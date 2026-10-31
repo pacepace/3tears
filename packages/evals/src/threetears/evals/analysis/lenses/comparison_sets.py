@@ -21,8 +21,8 @@ from threetears.evals.analysis.measurement_windows import measurement_window, me
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
 
 if TYPE_CHECKING:
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import (
-        EvalResult,
         EvalRun,
     )
 
@@ -203,7 +203,7 @@ class ComparisonSetsResult(EvalBaseModel):
 def compute_comparison_sets(
     runs: list[EvalRun],
     *,
-    results: Sequence[EvalResult] = (),
+    results: Sequence[ResultView] = (),
     full_windows: bool = False,
     scope_run_ids: Iterable[str] | None = None,
     profile: HostProfile,
@@ -250,7 +250,7 @@ def compute_comparison_sets(
         reads as sharing a clock when nothing checked. Every production caller
         supplies the scope's results; the default exists for callers whose
         question really is only about the run documents.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param full_windows: List every measurement span rather than summarising above
         :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
         surface groups a whole scope — the group that most needs the
@@ -283,7 +283,7 @@ def compute_comparison_sets(
         the narrowing stays visible rather than becoming a group that vanished.
     :rtype: ComparisonSetsResult
     """
-    results_by_run: dict[str, list[EvalResult]] = {}
+    results_by_run: dict[str, list[ResultView]] = {}
     for result in results:
         results_by_run.setdefault(result.eval_run_id, []).append(result)
 

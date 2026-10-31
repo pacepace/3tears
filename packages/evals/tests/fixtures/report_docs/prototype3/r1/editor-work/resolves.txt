@@ -1,0 +1,33 @@
+measure figures
+measure: resolves
+by: task
+level: 95%
+held: [mean, half_width]
+not_shown: []
+slices (1):
+  - slice: trouble; aspect: none
+    task.trouble.name = Troubleshooting (multi-turn)
+    task.trouble.n_cases = 180
+rows (4):
+  - aspect: none; slice: trouble
+    arm:atlas-l = Atlas-L (A)
+    figures (2):
+      task.trouble.atlas-l.resolves.mean = 91%
+      task.trouble.atlas-l.resolves.half_width = 4.2%
+  - aspect: none; slice: trouble
+    arm:atlas-m = Atlas-M (B)
+    figures (2):
+      task.trouble.atlas-m.resolves.mean = 90%
+      task.trouble.atlas-m.resolves.half_width = 4.4%
+  - aspect: none; slice: trouble
+    arm:brisk-s = Brisk-S (C)
+    figures (2):
+      task.trouble.brisk-s.resolves.mean = 74%
+      task.trouble.brisk-s.resolves.half_width = 6.4%
+  - aspect: none; slice: trouble
+    arm:open-70b = Open-70B (D)
+    figures (2):
+      task.trouble.open-70b.resolves.mean = 82%
+      task.trouble.open-70b.resolves.half_width = 5.6%
+total: 4
+offset: 0

@@ -845,6 +845,29 @@ OUTCOME_DIM_ID = "__outcome__"
 #: them — a judge service is built for these ids on every run.
 RESERVED_DIM_IDS: frozenset[str] = frozenset({TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID})
 
+
+def rubric_dim_scale(dim: str, scales: Mapping[str, RubricScale]) -> RubricScale:
+    """The scale ``dim`` was answered on, read off what was recorded, never assumed.
+
+    A reserved dual-score axis (:data:`RESERVED_DIM_IDS`) is 1 to 5 by construction, and no run records a scale for
+    it, since it is no template dim. Every other dim's scale is the one recorded for it: a run's
+    ``EvalRun.rubric_scales``, captured at launch from its template, or the scales its scores carried.
+
+    :param dim: The dimension, or a reserved axis id.
+    :ptype dim: str
+    :param scales: The scales recorded for the template's dims, by dim.
+    :ptype scales: Mapping[str, RubricScale]
+    :return: The scale.
+    :rtype: RubricScale
+    :raises ValueError: ``dim`` is no reserved axis and no scale was recorded for it.
+    """
+    if dim in RESERVED_DIM_IDS:
+        return "ordinal"
+    if dim not in scales:
+        raise ValueError(f"no scale was recorded for rubric dim {dim!r}, and a scale is never assumed")
+    return scales[dim]
+
+
 #: Separator between a dim's scoring context and its bare name.
 DIM_NAMESPACE_SEPARATOR = "."
 
@@ -1668,7 +1691,7 @@ class CalibrationRating(DurableDocumentModel):
 # EvalTemplate
 # =============================================================================
 
-#: The most characters a declared display name holds: an aspect's short name, a goal check's name. A count of
+#: The most characters a declared display name holds: an aspect's short name, a goal check's name, a stratum's name. A count of
 #: characters rather than of words, since what a word is differs from one language to the next.
 DECLARED_NAME_CHARS: Final[int] = 32
 
@@ -1677,7 +1700,7 @@ DECLARED_NAME_CHARS: Final[int] = 32
 #: (:func:`~threetears.evals.run.definition_digests.template_digest`, ``measured_template_digest``), out of every
 #: bundle fingerprint (a bundle carries them under the same names), and an edit of these alone leaves the template's
 #: ``updated_at`` as it was, since that stamp decides which runs still read the template's criteria and intent.
-TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names"})
+TEMPLATE_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"goal_check_names", "stratum_names"})
 
 
 def declared_name(name: str, *, what: str) -> str:
@@ -1848,6 +1871,17 @@ class EvalTemplate(DurableDocumentModel):
             "or candidate, so naming a check changes nothing a run measures."
         ),
     )
+    # What a page calls each stratum: presentation only, like `goal_check_names`.
+    stratum_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "A display name for a stratum, by the stratum id a case declares (`EvalTestCase.stratum`): what a page "
+            f"prints for the stratum, at most {DECLARED_NAME_CHARS} characters, one name per stratum. A stratum with no "
+            "name here is printed as its id. Read by no judge, simulator or candidate, so naming a stratum changes "
+            "nothing a run measures."
+        ),
+    )
 
     # Lifecycle
     revision: int = Field(
@@ -1935,8 +1969,8 @@ class EvalTemplate(DurableDocumentModel):
 
     @model_validator(mode="after")
     def _names_its_own_checks_once(self) -> Self:
-        """Refuse a check name for a check the template does not declare, a blank or over-long one, or one name
-        given to two checks, which a page would print alike.
+        """Refuse a check name for a check the template does not declare, a blank or over-long name, or one name
+        given to two checks or to two strata, which a page would print alike.
 
         :return: The validated template.
         :rtype: EvalTemplate
@@ -1954,6 +1988,15 @@ class EvalTemplate(DurableDocumentModel):
         if twice := sorted({name for name in names if names.count(name) > 1}):
             raise ValueError(
                 f"goal_check_names gives {', '.join(map(repr, twice))} to more than one check; name each check apart"
+            )
+        for stratum, name in self.stratum_names.items():
+            if not stratum.strip():
+                raise ValueError("stratum_names holds a blank stratum id; key each name by the stratum a case declares")
+            declared_name(name, what=f"stratum {stratum!r}")
+        given = list(self.stratum_names.values())
+        if twice := sorted({name for name in given if given.count(name) > 1}):
+            raise ValueError(
+                f"stratum_names gives {', '.join(map(repr, twice))} to more than one stratum; name each stratum apart"
             )
         return self
 
@@ -3439,6 +3482,52 @@ def sent_settings_phrase(settings: ClientRequestSettings | None) -> str:
 DEFAULT_LAUNCH_K_RUNS = 3
 
 
+class RunDisclosure(EvalDocumentModel, CoreShapeModel):
+    """What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
+
+    Stated by the host (``LaunchHost.run_disclosure``), stamped on every run the launch starts whatever its kind, and
+    carried as it was stated through the analysis bundle (``RunApparatus.run_disclosure``) and the report input to
+    ``campaign_overview``, where the analyst reads it. **A disclosure, never a coordinate**: nothing in the engine reads
+    a value of it to decide anything, so it is in no identity, context key, variant key, cell, confound list or
+    apparatus class, and two runs that disclose different machines or loads are still one cell (a host owner's ruling:
+    machine identity is apparatus with no rig coordinate). A host that wants a value to group or split runs declares
+    it as a sweepable instead.
+
+    Unlike ``host_payload``, which the engine never reads, this is read, and only to be shown.
+    """
+
+    values: dict[str, str | int | float | bool] = Field(
+        default_factory=dict,
+        description=(
+            "Each disclosed value by the host's own name for it, a word, a count or a reading, never a structure: the machine the launch ran on, its one-minute load "
+            "as the launch began, the host's build. Printed as given, never compared."
+        ),
+    )
+    statements: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What the host states about how the run was measured, each a sentence in the host's words, such as how "
+            "latency is taken and when it is valid. Carried verbatim to the analyst, never parsed."
+        ),
+    )
+
+    @field_validator("values")
+    @classmethod
+    def _named(cls, values: dict[str, str | int | float | bool]) -> dict[str, str | int | float | bool]:
+        """Refuse a value disclosed under a blank name, which no reader could cite."""
+        if blank := [name for name in values if not name.strip()]:
+            raise ValueError(f"a disclosed value needs a name; {len(blank)} have a blank one")
+        return values
+
+    @field_validator("statements")
+    @classmethod
+    def _stated(cls, statements: list[str]) -> list[str]:
+        """Refuse a blank statement, which says nothing."""
+        if any(not statement.strip() for statement in statements):
+            raise ValueError("a disclosed statement is a sentence; a blank one says nothing")
+        return statements
+
+
 #: The merit axes a declaration may name, defined here because ``kernel.metrics`` imports this module, which
 #: binds :data:`~threetears.evals.kernel.metrics.MeritAxis` to this same object.
 DeclaredMeritAxis = Literal["quality", "cost", "latency", "reliability"]
@@ -4109,6 +4198,20 @@ class EvalRun(CoreDocumentModel):
             "user was pinned, or the run's writer recorded no settings."
         ),
     )
+    simulator_prompt_digest: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The content address of the simulated user's prompts as this run sends them, stamped at launch beside "
+            "simulator_asked_settings (``threetears.evals.run.simulator.simulator_prompt_digest``): every engine-"
+            "authored word its calls carry around the conversation's actors (each utterance call's framing and reply "
+            "format; under ``llm_decided``, the scheduler's system and user prompts, its reply format, its repair and "
+            "its refusal reasons), with the parts each cell fills (the case's scenario parameters, the transcript so "
+            "far, the round's count, the reply a repair quotes) left empty, since the frozen cases address those. "
+            "Moves with any change to what the simulator is told, the engine's own words included. None = no simulated user was pinned, or the run was stored before the field existed. Left out "
+            "of the document when unset, and in no identity, key or digest."
+        ),
+    )
     max_cost_usd: float | None = Field(
         default=None,
         gt=0.0,
@@ -4131,6 +4234,50 @@ class EvalRun(CoreDocumentModel):
             "hashed into any identity key, on the same reasoning: two runs bounded by the same ceiling were "
             "measured under the same condition however each arrived at it. None = the run's writer recorded "
             "no ceiling (a run assembled without its launch, which is where the cascade resolves)."
+        ),
+    )
+    cap_checked_on_estimates: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "True when max_cost_usd was checked against estimates: the arm's largest call was bounded on rates the "
+            "host's pricer does not guarantee (an OpenRouter route whose upstream may bill otherwise), so the run "
+            "was admitted on an estimate and its cap reads against one. None = not recorded: no cap, a bound on "
+            "guaranteed rates, or a run stored before the field existed. Left out of the document when unset, and "
+            "in no identity, key or digest."
+        ),
+    )
+
+    package_version: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The 3tears-evals version that launched the run, from the installed distribution's metadata. None = the "
+            "launching build carried no metadata (a source tree on the path), or the run was stored before the field "
+            "existed. Left out of the document when unset, and in no identity, key or digest."
+        ),
+    )
+    package_rev: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The git commit the launching 3tears-evals was built from, as its installer recorded it (``vcs_info`` of "
+            "the distribution's ``direct_url.json``, PEP 610, written for an install from a git URL). None = the "
+            "install recorded none (a wheel from an index, an editable or local-directory install), the build carried "
+            "no metadata, or the run was stored before the field existed: not known, never guessed. Left out of the "
+            "document when unset, and in no identity, key or digest."
+        ),
+    )
+    run_disclosure: RunDisclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the launching host disclosed about the launch (``RunDisclosure``, from ``LaunchHost.run_disclosure``)"
+            ": its machine, load and how it measures, stamped on every run of every kind. A disclosure, never a "
+            "coordinate: in no identity, context or variant key, cell or confound. It is evidence the bundle carries, so "
+            "it moves the bundle's fingerprint and a snapshot's id as any recorded fact does. None = the host disclosed "
+            "nothing, or the run "
+            "was stored before the field existed. Left out of the document when unset."
         ),
     )
 
@@ -4835,6 +4982,18 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             "for work no model did."
         ),
     )
+    # Left out of the document when unset, so an entry naming none is stored as it was before the field existed.
+    served_model: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The model the provider's responses named as having answered the work's calls, as the work's client "
+            "reported it; folded into the inner_agent role's `RoleUsage.served_model`. None = not recorded: the "
+            "responses named none, or named more than one (one entry cannot name two; report each model's work as "
+            "its own entry). Never set on a substituted delivery, which ran on no model."
+        ),
+    )
     acknowledged_turn: int | None = Field(
         default=None,
         ge=0,
@@ -4918,6 +5077,8 @@ class AsyncDelivery(EvalDocumentModel, CoreShapeModel):
             defects.append(f"delivered_turn {self.delivered_turn} precedes acknowledged_turn {self.acknowledged_turn}")
         if self.substituted and self.model is not None:
             defects.append(f"a substituted delivery ran on no model, yet names {self.model!r}")
+        if self.substituted and self.served_model is not None:
+            defects.append(f"a substituted delivery was answered by no model, yet names {self.served_model!r}")
         if self.substituted and (spent := self.reported_spend):
             defects.append(f"a substituted delivery spent nothing, yet reports {', '.join(spent)}")
         if self.price_source is not None and self.cost_usd is None:
@@ -5130,6 +5291,114 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
             "it sent, or the row counts no completion a client reported on (background work, an external API)."
         ),
     )
+    # The unanswered calls stand beside the row's spend, never inside it: `call_count`, the tokens and the dollars count
+    # the answered calls, and a call sent and never answered neither adds to them nor unprices them. Left out of the
+    # document when unset, so a row that counted none is stored as it was before the fields existed.
+    unanswered_retried: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "This row's calls a forced tool choice was refused on and that were then asked again unforced and "
+            "answered in the same call, counted beside this row's `call_count` (which counts its answered calls) and "
+            "never in it: what they cost is in the row, so they explain attempts and latency, never a failure. Counted "
+            "per row, never a role's or a cell's total repeated on each row. None = not counted (the engine counts "
+            "none on its own rows); 0 = counted, and none."
+        ),
+    )
+    unanswered_lost: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "This row's calls that were sent and never answered, so the turn they belonged to ended in error (a "
+            "timeout, a cancel, a provider error after the request was sent, a stream cut mid-way), counted beside "
+            "this row's `call_count` and never in it. Not counted: a call that never reached the provider (a connect "
+            "failure, an open circuit), and an auth or payment failure, which is the rig's. Counted per row, never a "
+            "role's or a cell's total repeated on each row. None = not counted; 0 = counted, and none."
+        ),
+    )
+    unanswered_reasons: dict[str, int] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "This row's unanswered calls by the host's own reason word ('timeout', 'cancelled', 'http_529'), each "
+            "word mapped to how many of them it accounts for, at least 1. Set only beside a counted "
+            "unanswered_retried or unanswered_lost, and summing to no more than they do: a call whose host gave no "
+            "reason is counted there and not here. None = no reasons were counted."
+        ),
+    )
+
+    unpriced_reasons: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Why this row's dollars are unknown: each distinct reason its pricer gave for a call it could not price "
+            "(a completion's pricing_failure), in the order first seen. Set only beside a cost_usd of None, which is "
+            "unknown and never $0. None = no reason was given (the row is priced, or its unpriced calls said "
+            "nothing)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _unpriced_reasons_explain_an_unknown_cost(self) -> RoleUsage:
+        """Refuse reasons beside a known cost, an empty list, or an empty reason.
+
+        :return: The row, unchanged.
+        :rtype: RoleUsage
+        :raises ValueError: ``unpriced_reasons`` is set beside a ``cost_usd``, is empty, or holds an empty reason.
+        """
+        if self.unpriced_reasons is None:
+            return self
+        if self.cost_usd is not None:
+            raise ValueError("unpriced_reasons says why a row's cost is unknown, and this row's cost_usd is known")
+        if not self.unpriced_reasons or not all(self.unpriced_reasons):
+            raise ValueError(
+                "unpriced_reasons holds at least one reason, none empty; leave it None when none was given"
+            )
+        return self
+
+    @property
+    def answers_nothing(self) -> bool:
+        """Whether the row holds only unanswered calls: it counts no answered call, no token and no dollar, and counts
+        calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
+
+        Such a row is no spend at all, so it neither prices nor unprices a total (owner, 2026-10-27: unanswered calls
+        add nothing to cost and never unprice it): :func:`~threetears.evals.kernel.usage_capture.blended_cost` and the
+        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census.
+        """
+        return (
+            self.call_count is None
+            and self.cost_usd is None
+            and self.prompt_tokens is None
+            and self.completion_tokens is None
+            and self.reasoning_tokens is None
+            and self.provider_units is None
+            and (self.unanswered_retried is not None or self.unanswered_lost is not None)
+        )
+
+    @model_validator(mode="after")
+    def _reasons_count_the_unanswered(self) -> RoleUsage:
+        """Refuse reasons with no unanswered count beside them, a reason counting no call, or more reasons than calls.
+
+        :return: The row, unchanged.
+        :rtype: RoleUsage
+        :raises ValueError: ``unanswered_reasons`` is set with neither count, counts a reason zero times or less, or
+            accounts for more calls than ``unanswered_retried`` and ``unanswered_lost`` count.
+        """
+        if self.unanswered_reasons is None:
+            return self
+        if self.unanswered_retried is None and self.unanswered_lost is None:
+            raise ValueError("unanswered_reasons counts the reasons of unanswered calls, and the row counts none")
+        if any(count < 1 for count in self.unanswered_reasons.values()):
+            raise ValueError("each unanswered reason counts the calls it accounts for, at least one")
+        counted = (self.unanswered_retried or 0) + (self.unanswered_lost or 0)
+        if sum(self.unanswered_reasons.values()) > counted:
+            raise ValueError(
+                f"unanswered_reasons accounts for {sum(self.unanswered_reasons.values())} calls, more than the "
+                f"{counted} the row counts unanswered"
+            )
+        return self
 
     @field_validator("sent_settings")
     @classmethod
@@ -6587,6 +6856,7 @@ __all__ = [
     "CatalogRubricDim",
     "CellTermination",
     "ClientRequestSettings",
+    "RunDisclosure",
     "CompletenessSource",
     "ControlEndState",
     "ConversationSpec",
@@ -6639,6 +6909,7 @@ __all__ = [
     "fingerprint_criterion",
     "fingerprint_judged_output",
     "label_key_of",
+    "rubric_dim_scale",
     "resolve_effective_judges",
     "scored_dim_ids",
 ]

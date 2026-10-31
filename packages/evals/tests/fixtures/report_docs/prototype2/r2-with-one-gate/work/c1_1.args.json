@@ -1,0 +1,1 @@
+{"action": "block_render", "snapshot_id": "report-snapshot:c8b23ae16d7d0a2739fb9746039006be", "block_kind": "lattice", "query": {"source": "configs", "measures": ["pass_rate"]}, "reference": "floor", "emphasis": "brisk-s.low.r1"}

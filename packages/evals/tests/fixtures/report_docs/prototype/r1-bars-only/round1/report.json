@@ -1,0 +1,89 @@
+{
+  "schema": "report-doc/1",
+  "snapshot_id": "report-snapshot:0d5f1d10bda1a44e6a0a2c413ea25524",
+  "story": "tradeoff",
+  "headline": "{arm:atlas-m} costs {cost_per_1k.atlas-m} per thousand conversations against {arm:atlas-l}'s {cost_per_1k.atlas-l} and gives up a few points of overall quality; the two cheaper models give up far more, most on declining to speculate and confirming account changes.",
+  "lede": "{arm:brisk-s} declines speculation bait {task.specul.brisk-s.declines.mean|pct} of the time, against {task.specul.atlas-m.declines.mean|pct} for {arm:atlas-m}. A guardrail floor near the Atlas models' level on that behaviour or on confirming account changes would rule out both cheap models, and a price per point of overall quality would settle {arm:atlas-m} against {arm:atlas-l}; neither was declared.",
+  "flag": "Nothing was declared before the run: no control, no quality floor and no exchange rate between cost and quality. Code's dominance call names {arm:brisk-s} because it weighs cost alone; this page does not follow it, since no quality axis was declared for it to weigh.",
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {"id": "judge_not_stated", "material_if": "only if the judge scores declining to speculate or confirming account changes differently by model; the cheap models' losses on those behaviours rest on it, while cost and latency are measured"},
+      {"id": "unpaired_intervals", "material_if": "only for the small gaps between Atlas-L and Atlas-M; the cheap models' gaps on the two guardrail behaviours are clear even on each model's own interval"},
+      {"id": "no_traffic_mix", "material_if": "only if production traffic is weighted so heavily toward one task that the quality gaps there decide alone; the cost order is the same in every task"},
+      {"id": "overall_scale_not_stated", "material_if": "only if a few points of the overall quality score is a large difference on a scale the input does not define"}
+    ]
+  },
+  "decision": [
+    {"slot": "the_trade", "text": "{arm:atlas-l} scores highest on overall quality in every task and costs most. {arm:atlas-m} trails it by a few points at {cost_per_1k.atlas-m} per thousand conversations. {arm:open-70b} and {arm:brisk-s} cost least and lose most where a wrong reply does harm."},
+    {"slot": "where_it_flips", "text": "No price per point can be computed, because quality is stated per task only. A floor on declining to speculate or on confirming account changes set near {arm:atlas-m}'s level removes both cheap models. Between {arm:atlas-m} and {arm:atlas-l}, the call turns on whether a few points of overall quality are worth the cost gap."},
+    {"slot": "our_lean", "text": "Our lean, not a rule: {arm:atlas-m}. It is not separated from {arm:atlas-l} on any judged behaviour and costs far less. The lean holds while the owner accepts a few points of overall quality for that saving."},
+    {"slot": "what_settles_it", "text": "The concierge product owner declares floors on declining to speculate and confirming account changes, and a price per point of overall quality. With both, the four measured models rank without a judgment call."},
+    {"slot": "watch", "text": "Confirming before account changes was scored only in troubleshooting; billing & account questions hold no figure for it, so the cheap models' exposure where account changes are most common is unmeasured."}
+  ],
+  "claims": [
+    {
+      "id": "c1",
+      "weight": "lead",
+      "text": "{arm:atlas-l} scores highest on overall quality in every task and costs most; {arm:atlas-m} sits a few points lower at a fraction of the cost, and the two cheap models fall furthest in troubleshooting and research questions.",
+      "evidence": [
+        {"block": "scatter_frontier", "query": {"source": "tasks", "measures": ["cost_per_1k", "overall"], "small_multiples_by": "task"}, "caption": "Overall quality score against cost per thousand conversations, one panel per task, cost on a log scale. No quality line was declared."}
+      ]
+    },
+    {
+      "id": "c2",
+      "weight": "support",
+      "text": "The cheap models lose most on the two behaviours where a wrong reply does harm. {arm:brisk-s} declines speculation bait {task.specul.brisk-s.declines.mean|pct} of the time. {arm:open-70b} confirms before account changes {task.trouble.open-70b.confirms.mean|pct} of the time. Neither interval reaches {arm:atlas-m}'s.",
+      "evidence": [
+        {"block": "dot_interval", "query": {"source": "tasks", "measures": ["declines", "confirms"]}, "caption": "Judged rate with its interval, per model. No floor was declared for either behaviour."}
+      ]
+    },
+    {
+      "id": "c3",
+      "weight": "support",
+      "text": "On every other judged behaviour {arm:atlas-m} is not separated from {arm:atlas-l}, while {arm:brisk-s} trails most on resolving troubleshooting issues, at {task.trouble.brisk-s.resolves.mean|pct}.",
+      "evidence": [
+        {"block": "dot_interval", "query": {"source": "tasks", "measures": ["resolves", "steps", "escalates", "character", "toolcall", "cites", "unsupported"]}, "caption": "Judged rates with their intervals, per task and model. Each interval is the model's own, not a paired comparison."}
+      ]
+    },
+    {
+      "id": "c4",
+      "weight": "detail",
+      "text": "Latency rules no model out: every p95 sits under the {aspects.overall.bar.latency_s.atlas-l.bar} bar, the slowest being {arm:atlas-l} on research-needed questions at {task.research.atlas-l.latency_s.p95}.",
+      "evidence": [
+        {"block": "range_bars", "query": {"source": "tasks", "measures": ["latency_s"]}, "caption": "Latency from p50 to p95, per task and model. The declared bar is stated in the sentence and not drawn."}
+      ]
+    }
+  ],
+  "explore": [
+    {"control": "Floor on declining to speculate and on confirming before account changes", "binds": "Brisk-S and Open-70B", "outcome": "A floor above the top of either cheap model's interval removes it. No floor reads Atlas-M and Atlas-L apart with confidence: their intervals overlap on both behaviours."},
+    {"control": "Price of a point of overall quality, per thousand conversations", "binds": "Atlas-M against Atlas-L, and both against the cheap models", "outcome": "The flip point cannot be located: no model-level quality figure exists to price. Within each task, a higher price moves the choice toward Atlas-L."},
+    {"control": "Traffic mix across the tasks", "binds": "each model's blended cost and quality", "outcome": "The cost order is the same in every task, so the mix moves no cost ranking. It only weights the quality gaps, which are largest in troubleshooting and research questions."}
+  ],
+  "omitted": [
+    {"what": "Code's dominance call for Brisk-S", "why": "It weighs cost alone because no quality axis was declared; the flag says so once, and the page does not follow it."},
+    {"what": "Open-70B's top in-character rate in persona small talk", "why": "Not separated from Atlas-L or Atlas-M; it changes no option's standing. It stays in the judged-behaviours chart and its table."},
+    {"what": "Per-task cost figures", "why": "The cost order is the same in every task; the model-level costs carry the trade, and the per-task costs are in the cost-against-quality panels."},
+    {"what": "Latency medians and per-task tails beyond the slowest", "why": "Every model is well under the bar, so latency decides nothing; full figures stay in the latency chart and its table."},
+    {"what": "Scoreboard (cases run, none lost or failed)", "why": "Describes the method; one line in Method."},
+    {"what": "A routed mix (a cheap model on billing & account questions, where its overall quality is closest)", "why": "Nobody ran it, so no figure states its cost or quality; and speculation bait and account changes can arrive in any task, so routing by task does not avoid the cheap models' weak behaviours. Named as a next step only."},
+    {"what": "Price per point and monthly cost", "why": "No tool can state them: quality has no model-level figure and no monthly volume was declared."}
+  ],
+  "next": [
+    {"text": "The concierge product owner declares floors on declining to speculate and confirming before account changes.", "settles": "Whether Brisk-S and Open-70B stay on the table; at any floor near the Atlas models' level, the trade narrows to Atlas-M against Atlas-L."},
+    {"text": "Calibrate the judge with human ratings on speculation-bait and account-change replies from all four models.", "settles": "Turns the judge caveat into evidence for the two behaviours the cheap models' losses rest on."},
+    {"text": "Declare a price per point of overall quality, the traffic mix across tasks and a monthly volume.", "settles": "Lets the trade be priced at model level and decides Atlas-M against Atlas-L without a judgment call."},
+    {"text": "Score confirming before account changes on billing & account questions.", "settles": "Whether the cheap models' weakest behaviour also shows where account changes are most common."},
+    {"text": "If a cheaper option is still wanted, run a routed mix (a cheap model on billing & account questions, Atlas-M elsewhere) as a measured option, scoring speculation and account-change confirmation inside the routed traffic.", "settles": "Whether routing keeps the saving without the guardrail losses, so it can be priced beside the four measured models."}
+  ],
+  "method": [
+    {"term": "Cases", "text": "{scoreboard.atlas-l.cases|int} cases per model across the tasks; repeats are not stated. No trial was lost or failed."},
+    {"term": "Judged behaviours", "text": "Each is a pass or fail verdict from a judge whose model and calibration the input does not state. Each behaviour is scored in one task only."},
+    {"term": "Overall quality", "text": "An ordinal score per task; the input does not define its scale."},
+    {"term": "Intervals", "text": "Each model's own interval per task, at the level each chart prints, neither paired nor corrected for the number of comparisons. Not separated means the intervals overlap; it never means equal."},
+    {"term": "Cost", "text": "Cost per thousand conversations, measured. No monthly volume was declared, so no monthly figure is stated."},
+    {"term": "Latency", "text": "p50 and p95 per task; one bar was declared, and every model met it."},
+    {"term": "Not compared", "text": "No control was named, so no change against a control exists; quality has no model-level figure, and no traffic mix was declared."},
+    {"term": "Source", "text": "Synthetic example data for {meta.campaign}, run {meta.run_date}."}
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the recommendation slot and the two why_not slots say what to do (keep September), why (both candidates cost more per reply, cost.uplift_range, contrasts separated at p_adj < 0.000001 and 0.00008), and the main risk (the watch slot and lede: an earlier round claimed qwen3.8-flash was cheaper, and this run contradicts it). The late-criteria flag sits on the first screen too. A small gap: the question was asked as non-inferiority within 15 points, and the first screen never answers it in those terms (see item 3)."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (character pass rate) -> c2 (cost, the deciding axis) -> c3 (1017 lower on holding character after correction, -4.7, 99.69% interval -8.2 to -1.3) -> c4 (off lane carries about half of each candidate's loss, 48% and 53%) -> c5 (what off-lane failures look like) follows. options_dominance and price_tradeoff both confirm September dominates both candidates on cost and holding character, so nothing in the snapshot contradicts the headline. decision_sensitivity on the margin holds across every margin (flips at 5.8 and 10.8 do not change the call), matching the explore row."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "September's weak axis is shown (watch slot: off lane in character 65.8%). But two framings run ahead of the evidence. (a) The question asks whether a candidate is no more than 15 points worse; readings_list gives both candidates verdict within_margin (qwen3.8-flash worst drop 10.8, 1017 worst drop 5.8) and both floors held. The lede, why_not and c1 call qwen3.8-flash 'clearly worse' and never state that both candidates pass the question's own bar on character; the margin band appears only in the c1 caption. The call is unaffected (cost decides), but the reader is never told that the answer to the asked question is 'yes, both are within margin; both lose on cost'. (b) c5 says off-lane failures 'look the same on every model' from three examples, one per arm, and the 1017 one does not fit (item 7)."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 1,
+      "reason": "No omitted item would change the decision. Checked: goal_state is not separated for either candidate (p_adj 0.11, 0.50); failed-reply notices are not separated; smaller strata (next up -16.7, assistant shape -14.4, music tech -14.3 on 6-8 cases) are too small to read. But one omission reason is false. 'The judge's outcome and transcript grades ... move the same way as holding character' holds for qwen3.8-flash (both regressed) but not for 1017: its outcome grade is +0.014 (4.709 vs 4.695) and its transcript grade +0.017, both not separated, p_adj 1, while its holding character is clearly lower. The decision stands (1017 still costs more for no separated gain), but the reason must be accurate."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "confound:observed:reasoning_ratio is carried into a confidence caveat and next step 4; confound:model and apparatus:simulator_sent_settings each get a material_if scoped to what they could touch; the short runs are explained as 2 lost trials, too few to close qwen3.8-flash's interval. Weakness: caveat and next step assert 1017 has a 'smaller reasoning share' with no figure key (reasoning_ratio.<arm> exists in the key grammar but is not cited, and the editor tool cannot read it). Next step 4's 'it cannot make 1017 cheaper, so it does not reopen the call' depends on that direction."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All five name a concrete experiment or declaration and what it settles: reconcile qwen3.8-flash's cost with the earlier round on shared cases (and why cost is missing on 67 of its 895 usable trials, n 828); calibrate the judge with off-lane-heavy human ratings; tighten the off-lane directive and rerun on all three; rerun 1017 at matched reasoning; declare question, control and margin in advance. Each says whether it could reopen the call."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1, c3, c4 fit and pass the counterfactual: if qwen3.8-flash's interval crossed zero, or off lane's loss share were small, the claim would change. c2 fits loosely: the bars show per-arm cost intervals that do not overlap, but the corrected cost contrasts (+$0.000616, interval +$0.000379 to +$0.000853; +$0.000492, interval +$0.000174 to +$0.000811) would show the deciding finding directly, and Method says 'cost uplift ... carries no interval' when the underlying contrast does. c5 fails: the claim is two failure modes, 'helps with the non-music task or answers like a help desk', on every model. Its block holds one frozen example per arm. qwen3.8-flash (T44) fits the first mode and September (T14) fits the second. 1017 (T15) fits neither: the judge faults a queued voice line that reads like a backstage recap. Two of the three excerpts are music-search tool output, so the failing reply is not visible."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c5",
+      "severity": "must_fix",
+      "finding": "The claim is contradicted by its own evidence. 1017's frozen off-lane failure (T15) is a queued voice line judged a backstage recap, neither 'helps with the non-music task' nor 'answers like a help desk'. With one example per arm (the only ones frozen), 'look the same on every model' is not supported. Restate it as what three examples show: September (T14) slips into help-desk refusal, qwen3.8-flash (T44) helps with the landlord email, and 1017 (T15) breaks voice in a queued line. Or drop it to the appendix. Also, the T15 and T14 excerpts show music-search tool output, not the failing reply."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Answer the question in its own terms. Both candidates are within the 15-point margin on the pass rate (readings verdict within_margin; worst drops 10.8 and 5.8), and both late floors held. Say so in the lede or c1, then say why the answer is still to keep September: neither is better, and both cost more. As written, 'clearly worse' alongside a question about a 15-point margin invites a reader to think qwen3.8-flash failed the bar."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The omitted entry on the judge's outcome and transcript grades gives a false reason for 1017. Its outcome grade (+0.014) and transcript grade (+0.017) are not separated and point slightly up, while its holding character is clearly lower (-4.7). Reword: they fall with holding character for qwen3.8-flash; for 1017 they are not separated and do not bear on a call made on cost."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The deciding finding should carry its corrected interval. Cite contrast.<arm>.production_replicating_cost.interval: both are separated at 99.69%, p_adj < 0.000001 and 0.00008. Change Method's 'Cost uplift ... carries no interval' to say the percentage is arithmetic on means while the per-reply difference is a corrected contrast. Consider a forest of the two cost contrasts in place of, or beside, the bars."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The '{arm:1017}'s smaller reasoning share' in the confound caveat and next step 4 has no figure behind it. Cite reasoning_ratio for 1017 and September. The claim that matching reasoning 'cannot make 1017 cheaper' holds only if 1017 reasons less; a reader cannot check that from the page."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The second short_run caveat ('The same lost trials as the run above') is inaccurate. Each run excluded one distinct trial (1 of 299 cells and 1 of 598 cells), which together make the 2 lost trials. Say 'the other of the two lost trials'."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Watch slot 2 says off lane is 'where every option is weakest'. Assistant shape reads lower for September (58.8% vs 65.8%) and for 1017 (44.4% vs 45.6%), on 6 cases. Qualify it as the weakest stratum large enough to read."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: two confidence caveat ids are run UUIDs (short_run:01a170ab-..., short_run:01a17121-...), and one is a criterion key (late:floor:character adherence (v2)/rate_drop/*). They are fine as ids in the doc, but if the renderer prints a caveat's id above the appendix, the page breaks invariant 5. Confirm that the renderer labels caveats rather than printing ids.",
+    "Invariant 1: c1's lead claim and the why_not slot rest on the pass rate, which Method says the campaign never defines. This is not a figure-key failure, but the lead finding's measure has no stated definition on the page beyond 'stricter than holding character' (checked: pass 85.3/77.7/82.3% vs holding character 91.5/85.4/86.6%)."
+  ],
+  "calls": 22
+}

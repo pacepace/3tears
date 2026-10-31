@@ -1,0 +1,203 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and the frontier claim tell a reader what to do now: run every planner with a retry. They also say what is still open, which model to run, and the reason: nothing is declared, so it is a trade the owner has to price. The lean is Brisk-S at low reasoning with a retry, at 97.1% for $1,208 a month. The Watch line names the main risk: Atlas-M at high reasoning with a retry is ahead by 1.5 points (+0.3 to +2.6) at 12 times the cost. The step prices match price_tradeoff: $319.67, $1,595.18 and $17,236.36 a point a month."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims build on each other. The frontier claim gives seven configurations on the frontier, which matches price_tradeoff. The retry claim shows every frontier step past the cheapest runs with a retry. The top claim shows that model alone and reasoning alone do not separate, while the Watch line shows the two together do (+1.5, +0.3 to +2.6). These fit. Each block's rows match its sentence. Only one pairing, Atlas-M high, has a retry interval reaching zero (-0.2 to +2.0); Brisk-S high just clears it (+0.04 to +2.6). Multi-hop is the lowest task for S, J and F. One rough spot: the latency claim opens with 'not the retry', yet its own rows show the retry raising p95 in every pair, from 378 to 450 ms and from 2430 to 2551 ms."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "The lean's weak points are visible: multi-hop at 95.6%, its kept failures, and the 0.8-point gain from high reasoning that this run cannot tell from zero. Two things read stronger than the evidence allows. Watch calls Atlas-M at high reasoning 'clearly ahead' on an interval whose low end is +0.3. That interval is unpaired and uncorrected, and Atlas-M is the best of 18 configurations, which is the case the best-of-n caveat describes. And the top claim's 'Atlas-M costs 5.5 times as much' ranks the models by cost with no routing caveat on the claim."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing left out would change the decision. Brisk-S at low reasoning without a retry is undominated on the two axes (95.3% at $0.288), but it sits under the frontier hull, and the lean costs only about $56 a month more for 1.8 points. With the volume read as tasks, cost per task keeps the same frontier order. Two items in the left-out list point to an appendix effects table that does not exist (see findings)."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "The page names all four confounds: no control (unpaired intervals), best of many, unknown cost routing and the volume unit. Each has a next step. But the routing caveat is attached only to the frontier claim. The retry claim ($0.077 per thousand calls) and the top claim (5.5 times the cost) cite costs without it. The volume clause says the cost gaps between models 'would not close'. It leaves out that the explore bands the owner is told to pick from would scale by about 1.5 times. For example, the lean's band would become roughly $490 to $2,450 a point."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it would settle. The owner declares a floor or a price per point. The Brisk-S high-against-low re-run is sized from settle_cases: 5,432 cases for four in five, and 9.4% wrong-side today. The multi-hop work and the provider and unit record are also there. A small slip: the re-run is called paired on the same cases, but 5,432 is the size for independent arms."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "The retry, top and tasks blocks fit their claims and carry the claims' own figures. The frontier claim says 'seven configurations sit on it', but its values table lists all 18 points and does not mark which seven, so a reader cannot check the claim from the block. The latency caption says 'the frontier configurations and their no-retry twins', but the block leaves out three frontier configurations (Nano-XS off without and with a retry, Nano-XS low with a retry) and Brisk-S high without a retry, which is the lean-adjacent L's twin."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "top",
+          "severity": "must_fix",
+          "finding": "'Atlas-M costs 5.5 times as much at the same settings' ranks two models by cost, but the claim names no provider and carries only the no-control caveat. No configuration records who served it, and the page's own 'Cost routing unknown' caveat says the cost order holds only for this run's routing. Attach 'Cost routing unknown' to this claim and write it as 'at this run's unnamed provider routing, Atlas-M costs 5.5 times as much'. Do the same in the retry claim, which cites '$0.077 per thousand calls'.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Watch says Atlas-M · reasoning high · 1 retry is 'clearly ahead' of the lean, on an interval of +0.3 to +2.6 points. That interval is unpaired and uncorrected across 18 configurations, and Atlas-M is the top one, which is exactly where the best-of-n caveat applies. Say 'ahead, with an interval clearing zero by 0.3 points, uncorrected for 18 configurations'. Also make the best-of-n confidence clause say whether this lead is the thin lead it means, and why the lean holds either way. Right now it only says the pass rates 'likely fall a little'.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The explore row for the worth of a point gives only three bands: below $3.20 (Nano-XS off, no retry), $319.67 to $1,595.18 (the lean) and above $17,236.36 (Atlas-M high with a retry). It leaves out the bands for Nano-XS off with a retry ($3.20 to $17.31), Nano-XS low with a retry ($17.31 to $111.22), Nano-XS high with a retry ($111.22 to $319.67) and Brisk-S high with a retry ($1,595.18 to $17,236.36). That last band is the widest on the page. An owner who prices a point anywhere in those ranges gets no answer. List all seven bands, since the first next step says 'the explore bands then pick one'.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "frontier",
+          "severity": "should_fix",
+          "finding": "The claim says seven configurations sit on the frontier, but the values table lists all 18 points and marks only J. Add a column or tag for the seven frontier points (Nano-XS off without and with a retry, Nano-XS low and high with a retry, Brisk-S low and high with a retry, Atlas-M high with a retry), so a reader can check the count against the block.",
+          "id": "f1.4",
+          "since": 1
+        },
+        {
+          "claim": "latency",
+          "severity": "should_fix",
+          "finding": "The opening 'Latency follows model and reasoning, not the retry' is contradicted in part by the block: the retry raises p95 in every pair shown (378 to 450 ms, 465 to 513 ms, 2430 to 2551 ms). Write it as 'the retry leaves the median unchanged and adds 48 to 121 ms at p95'. The caption also says 'the frontier configurations and their no-retry twins', but Nano-XS off without and with a retry, Nano-XS low with a retry, and Brisk-S high without a retry (L's twin) are missing. Add them or reword the caption to match what is drawn.",
+          "id": "f1.5",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The volume-unit confidence clause says only that the cost gaps between models 'would not close'. If the 4,000,000 a month counts tasks, every price per point on the page and every explore band scales by about 1.45 to 1.9 times, depending on the configuration's calls per task. The lean's band, for example, becomes about $490 to $2,450. An owner setting a price per point against these bands could land in the wrong one. Say this in the clause and in the explore row, or ask the owner to resolve the unit before pricing.",
+          "id": "f1.6",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The decision block and the second next step call the Brisk-S high-against-low re-run paired, on the same fresh cases, at 5,432 cases each. That size comes from reading the two arms as independent. A paired design over the same cases needs fewer. Either call it the unpaired size and add 'fewer if paired', or size it paired. In the multi-hop next step, also say that the re-test must record case counts per task, because today's task figures carry no interval and cannot show a gap closing.",
+          "id": "f1.7",
+          "since": 1
+        },
+        {
+          "claim": "retry",
+          "severity": "should_fix",
+          "finding": "The retry block's caption says 'the other pairings are in the appendix', and the left-out list says the model and reasoning effects have a 'full table in the appendix'. The appendix has no effects table, only per-arm figures. Add the nine retry pairings and the model and reasoning effects to the appendix, or reword both pointers to say the reader can compute them from 'Every arm by measure'.",
+          "id": "f1.8",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 11,
+      "passes": true,
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5",
+        "f1.6",
+        "f1.7",
+        "f1.8"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and decision block say what is unresolved and what to do. Every option on the price-per-point frontier runs with a retry. Past that, the owner must settle what the monthly volume counts and then declare a floor or a price per point. The lean is Brisk-S at low reasoning with a retry for a point worth $319.67 to $1,595.18 a month. The main risk is in Watch: Atlas-M at high reasoning with a retry leads by +0.3 to +2.6 points, unpaired and uncorrected, at about 12 times the cost. I checked the figures against the price trade-off, both pairwise comparisons and the case sizing (5,432 cases, 9.4%), and they match."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each claim's sentence agrees with its block row by row. In the retry claim, Atlas-M at high reasoning (-0.2 to +2.0) is the only one of all nine retry pairings whose interval reaches zero; the closest of the others is Atlas-M at low reasoning, +0.1 to +2.7. The top claim's -0.8 and +0.8 both cross zero. The latency claim's medians are unchanged and its p95 rows rise in every pair. Multi-hop is the lowest task for each of the three options in the tasks claim. One loose end is a should_fix: the headline says 'run every planner with a retry', yet Brisk-S at low reasoning without a retry is not dominated on cost and pass rate."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The lean's weak axes are visible. It trails Atlas-M at high reasoning by 1.5 points, and the next step up is a gain not separated from zero. Watch now says the lead clears zero only narrowly and is uncorrected across eighteen configurations, and the best-of-n clause says why the lean holds either way. The last two frontier steps are flagged as indistinguishable from zero."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Each omission is minor and says where its figures live. The effects table is now described as not on the page, with rates in Every arm by measure. Calls per task is carried into the volume caveat. Leaving out the no-retry configurations hides one option that is not dominated (Brisk-S at low reasoning, no retry, 95.3% at $0.288). It matters only for a pass-rate floor between 94.9% and 95.3%, worth about $56 a month, so it does not change a decision."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Each confound is carried into the story and the next steps. Unknown cost routing is on every claim that cites a cost, with a next step to record providers. The volume unit has a clause giving the 1.452 to 1.888 calls-per-task scale and tells the owner to settle it before pricing. The unpaired reading and the lack of per-task case counts are each carried, the latter into the multi-hop next step."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names a declaration or an experiment and what it settles. The owner first settles the volume unit, then declares a floor or price per point, and the bands pick an option. The Brisk-S high-against-low re-run is sized at 5,432 cases unpaired, with fewer if paired, and today's size reads the wrong way 9.4% of the time. The multi-hop re-test now records per-task counts. Recording the provider settles whether the cost order holds."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "Each claim's figure is in its block. The frontier claim's step table names the seven configurations on the price-per-point frontier, and the scatter's caption now points to it. The latency caption matches the twelve rows drawn, each frontier configuration beside its retry twin. The failure examples match the three kept for the lean, and the page says how many failures they came from is not stated."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "frontier",
+          "severity": "should_fix",
+          "finding": "Brisk-S at low reasoning without a retry (95.3% at $0.288 per 1k calls) is not dominated: no other configuration is both cheaper and better. It sits above the seven configurations the frontier claim counts, and a pass-rate floor between 94.9% and 95.3% makes it the cheapest option that meets the floor. Yet the headline says 'run every planner with a retry', and the floor row says only 'up to 98%, a Brisk-S one'. Say in the frontier claim or the floor row that the seven are the price-per-point frontier, and that this no-retry configuration is cheapest only for a floor of 94.9% to 95.3%, where it saves about $56 a month against the lean for 1.8 fewer points. Or soften the headline to 'every option on the price-per-point frontier runs with a retry'.",
+          "id": "f2.1",
+          "since": 2
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The lede compares Brisk-S and Atlas-M costs ('$1,208 a month', '$12,700 more a month') with no routing qualifier. 'The trade' and 'Where the answer flips' in the decision block also price models without one. The confidence line covers 'every price on the page', so a reader is not misled. Still, add 'at this run's unnamed provider routing' to the lede's cost sentence, as the claims and Watch now do. Also, in the cost-routing confidence clause, say why the lean holds until the routing is known: for example, a routing change would have to shift the roughly 2.7 times cost gap between Nano-XS at high reasoning and Brisk-S at low reasoning enough to move the band edges. Watch's '12 times' is 11.5 times on the figures ($3.477 against $0.302).",
+          "id": "f2.2",
+          "since": 2
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5",
+        "f1.6",
+        "f1.7",
+        "f1.8"
+      ],
+      "total": 14,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    }
+  ]
+}

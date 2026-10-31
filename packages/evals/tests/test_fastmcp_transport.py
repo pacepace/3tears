@@ -11,6 +11,7 @@ own prefix), and the caller resolved per call — sync or async.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import subprocess
 import sys
@@ -22,7 +23,15 @@ from fastmcp import Client, FastMCP
 
 from pydantic import Field
 
-from threetears.evals.actions import Action, Caller, eval_catalogue, read_only_tools, standard_tools
+from threetears.evals.actions import (
+    Action,
+    Caller,
+    analyst_tools,
+    catalogue_primer,
+    eval_catalogue,
+    read_only_tools,
+    standard_tools,
+)
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import report_read
@@ -90,12 +99,13 @@ async def test_an_agent_lists_launches_polls_and_reads_a_report() -> None:
             client, "evals", {"action": "report_read", "campaign_id": fixture.campaign.id}
         )
         assert not is_error and document is not None and document["format"] == "markdown"
-        assert (document["basis"], document["analysis_id"]) == ("analysis", analysis_status["analysis_id"])
-        # The title opens the page; what warns (each broken floor and missed bar, and the memo's why beside one)
-        # follows the question and the answer, never above the title.
-        assert report.startswith("# ")
-        assert "**Adopting " in report[: report.index("\n## ")]
-        assert "| Analysis | " in report and "none written" not in report
+        # The generation wrote a report document, and the campaign's page is the one it draws.
+        assert (document["basis"], document["analysis_id"], document["analysis_basis"]) == (
+            "analysis",
+            analysis_status["analysis_id"],
+            "doc",
+        )
+        assert document["doc"] is not None and f"# {document['doc']['headline']}" in report
 
 
 async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as_data() -> None:
@@ -114,6 +124,10 @@ async def test_a_report_s_body_is_sent_once_as_the_text_and_every_other_field_as
                 "campaign_id": fixture.campaign.id,
                 "basis": expected.basis,
                 "analysis_id": expected.analysis_id,
+                "analysis_basis": expected.analysis_basis,
+                "doc": expected.doc,
+                "needs_regeneration": expected.needs_regeneration,
+                "draft": expected.draft,
                 "format": form,
             }
         # A result whose text is composed from its fields keeps every field.
@@ -178,11 +192,23 @@ async def test_an_undeclared_parameter_is_refused_with_the_valid_set() -> None:
         text, structured, is_error = await _text(
             client, "evals", {"action": "job_poll", "job_id": "run:r", "analysis_id": "a"}
         )
-    assert is_error and structured == {"ending": "refused", "refusal": {"kind": "validation_failed", "status": 422}}
+    recovery = {
+        "parameters": ["analysis_id"],
+        "accepted": ["job_id"],
+        "example": {"action": "job_poll", "job_id": "run:0193a1b2-run"},
+        "see": {"action": "help", "topic": "job_poll"},
+    }
+    assert is_error and structured == {
+        "ending": "refused",
+        "refusal": {"kind": "validation_failed", "status": 422},
+        "recovery": recovery,
+    }
     assert text.startswith(
         "refused: job_poll does not take analysis_id.\njob_poll accepts:\n- job_id (string, required)"
     )
     assert 'Example: {"action": "job_poll", "job_id": "run:' in text
+    # A client may forward only the text, so the fields ride its last line too, as compact JSON.
+    assert text.splitlines()[-1] == "recovery: " + json.dumps(recovery, separators=(",", ":"))
 
 
 async def test_an_engine_refusal_reaches_the_client_with_its_kind_and_status() -> None:
@@ -199,8 +225,14 @@ async def test_each_tool_shows_a_client_its_hints_schema_and_help() -> None:
     evals, admin = tools["evals"], tools["evals_admin"]
     assert evals.annotations is not None and admin.annotations is not None
     hints = wire(evals.annotations)
-    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["openWorldHint"]) == (False, False, True)
-    assert wire(admin.annotations)["destructiveHint"] is True
+    assert (hints["readOnlyHint"], hints["destructiveHint"], hints["idempotentHint"], hints["openWorldHint"]) == (
+        False,
+        False,
+        False,
+        True,
+    )
+    admin_hints = wire(admin.annotations)
+    assert admin_hints["destructiveHint"] is True and admin_hints["idempotentHint"] is False
     assert wire(evals)["inputSchema"]["properties"]["action"]["enum"][:2] == ["help", "templates_list"]
     assert set(wire(admin)["inputSchema"]["properties"]) == {
         "action",
@@ -219,6 +251,7 @@ async def test_a_host_mounts_a_read_only_tool_under_its_own_prefix() -> None:
         (tool,) = await client.list_tools()
         text, _, is_error = await _text(client, "lab", {"action": "run_launch", "template_id": "t", "subject_id": "s"})
     assert tool.name == "lab" and tool.annotations is not None and wire(tool.annotations)["readOnlyHint"] is True
+    assert wire(tool.annotations)["idempotentHint"] is True, "every read may be repeated to no further effect"
     assert is_error and "run_launch is a spend action, and tool lab carries read actions only" in text
 
 
@@ -321,6 +354,7 @@ async def test_an_eval_host_is_served_in_one_line_read_only_in_one_scope() -> No
             client, "evals", {"action": "run_launch", "template_id": "t", "subject_id": "s"}
         )
     assert server.name == "evals" and tool.name == "evals" and tool.annotations is not None
+    assert server.instructions == catalogue_primer(eval_catalogue().mount_all(read_only_tools()))
     assert wire(tool.annotations)["readOnlyHint"] is True
     assert toyhost_template().id in listed, "the scope named, over the eval host's own storage"
     assert is_error and "carries read actions only" in refused
@@ -344,6 +378,17 @@ async def test_a_reading_host_refuses_a_launch_by_name_under_the_full_tools() ->
 async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
     async with Client(mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id)) as client:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
+
+
+async def test_a_server_built_here_hands_a_client_the_primer_of_the_tools_it_mounts() -> None:
+    tools = (*standard_tools(), *analyst_tools())
+    server = mount_fastmcp(off_loop(ops_fixture).host, scope=CALLER.scope_id, tools=tools)
+    async with Client(server) as client:
+        instructions = client.instructions
+    assert instructions == catalogue_primer(eval_catalogue().mount_all(tools))
+    assert (
+        instructions is not None and "evals_analyst" in instructions and "figure_keys" in instructions.splitlines()[1]
+    )
 
 
 @pytest.mark.parametrize(

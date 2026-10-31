@@ -51,7 +51,9 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
 - **A refusal as data.** A refused call is an MCP error result (``isError``) carrying the refusal's
   teaching text, and its :class:`~threetears.evals.actions.Refusal` as structured content —
   ``{"ending": "refused", "refusal": {"kind": ..., "status": ...}}``, ``"raised"`` where the engine or host failed
-  the call (a 5xx status) — so a client branches on the kind, never on the text. A
+  the call (a 5xx status) — so a client branches on the kind, never on the text — and, where the call has a corrected
+  form, ``"recovery"``: the parameters at fault, the ones accepted, an example, the valid values or the action that
+  lists them, and the help call that explains (:class:`~threetears.evals.actions.Recovery`). A
   result carries its text and the result model's JSON as structured content, less the one field an action declares
   its text is (``Action.text_field``): ``report_read``'s body is its text, so the body is sent once.
 
@@ -98,7 +100,10 @@ from threetears.evals.actions import (
     ActionOutcome,
     Caller,
     MountedTool,
+    Recovery,
+    Refusal,
     ToolSpec,
+    catalogue_primer,
     eval_catalogue,
     read_only_tools,
     standard_tools,
@@ -708,7 +713,7 @@ class CatalogueTool(Tool):
                 "annotations": {
                     "readOnlyHint": hints.read_only,
                     "destructiveHint": hints.destructive,
-                    "idempotentHint": False,
+                    "idempotentHint": hints.idempotent,
                     "openWorldHint": hints.open_world,
                 },
                 "binding": binding,
@@ -723,8 +728,9 @@ class CatalogueTool(Tool):
         :return: The result: text always; as structured content, the result model's JSON when the call
             succeeded, less the field its action declares its text is (``report_read``'s ``body``), so a long body is
             sent once,
-            or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}`` with the
-            error flag when it was refused or raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
+            or ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery``
+            (the corrected call's fields) where the refusal carries one, and the error flag when it was refused or
+            raised (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the
             error flag alone, with text saying so and to read what it may have done before calling it again, when it
             outlived the call timeout. A note the ``annotate`` hook answered follows the outcome's text as a text block
             of its own, and changes nothing else (:data:`CallAnnotator`).
@@ -745,9 +751,7 @@ class CatalogueTool(Tool):
                 is_error=True,
             )
         structured = (
-            {"ending": outcome.ending, "refusal": asdict(outcome.refusal)}
-            if outcome.refusal is not None
-            else _beside(outcome)
+            _beside(outcome) if outcome.refusal is None else _refusal(outcome.ending, outcome.refusal, outcome.recovery)
         )
         note = (
             await _note(binding.annotate, call, outcome) if binding.annotate is not None and call is not None else None
@@ -756,6 +760,16 @@ class CatalogueTool(Tool):
         # block after the outcome's and never joined into it — without this adapter importing the SDK beneath it.
         content = [block for text in (outcome.text, note) if text is not None for block in ToolResult(text).content]
         return ToolResult(content=content, structured_content=structured, is_error=outcome.is_error)
+
+
+def _refusal(ending: str, refusal: Refusal, recovery: Recovery | None) -> dict[str, Any]:
+    """A refused call's structured content: how it ended, the refusal's kind and status, and, where the call has a
+    corrected form, its recovery fields (:class:`~threetears.evals.actions.Recovery`), each present only where it
+    applies."""
+    structured: dict[str, Any] = {"ending": ending, "refusal": asdict(refusal)}
+    if recovery is not None:
+        structured["recovery"] = recovery.as_data()
+    return structured
 
 
 def _beside(outcome: ActionOutcome) -> dict[str, Any] | None:
@@ -821,7 +835,9 @@ def mount_fastmcp(
     **In one line**, ``mount_fastmcp(as_host([...], store=...), scope="dev").run()`` serves an eval host's runs: a
     server named ``evals``, the engine's catalogue, :func:`~threetears.evals.actions.read_only_tools` (nothing
     launches over it: :meth:`~threetears.evals.ops.OpsHost.reading`), and every call in ``scope`` as ``identity``. A
-    host of the full shape mounts on its own server with every hook below.
+    host of the full shape mounts on its own server with every hook below. A server built here carries the tools'
+    primer as its instructions (:func:`~threetears.evals.actions.catalogue_primer`); a host building its own passes
+    ``instructions=catalogue_primer(...)`` there.
 
     :param server: The host's server; or the one host every action works in, an
         :class:`~threetears.evals.kernel.host.EvalHost` or an :class:`~threetears.evals.ops.OpsHost`, to serve
@@ -860,6 +876,7 @@ def mount_fastmcp(
     :return: The names of the tools added; or, handed a host alone, the server built, ready to ``run()``.
     :rtype: FastMCP | tuple[str, ...]
     :raises ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`),
+        a server built here would carry a primer past its budget (:func:`~threetears.evals.actions.catalogue_primer`),
         or both or neither of ``host`` and ``host_resolver``, or of ``caller`` and ``scope``, were given, or
         ``call_timeout_s`` is a number that is not positive — before any tool is added. A function's value is
         checked per call instead.
@@ -870,7 +887,9 @@ def mount_fastmcp(
             raise ValueError("mount_fastmcp(host, ...) serves the host it is handed; pass no host= or host_resolver=")
         from fastmcp import FastMCP  # the server stack, loaded only when a server is built here
 
-        built = FastMCP(_SERVER_NAME)
+        specs = tools if tools is not None else read_only_tools() if isinstance(server, EvalHost) else standard_tools()
+        primer = catalogue_primer((catalogue if catalogue is not None else eval_catalogue()).mount_all(specs))
+        built = FastMCP(_SERVER_NAME, instructions=primer)
         mount_fastmcp(
             built,
             catalogue,
@@ -880,7 +899,7 @@ def mount_fastmcp(
             identity=identity,
             around=around,
             annotate=annotate,
-            tools=tools,
+            tools=specs,
             call_timeout_s=call_timeout_s,
         )
         return built

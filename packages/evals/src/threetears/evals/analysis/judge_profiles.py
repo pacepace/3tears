@@ -64,7 +64,8 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID, utc_now_iso
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.kernel.result_reading import ResultView
+    from threetears.evals.schema.models import CalibrationRating, EvalRun, EvalTemplate
 
 __all__ = [
     "JudgeProfileDrafts",
@@ -194,7 +195,7 @@ def _criterion_of(template: EvalTemplate, key: JudgeKey) -> str | None:
 
 def judged_criteria(
     runs: Sequence[EvalRun],
-    results_by_run: Mapping[str, Sequence[EvalResult]],
+    results_by_run: Mapping[str, Sequence[ResultView]],
     templates: Mapping[str, EvalTemplate],
 ) -> dict[JudgeKey, str | None]:
     """The criterion each judge behind a campaign's judged scores was asked, as the digest a profile is keyed by.
@@ -206,7 +207,7 @@ def judged_criteria(
     :param runs: The campaign's resolved runs.
     :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, Sequence[EvalResult]]
+    :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :param templates: The runs' templates by id, as loaded; a template absent here did not load.
     :ptype templates: Mapping[str, EvalTemplate]
     :return: Every judge behind a judged score, mapped to its criterion's digest, or None when it cannot be told.
@@ -337,7 +338,7 @@ class TierReadStore(Protocol):
 
 
 def judged_ratings(
-    storage: TierReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[EvalResult]
+    storage: TierReadStore, scope_id: str, runs: Sequence[EvalRun], results: Sequence[ResultView]
 ) -> list[CalibrationRating]:
     """The ratings a judge agreement over ``runs`` reads: of their results, and of what their judges scored.
 
@@ -354,7 +355,7 @@ def judged_ratings(
     :param runs: The runs, in order.
     :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: The ratings, each once.
     :rtype: list[CalibrationRating]
     """
@@ -385,7 +386,7 @@ def judges_tiers(
     storage: TierReadStore,
     scope_id: str,
     runs: Sequence[EvalRun],
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     *,
     ratings: Sequence[CalibrationRating] | None = None,
     templates: Mapping[str, EvalTemplate] | None = None,
@@ -404,7 +405,7 @@ def judges_tiers(
     :param runs: The runs, in order.
     :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param ratings: What :func:`judged_ratings` reads over the same runs and results, when the caller has already
         read it; read here otherwise.
     :ptype ratings: Sequence[CalibrationRating] | None
@@ -420,7 +421,7 @@ def judges_tiers(
         for score in (*result.rubric_scores, result.transcript_score, result.outcome_score)
         if score is not None and (key := judge_key(result, score.dim)) is not None
     }
-    results_by_run: dict[str, list[EvalResult]] = {}
+    results_by_run: dict[str, list[ResultView]] = {}
     for result in results:
         results_by_run.setdefault(result.eval_run_id, []).append(result)
     if templates is None:

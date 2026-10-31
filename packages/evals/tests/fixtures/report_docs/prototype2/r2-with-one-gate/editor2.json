@@ -1,0 +1,119 @@
+{
+  "resolutions": [
+    {
+      "finding": "must_fix (report): the explore gate control's lowest band was wrong; Nano-XS is the cheapest passer at gates up to 94.8%.",
+      "status": "resolved",
+      "evidence": "The control now lists eight bands: Nano-XS off/no retry up to 81%, off/1 retry up to 88.5%, low/1 retry up to 92.7%, high/1 retry up to 94.8%, then Brisk-S low/no retry up to 95.3%, the pick up to 97.1%, Brisk-S high/1 retry up to 98%, Atlas-M high/1 retry up to 98.6%, and nothing above that. decision_sensitivity threshold:pass_rate returns the same nine segments with the same boundaries."
+    },
+    {
+      "finding": "should_fix (report): next[1] said a same-size re-run settles whether the pick's reading was best-of-eighteen luck.",
+      "status": "resolved",
+      "evidence": "next[1].settles now says the run gives a second reading free of selection among eighteen, and that it does not settle the pick against the line, because a same-size run reads it under the gate 38.6% of the time. next[0].settles adds that more cases cannot settle the clearance at any practical size (38,350 for even odds)."
+    },
+    {
+      "finding": "should_fix (c2): the claim is about noise, but the dot_interval draws no intervals.",
+      "status": "partially resolved",
+      "evidence": "The sentence now carries the noise itself: a re-run lands under the gate 38.6% of the time for the pick against 0.9% for high-reasoning Brisk-S. The block is unchanged and still draws seven points against the floor with no spread. The fix went into prose instead: the caption explains what the block cannot draw, and a Method entry called 'Revision notes' says the same."
+    },
+    {
+      "finding": "should_fix (c3): the prose cites a $1,324 monthly gap but the bars showed $1,595 per point, and the priced gain was not separated from zero.",
+      "status": "resolved",
+      "evidence": "The price-per-point bars were dropped, and an omitted entry gives the reason. c3's bars now show cost per 1,000 calls ($0.302, $0.633, $3.477), which match the sentence. The sentence states that the gain is not separated from the pick's (-0.4 to +2.1). The explore price control says neither step's gain is separated from zero, which arms_compare confirms for both steps (-0.4 to +2.1 and -0.4 to +1.7)."
+    },
+    {
+      "finding": "should_fix (c5): the claim said retry helps 'at every model and reasoning level', and the prose said +1.9 where the bars differ by 1.8.",
+      "status": "resolved",
+      "evidence": "c5 now claims only the Brisk-S low-reasoning step (95.3% to 97.1%, interval +0.3 to +3.4) and types no point gain. The cross-model statement moved to omitted, with the Atlas-M high exception. levers_effects confirms it: every retry interval excludes zero except Atlas-M high (-0.2 to +2); Brisk-S high is +0.04 to +2.6."
+    },
+    {
+      "finding": "should_fix (c4): the pick is under the gate's level on two tasks, not one, and 'holds in every task' for high reasoning rested on per-task points with no counts.",
+      "status": "resolved",
+      "evidence": "c4 and the watch now name both multi-hop (95.6%) and ambiguous entities (96.4%). The sentence opens with 'Read task by task, with no per-task counts or floor', and says high reasoning 'reads at or above it in each task' (98.5, 97.3, 97.9, 97.6)."
+    },
+    {
+      "finding": "should_fix (report): the page never said the extra $1,324 a month buys no measured pass-rate gain, only clearance.",
+      "status": "resolved",
+      "evidence": "c3 states that the alternative buys no gain separated from the pick (-0.4 to +2.1), and watch[0] ends with 'it buys clearance of the line, not a measured gain over the pick'."
+    }
+  ],
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline names the action (Brisk-S low reasoning, 1 retry), why (the cheapest configuration over the 97% gate) and the risk (a 0.1-point clearance). The lede adds the risk's size: 38.6% of same-size re-runs land under the gate. It also names the fallback and its price: high reasoning, $1,324 more a month. The decision block says which single declaration switches the pick, and c1 grounds the call in the lattice (five of eighteen pass, the pick at $0.30)."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "Each claim builds on the last. c1 makes the pick the cheapest passer. c2 shows its pass is inside the noise (38.6% against 0.9%). c3 gives what room costs and shows it buys no separated gain. c4 shows where the pick is weak, and c5 why it passes at all. The gate is declared on the mean, so recommending on the point estimate while leaving 'beyond noise' to the gate's owner (watch[0], decision next, next[0]) is consistent throughout. The contradiction in round 1's next[1] is gone."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 2,
+      "reason": "The pick's weak axes are in plain view: the 0.1-point margin with its re-run odds and the 38,350 cases needed, and both weak tasks at 95.6% and 96.4%, framed as descriptive. Nothing claims more than its interval supports. The alternative's gain is stated as not separated (-0.4 to +2.1), Atlas-M is not separated from Brisk-S at any shared setting (verified: -0.5 to +2, -0.2 to +2.4, -0.4 to +1.7), and c5 cites only the retry step whose interval excludes zero. One blemish, in explore rather than the decision: the price control's framing (see findings)."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked the omissions that could matter. None of the near misses (96.6%, 96.6%, 96.4%) is cheaper than the pick. Nano-XS's best miss is settled: it reads on the wrong side 0.024% of the time. Atlas-M is unseparated from Brisk-S at every shared setting and costs several times more. The omitted retry note matches levers_effects. Outcome and extra calls hold no statistics in the snapshot. None of these would change the call under the declared gate or under the beyond-noise reading: high-reasoning Brisk-S clears beyond noise today, needing 572 cases against the 1,200 run."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "caveats_list holds three caveats, and all three are on the page with a material_if that fits the call. point_estimate runs through the lede, c2, watch[0] and next[0]. best_of_n runs into next[1], whose fresh-case re-run targets it directly. no_control is in the caveats and in Method, which notes that the unpaired basis reads wider. The overall gate over an uncounted task mix appears in watch[1], and next[2] addresses it."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "next[0] is a declaration (gate beyond noise or on the point estimate) and says that it alone picks between the two Brisk-S survivors. next[1] is an experiment, a selection-free re-run of the two, and states honestly what it settles and what it does not. next[2] is an experiment, a hop-by-hop plan for low reasoning, and says it settles whether the cheap configuration can clear with room. It names no target lift or done-when, a small gap (see findings)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1's lattice, c4's heatmap and example, and c5's Brisk-S bars fit their claims, and each would change if the values flipped. c2 is the lead claim on noise, but its dot_interval shows only points against the floor. If the pick's spread were a tenth as wide, the block would look identical, so the counterfactual fails for the claim it carries. The 38.6% and 0.9% figures appear in prose only. c3's second block, the latency range_bars (513 against 870 ms p95), backs nothing the c3 sentence says; only the caption mentions latency."
+    }
+  ],
+  "total": 13,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The lead noise claim still has a block that cannot show noise. Show the re-run odds or the one-sided bounds in a block, for example the pick's 38.6% against high reasoning's 0.9%, or the settle distance against cases_needed. If no block can draw them, note a capability gap for the toolkit. Do not explain the limitation in the caption: 'the binomial spread ... is not one it can draw' tells a reader about the tool, not the data."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Method's 'Revision notes' entry is process prose addressed to the reviewer: why the dot plot draws no interval and what the revision did. A reader of the page has no revision to be told about. Remove it. Its second sentence, that per-task readings are descriptive because they carry no counts, belongs in Method's 'Cases' or 'Intervals' entry."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The explore price control's 'binds' says 'if the owner prices points instead of holding the gate', but its bands are priced among the gate's survivors only. price_tradeoff's frontier is the three passers. Without the gate, the pick does not hold at every price under $1,595 a point. The what-if run of price_tradeoff with brisk-s.low.r0 prices the step from Brisk-S low no-retry to the pick at $29.95 a point a month, so below about $30 a point the no-retry configuration wins, and Nano-XS wins further down. Either say the gate is held while the price decides among survivors, or give the lower bands."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The latency range_bars back nothing the sentence says. High-reasoning Brisk-S is slower: p95 of 870 ms against 513 ms. That is a second cost of the alternative the claim recommends as the fallback. Add a clause on it to c3, or drop the block and leave latency to the lattice."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "next[2] (a hop-by-hop plan, then a re-run) gives no done-when. State the overall clearance that would hold beyond noise at today's 1,200 cases, by key. High reasoning's 1.0-point clearance needs about 572 cases (settle.criteria.pass_rate.brisk-s.high.r1.overall.cases_needed). The experiment then has a target, and the reader can judge whether a multi-hop fix alone could reach it."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 1: all 43 figure keys read through figure_keys_check, and none is refused. The count 'two' (the two Brisk-S survivors) is still typed in decision next, next[1].text, the no_control caveat, c4's caption and omitted. It is structural rather than measured, but a key would remove the question.",
+    "Invariant 4: the form is high_if_immaterial, not plain high, so it passes. But the point_estimate caveat is live (wrong_side 38.6%), and its own material_if says the clearance 'cannot rule out' a true rate under the gate. The headline and lede already state the risk, so a reader is not misled.",
+    "Invariant 5: Method's Source line prints a repository file path (meta.provenance). That is fine only if Method renders below the claims as part of the appendix.",
+    "Invariant 6: Method is present. report.json does not show the full-results appendix, so this review cannot confirm it renders."
+  ],
+  "calls": 23
+}

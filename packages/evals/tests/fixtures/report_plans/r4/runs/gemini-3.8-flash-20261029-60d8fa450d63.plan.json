@@ -1,0 +1,350 @@
+{
+  "mode": "tradeoff",
+  "headline_kind": "trade",
+  "headline": "Choose between saving {cost.gap.f64.prod.monthly|usd_whole} monthly or keeping persona consistency on longer conversations.",
+  "lede": "Switching to {arm:f64} saves {cost_per_1k.f64|usd_per_1k} against {cost_per_1k.prod|usd_per_1k} on {control.name}, while persona retention drops {contrast.f64.persona.delta|abs|pts} points ({contrast.f64.persona.interval|pts}). A product decision on acceptable loss at turn depths above five settles the choice.",
+  "decision": {
+    "slots": [
+      {
+        "key": "the_trade",
+        "text": "{arm:f64} cuts cost by {cost.gap.f64.prod.monthly|abs|usd_whole} each month, but drops Stays in character from {judged.persona.prod|pct} to {judged.persona.f64|pct}.",
+        "caveats": []
+      },
+      {
+        "key": "where_it_flips",
+        "text": "{arm:f64} is favored if saving at least {price.prod.f64.persona.per_point|usd} per point of Stays in character matters more than the drop.",
+        "caveats": []
+      },
+      {
+        "key": "our_lean",
+        "text": "Lean toward {arm:f64} because both standing guardrails hold and persona losses remain modest until conversation depth exceeds five turns.",
+        "caveats": []
+      },
+      {
+        "key": "what_settles_it",
+        "text": "A human review of turn depth above five to verify whether users tolerate the persona drift on long chats.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Evaluation design",
+      "text": "Multi-factor design comparing {control.name} against three challengers across {scoreboard.prod.cases} cases with eight repeats per case.",
+      "caveats": []
+    },
+    {
+      "term": "Judge calibration",
+      "text": "Stays in character evaluated with a calibrated judge rubric exhibiting {judged.persona.agreement} agreement across {judged.persona.calibration_ratings} human ratings.",
+      "caveats": []
+    },
+    {
+      "term": "Guardrails",
+      "text": "Standing policy guardrails require at least {criteria.facts.threshold} on Music facts correct and {criteria.specul.threshold} on Declines to speculate.",
+      "caveats": []
+    },
+    {
+      "term": "Cost basis",
+      "text": "Measured tokens multiplied by list price per 1,000 replies at an assumed monthly volume of {meta.volume_per_month} replies.",
+      "caveats": []
+    },
+    {
+      "term": "Statistical intervals",
+      "text": "Differences reported with {family.level} confidence intervals on paired differences without multi-candidate correction.",
+      "caveats": []
+    },
+    {
+      "term": "Latency measurement",
+      "text": "Latency measured as end-to-end response time at median (p50) and p95 tail.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "control_plus_candidates",
+    "baseline": "control",
+    "score_type": "pass_fail",
+    "strata": "many_strata",
+    "criteria": "margin",
+    "cross_cutting": [],
+    "log_cost_axis": false
+  },
+  "shape": "D",
+  "masthead": {
+    "kind": "Change · control vs candidates",
+    "system": "Persona chat model",
+    "counts": "{control.name} vs {n_candidates} candidates · 4 aspects",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "prod",
+      "color_slot": -1
+    },
+    {
+      "id": "f64",
+      "color_slot": 0
+    },
+    {
+      "id": "f16",
+      "color_slot": 1
+    },
+    {
+      "id": "cor",
+      "color_slot": 2
+    }
+  ],
+  "show_arms_key": true,
+  "flag": [
+    {
+      "title": "No decision rule declared in advance",
+      "text": "The campaign declared no threshold for acceptable loss in Stays in character, leaving leadership to weigh cost against persona fidelity.",
+      "discloses": [
+        "no_rule"
+      ],
+      "weakens": [],
+      "survives": [
+        "judged:persona",
+        "task",
+        "judged:facts",
+        "specul"
+      ]
+    }
+  ],
+  "options": {
+    "rows": [
+      {
+        "option": "prod",
+        "role": "control"
+      },
+      {
+        "option": "f64",
+        "role": "lean"
+      },
+      {
+        "option": "f16",
+        "role": "cheapest"
+      },
+      {
+        "option": "cor",
+        "role": "alternative"
+      }
+    ],
+    "columns": [
+      "judged:persona",
+      "judged:facts",
+      "measure:specul",
+      "cost_per_1k"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "bars",
+      "title": "",
+      "query": {
+        "source": "measures",
+        "aspect": "",
+        "measures": [
+          "cost_per_1k"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "",
+      "unit": "usd_per_1k",
+      "domain": []
+    },
+    {
+      "kind": "dot_interval",
+      "title": "",
+      "query": {
+        "source": "judged",
+        "aspect": "",
+        "measures": [
+          "persona"
+        ],
+        "arms": [
+          "prod",
+          "f64",
+          "f16",
+          "cor"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "f64",
+      "level": "95% computed",
+      "unit": "percent",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "contrasts_spine",
+      "eyebrow": "Candidate comparisons",
+      "headline": "Challengers reduce persona consistency while only {arm:f64} clears both guardrails",
+      "takeaway": "Points show difference from {control.name} with {family.level} paired intervals.",
+      "chart": {
+        "kind": "forest",
+        "title": "",
+        "query": {
+          "source": "contrasts",
+          "aspect": "",
+          "measures": [],
+          "arms": [],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "95%",
+        "unit": "points",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "depth_divergence",
+      "eyebrow": "Persona drift by depth",
+      "headline": "Persona fidelity drops sharply at depth six and above for all challengers",
+      "takeaway": "Stays in character accuracy plotted across conversation turn brackets.",
+      "chart": {
+        "kind": "lines",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "prod",
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [
+            "depth:1-2",
+            "depth:3-5",
+            "depth:6-10",
+            "depth:11+"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    },
+    {
+      "id": "scenarios",
+      "eyebrow": "Scenario sensitivity",
+      "headline": "Taking a correction and banter drive the largest drops in persona",
+      "takeaway": "Change in Stays in character compared to {control.name} across scenario categories.",
+      "chart": {
+        "kind": "diverging_bars",
+        "title": "",
+        "query": {
+          "source": "strata",
+          "aspect": "",
+          "measures": [
+            "persona"
+          ],
+          "arms": [
+            "f64",
+            "f16",
+            "cor"
+          ],
+          "strata": [
+            "scenario:intro",
+            "scenario:rec",
+            "scenario:banter",
+            "scenario:deflect",
+            "scenario:correct"
+          ],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "f64",
+        "level": "",
+        "unit": "percent",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Price per point valuation",
+      "controls": [
+        {
+          "id": "price_per_point_slider",
+          "kind": "slider",
+          "title": "Valuation per point in reply cost",
+          "binds": "price_per_point",
+          "min": 0.0,
+          "max": 0.5,
+          "step": 0.01,
+          "default": 0.1,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the valuation re-ranks {arm:f64} against {control.name} at {price.prod.f64.persona.per_point|usd} per point."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "contrasts",
+    "strata"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:f64} drops Stays in character by {contrast.f64.persona.delta|abs|pts} points while cutting cost from {cost_per_1k.prod|usd_per_1k} to {cost_per_1k.f64|usd_per_1k}.",
+      "confidence": "high",
+      "keys": [
+        "contrast.f64.persona.delta",
+        "cost_per_1k.f64",
+        "cost_per_1k.prod"
+      ]
+    },
+    {
+      "text": "At depth 11+, {control.name} maintains {strata.depth:11+.prod.persona.mean|pct} on Stays in character while {arm:f64} falls to {strata.depth:11+.f64.persona.mean|pct}.",
+      "confidence": "high",
+      "keys": [
+        "strata.depth:11+.prod.persona.mean",
+        "strata.depth:11+.f64.persona.mean"
+      ]
+    }
+  ],
+  "answers": []
+}

@@ -40,7 +40,7 @@ import csv
 import io
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -53,7 +53,9 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
 from threetears.evals.kernel.run_pages import ResultKey
+from threetears.evals.kernel.result_reading import GroupsRead, ReadingsRead
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.schema.store_port import GroupMeasure
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate, RunCompleteness
 from packages.evals.tests.factories import make_eval_result, make_eval_run, memory_storage
@@ -85,13 +87,15 @@ class FakeCountingStore:
         #: The rows each read of results by id returned, in call order.
         self.id_reads: list[int] = []
 
-    def query_eval_results(self, scope_id: str, /) -> list[EvalResult]:
-        rows = self._inner.query_eval_results(scope_id)
+    def query_eval_results(self, scope_id: str, /, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        rows = self._inner.query_eval_results(scope_id, elide=elide)
         self.scope_reads.append(len(rows))
         return rows
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str, /) -> list[EvalResult]:
-        rows = self._inner.query_eval_results_by_run(run_id, scope_id)
+    def query_eval_results_by_run(
+        self, run_id: str, scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        rows = self._inner.query_eval_results_by_run(run_id, scope_id, elide=elide)
         self.run_reads.append((run_id, len(rows)))
         return rows
 
@@ -124,6 +128,21 @@ class FakeCountingStore:
 
     def load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None:
         return self._inner.load_eval_run(run_id, scope_id)
+
+    # An export reads by its own pages, never through the reading seams; they pass through, uncounted.
+    def iter_result_readings(self, run_ids: Sequence[str] | None, scope_id: str, /) -> ReadingsRead:
+        return self._inner.iter_result_readings(run_ids, scope_id)
+
+    def result_groups(
+        self,
+        run_ids: Sequence[str] | None,
+        scope_id: str,
+        /,
+        *,
+        by: Sequence[str],
+        measures: Mapping[str, GroupMeasure],
+    ) -> GroupsRead:
+        return self._inner.result_groups(run_ids, scope_id, by=by, measures=measures)
 
     def rows_read(self) -> int:
         """Every result row any read returned."""

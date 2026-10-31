@@ -1,0 +1,363 @@
+{
+  "schema": "report-doc/1",
+  "story": "decision",
+  "headline": "Ship Brisk-S with high reasoning and one retry: the cheapest configuration that clears the pass-rate gate by more than noise, at {cost_per_month.brisk-s.high.r1|usd_whole} a month.",
+  "lede": "It passes {measure.pass_rate.brisk-s.high.r1.mean} of tasks, its whole interval above the {criteria.pass_rate.threshold} gate. The cheaper low-reasoning setting passes only on its estimate, by {settle.criteria.pass_rate.brisk-s.low.r1.overall.distance|abs} points; if the gate is meant that way, it saves {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} a month.",
+  "flag": null,
+  "recommends": [
+    "brisk-s.high.r1"
+  ],
+  "confidence": {
+    "form": "high_if_immaterial",
+    "caveats": [
+      {
+        "id": "no_control",
+        "label": null,
+        "material_if": "Only if the choice is meant relative to the planner now in production, which was not run; the gate is absolute and every configuration is read against it.",
+        "checked": null
+      },
+      {
+        "id": "point_estimate:pass_rate",
+        "label": null,
+        "material_if": "Only for the low-reasoning alternative, whose interval {spread.brisk-s.low.r1.pass_rate.overall.interval} straddles the gate; the recommendation clears it on its whole computed interval.",
+        "checked": null
+      },
+      {
+        "id": "best_of_n",
+        "label": null,
+        "material_if": "If the recommendation's clearance of {settle.criteria.pass_rate.brisk-s.high.r1.overall.distance|abs} point is mostly selection luck among {n_candidates|words} configurations, so a fresh case set reads it below the gate.",
+        "checked": null
+      }
+    ]
+  },
+  "decision": [
+    {
+      "slot": "recommendation",
+      "text": "Ship Brisk-S with high reasoning and one retry. It passes {measure.pass_rate.brisk-s.high.r1.mean} of tasks, clear of the {criteria.pass_rate.threshold} gate on its whole interval, at {cost_per_1k.brisk-s.high.r1} per thousand calls ({cost_per_month.brisk-s.high.r1|usd_whole} a month)."
+    },
+    {
+      "slot": "why_not",
+      "text": "Brisk-S with low reasoning and one retry is the cheapest configuration that passes on its estimate, and so the declared rule's pick, but it clears by {settle.criteria.pass_rate.brisk-s.low.r1.overall.distance|abs} points: a fresh run this size would read it below the gate {settle.criteria.pass_rate.brisk-s.low.r1.overall.wrong_side} of the time, and settling it would take {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided} cases. High reasoning instead costs {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} more a month."
+    },
+    {
+      "slot": "why_not",
+      "text": "Atlas-M: no setting is separated from Brisk-S at the same settings, and its cheapest passing setting costs {cost_per_month.atlas-m.low.r1|usd_whole} a month. Nano-XS: no setting reaches the gate; its best passes {measure.pass_rate.nano-xs.high.r1.mean}."
+    },
+    {
+      "slot": "watch",
+      "text": "The pick is the best of {n_candidates|words} configurations near one line, so a fresh case set may read it lower; if today's estimate is the truth, a fresh run this size reads it below the gate {settle.criteria.pass_rate.brisk-s.high.r1.overall.wrong_side} of the time. Multi-hop questions are its weakest task at {task.multihop.brisk-s.high.r1.pass_rate.mean}, and its slow tail reaches {measure.latency_ms.brisk-s.high.r1.p95}."
+    },
+    {
+      "slot": "next",
+      "text": "Confirm the pick on a fresh case set of today's size; if it holds above the gate, ship. In parallel, the gate's owner says whether the gate is read on the estimate, which decides whether the low-reasoning setting is eligible."
+    }
+  ],
+  "claims": [
+    {
+      "id": "gate-and-cost",
+      "text": "Of the {n_candidates|words} configurations, {count.passing.pass_rate|words} reach the {criteria.pass_rate.threshold} pass-rate gate, and the two Brisk-S ones with reasoning and a retry cost a fraction of the three Atlas-M ones.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "scatter_frontier",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "cost_per_1k",
+              "pass_rate"
+            ],
+            "arms": [],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Cost per thousand calls, on a log axis, against pass rate for every configuration; the gate is {criteria.pass_rate.threshold}."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "clear-of-line",
+      "text": "Only high reasoning clears the gate by more than noise: its interval's lower end is {spread.brisk-s.high.r1.pass_rate.overall.low}, while low reasoning sits on the line at {measure.pass_rate.brisk-s.low.r1.mean}.",
+      "weight": "lead",
+      "evidence": [
+        {
+          "block": "dot_interval",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r0",
+              "brisk-s.high.r0",
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r0",
+              "atlas-m.low.r1",
+              "atlas-m.high.r0",
+              "atlas-m.high.r1",
+              "nano-xs.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": "floor",
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Pass rate with its computed interval against the gate, for the configurations nearest it."
+        },
+        {
+          "block": "table",
+          "query": {
+            "source": "settle",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "How often a fresh run of today's size would read each on the other side of the gate, and the cases it would take to settle."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "atlas-buys-nothing",
+      "text": "Atlas-M is not separated from Brisk-S at the same settings, so its extra cost buys nothing measurable: the best Atlas-M setting costs {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_cost_gap|abs} more a month than the pick.",
+      "weight": "support",
+      "evidence": [
+        {
+          "block": "diverging_bars",
+          "query": {
+            "source": "levers",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "atlas-m.low.r1",
+              "brisk-s.low.r1",
+              "atlas-m.high.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "Pass-rate change from moving the model or the reasoning level alone, with a retry on, with unpaired intervals; the step from low to high reasoning is not separated either."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "multihop",
+      "text": "Multi-hop questions are where low reasoning falls short, at {task.multihop.brisk-s.low.r1.pass_rate.mean} against {task.multihop.brisk-s.high.r1.pass_rate.mean} with high reasoning.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "bars",
+          "query": {
+            "source": "tasks",
+            "aspect": "",
+            "measures": [
+              "pass_rate"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Pass rate by task for the two Brisk-S settings with a retry; task figures state no case counts, so they are descriptive."
+        },
+        {
+          "block": "examples",
+          "query": {
+            "source": "examples",
+            "aspect": "",
+            "measures": [],
+            "arms": [
+              "brisk-s.low.r1"
+            ],
+            "strata": [
+              "multihop"
+            ],
+            "limit": 1,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "",
+          "caption": "A kept multi-hop failure of low reasoning: two hops collapsed into one search."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    },
+    {
+      "id": "latency",
+      "text": "High reasoning lengthens the slow tail to {measure.latency_ms.brisk-s.high.r1.p95} from {measure.latency_ms.brisk-s.low.r1.p95}, still well under either Atlas-M setting.",
+      "weight": "detail",
+      "evidence": [
+        {
+          "block": "range_bars",
+          "query": {
+            "source": "measures",
+            "aspect": "",
+            "measures": [
+              "latency_ms"
+            ],
+            "arms": [
+              "brisk-s.low.r1",
+              "brisk-s.high.r1",
+              "atlas-m.low.r1",
+              "atlas-m.high.r1"
+            ],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none"
+          },
+          "reference": null,
+          "emphasis": "brisk-s.high.r1",
+          "caption": "Latency from median to slow tail; no latency budget was declared."
+        }
+      ],
+      "caveats": [],
+      "durable": false
+    }
+  ],
+  "explore": [
+    {
+      "control": "How the pass-rate gate is read",
+      "binds": "High or low reasoning on Brisk-S",
+      "outcome": "Read on the estimate, low reasoning passes and saves {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} a month; read on the whole interval, only high reasoning among the Brisk-S settings clears it, its lower end at {spread.brisk-s.high.r1.pass_rate.overall.low}."
+    },
+    {
+      "control": "The gate's threshold",
+      "binds": "Which configuration is cheapest to pass",
+      "outcome": "Up to {criteria.pass_rate.nano-xs.low.r1.value}, Nano-XS with low reasoning and a retry, and cheaper Nano-XS settings below that; to {criteria.pass_rate.nano-xs.high.r1.value}, Nano-XS with high reasoning and a retry; to {criteria.pass_rate.brisk-s.low.r0.value}, Brisk-S with low reasoning and no retry; to {criteria.pass_rate.brisk-s.low.r1.value}, Brisk-S with low reasoning and a retry; to {criteria.pass_rate.brisk-s.high.r1.value}, the pick; to {criteria.pass_rate.atlas-m.high.r1.value}, Atlas-M with high reasoning and a retry; above that, nothing passes."
+    },
+    {
+      "control": "Price of a pass-rate point",
+      "binds": "How far up the cost frontier to go",
+      "outcome": "Low to high reasoning on Brisk-S costs {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_per_point} a month per point; Brisk-S to Atlas-M at high reasoning costs {price.brisk-s.high.r1.atlas-m.high.r1.pass_rate.monthly_per_point} a month per point. Neither step's gain is separated from zero; the first buys distance from the gate, not a measured improvement."
+    }
+  ],
+  "omitted": [
+    {
+      "what": "Retry effects",
+      "why": "A retry lifts every model and reasoning level at a small cost, and every Brisk-S survivor already carries one; it doesn't change the call."
+    },
+    {
+      "what": "Interactions between settings",
+      "why": "Retry and reasoning effects don't differ between Atlas-M and Brisk-S; Nano-XS gains more from a retry but still misses the gate."
+    },
+    {
+      "what": "Nano-XS settings in detail",
+      "why": "None reaches the gate; they appear in the scatter and the appendix."
+    },
+    {
+      "what": "Calls per task",
+      "why": "Small differences between configurations; describes planner behaviour, not a decision axis."
+    },
+    {
+      "what": "Extra calls and outcome measures",
+      "why": "The snapshot holds no figures for them."
+    },
+    {
+      "what": "Atlas-M with high reasoning and no retry",
+      "why": "Passes on its estimate with an interval crossing the gate, and costs more than either Brisk-S survivor."
+    }
+  ],
+  "next": [
+    {
+      "text": "Re-run Brisk-S with high reasoning and one retry, with the low-reasoning setting beside it, on a fresh set of {scoreboard.brisk-s.high.r1.cases} tasks.",
+      "settles": "Whether the pick's clearance survives selection among many configurations; if it reads below the gate, Atlas-M with low reasoning and a retry is the next cheapest option clear of it."
+    },
+    {
+      "text": "The gate's owner declares whether the {criteria.pass_rate.threshold} gate is read on the estimate or on the whole interval.",
+      "settles": "Whether low reasoning, {price.brisk-s.low.r1.brisk-s.high.r1.pass_rate.monthly_cost_gap|abs} a month cheaper, is eligible."
+    },
+    {
+      "text": "Teach the low-reasoning planner to split multi-hop questions into steps, then re-test Brisk-S with low reasoning and a retry.",
+      "settles": "Whether the cheaper setting can clear the gate with room; more cases alone would need {settle.criteria.pass_rate.brisk-s.low.r1.overall.cases_needed_two_sided}."
+    },
+    {
+      "text": "Record case counts per task in the next run.",
+      "settles": "Whether the multi-hop shortfall is real or noise."
+    }
+  ],
+  "method": [
+    {
+      "term": "Cases",
+      "text": "Each configuration ran {scoreboard.brisk-s.high.r1.cases} tasks once, with none lost. The snapshot doesn't say whether every configuration ran the same tasks, so differences are read unpaired.",
+      "caveats": []
+    },
+    {
+      "term": "Pass",
+      "text": "The snapshot does not define what makes a task pass; its kept failures are scored for a missing call, wrong arguments or the wrong tool.",
+      "caveats": []
+    },
+    {
+      "term": "Gate",
+      "text": "The one declared criterion: pass rate at least {criteria.pass_rate.threshold} overall. It is read on the estimate as declared; the recommendation is also read on its whole interval.",
+      "caveats": []
+    },
+    {
+      "term": "Intervals",
+      "text": "{spread.brisk-s.high.r1.pass_rate.overall.level} intervals computed from each rate's binomial spread over its cases. Differences between configurations combine two spreads as independent, with no correction for the many comparisons.",
+      "caveats": []
+    },
+    {
+      "term": "Fresh-run risk",
+      "text": "How often a fresh run of today's size reads the other side of the gate, assuming today's estimate is the truth, at {settle.criteria.pass_rate.brisk-s.high.r1.overall.level}.",
+      "caveats": []
+    },
+    {
+      "term": "Cost",
+      "text": "Cost per thousand calls as measured; monthly cost at the declared volume of {meta.volume_per_month} a month.",
+      "caveats": []
+    },
+    {
+      "term": "Latency",
+      "text": "Median and slow-tail latency per configuration; no budget was declared, so it is descriptive.",
+      "caveats": []
+    },
+    {
+      "term": "Not compared",
+      "text": "No production planner was run, so nothing is read against current behaviour.",
+      "caveats": []
+    },
+    {
+      "term": "Source",
+      "text": "{meta.provenance}, run {meta.run_date}.",
+      "caveats": []
+    }
+  ]
+}

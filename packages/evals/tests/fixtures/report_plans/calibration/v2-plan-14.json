@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with its instruction and reason, matching the recommended September row in the options table and the first chart's negative contrasts.",
+      "quote": "Keep September. Both candidates cost 27–28% more per reply and stay in character less often.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the strongest supporting fact (qwen3.8-flash separated as worse, neither candidate better on anything), then what would change the answer.",
+      "quote": "qwen3.8-flash (A) is worse on the asked pass rate, by 3.4 to 10.8 points, and neither candidate beats September on anything this campaign measured. A candidate priced at or below September that holds character as well would change the answer.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag and no caveat said twice; the scoped confounds and short runs are simply absent from Watch, which R7 scores, while the rest sit once in the confidence, the question caption or Method.",
+      "quote": "The margin was set after the readings were visible.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples section's headline claims a frequency ('most failures') that a chart of example cards cannot show, and the shown examples include machinery failures that are not off-topic answers.",
+      "quote": "Most failures answer an off-topic question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results, arms, measures and strata appear in reader words (pass rate, in-character rate, off-lane asks); run and insight ids appear only in Method's Source.",
+      "quote": "Off-lane asks, the largest stratum, carry about 50% of each candidate's loss",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch is generic monitoring advice and does not name the weakest margin under the call or any scoped confound.",
+      "quote": "Keep monitoring qwen3.8-flash (A) and the persona metrics in production after the decision.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Short active sentences without hedges, one name per measure, and no statistician's grammar on the first screen.",
+      "quote": "It has the highest pass rate (85.3%), the highest in-character rate (91.5%) and the lowest cost ($1.89 per 1,000 replies).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline says what to do and why, and the confidence clauses on the first screen carry the main risk (an uncalibrated judge, late choices) even though Watch is generic.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment whose result could change the call, with both decisive directions stated.",
+      "quote": "if it holds character within the margin, it replaces September; if not, September stays.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each confidence clause names the condition under which its caveat would matter, or says the deciding cost finding does not rest on it.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure measures what its sentence says: the 27–28% are cost uplifts over September, the point changes are each arm's contrasts, and the 3.4–10.8 range is the asked reading's interval.",
+      "quote": "**qwen3.8-flash (A):** 28% more per reply, in-character -6 points, pass rate -7.6.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:27:01Z"
+}

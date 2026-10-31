@@ -20,8 +20,8 @@ stored artifact, and ``token_cost`` is the total, so a repaired analysis is neve
 for one accepted first time. A parse failure and a schema failure ARE repaired, because they
 are things a finished call did; only a call that did not finish is not — see
 :class:`SoundnessRefusal` for why the boundary sits there and not elsewhere. A generation the provider
-reported it cut short does not even reach the chain: :func:`_reject_incomplete_generation`
-refuses it first, so a truncation can never buy the repair that would regenerate into the
+reported it cut short does not even reach the chain:
+:func:`~threetears.evals.analysis.generation_round.reject_incomplete_generation` refuses it first, so a truncation can never buy the repair that would regenerate into the
 same cap.
 
 **The contract is sent, not described.** The model is asked for a document in the shape
@@ -97,6 +97,13 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_user_message
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
+from threetears.evals.analysis.generation_round import (
+    parse_reply,
+    prompt_provenance_clause,
+    record_returned_call,
+    reject_incomplete_generation,
+    repair_user_message,
+)
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.prose_refs import reference_grammar, render_prose_figures
 from threetears.evals.analysis.references import (
@@ -135,7 +142,6 @@ from threetears.evals.kernel.host.style import prompt_fragment
 from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.kernel.prompts.catalogue import ANALYSIS_GEN_PROMPT
 from threetears.evals.schema.models import ClientRequestSettings, KnownReasoningEffort, utc_now_iso
-from threetears.evals.kernel.provider import describe_incomplete_completion, extract_json
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.logs import get_logger
 
@@ -510,8 +516,11 @@ async def generate_analysis(
 
     # Reached only via the `except` above, since the `try` returns on success. A second
     # refusal propagates from here exactly as the first one used to — one attempt, then fail.
-    repair_message = _repair_user_message(
-        user_message, writer_refusal, result.content or "(the generator returned no content)"
+    repair_message = repair_user_message(
+        user_message,
+        writer_refusal,
+        result.content or "(the generator returned no content)",
+        instruction=_REPAIR_INSTRUCTION,
     )
     if admit is not None:
         admit(system_prompt, repair_message, contract)
@@ -572,41 +581,20 @@ async def generate_analysis(
 
 
 def _prompt_provenance_clause(prompt: str) -> str:
-    """Say, on a twice-refused generation, whether the prompt it ran on is the shipped default.
+    """Say, on a twice-refused generation, whether the writer's prompt is the shipped default
+    (:func:`~threetears.evals.analysis.generation_round.prompt_provenance_clause`).
 
-    The prompt is store-master: :data:`~threetears.evals.analysis.gen_prompt.EVAL_ANALYSIS_GEN_DEFAULT`
-    seeds an empty slot once, and after that a rule added to it in code reaches a deployment
-    only when an operator pushes it through the host's prompt store. Nothing in a deploy does
-    that. So a validator can refuse, at full cost and repeatably, a shape the shipped prompt
-    forbids and the deployment's prompt has never heard of — for example a rule like
-    ``evidence: null`` shipping in code while the store still serves the older text, so every
-    generation over a campaign emits ``{"rows": []}`` and is refused for it. The refusal text named the rule; nothing
-    named that the prompt in use predated it, and the diagnosis took reading the store by hand.
+    The figure-reference grammar is outside the gap it discloses: it is not in the prompt at all, but appended by
+    :func:`assemble_system_prompt` from the parser's constants, so a grammar change needs no push.
 
-    The figure-reference grammar is outside this gap: it is not in the prompt at all, but appended
-    by :func:`assemble_system_prompt` from the parser's constants, so a grammar change needs no push.
-
-    This is the disclose-only option — report the divergence and leave the judgement to the operator —
-    and deliberately no more: an operator's retuned prompt differs from the default by design, so
-    a divergence is a FACT to disclose on a failure, never a reason to refuse or to warn on every
-    generation. Compared stripped, because the registry round-trip is not guaranteed to preserve
-    a trailing newline and a one-byte difference would report a retuned prompt where there is
-    none.
-
-    :param prompt: The resolved registry prompt, as :func:`generate_analysis` received it — the
-        body BEFORE the host's style register and caveat kinds are appended, so it is comparable to
-        the seed.
+    :param prompt: The resolved registry prompt, as :func:`generate_analysis` received it — the body BEFORE the host's
+        style register and caveat kinds are appended, so it is comparable to the seed.
     :ptype prompt: str
-    :return: A clause to append to the failure summary, beginning with punctuation. Empty when the
-        prompt is the shipped default, so the summary says nothing where there is nothing to say.
+    :return: A clause to append to the failure summary, beginning with punctuation; empty for the shipped default.
     :rtype: str
     """
-    if prompt.strip() == EVAL_ANALYSIS_GEN_DEFAULT.strip():
-        return ""
-    return (
-        f". NOTE: the resolved {ANALYSIS_GEN_PROMPT} prompt is NOT the in-repo default — the store is master, so a rule "
-        "shipped in gen_prompt.py reaches this deployment only when pushed to the host's prompt store; a refusal "
-        "naming a rule the default teaches is the signature of that gap"
+    return prompt_provenance_clause(
+        prompt, default=EVAL_ANALYSIS_GEN_DEFAULT, prompt_type=ANALYSIS_GEN_PROMPT, seed_module="gen_prompt.py"
     )
 
 
@@ -621,12 +609,7 @@ def _log_generation(
     cost adds nothing to the total and is counted as unreported, so the tally does not read
     an unpriced call as a free one.
     """
-    cost = result.cost_usd if result.cost_usd is not None else 0.0
-    tally.returned += 1
-    tally.token_cost += cost
-    tally.reported_models.append(result.model or model)
-    if result.cost_usd is None:
-        tally.unreported_cost += 1
+    cost = record_returned_call(tally, result, model)
     # `stop_reason` is on the line because it is the only per-attempt record of HOW the
     # call ended. The client logs one WARNING when it maps `finish_reason=length`, but it
     # names the model and nothing else — with two attempts over one campaign, that warning
@@ -646,63 +629,6 @@ def _log_generation(
     )
 
 
-def _reject_incomplete_generation(result: CompletionResult) -> None:
-    """Refuse a generation the provider itself reported it cut short, before parsing it.
-
-    First in :func:`_assemble_and_validate`, ahead of every parse and every ``_reject_*``,
-    and that ordering is the whole point. The output cap is a failure mode a SUPPORTED input
-    reaches, not a misuse: ``analysis_generate`` documents ``model`` as an override for
-    A/B-ing a cheaper generator, the cap is fixed and the caller cannot raise it, and a model
-    whose own output ceiling sits under what the bundle needs truncates every time: it logs
-    ``finish_reason=length`` and stores no analysis.
-
-    Placed here rather than at the two call sites because a truncated result must be unable
-    to reach the soundness chain, not merely unlikely to: a :class:`SoundnessRefusal` raised
-    off a salvaged partial payload buys a repair round-trip, which regenerates into the same
-    cap and bills a second full generation to fail the same way. One chokepoint covers the
-    initial call and the repair with one check, and a third call site would inherit it.
-
-    **What this does NOT claim.** Nothing here is a timeout or a cancellation — a call that
-    sits unanswered is a different failure, upstream of this path — and the case for this
-    check does not rest on one: it rests on the truncation being real, on the
-    repair boundary having been an unenforced assumption, and on the caller being owed the
-    reason for a generation it was billed for.
-
-    :param result: The completed generator call to check.
-    :ptype result: CompletionResult
-    :raises GenerationError: The provider reported the call did not finish. Deliberately the
-        BARE class and never :class:`SoundnessRefusal` — the call did not finish, so
-        there is nothing to feed back that would change the outcome, and the second
-        attempt would run into the identical fixed cap.
-
-        **This is now the ONLY thing the bare class means on a call that was made**, and
-        this check is the only place that raises it after one. Every other way a
-        generation can fail — output that is not JSON, a missing field, an insight
-        element that will not build, any ``_reject_*`` validator — is something a
-        finished call DID, and raises the repairable subclass. The boundary is
-        therefore no longer "which step complained" but "did the call finish", and this
-        function is the single place that answers it.
-    """
-    incomplete = describe_incomplete_completion(result)
-    if incomplete is None:
-        return
-    # `describe_incomplete_completion` names two remedies — raise the cap, or change model — and
-    # both are reachable, but not the way it phrases the first: no ACTION takes the cap. It is the
-    # host's configured answer budget, which the host's client builder derives the cap from per client. So this SCOPES the shared advice to where the
-    # knob actually is; naming a per-call parameter would send an operator hunting for one that does
-    # not exist. The budget's value is not restated — it is the host's, and would drift here. Only
-    # ``max_tokens`` gets it: ``truncated`` is cut short by a cause the provider did not name, which is
-    # not the cap, so pointing at the budget there would send the operator after the wrong knob.
-    remedy = (
-        " The output cap is not a parameter of this action: it is the host's configured generator answer "
-        "budget. Raise that budget, re-run with a larger-output generator model, or narrow the campaign so "
-        "there is less to analyse."
-        if result.stop_reason == "max_tokens"
-        else ""
-    )
-    raise GenerationError(f"the generator did not finish — {incomplete}{remedy}")
-
-
 #: Fed back to the generator after a refusal. Deliberately APPENDED to the
 #: original user message rather than replacing it: the model needs the same evidence to
 #: re-derive the analysis, and putting the new text last keeps the long prefix (system
@@ -713,6 +639,8 @@ def _reject_incomplete_generation(result: CompletionResult) -> None:
 #: silent evidence loss — the report comes back sound and quietly smaller. For example, a
 #: generator refused for an ``evidence.rows[]`` coordinate it could not key can return the
 #: same analysis with ``evidence.rows`` EMPTY, which `min_length=1` then refuses.
+#:
+#: Built into the repair message by :func:`~threetears.evals.analysis.generation_round.repair_user_message`.
 #:
 #: The opening two sentences are equally load-bearing and were wrong for a year of a narrower
 #: boundary's making: this text asserted "It was complete and well-formed. It was refused for
@@ -747,37 +675,6 @@ THIS IS WHAT YOU SENT, AND IT IS THE ONLY COPY YOU HAVE OF IT:
 {previous}"""
 
 
-def _repair_user_message(user_message: str, refusal: str, previous: str) -> str:
-    """Append the refusal AND the refused output to the original user message.
-
-    ``previous`` is included because the refusal often indexes into it and the model cannot
-    see it otherwise: the completion port starts a new conversation per call, so the second
-    call's only context is what this function builds. A soundness refusal survives that —
-    "finding 'f-glm' claimed significance with no statistic" is actionable cold — but the
-    parse arm is not: "not valid JSON: Expecting ',' delimiter: line 1 column 34" names a
-    coordinate in text the model no longer has, which made the stated justification for
-    repairing a parse failure at all untrue of the case it was written for. Cheaper to send
-    the output back than to spend a second full generation on a hint that points nowhere.
-
-    Appended LAST so the stable prefix stays as long as it can be. That prefix is the system
-    prompt plus the bundle, NOT the instruction: `_REPAIR_INSTRUCTION` interpolates `{refusal}`
-    ahead of `{previous}`, and the refusal differs per call, so nothing from the instruction
-    onward can be byte-identical to anything. The module comment above the constant says exactly
-    this; an earlier version of this docstring claimed the instruction was inside the stable
-    prefix, which would have been a reason to order the two fields that does not exist.
-
-    :param user_message: The original bundle message, reused verbatim.
-    :ptype user_message: str
-    :param refusal: The refusal text, which the instruction interpolates.
-    :ptype refusal: str
-    :param previous: The output that was refused.
-    :ptype previous: str
-    :return: The repair call's user message.
-    :rtype: str
-    """
-    return user_message + _REPAIR_INSTRUCTION.format(refusal=refusal, previous=previous)
-
-
 def _caveat_kinds(profile: HostProfile) -> frozenset[str]:
     """The caveat kinds on offer: the engine's four and any the host registered."""
     return ENGINE_CAVEAT_KINDS | profile.caveat_kinds
@@ -805,8 +702,8 @@ def _assemble_and_validate(
         no reading separated from the control, leaves a warning on its arm unaddressed (a broken floor, another arm
         ahead, a missed bar) or names one code never raised (repaired once).
     """
-    _reject_incomplete_generation(result)
-    payload = _parse_payload(result)
+    reject_incomplete_generation(result)
+    payload = parse_reply(result)
     try:
         document = validate_authored(payload, _caveat_kinds(profile))
     except (ValidationError, OffVocabulary) as refused:
@@ -871,15 +768,15 @@ def _resolved_analysis(
             document=document,
             resolutions=resolutions,
             judged_tier_rule=JUDGED_TIER_RULE,
-            aspects=[_aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
+            aspects=[aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
             campaign_bundle=bundle.frame(),
         )
     except ValueError as refused:
         raise SoundnessRefusal(f"generator output failed analysis validation: {refused}") from refused
-    return analysis, _insights_of(analysis, bundle, surfaces, aspects_of)
+    return analysis, _insights_of(analysis, document, bundle, surfaces, aspects_of)
 
 
-def _aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> AspectAnalysis:
+def aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> AspectAnalysis:
     """What a stored analysis keeps of one aspect: its frozen bundle, and what code read off it.
 
     :param bundle: The aspect's bundle.
@@ -1439,6 +1336,7 @@ def _resolution_of(
 
 def _insights_of(
     analysis: EvalAnalysis,
+    document: AuthoredCampaignAnalysis,
     bundle: CampaignBundle,
     surfaces: Mapping[str, DecisionSurface],
     aspects_of: Sequence[Sequence[str]],
@@ -1458,7 +1356,7 @@ def _insights_of(
         f"Retracted if analysis {analysis.id} is archived; replaced in place when a later analysis of this "
         "subject states the same claim."
     )
-    for finding, aspects in zip(analysis.document.findings, aspects_of, strict=True):
+    for finding, aspects in zip(document.findings, aspects_of, strict=True):
         if not finding.durable.strip():
             continue
         key = insight_restatement_key(finding.durable)
@@ -1591,35 +1489,6 @@ def prompt_content_version(prompt: str, profile: HostProfile) -> str:
     contract = json.dumps(response_format(_caveat_kinds(profile)), sort_keys=True, separators=(",", ":"))
     told = assemble_system_prompt(prompt, profile) + "\n" + contract
     return hashlib.sha256(told.encode("utf-8")).hexdigest()[:12]
-
-
-def _parse_payload(result: CompletionResult) -> dict[str, Any]:
-    """Extract the single JSON object the generator returned, or raise.
-
-    ``extract_json`` returns a JSON *object* or raises — a bare array or scalar is
-    a ``ValueError`` here, so the object shape is guaranteed to the callers below.
-
-    **Reaching this function means the call finished normally**, so a failure here really
-    is a malformed payload and nothing more. That is not an assumption: a provider-reported
-    truncation or filter was already refused by :func:`_reject_incomplete_generation`, which
-    runs first in :func:`_assemble_and_validate` for exactly this reason. The diagnosis used
-    to live here, appended to the parse failure — which reported the cause correctly only
-    for the truncations that happen not to parse, and said nothing for the ones that do.
-    Reporting only "not valid JSON" on a truncation sent a caller to retry or blame the
-    prompt when the fix is the model, while the ``stop_reason="max_tokens"`` sat unread on
-    the result. It is now read before the parse, not after it.
-
-    :param result: The completed generator call, known to have finished normally.
-    :ptype result: CompletionResult
-    :raises SoundnessRefusal: The content is not a JSON object. Repairable, because the decoder's
-        own message names the line and column that broke — an instruction the generator
-        can act on. That it is repairable rests on the call having FINISHED, which is the
-        guarantee the paragraph above records.
-    """
-    try:
-        return extract_json(result.content or "")
-    except ValueError as e:
-        raise SoundnessRefusal(f"generator output was not valid JSON: {e}") from e
 
 
 def _resolve(surface: DecisionSurface, ref: str, reading: ReadingRef, *, where: str) -> ResolvedReading:

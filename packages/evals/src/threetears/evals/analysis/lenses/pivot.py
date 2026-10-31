@@ -249,7 +249,7 @@ class PivotTable(EvalBaseModel):
     #: counting those that cannot say (:attr:`PivotCell.served_models`), or ``None`` when every cell names one
     #: model or the table is not grouped by contestant (#684).
     served_model_disclosure: str | None = None
-    #: Set when the scope was past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and only one subject's runs
+    #: Set when the scope was past :data:`~threetears.evals.analysis.reads.PIVOT_READ_BUDGET` and only one subject's runs
     #: were read (:func:`~threetears.evals.analysis.reads.pivot`): the sentence naming the subject and what was
     #: therefore not counted (other subjects' rows in ``n_filtered_out``, and results whose run is missing). ``None``
     #: on a whole-scope read, and then left out of a dump, so an answer read whole serializes, and digests, as it did

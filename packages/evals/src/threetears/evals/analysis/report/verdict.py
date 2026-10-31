@@ -482,8 +482,10 @@ def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str |
     return said + "." + _guardrail_words(bundle, arm)
 
 
-#: The contrast verdicts that separated, which the verdict line names.
-_SEPARATED = ("improved", "regressed")
+#: The contrast verdicts the verdict line names as one arm better than the other: the directional ones. Narrower than
+#: :data:`~threetears.evals.analysis.bundle.schema.SEPARATED_VERDICTS` by design: an ``equivalent`` verdict settles a
+#: comparison but names no better arm, so this line does not say it.
+_DIRECTIONAL = ("improved", "regressed")
 
 
 def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, asked: bool) -> list[str]:
@@ -495,7 +497,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
         if asked and family.aspect is None:
             continue
         for comparison in family.comparisons:
-            if comparison.verdict in _SEPARATED:
+            if comparison.verdict in _DIRECTIONAL:
                 heading = bundle.measure_catalog.get(comparison.name)
                 reading = measure_name(
                     comparison.name,

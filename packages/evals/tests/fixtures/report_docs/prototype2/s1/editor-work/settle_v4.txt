@@ -1,0 +1,3 @@
+refused: settle_cases: no declared criterion reads a figure for arm:v4, so there is no line to settle it against
+remedy: give a hypothetical_line with its measure_key (the line in the figure's own units), or name a second arm to settle the two apart
+recovery: {"parameters":["hypothetical_line","measure_key"],"accepted":["snapshot_id","arm_ids","measure_key","criterion_id","hypothetical_line","limit","offset"],"see":{"action":"help","topic":"settle_cases"}}

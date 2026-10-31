@@ -27,6 +27,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TextBlock,
 )
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.authored import (
     AspectSummary,
     AuthoredCampaignAnalysis,
@@ -108,9 +109,10 @@ async def page_of(
     campaign, measured = await campaign_fixture(*labels, margins=margins, **changes)
     bundles = {changed.aspect: changed for changed in (bundle(one.bundle) for one in measured)}
     read = readings(campaign_readings(campaign, bundles, arms=arms_of(measured[0])))
+    tags = campaign_arm_tags(bundles.values(), read.control)
     reports = {
         label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels(), arm_tags=tags
         )
         for label, evidence in bundles.items()
     }
@@ -230,9 +232,10 @@ async def kind_page_of(
     campaign = joined(measured)
     bundles = {one.bundle.aspect: bundle(one.bundle) for one in measured}
     read = campaign_readings(campaign, bundles, arms=measured[0].arms())
+    tags = campaign_arm_tags(bundles.values(), read.control)
     reports = {
         label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
+            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels(), arm_tags=tags
         )
         for label, evidence in bundles.items()
     }

@@ -11,7 +11,7 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pytest
@@ -56,10 +56,10 @@ async def g2_ruled() -> tuple[Result, Report]:
 async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_ruled: tuple[Result, Report]) -> None:
     _, report = g2_ruled
     lines = report_markdown(report).splitlines()
-    # The title is the campaign's name (no floor is broken on four cases, so none warns under the verdict); the
-    # question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
+    # The title heads the campaign by the title code builds (what it compares and on what, its name a qualifier; no
+    # floor is broken on four cases, so none warns under the verdict); the question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
-    assert lines[0] == "# G2: can the cheaper model replace production?"
+    assert lines[0] == "# production vs cheaper candidate · classify (G2: can the cheaper model replace production?)"
     assert lines[1] == f'"{G2_QUESTION}"'
     assert lines[3] == (
         "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
@@ -77,7 +77,8 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
         "",
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Cost per 1,000 replies |",
     ]
-    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.092 |"
+    # The scoreboard's cost in its column's one form (#993): cents, two figures on the least.
+    assert lines[13] == "| ▸ production | 12 | 12 | 10 | 2 | 0 | $3.09 |"
     first = report_markdown(report).split("\n## ", 1)[0]
     # The case floor's caveat says what is withheld under four cases and why, in the reader's terms. Nothing else is
     # under the scoreboard: the design is on the arms line.
@@ -124,7 +125,7 @@ async def test_an_outcome_bar_repeating_the_scoreboard_prints_no_second_table(g2
     # Passed, failed by check and failed by judge are the scoreboard's own columns: the bar's table would repeat it.
     assert "**Outcomes**" not in report_markdown(report)
     # The page still draws the bar.
-    assert report_html(report).count('data-chart="outcome_bar"') == 1
+    assert report_html(report).count('data-figure="outcome_bar"') == 1
 
 
 async def test_the_question_is_quoted_once_under_the_title_and_never_in_the_body(
@@ -175,6 +176,178 @@ async def _pages() -> list[Report]:
 def _arm_names(report: Report) -> set[str]:
     (scoreboard,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "scoreboard"]
     return {str(row["arm"]).removeprefix("▸ ") for row in scoreboard.values()}
+
+
+#: Eight cases, each numbered, so a runner can price each case alike on every call, whatever order they run in.
+_NUMBERED = [{"text": f"queue request {at}", "label": "queued", "at": at} for at in range(8)]
+
+
+def _priced(base: float, step: float, unpriced: frozenset[int] = frozenset()) -> Any:
+    """A runner answering every case right, each case costing ``base`` and ``step`` more per case after the first;
+    the cases ``unpriced`` names go unpriced."""
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        at = int(case["at"])
+        cost = None if at in unpriced else base + step * at
+        return Answer(case["label"], model="deepseek", input_tokens=100, output_tokens=10, cost_usd=cost)
+
+    return run
+
+
+async def _contrasted(scale: float, candidate: float = 0.0033) -> str:
+    """A code-only page whose cost contrast resolves, at ``scale`` times a cost of a third of a cent a reply (the
+    candidate's at ``candidate`` a reply)."""
+    arms = {PRODUCTION: _priced(0.0030 * scale, 0.0001 * scale), CANDIDATE: _priced(candidate * scale, 0.00015 * scale)}
+    run = await Eval(_NUMBERED, arms, ["label"], k=3, name="queue").run(store=":memory:")
+    return report_markdown(
+        build_code_only_report(declaring(run.report.bundle, G2_QUESTION), assembled_at="2026-10-14T00:00Z")
+    )
+
+
+async def _one_arm(cost: float) -> str:
+    run = await Eval(CASES, {"production": answering(10, cost)}, ["label"], k=3, name="queue").run(store=":memory:")
+    return report_markdown(run.report)
+
+
+async def _money_pages() -> dict[str, str]:
+    """Every code-only page the money checks read, by name: the suite's pages, a one-arm page at $0.003 a reply, under
+    a cent per 1,000 and under a cent even per 1,000,000, a resolved cost contrast at ordinary size and under a cent
+    per 1,000, and a run whose candidate went unpriced on one case."""
+    pages = {f"page {at}": report_markdown(report) for at, report in enumerate(await _pages())}
+    pages["under a cent per 1,000"] = await _one_arm(0.000003)
+    pages["under a cent at the cap"] = await _one_arm(0.000000003)
+    pages["contrast"] = await _contrasted(1.0)
+    pages["contrast under a cent per 1,000"] = await _contrasted(1e-6)
+    # The candidate's cost past $10 per 1,000 replies, the production's under it: one form over both all the same.
+    pages["contrast across $10"] = await _contrasted(1.0, candidate=0.015)
+    arms = {PRODUCTION: _priced(0.003, 0.0), CANDIDATE: _priced(0.003, 0.0, frozenset({0}))}
+    pages["partly priced"] = report_markdown(
+        (await Eval(_NUMBERED, arms, ["label"], k=3, name="q").run(store=":memory:")).report
+    )
+    return pages
+
+
+#: The heads of two arms' means on one reading, side by side in one row.
+_MEANS = frozenset({"Control mean", "Arm mean"})
+
+#: One amount of money as a page prints it: its sign, its digits, its per-1,000 mark.
+_SPELLED = r"[+\-]?\$\d[\d,]*(?:\.\d+)?(?:/1000)?"
+
+
+def _places(amounts: Iterable[str]) -> set[int]:
+    """The decimals a set of amounts is written to; a zero (``$0``) says nothing of a form, so it is passed over."""
+    return {
+        len(amount.removesuffix("/1000").partition(".")[2])
+        for amount in amounts
+        if float(re.sub(r"[^\d.]", "", amount.removesuffix("/1000")) or 0) != 0
+    }
+
+
+def _tables(page: str) -> list[list[list[str]]]:
+    """Every Markdown table on a page, as its rows of cells, its head first (its rule row dropped)."""
+    tables: list[list[list[str]]] = []
+    run: list[list[str]] = []
+    for line in [*page.splitlines(), ""]:
+        if line.startswith("|"):
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if not all(set(cell) <= set("-: ") for cell in cells):
+                run.append(cells)
+        elif run:
+            tables.append(run)
+            run = []
+    return tables
+
+
+def _money_faults(page: str, arms: set[str]) -> list[str]:
+    """Every way a page's money text breaks the one-form rule (#993): an amount carrying the per-1,000 mark in a table
+    that names the count it is drawn per (two scales on one amount); a mean's or a change's interval whose ends read
+    to other decimals than it does; one figure type in a table read to two forms (a column's, and a row's across the
+    arms where the arms are the columns); an amount to one decimal; and a partly priced total that says nothing of it
+    beside itself."""
+    faults: list[str] = []
+    for table in _tables(page):
+        joined = " | ".join(" | ".join(row) for row in table)
+        if re.search(r"per [\d,]+ |\(\$/[\d,]+ ", joined) and "/1000" in joined:
+            faults.append(f"stacked: {joined[:200]}")
+        head, *rows = table
+        # Where the arms are the columns (or their means are), each row's amounts under them are one figure type
+        # across the arms.
+        under = [at for at, cell in enumerate(head) if cell.removeprefix("▸ ") in arms or cell in _MEANS]
+        for at in range(len(head)):
+            # A cell stating one amount (``42 cases, $0.92`` as much as ``$3.40``) states one of its column's.
+            column = [
+                found[0]
+                for row in rows
+                if at < len(row)
+                for found in [re.findall(_SPELLED, row[at])]
+                if len(found) == 1
+            ]
+            if len(_places(column)) > 1:
+                faults.append(f"column {head[at]!r}: {column}")
+        for row in rows if len(under) >= 2 else []:
+            bare = [row[at] for at in under if at < len(row) and re.fullmatch(_SPELLED, row[at])]
+            if len(_places(bare)) > 1:
+                faults.append(f"row: {row}")
+        # A projection's costs, in whichever column they sit, are one set of totals.
+        projected = [found for row in rows for cell in row for found in re.findall(rf"\d cases, ({_SPELLED})", cell)]
+        if len(_places(projected)) > 1:
+            faults.append(f"projected: {projected}")
+    # Money keeps cents or whole dollars, never one decimal ($2.3).
+    faults.extend(f"one decimal: {found.group(0)}" for found in re.finditer(r"\$\d[\d,]*\.\d(?![\d])", page))
+    for found in re.finditer(rf"({_SPELLED})(?: \| | )\[({_SPELLED}), ({_SPELLED})\]", page):
+        if len(_places(found.groups())) > 1:
+            faults.append(f"interval: {found.group(0)}")
+    if "The cost is a floor where" in page:
+        (tested,) = [line for line in page.splitlines() if line.startswith("| Test cost |")]
+        if "trials priced" not in tested:
+            faults.append(f"unmarked partial: {tested}")
+    return faults
+
+
+async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
+    """Every money figure the code-only pages state with its interval reads its ends where its mean is drawn: at the
+    same count and to the same decimals, the mean between them. The one-arm page's cost, $0.003 a reply every time,
+    reads $3.00 per 1,000 replies, and so does each end; under a cent per 1,000 the ruler moves, and its heading names
+    the count; under a cent even per 1,000,000 it reads there, to the decimals its least amount needs, and never with
+    the per-1,000 mark beside the count."""
+    pages = await _money_pages()
+    assert "| Production cost ($/1,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in pages["page 2"]
+    assert "| Production cost ($/1,000,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in pages["under a cent per 1,000"]
+    assert (
+        "| Production cost ($/1,000,000 replies) | $0.0030 [$0.0030, $0.0030] | 4 |" in pages["under a cent at the cap"]
+    )
+    read = 0
+    for page in pages.values():
+        for found in re.finditer(r"\$(\d[\d,]*\.?\d*) \[\$(\d[\d,]*\.?\d*), \$(\d[\d,]*\.?\d*)\]", page):
+            mean, low, high = (float(group.replace(",", "")) for group in found.groups())
+            assert low <= mean <= high, found.group(0)
+            read += 1
+    assert read, "the control: some page states a money interval"
+
+
+async def test_a_money_contrasts_interval_reads_in_its_changes_form() -> None:
+    """A cost contrast's change and its interval's ends are one set, in one form: never $0.51 beside [$0.4107,
+    $0.606]."""
+    pages = await _money_pages()
+    assert "| $0.47 | [$0.35, $0.60] |" in pages["contrast"]
+    assert "| $0.00047 | [$0.00035, $0.00060] |" in pages["contrast under a cent per 1,000"]
+
+
+async def test_a_partly_priced_total_says_so_in_its_own_row() -> None:
+    """A run's total that counts only part of its trials' spend is a floor, and its Methods row says so beside it."""
+    pages = await _money_pages()
+    assert (
+        "| Test cost | production $0.072; cheaper candidate $0.063 (21 of 24 trials priced) |" in pages["partly priced"]
+    )
+
+
+async def test_no_code_only_page_breaks_the_one_form_rule_for_money() -> None:
+    """No page stacks two scales on an amount, reads an interval's ends to other decimals than its figure, reads one
+    figure type in a table in two forms, or states a partly priced total bare."""
+    pages = await _money_pages()
+    arms = {"production", "cheaper candidate", "v4.1-flash", "v4-flash", "deepseek-v4.1-flash", "deepseek-v4-flash"}
+    faults = {name: _money_faults(page, arms) for name, page in pages.items()}
+    assert not any(faults.values()), {name: found for name, found in faults.items() if found}
 
 
 async def test_every_page_passes_the_style_lint() -> None:
@@ -393,6 +566,8 @@ async def test_a_trial_s_summary_is_never_the_first_line_of_what_it_asked() -> N
     trial_summaries = [summary for summary in summaries if re.match(r"T\d+ · ", summary)]
     assert len(trial_summaries) == 2 * len(trials)
     for summary in trial_summaries:
+        # Read as a reader hears it: the HTML's state is a pill, whose icon a screen reader skips and whose word it reads.
+        summary = re.sub(r"<[^>]+>", "", re.sub(r'<span aria-hidden="true">[^<]*</span>', "", summary))
         assert "{" not in summary and "The world" not in summary
         assert re.fullmatch(r"T\d+ · case \d · [ab] · (passed|failed|lost)", summary), summary
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
@@ -547,13 +722,23 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
     page = report_html(await g2_report())
     (style,) = re.findall(r"<style>(.*?)</style>", page, re.S)
     roots = _root_blocks(style)
-    assert len(roots) == 6, "light, dark by preference and dark by attribute, for the page and for the charts"
+    assert len(roots) == 3, "light, dark by preference and dark by attribute: the kit's, which the charts draw from too"
     rules = re.sub(r":root[^{]*\{[^}]*\}", "", style)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", rules), "a hard-coded colour outside :root"
-    light = " ".join(roots[0::3])
-    dark = " ".join(roots[1::3])
-    used = set(re.findall(r"var\((--[\w-]+)", rules)) - {"--font-sans", "--font-mono"}
+    light, dark_by_preference, dark_by_attribute = roots
+    # The kit's faces, type steps and measures are tokens too, set once for both schemes; the colours are the rest.
+    used = {
+        variable
+        for variable in re.findall(r"var\((--[\w-]+)", rules)
+        if not re.match(r"--(f|t)-|--(col|wide|r)$", variable)
+    }
+    # A colour the light block derives from another token (``--accent: var(--host-accent)``) follows that token,
+    # which each dark block sets in its place.
+    derived = dict(re.findall(r"(--[\w-]+):\s*var\((--[\w-]+)\)", light))
     for variable in used:
-        assert f"{variable}:" in light and f"{variable}:" in dark, variable
+        defined = derived.get(variable, variable)
+        assert f"{variable}:" in light, variable
+        for dark in (dark_by_preference, dark_by_attribute):
+            assert re.search(rf"(?<![\w-]){defined}:", dark), variable
     svg = "".join(re.findall(r"<svg\b.*?</svg>", page, re.S))
     assert not re.search(r'(fill|stroke|color|style)="[^"]*(#|rgb)', svg), "a colour drawn inline"

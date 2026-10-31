@@ -53,13 +53,14 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from pydantic import Field, field_validator, model_validator
 
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest, writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
 from threetears.evals.analysis.bundle.schema import (
+    SEPARATED_VERDICTS,
     AnalysisContextBundle,
     evidence_digest,
     fingerprint_digest,
@@ -94,12 +95,18 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS, CampaignArm, Floor, resolve_control_arm
+from threetears.evals.kernel.declaration import (
+    ARM_PRESENTATION_FIELDS,
+    ASPECT_PRESENTATION_FIELDS,
+    CampaignArm,
+    Floor,
+    resolve_control_arm,
+)
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.hashing import round_floats
+from threetears.evals.schema.hashing import identity_digest, round_floats
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)
@@ -119,6 +126,16 @@ _EARLIER_SHAPES = frozenset({2})
 #: from what shape 2 holds, so one campaign's evidence fingerprints alike at either, and a frozen case's labels, an
 #: analysis's staleness and a re-freeze's match never move with the shape.
 _EVIDENCE_SHAPE = 2
+
+#: The campaign's own fields its fingerprint leaves out from version 3 on: what a list prints for it. A campaign renamed
+#: is the same evidence, so renaming it moves no fingerprint taken in this version (its description never reaches the
+#: bundle at all).
+CAMPAIGN_PRESENTATION_FIELDS: frozenset[str] = frozenset({"name"})
+
+#: A campaign bundle's fingerprint version 3: version 2's digest (floats rounded) over evidence without the campaign's
+#: name. A fingerprint stored in version 2 (``v2:``) or 1 (unprefixed) was taken with the name and is computed again
+#: in its own version, name included, so every stored fingerprint still matches the evidence it was taken over.
+_CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
 _DERIVED_READINGS = frozenset({"aggregate"})
 
 #: The most characters one aspect's part of the writer's user message may take, as compact JSON. A campaign's message
@@ -141,12 +158,9 @@ _MEANING_CHARS = 200
 #: The significant figures a figure in the writer's view keeps: enough to read, not to recompute.
 _FIGURES = 4
 
-#: The comparison verdicts that separate an arm from the control, or establish it alike: listed first, so a trim of
-#: the contrasts drops the unresolved ones before any of these.
-_SEPARATED = frozenset({"improved", "regressed", "equivalent"})
 
 #: What each kind of campaign asks of its memo, as the writer's view says it.
-_KIND_MEANS: dict[str, str] = {
+KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the memo recommends no arm.",
     "choice": (
         "Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm "
@@ -272,16 +286,21 @@ class CampaignBundle(EvalDocumentModel):
     def fingerprint(self, *, like: str | None = None) -> str:
         """The campaign bundle's fingerprint: its frame's, which names each aspect's bundle by its fingerprint.
 
+        Version 3 (prefix ``v3:``), the current one, leaves out the campaign's name
+        (:data:`CAMPAIGN_PRESENTATION_FIELDS`); asked ``like`` a version 2 or 1 fingerprint, it is computed in that
+        version, the name included, as it was taken.
+
         Its floats rounded to twelve significant figures, so one campaign's evidence fingerprints alike across Python
         builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary (:meth:`AnalysisContextBundle.fingerprint` says why).
 
         :param like: A fingerprint stored earlier, to compute this one in that one's version so the two compare;
             None for the current version.
         :ptype like: str | None
-        :return: ``v2:`` and a 64-character lowercase hex digest, or, ``like`` an unprefixed one, the bare digest.
+        :return: ``v3:`` and a 64-character lowercase hex digest (``like`` an earlier version's, that version's
+            prefix), or, ``like`` an unprefixed one, the bare digest.
         :rtype: str
         """
-        return fingerprint_digest(_evidence_of(self.frame(like=like)), like=like)
+        return _campaign_digest(self.frame(like=_aspects_like(like)), like=like)
 
     @staticmethod
     def refuse_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
@@ -531,10 +550,26 @@ def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = 
     """
     frame = {key: value for key, value in document.items() if key != "aspects"}
     frame["aspects"] = [
-        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect, like=like)}
+        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect, like=_aspects_like(like))}
         for aspect in document.get("aspects") or []
     ]
-    return fingerprint_digest(_evidence_of(frame), like=like)
+    return _campaign_digest(frame, like=like)
+
+
+def _aspects_like(like: str | None) -> str | None:
+    """The version a campaign fingerprint in ``like``'s version names its aspects' bundles in: their current one under
+    version 3 (which changed only the campaign's own evidence), else ``like``'s."""
+    return None if like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX) else like
+
+
+def _campaign_digest(frame: Mapping[str, Any], *, like: str | None) -> str:
+    """A campaign bundle frame's fingerprint in ``like``'s version: version 3 over its evidence without the campaign's
+    name, or, ``like`` a version 2 or 1 fingerprint, that version's digest with the name, as it was taken."""
+    evidence = _evidence_of(frame)
+    if like is None or like.startswith(_CAMPAIGN_FINGERPRINT_PREFIX):
+        unnamed = {key: value for key, value in evidence.items() if key not in CAMPAIGN_PRESENTATION_FIELDS}
+        return _CAMPAIGN_FINGERPRINT_PREFIX + identity_digest(unnamed)
+    return fingerprint_digest(evidence, like=like)
 
 
 def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContextBundle]) -> dict[str, Any]:
@@ -551,29 +586,40 @@ def _as_this_shape(document: Mapping[str, Any], bundles: Sequence[AnalysisContex
 
 def _evidence_of(frame: Mapping[str, Any]) -> dict[str, Any]:
     """A campaign bundle's frame as its fingerprint reads it: at :data:`_EVIDENCE_SHAPE`, without the figures derived
-    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect
-    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`).
+    from its readings (:data:`_DERIVED_READINGS`), and without how a page prints each aspect and each arm
+    (:data:`~threetears.evals.kernel.declaration.ASPECT_PRESENTATION_FIELDS`,
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`).
 
     The figures across aspects are read off the readings and the aspects' bundles the fingerprint already reads, so a
     bundle of this shape and one frozen at the shape before it fingerprint alike over the same evidence. A short name
-    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect leaves every
-    analysis and reporter case of the campaign reproducing. An aspect naming none carries no key to drop.
+    is presentation, as an aspect bundle's own is (left out of its fingerprint), so naming an aspect or an arm leaves
+    every analysis and reporter case of the campaign reproducing. One naming none carries no key to drop. The campaign's
+    own name stays here: version 3 of :meth:`CampaignBundle.fingerprint` leaves it out, and earlier versions read it.
     """
     frame = dict(frame)
     if frame.get("schema_version") == CAMPAIGN_BUNDLE_SHAPE:
         frame["schema_version"] = _EVIDENCE_SHAPE
         if isinstance(readings := frame.get("readings"), Mapping):
             frame["readings"] = {key: value for key, value in readings.items() if key not in _DERIVED_READINGS}
+    if isinstance(arms := frame.get("arms"), list):
+        frame["arms"] = _unpresented(arms, ARM_PRESENTATION_FIELDS)
     declaration = frame.get("declaration")
-    if not isinstance(declaration, Mapping) or not isinstance(declaration.get("aspects"), list):
+    if not isinstance(declaration, Mapping):
         return frame
-    aspects = [
-        {key: value for key, value in aspect.items() if key not in ASPECT_PRESENTATION_FIELDS}
-        if isinstance(aspect, Mapping)
-        else aspect
-        for aspect in declaration["aspects"]
+    declaration = dict(declaration)
+    if isinstance(declaration.get("aspects"), list):
+        declaration["aspects"] = _unpresented(declaration["aspects"], ASPECT_PRESENTATION_FIELDS)
+    if isinstance(declaration.get("arms"), list):
+        declaration["arms"] = _unpresented(declaration["arms"], ARM_PRESENTATION_FIELDS)
+    return {**frame, "declaration": declaration}
+
+
+def _unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
+    """``items`` with each mapping's presentation ``fields`` left out; anything else as it is."""
+    return [
+        {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
+        for item in items
     ]
-    return {**frame, "declaration": {**declaration, "aspects": aspects}}
 
 
 def build_campaign_bundle(
@@ -664,7 +710,7 @@ def writer_view(bundle: CampaignBundle, *, budget: int = CAMPAIGN_MESSAGE_CHARS_
             "aspects": bundle.labels,
         },
         "kind": kind,
-        "kind_means": _KIND_MEANS[kind],
+        "kind_means": KIND_MEANS[kind],
     }
     if kind == "choice":
         # A choice reads first which arm code showed ahead of which, on each aspect, and every bar an arm missed.
@@ -1406,7 +1452,7 @@ def _contrasts(aspect: AnalysisContextBundle, namer: _Namer) -> list[dict[str, A
                     [confound.model_dump(mode="json") for confound in comparison.mechanism_confounds], aspect.aspect
                 ),
             }
-            separated = comparison.verdict in _SEPARATED
+            separated = comparison.verdict in SEPARATED_VERDICTS
             p = comparison.p_adjusted if comparison.p_adjusted is not None else 1.0
             rows.append(
                 ((0 if separated else 1, p), {key: value for key, value in row.items() if value not in (None, [])})

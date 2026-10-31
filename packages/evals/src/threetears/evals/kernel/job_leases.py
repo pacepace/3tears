@@ -67,6 +67,7 @@ from pydantic import ValidationError
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.kernel.errors import ConflictError, JobFenced, StorageError
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import UnreadableResultKey, iter_stored_results
 from threetears.evals.kernel.scoring import reconstruct_completeness
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.job_lease import (
@@ -168,8 +169,13 @@ def _run_lost(run: EvalRun, loss: JobLoss, store: LeaseStore) -> EvalRun:
     unreadable: list[str] = []
     if completeness is None:
         try:
-            completeness = reconstruct_completeness(run, store.query_eval_results_by_run(run.id, run.scope_id))
-        except ValidationError as refused:
+            # Read a page at a time: the run is lost at its largest, and the count keeps nothing of a result.
+            completeness = reconstruct_completeness(run, iter_stored_results(store, run.id, run.scope_id))
+        # A result this build cannot reconstruct refuses as a ValidationError; one whose key (id, case, k, model, when
+        # stored) it cannot read refuses the paged read's pass over the run as UnreadableResultKey. Either leaves the
+        # run's completeness unknown, said on the run, and the run still settles. A store that failed to answer is no
+        # fact about the run: it propagates, and the next read settles the run again.
+        except (ValidationError, UnreadableResultKey) as refused:
             # NOSILENT: the completeness is written None, which every reader reads as unknown, and why is written
             # on the run itself as an error_details entry below.
             log.exception(
@@ -651,6 +657,31 @@ def _note_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, sco
         f"{kind.name} job '{record_id}' kept changing while a fault was being written on it",
         remedy="read it again with job_poll",
     )
+
+
+def note_job_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, scope_id: str, entry: str) -> bool:
+    """Append ``entry`` to a job record's ``faults`` while it runs, touching nothing else; whether it was.
+
+    For what went wrong beside the job's work and does not end it: a report write whose gaps the store refused, which
+    the job notes on its attempt so ``job_poll`` shows it beside the ending. The ending written after keeps it
+    (:func:`write_held_record` keeps the stored faults).
+
+    :param store: The store holding the record.
+    :ptype store: LeaseStore
+    :param kind: The record's kind (``ANALYSIS_JOB``).
+    :ptype kind: LeasedJobKind[Any]
+    :param record_id: The record's id.
+    :ptype record_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param entry: What went wrong, where first; cut to the field's bound.
+    :ptype entry: str
+    :return: ``True`` when it was written; ``False`` for a record that is gone.
+    :rtype: bool
+    :raises ConflictError: Every attempt lost its race.
+    :raises StorageError: A read or write failed.
+    """
+    return _note_fault(store, kind, record_id, scope_id, entry)
 
 
 #: What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job
@@ -1473,6 +1504,7 @@ __all__ = [
     "LeasedJobKind",
     "RenewalVerdict",
     "lease_lapsed",
+    "note_job_fault",
     "read_to_take_up",
     "reopened_job_fields",
     "request_job_cancel",

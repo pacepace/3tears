@@ -19,6 +19,8 @@ from packages.evals.tests.stored_models import doc_type_of, stored_models, store
 from threetears.evals.schema import DOC_TYPE_FACTS, DocTypeFacts
 from threetears.evals.schema.base import CoreDocumentModel
 from threetears.evals.schema import models as schema_models
+from threetears.evals.kernel import report_doc
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession
 from threetears.evals.schema.models import EVAL_DOC_TYPES, EvalCassette
 from threetears.evals.schema.versioning import (
     CASSETTE_SCHEMA_VERSION,
@@ -28,10 +30,18 @@ from threetears.evals.schema.versioning import (
     DURABLE_DOC_TYPES,
     DURABLE_VERSION_SPACE,
     REGENERABLE_SCHEMA_VERSION,
+    REPORT_DOC_SCHEMA_VERSION,
 )
 
-#: What people author: the eight types decided at ``.26``, and the campaign, at durable v16 — the types a core baseline
-#: reset never touches.
+#: Each regenerable version space apart from the shared one, by the constant that governs it, and where it is read.
+_OWN_SPACES: dict[type[Any], tuple[str, Any]] = {
+    EvalCassette: ("CASSETTE_SCHEMA_VERSION", schema_models),
+    EvalReportDoc: ("REPORT_DOC_SCHEMA_VERSION", report_doc),
+    EvalReportSession: ("REPORT_DOC_SCHEMA_VERSION", report_doc),
+}
+
+#: What people author: the eight types decided at ``.26``, the campaign, at durable v16, and the analyst's gap notes, at
+#: a later durable minor, which nothing makes again — the types a core baseline reset never touches.
 DURABLE = frozenset(
     {
         "eval_template",
@@ -43,6 +53,7 @@ DURABLE = frozenset(
         "eval_test_case",
         "calibration_rating",
         "eval_campaign",
+        "eval_analyst_gap",
     }
 )
 
@@ -80,7 +91,11 @@ def test_a_type_is_kept_or_durable_exactly_when_its_model_is_read_in_that_space(
         assert issubclass(model, CoreDocumentModel) and model.version_space is DURABLE_VERSION_SPACE
     else:
         assert not issubclass(model, CoreDocumentModel)
-        assert model.model_fields["schema_version"].default in {REGENERABLE_SCHEMA_VERSION, CASSETTE_SCHEMA_VERSION}
+        assert model.model_fields["schema_version"].default in {
+            REGENERABLE_SCHEMA_VERSION,
+            CASSETTE_SCHEMA_VERSION,
+            REPORT_DOC_SCHEMA_VERSION,
+        }
 
 
 def _regenerable_models() -> list[Any]:
@@ -88,30 +103,41 @@ def _regenerable_models() -> list[Any]:
 
 
 @pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
-def test_the_cassette_alone_is_written_under_the_cassette_version(model: Any) -> None:
-    """The two regenerable version spaces stay apart: the cassette carries one constant, every other model the other."""
-    if model is EvalCassette:
-        assert model.model_fields["schema_version"].default == CASSETTE_SCHEMA_VERSION
+def test_each_regenerable_model_is_written_under_its_own_space_s_version(model: Any) -> None:
+    """The regenerable version spaces stay apart: the cassette carries its constant, a report document and its sessions
+    theirs, every other model the shared one."""
+    versions = {
+        "CASSETTE_SCHEMA_VERSION": CASSETTE_SCHEMA_VERSION,
+        "REPORT_DOC_SCHEMA_VERSION": REPORT_DOC_SCHEMA_VERSION,
+    }
+    if model in _OWN_SPACES:
+        assert model.model_fields["schema_version"].default == versions[_OWN_SPACES[model][0]]
     else:
         assert model.model_fields["schema_version"].default == REGENERABLE_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("model", _regenerable_models(), ids=lambda model: model.__name__)
 def test_each_regenerable_bump_refuses_its_own_space_and_no_other(model: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An analysis bump must never refuse a recorded corpus, nor a cassette bump an analysis.
+    """An analysis bump must never refuse a recorded corpus or a report, nor a cassette or report bump an analysis.
 
     A cassette is re-captured by calling the third-party tools again, so it reads against
-    ``CASSETTE_SCHEMA_VERSION`` and nothing else does. Each constant is moved in turn, to a number neither space
+    ``CASSETTE_SCHEMA_VERSION`` and nothing else does; a report document and its sessions, written by a paid loop,
+    read against ``REPORT_DOC_SCHEMA_VERSION`` and nothing else does. Each constant is moved in turn, to a number neither space
     uses, and a stored document reads exactly when the constant it is governed by did not move: so a cassette typed
     ``SchemaVersion``, or an analysis typed ``CassetteSchemaVersion``, is named here whatever the two numbers are.
     """
     document = stored_sample(model)
-    unused = max(REGENERABLE_SCHEMA_VERSION, CASSETTE_SCHEMA_VERSION) + 1
-    governs = "CASSETTE_SCHEMA_VERSION" if model is EvalCassette else "REGENERABLE_SCHEMA_VERSION"
+    unused = max(REGENERABLE_SCHEMA_VERSION, CASSETTE_SCHEMA_VERSION, REPORT_DOC_SCHEMA_VERSION) + 1
+    governs = _OWN_SPACES.get(model, ("REGENERABLE_SCHEMA_VERSION", schema_models))[0]
+    spaces = (
+        ("REGENERABLE_SCHEMA_VERSION", schema_models),
+        ("CASSETTE_SCHEMA_VERSION", schema_models),
+        ("REPORT_DOC_SCHEMA_VERSION", report_doc),
+    )
 
-    for constant in ("REGENERABLE_SCHEMA_VERSION", "CASSETTE_SCHEMA_VERSION"):
+    for constant, read_in in spaces:
         with monkeypatch.context() as bumped:
-            bumped.setattr(schema_models, constant, unused)
+            bumped.setattr(read_in, constant, unused)
             if constant == governs:
                 with pytest.raises(ValidationError, match=f"v{document['schema_version']}"):
                     model.from_dict(document)
@@ -155,8 +181,13 @@ def test_the_placements_the_registry_records() -> None:
         "eval_second_judge_pass": ("record", "kept"),
         "eval_judge_temperature_check": ("record", "kept"),
         "eval_action_job": ("record", "kept"),
+        "eval_analyst_gap": ("record", "durable"),
         "eval_analysis": ("derived", "regenerable"),
         "eval_insight": ("derived", "regenerable"),
+        "eval_report_plan": ("derived", "regenerable"),
+        "eval_report_snapshot": ("derived", "regenerable"),
+        "eval_report_doc": ("derived", "regenerable"),
+        "eval_report_session": ("derived", "regenerable"),
         "eval_judge_profile": ("derived", "regenerable"),
     }
 

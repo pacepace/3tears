@@ -1,0 +1,32 @@
+[
+  {
+    "need": "A lattice block over the model x prompt grid (three models by three prompts), one tile per configuration with balanced accuracy, p95, cost and gate status",
+    "why": "The campaign is a full 3x3 factorial and the prompt effect reverses across models; a lattice shows the interaction at a glance. block_render refuses lattice: the snapshot holds no configs rows, though every arm carries model and prompt settings",
+    "workaround": "A table of the nine configurations (balanced accuracy, cost, p95) plus lever effect keys cited in the claim sentence"
+  },
+  {
+    "need": "An interval on each configuration's overall balanced accuracy, in measure_read and in dot_interval",
+    "why": "The pick clears the overall gate by its thinnest margin; measure_read says balanced accuracy holds no interval and dot_interval draws none, yet spread and settle_cases compute a standard error for it on a binomial basis, which is an approximation for a mean of per-class recalls. The page cannot show the clearance against its noise",
+    "workaround": "Keep the point_estimate caveat open and cite settle_cases figures (cases needed vs cases run) in its material_if clause"
+  },
+  {
+    "need": "Figure keys for confusion-matrix cells (per arm, axis, true label, predicted label)",
+    "why": "The detail claim on what kind of errors the pick makes cannot cite a single share in prose; only the block carries them",
+    "workaround": "The claim states the pattern (adjacent complexity levels, domain near-perfect) with no number; the confusion block carries the figures"
+  },
+  {
+    "need": "A spread or interval for p95 latency, and the conditions it was measured under (confound_check)",
+    "why": "The pick clears the latency budget on a point estimate with no spread; no tool can say whether the clearance is more than noise or whether runs shared a machine",
+    "workaround": "Open caveat point_estimate:p95 with a material_if clause and a next step to measure p95 under production serving"
+  },
+  {
+    "need": "A key for the cost difference per month between two arms, or the multiple between their costs",
+    "why": "The cheap alternative's appeal is its monthly saving at declared volume; compare gives only a per-million difference and no key states the multiple",
+    "workaround": "Cite both arms' cost_per_month keys side by side"
+  },
+  {
+    "need": "Confusion block columns labelled per panel (the domain panel's predicted labels)",
+    "why": "block_render's confusion values table prints one column header for both panels, Simple/Medium/Complex, so the domain panel's columns read as complexity labels",
+    "workaround": "Read the domain panel's columns by row order (Science, Conversational, News) and say so in the caption"
+  }
+]

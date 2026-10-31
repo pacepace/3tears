@@ -20,7 +20,11 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import tracemalloc
+from collections.abc import Callable
 from dataclasses import replace
+
+from typing import Any
 
 import pytest
 
@@ -32,14 +36,24 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.kernel import EvalStorage
+from threetears.evals.analysis import assemble_context_bundle, reads
+from threetears.evals.analysis.bundle import comparisons
+from threetears.evals.analysis.bundle.comparisons import planning_readings
+from threetears.evals.kernel import EvalStorage, ValidationFailedError
+from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
+from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.factories import make_eval_result, make_eval_run
+from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.hot_path_support import hot_path_corpus
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
+from packages.evals.tests.read_path_support import EngineOnlyStore
+from packages.evals.tests.run_pages_support import BatchRecordingStore
 from packages.evals.tests.simulation_support import (
     ClusteredDesign,
     at_least,
@@ -155,9 +169,15 @@ class TestTheComponentsAreRecovered:
 
 
 def _store_history(
-    storage: EvalStorage, runs: dict[str, dict[str, list[float]]], *, template_id: str = TEMPLATE, scope: str = SCOPE
+    storage: EvalStorage,
+    runs: dict[str, dict[str, list[float]]],
+    *,
+    template_id: str = TEMPLATE,
+    scope: str = SCOPE,
+    payload: int = 0,
 ) -> None:
-    """Save one run per model, each case's repeats carrying ``READING`` at the given values."""
+    """Save one run per model, each case's repeats carrying ``READING`` at the given values, and ``payload`` characters
+    of a kind's verbatim payload each when it is more than none."""
     for model, by_case in runs.items():
         run = make_eval_run(
             id=f"run-{model}",
@@ -180,6 +200,7 @@ def _store_history(
                         test_case_id=case,
                         k_iteration=repeat,
                         host_measures={READING: value},
+                        kind_payload={"events": f"{model}-{case}-{repeat}:" + "x" * payload} if payload else None,
                     )
                 )
 
@@ -284,3 +305,353 @@ def test_the_launch_estimate_prints_one_line_per_reading() -> None:
         else:
             assert f"- {effect.name}: cannot estimate: {effect.cannot_estimate}" in text
     assert "assumes: the planned arms run the same cases" in text
+
+
+class TestThePlanningReadIsHeldToTheReadBudget:
+    """Every earlier run's results are read, and the planning fold keeps each one's values until every run is read, so
+    past its budget (``PLANNING_READ_BUDGET``) the block is refused before any result is read. Two runs of 6 cases × 2:
+    24 results by their matrices.
+
+    The store calls pinned here are the engine path's (the store's narrowed reads hidden, :class:`EngineOnlyStore`):
+    the planning read is one read of the runs' readings in the store's own order across them, which on that path reads
+    every run's keys in one call, then the results by id a page at a time."""
+
+    def _host(self) -> tuple[BatchRecordingStore, EvalHost]:
+        store = BatchRecordingStore()
+        host = replace(ops_fixture().host.eval_host, storage=EvalStorage(EngineOnlyStore(store)))
+        by_case = {f"c{index}": [float(index), float(index) + 0.5] for index in range(6)}
+        _store_history(host.storage, {"model-a": by_case, "model-b": by_case})
+        store.clear()
+        return store, host
+
+    def test_one_result_past_the_budget_is_refused_reading_no_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, host = self._host()
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 23)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert refused.value.details == {"runs": 2, "results_estimated": 24, "result_budget": 23}
+        assert refused.value.remedy.startswith("archive the template's earlier runs the plan need not read")
+        assert store.typed_reads == [] and store.id_reads == [], "refused before any result was read"
+
+    def test_at_the_budget_it_plans_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store, host = self._host()
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 24)
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert block.run_ids == ["run-model-a", "run-model-b"] and _reading(block)
+        assert all(keys_only for _, keys_only, _ in store.typed_reads), "no run was read whole"
+        assert sum(store.id_reads) == 24
+
+    def test_every_runs_results_are_one_read_of_readings(self) -> None:
+        store, host = self._host()
+
+        detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        # On the engine path a read of readings in the store's order reads every run's keys in one call, then a page
+        # of results by id.
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert [sorted(named) for named in key_reads] == [["run-model-a", "run-model-b"]], "every run's keys, once"
+        assert store.id_reads == [24], "one page of results by id"
+
+    def test_every_runs_keys_are_one_read(self) -> None:
+        store, host = self._host()
+        # Runs whose matrices promise far more results than they hold: their keys are one read, of every run named.
+        for name, cases in (("wide-1", 2_000), ("wide-2", 2_000), ("wide-3", 2_000), ("past-the-bound", 6_000)):
+            run = make_eval_run(
+                id=f"run-{name}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=name,
+                status="completed",
+                k_runs=1,
+                test_case_ids=[f"c{index}" for index in range(cases)],
+            )
+            host.storage.save_eval_run(run)
+            for case in ("c0", "c1"):
+                host.storage.save_eval_result(
+                    make_eval_result(
+                        id=f"{name}-{case}",
+                        eval_run_id=run.id,
+                        scope_id=SCOPE,
+                        model=name,
+                        test_case_id=case,
+                        k_iteration=1,
+                        host_measures={READING: 1.0},
+                    )
+                )
+        estimate = {
+            run.id: len(run.test_case_ids) * run.k_runs
+            for run in host.storage.query_eval_runs(SCOPE)
+            if run.template_id == TEMPLATE
+        }
+        store.clear()
+
+        block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        key_reads = [named for named, keys_only, _ in store.typed_reads if keys_only]
+        assert len(key_reads) == 1, key_reads
+        assert sorted(run for named in key_reads for run in named) == sorted(estimate), "every run's keys read once"
+        assert sorted(block.run_ids) == sorted(estimate)
+
+    def test_a_read_returning_more_than_its_runs_promised_past_the_budget_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, host = self._host()
+        # Two cells past what run-model-a's matrix promises: 24 by the matrices, 26 stored.
+        for extra in (3, 4):
+            host.storage.save_eval_result(
+                make_eval_result(
+                    id=f"model-a-c0-{extra}",
+                    eval_run_id="run-model-a",
+                    scope_id=SCOPE,
+                    model="model-a",
+                    test_case_id="c0",
+                    k_iteration=extra,
+                    host_measures={READING: 1.0},
+                )
+            )
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 25)
+
+        with pytest.raises(ValidationFailedError) as refused:
+            detectable_effects(host, SCOPE, TEMPLATE, n_cases=6, k_runs=2, n_arms=2)
+
+        assert refused.value.details == {
+            "runs": 2,
+            "results_estimated": 24,
+            "result_budget": 25,
+            "results_returned": 26,
+        }
+        # Counted as the read is walked, so the refusal comes once it is, a page of results at a time.
+        assert store.id_reads == [26], "one page read, then refused"
+
+
+class TestALaunchEstimatePastTheBudgetIsPricedAndSaysWhyItCannotPlan:
+    """The price does not depend on the planning block, so a planning read past the budget is the block's disclosure,
+    never a refusal of the estimate: the toy template's earlier runs hold 24 results by their matrices."""
+
+    def _fixture(self) -> tuple[BatchRecordingStore, Any, LaunchArguments]:
+        store = BatchRecordingStore()
+        fixture = ops_fixture(store=store)
+        by_case = {f"case-{index}": [1.0 + index, 1.5 + index] for index in range(6)}
+        _store_history(
+            fixture.host.eval_host.storage,
+            {"m-0": by_case, "m-9": by_case},
+            template_id=toyhost_template().id,
+            scope=TOYHOST_SCOPE,
+        )
+        arguments = LaunchArguments(
+            template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=["m-1", "m-2"], k_runs=2
+        )
+        return store, fixture, arguments
+
+    def test_over_the_budget_it_is_priced_and_its_planning_block_says_why_reading_no_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store, fixture, arguments = self._fixture()
+        corpus = sum(
+            len(run.test_case_ids) * run.k_runs
+            for run in fixture.host.eval_host.storage.query_eval_runs(TOYHOST_SCOPE)
+            if run.template_id == toyhost_template().id and not run.archived
+        )
+        within = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
+        assert within.detectable_effect is not None and within.detectable_effect.run_ids, "it plans within the budget"
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", corpus - 1)
+        store.clear()
+
+        estimate = asyncio.run(launch_estimate(fixture.host, arguments, TOYHOST_SCOPE))
+
+        assert estimate.arms and estimate.arms == within.arms, "priced as within the budget"
+        assert estimate.total_predicted_usd == within.total_predicted_usd
+        assert estimate.would_launch == within.would_launch
+        block = estimate.detectable_effect
+        assert block is not None and block.effects == [] and block.run_ids == []
+        assert block.cannot_estimate is not None
+        assert f"hold about {corpus} results by their matrices, past the read tier's budget of {corpus - 1}" in (
+            block.cannot_estimate
+        )
+        assert "archive the template's earlier runs the plan need not read" in block.cannot_estimate
+        assert f"- cannot estimate: {block.cannot_estimate}" in estimate_text(estimate)
+        assert store.row_reads() == [], "no result of the template's earlier runs was read"
+
+    def test_a_direct_call_still_refuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _, fixture, _ = self._fixture()
+        monkeypatch.setattr(reads, "PLANNING_READ_BUDGET", 1)
+
+        with pytest.raises(ValidationFailedError, match="detectable_effects would aggregate about"):
+            detectable_effects(
+                fixture.host.eval_host, TOYHOST_SCOPE, toyhost_template().id, n_cases=6, k_runs=2, n_arms=2
+            )
+
+
+def _peak(read: Callable[[], object]) -> int:
+    """The peak memory ``read`` allocates above what was held before it, in bytes."""
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        before = tracemalloc.get_traced_memory()[0]
+        read()
+        return tracemalloc.get_traced_memory()[1] - before
+    finally:
+        tracemalloc.stop()
+
+
+class TestThePlanningReadHoldsAPageNotTheHistory:
+    """The planning block reads every result of every earlier run of the template: in a live history, dozens of runs
+    of hundreds of results, each carrying tens of kilobytes verbatim. Read whole, they were all held at once (a 2 GB
+    pod was killed twice on 2026-10-30 by launch estimates). Walked a page at a time, each result read down to its
+    values before the next page, a history four times as long adds only those values: far less per result than one
+    result weighs."""
+
+    #: The characters of verbatim payload each stored result carries.
+    PAYLOAD = 16_000
+
+    def _runs(self, first: int, last: int) -> dict[str, dict[str, list[float]]]:
+        return {
+            f"model-{index:02d}": {f"c{case}": [case + index / 10, case + 0.5, case + 0.25] for case in range(10)}
+            for index in range(first, last)
+        }
+
+    def test_four_times_the_history_adds_its_values_not_its_results(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The read pages by the reading seam's page (``READINGS_PAGE``, a thousand results), which this history would
+        # fit in whole; a page of one run's results makes the history twelve pages, as a live history is many.
+        monkeypatch.setattr(storage_module, "READINGS_PAGE", 30)
+        host = _host()
+        _store_history(host.storage, self._runs(0, 3), payload=self.PAYLOAD)
+
+        def plan() -> DetectableEffects:
+            return detectable_effects(host, SCOPE, TEMPLATE, n_cases=10, k_runs=3, n_arms=2)
+
+        plan()
+        short = _peak(plan)
+        _store_history(host.storage, self._runs(3, 12), payload=self.PAYLOAD)
+        block = plan()
+        long = _peak(plan)
+
+        assert len(block.run_ids) == 12 and _reading(block)
+        added = 9 * 10 * 3
+        # Held whole, each added result costs at least its payload; read down to its values, a small fraction of it.
+        assert (long - short) / added < self.PAYLOAD / 4, (short, long)
+
+
+class TestTheCrossRunRulesHoldAcrossPages:
+    """The planning read keeps each result's values and applies what reads across runs once every run is read, so a
+    rule decided by a later run reaches a result read pages earlier. Each result is its own page here."""
+
+    @pytest.fixture(autouse=True)
+    def _a_result_a_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(comparisons, "RUN_RESULTS_PAGE", 1)
+
+    def _result(self, run: str, case: str, k: int, **fields: Any) -> EvalResult:
+        return make_eval_result(
+            id=f"{run}-{case}-{k}",
+            eval_run_id=f"run-{run}",
+            scope_id=SCOPE,
+            model=run,
+            test_case_id=case,
+            k_iteration=k,
+            **fields,
+        )
+
+    def test_a_miss_a_run_grading_otherwise_and_a_boundary_are_read_as_the_whole_history_reads_them(self) -> None:
+        host = _host()
+        refused = {"candidate_error": "refused", "host_measures": {}}
+        boundary_tone = RubricScore(
+            dim="conversation.tone", score=3, scale="ordinal", axis="boundary", judge_temperature=0.0
+        )
+        history = {
+            # Read first: its failure on c1 is a miss only because run b, read last, classifies c1.
+            # Its one page also scores conversation.tone as a boundary: a guardrail, however many capability scores of
+            # it are read after.
+            "c": [self._result("c", "c1", 1, **refused, rubric_scores=[boundary_tone])],
+            # Classifies c0; its failure there is a miss.
+            "a": [
+                self._result("a", "c0", 1, host_measures={"match": True}),
+                self._result("a", "c0", 2, host_measures={"match": True}),
+                self._result("a", "c0", 3, **refused),
+            ],
+            # Classifies c1, but answers c0 without a verdict on its last page: it grades otherwise, so its failure on
+            # c1 is no miss.
+            "b": [
+                self._result("b", "c1", 1, host_measures={"match": True}),
+                self._result("b", "c1", 2, **refused),
+                self._result("b", "c0", 1, host_measures={}),
+            ],
+        }
+        runs = []
+        for model, results in history.items():
+            run = make_eval_run(
+                id=f"run-{model}",
+                scope_id=SCOPE,
+                template_id=TEMPLATE,
+                candidate_model=model,
+                status="completed",
+                k_runs=3,
+                test_case_ids=["c0", "c1"],
+            )
+            host.storage.save_eval_run(run)
+            runs.append(run)
+            for result in results:
+                host.storage.save_eval_result(result)
+        # One walk, run by run in the runs' order, as the planning read hands its readings out.
+        walked = (result for run in runs for result in history[run.candidate_model])
+
+        readings = {reading.name: reading for reading in planning_readings(runs, walked, profile=host.profile)}
+
+        assert readings["accuracy"].repeats == {
+            "run-c": {"c1": [0.0]},
+            "run-a": {"c0": [1.0, 1.0, 0.0]},
+            "run-b": {"c1": [1.0]},
+        }
+        assert "conversation.tone" not in readings, "scored once as a boundary, on the first page read: a guardrail"
+
+
+class TestARepeatsValueIsItsResultsSummaryMean:
+    """A repeat's value in the planning read is its one result's mean of each measure, exactly as a summary states it:
+    the read takes each mean without building the summary, so its arithmetic is held here to a summary built over the
+    same result, a run of that one result in an assembled bundle (``run_summaries``). On the production-shaped corpus,
+    whose results carry per-role usage rows (several observations of one measure in one result) beside scalars."""
+
+    def test_on_the_production_shaped_corpus(self) -> None:
+        corpus = hot_path_corpus(cases_per_run=2)
+        storage, scope = corpus.host.storage, corpus.scope_id
+        runs: list[EvalRun] = []
+        results: dict[str, list[EvalResult]] = {}
+        for run in storage.query_eval_runs(scope):
+            for result in storage.query_eval_results_by_run(run.id, scope):
+                # A failure is read as a miss across runs, and a faulted result is out of a scored summary: neither
+                # is the arithmetic this pins.
+                if harness_faulted(result) or candidate_failure_cause(result) is not None:
+                    continue
+                one = run.model_copy(
+                    update={"id": f"{run.id}-{result.id}", "test_case_ids": [result.test_case_id], "k_runs": 1}
+                )
+                runs.append(one)
+                results[one.id] = [result.model_copy(update={"eval_run_id": one.id})]
+        campaign = make_campaign(
+            scope_id=scope,
+            subject_id=corpus.campaign.subject_id,
+            template_id=corpus.template_ids[0],
+            run_ids=[run.id for run in runs],
+        )
+        bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=corpus.host.profile)
+        stated = {
+            summary.run_id: {measure.name: measure.mean for measure in summary.measures.measures}
+            for summary in bundle.run_summaries
+        }
+
+        readings = planning_readings(
+            runs, (result for run in runs for result in results[run.id]), profile=corpus.host.profile
+        )
+
+        compared = 0
+        for reading in readings:
+            if reading.reading != "measure":
+                continue
+            for run_id, by_case in reading.repeats.items():
+                ((value,),) = by_case.values()
+                assert value == stated[run_id][reading.name], (reading.name, run_id)
+                compared += 1
+        assert compared > len(runs), "more than one measure compared per result"

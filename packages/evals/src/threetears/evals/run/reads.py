@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.run_pages import iter_stored_results
 from threetears.evals.kernel.storage import RunsRead
 from threetears.evals.kernel.status_filter import StatusFilterError, validate_status_filter
 from threetears.evals.schema.logs import get_logger
@@ -23,6 +24,7 @@ from threetears.evals.kernel.remedies import FIND_RESULT
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.eval_host import EvalHost
     from threetears.evals.schema.models import EvalResult, EvalRun, EvalRunStatus, EvalTrace
+    from threetears.evals.kernel.run_pages import RunResultsStore
     from threetears.evals.kernel.storage import ResultStore
 
 log = get_logger(__name__)
@@ -184,11 +186,15 @@ def _narrowed(runs: list[EvalRun], *, include_archived: bool, label: str | None)
     return [run for run in runs if not run.archived]
 
 
-def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]:
-    """List every result for one eval run within its scope.
+def list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]:
+    """List every result for one eval run within its scope, read a page at a time in the store's order.
+
+    No read hands out more than a page (:func:`~threetears.evals.kernel.run_pages.iter_stored_results`), and the
+    list is the one a read of the whole run gave. The caller holds every result it asked for: a reader that need
+    not, walks the run's pages itself.
 
     :param storage: Eval storage backend.
-    :ptype storage: ResultStore
+    :ptype storage: RunResultsStore
     :param run_id: The eval run whose results to list.
     :ptype run_id: str
     :param scope_id: Partition key — the scope the run lives in.
@@ -196,7 +202,7 @@ def list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalR
     :return: Every :class:`~threetears.evals.schema.models.EvalResult` produced by the run.
     :rtype: list[EvalResult]
     """
-    return storage.query_eval_results_by_run(run_id, scope_id)
+    return list(iter_stored_results(storage, run_id, scope_id))
 
 
 def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResult:

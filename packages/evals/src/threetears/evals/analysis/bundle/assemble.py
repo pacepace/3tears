@@ -38,11 +38,9 @@ so pinning ``created_at`` alone looked complete while the measurement windows' `
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from dataclasses import replace
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as distribution_version
 from typing import TYPE_CHECKING, Protocol
 
 from threetears.evals.analysis.aspects import aspect_view
@@ -77,9 +75,13 @@ from threetears.evals.analysis.lenses.comparison_sets import compute_comparison_
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
 from threetears.evals.analysis.completeness import completeness_disclosure
+from threetears.evals.analysis import reads as read_tier
+from threetears.evals.analysis.reads import hold_to_read_budget
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.campaign import EvalInsight, derive_window
+from threetears.evals.kernel.build_stamp import package_version
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel.declaration import aware_instant, resolve_control_arm
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
@@ -109,6 +111,7 @@ from threetears.evals.analysis.bundle.observations import _apparatus_classes, _o
 from threetears.evals.analysis.bundle.measures import (
     _failures_as_misses,
     goal_check_proofs_of,
+    _measure_walk_memo,
 )
 from threetears.evals.analysis.bundle.design import (
     _apparatus_levels,
@@ -166,6 +169,7 @@ from threetears.evals.kernel.host.measures import MeasureRegistry
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
+    from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
 
 
@@ -173,17 +177,22 @@ log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
-    """The nine reads assembling a campaign's context bundle needs, each a batch.
+    """The ten reads assembling a campaign's context bundle needs, each a batch.
 
-    **Every read is one store call however large the campaign.** A host's store may open a connection per call, so a
-    read per run, per template, per insight or per trial grows with the campaign until it outruns the host's call
-    budget: assembly asks each of these once, or twice for the ratings (the runs', then, only when a judged score
-    carries a label key, the scope's).
+    **Every read but the results is one store call however large the campaign.** A host's store may open a connection
+    per call, so a read per template, per insight or per trial grows with the campaign until it outruns the host's
+    call budget: assembly asks each of these once, or twice for the ratings (the runs', then, only when a judged score
+    carries a label key, the scope's). The results are read as their readings
+    (:meth:`iter_result_readings`), which hold a result in a fraction of its bytes. On
+    :class:`~threetears.evals.kernel.storage.EvalStorage` that is one store call over a store that narrows its own rows
+    (:class:`~threetears.evals.schema.store_port.ResultReadings`), and otherwise one key read per run plus one read by
+    id per :data:`~threetears.evals.kernel.storage.READINGS_PAGE` results. The kept trials are then read whole, by id,
+    in one more call.
 
     Cut to what :func:`assemble_context_bundle` calls rather than to what a
     storage layer offers: the bundle reads member runs (in one batch, without the
-    payload paths the host declares a listing may leave out), each run's results, the
-    stratum each of their cases declares, the
+    payload paths the host declares a listing may leave out), each run's results as readings, the kept trials' results whole (for the judge's
+    reasons), the stratum each of their cases declares, the
     people's calibration ratings of those results, the templates the runs were judged
     against and the scope's stored judge profiles (for the tier of a judge whose own
     evidence decides none), the judge evidence of the trials the bundle keeps, in one read (what each case asked and
@@ -221,8 +230,24 @@ class CampaignReadStore(Protocol):
         """
         ...
 
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalResult]:
-        """Every result belonging to any of the named runs within a scope, in one read."""
+    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str, /) -> Iterable[ResultView]:
+        """Every result belonging to any of the named runs within a scope, each as the readers read it
+        (:class:`~threetears.evals.kernel.result_reading.ResultView`): its compact reading, or the result itself.
+
+        Walked once. A run named twice is read once. The order is free: assembly orders the results itself.
+        :meth:`~threetears.evals.kernel.storage.EvalStorage.iter_result_readings` is the reference implementation.
+        """
+        ...
+
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """The named results within a scope, in one read by id, each without the fields ``elide`` names (the store
+        never ships them, and each reads as none); an id naming no result there is skipped.
+
+        Read for the trials the bundle keeps (at most :data:`~threetears.evals.analysis.bundle.caps.MAX_TRIALS`), whose
+        rows show the judge's reasons, which a reading leaves out.
+        """
         ...
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
@@ -321,6 +346,18 @@ def _first_result_at(scored_at: Sequence[str]) -> tuple[str | None, int]:
     return (min(ordered)[1] if ordered else None), untimed
 
 
+#: The operation a bundle past the read budget is refused as, in its refusal and its log line.
+_BUNDLE_LENS = "assemble_context_bundle"
+
+#: How a bundle past the read budget narrows: the refusal's remedy begins with it.
+_NARROW_THE_BUNDLE = (
+    "assemble a campaign of fewer member runs, or archive the members it need not read, or, where the call takes one, "
+    "name one aspect that reads fewer runs (aspect)"
+)
+
+
+# Every fold below pools the same results, so each result's measure walk is read once per assembly.
+@_measure_walk_memo()
 def assemble_context_bundle(
     campaign: EvalCampaign,
     *,
@@ -372,6 +409,9 @@ def assemble_context_bundle(
     :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
     :rtype: AnalysisContextBundle
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
+    :raises ValidationFailedError: The runs it reads are estimated past
+        :data:`~threetears.evals.analysis.reads.BUNDLE_READ_BUDGET` results by their matrices (refused before any
+        result is read), or their read returned more than it.
     """
     view = aspect_view(campaign, aspect)
     declared = view.declared
@@ -421,12 +461,31 @@ def assemble_context_bundle(
     # The archived members' results are read only when a declared control might have been curated out (below), and
     # then in the same call as the resolved members': one read of results however many runs the campaign holds.
     read_archived = bool(declared_control.variant_keys and archived)
-    every_result: dict[str, list[EvalResult]] = {
+    every_result: dict[str, list[ResultView]] = {
         run_id: [] for run_id in (*run_ids, *(archived if read_archived else ()))
     }
-    for result in storage.query_eval_results_by_runs(list(every_result), scope_id):
+    # Held to the read tier's budget before any result is read, as the aggregates are: the bundle holds every result it
+    # reads at once, so past its budget it is refused, never assembled in part. The estimate is each run's matrix, off
+    # the batch read above; no further read is made to refuse.
+    read_runs = [loaded[run_id] for run_id in every_result]
+    hold_to_read_budget(_BUNDLE_LENS, scope_id, read_runs, budget=read_tier.BUNDLE_READ_BUDGET, how=_NARROW_THE_BUNDLE)
+    # As readings: every fold below reads figures, never the judge's prose, a world's event log or a kind's payload,
+    # which are most of a result's bytes. The trials the bundle keeps are read whole, below, for their prose.
+    returned = 0
+    for result in storage.iter_result_readings(list(every_result), scope_id):
+        returned += 1
         if result.eval_run_id in every_result:
             every_result[result.eval_run_id].append(result)
+    # The safety net: results their runs' matrices did not promise (a run that wrote past its matrix and recorded no
+    # completeness) are not assembled past the budget either.
+    hold_to_read_budget(
+        _BUNDLE_LENS,
+        scope_id,
+        read_runs,
+        budget=read_tier.BUNDLE_READ_BUDGET,
+        how=_NARROW_THE_BUNDLE,
+        returned=returned,
+    )
     # When the aspect's readings could first be seen: the first stored result of the runs it reads, never a run's
     # creation, nor when the campaign holding them was declared. A criterion set after it (the aspect, its control,
     # margin, bars or floors) is named in `reading_scope.late_criteria`; one set before it reads as pre-registered,
@@ -434,7 +493,7 @@ def assemble_context_bundle(
     first_result_at, untimed_results = _first_result_at(
         [result.scored_at for run_id in run_ids for result in every_result[run_id]]
     )
-    results_by_run: dict[str, list[EvalResult]] = {
+    results_by_run: dict[str, list[ResultView]] = {
         run_id: sorted(every_result[run_id], key=lambda r: r.id) for run_id in run_ids
     }
     # Before anything reads them: a classifier's failure is a miss in every rate, not absent from them all.
@@ -595,6 +654,7 @@ def assemble_context_bundle(
         aspect=view.aspect,
         short_name=view.short_name,
         goal_check_names=_check_names(runs, templates),
+        stratum_names=_stratum_names(runs, templates),
         subject_id=view.subject_id,
         subject_kind=view.subject_kind,
         behavior=view.behavior,
@@ -840,6 +900,9 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         catalog=bundle.measure_catalog,
         load_judge_evidence=lambda result_ids: storage.load_judge_evidence(result_ids, scope_id),
+        # Without the verbatim fields (a world's event log, a kind's payload), which no trial row shows.
+        load_results=lambda result_ids: storage.load_eval_results(result_ids, scope_id, elide=VERBATIM_RESULT_FIELDS),
+        rubric_scales={run.id: run.rubric_scales for run in runs},
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials
@@ -847,7 +910,7 @@ def assemble_context_bundle(
     bundle.case_sets = sorted(
         {run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version)
     )
-    bundle.package_version = _package_version()
+    bundle.package_version = package_version()
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
     # after it — and from the same descriptors the generator will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
@@ -916,17 +979,38 @@ def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate])
     return names
 
 
-def _package_version() -> str | None:
-    """The installed 3tears-evals version, or None when this build carries no distribution metadata.
+def _stratum_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """Each stratum's display name as the member runs' templates declare it, by the stratum id.
 
-    A source tree on the path (the installability check, a vendored checkout) has none; the bundle then says it
-    cannot name its build rather than naming a wrong one.
+    A template that no longer resolves names nothing, and a stratum no template names is absent, printed as its id. A
+    stratum two templates name differently is absent too, and a name two strata would take from different templates is
+    kept by neither, so a page never prints two strata alike; the warning log names each.
     """
-    try:
-        return distribution_version("3tears-evals")
-    except PackageNotFoundError:
-        # NOSILENT: no metadata is a build fact the bundle states as None, and the report prints it as unrecorded
-        return None
+    given: dict[str, dict[str, str]] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is None:
+            continue
+        for stratum, name in template.stratum_names.items():
+            given.setdefault(stratum, {})[template_id] = name
+    names: dict[str, str] = {}
+    for stratum, by_template in given.items():
+        if len(set(by_template.values())) == 1:
+            names[stratum] = next(iter(by_template.values()))
+        else:
+            log.warning(
+                "eval.stratum_names_differ stratum=%r names=%s: printed as its id until its templates name it alike",
+                stratum,
+                ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
+            )
+    held = list(names.values())
+    clashing = {name for name in held if held.count(name) > 1}
+    if clashing:
+        log.warning(
+            "eval.stratum_names_clash names=%s: strata of different templates share a name, printed as their ids",
+            ", ".join(sorted(map(repr, clashing))),
+        )
+    return {stratum: name for stratum, name in names.items() if name not in clashing}
 
 
 def _declared_words(declaration: MeasureDeclaration) -> str:

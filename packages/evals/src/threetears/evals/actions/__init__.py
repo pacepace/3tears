@@ -3,11 +3,14 @@
 An :class:`Action` binds one operation (:mod:`threetears.evals.ops`) to its name, help, flat parameters,
 result, permission class and agent-facing rendering. :func:`eval_catalogue` is the engine's actions plus
 any a host contributes; :meth:`ActionCatalogue.mount` cuts a tool from it by permission class —
-:func:`standard_tools` (``evals`` and ``evals_admin``) or :func:`read_only_tools` — and a mounted tool's
+:func:`standard_tools` (``evals`` and ``evals_admin``) or :func:`read_only_tools`, and the analyst's actions by their
+cut, :func:`analyst_tools` — and a mounted tool's
 :meth:`MountedTool.call` carries a call out: ``help`` generated from the catalogue, undeclared parameters
 refused, errors that teach and carry their :class:`Refusal` as data, long work as a job to poll. A
 transport adapter is a thin binding of :class:`MountedTool` to its server's tool shape
-(:mod:`threetears.evals.transports.fastmcp`).
+(:mod:`threetears.evals.transports.fastmcp`). A loop running a model in process hands it the same mounted tools: each
+one's :attr:`MountedTool.name`, :attr:`MountedTool.description` and :meth:`MountedTool.input_schema` are a provider's
+tool definition, and :meth:`MountedTool.call` answers its calls.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -31,15 +34,19 @@ from threetears.evals.actions.catalogue import (
     ConformanceSample,
     ConformanceStage,
     HappyPath,
+    HelpTopic,
     MountedTool,
     PermissionClass,
+    Recovery,
     Refusal,
     RefusalKind,
     ToolHints,
     ToolSpec,
+    catalogue_primer,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
@@ -60,12 +67,17 @@ __all__ = [
     "ConformanceSample",
     "ConformanceStage",
     "HappyPath",
+    "HelpTopic",
     "MountedTool",
     "PermissionClass",
+    "Recovery",
     "Refusal",
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
+    "analyst_actions",
+    "analyst_tools",
+    "catalogue_primer",
     "definition_drift_actions",
     "engine_actions",
     "eval_catalogue",

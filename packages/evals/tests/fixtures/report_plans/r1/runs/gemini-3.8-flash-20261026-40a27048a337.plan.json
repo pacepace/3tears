@@ -1,0 +1,214 @@
+{
+  "mode": "decide",
+  "headline_kind": "decision",
+  "headline": "Adopt {arm:atlas-m}. It is the only option that meets all quality gates while staying within the latency budget.",
+  "lede": "{arm:atlas-m} passes all quality and latency criteria across every task. Relaxing the latency budget would allow consideration of {arm:atlas-l}.",
+  "decision": {
+    "slots": [
+      {
+        "key": "recommendation",
+        "text": "Deploy {arm:atlas-m}. It meets the quality threshold on all tasks and maintains p95 latency under {criteria.p95.threshold} seconds across the board.",
+        "caveats": []
+      },
+      {
+        "key": "why_not",
+        "text": "{arm:atlas-l} breaches the latency budget on three tasks; {arm:brisk-s} and {arm:open-70b} fail multiple domain and safety quality gates.",
+        "caveats": []
+      },
+      {
+        "key": "watch",
+        "text": "{weakest.arm} sits directly on the threshold for {weakest.criterion} at {weakest.value|pct} against {weakest.threshold|pct} with a margin of {weakest.margin|pts}. Monitor resolution quality in troubleshooting.",
+        "caveats": []
+      },
+      {
+        "key": "next",
+        "text": "Test speculative decoding or prompt pruning on {arm:atlas-l} to evaluate whether its p95 latency can reach the {criteria.p95.threshold} second target.",
+        "caveats": []
+      }
+    ],
+    "confidence": {
+      "form": "high",
+      "caveats": []
+    }
+  },
+  "method": [
+    {
+      "term": "Quality Gates",
+      "text": "Requires meeting calibrated judge criteria per task alongside task-level p95 latency thresholds.",
+      "caveats": []
+    },
+    {
+      "term": "Latency Measurement",
+      "text": "Measured end to end from user message submission to final generated token in staging.",
+      "caveats": []
+    },
+    {
+      "term": "Judge Calibration",
+      "text": "Overall quality graded via a calibrated judge exhibiting {judged.overall.agreement|pct} agreement across {judged.overall.calibration_ratings} samples.",
+      "caveats": []
+    },
+    {
+      "term": "Cost Basis",
+      "text": "Derived from measured token consumption multiplied by vendor list prices per 1,000 replies.",
+      "caveats": []
+    }
+  ],
+  "schema": "report-plan/1",
+  "signals": {
+    "candidate_structure": "unordered",
+    "baseline": "none",
+    "score_type": "mixed",
+    "strata": "tasks",
+    "criteria": "hard_gates",
+    "cross_cutting": [
+      "specul"
+    ],
+    "log_cost_axis": false
+  },
+  "shape": "A",
+  "masthead": {
+    "kind": "Choice · candidates compared",
+    "system": "Concierge chat assistant",
+    "counts": "4 arms · 5 tasks",
+    "run_date": "{meta.run_date}",
+    "synthetic": true
+  },
+  "arms": [
+    {
+      "id": "atlas-l",
+      "color_slot": 0
+    },
+    {
+      "id": "atlas-m",
+      "color_slot": 1
+    },
+    {
+      "id": "brisk-s",
+      "color_slot": 2
+    },
+    {
+      "id": "open-70b",
+      "color_slot": 3
+    }
+  ],
+  "show_arms_key": false,
+  "flag": [],
+  "options": {
+    "rows": [
+      {
+        "option": "atlas-m",
+        "role": "recommended"
+      },
+      {
+        "option": "atlas-l",
+        "role": "near_miss"
+      },
+      {
+        "option": "open-70b",
+        "role": "alternative"
+      },
+      {
+        "option": "brisk-s",
+        "role": "cheapest"
+      }
+    ],
+    "columns": [
+      "gate"
+    ]
+  },
+  "summary": [
+    {
+      "kind": "gate_matrix",
+      "title": "Task Gate Compliance by Candidate",
+      "query": {
+        "source": "tasks",
+        "aspect": "",
+        "measures": [],
+        "arms": [
+          "atlas-m",
+          "atlas-l",
+          "open-70b",
+          "brisk-s"
+        ],
+        "strata": [],
+        "limit": 0,
+        "transform": "none",
+        "small_multiples_by": "none"
+      },
+      "reference": [],
+      "emphasis": "atlas-m",
+      "level": "",
+      "unit": "",
+      "domain": []
+    }
+  ],
+  "sections": [
+    {
+      "id": "gate_performance",
+      "eyebrow": "Gate evaluation",
+      "headline": "{arm:atlas-m} clears every task gate while competing candidates miss on latency or accuracy.",
+      "takeaway": "Columns represent tasks; cells show gate compliance against quality and latency thresholds.",
+      "chart": {
+        "kind": "gate_matrix",
+        "title": "Gate outcomes across evaluated tasks",
+        "query": {
+          "source": "tasks",
+          "aspect": "",
+          "measures": [],
+          "arms": [
+            "atlas-m",
+            "atlas-l",
+            "open-70b",
+            "brisk-s"
+          ],
+          "strata": [],
+          "limit": 0,
+          "transform": "none",
+          "small_multiples_by": "none"
+        },
+        "reference": [],
+        "emphasis": "atlas-m",
+        "level": "",
+        "unit": "",
+        "domain": []
+      },
+      "caption": "",
+      "caveats": []
+    }
+  ],
+  "explore": [
+    {
+      "title": "Explore Gate Thresholds",
+      "controls": [
+        {
+          "id": "latency_p95_limit",
+          "kind": "slider",
+          "title": "p95 Latency Budget (s)",
+          "binds": "p95",
+          "min": 2.0,
+          "max": 5.0,
+          "step": 0.5,
+          "default": 3.0,
+          "options": []
+        }
+      ],
+      "recomputes": "Adjusting the p95 latency budget changes gate outcomes; raising the limit above {task.research.atlas-l.latency_s.p95} seconds enables {arm:atlas-l}."
+    }
+  ],
+  "full_results": [
+    "arms_by_measure",
+    "strata",
+    "gate_matrix_full"
+  ],
+  "durable_claims": [
+    {
+      "text": "{arm:atlas-m} achieved a mean of {task.trouble.atlas-m.resolves.mean|pct} on troubleshooting issue resolution, meeting the gate threshold of {criteria.trouble.resolves.threshold|pct}.",
+      "confidence": "very_high",
+      "keys": [
+        "task.trouble.atlas-m.resolves.mean",
+        "criteria.trouble.resolves.threshold"
+      ]
+    }
+  ],
+  "answers": []
+}

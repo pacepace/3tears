@@ -1,0 +1,1 @@
+{"action": "block_render", "snapshot_id": "report-snapshot:c8b23ae16d7d0a2739fb9746039006be", "block_kind": "bars", "query": {"source": "configs", "measures": ["pass_rate"], "arms": ["brisk-s.off.r0", "brisk-s.off.r1", "brisk-s.low.r0", "brisk-s.low.r1", "brisk-s.high.r0", "brisk-s.high.r1"]}, "reference": "floor", "emphasis": "brisk-s.low.r1"}

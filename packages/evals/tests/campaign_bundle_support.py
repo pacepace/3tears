@@ -83,6 +83,18 @@ def label_of(bundle: CampaignBundle, variant_key: str) -> str:
     return bundle.label_of(variant_key)
 
 
+def _declared_arms(bundles: Sequence[AnalysisContextBundle], held: Sequence[CampaignArm]) -> list[CampaignArm]:
+    """The arms a person named: the control as its bundle declared it, with the label it declared (not the one code
+    spelled for it among the held arms), else the held control. A title prints a label code spelled as every page does."""
+    declared = next(
+        (bundle.declared.control for bundle in bundles if bundle.declared is not None and bundle.declared.control),
+        None,
+    )
+    if declared is None:
+        return [arm for arm in held if arm.role == "control"]
+    return [declared]
+
+
 def campaign_bundle(
     *bundles: AnalysisContextBundle,
     arms: Sequence[CampaignArm] | None = None,
@@ -131,7 +143,7 @@ def campaign_bundle(
             question=question,
             declared_at=None,
             declared_by=None,
-            arms=[arm for arm in held if arm.role == "control"],
+            arms=_declared_arms(bundles, held),
             aspects=[Aspect(label=bundle.aspect, template_id=bundle.template_id) for bundle in bundles],
             floors=declared_floors,
         ),

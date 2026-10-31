@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report-plan/1",
+  "title": "Report plan",
+  "description": "What the renderer draws. The planner (LLM) writes the choices and the prose; code fills the facts: schema, signals, shape, masthead, arms, show_arms_key, full_results, the flag's discloses, weakens and survives, the options columns, each chart reference's key, each answer's warning, and each chart's level, unit and domain (marked 'Code-filled'). The planner writes in two calls, a structure (every choice) and its prose (flat {key, text} pairs), and code assembles them (threetears.evals.analysis.plan_assembly). Prose uses figure keys like {reading.<arm>.change|pts}, never typed numbers. No field is null: an optional part is a list of at most one, an optional scalar an empty string. See GENERATOR.md §2 and §6.2. The package's models (threetears.evals.kernel.report_plan) are held to this file by a test.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "signals", "shape", "masthead", "arms", "show_arms_key", "mode", "headline_kind", "headline", "lede", "flag", "decision", "options", "summary", "sections", "explore", "full_results", "method", "durable_claims", "answers"],
+  "properties": {
+    "schema": {"const": "report-plan/1", "description": "Code-filled."},
+    "signals": {
+      "type": "object",
+      "description": "Code-filled. GENERATOR.md §1, read off the report input as a lookup.",
+      "additionalProperties": false,
+      "required": ["candidate_structure", "baseline", "score_type", "strata", "criteria", "cross_cutting", "log_cost_axis"],
+      "properties": {
+        "candidate_structure": {"enum": ["unordered", "ordered_versions", "factorial", "control_plus_candidates"]},
+        "baseline": {"enum": ["none", "control"]},
+        "score_type": {"enum": ["graded", "pass_fail", "class_label", "mixed"]},
+        "strata": {"enum": ["none", "tasks", "many_strata", "target_matrix"]},
+        "criteria": {"enum": ["hard_gates", "margin", "none_declared"]},
+        "cross_cutting": {"type": "array", "items": {"type": "string"}},
+        "log_cost_axis": {"type": "boolean"}
+      }
+    },
+    "shape": {"enum": ["A", "B", "C", "D", "E"], "description": "Code-filled: the §1 lookup over the signals."},
+    "masthead": {
+      "type": "object",
+      "description": "Code-filled.",
+      "additionalProperties": false,
+      "required": ["kind", "system", "counts", "run_date", "synthetic"],
+      "properties": {"kind": {"type": "string"}, "system": {"type": "string"}, "counts": {"type": "string"}, "run_date": {"type": "string"}, "synthetic": {"type": "boolean"}}
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Code-filled. Display names are the report input's (declared, never the planner's); the renderer resolves them with armLabels().",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "color_slot"],
+        "properties": {"id": {"type": "string", "minLength": 1}, "color_slot": {"type": "integer", "minimum": -1, "description": "-1 = the control (ink gray); 0.. = series colors in fixed order"}}
+      }
+    },
+    "show_arms_key": {"type": "boolean", "description": "Code-filled (GENERATOR.md §2.8)."},
+    "mode": {"enum": ["decide", "tradeoff", "no_call"]},
+    "headline_kind": {"enum": ["decision", "trade", "no_call"], "description": "What the headline is; must agree with mode (decide: decision, tradeoff: trade, no_call: no_call)."},
+    "headline": {"type": "string", "minLength": 1, "description": "The decision as an instruction with its reason; in tradeoff mode, the trade."},
+    "lede": {"type": "string", "minLength": 1, "maxLength": 420},
+    "flag": {
+      "type": "array",
+      "maxItems": 1,
+      "description": "The flag, or none. It carries no confidence: the decision does (decision.confidence). It holds no_rule in a tradeoff with no declared ranking rule and, only under a low confidence, report-wide caveats no confidence clause carries.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "text", "discloses", "weakens", "survives"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "text": {"type": "string", "minLength": 1},
+          "discloses": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^(no_rule|judge_uncalibrated|late:.+|confound:.+|apparatus:.+|short_run:.+|unsettled:.+)$"}, "description": "no_rule (a tradeoff with no declared ranking rule), or a report-wide caveat's id that no confidence clause carries (only under a low confidence): late:<criterion>, late:<criterion>:<name>, judge_uncalibrated, confound:<id in caveats.confounds>, apparatus:<dimension>, short_run:<run id>, unsettled:<aspect>"},
+          "weakens": {"type": "array", "items": {"type": "string"}},
+          "survives": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slots", "confidence"],
+      "properties": {
+        "slots": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "object", "additionalProperties": false, "required": ["key", "text", "caveats"], "properties": {"key": {"enum": ["recommendation", "why_not", "watch", "next", "the_trade", "where_it_flips", "our_lean", "what_settles_it"]}, "text": {"type": "string", "minLength": 1}, "caveats": {"type": "array", "items": {"type": "string", "pattern": "^(judge_uncalibrated|latency|late:.+|confound:.+|apparatus:.+|short_run:.+|unsettled:.+|unreported:.+)$"}, "description": "The ids of the caveats the slot states beside the claim they qualify."}}}},
+        "confidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "How sure the decision is. high: no open report-wide caveat remains. high_if_immaterial: the evidence is strong, and every open report-wide caveat is listed with its clause. low: the evidence is weak even if every caveat is immaterial. A caveat code proved immaterial is never listed: code renders its checked line. GENERATOR.md §2.5.",
+          "required": ["form", "caveats"],
+          "properties": {
+            "form": {"enum": ["high", "high_if_immaterial", "low"]},
+            "caveats": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "material_if"], "properties": {"id": {"type": "string", "pattern": "^(judge_uncalibrated|latency|late:.+|confound:.+|apparatus:.+|short_run:.+|unsettled:.+|unreported:.+)$"}, "material_if": {"type": "string", "description": "The clause the page prints: what the caveat is, and what would make it material."}}}}
+          }
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "columns"],
+      "properties": {
+        "rows": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "object", "additionalProperties": false, "required": ["option", "role"], "properties": {"option": {"type": "string", "minLength": 1, "description": "an arm id, or a modeled option id"}, "role": {"enum": ["recommended", "lean", "control", "near_miss", "most_accurate", "cheapest", "alternative"]}}}},
+        "columns": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "description": "Code-filled: a column family, one of pass_rate, reading.change, reading.verdict, judged:<dim>, gate, measure:<key>, cost_per_1k (GENERATOR.md §2 item 6); any other is refused when the plan is generated"}}
+      }
+    },
+    "summary": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/chart"}},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "eyebrow", "headline", "takeaway", "chart", "caption", "caveats"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "eyebrow": {"type": "string", "minLength": 1},
+          "headline": {"type": "string", "minLength": 1, "description": "A finding with subject and direction."},
+          "takeaway": {"type": "string", "description": "One or two sentences on how to read the chart; empty for none."},
+          "chart": {"$ref": "#/$defs/chart"},
+          "caption": {"type": "string", "description": "Empty for none."},
+          "caveats": {"type": "array", "items": {"type": "string", "pattern": "^(judge_uncalibrated|latency|late:.+|confound:.+|apparatus:.+|short_run:.+|unsettled:.+|unreported:.+)$"}, "description": "The ids of the caveats the section states beside its finding."}
+        }
+      }
+    },
+    "explore": {
+      "type": "array",
+      "maxItems": 1,
+      "description": "The explore part, or none.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "controls", "recomputes"],
+        "properties": {
+          "title": {"type": "string", "minLength": 1},
+          "controls": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "object", "additionalProperties": false, "required": ["id", "kind", "title", "binds", "min", "max", "step", "default", "options"], "properties": {"id": {"type": "string", "minLength": 1}, "kind": {"enum": ["slider", "segmented", "toggle", "select"]}, "title": {"type": "string", "minLength": 1, "description": "what the control sets, as its label reads"}, "binds": {"type": "string", "description": "criterion it replaces: margin, floor:<id>, p95, price_per_point, weighting, lever:<factor>"}, "min": {"type": "number"}, "max": {"type": "number"}, "step": {"type": "number"}, "default": {"type": "number", "description": "a slider's start; a segmented control or select starts on its first option, a toggle off"}, "options": {"type": "array", "items": {"type": "string"}}}}},
+          "recomputes": {"type": "string", "minLength": 1, "description": "What the controls recompute and the page states, e.g. reading per arm + flip point"}
+        }
+      }
+    },
+    "full_results": {"type": "array", "items": {"enum": ["arms_by_measure", "contrasts", "strata", "gate_matrix_full", "configs", "cells"]}},
+    "method": {"type": "array", "minItems": 3, "maxItems": 9, "items": {"type": "object", "additionalProperties": false, "required": ["term", "text", "caveats"], "properties": {"term": {"type": "string", "minLength": 1}, "text": {"type": "string", "minLength": 1}, "caveats": {"type": "array", "items": {"type": "string", "pattern": "^(judge_uncalibrated|latency|late:.+|confound:.+|apparatus:.+|short_run:.+|unsettled:.+|unreported:.+)$"}, "description": "The ids of the method-level caveats (apparatus, latency, unreported) it states."}}}},
+    "durable_claims": {
+      "type": "array",
+      "description": "Claims about the subject for later campaigns' prior insights; code reads the runs each rests on from its keys.",
+      "items": {"type": "object", "additionalProperties": false, "required": ["text", "confidence", "keys"], "properties": {"text": {"type": "string", "minLength": 1}, "confidence": {"enum": ["very_high", "high", "medium", "low"]}, "keys": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}}
+    },
+    "answers": {
+      "type": "array",
+      "description": "One per warning code raised on the recommended arm: a floor it broke, an aspect another arm is shown ahead of it on (a choice), an absolute bar it missed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["warning", "text"],
+        "properties": {
+          "warning": {"type": "object", "additionalProperties": false, "required": ["kind", "aspect", "name"], "properties": {"kind": {"enum": ["floor_broken", "floor_unclear", "behind_on", "bar_missed"]}, "aspect": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1, "description": "floor_broken and floor_unclear: the floor key; behind_on: the arm id shown ahead; bar_missed: the bar's measure key"}}},
+          "text": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "chart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "title", "query", "reference", "emphasis", "level", "unit", "domain"],
+      "properties": {
+        "kind": {"enum": ["forest", "bars", "diverging_bars", "lines", "scatter_frontier", "gate_scatter", "dot_interval", "range_bars", "gate_matrix", "lattice", "heatmap", "diff_heatmap", "confusion", "examples", "table"]},
+        "title": {"type": "string", "description": "Empty when the section headline says it."},
+        "query": {
+          "type": "object",
+          "description": "What the chart reads from the report input. An empty list or string is no filter; limit 0 is no limit.",
+          "additionalProperties": false,
+          "required": ["source", "aspect", "measures", "arms", "strata", "limit", "transform", "small_multiples_by"],
+          "properties": {
+            "source": {"enum": ["readings", "contrasts", "measures", "judged", "scoreboard", "floors", "strata", "examples", "tasks", "configs", "cells", "confusion", "human_pref", "prices", "bar_reads", "compare", "settle", "levers"]},
+            "aspect": {"type": "string"},
+            "measures": {"type": "array", "items": {"type": "string"}},
+            "arms": {"type": "array", "items": {"type": "string"}},
+            "strata": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer", "minimum": 0},
+            "transform": {"enum": ["none", "per_1k", "arm_minus_control"]},
+            "small_multiples_by": {"enum": ["none", "arm", "aspect", "task"], "description": "What the chart repeats its panel by; other than none only on a kind the kit panels (bars, diverging_bars, scatter_frontier, gate_scatter, dot_interval, heatmap, confusion)"}
+          }
+        },
+        "reference": {
+          "type": "array",
+          "maxItems": 1,
+          "description": "At most one reference line, at a declared line: a margin on a forest, a floor or budget at the criterion that reads the chart's one measure (GENERATOR.md §5.2). The planner picks the kind and code fills the key; the renderer reads its value from the key and writes its label.",
+          "items": {"type": "object", "additionalProperties": false, "required": ["key", "kind"], "properties": {"key": {"type": "string", "minLength": 1, "description": "Code-filled: a figure key, aspect.margin or aspects.<id>.margin for a margin, criteria.<id>.threshold for a floor or budget"}, "kind": {"enum": ["floor", "budget", "margin", "no_preference"]}}}
+        },
+        "emphasis": {"type": "string", "description": "the one arm or row bolded or ringed, by id; empty for none"},
+        "level": {"type": "string", "description": "Code-filled: the interval level printed on the chart, e.g. 95% or 99.69%; empty without intervals."},
+        "unit": {"type": "string", "description": "Code-filled: the unit the chart's rows state (points, percent, pct, usd, usd_per_1k, usd_per_1m, ms, s, score, or a measure's own); empty where they state several, each drawn in its own panel, or none."},
+        "domain": {"type": "array", "items": {"type": "number"}, "maxItems": 2, "description": "Code-filled: [low, high], or empty for the renderer to fit."}
+      }
+    }
+  }
+}

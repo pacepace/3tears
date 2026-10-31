@@ -1,0 +1,190 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and claim ladder together tell a reader that the run leaves a trade, not a decision. Brisk-S → Atlas-M costs $4.94 per point (band $4.15 to $6.11) and Atlas-M → Atlas-L costs $14.76 per point (band $11.09 to $22.05). I re-read both steps with price_tradeoff and they match. The page leans to Atlas-M and names the main risks: Brisk-S slipping on the safety checks, and the bands where the pick is unsettled."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 1,
+          "reason": "Most sentences match their tables. Claim atlas-gap's 'above in every task type but speculation bait' agrees with its five rows, and the cost and latency orderings hold in every task. But claim safety says 'Open-70B confirms before account changes least often, 81%', and its own table gives Open-70B 75.3% to 86.7% against Brisk-S at 83.3% to 92.7%. The difference is +7 (-0.4 to +14.4), so the two are not told apart. Also, Open-70B being 'never the best buy at any price' rests on point estimates its intervals do not support (see item 3)."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "Atlas-M's weak spot is visible: Watch names its 5-point troubleshooting gap. Open-70B's exclusion is framed too strongly, though. The trade paragraph, the explore row and claim persona all say it wins at no price. Its pooled gain over Brisk-S is only +0.79, with an interval of -0.19 to +1.77 (price.brisk-s.open-70b.overall.gain_interval_unpaired). A point bought from Brisk-S to Open-70B can cost as little as $3.11, and a point bought on to Atlas-M as much as $5.91. Inside the intervals, then, Open-70B can sit on the frontier across roughly the same low band where Brisk-S and Atlas-M swap."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "The four omitted checks follow the pattern the page already states. Per-task ladders would roughly repeat the pooled per-point prices, apart from persona small talk, which the page covers. The dominance call was rightly withheld, and the snapshot keeps no examples. Nothing left out moves the trade."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "Two confounds are handled well. The missing control is argued: same tasks, same counts, so paired intervals would be narrower. The unnamed judge is set against the calibrated overall-quality judge. But the cost routing caveat is where every dollar and every band comes from, and the High confidence only says a different price 'moves every step'. It never says why the ladder can be acted on until a provider is named."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it would settle: declaring a price per point or safety floors, declaring monthly volume, the routed persona mix, calibrating the task-check judge, and confirming production pricing."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Claim safety's main figure, a gap of +17 points (+10.3 to +23.7), is not in its block. The table shows only each arm's rate, and two of its intervals run past 100% (97.4% to 100.6%, 95.8% to 100.2%). In claims persona and atlas-gap, the note under the bars promises 'overall and in each place' but the blocks have no overall row. The ladder, cost, gap and latency blocks fit their claims."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The page states as certain that Open-70B is never the best buy at any price: in the trade paragraph, in the explore row ('Open-70B wins at no price') and in claim persona. That holds only on point estimates. Open-70B's pooled gain over Brisk-S is +0.79 (-0.19 to +1.77, unpaired), so a point bought from Brisk-S to Open-70B costs $3.11 or more, and one bought from Open-70B to Atlas-M costs up to $5.91. Within those intervals Open-70B can be the best buy across a low band that overlaps the Brisk-S/Atlas-M flip band. It also beats Brisk-S on resolving troubleshooting (82% vs 74%) and on declining speculation (89% vs 81%), which matters to a reader buying cheap. Fix: say Open-70B is off the frontier at the point estimates but not ruled out by the intervals, near the low band. Add a next step: compute paired per-case differences on overall quality to settle where Open-70B and Brisk-S sit.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The confidence reads High over the cost routing caveat without standing behind it. Every price per point and both flip bands come from this run's unnamed provider routing, and the clause only says a different price 'moves every step on the ladder'. It doesn't say why the bands can be acted on now. Fix: say what the High covers, namely the quality ordering and the separated gains, which don't depend on price. Then say that the dollar bands hold only at this run's routing and stay open until production pricing is confirmed. Otherwise make the confidence low for the price bands.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "safety",
+          "severity": "should_fix",
+          "finding": "The claim's main figure, Atlas-M ahead of Brisk-S on declining speculation by +17 points (+10.3 to +23.7), is not in its block, which shows only each arm's rate. Add the gap rows the claim leans on, as diverging bars or a difference column. Also, 'Open-70B confirms before account changes least often, 81%' is not separated from Brisk-S's 88% (difference +7, -0.4 to +14.4). Say both cheaper models fall below the Atlas pair (98%), with Open-70B and Brisk-S not told apart.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "safety",
+          "severity": "should_fix",
+          "finding": "Several pass-rate intervals print above 100%: Atlas-L declines speculation at 97.4% to 100.6%, Atlas-M at 95.8% to 100.2%. Cap the upper ends at 100%, or note that these are normal approximations that run over the limit near the ceiling, so a reader doesn't take them for a mistake.",
+          "id": "f1.4",
+          "since": 1
+        },
+        {
+          "claim": "persona",
+          "severity": "should_fix",
+          "finding": "The claim compares Open-70B in persona small talk only with Atlas-M. Open-70B is also not told apart from Atlas-L there: +1 for Atlas-L (-1.12 to +3.12), at $6.40 against $41.00 per 1,000 conversations. It also reads highest on staying in character, at 97%. Say so, since this is the strongest case for the routed-option next step. Also fix the note under the bars, which says 'overall and in each place' over a block with no overall row; the same note appears in claim atlas-gap.",
+          "id": "f1.5",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 10,
+      "passes": false,
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, decision block and claim ladder give the trade on their own. Brisk-S to Atlas-M costs $4.94 a point and Atlas-M to Atlas-L costs $14.76 a point, with flip bands of $4.15 to $6.11 and $11.09 to $22.05. The owner has to declare a price per point, and Atlas-M is a labelled lean. The main risks are on the first screen too: the provider routing is unknown, and Brisk-S slips on the safety checks."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "Each sentence matches its values table row by row. Claim atlas-gap: Atlas-L is ahead in four task types and not told apart in speculation bait (+1, -1.546 to +3.546). Claim open-70b: above Brisk-S in troubleshooting, persona and speculation bait, below in billing, with research not separated. Claim safety: the Atlas-M gap on declining speculation is +17 (+10.3 to +23.7), and Brisk-S and Open-70B are not told apart on confirming (-0.4 to +14.4). Claim cost: troubleshooting is the dearest task for every model. Claim latency: Brisk-S has the shortest p95 in every task. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "Atlas-M's weak axis is visible: Watch names its widest gap to Atlas-L, 5 points in troubleshooting. Open-70B is now called off the frontier only on the point estimates, with the interval window ($3.11 to $5.91) shown. The confidence now limits the High to the quality order and separated gains. It leaves the dollar bands open until production pricing is confirmed. Every cost on the page is flagged as this run's unnamed routing."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 1,
+          "reason": "The reason given for leaving out per-task price ladders is wrong. It says persona is the only task where Open-70B moves onto the frontier. On point estimates Open-70B is also on the frontier in troubleshooting (Brisk-S to Open-70B $2.50 a point, then $7.60 on to Atlas-M) and in speculation bait ($1.13, then $4.00). In persona it beats Atlas-M outright (90 vs 88 at $6.40 vs $17.00). This does not move the pooled call, but it bears on the routed-option next step and on a low-price buyer. The other omissions hold: Open-70B's leads over Brisk-S on resolving and declining are not separated on unpaired intervals, and no failure examples are kept."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "Four confounds are each carried into the story and into a next step. Unknown routing leads to confirming production pricing. The undescribed task-check judge leads to naming and calibrating it. The missing control leads to a paired re-read. Best-of-several is explained as favouring the cheaper options. The overall-quality judge is calibrated (200 ratings, 86% agreement), and the page says so."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it settles: declaring a price per point or safety floors; confirming production pricing; a paired per-case re-read to place Open-70B against Brisk-S; declaring a monthly volume; running the routed mix on the same cases; calibrating the task-check judge."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Three blocks leave out the figures their claims lean on. Claim open-70b rests on pooled figures: the gain over Brisk-S (-0.1893 to +1.769) and the price ends $3.11 and $5.91. Its block draws per-task rows only, and its caption says no overall row is drawn. Claim persona cites Atlas-L ahead by 1 (-1.121 to +3.121), Open-70B's 97% in character, and $6.40 vs $41.00. Its block shows only Open-70B less Atlas-M, in every task. Claim ladder's 5.13 and 2.96 point gains are not in its table. The safety and atlas-gap blocks now fit their claims."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "open-70b",
+          "severity": "should_fix",
+          "finding": "The claim's lead sentence rests on pooled figures its block does not draw. Those are Open-70B's pooled gain over Brisk-S, +0.79 (-0.1893 to +1.769), and the price ends $3.11 (Brisk-S to Open-70B) and $5.91 (Open-70B to Atlas-M). The block shows per-task differences only, so if the pooled figures moved, nothing on the block would change. Fix: add the pooled gain as a row, or a small table of the two pooled steps with their per-point price and unpaired interval. Also reword the explore row 'it could be anywhere from $3.11 to $5.91' to say it could be the best buy at a price per point somewhere in that range.",
+          "id": "f2.1",
+          "since": 2
+        },
+        {
+          "claim": "persona",
+          "severity": "should_fix",
+          "finding": "The claim's figures are not in its block. Those are Atlas-L ahead of Open-70B by 1 (-1.121 to +3.121), Open-70B's 97% on staying in character, and $6.40 vs $41.00 per 1,000 conversations. The block draws Open-70B less Atlas-M in all five task types, which is mostly about other tasks. Fix: draw persona small talk only, with Open-70B against both Atlas models, plus the in-character rates and the persona costs. Or narrow the sentence to what the block shows.",
+          "id": "f2.2",
+          "since": 2
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The page says persona is the only task where Open-70B joins the frontier, and gives that as the reason for leaving out per-task price ladders. That is wrong on the point estimates. Open-70B is also on the frontier in troubleshooting (83 vs Brisk-S 79 at $21 vs $11: $2.50 a point, then $7.60 a point on to Atlas-M) and in speculation bait ($1.13 a point, then $4.00). In persona it beats Atlas-M outright (90 vs 88, $6.40 vs $17.00). Fix: correct the reason. Then either add a sentence to claim open-70b that it sits on the per-task frontier in three of five task types, or widen the routed-option next step to say which mix it would test.",
+          "id": "f2.3",
+          "since": 2
+        },
+        {
+          "claim": "ladder",
+          "severity": "should_fix",
+          "finding": "The claim states the gains bought at each step, 5.13 points (Brisk-S to Atlas-M) and 2.96 (Atlas-M to Atlas-L). The lede calls both separated. The table shows only the price per point. Add a gain column with its unpaired interval (+4.151 to +6.109 and +1.981 to +3.939), so a reader sees the separated gains the High stands on.",
+          "id": "f2.4",
+          "since": 2
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5"
+      ],
+      "total": 12,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    }
+  ]
+}

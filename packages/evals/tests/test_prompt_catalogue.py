@@ -23,6 +23,7 @@ from threetears.evals.kernel import (
     SeedPrompt,
     SeedTemplate,
 )
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 
 #: The repository root.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -40,7 +41,12 @@ def _entry(prompt_type: str) -> SeedPrompt:
 
 
 def test_the_catalogue_declares_each_of_the_packages_prompts_once():
-    assert [entry.prompt_type for entry in SEED_PROMPTS] == [ANALYSIS_GEN_PROMPT, PROPOSER_PROMPT, BOUNDARY_GEN_PROMPT]
+    assert [entry.prompt_type for entry in SEED_PROMPTS] == [
+        ANALYSIS_GEN_PROMPT,
+        REPORT_PLAN_PROMPT,
+        PROPOSER_PROMPT,
+        BOUNDARY_GEN_PROMPT,
+    ]
     assert len({entry.prompt_type for entry in SEED_PROMPTS}) == len(SEED_PROMPTS)
 
 

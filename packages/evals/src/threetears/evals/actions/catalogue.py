@@ -11,6 +11,11 @@ grants work, so the classes are what a host splits on: :func:`standard_tools` gi
 spend, write) and ``evals_admin`` (destructive), and :func:`read_only_tools` a tool a host can mount for
 an agent that may only look. The host supplies the prefix.
 
+**And by cut.** An action may name a cut (:attr:`Action.cut`): a set of actions with a tool of its own, which only a
+:class:`ToolSpec` of the same cut mounts. The standard tools are the actions that name none. The analyst's actions are
+one cut (:func:`~threetears.evals.actions.analyst.analyst_tools`), so a client mounting ``evals`` does not see them,
+and its flat parameters do not grow with them.
+
 **One tool, many actions, flat parameters.** A mounted tool's input is ``action`` — an enum of its
 actions plus ``help`` — and the union of its actions' parameters, flat. A parameter name means one
 thing across the tool: two actions declaring it with different types or descriptions are refused at
@@ -21,7 +26,13 @@ naming the ones it accepts and an example, rather than ignored.
 mount, an undeclared parameter, a value that does not validate, a refusal from the engine — says what
 was wrong and what would be right: the valid actions, the accepted parameters, an example call. Each
 also carries a :class:`Refusal` — its kind and status — so a host's code branches on data, never on
-the teaching text.
+the teaching text; and, where the call has a corrected form, a :class:`Recovery` — the parameters at fault, the
+ones accepted, an example, the valid values or the action listing them, the help call that explains — mirrored as
+the text's last line, so a caller builds the next call from fields alone.
+
+**A page names the next call** (:attr:`Action.paged`), and **help serves reference topics** beside the actions
+(:class:`HelpTopic`). :func:`catalogue_primer` is what a server's instructions say of its tools, within the budget a
+client is known to deliver whole.
 
 **Long work is a job, and no call waits on a model.** An action whose work outlives a call (``long_running``)
 returns :class:`~threetears.evals.ops.JobsStarted`, and the caller polls with ``job_poll``. A ``spend`` action is
@@ -41,19 +52,23 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from pydantic import BaseModel, ValidationError
 
 from threetears.evals.actions import render
 from threetears.evals.kernel.errors import (
     EvalServiceError,
+    RefusedInput,
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import refusal_kind
 from threetears.evals.schema.refusal import REFUSAL_KINDS, KnownRefusalKind, RefusalKind
 from threetears.evals.ops import JobsStarted, OpsHost
 from threetears.evals.run import start_run
+from threetears.evals.schema.logs import get_logger
+
+log = get_logger(__name__)
 
 #: What an action does to the world, which decides the tools that may mount it.
 #:
@@ -203,6 +218,21 @@ class Action:
     :ivar text_field: The one field of the result its ``render`` returns verbatim (``report_read``'s ``body``), so a
         transport sending the text and the result's JSON in one reply leaves that field out of the JSON rather than
         send it twice; ``None``, the default, for a render that composes its text, whose result is sent whole.
+    :ivar cut: The cut whose tools alone mount it (:attr:`ToolSpec.cut`); ``None``, the default, for an action the
+        standard tools mount.
+    :ivar paged: Its result is one page of a listing: its parameters declare ``offset`` and its result ``next_offset``
+        (the next page's offset, ``None`` on the last). The tool writes the next page's call
+        (:func:`~threetears.evals.actions.render.render_page`): the arguments the caller sent with ``offset`` advanced,
+        as the text's last line and as ``next`` in the structured result, and leaves ``next_offset`` out of both on
+        the last page, and says how much of the whole the page holds in the unit its result names
+        (``page_unit``: flips, options, cards…). Every analyst listing is paged; ``False``, the default.
+    :ivar idempotent: A ``write`` or ``destructive`` action a caller may repeat with the same parameters to no further
+        effect (``report_snapshot_freeze`` names the snapshot it stored); a ``read`` is idempotent by its class, and
+        neither a ``spend`` nor long work can be, since each call spends or starts work again. ``False``, the default.
+    :ivar appends: A ``read`` that may append a bounded, idempotent feedback record (``capability_gap``'s note of a
+        missing capability, stored once per gap): it changes no evaluation data, so a read tool carries it, and a
+        tool carrying it is not read-only to a transport (its ``readOnlyHint`` is false) while it stays idempotent.
+        ``False``, the default.
     """
 
     name: str
@@ -218,6 +248,10 @@ class Action:
     detail: str = ""
     happy_path: HappyPath | None = None
     text_field: str | None = None
+    cut: str | None = None
+    paged: bool = False
+    idempotent: bool = False
+    appends: bool = False
 
     def __post_init__(self) -> None:
         """Refuse an action no transport could mount honestly.
@@ -226,12 +260,18 @@ class Action:
             class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
             nested model; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
-            declares no ``render`` of its own; a spend action declares no ``happy_path``; or the example
-            does not validate.
+            declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
+            lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset`` or no
+            ``page_unit``, or an
+            action rendered by :func:`~threetears.evals.actions.render.render_cited` returns a ``next_offset`` and is
+            not paged; an action that is not a ``write`` or ``destructive`` one, or is long work, is
+            declared idempotent; or the example does not validate.
         """
         where = f"action {self.name!r}"
         if not ACTION_NAME.fullmatch(self.name):
             raise ValueError(f"{where}: an action is named noun_verb — lowercase words joined by underscores")
+        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+            raise ValueError(f"{where}: cut {self.cut!r} is not a lowercase identifier")
         # prose-canary: allow — Action.summary is help text a host's code declares, not text a model wrote
         if not self.summary.strip() or "\n" in self.summary.strip():
             raise ValueError(f"{where}: the summary is one non-blank line; longer help goes in `detail`")
@@ -265,6 +305,33 @@ class Action:
                 f"{where}: a spend action declares a happy_path — the parameters that reach its work — so the jobs "
                 "conformance kit can show its call makes no completion request and its job makes some"
             )
+        pages = "next_offset" in self.result.model_fields
+        if self.paged and not (pages and "offset" in self.params.model_fields):
+            raise ValueError(
+                f"{where}: a paged action takes an `offset` and returns a `next_offset`, the call to the next page; "
+                f"{self.params.__name__} or {self.result.__name__} does not"
+            )
+        if self.paged and getattr(self.result, "page_unit", None) is None:
+            raise ValueError(
+                f"{where}: a paged result names what its total counts, one and many, so its page says how much of the "
+                f"whole it holds in that unit: {self.result.__name__} declares no page_unit, such as "
+                "page_unit: ClassVar[tuple[str, str]] = ('flip', 'flips')"
+            )
+        if pages and not self.paged and self.render is render.render_cited:
+            raise ValueError(
+                f"{where}: {self.result.__name__} is a page (next_offset): declare paged=True, so the tool writes the "
+                "next page's call, which render_cited leaves to it"
+            )
+        if self.idempotent and (self.permission not in ("write", "destructive") or self.long_running):
+            raise ValueError(
+                f"{where}: idempotent is declared by a write or destructive action that starts no long work; a read "
+                "is idempotent by its class, and a spend or long work spends or starts work again on every call"
+            )
+        if self.appends and self.permission != "read":
+            raise ValueError(
+                f"{where}: appends is declared by a read that may append a feedback record; a {self.permission} "
+                "action's class already says it changes what it changes"
+            )
         if self.text_field is not None and self.text_field not in self.result.model_fields:
             raise ValueError(
                 f"{where}: text_field {self.text_field!r} is no field of {self.result.__name__}: it names the field "
@@ -277,27 +344,95 @@ class Action:
 
 
 @dataclass(frozen=True, kw_only=True)
+class HelpTopic:
+    """A reference page a tool's ``help`` serves beside its actions' pages: text code writes, never a hand copy.
+
+    A reference too long for one result is an index and its pages: ``text`` writes the index, and ``pages`` the pages
+    it names, each served as ``help topic='<name>.<page>'``.
+
+    :ivar name: What ``help topic='<name>'`` names it by: a lowercase identifier, no action's name on its tool.
+    :ivar summary: One line, shown in the help index.
+    :ivar text: Writes the page when it is asked for, so a tool built with it reads nothing until then.
+    :ivar pages: Writes the topic's pages, by name, when one is asked for; ``None``, the default, for a topic that is
+        one page.
+    """
+
+    name: str
+    summary: str
+    text: Callable[[], str] = field(compare=False)
+    pages: Callable[[], Mapping[str, str]] | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        """Refuse a malformed name or a summary that is blank or more than one line.
+
+        :raises ValueError: As described.
+        """
+        if not TOOL_NAME.fullmatch(self.name) or self.name == HELP_ACTION:
+            raise ValueError(f"help topic {self.name!r} is not a lowercase identifier other than {HELP_ACTION!r}")
+        # prose-canary: allow — HelpTopic.summary is help text a host's code declares, not text a model wrote
+        if not self.summary.strip() or "\n" in self.summary.strip():
+            raise ValueError(f"help topic {self.name!r}: the summary is one non-blank line")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ToolSpec:
     """One tool a transport mounts: its name, its short description and the classes of action it carries.
 
     :ivar name: The tool's name (:data:`TOOL_NAME`).
     :ivar description: What the tool is for, in a sentence or two; the tool adds how to get help.
     :ivar permissions: The classes of action it mounts.
+    :ivar cut: The cut whose actions it mounts (:attr:`Action.cut`); ``None``, the default, for a standard tool, which
+        mounts the actions that name no cut.
+    :ivar workflows: The workflows (:attr:`Action.workflow`) whose actions it mounts, a subset of its cut's for a tool
+        one role uses (the report editor's, which reads no blocks); ``None``, the default, for every workflow.
+    :ivar topics: The reference pages its ``help`` serves beside its actions' (:class:`HelpTopic`), listed in its help
+        index; none, the default.
+    :ivar constraints: The rules every call to it is held to, one line each, which its help index and the primer
+        (:func:`catalogue_primer`) repeat, so a client reads them before its first call; none, the default.
+    :ivar left_out: For a tool cut to workflows, one line saying why its role goes without the cut's other workflows
+        and what its caller does instead. A call naming a left-out action is refused with it, and a remedy that needs
+        one is served as it, so the tool never sends its caller to an action it does not carry, and never names one
+        it was not asked for. Required with ``workflows``, and blank without them.
     """
 
     name: str
     description: str
     permissions: frozenset[PermissionClass]
+    cut: str | None = None
+    workflows: frozenset[str] | None = None
+    topics: tuple[HelpTopic, ...] = ()
+    constraints: tuple[str, ...] = ()
+    left_out: str = ""
 
     def __post_init__(self) -> None:
-        """Refuse a malformed name, a blank description or a set of classes that is empty or unknown.
+        """Refuse a malformed name or cut, a blank description, a set of classes that is empty or unknown, a set of
+        workflows that is empty or names a blank one, workflows with no one-line ``left_out`` or a ``left_out`` with no
+        workflows, two help topics of one name, or a constraint that is blank or more than one line.
 
         :raises ValueError: As described.
         """
         if not TOOL_NAME.fullmatch(self.name):
             raise ValueError(f"tool name {self.name!r} is not a lowercase identifier")
+        if self.cut is not None and not TOOL_NAME.fullmatch(self.cut):
+            raise ValueError(f"tool {self.name!r}: cut {self.cut!r} is not a lowercase identifier")
         if not self.description.strip():
             raise ValueError(f"tool {self.name!r}: the description is blank")
+        if self.workflows is not None and (not self.workflows or not all(name.strip() for name in self.workflows)):
+            raise ValueError(
+                f"tool {self.name!r}: workflows names one or more workflows, none blank, or is None for all"
+            )
+        # prose-canary: allow — ToolSpec.left_out is help text a host's code declares, not text a model wrote
+        said = bool(self.left_out.strip()) and "\n" not in self.left_out.strip()
+        if (self.workflows is not None) != said or (self.workflows is None and self.left_out):
+            raise ValueError(
+                f"tool {self.name!r}: a tool cut to workflows says in one line, left_out, why its role goes without "
+                "the others and what its caller does instead; a tool of every workflow says nothing there"
+            )
+        if not all(rule.strip() and "\n" not in rule.strip() for rule in self.constraints):
+            raise ValueError(f"tool {self.name!r}: each constraint is one non-blank line")
+        topics = [topic.name for topic in self.topics]
+        if len(set(topics)) != len(topics):
+            raise ValueError(f"tool {self.name!r}: two help topics share a name among {topics}")
         unknown = sorted(set(self.permissions) - set(PERMISSION_CLASSES))
         if not self.permissions or unknown:
             raise ValueError(
@@ -339,7 +474,10 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     return (
         ToolSpec(
             name=prefix,
-            description="Read evals: templates, runs, jobs, campaigns and reports. Nothing here launches or changes.",
+            description=(
+                "Read evals: templates, runs, jobs, campaigns and reports. Nothing here launches anything or changes "
+                "evaluation data."
+            ),
             permissions=frozenset({"read"}),
         ),
     )
@@ -400,6 +538,51 @@ _CALL_REFUSAL = Refusal.of(
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class Recovery:
+    """How to correct a refused call, as fields: what a caller needs to build the next call without reading the text.
+
+    Each field is present only where it applies (:meth:`as_data` leaves the rest out), so its absence says something:
+    a refusal with no ``valid_values`` lists none because none can be listed. A refusal carries one where the call
+    itself was at fault: no action, an unknown one or help topic, an undeclared parameter, a value that does not
+    validate, and an engine refusal whose raiser named the parameters at fault
+    (:class:`~threetears.evals.kernel.ValidationFailedError`). A not-found, a conflict or a call the engine failed to
+    carry out carries none: its remedy is a next step, not a corrected call.
+
+    :ivar parameters: The parameters at fault, by name (``action`` and ``topic`` among them; a field of one written
+        ``parameter.field``). Changing these is what makes the call valid; a name not in ``accepted`` is dropped.
+    :ivar accepted: Every parameter the action (or ``help``) takes, where the refusal names an action.
+    :ivar example: A call that validates, ``action`` first: the form, where the form was what was wrong.
+    :ivar valid_values: Every value the one parameter at fault accepts here.
+    :ivar valid_values_from: The action that lists them, where they are data rather than a set this tool holds.
+    :ivar see: The help call that explains the whole rule: ``{"action": "help", "topic": …}``.
+    """
+
+    parameters: tuple[str, ...] = ()
+    accepted: tuple[str, ...] | None = None
+    example: Mapping[str, Any] | None = None
+    valid_values: tuple[Any, ...] | None = None
+    valid_values_from: str | None = None
+    see: Mapping[str, Any] | None = None
+
+    def as_data(self) -> dict[str, Any]:
+        """The fields that apply, as JSON: what a transport sends as ``recovery`` and the text mirrors."""
+        data: dict[str, Any] = {}
+        if self.parameters:
+            data["parameters"] = list(self.parameters)
+        if self.accepted is not None:
+            data["accepted"] = list(self.accepted)
+        if self.example is not None:
+            data["example"] = dict(self.example)
+        if self.valid_values is not None:
+            data["valid_values"] = list(self.valid_values)
+        if self.valid_values_from is not None:
+            data["valid_values_from"] = self.valid_values_from
+        if self.see is not None:
+            data["see"] = dict(self.see)
+        return data
+
+
 @dataclass(frozen=True)
 class ActionOutcome:
     """What one call came to: the text an agent reads, the typed result as data, and why it was refused.
@@ -417,6 +600,9 @@ class ActionOutcome:
     :ivar action: The action called, when the call named one the tool has.
     :ivar text_field: The field of :attr:`structured` that :attr:`text` is verbatim, as the action declares it
         (:attr:`Action.text_field`); ``None`` when the text is composed.
+    :ivar recovery: How to correct the refused call, as fields (:class:`Recovery`), which the text's last line
+        mirrors as compact JSON (``recovery: {…}``), since a client may forward only the text; ``None`` for a result,
+        help, and a refusal with no corrected call to build.
     """
 
     text: str
@@ -424,14 +610,17 @@ class ActionOutcome:
     refusal: Refusal | None = None
     action: str | None = None
     text_field: str | None = None
+    recovery: Recovery | None = None
 
     def __post_init__(self) -> None:
-        """Refuse an outcome that is both a result and a refusal.
+        """Refuse an outcome that is both a result and a refusal, or carries a recovery and no refusal.
 
-        :raises ValueError: ``structured`` and ``refusal`` are both set.
+        :raises ValueError: ``structured`` and ``refusal`` are both set, or ``recovery`` is set without ``refusal``.
         """
         if self.structured is not None and self.refusal is not None:
             raise ValueError("an outcome carries a result or a refusal, never both")
+        if self.recovery is not None and self.refusal is None:
+            raise ValueError("a recovery corrects a refused call; this outcome was not refused")
 
     @property
     def is_error(self) -> bool:
@@ -451,14 +640,17 @@ class ActionOutcome:
 class ToolHints:
     """The MCP behaviour hints a mounted tool's actions earn.
 
-    :ivar read_only: Every action is ``read``.
+    :ivar read_only: Every action is ``read``, and none appends a feedback record (:attr:`Action.appends`).
     :ivar destructive: Some action is ``destructive``.
     :ivar open_world: Some action spends on a provider outside the host.
+    :ivar idempotent: Every action may be repeated with the same parameters to no further effect: a ``read``, or a
+        write or destructive action declared so (:attr:`Action.idempotent`).
     """
 
     read_only: bool
     destructive: bool
     open_world: bool
+    idempotent: bool
 
 
 def _property_meaning(schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -500,9 +692,18 @@ class MountedTool:
 
     @property
     def description(self) -> str:
-        """The tool's short description, and how to get help from it."""
+        """The tool's short description, why it is not read-only when only an appended note makes it so, and how to
+        get help from it."""
+        appending = [action.name for action in self.actions if action.appends]
+        why_not_read_only = (
+            f" It is not marked read-only: {' and '.join(appending)} {'stores' if len(appending) == 1 else 'store'} "
+            "the note it is given, and nothing else "
+            "it carries writes."
+            if appending and all(action.permission == "read" for action in self.actions)
+            else ""
+        )
         return (
-            f"{self.spec.description} Call action='help' for the actions grouped by workflow, and "
+            f"{self.spec.description}{why_not_read_only} Call action='help' for the actions grouped by workflow, and "
             "action='help', topic='<action>' for one action's parameters and an example."
         )
 
@@ -511,12 +712,19 @@ class MountedTool:
         """The behaviour hints this tool's actions earn."""
         classes = {action.permission for action in self.actions}
         return ToolHints(
-            read_only=classes == {"read"}, destructive="destructive" in classes, open_world="spend" in classes
+            read_only=classes == {"read"} and not any(action.appends for action in self.actions),
+            destructive="destructive" in classes,
+            open_world="spend" in classes,
+            idempotent=all(action.permission == "read" or action.idempotent for action in self.actions),
         )
 
     def action(self, name: str) -> Action | None:
         """This tool's action of that name, or ``None``."""
         return next((action for action in self.actions if action.name == name), None)
+
+    def topic(self, name: str) -> HelpTopic | None:
+        """This tool's help topic of that name (:attr:`ToolSpec.topics`), or ``None``."""
+        return next((topic for topic in self.spec.topics if topic.name == name), None)
 
     def input_schema(self) -> dict[str, Any]:
         """The tool's input: ``action`` and ``topic``, then every action's parameters, flat and described.
@@ -528,7 +736,7 @@ class MountedTool:
         names = [HELP_ACTION, *(action.name for action in self.actions)]
         properties: dict[str, Any] = {
             "action": {"type": "string", "enum": names, "description": "The action to run; 'help' lists them."},
-            "topic": {"type": "string", "description": "help only: the action to explain, by name."},
+            "topic": {"type": "string", "description": render.topic_description(self)},
         }
         properties.update(self.properties)
         return {"type": "object", "properties": properties, "required": ["action"], "additionalProperties": False}
@@ -583,8 +791,13 @@ class MountedTool:
 
         A refusal the engine raises (:class:`~threetears.evals.kernel.EvalServiceError`) is a refused
         call, rendered with its reason and carrying its kind and status (:meth:`Refusal.of`); a call the
-        catalogue turns away is ``validation_failed`` (422). Anything else the handler raises propagates: it is a
-        defect, and the transport's error path is where a defect belongs.
+        catalogue turns away is ``validation_failed`` (422). A lower layer's refusal that no operation translated
+        (:class:`~threetears.evals.kernel.RefusedInput`, or a subclass) is still a refusal of what the caller asked:
+        it is refused as the operation would have refused it
+        (:meth:`~threetears.evals.kernel.ValidationFailedError.refusing`, 422, its fault and remedy), and one
+        WARNING names the action and the function that raised it, since the translation belongs there. Anything
+        else the handler raises propagates: it is a defect, and the transport's error path is where a defect
+        belongs.
 
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: Mapping[str, Any]
@@ -598,43 +811,183 @@ class MountedTool:
         given = dict(arguments)
         name = given.pop("action", None)
         if not isinstance(name, str) or not name:
-            return ActionOutcome(render.refuse_no_action(self), refusal=_CALL_REFUSAL)
+            return _refused(render.refuse_no_action(self), _CALL_REFUSAL, self._pick("action", self._names()))
         if name == HELP_ACTION:
             return self._help(given)
         action = self.action(name)
         if action is None:
-            return ActionOutcome(render.refuse_unknown_action(self, name), refusal=_CALL_REFUSAL)
+            recovery = self._pick("action", self._names())
+            return _refused(render.refuse_unknown_action(self, name), _CALL_REFUSAL, recovery)
         undeclared = sorted(set(given) - set(action.params.model_fields))
         if undeclared:
-            return ActionOutcome(render.refuse_undeclared(self, action, undeclared), refusal=_CALL_REFUSAL, action=name)
+            recovery = self._form(action, undeclared)
+            return _refused(render.refuse_undeclared(self, action, undeclared), _CALL_REFUSAL, recovery, name)
         try:
             params = action.params.model_validate(given)
         except ValidationError as invalid:
-            return ActionOutcome(render.refuse_invalid(self, action, invalid), refusal=_CALL_REFUSAL, action=name)
+            at_fault = list(dict.fromkeys(str(error["loc"][0]) for error in invalid.errors() if error["loc"]))
+            recovery = self._form(action, at_fault, valid_values=_enum(action, at_fault))
+            return _refused(render.refuse_invalid(self, action, invalid), _CALL_REFUSAL, recovery, name)
         try:
             result = await action.handler(host, caller, params)
         except EvalServiceError as refused:
-            return ActionOutcome(
-                render.refuse_by_engine(self, action, refused), refusal=Refusal.of(refused), action=name
+            return _refused(
+                render.refuse_by_engine(self, action, refused), Refusal.of(refused), _named(action, refused), name
             )
-        return ActionOutcome(
-            action.render(result), structured=result.model_dump(mode="json"), action=name, text_field=action.text_field
+        except RefusedInput as untranslated:
+            log.warning(
+                "action %s: a refusal raised in %s reached the dispatcher untranslated; refused as "
+                "validation_failed, and the operation should translate it: %s",
+                name,
+                _raise_site(untranslated),
+                untranslated.fault,
+            )
+            translated = ValidationFailedError.refusing(untranslated)
+            return _refused(
+                render.refuse_by_engine(self, action, translated),
+                Refusal.of(translated),
+                _named(action, translated),
+                name,
+            )
+        text, structured = action.render(result), result.model_dump(mode="json")
+        if action.paged:
+            text, structured = render.render_page(name, params, text, structured, render.page_unit(result))
+        return ActionOutcome(text, structured=structured, action=name, text_field=action.text_field)
+
+    def _names(self) -> tuple[str, ...]:
+        """Every value ``action`` takes on this tool: ``help``, then its actions."""
+        return (HELP_ACTION, *(action.name for action in self.actions))
+
+    def _pick(self, parameter: str, values: Sequence[str]) -> Recovery:
+        """The recovery of a call whose ``action`` or ``topic`` names nothing here: the values it takes, and help."""
+        return Recovery(parameters=(parameter,), valid_values=tuple(values), see={"action": HELP_ACTION})
+
+    def _form(
+        self, action: Action, at_fault: Sequence[str], *, valid_values: tuple[Any, ...] | None = None
+    ) -> Recovery:
+        """The recovery of a call whose parameters do not fit its action: which, what it takes and an example."""
+        return Recovery(
+            parameters=tuple(at_fault),
+            accepted=tuple(action.params.model_fields),
+            example={"action": action.name, **dict(action.example)},
+            valid_values=valid_values,
+            see={"action": HELP_ACTION, "topic": action.name},
         )
 
     def _help(self, given: Mapping[str, Any]) -> ActionOutcome:
         undeclared = sorted(set(given) - {"topic"})
         if undeclared:
-            return ActionOutcome(
-                render.refuse_help_parameters(self, undeclared), refusal=_CALL_REFUSAL, action=HELP_ACTION
-            )
+            recovery = Recovery(parameters=tuple(undeclared), accepted=("topic",), see={"action": HELP_ACTION})
+            return _refused(render.refuse_help_parameters(self, undeclared), _CALL_REFUSAL, recovery, HELP_ACTION)
         topic = given.get("topic")
         if topic is None:
             return ActionOutcome(self.help_index(), action=HELP_ACTION)
+        reference = self.topic(topic) if isinstance(topic, str) else None
+        if reference is not None:
+            return ActionOutcome(reference.text(), action=HELP_ACTION)
+        paged = self._topic_page(topic) if isinstance(topic, str) else None
+        if paged is not None:
+            return paged
         if not isinstance(topic, str) or self.action(topic) is None:
-            return ActionOutcome(
-                render.refuse_unknown_action(self, str(topic)), refusal=_CALL_REFUSAL, action=HELP_ACTION
-            )
+            topics = (*(action.name for action in self.actions), *(item.name for item in self.spec.topics))
+            recovery = self._pick("topic", topics)
+            return _refused(render.refuse_unknown_topic(self, str(topic)), _CALL_REFUSAL, recovery, HELP_ACTION)
         return ActionOutcome(self.help_page(topic), action=HELP_ACTION)
+
+    def _topic_page(self, topic: str) -> ActionOutcome | None:
+        """One page of a reference topic's (``<topic>.<page>``), or the refusal of a page it does not have; ``None``
+        where ``topic`` names no paged topic of this tool."""
+        (head, dot, page) = topic.partition(".")
+        reference = self.topic(head) if dot else None
+        if reference is None or reference.pages is None:
+            return None
+        pages = reference.pages()
+        if page in pages:
+            return ActionOutcome(pages[page], action=HELP_ACTION)
+        named = tuple(f"{head}.{name}" for name in pages)
+        recovery = self._pick("topic", named)
+        return _refused(render.refuse_unknown_page(reference, page, named), _CALL_REFUSAL, recovery, HELP_ACTION)
+
+
+def _refused(text: str, refusal: Refusal, recovery: Recovery | None, action: str | None = None) -> ActionOutcome:
+    """A refused outcome, its recovery's fields mirrored as the text's last line where it carries one."""
+    if recovery is None:
+        return ActionOutcome(text, refusal=refusal, action=action)
+    return ActionOutcome(
+        f"{text}\n{render.recovery_line(recovery.as_data())}", refusal=refusal, action=action, recovery=recovery
+    )
+
+
+def _raise_site(error: BaseException) -> str:
+    """Where ``error`` was raised, as ``module:qualified.function``: the innermost frame of its traceback."""
+    trace = error.__traceback__
+    if trace is None:
+        return "<unknown>"
+    while trace.tb_next is not None:
+        trace = trace.tb_next
+    frame = trace.tb_frame
+    return f"{frame.f_globals.get('__name__', '<unknown>')}:{frame.f_code.co_qualname}"
+
+
+def _enum(action: Action, at_fault: Sequence[str]) -> tuple[Any, ...] | None:
+    """Every value the one parameter at fault takes, where its schema closes the set (an enum, or a list of one)."""
+    if len(at_fault) != 1:
+        return None
+    schema = action.params.model_json_schema().get("properties", {}).get(at_fault[0], {})
+    branches = [schema, *schema.get("anyOf", [])]
+    for branch in branches:
+        for where in (branch, branch.get("items", {})):
+            if "enum" in where:
+                return tuple(where["enum"])
+    return None
+
+
+def _named(action: Action, refused: EvalServiceError) -> Recovery | None:
+    """The recovery of an engine refusal whose raiser named the parameters at fault; ``None`` for any other."""
+    if not isinstance(refused, ValidationFailedError):
+        return None
+    if not refused.parameters and refused.valid_values is None and refused.valid_values_from is None:
+        return None
+    return Recovery(
+        parameters=refused.parameters,
+        accepted=tuple(action.params.model_fields),
+        valid_values=refused.valid_values,
+        valid_values_from=refused.valid_values_from,
+        see={"action": HELP_ACTION, "topic": action.name},
+    )
+
+
+#: The most characters the primer may run to: one client was measured handing a model the first 2,045 characters of
+#: a server's instructions and cutting the rest without a mark, so a primer within this reaches a model whole.
+_PRIMER_BUDGET: Final = 1_800
+
+
+def catalogue_primer(tools: Sequence[MountedTool]) -> str:
+    """What a client reads before its first call, for a server's instructions: every tool in a line, then its rules.
+
+    The opening lines say how to get help and name every reference topic; then each tool, its domain and to call
+    ``help`` first; then the rules every call is held to, derived from the tools' actions (long work is a job to poll,
+    a destructive action echoes what it destroys, a refusal carries its recovery as data) and each tool's own
+    (:attr:`ToolSpec.constraints`). Everything else is served by ``help``, so the primer stays within 1,800
+    characters, which a client is known to deliver whole. :func:`~threetears.evals.transports.fastmcp.mount_fastmcp` passes it as the instructions
+    of a server it builds; a host building its own server passes it there.
+
+    :param tools: The tools the server mounts.
+    :ptype tools: Sequence[MountedTool]
+    :return: The primer.
+    :rtype: str
+    :raises ValueError: No tool is given, or the primer runs past 1,800 characters: a client would cut it, so
+        shorten a tool's description or constraints.
+    """
+    if not tools:
+        raise ValueError("a primer names the tools a server mounts; none were given")
+    text = render.render_primer(tools)
+    if len(text) > _PRIMER_BUDGET:
+        raise ValueError(
+            f"the primer runs to {len(text)} characters, past the {_PRIMER_BUDGET} a client is known to deliver whole; "
+            "shorten a tool's description or constraints"
+        )
+    return text
 
 
 class ActionCatalogue:
@@ -684,18 +1037,32 @@ class ActionCatalogue:
         return ActionCatalogue([*self._actions.values(), *actions])
 
     def mount(self, spec: ToolSpec) -> MountedTool:
-        """Cut one tool from the catalogue: the actions whose class the tool mounts.
+        """Cut one tool from the catalogue: the actions of the tool's cut and workflows whose class the tool mounts.
 
         :param spec: The tool.
         :ptype spec: ToolSpec
         :return: The mounted tool.
         :rtype: MountedTool
-        :raises ValueError: No action has a class the tool mounts, or two of its actions declare one
-            parameter name with different meanings (type or description).
+        :raises ValueError: No action of its cut and workflows has a class the tool mounts, or two of its actions
+            declare one parameter name with different meanings (type or description).
         """
-        actions = tuple(action for action in self._actions.values() if action.permission in spec.permissions)
+        actions = tuple(
+            action
+            for action in self._actions.values()
+            if action.permission in spec.permissions
+            and action.cut == spec.cut
+            and (spec.workflows is None or action.workflow in spec.workflows)
+        )
         if not actions:
-            raise ValueError(f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes")
+            where = "" if spec.cut is None else f" in cut {spec.cut!r}"
+            if spec.workflows is not None:
+                where += f" in workflows {sorted(spec.workflows)}"
+            raise ValueError(
+                f"tool {spec.name!r} mounts {sorted(spec.permissions)} and no action has those classes{where}"
+            )
+        colliding = sorted({topic.name for topic in spec.topics} & {action.name for action in actions})
+        if colliding:
+            raise ValueError(f"tool {spec.name!r}: help topic {', '.join(colliding)} is named as one of its actions")
         properties: dict[str, dict[str, Any]] = {}
         declared_by: dict[str, str] = {}
         for action in actions:
@@ -742,12 +1109,15 @@ __all__ = [
     "ConformanceSample",
     "ConformanceStage",
     "HappyPath",
+    "HelpTopic",
     "MountedTool",
     "PermissionClass",
+    "Recovery",
     "Refusal",
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
+    "catalogue_primer",
     "read_only_tools",
     "standard_tools",
 ]

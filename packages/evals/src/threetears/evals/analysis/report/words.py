@@ -15,8 +15,8 @@ reach those screens; :data:`ENGINE_WORDS` maps each to what a reader is told ins
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable, Sequence
-from typing import Any, Literal
+from collections.abc import Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.analysis.arms import arm_label, arm_names, multi_rig_variants, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
@@ -26,7 +26,7 @@ from threetears.evals.analysis.references import cell_index, resolve_reading, re
 from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
 from threetears.evals.analysis.report.blocks import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
-from threetears.evals.analysis.style import declared_check_name, measure_name
+from threetears.evals.analysis.style import arm_display_name, arm_name, declared_check_name, measure_name
 from threetears.evals.kernel.campaign import (
     AspectAnalysis,
     ConfidenceTier,
@@ -35,8 +35,12 @@ from threetears.evals.kernel.campaign import (
     EvidenceTier,
     VariantIndexEntry,
 )
+from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
 
 
 def _literal_values(annotation: Any) -> frozenset[str]:
@@ -415,6 +419,106 @@ def positions(numbers: list[int]) -> str:
     return ", ".join(f"F{position + 1}" for position in numbers)
 
 
+#: The control's letter tag, which no candidate wears.
+_CONTROL_TAG = "P"
+
+
+def arm_tags(variant_keys: Sequence[str], control: str | None) -> dict[str, str]:
+    """Each arm's letter tag (GENERATOR.md §6.1): ``P`` for the control, then ``A``, ``B``, ``C``… for the others in
+    the order given (``AA`` after ``Z``), skipping ``P``, which is the control's alone, so every chart of one page tags
+    an arm alike and colours it by its tag.
+
+    :param variant_keys: The arms, in the page's order.
+    :ptype variant_keys: Sequence[str]
+    :param control: The control's variant key; None where there is none.
+    :ptype control: str | None
+    :return: Variant key -> tag, for every arm given.
+    :rtype: dict[str, str]
+    """
+    tags: dict[str, str] = {}
+    place = 0
+    for key in variant_keys:
+        if key == control:
+            tags[key] = _CONTROL_TAG
+            continue
+        tag = _CONTROL_TAG
+        while tag == _CONTROL_TAG:
+            place += 1
+            tag, number = "", place
+            while number:
+                number, letter = divmod(number - 1, 26)
+                tag = chr(ord("A") + letter) + tag
+        tags[key] = tag
+    return tags
+
+
+def campaign_arm_tags(
+    bundles: Iterable[AnalysisContextBundle], control: str | None, *, also: Iterable[str] = ()
+) -> dict[str, str]:
+    """Each arm's letter tag across a campaign's page (:func:`arm_tags`): the arms in the order its aspects'
+    scoreboards list them, then ``also``'s not listed there, so an arm one aspect lacks shifts no other arm's tag, and
+    every chart of the page tags and colours an arm alike.
+
+    :param bundles: Each aspect's bundle, in the campaign's order.
+    :ptype bundles: Iterable[AnalysisContextBundle]
+    :param control: The campaign's control's variant key; None where there is none.
+    :ptype control: str | None
+    :param also: Arms to tag after those the scoreboards list, where they are not among them.
+    :ptype also: Iterable[str]
+    :return: Variant key -> tag.
+    :rtype: dict[str, str]
+    """
+    listed = dict.fromkeys(board.variant_key for bundle in bundles for board in bundle.scoreboard)
+    listed.update(dict.fromkeys(also))
+    return arm_tags(list(listed), control)
+
+
+def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
+    """The short name each arm declares (``CampaignArm.short_name``), by every variant key that names its cells: its
+    own, and those it resolves to under this build's identity predicate. A declared name is what a page prints for
+    the arm in its tight places, ahead of any short name a page would compute (GENERATOR.md §6.1); an arm declaring
+    none is absent.
+
+    :param arms: A campaign's arms.
+    :ptype arms: Iterable[CampaignArm]
+    :return: Variant key -> declared short name.
+    :rtype: dict[str, str]
+    """
+    return {
+        key: arm.short_name
+        for arm in arms
+        if arm.short_name is not None
+        for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)
+    }
+
+
+def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
+    """The name every page prints for each arm of a campaign, by every variant key a label names: the one display-name
+    rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
+    the campaign page's folds and readings, and the plan page alike.
+
+    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code, from the
+    levers its variant's ``axis=level`` name spells (:func:`~threetears.evals.analysis.style.arm_name`'s ``levers``,
+    as a code-only page reads them), so it prints by the rule; an arm a person named (any the declaration covers) keeps
+    its label as written. The labels themselves, which name the arms as ids, are unchanged.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> the name a page prints.
+    :rtype: dict[str, str]
+    """
+    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
+    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
+    spelled = arm_names(list(entries.values()))
+    keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
+    printed: dict[str, str] = {}
+    for key in dict.fromkeys(keys):
+        label = bundle.label_of(key)
+        levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
+        printed[key] = arm_display_name(label, levers)
+    return printed
+
+
 def counted(n: int, of: int, what: str) -> str:
     """``n of m <what>``: a count, never a rate."""
     return f"{n} of {of} {what}"
@@ -435,7 +539,11 @@ __all__ = [
     "GUARDRAIL_DECISION_WORDS",
     "LOWER_IS_BETTER",
     "arm_namer",
+    "arm_tags",
+    "campaign_arm_tags",
     "cell_arm_labels",
+    "declared_arm_names",
+    "printed_arm_labels",
     "comparison_words",
     "counted",
     "evidence_rows",

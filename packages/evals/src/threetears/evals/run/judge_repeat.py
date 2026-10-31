@@ -51,6 +51,7 @@ from threetears.evals.schema.models import (
     RepeatedScore,
 )
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.run_pages import iter_keyed_results, without_payloads
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
@@ -224,7 +225,12 @@ class BudgetedJudgeClient:
 
 @dataclass(frozen=True)
 class PlannedRepeat:
-    """One result to repeat: what its judge read, and the dims it holds a score on, in dimension order."""
+    """One result to repeat: what its judge read, and the dims it holds a score on, in dimension order.
+
+    ``result`` is held without its verbatim fields (:func:`~threetears.evals.kernel.run_pages.without_payloads`), so
+    a plan of every result of a large run holds none of their world events or kind payloads; a repeat is written to
+    the result as the store holds it, read again by id.
+    """
 
     result: EvalResult
     inputs: ReproducibleJudgeInputs
@@ -289,19 +295,20 @@ def collect_repeatable(
     # Refusals that hold for every result, raised once rather than named per result.
     judge_model = recorded_judge_pins(run, request_settings=request_settings)
     judged_template(storage, run, scope_id)
-    results = storage.query_eval_results_by_run(run.id, scope_id)
+    # The run's keys, then its results by id a page at a time: the named ones alone when results are named.
+    keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
     if result_ids is not None:
-        known = {result.id for result in results}
+        known = {key.id for key in keys}
         if stray := sorted(set(result_ids) - known):
             raise ValidationFailedError(
                 f"result(s) {stray} are not results of run '{run_id}' in this scope",
                 remedy=f"name results of run '{run_id}' ({FIND_RESULT})",
             )
         wanted = set(result_ids)
-        results = [result for result in results if result.id in wanted]
+        keys = [key for key in keys if key.id in wanted]
     planned: list[PlannedRepeat] = []
     skipped: list[JudgeRepeatSkip] = []
-    for result in results:
+    for result in iter_keyed_results(storage, scope_id, keys):
         scored = _scored_dims(result)
         if not scored:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason="it holds no judge score to repeat"))
@@ -325,7 +332,8 @@ def collect_repeatable(
         if not dims:
             skipped.append(JudgeRepeatSkip(result_id=result.id, reason="none of its scored dims is one its run judged"))
             continue
-        planned.append(PlannedRepeat(result=result, inputs=inputs, dims=dims))
+        # Kept without its verbatim fields: the pass reads its scores, and reloads it to write.
+        planned.append(PlannedRepeat(result=without_payloads(result), inputs=inputs, dims=dims))
     if not planned:
         why = "; ".join(f"{skip.result_id}: {skip.reason}" for skip in skipped) or "it has no results"
         raise ValidationFailedError(

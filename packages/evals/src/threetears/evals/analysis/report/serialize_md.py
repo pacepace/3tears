@@ -23,8 +23,7 @@ a record for each failed or lost trial, the passed ones one table of their store
 from __future__ import annotations
 
 import html
-import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.report.blocks import (
@@ -37,6 +36,17 @@ from threetears.evals.analysis.report.blocks import (
     TextBlock,
     TrialBlock,
 )
+from threetears.evals.analysis.report.md_parts import (
+    chart_lines,
+    code_span,
+    fenced,
+    inert,
+    one_line,
+    paragraphs,
+    table_lines,
+)
+from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
+from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
@@ -60,7 +70,7 @@ def report_markdown(report: Report) -> str:
     :rtype: str
     """
     # The title first, then the first screen in order: what warns is under the verdict, never above the title.
-    lines = [f"# {_one_line(report.title)}"]
+    lines = [f"# {one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN and not _repeats_scoreboard(block)]
     for index, block in enumerate(head):
         # Line 2 (the arms, or a declared question) is directly under the title: every other block is set off by a
@@ -79,13 +89,26 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     any disclosure the campaign states once for every aspect; its headings a level down, its trials' ids prefixed with
     the aspect's), then how the page was made, then the one glossary.
 
+    A planned analysis's page (``plan_page`` set) is the page its report plan draws
+    (:func:`~threetears.evals.analysis.report.plan_page.markdown.planned_page_markdown`), with each aspect's fold and
+    the glossary as its appendix after Method.
+
+    A report document's page (``doc_page`` set) is the page its stored document draws
+    (:func:`~threetears.evals.analysis.report.doc_page.markdown.doc_page_markdown`), written whole, with each aspect's
+    fold and the glossary after it as its evidence record where ``doc_trials`` asks for every trial's record.
+
     :param report: The campaign's page.
     :ptype report: CampaignReport
     :return: The Markdown text, ending in a newline.
     :rtype: str
     """
+    if report.doc_page is not None:
+        record = [*_fold_lines(report), *_glossary_lines(report.terms)] if report.doc_trials else []
+        return doc_page_markdown(report.doc_page, record=record)
+    if report.plan_page is not None:
+        return planned_page_markdown(report.plan_page, appendix=[*_fold_lines(report), *_glossary_lines(report.terms)])
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
-    lines = [f"# {_one_line(report.title)}"]
+    lines = [f"# {one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     for index, block in enumerate(head):
         lines += [*([] if index == 0 else [""]), *_block(block)]
@@ -94,21 +117,28 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     titles = report.section_titles
     for section in before:
         lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
-    for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
-        prefix = f"a-{slug}-"
-        lines += ["", f"## {_inert(_one_line(fold.aspect))}", "", f"{_inert(_one_line(fold.shows))}.", ""]
-        lines += [f"<details><summary>{html.escape(_one_line(fold.aspect), quote=False)} in full</summary>"]
-        lines += _folded(fold.summary, prefix=prefix)
-        aspect = fold.report
-        own = [block for block in fold.head if not _repeats_scoreboard(block)]
-        for block in own:
-            lines += ["", *_block(block, prefix=prefix)]
-        lines += _section_lines(aspect, depth=3, prefix=prefix)
-        lines += ["", "</details>"]
+    lines += _fold_lines(report)
     for section in after:
         lines += ["", f"## {titles[section]}", *_folded([b for b in report.blocks if b.section == section])]
     lines += _glossary_lines(report.terms)
     return "\n".join(lines) + "\n"
+
+
+def _fold_lines(report: CampaignReport) -> list[str]:
+    """Each aspect under its own heading with what code read there, then its page in one ``<details>``, each opening
+    on a blank line."""
+    lines: list[str] = []
+    for fold, slug in zip(report.aspects, report.fold_ids, strict=True):
+        prefix = f"a-{slug}--"
+        lines += ["", f"## {inert(one_line(fold.aspect))}", "", f"{inert(one_line(fold.shows))}.", ""]
+        lines += [f"<details><summary>{html.escape(one_line(fold.aspect), quote=False)} in full</summary>"]
+        lines += _folded(fold.summary, prefix=prefix)
+        own = [block for block in fold.head if not _repeats_scoreboard(block)]
+        for block in own:
+            lines += ["", *_block(block, prefix=prefix)]
+        lines += _section_lines(fold.report, depth=3, prefix=prefix)
+        lines += ["", "</details>"]
+    return lines
 
 
 def _section_lines(report: Report, *, depth: int, prefix: str = "") -> list[str]:
@@ -181,14 +211,13 @@ def _block(block: ReportBlock, *, prefix: str = "") -> list[str]:
         return _text(block)
     if isinstance(block, TableBlock):
         if block.details:
-            return [f"<details><summary>{block.title}</summary>", "", *_table(block), "", "</details>"]
+            return [f"<details><summary>{block.title}</summary>", "", *table_lines(block), "", "</details>"]
         # A table in a fold of its own name is titled once, by the fold's summary.
         if block.fold == block.title:
-            return _table(block)
-        return [f"**{block.title}**", "", *_table(block)]
+            return table_lines(block)
+        return [f"**{block.title}**", "", *table_lines(block)]
     if isinstance(block, ChartBlock):
-        headers, rows = block.values_table()
-        return [f"**{block.title}**", "", *markdown_table(headers, rows)]
+        return chart_lines(block)
     if isinstance(block, TrialBlock):
         return _trial(block, prefix=prefix)
     return _disclosure(block)
@@ -196,18 +225,18 @@ def _block(block: ReportBlock, *, prefix: str = "") -> list[str]:
 
 def _text(block: TextBlock) -> list[str]:
     """An author's words, laid out by what they were written as."""
-    body = _one_line(block.body.strip())
+    body = one_line(block.body.strip())
     facts = {fact.name: fact.value for fact in block.facts}
     if block.role == "finding_title":
         # A finding leads with its headline, unnumbered: nothing on the page cites it by number.
         return [f"**{body}**"]
     if block.role == "answer":
         lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
-        return [f"**{lead}.** {body}" if lead else _inert(body)]
+        return [f"**{lead}.** {body}" if lead else inert(body)]
     if block.role == "recommendation":
         disposition = facts.get("Disposition", "")
         sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
-        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else _inert(body + sure)]
+        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else inert(body + sure)]
     if block.role == "override":
         over = (
             f"The memo recommends {facts['Arm']} over {facts.get('Over', 'it')}" if "Arm" in facts else "The memo's why"
@@ -216,21 +245,21 @@ def _text(block: TextBlock) -> list[str]:
     if block.role in SUMMARY_LEADS:
         return [f"**{SUMMARY_LEADS[block.role]}** {body}"]
     if block.role == "reason":
-        return [f"- {_inert(body)}"]  # one line: body is _one_line(...) above
+        return [f"- {inert(body)}"]  # one line: body is one_line(...) above
     if block.role == "next_step":
         return [f"**Next:** {body}"]
     if block.role == "caveat":
         return [f"Caveat ({facts.get('Kind', 'unkinded')}): {body}"]
     if block.role == "carried_forward":
         return [f"Carried forward: {body}"]
-    return _paragraphs(block.body)
+    return paragraphs(block.body)
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
     """Something code had to say: the verdict and what warns in bold, every other line plain."""
     if block.source == "verdict" or (block.section in ("header", "warnings") and block.source in _WARNING_SOURCES):
-        return [f"**{_one_line(block.text)}**"]
-    return [_inert(_one_line(block.text))]
+        return [f"**{one_line(block.text)}**"]
+    return [inert(one_line(block.text))]
 
 
 def trial_summary(block: TrialBlock) -> str:
@@ -242,22 +271,22 @@ def _trial(block: TrialBlock, *, prefix: str = "") -> list[str]:
     """One trial's record, open when the block says so: what it asked, what the judge saw and said, what failed,
     and where it is stored."""
     opened = " open" if block.open else ""
-    summary = html.escape(_one_line(trial_summary(block)), quote=False)
+    summary = html.escape(one_line(trial_summary(block)), quote=False)
     lines = [f'<details id="{html.escape(prefix + block.trial_id)}"{opened}><summary>{summary}</summary>', ""]
     if block.cause_words:
         lines += [*_quoted("Why:", block.cause_words), ""]
     if block.first_input:
-        lines += ["What the case asked:", "", *_fenced(block.first_input), ""]
+        lines += ["What the case asked:", "", *fenced(block.first_input), ""]
     if block.excerpt:
-        lines += ["What the judge saw (its last part):", "", *_fenced(block.excerpt), ""]
+        lines += ["What the judge saw (its last part):", "", *fenced(block.excerpt), ""]
     if block.failed_checks:
         # A name that only restates the expression ("Pass rate of <expression>") adds nothing beside it.
         lines += [
             "Failed checks:",
             *(
-                f"- {_code(check.expression)}"
+                f"- {code_span(check.expression)}"
                 if check.expression in check.name
-                else f"- {_code(check.name)}: {_code(check.expression)}"
+                else f"- {code_span(check.name)}: {code_span(check.expression)}"
                 for check in block.failed_checks
             ),
             "",
@@ -266,121 +295,28 @@ def _trial(block: TrialBlock, *, prefix: str = "") -> list[str]:
         lines += ["What the judge said:"]
         for entry in block.judge:
             score = "could not tell" if entry.score is None else f"{entry.score} ({entry.scale})"
-            asked = f" Asked: {_code(entry.criterion)}." if entry.criterion else ""
-            said = f" {_code(entry.reason)}" if entry.reason.strip() else ""
-            lines.append(f"- {_code(entry.dim)}: {score}.{asked}{said}")  # one line: asked and said are code spans
+            asked = f" Asked: {code_span(entry.criterion)}." if entry.criterion else ""
+            said = f" {code_span(entry.reason)}" if entry.reason.strip() else ""
+            lines.append(f"- {code_span(entry.dim)}: {score}.{asked}{said}")  # one line: asked and said are code spans
         lines.append("")
     if block.error_words:
-        lines += ["Recorded error:", "", *_fenced(block.error_words), ""]
+        lines += ["Recorded error:", "", *fenced(block.error_words), ""]
     lines += [f"Stored result: `{block.result_id}` (read it with result_get).", "", "</details>"]
     return lines
 
 
 def _quoted(label: str, text: str) -> list[str]:
     """``label`` and a string the trial carried, escaped by its content: fenced under it when it runs over several
-    lines (:func:`_fenced`), else a code span beside it (:func:`_code`)."""
+    lines (:func:`fenced`), else a code span beside it (:func:`code_span`)."""
     if "\n" in text.strip():
-        return [label, "", *_fenced(text)]
-    return [f"{label} {_code(text)}"]
-
-
-def _code(text: str) -> str:
-    """One line of quoted text as a code span no run of backticks inside it can close: nothing in it is structure, a
-    tag or an emphasis. Padded with a space where it begins or ends with a backtick, which the span then strips."""
-    text = _one_line(text)
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    ticks = "`" * (longest + 1)
-    pad = " " if text[:1] == "`" or text[-1:] == "`" or (text[:1] == " " and text[-1:] == " ") else ""
-    return f"{ticks}{pad}{text}{pad}{ticks}"
-
-
-def _fenced(text: str) -> list[str]:
-    """Text as a fenced block whose fence no run of backticks inside it can close, so nothing in it is structure."""
-    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return [fence, *text.splitlines(), fence]
-
-
-#: A line's opening that would make it a block of its own rather than a paragraph's text: a heading, a quote, a
-#: list item, a code fence or an HTML block — or a whole line that is a thematic break. Its first character is
-#: escaped. A table and a setext heading each need a second line, which a paragraph laid out on one never has.
-_BLOCK_OPENING = re.compile(r"#|>|[-+*](?:\s|$)|`{3}|~{3}|<|([-*_])(?:\s*\1){2,}\s*$")
-
-#: An ordered list item's opening (``1.`` or ``1)``), whose delimiter is escaped instead.
-_ORDERED_OPENING = re.compile(r"(\d{1,9})([.)])(?=\s|$)")
-
-
-def _inert(line: str) -> str:
-    """One line of someone else's words that opens no block of its own: its leading marker escaped."""
-    line = line.lstrip()
-    if _BLOCK_OPENING.match(line):
-        return "\\" + line
-    if match := _ORDERED_OPENING.match(line):
-        return f"{match.group(1)}\\{match.group(2)}{line[match.end() :]}"
-    return line
-
-
-def _paragraphs(text: str) -> list[str]:
-    """An author's words as the page lays them out: paragraphs on one line each and bullet lists, nothing else.
-
-    The page (``serialize_html._markdown``) renders only those, with bold and code inside them; a heading, a quote or a
-    fence an author's words carry reads there as the text it is, and here as the same text, escaped.
-    """
-    out: list[str] = []
-    for paragraph in re.split(r"\n\s*\n", text.strip()):
-        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
-        if not lines:
-            continue
-        if out:
-            out.append("")
-        if all(line[:2] in ("- ", "* ") for line in lines):
-            out += [f"- {_inert(line[2:])}" for line in lines]  # one line: each is a line of paragraph.splitlines()
-        else:
-            out.append(_inert(" ".join(lines)))
-    return out
-
-
-def _table(block: TableBlock) -> list[str]:
-    """A table block's rows, or a line saying it has none."""
-    if not block.rows:
-        return ["_(no rows)_"]
-    headers = [column.header for column in block.columns]
-    lines = markdown_table(headers, [[row[column.key].text for column in block.columns] for row in block.rows])
-    if block.total_rows > len(block.rows):
-        lines += ["", f"_{len(block.rows)} of {block.total_rows} rows shown._"]
-    return lines
-
-
-def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[str]:
-    """A GitHub-flavoured Markdown table: one line per row, each cell on one line with its pipes escaped.
-
-    :param headers: The column headers.
-    :ptype headers: Sequence[str]
-    :param rows: Each row's cells as text, in header order.
-    :ptype rows: Iterable[Sequence[str]]
-    :return: The table's lines.
-    :rtype: list[str]
-    """
-    lines = ["| " + " | ".join(_cell(header) for header in headers) + " |", "|" + "---|" * len(headers)]
-    lines += ["| " + " | ".join(_cell(text) for text in row) + " |" for row in rows]
-    return lines
-
-
-def _cell(text: str) -> str:
-    """Text a table cell can hold: one line, its pipes escaped."""
-    return _one_line(text).replace("|", "\\|")
-
-
-def _one_line(text: str) -> str:
-    """Text a heading, a list item or a cell carries, on one line — a newline would end either mid-sentence."""
-    return " ".join(text.split("\n")).strip()
+        return [label, "", *fenced(text)]
+    return [f"{label} {code_span(text)}"]
 
 
 __all__ = [
     "RESOLUTION_WORDS",
     "SUMMARY_LEADS",
     "campaign_report_markdown",
-    "markdown_table",
     "report_markdown",
     "trial_summary",
 ]

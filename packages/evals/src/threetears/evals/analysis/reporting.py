@@ -76,11 +76,8 @@ from threetears.evals.analysis.completeness import degraded_run_disclosures
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries
 
 if TYPE_CHECKING:
-    from threetears.evals.schema.models import (
-        EvalResult,
-        EvalRun,
-        GoalStateOutcome,
-    )
+    from threetears.evals.kernel.result_reading import GoalView, ResultView
+    from threetears.evals.schema.models import EvalResult, EvalRun
 
 
 log = get_logger(__name__)
@@ -232,7 +229,7 @@ class ResultServedReading(NamedTuple):
     unrecorded: bool
 
 
-def served_reading(result: EvalResult) -> ResultServedReading | None:
+def served_reading(result: ResultView) -> ResultServedReading | None:
     """Read which model answered one result's candidate calls, off its candidate usage rows.
 
     ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
@@ -240,7 +237,7 @@ def served_reading(result: EvalResult) -> ResultServedReading | None:
     the pointer rather than the model behind it.
 
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The reading, or ``None`` when the candidate left no usage row: nothing was called, so nothing
         answered, and no claim is made about it.
     :rtype: ResultServedReading | None
@@ -358,7 +355,7 @@ def pool_served_readings(readings: Iterable[ResultServedReading | None]) -> Serv
     )
 
 
-def pooled_served_models(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> ServedModelReading | None:
+def pooled_served_models(results: Sequence[ResultView] | Sequence[ScoreRecord]) -> ServedModelReading | None:
     """Say which models answered the candidate calls a pooled figure rests on (#684).
 
     Shared, as :func:`pooled_cost_compositions` is, so the frontier, history, pivot and two-run comparison read
@@ -366,7 +363,7 @@ def pooled_served_models(results: Sequence[EvalResult] | Sequence[ScoreRecord]) 
 
     :param results: The results the caller pooled, or the rows a pivot cell pooled — read through
         :attr:`ScoreRecord.served_model`, once per result however many rows it put in the cell.
-    :ptype results: Sequence[EvalResult] | Sequence[ScoreRecord]
+    :ptype results: Sequence[ResultView] | Sequence[ScoreRecord]
     :return: The pooled reading, or ``None`` when no pooled result's candidate made a call.
     :rtype: ServedModelReading | None
     """
@@ -465,7 +462,7 @@ class UnconfirmedModelIdentity(EvalBaseModel):
 
 
 def unconfirmed_model_identities(
-    runs: Iterable[EvalRun], results: Iterable[EvalResult]
+    runs: Iterable[EvalRun], results: Iterable[ResultView]
 ) -> list[UnconfirmedModelIdentity]:
     """Each role whose calls some response named no model for, over the results given (#2025).
 
@@ -477,7 +474,7 @@ def unconfirmed_model_identities(
     :param runs: The runs the results belong to; a result whose run is absent names no requested judge.
     :ptype runs: Iterable[EvalRun]
     :param results: The results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The candidate's reading then the judge's, each only where some call or score is unconfirmed; empty when
         every response named its model, or nothing was called.
     :rtype: list[UnconfirmedModelIdentity]
@@ -506,11 +503,11 @@ class ModelIdentityTally:
         self._judge_requested: set[str] = set()
         self._n_scores = self._n_unnamed = 0
 
-    def add(self, result: EvalResult) -> None:
+    def add(self, result: ResultView) -> None:
         """Read one result's candidate calls and judge scores.
 
         :param result: The result.
-        :ptype result: EvalResult
+        :ptype result: ResultView
         """
         if (reading := served_reading(result)) is not None:
             self._candidate_total += 1
@@ -771,7 +768,7 @@ class _Tally:
         )
 
 
-def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[EvalResult]) -> list[RequestSettingsReading]:
+def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[ResultView]) -> list[RequestSettingsReading]:
     """What the judge and the simulated user asked for and were actually sent, over the results given.
 
     The judge is read off every stored score a judge phase produced (one with a ``judge_temperature``; a score made
@@ -782,7 +779,7 @@ def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[EvalRes
     :param runs: The runs the results belong to; a result whose run is absent counts as asking nothing recorded.
     :ptype runs: Iterable[EvalRun]
     :param results: The results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The judge's reading then the simulated user's, each only where the role made a call; empty when neither
         did.
     :rtype: list[RequestSettingsReading]
@@ -806,11 +803,11 @@ class RequestSettingsTally:
         self._by_id = {run.id: run for run in runs}
         self._judge, self._simulator = _Tally(), _Tally()
 
-    def add(self, result: EvalResult) -> None:
+    def add(self, result: ResultView) -> None:
         """Read one result's judge scores and simulator calls.
 
         :param result: The result.
-        :ptype result: EvalResult
+        :ptype result: ResultView
         """
         run = self._by_id.get(result.eval_run_id)
         axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
@@ -1275,7 +1272,7 @@ class ScoreProjection(EvalBaseModel):
     completeness_disclosures: dict[str, str] = {}
 
 
-def _subject_id_of(run: EvalRun, result: EvalResult | None = None) -> str:
+def _subject_id_of(run: EvalRun, result: ResultView | None = None) -> str:
     """Resolve the real subject a measurement is attributed to.
 
     Two fields carry the same fact, populated by different generations of the
@@ -1296,7 +1293,7 @@ def _subject_id_of(run: EvalRun, result: EvalResult | None = None) -> str:
     :param run: The run supplying the snapshot fallback.
     :ptype run: EvalRun
     :param result: The result whose attribution is preferred, when available.
-    :ptype result: EvalResult | None
+    :ptype result: ResultView | None
     :return: The subject key, never blank. ``SubjectSnapshot`` refuses a blank one, so the fallback
         below always answers — which is what retired the whole family of "excluded: no captured
         identity" counters this function used to feed. A blank subject was never a group of its
@@ -1309,7 +1306,7 @@ def _subject_id_of(run: EvalRun, result: EvalResult | None = None) -> str:
     return run.subject_snapshot.subject_id
 
 
-class PlacedResult(NamedTuple):
+class PlacedResult[R: ResultView = EvalResult](NamedTuple):
     """One result matched to its run and its resolved subject, ready to group.
 
     The unit of :func:`place_results`. Carrying the ``run`` beside the result
@@ -1320,18 +1317,18 @@ class PlacedResult(NamedTuple):
     """
 
     run: EvalRun
-    result: EvalResult
+    result: R
     subject_id: str
 
 
-def place_results(
+def place_results[R: ResultView](
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[R],
     known_run_ids: set[str] | None,
     *,
     source: str,
     archived_run_ids: set[str] | None,
-) -> tuple[list[PlacedResult], ProjectionExclusions]:
+) -> tuple[list[PlacedResult[R]], ProjectionExclusions]:
     """Match each result to its run and resolved subject, accounting for every drop.
 
     The prologue shared by :func:`project_score_records`, :func:`compute_frontier`, and
@@ -1351,7 +1348,7 @@ def place_results(
     :param runs: The runs supplying cell coordinates. Order is irrelevant.
     :ptype runs: list[EvalRun]
     :param results: The observations to place. Output preserves this order.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[R]
     :param known_run_ids: Every run id that exists in the corpus, including ones a
         caller's own filter kept out of ``runs``. A result whose run is in
         this set but not in ``runs`` was excluded *on request* and is counted
@@ -1375,11 +1372,11 @@ def place_results(
     :ptype archived_run_ids: set[str] | None
     :return: The placed results in input order — each carrying a non-blank
         ``subject_id`` — plus the exclusion accounting.
-    :rtype: tuple[list[PlacedResult], ProjectionExclusions]
+    :rtype: tuple[list[PlacedResult[R]], ProjectionExclusions]
     """
     runs_by_id = {run.id: run for run in runs}
 
-    placed: list[PlacedResult] = []
+    placed: list[PlacedResult[R]] = []
     skipped_no_run = 0
     skipped_outside_query = 0
     skipped_archived = 0
@@ -1456,7 +1453,7 @@ def lever_level(value: Any) -> str:
 
 
 def _run_factors(
-    placed: Sequence[tuple[EvalRun, EvalResult, str]], *, profile: HostProfile
+    placed: Sequence[tuple[EvalRun, ResultView, str]], *, profile: HostProfile
 ) -> dict[str, dict[str, str]]:
     """Each placed run's open coordinates: every lever its host's registry resolves for it.
 
@@ -1473,13 +1470,13 @@ def _run_factors(
     again per row would pay for it k × cases times for one answer.
 
     :param placed: The ``(run, result, subject_id)`` triples being projected.
-    :ptype placed: Sequence[tuple[EvalRun, EvalResult, str]]
+    :ptype placed: Sequence[tuple[EvalRun, ResultView, str]]
     :param profile: The host whose vocabulary this reads.
     :ptype profile: HostProfile
     :return: Run id -> its coordinate map.
     :rtype: dict[str, dict[str, str]]
     """
-    results_by_run: dict[str, list[EvalResult]] = {}
+    results_by_run: dict[str, list[ResultView]] = {}
     runs: dict[str, EvalRun] = {}
     for run, result, _ in placed:
         runs.setdefault(run.id, run)
@@ -1541,7 +1538,7 @@ def dim_judge_model(run: EvalRun, rubric_dim: str | None) -> str | None:
 
 def project_score_records(
     runs: list[EvalRun],
-    results: list[EvalResult],
+    results: Sequence[ResultView],
     *,
     known_run_ids: set[str] | None = None,
     archived_run_ids: set[str] | None,
@@ -1564,7 +1561,7 @@ def project_score_records(
     :param runs: The runs supplying cell coordinates. Order is irrelevant.
     :ptype runs: list[EvalRun]
     :param results: The observations to project.
-    :ptype results: list[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param known_run_ids: Every run id that exists in the corpus, including ones a
         caller's own filter kept out of ``runs``. A result whose run is in
         this set but not in ``runs`` was excluded *on request* and is
@@ -1676,7 +1673,7 @@ def project_score_records(
                 metric=METRIC_COMPOSITE,
                 value=composite,
                 dimension_basis=composite_basis(result),
-                host_measures=result.host_measures,
+                host_measures=dict(result.host_measures),
                 **composite_coordinates,
             )
         )
@@ -1762,7 +1759,7 @@ def project_score_records(
         # harness-faulted result (the check read the harness, so it stays out of every pass rate while the
         # row still records that it was attempted), and 0.0 for every check on a candidate failure.
         counted = counted_goal_verdicts(result)
-        verdicts: list[tuple[GoalStateOutcome, float | None]]
+        verdicts: list[tuple[GoalView, float | None]]
         if counted is None:
             verdicts = [(goal, None) for goal in result.goal_state_outcomes]
         else:
@@ -1864,7 +1861,7 @@ def project_score_records(
     )
 
 
-def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]) -> CompositeBasis | None:
+def pooled_composite_basis(results: Sequence[ResultView] | Sequence[ScoreRecord]) -> CompositeBasis | None:
     """Say what a pooled composite was meaned over, and whether the pool is ragged (#638).
 
     Every surface that means composites across results pools numbers each meaned over whatever dimensions
@@ -1874,7 +1871,7 @@ def pooled_composite_basis(results: Sequence[EvalResult] | Sequence[ScoreRecord]
 
     :param results: The results whose composites the caller pooled, or the composite rows a pivot cell pooled
         (:attr:`ScoreRecord.dimension_basis`). A row that is not a composite row contributes nothing.
-    :ptype results: Sequence[EvalResult] | Sequence[ScoreRecord]
+    :ptype results: Sequence[ResultView] | Sequence[ScoreRecord]
     :return: The pooled basis, or None when nothing pooled carried a composite.
     :rtype: CompositeBasis | None
     """
@@ -1914,7 +1911,7 @@ def pooled_cost_compositions(results: Iterable[_CostComposed]) -> list[list[str]
     return sorted(list(c) for c in {tuple(result.cost_roles) for result in results if result.cost_roles is not None})
 
 
-def self_judging_models(run: EvalRun, results: Iterable[EvalResult]) -> list[str]:
+def self_judging_models(run: EvalRun, results: Iterable[ResultView]) -> list[str]:
     """The models that both judged a run's answers and produced them, sorted; empty when none did.
 
     The judges are the run's pins and every model a score names as having served it; the candidates are the run's
@@ -1924,7 +1921,7 @@ def self_judging_models(run: EvalRun, results: Iterable[EvalResult]) -> list[str
     :param run: The run.
     :ptype run: EvalRun
     :param results: Its results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: The shared models.
     :rtype: list[str]
     """
@@ -1947,11 +1944,11 @@ class SelfJudgingTally:
         self._judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
         self._candidates = {run.candidate_model}
 
-    def add(self, result: EvalResult) -> None:
+    def add(self, result: ResultView) -> None:
         """Read the models one result's scores name as judging it and its candidate rows name as answering.
 
         :param result: The result.
-        :ptype result: EvalResult
+        :ptype result: ResultView
         """
         self._judges |= {score.served_model for score in result.rubric_scores if score.served_model}
         self._candidates |= {

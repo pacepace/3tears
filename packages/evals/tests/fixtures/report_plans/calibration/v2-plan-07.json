@@ -1,0 +1,16 @@
+{
+  "items": [
+    {"id": "R2", "verdict": "pass", "reason": "A decision with instruction and reason, matching the recommended atlas-m row and the gate matrix that emphasises it; the input confirms Atlas-M is the only arm clearing every gate.", "quote": "Ship Atlas-M (B) on all traffic. It is the only candidate that clears every gate.", "labeled_by": "model"},
+    {"id": "R3", "verdict": "pass", "reason": "Two sentences: the supporting fact that the cheaper task winners are blocked by the speculation gate, then what would change the answer.", "quote": "Once a cheaper model clears that gate, routing would cut cost.", "labeled_by": "model"},
+    {"id": "R4", "verdict": "pass", "reason": "No flag and no report-wide disclosures; the borderline interval on troubleshooting is stated once in Watch, and the judge agreement in Method is a required definition.", "quote": "", "labeled_by": "model"},
+    {"id": "R5", "verdict": "fail", "reason": "The first section's headline claims the cheapest passing model differs by task, but its gate matrix plots only pass/fail on quality, behaviors and latency, not cost, so the chart cannot show which passing model is cheapest.", "quote": "Atlas-M (B) passes every task; the cheapest passing model differs by task", "labeled_by": "model"},
+    {"id": "R6", "verdict": "pass", "reason": "Every arm, task, criterion and measure above Full results appears under its reader name; no ids, hashes or measure keys.", "quote": "", "labeled_by": "model"},
+    {"id": "R7", "verdict": "pass", "reason": "Watch names the weakest margin given by the facts (Atlas-M at its 90% resolves floor, interval crossing) and the sample that settles it.", "quote": "The weakest margin is Atlas-M (B) on Resolves the issue in Troubleshooting (multi-turn): 90%, exactly at its 90% floor, with an interval that crosses it. A larger troubleshooting sample settles it before launch.", "labeled_by": "model"},
+    {"id": "R8", "verdict": "pass", "reason": "Short active sentences, no hedges, consistent measure names, and no statistician's grammar above the fold.", "quote": "", "labeled_by": "model"},
+    {"id": "R9", "verdict": "pass", "reason": "The headline gives what and why, the second slot explains why not the others, and Watch gives the main risk, all before any section.", "quote": "It passes the quality floor, every task-specific behavior and the latency budget on all five tasks.", "labeled_by": "model"},
+    {"id": "R10", "verdict": "pass", "reason": "Next names a concrete experiment (a speculation guard on Brisk-S) with a stated decisive direction that would turn the call into a routing plan.", "quote": "Test a speculation guard on Brisk-S (C). If it clears the speculation gate, route billing to Brisk-S (C) and small talk to Open-70B (D), and the recommendation changes from one model to a routing plan.", "labeled_by": "model"},
+    {"id": "R11", "verdict": "pass", "reason": "The confidence is high with no clauses, so nothing to score.", "quote": "", "labeled_by": "model"},
+    {"id": "R12", "verdict": "pass", "reason": "Each figure measures what its sentence claims: the 3 s p95 budget, Atlas-M's 90% against the 90% floor, and the judge's 200 ratings and 86% agreement.", "quote": "misses the 3 s p95 latency budget on four of five tasks", "labeled_by": "model"}
+  ],
+  "scored_at": "2026-10-25T23:26:30Z"
+}

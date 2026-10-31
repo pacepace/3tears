@@ -1,0 +1,27 @@
+rendered block
+block_kind: range_bars
+query:
+  source: measures
+  aspect: 
+  measures: [latency_ms]
+  arms: [brisk-s.low.r1, brisk-s.high.r1, atlas-m.high.r1]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: brisk-s.low.r1
+title: 
+level: 
+unit: ms
+domain: 
+reference: none
+columns: [Group, Row, From, To]
+rows (3):
+  - cells: [Latency, J · Brisk-S · reasoning low · 1 retry, 209 ms, 513 ms]
+  - cells: [Latency, L · Brisk-S · reasoning high · 1 retry, 364 ms, 870 ms]
+  - cells: [Latency, F · Atlas-M · reasoning high · 1 retry, 1094 ms, 2551 ms]
+total: 3
+offset: 0
+truncated: False
+notes: []

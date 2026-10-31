@@ -43,6 +43,18 @@ _ONE_DECIMAL_UNITS: frozenset[str] = frozenset({PERCENT, POINTS})
 #: (``$0.0031``), as the scoreboard writes its cost: one money format on every surface of a page.
 MONEY = "usd"
 
+#: The package's own units, each with the names a sentence spells it by: its symbol, its abbreviations and its words.
+#: A closed vocabulary, the package's and never read from an input, so that prose writing a unit right after a figure
+#: that already prints it (``513 ms milliseconds``, ``3 s seconds``, ``45%%``) can be refused
+#: (:mod:`threetears.evals.analysis.report_plan_checks`). Matched in any case.
+UNIT_NAMES: dict[str, tuple[str, ...]] = {
+    "ms": ("ms", "msec", "msecs", "millisecond", "milliseconds"),
+    "s": ("s", "sec", "secs", "second", "seconds"),
+    PERCENT: (PERCENT, "pct", "percent", "per cent"),
+    POINTS: (POINTS, "pt", "pp", "point", "points", "percentage point", "percentage points"),
+    MONEY: (MONEY, "$", "dollar", "dollars"),
+}
+
 
 def display_scale(values: Sequence[float], unit: str | None, *, share: bool = False) -> tuple[float, str]:
     """Choose the unit a chart's or a table column's quantity is stated in, and the factor to reach it.
@@ -155,6 +167,7 @@ __all__ = [
     "MONEY",
     "PERCENT",
     "POINTS",
+    "UNIT_NAMES",
     "UNSPACED_UNITS",
     "delta_unit",
     "display_scale",

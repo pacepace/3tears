@@ -1,10 +1,11 @@
-"""Names are declared, never derived: an aspect's short name and a goal check's display name.
+"""Names are declared, never derived: an aspect's and an arm's short name, and a goal check's display name.
 
-An aspect declares a ``short_name`` (``Aspect.short_name``) and a template a display name per goal check
-(``EvalTemplate.goal_check_names``). A page prints the declared name, and where none is declared it prints the full
-label or the full expression, unchanged and never shortened. Neither name is part of anything a run, a cell, a pool
-or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect or a
-check changes no reading and stales nothing.
+An aspect declares a ``short_name`` (``Aspect.short_name``), so may an arm (``CampaignArm.short_name``), and a
+template a display name per goal check (``EvalTemplate.goal_check_names``). A page prints the declared name. Where
+none is declared it prints an aspect's full label or a check's full expression, unchanged and never shortened, and
+computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
+or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect, an
+arm or a check changes no reading and stales nothing.
 
 **Runs from before names existed stay poolable.** :data:`PINNED` holds every identity and digest of one fixed
 template and campaign as the tree at ``00107a5b7`` computed them (the commit names could first be declared on), byte
@@ -80,6 +81,8 @@ LABELS = ("Queue discipline under a full queue", "Queue discipline under an empt
 SHORT_NAMES = {LABELS[0]: "Full queue", LABELS[1]: "Empty queue"}
 CHECK_NAMES = {CHECKS[0]: "Cart filled", CHECKS[1]: "Replied twice"}
 ARMS = ("production", "candidate")
+#: The short names the fixture's arms declare when it declares any names.
+ARM_SHORT_NAMES = {ARMS[0]: "Prod", ARMS[1]: "Cand"}
 CASES = 6
 STAMP = "2026-10-01T00:00:00+00:00"
 
@@ -104,6 +107,7 @@ def _fixture(*, named: bool) -> dict[str, Any]:
             role="control" if index == 0 else "candidate",
             variant_key=fixture_variant_key(label),
             **({"named_at": ASKED_AT} if index == 0 else {}),
+            **({"short_name": ARM_SHORT_NAMES[label]} if named else {}),
         )
         for index, label in enumerate(ARMS)
     ]
@@ -224,8 +228,13 @@ def identities(*, named: bool) -> dict[str, str]:
     # Every reading as 00107a5b7 read it; the figures across aspects came later, read off these readings and the
     # bundles pinned above, and the campaign fingerprint below leaves them out.
     found["readings"] = _sha(built["readings"].model_dump(mode="json", exclude={"aggregate"}))
-    found["campaign fingerprint"] = campaign_bundle.fingerprint()
-    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict())
+    # Version 2, as 00107a5b7 took it, still reproduces when asked in its own version; version 3, the current one,
+    # leaves the campaign's name out and is pinned beside it.
+    v2 = PINNED["campaign fingerprint"]
+    found["campaign fingerprint"] = campaign_bundle.fingerprint(like=v2)
+    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict(), like=v2)
+    found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
+    found["campaign_evidence_digest v3"] = campaign_evidence_digest(campaign_bundle.to_dict())
     return found
 
 
@@ -298,10 +307,13 @@ PINNED: dict[str, str] = {
     "bundle schema_version": "64",
     "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
     "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
+    "campaign fingerprint v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
+    "campaign_evidence_digest v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
-    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, and the names are 16.3. It is no part
-    # of what a run, cell, pool, pairing, analysis or reporter case keys on.
-    "durable version": "16.3",
+    # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
+    # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7. It is no part of what
+    # a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "16.7",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -322,9 +334,12 @@ PINNED: dict[str, str] = {
 #: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
 #: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
 #: the names reach it, since the writer names an aspect by its short name and a check by its display name.
+#: Re-pinned in W4 (ENGINE) when the bundle's census began reading each arm's pricing off its production usage rows
+#: (``ArmScoreboard.pricing``): the fixture's runs carry such rows, so the writer is sent each arm's price sources,
+#: providers and priced calls. Nothing a name moves; no fingerprint moves (the owner's ruling keeps pricing out of them).
 PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "a1f054d06768eafd96a8a121486511ebc60742bd3a1522bbc9ec81eb9a46b05e",
-    True: "637d16a2d12009bf465a6ce55d034c9db7b3d2c96d3ef25f001fab19234f8937",
+    False: "6a1bbe9f0579ecd673aa57c18e69df4199ea0d66c1f7a1091cfe5ec935db859d",
+    True: "7bf7a21b2370ef488d1bfb06d7dd173188a2214be2008394cb68c0cd553b79cf",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
@@ -334,9 +349,11 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: differently, so its raw bytes differ between hosts while its identity does not. Its two values were computed by
 #: building this fixture on a checkout of ``00107a5b7``. The template and the campaign hold no computed figure and
 #: are pinned byte for byte.
+#: The two bundles were re-pinned in W4 (ENGINE) for the census's pricing alone: less ``scoreboard[].pricing`` each
+#: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "288ea2bcd8e5712056b228e0b9d9f2ec7a06142980e05bbe7c3031ba3dbabe8e",
-    "Queue discipline under an empty queue bundle": "afacd41e1d17fed851434d220fede231de4dd800d96556371bf427585a490f20",
+    "Queue discipline under a full queue bundle": "2ab949ec0dd4ee2c362000ca8b90ccd5da0a2197874c1660452488a289aab561",
+    "Queue discipline under an empty queue bundle": "f645d767ce42d6cd087f2b9cf75761ce08095a766756ea4990987351c92ee0a7",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }
@@ -368,6 +385,10 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
         for label, bundle in built["bundles"].items():
             assert bundle.to_dict()["short_name"] == SHORT_NAMES[label]
             assert bundle.goal_check_names == CHECK_NAMES
+            assert bundle.to_dict()["declared"]["control"]["short_name"] == ARM_SHORT_NAMES[ARMS[0]]
+        frame = built["campaign_bundle"].to_dict()
+        assert [arm["short_name"] for arm in frame["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
+        assert [arm["short_name"] for arm in frame["declaration"]["arms"]] == [ARM_SHORT_NAMES[arm] for arm in ARMS]
 
 
 # --- an aspect's short name ---------------------------------------------------------------------------------------
@@ -653,18 +674,18 @@ class TestNamingAStoredTemplateCutsNoRunOff:
             "fingerprint": assemble_context_bundle(campaign, storage=host.storage, profile=host.profile).fingerprint(),
         }
 
-    def test_naming_a_check_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_naming_leaves_criteria_rejudging_take_up_and_fingerprint_as_they_were(self, field: str) -> None:
         fixture, template, runs = self._stored()
         before = self._readings(fixture, template.id, runs)
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
 
-        named = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}},
-        )
+        named = update_template(fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names})
 
-        assert named.goal_check_names == {template.goal_state_checks[0]: "Every field"}
+        assert getattr(named, field) == names
         after = self._readings(fixture, template.id, runs)
         assert after == before
         assert all(before["rejudgeable"]), "a run launched after its template's last edit may be rejudged"
@@ -679,13 +700,15 @@ class TestNamingAStoredTemplateCutsNoRunOff:
         assert after["updated_at"] > before["updated_at"]
         assert not any(after["rejudgeable"]) and not any(after["taken up as read"])
 
-    def test_names_beside_a_measured_edit_still_stamp_it(self) -> None:
+    @pytest.mark.parametrize("field", ["goal_check_names", "stratum_names"])
+    def test_names_beside_a_measured_edit_still_stamp_it(self, field: str) -> None:
         fixture, template, _ = self._stored()
+        names = {
+            "goal_check_names": {template.goal_state_checks[0]: "Every field"},
+            "stratum_names": {"off_lane": "Off-lane asks"},
+        }[field]
         edited = update_template(
-            fixture.host.eval_host,
-            template.id,
-            TOYHOST_SCOPE,
-            {"goal_check_names": {template.goal_state_checks[0]: "Every field"}, "description": "renamed"},
+            fixture.host.eval_host, template.id, TOYHOST_SCOPE, {field: names, "description": "renamed"}
         )
         assert edited.updated_at > template.updated_at
 

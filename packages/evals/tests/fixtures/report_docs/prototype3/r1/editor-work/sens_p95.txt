@@ -1,0 +1,109 @@
+sensitivity
+parameter: threshold:p95
+hypothetical: False
+swept: every threshold from no lower end up, without end, on criterion p95
+criteria.p95.threshold = 3 s
+boundary_belongs_to: above
+declared_call:
+  modes: [decide]
+  dominant: [arm:atlas-m]
+reads_as: code's reading of the declared criteria: an interpretive fact for the analyst and the editor to weigh, never a constraint on what the report says
+declared_picks (4):
+  - task: billing; arm: arm:atlas-m
+  - task: trouble; arm: arm:atlas-m
+  - task: persona; arm: arm:atlas-m
+  - task: research; arm: arm:atlas-m
+segments (5):
+  - low: none; modes: [no_call]; dominant: []
+    high:
+      criteria.p95.atlas-m.specul.value = 1.89 s
+    picks (4):
+      - task: billing; arm: none
+      - task: trouble; arm: none
+      - task: persona; arm: none
+      - task: research; arm: none
+  - modes: [no_call]; dominant: []
+    low:
+      criteria.p95.atlas-m.specul.value = 1.89 s
+    high:
+      criteria.p95.atlas-m.billing.value = 2.1 s
+    picks (4):
+      - task: billing; arm: none
+      - task: trouble; arm: none
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: none
+  - modes: [no_call]; dominant: []
+    low:
+      criteria.p95.atlas-m.billing.value = 2.1 s
+    high:
+      criteria.p95.atlas-m.trouble.value = 2.73 s
+    picks (4):
+      - task: billing; arm: arm:atlas-m
+      - task: trouble; arm: none
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: none
+  - modes: [no_call]; dominant: []
+    low:
+      criteria.p95.atlas-m.trouble.value = 2.73 s
+    high:
+      criteria.p95.atlas-m.research.value = 2.84 s
+    picks (4):
+      - task: billing; arm: arm:atlas-m
+      - task: trouble; arm: arm:atlas-m
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: none
+  - high: none; modes: [decide]; dominant: [arm:atlas-m]
+    low:
+      criteria.p95.atlas-m.research.value = 2.84 s
+    picks (4):
+      - task: billing; arm: arm:atlas-m
+      - task: trouble; arm: arm:atlas-m
+      - task: persona; arm: arm:atlas-m
+      - task: research; arm: arm:atlas-m
+holds: False
+picks_hold: False
+flips (20):
+  - arm: arm:brisk-s; where: persona; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.persona.value = 0.72 s
+  - arm: arm:brisk-s; where: specul; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.specul.value = 0.81 s
+  - arm: arm:brisk-s; where: billing; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.billing.value = 0.9 s
+  - arm: arm:brisk-s; where: trouble; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.trouble.value = 1.17 s
+  - arm: arm:brisk-s; where: research; call_changes: False; picks_change: False
+    criteria.p95.brisk-s.research.value = 1.22 s
+  - arm: arm:open-70b; where: persona; call_changes: False; picks_change: False
+    criteria.p95.open-70b.persona.value = 1.28 s
+  - arm: arm:open-70b; where: specul; call_changes: False; picks_change: False
+    criteria.p95.open-70b.specul.value = 1.44 s
+  - arm: arm:open-70b; where: billing; call_changes: False; picks_change: False
+    criteria.p95.open-70b.billing.value = 1.6 s
+  - arm: arm:atlas-m; where: persona; call_changes: False; picks_change: False
+    criteria.p95.atlas-m.persona.value = 1.68 s
+  - arm: arm:atlas-m; where: specul; call_changes: False; picks_change: True
+    criteria.p95.atlas-m.specul.value = 1.89 s
+  - arm: arm:open-70b; where: trouble; call_changes: False; picks_change: False
+    criteria.p95.open-70b.trouble.value = 2.08 s
+  - arm: arm:atlas-m; where: billing; call_changes: False; picks_change: True
+    criteria.p95.atlas-m.billing.value = 2.1 s
+  - arm: arm:open-70b; where: research; call_changes: False; picks_change: False
+    criteria.p95.open-70b.research.value = 2.16 s
+  - arm: arm:atlas-m; where: trouble; call_changes: False; picks_change: True
+    criteria.p95.atlas-m.trouble.value = 2.73 s
+  - arm: arm:atlas-m; where: research; call_changes: True; picks_change: True
+    criteria.p95.atlas-m.research.value = 2.84 s
+  - arm: arm:atlas-l; where: persona; call_changes: False; picks_change: False
+    criteria.p95.atlas-l.persona.value = 2.88 s
+  - arm: arm:atlas-l; where: specul; call_changes: False; picks_change: False
+    criteria.p95.atlas-l.specul.value = 3.24 s
+  - arm: arm:atlas-l; where: billing; call_changes: False; picks_change: False
+    criteria.p95.atlas-l.billing.value = 3.6 s
+  - arm: arm:atlas-l; where: trouble; call_changes: False; picks_change: False
+    criteria.p95.atlas-l.trouble.value = 4.68 s
+  - arm: arm:atlas-l; where: research; call_changes: False; picks_change: False
+    criteria.p95.atlas-l.research.value = 4.86 s
+total: 20
+offset: 0
+notes: []
+bars_as: warnings

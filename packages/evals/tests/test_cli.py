@@ -60,6 +60,7 @@ from packages.evals.tests.fixtures.courierhost import (
 )
 from packages.evals.tests.test_package_matrix import REPO_ROOT
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.page_contract_support import what_runs
 
 COURIER_FACTORY = "packages.evals.tests.fixtures.courierhost:courier_launch_host"
 
@@ -125,7 +126,8 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
     out = capsys.readouterr().out
     title = out.splitlines()[0]
-    assert title.startswith(f"# {campaign.name}")
+    # The page is headed by the campaign's title, its name the qualifier in parentheses.
+    assert title.startswith("# ") and title.endswith(f"({campaign.name})")
     assert NO_RECOMMENDATION in out
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
     assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
@@ -172,8 +174,9 @@ def test_report_writes_the_page_its_markdown_and_its_bundle_to_out(
     assert run_cli(args, host_factory=lambda: host) == 0
 
     page = (out / "report.html").read_text(encoding="utf-8")
-    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and "<script" not in page.lower()
-    assert (out / "report.md").read_text(encoding="utf-8").startswith(f"# {campaign.name}")
+    assert page.startswith("<!doctype html>") and 'data-basis="code_only"' in page and what_runs(page) == []
+    first_line = (out / "report.md").read_text(encoding="utf-8").splitlines()[0]
+    assert first_line.startswith("# ") and first_line.endswith(f"({campaign.name})")
     (bundle,) = out.glob("bundle-*.json")
     assert AnalysisContextBundle.from_json(bundle.read_text(encoding="utf-8")).campaign_id == campaign.id
     assert json.loads((out / "campaign.json").read_text(encoding="utf-8"))["campaign_id"] == campaign.id

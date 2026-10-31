@@ -1,0 +1,17 @@
+{
+ "plan-01": "r4/anchor.plan.json",
+ "plan-02": "anchors/weak/item-R7.plan.json",
+ "plan-03": "anchors/weak/item-R9.plan.json",
+ "plan-04": "anchors/weak/item-R2.plan.json",
+ "plan-05": "anchors/weak/item-R6.plan.json",
+ "plan-06": "r5/anchor.plan.json",
+ "plan-07": "anchors/weak/item-R8.plan.json",
+ "plan-08": "anchors/weak/item-R4.plan.json",
+ "plan-09": "anchors/weak/item-R3.plan.json",
+ "plan-10": "r2/anchor.plan.json",
+ "plan-11": "r1/anchor.plan.json",
+ "plan-12": "anchors/weak/item-R5.plan.json",
+ "plan-13": "anchors/weak/item-R11.plan.json",
+ "plan-14": "r3/anchor.plan.json",
+ "plan-15": "anchors/weak/item-R10.plan.json"
+}

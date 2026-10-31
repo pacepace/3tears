@@ -98,7 +98,9 @@ pass it to every entrypoint. It holds:
   and is refused when the template does not declare it, exactly as a campaign's own bar on a judged dimension is;
 
 - the `EvalStorage` you read and write through;
-- a factory for the completion clients the engine's own judge, simulator and analysis roles call. Every
+- a factory for the completion clients the engine's own roles call: the judge, the simulator, case generation, the
+  proposers, the memo writer (`analysis`) and the report writer (`analyst`, one model for both the analyst and its
+  editor, whose client must also take tool turns; one that cannot is refused before anything is spent). Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
   token and cost attributes with a default, so a renamed attribute would degrade every usage row to
   "unreported" in silence. Check your completion type in your own suite with
@@ -318,10 +320,21 @@ temperature, and only then without enforcement, for that call alone. The refused
 billed, so the price ceiling is one request's, but each refused send can take up to a request timeout
 (`MAX_RESENDS`, 4).
 
-**Pricing.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
+**What your host pays is yours to say.** Hand each model your pricer (`Model(..., pricer=...)`), the port every call
+the model makes is priced through, a completion or a tool turn alike. Before a call it answers the rates you are
+billed for that model on that provider, and whether they are guaranteed; the engine computes the bound from them,
+so you never write the bound's arithmetic, and a bound on rates you do not guarantee admits the call as a disclosed
+estimate. After a call it receives the provider's usage block as returned, the provider that served it and the cache
+writes split by how long they are kept, and answers the price and its source: your own figure, your router's billed
+figure, or `None` with a reason. A model you hand no pricer gets the package's default, for standalone and
+development use: Anthropic's published rates for a direct Anthropic call, then the catalogue. Unpriced is
+`None` with `pricing_failure` saying why, never `0`.
+
+**How the default prices.** An OpenRouter call is priced by OpenRouter's own figure (`usage.cost`); under bring-your-own-key that
 figure is OpenRouter's fee alone, so the cost is it plus `cost_details.upstream_inference_cost`, and a BYOK reply
 without the upstream figure is unpriced. A reply that carries no `is_byok` is unpriced too (`cost_usd` and
-`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic or OpenAI call is priced by the catalogue row
+`price_source` are `None`, `pricing_failure` says why), since its `cost` may be the fee alone. A direct Anthropic call is priced at Anthropic's published rates, which need no
+fetch; a direct OpenAI call, or an Anthropic model those rates do not list, is priced by the catalogue row
 for the matching `vendor/model`, from the same reading of the row as the price ceiling: at the tier its prompt fell
 in, its reasoning tokens at the reasoning rate where the row lists one apart from the completion rate, its cache reads
 and writes at their rates, plus the request fee. Where a price applies that the reply's counts cannot price (reasoning
@@ -329,7 +342,8 @@ tokens it does not split out) the call is unpriced, never priced lower; its `pri
 when a cache share was priced at a rate the row does not list for it. The `price_source` words are `PriceSource`'s (host contract, from
 `threetears.evals.providers`, each member the string itself): `OPENROUTER_REPORTED`, `OPENROUTER_REPORTED_UPSTREAM`
 (the BYOK sum, `openrouter:reported+upstream`) and `OPENROUTER_CATALOGUE`, the prefix of
-`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words. Unpriced is `None` with `pricing_failure` saying why, never `0`. A
+`openrouter-catalogue:<id>`. Compare a stored `price_source` with them rather than spelling the words.
+A
 model's `price_ceiling` answers once its catalogue is loaded. The engine awaits the model's `refresh_prices()`
 before it prices a call, which loads it; `await clients.load_prices()` at boot reads it early and says which models
 it cannot price. A long-lived process is not priced from its first
@@ -716,7 +730,12 @@ typed `DefinitionStore` cannot reach a run, and a test of one hands it only that
 
 **Watch the read tier's size.** The lenses that read a whole scope — `pivot` and `export_results` (and the
 `scope_pivot` / `scope_export` operations over them) — project and aggregate every result in Python on each
-call, which suits a scope of dozens-to-hundreds of cells. Each call logs one line on the
+call, which suits a scope of dozens-to-hundreds of cells. The aggregates (`pivot`, `history`, `frontier`,
+`program_budget`, `orphaned_runs`, `comparison_sets`) read results without `world_events` and `kind_payload`, which
+none of them reads, and so do an export's reads of a scope, of named runs and of a page of whole runs (its rows are
+the same projection's), so a store that projects `exclude` never ships those bytes; a run too large for one page is read
+a page at a time by id, each page whole. A host reader handed those results (a sweepable's `read`, a residual or production
+reader) sees both as none, as a paged reader's are; read what your kind reports into its measures as the cell ends. Each call logs one line on the
 `threetears.evals.analysis.reads` logger, at INFO:
 
 ```
@@ -725,8 +744,8 @@ eval.read_tier lens=pivot scope_id=acme runs_in=12 results_in=480 records_out=28
 
 `runs_in` and `results_in` are what the call read, `records_out` the score records it projected, `cells_out`
 the pivot's cells (`refused` when the pivot was refused; absent on an export) and `elapsed_ms` its wall time.
-Once `records_out` passes `READ_TIER_ROW_BUDGET` (50,000, in `threetears.evals.analysis`) the line is logged
-at WARNING and ends `over READ_TIER_ROW_BUDGET=50000`, so you can alert on the level alone. Crossing it means
+Once `records_out` passes `READ_TIER_ROW_BUDGET` (66,003, in `threetears.evals.analysis`) the line is logged
+at WARNING and ends `over READ_TIER_ROW_BUDGET=66003`, so you can alert on the level alone. Crossing it means
 the scope has outgrown the in-Python projection, the signal to push it down into your store; it fires
 before a page is slow, and you can alert on `elapsed_ms` instead.
 
@@ -736,10 +755,19 @@ more. Past `EXPORT_PAGE_RESULTS` (1,000) it exports in pages of whole runs (`Sco
 run, so one call never holds the scope. A run past the ceiling, in the scope's pages or named alone, is exported in
 pages of whole cases of it, the cursor naming the case (`page.next_after_case_id`).
 
-The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`, and
-the `scope_pivot`, `scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a
-pivot, a frontier or a history reads as the whole of it. They make the same estimate and hold it to
-`READ_TIER_ROW_BUDGET`, before reading anything:
+The aggregating lenses (`comparison_sets`, `pivot`, `frontier`, `history`, `program_budget` and `orphaned_runs`,
+and the `scope_pivot`,
+`scope_frontier` and `scope_history` operations and actions over them) cannot page: part of a pivot, a frontier or a
+history reads as the whole of it. They make the same estimate and hold it to their read budget, before reading
+anything. Each budget is the bytes per result that reader holds at its peak against the memory one call may take,
+measured on the paths a host runs (constants of `threetears.evals.analysis.reads`): `READING_BUDGET` (66,003 results, 256 MiB) for
+`comparison_sets`,
+`frontier`, `history` and the regression watch; `PIVOT_READ_BUDGET` (27,108, 1 GiB) for `pivot`; `BUNDLE_READ_BUDGET`
+(28,116, 1 GiB) for a campaign's bundle; `PLANNING_READ_BUDGET` (37,010, 256 MiB) for a launch estimate's planning
+block; `SPEND_READ_BUDGET` (105,196, 1 GiB) for `program_budget` and `orphaned_runs`, which read each result's
+spend figures off one grouped read, never a result, but hold that read whole before folding it (1,683 bytes a result
+on a store offering grouped reads, 10,207 on a store without them, whose rows the engine groups). They take no
+filter, so past it they are refused, the remedy naming where to read the spend a page at a time.
 
 - **A scope within the budget** is read whole, as before.
 - **A scope past it** is refused (`VALIDATION_FAILED`, with `details` `runs`, `results_estimated` and
@@ -756,7 +784,10 @@ pivot, a frontier or a history reads as the whole of it. They make the same esti
 - **A read that returns more than the budget** (a deleted run's results are in no listing) is not aggregated. A
   call for one subject reads that subject's runs instead; any other call is refused.
 
-Campaign reports read their member runs by id, so the budget never applies to them. Answering a scope past the
+Campaign reports read their member runs by id, so the scope's size never refuses them. A campaign's own runs are
+held to the same budget: `assemble_context_bundle` (every analysis and campaign report) estimates the runs it reads
+from the batch run read it already makes and refuses past the budget before reading a result, naming a campaign
+of fewer member runs, archiving members it need not read, or an aspect that reads fewer runs. Answering a scope past the
 budget in one call needs the projection pushed down into SQL (#996).
 
 **A run is read a page at a time.** A run's summary (`summarize_run`, `run_get`), a take-up of it (`job_resume`, the
@@ -768,7 +799,22 @@ by run, the one a whole read of the run made, now once a walk and shipping no he
 key. Leaving the fields out costs what your store's `exclude` costs: one rebuild of each document per path when it
 drops them one at a time; a store whose fields are top-level keys of a Postgres `jsonb` can drop them all in one
 operation (`data - text[]`). A store that applies `exclude` after fetching should project each row as it reads it, or
-the pass holds every row's text at once. A few readers still read a run whole; the CHANGELOG lists them.
+the pass holds every row's text at once. Every other reader of a whole run reads it the same way, in the store's
+order: a comparison or bisection of two runs, a run written lost, the witnessed judge ceiling, `results_list`,
+`list_results`, `delete_run` (its ids only), a calibration and the judge passes. A campaign's bundle reads its member
+runs' results as their compact readings (`iter_result_readings`: one call over a store that offers `ResultReadings`,
+else one key read per run and one read by id per 1,000 results), then the trials it keeps whole by id in one more call,
+without the verbatim fields. A regression watch's judged tiers read many runs in one call, each without
+`world_events` and `kind_payload` (`query_eval_results_by_runs(..., elide=VERBATIM_RESULT_FIELDS)`, a by-type read with
+`exclude` and `field_in` together: the conformance case `projection.exclude_with_field_in` pins that a store projects
+it); a launch
+estimate's planning block (`detectable_effects`) walks each earlier run a page at a time, keeping each result's
+per-case values; past the budget above each reads no result, and the bundle and the tiers are
+refused while a launch estimate is still priced, its planning block saying why in `cannot_estimate`. A reader that keeps
+every result to fold into figures keeps it without `world_events` and `kind_payload`, so a host callable handed a run's
+results there (a sweepable's `read`, `row_columns`) reads them without those two fields; read what your kind reports
+into its measures as the cell ends.
+Aggregates over a scope are bounded by the read budget above instead.
 
 ## Stored data: what is kept
 
@@ -892,7 +938,7 @@ subject's insights, so one insight from before the bump refuses every generation
 that subject until it is gone; the refusal names this step. With the engine stopped:
 
 ```python
-dropped = storage.drop_derived(["support"])          # analyses, insights and judge profiles of these scopes
+dropped = storage.drop_derived(["support"])          # analyses, reports, insights and judge profiles of these scopes
 for profile in dropped.judge_profiles:                # the one kind that does not come back by itself
     judge_profiles_record(host, JudgeProfilesRecord(judge_run_ids=profile.run_ids), profile.scope_id)
 ```
@@ -908,8 +954,8 @@ corpus); a replay that asks for a refused recording stops its cell with a `Casse
 
 **Each version space moves on its own.** Core documents (v15.7), durable documents (v16.3), regenerable documents
 (v13), cassettes (`CASSETTE_SCHEMA_VERSION`, 1), the bundle shape (the bundle's `schema_version`), the cell model
-(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The report has none: it is a page rendered from the bundle, which is the versioned machine
-form.
+(`CELL_MODEL_VERSION`) and the identity keys (`IDENTITY_VERSION`, 25) carry separate versions. The code-only page has none: it is rendered from the bundle, which is the versioned machine
+form. Report documents and their sessions carry a version of their own, as cassettes do: a change to the report document's shape moves that version alone, the shared regenerable version stays where it is, and a report from before it reads as the code-only page with a line to regenerate it.
 **A judge's identity moves with its wording, and no version number moves with it.** Each result records what asked
 each dim (`EvalResult.judge_config_ids`): `builtin:<sha12>`, a fingerprint of the engine's own judge prompt, or
 `<config id>@<sha12>`, your `JudgeConfig` and a fingerprint of the reply-format suffix the engine appends to its
@@ -1028,8 +1074,14 @@ The router refuses to start (`RouteChanged`) when a type would be read from a st
 two stores are passed under each other's names, and when no store has a record yet. `RoutedDocumentStore.relocate`
 moves every document of the scopes and host types you name to its new store, then writes the records. Run it
 once when you adopt the router and again whenever you change the route, with the engine stopped. If it is
-interrupted, run it again. A release that adds a type needs no relocation unless your route places the new type
-somewhere other than your `unregistered` store. A release that adds a fact value needs your route to map it: a
+interrupted, run it again. A release that adds a type needs no relocation, wherever your route places it: the
+records list every type registered when they were written, so a type they do not name has no documents yet, and the
+router places it by the route and records it. This assumes you never keep your own documents under an `eval_*` name;
+one the engine later registers is read from that type's placement, and you relocate to move them. If you roll back
+and run an older build's `relocate`, it moves the newer types' documents to your `unregistered` store; relocate again
+once the newer build is back. During a rolling deploy, once a pod of the newer build has started and rewritten the
+records, an older pod that restarts refuses to start (`RouteChanged`): finish rolling forward rather than restarting
+older pods. A release that adds a fact value needs your route to map it: a
 lifecycle route must map `durable` (from `.26`), or it is refused when built. Giving `durable` a store other than
 the one `kept` types were written to moves the nine durable types, so the first start raises `RouteChanged` for
 them until you relocate (or run `RoutedDocumentStore.reset_core`, which relocates).
@@ -1388,9 +1440,14 @@ job's `budget_s`, the output cap of the client you build for the simulator or th
 scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
 you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
 in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
-`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the two functions
-`generation_ceiling_s` and `judge_phase_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
-generation or a judge phase. Derive each outer budget from a field, never from a number you copied: a release that
+`simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
+`generation_ceiling_s`, `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request
+into the ceiling of a generation, a judge phase, or the writing of a report (every analyst round, revision, bounce
+and editor review its limits allow). `writer_ceiling_s` also takes the writer's limits, the same ones the report is
+written under, and the turn cap of your report budget (`turns=`, `ReportBudget.turns`). A report's job budget is
+`writer_ceiling_s` plus your headroom. Declare a turn cap even on a dollar budget (`ReportBudget(usd=10.0,
+turns=60)`): dollars bound what a report spends, never how many turns it sends, so without one the ceiling is every
+turn the limits allow at your full request ceiling, which at a long request ceiling runs to days and stops nothing. Derive each outer budget from a field, never from a number you copied: a release that
 raises an inner ceiling then raises your budget with it, so the budget cannot drift below it. The package exports
 no other name for them: the six separate constants and functions `.32` kept beside `Ceilings` were removed in `.33`.
 
@@ -1416,7 +1473,7 @@ A judged measure fires only when every judge behind the step's scores is `calibr
 [Judges and calibration](judges-and-calibration.md)). A run that ended any other way than `completed` is
 not a point on the history, so it is never checked. The engine ships no delivery: with no watch, nothing
 is checked. A sink that raises is logged, the next alert is still delivered, and the run's status never
-changes. The watch reads the history of the run's own subject, so a scope past `READ_TIER_ROW_BUDGET` is still
+changes. The watch reads the history of the run's own subject, so a scope past `READING_BUDGET` is still
 checked wherever that subject fits; a judged alert then carries `narrowed_read_disclosure`, saying its judges were
 tiered on that subject's results alone. When the subject alone is past the budget, the watch checks nothing on the
 run and logs it at ERROR (`eval.regression watch checked nothing on run=...`), saying nothing narrower exists
@@ -1524,7 +1581,7 @@ campaign_record(
 )
 ```
 
-The call is read against code's readings of the evidence as it stands, never the memo's words, and is refused:
+The call is read against code's readings of the evidence as it stands, never the report's words, and is refused:
 
 | When | Why |
 |---|---|
@@ -1542,26 +1599,49 @@ joined since it was made. In a choice, an arm shown behind another on some aspec
 beside the call.
 
 
+## Campaign reports: what your host supplies
+
+`analysis_generate` writes a campaign's report as a job: it freezes the evidence, runs the analyst and its editor
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)), and stores the
+document, linked to the campaign as its analysis. Your host supplies four things:
+
+- **The model**, from your factory's `analyst` role, built on your own key. One model serves the analyst and the
+  editor. Its client must take tool turns, or the job is refused before anything is spent, naming what to forward.
+- **The budget and the time**, on your `AnalysisGeneration`, each read on every generation so a value kept in your
+  config changes without a restart: the report budget (dollars, or tokens for a model you have no price
+  for, either with a turn cap), which no caller can raise; `budget_s`, the job's time, `writer_ceiling_s` plus your headroom
+  ([deriving your budgets](#deriving-your-budgets-from-the-engines-ceilings)); and `preparation_budget_s`, the bound
+  on its preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s). How the budget admits each turn is in
+  [Cost and budgets](cost-and-budgets.md#spend-outside-any-run).
+- **The page.** `report_read` serves the newest report in each format; serve the static HTML, or frame it as an
+  iframe's `srcdoc` with an empty `sandbox` ([embedding](reading-reports.md#embedding-the-page-in-a-host)). A report
+  this version no longer reads is never refused: it reads as the code-only page with one line to regenerate.
+
+Two document types come with it, routed like any other: each report's session transcripts, derived and swept with
+their report, and the analyst's capability gaps, durable. The engine posts no gap anywhere; if you want a digest or
+filed issues, run `analyst_gaps_list` from a scheduled job of your own and post its groups with your own credentials.
+To let your own agents investigate a campaign the way the analyst does, mount the `evals_analyst` tool beside `evals`
+([serving](serving.md#the-analysts-tool)).
+
 ## The engine's prompts: shipped defaults, optional overrides
 
-The engine steers three LLM calls of its own with a prompt: the analysis generator (`ANALYSIS_GEN_PROMPT`), the
-capability proposer (`PROPOSER_PROMPT`) and the boundary proposer (`BOUNDARY_GEN_PROMPT`). **A new host does
-nothing here.** Each call runs the default the package ships (`EVAL_ANALYSIS_GEN_DEFAULT` in `analysis`,
-`EVAL_PROPOSER_TEMPLATE_DEFAULT` and `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt
-of your own: an `AnalysisGeneration` with no `resolve_prompt`, and `plan_draft(axis=..., subject_feed=...,
-catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
+**The report writer reads a skill, not a prompt you hold.** A campaign report is written by the analyst and its
+editor from the skill the package ships as data (principles, story forms, charts, statistics, writing, reasoning
+notes, and the editor's rubric). It is not overridable today: an improvement lands as a change to the package, checked
+against the acceptance campaigns and the editor's scores. Each report records the skill's digest as its provenance.
+
+The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`), the boundary
+proposer (`BOUNDARY_GEN_PROMPT`), and the memo writer the analysis reporter's candidates run (the planner's prompt is
+kept for the plan cases it recorded, and makes no call). **A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
+`EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
+subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
-registry and hand it in: `AnalysisGeneration(resolve_prompt=..., prompt_id=...)` (the id is recorded on every
-analysis as its provenance), and `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
-`threetears.evals.kernel`) lists the three, one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+registry and hand it in: `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
+`threetears.evals.kernel`) lists them (the planner's, the memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.
-
-**The preparation bound is yours to set.** `AnalysisGeneration(preparation_budget_s=...)` bounds a generation's
-preparation (default `ANALYSIS_PREPARATION_BUDGET_S`, 900 s), alongside `budget_s`, which bounds its generator calls.
-Both are read on every generation, so a timeout kept in host config can change without a restart.
 
 **A proposer override states the draft shape it was written for, and the engine checks it.** Each shipped
 proposer default ends with its output-contract line, `eval-output-contract: rubric_proposal <fingerprint>`
@@ -1597,8 +1677,9 @@ check.
 
 The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
 bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
-candidate is a preset of the `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
-which replays the memo each campaign got.
+candidate is a preset of the memo writer's `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
+which replays the memo or planned report each campaign got. The analyst's report is not yet one of its subjects
+([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
 
 The kind is declared by the engine, so your host supplies only two things:
 
@@ -1645,7 +1726,8 @@ call stays unpriced, since the memo it judges does not exist yet.
    alias's target moves;
 4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
    names a case set, its cases run instead, and each must carry a reporter case;
-5. the replay over a case with no recorded memo.
+5. the replay over a case with no recorded memo, and a generator model over a plan case (a case judging a report
+   plan, which only the replay runs).
 
 Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
 `ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,
@@ -1874,6 +1956,15 @@ stores and never reads; register a measure for whatever should be compared.
 **Spend.** Your kind reports its own calls' spend only as usage rows (`CandidateTelemetry.usage`). How
 the engine turns those rows into a result's `cost_usd`, and what happens when a call cannot be priced, is
 in [Cost and budgets: how a result's cost is counted](cost-and-budgets.md#how-a-results-cost-is-counted).
+
+**Calls nobody answered.** Count them on the ledger with `RoleUsageLedger.add_unanswered(model=, retried=, lost=,
+reasons=)`, never on a row you build yourself. Pass the key fields you passed `add` for the calls they sit beside. A
+lost call names no served model, and the ledger folds it into its model's answered row anyway, so you need not know
+which row it belongs to. The counts sit beside the row's `call_count` and never in its cost. A model none of whose calls
+was answered keeps a row of its own (`RoleUsage.answers_nothing`): its `call_count` is None, because it answered
+nothing, and no cost reads it. A reader that keys rows on `call_count` should expect that row. Each count you leave
+out reads as not counted, never as zero. So where your rate measures need the counts on every row, mark a row whose
+calls were all answered with `add_unanswered(model=..., retried=0, lost=0)` on its key.
 
 ## Cassettes: recording and replaying tools
 

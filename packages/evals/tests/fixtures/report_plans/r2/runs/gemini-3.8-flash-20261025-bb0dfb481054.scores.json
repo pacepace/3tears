@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-bb0dfb481054",
+  "input": "r2",
+  "input_digest": "3b825233f6120f9deb81f63c4a9c2849c6ba2d388a1db0be780cbe5395add19d",
+  "plan_digest": "4fa6bc4e731cb8db01a8e2b5e587811caf79e248ff4f8677bb7d861100e7901f",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "46b2691a55b6edc02a8d0b6fca8bf2ea60aeb6be0c4733bfe5575cf3bab4565f",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision naming the options table's recommended arm, J, which the gate matrix shows as the only configuration clearing both gates.",
+      "quote": "Adopt Brisk-S · reasoning low · 1 retry (J) to meet both accuracy and latency limits at minimal cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting figures, then a tighter pass gate as the change that would alter the answer.",
+      "quote": "Tightening the pass gate beyond this level would necessitate more expensive configurations.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input carries no caveats and the plan has no flag or confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The cost section claims orders-of-magnitude savings over Atlas-M, but J's $0.30 against Atlas-M's $1.00 to $3.48 is a 3x to 12x gap, which the chart does not show as orders of magnitude.",
+      "quote": "Brisk-S provides orders-of-magnitude savings over Atlas-M while clearing performance hurdles.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the plan uses reader arm names and criterion names, with no ids, hashes or measure keys.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the code-identified weakest margin, J's 0.1-point margin on pass rate, then a scoped risk.",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) holds a narrow margin: 97.1% against Pass rate at 97%, a gap of +0.1.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The pass-rate measure is called both 'the accuracy gate' and 'the pass gate', and 'pass rate threshold' as well.",
+      "quote": "Deploy Brisk-S · reasoning low · 1 retry (J), satisfying the accuracy gate at 97.1% and the p95 latency gate at 513 ms ms.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline and decision slots give the choice (J), the reason (it alone meets both gates, at minimal cost) and the main risk (a 0.1-point margin on pass rate).",
+      "quote": "Brisk-S · reasoning low · 1 retry (J) holds a narrow margin: 97.1% against Pass rate at 97%, a gap of +0.1.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "The A/B validation names no comparator, targets tail latency and retry recovery instead of the 0.1-point pass-rate margin, and states no result that would change the call.",
+      "quote": "Run an A/B validation on live production queries to verify tail latency and retry recovery rates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence form is high and the plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure (97.1%, 513 ms, $0.30, $3.48, the 900 ms Atlas-M floor, 1200 queries) is the figure of the arm and measure its sentence names.",
+      "quote": "All Atlas-M variants fail the latency budget, starting at 900 ms ms p95 against the 600 ms ms threshold.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:36Z"
+}

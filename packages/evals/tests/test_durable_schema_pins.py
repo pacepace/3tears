@@ -1,8 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, and since durable v16 campaigns) out of the evidence core into a version space
-of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
+sets, test cases, calibration ratings, since durable v16 campaigns, and since a later minor the analyst's gap notes) out of
+the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
 - every durable type's validation JSON schema, embedded shapes included, is pinned to a digest under the durable
@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from packages.evals.tests.schema_pin_support import keeps, minors_missing_the_sentence
+from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR, keeps, minors_missing_the_sentence
 from packages.evals.tests.stored_models import doc_type_of, stored_models
 from packages.evals.tests.test_core_schema_pins import core_shape_digest
 from threetears.evals.schema import versioning
@@ -55,19 +55,20 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 16
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 3
+PINNED_DURABLE_SCHEMA_MINOR = 7
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "b185e9d06cd747482dc37336a3100db47885b74c64843457b818210101e1daec",
-    "case_set": "def689cc1d49d06bddfb32727c98f0e3fb775f6187939b989699e495c2f6e0c5",
-    "eval_campaign": "152214f8642384967bc1811383034a8d949ff4c407dd7145ad5edeefee4392b4",
-    "eval_template": "68b1ed828aa9331c88b07350666abc2b1531f93d6b4e11968af2394780067127",
-    "eval_test_case": "6a6719dfbf17f23f7a0cb6728782478230221c3bac218471f4f32a855962c85e",
-    "judge_config": "cd643621bc3f6ac1d2c023626c6cf8e702fcd9ebce0b55a3deba82bdf4bd6209",
-    "judge_config_tombstone": "c100c9502bc1ad870d47c4be0aee1a479c84835e025620ac4453b578963b3643",
-    "rubric_dim": "4cbb75caa72b9e2f90f1b4644489e0a7f00d9e57d1f964beb3938e22950cbf8c",
-    "rubric_dim_tombstone": "160dde8507b727fc7f1169cb12520b9e64f85b093757e8194c21f24b92da69e1",
+    "calibration_rating": "32c35b62d86a1420f59a1c0737ef8c11a1ad56cc945d04892984903e16d3214e",
+    "case_set": "0fc5a5e11386551ad7f455fa3cb0f56c3b0f244baed97286898f5e88b988a2c2",
+    "eval_analyst_gap": "3f2b779d2a91d3c41e4e8e07311a34bbc3be184ef58a648cae0ebbe6ad56f6a8",
+    "eval_campaign": "8f2cb7be256bf880fb2e0757e2111971ad78f96fcab9ddbdfe3cc1a93994ee0b",
+    "eval_template": "81f709a3c700584f580db19866f651d32a85060786a4ebc3244e6574617f59d6",
+    "eval_test_case": "47adc6f735fe5ded8d6296f74714843dda64af3fb3f543ef4ca0681c41dd6e78",
+    "judge_config": "95655c671ce0991ec2adae4a711cfb21f06ce44e767f68bd03cb04e509cded3b",
+    "judge_config_tombstone": "3778f3c8295e9bf984f85856ac1df77989a26c4154d8304d21b7eb2d075b525f",
+    "rubric_dim": "898d90027ab3112b36f3aebd58937686f7e0fa3d80a8c7189939d8d1529b58e2",
+    "rubric_dim_tombstone": "126b42005778bdd42cca1efeb52226da23a87d53017fb624d4636011d7ab564f",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -97,6 +98,7 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
     "eval_campaign": frozenset(
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
+    "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
@@ -115,6 +117,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v15/rubric_dim.json": "b65c88b862dddf2723ea3972be8381cca002131d7d9ae524418602d1bc2f6378",
     "v15/rubric_dim_tombstone.json": "da3fb751ac55bf182f339faf233fc65aeeb0d467044c78ee9709844761042cef",
     "v16/calibration_rating.json": "085d1e7f28b15a7b6fffc850dca73c88bb7afcc543169367fd42bb1b21ee775c",
+    "v16/eval_analyst_gap.json": "b1c02467eb7abad961ae645d37ddc59c9fe203f4349d007ec4f594f94b67d9c6",
     "v16/case_set.json": "cae61566ce663fc6eff2ddb4604e6b5a066e4b347bd998ea391647e2dcb7730c",
     "v16/eval_campaign.json": "b074a1ff416888f86382dd13997f788805ab8429c3a65330ffa59fb0f0d4f70e",
     "v16/eval_template.json": "0ffbc44743965bd0786cf8d8ad0d2482cc0c96a8a0628bd93ab82cca6dcdd113",
@@ -247,9 +250,12 @@ def test_the_standing_rule_is_in_the_durable_ledger() -> None:
 
 
 def test_every_durable_version_has_a_whole_frozen_corpus() -> None:
+    """A major's corpus holds every type that existed at it; a type added later has no earlier document to freeze."""
+    assert set(ADDED_AT_MAJOR) <= DURABLE_DOC_TYPES
     for version in range(DURABLE_BASELINE_VERSION, DURABLE_SCHEMA_VERSION + 1):
         held = {path.stem for path in (FIXTURES / f"v{version}").glob("*.json")}
-        assert held == DURABLE_DOC_TYPES, f"durable v{version}'s frozen corpus holds {sorted(held)}"
+        existed = {kind for kind in DURABLE_DOC_TYPES if ADDED_AT_MAJOR.get(kind, DURABLE_BASELINE_VERSION) <= version}
+        assert held == existed, f"durable v{version}'s frozen corpus holds {sorted(held)}"
 
 
 def test_no_frozen_durable_fixture_was_edited() -> None:

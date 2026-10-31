@@ -1,0 +1,8 @@
+c1 / 1	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "forest", "query": {"source": "contrasts", "aspect": "billing", "measures": ["passed"]}, "reference": "margin"}
+c1 / 2	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "forest", "query": {"source": "readings", "aspect": "billing", "arms": ["v3", "v4"]}, "reference": "margin"}
+c2 / 1	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "forest", "query": {"source": "contrasts", "aspect": "tone", "measures": ["goal_state:reply.cites_policy"]}}
+c2 / 2	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "table", "query": {"source": "floors", "aspect": "tone"}}
+c3 / 1	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "bars", "query": {"source": "measures", "aspect": "billing", "measures": ["cost_usd"], "transform": "per_1k"}}
+c4 / 1	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "forest", "query": {"source": "contrasts", "aspect": "tone", "measures": ["passed"]}, "reference": "margin"}
+c5 / 1	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "dot_interval", "query": {"source": "measures", "aspect": "refunds", "measures": ["goal_state:reply.total == case.total"]}}
+c5 / 2	{"action": "block_render", "snapshot_id": "report-snapshot:cbe4fd230e040e604b34df5704aa5b38", "block_kind": "forest", "query": {"source": "contrasts", "aspect": "refunds", "measures": ["passed"]}, "reference": "margin"}

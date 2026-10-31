@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261026-40a27048a337",
+  "input": "r1",
+  "input_digest": "671ed1ea10d5bb21b6b16d65fae9e43fe0f1f8508eee021e54fad733cbe000f9",
+  "plan_digest": "4380371409f6db090bcc15ca9945c35b93828296a551c42ace4ee30edafe2130",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "6bba1ddb689d701e14692afd45d9fe36f6004d86b031fb4a14209a94fe900416",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with instruction and reason that names the options table's recommended arm and agrees with the gate matrix, where Atlas-M is the only arm clearing every gate.",
+      "quote": "Adopt Atlas-M (B). It is the only option that meets all quality gates while staying within the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The lede's first sentence restates the headline's claim that Atlas-M meets every quality and latency gate rather than giving a supporting fact.",
+      "quote": "Atlas-M (B) passes all quality and latency criteria across every task.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag is raised and the input carries no caveats, so no caveat is stated twice or at the wrong level.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "The section headline is a finding with subject and direction that the gate matrix shows: Atlas-M passes every cell and each rival fails at least one.",
+      "quote": "Atlas-M (B) clears every task gate while competing candidates miss on latency or accuracy.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, criteria and tasks appear under reader names above Full results, with no ids, keys or hashes.",
+      "quote": "Overall quality graded via a calibrated judge exhibiting 86% agreement across 200 samples.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin under the call: the 0-point gap on Resolves the issue in Troubleshooting.",
+      "quote": "Atlas-M (B) sits directly on the threshold for Resolves the issue in Troubleshooting (multi-turn) at 90% against 90% with a margin of 0.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "The quality gates get a second name, 'accuracy', in the section headline, and units render doubled ('3 s seconds').",
+      "quote": "competing candidates miss on latency or accuracy",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "From the headline to the options table, the first screen says what to do (adopt Atlas-M), why (the only arm passing every gate) and the main risk (the 0-point Troubleshooting resolution margin).",
+      "quote": "Adopt Atlas-M (B). It is the only option that meets all quality gates while staying within the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment on Atlas-L's p95 latency; the lede makes clear that if Atlas-L reaches the budget it re-enters the choice, which could change the call.",
+      "quote": "Test speculative decoding or prompt pruning on Atlas-L (A) to evaluate whether its p95 latency can reach the 3 s second target.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high with no clauses, so this item passes by default.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "Atlas-L's p95 breaches the 3 s budget on four of the five tasks (Billing 3.6, Troubleshooting 4.68, Research 4.86, Speculation bait 3.24), not three.",
+      "quote": "Atlas-L (A) breaches the latency budget on three tasks",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:35:54+00:00"
+}

@@ -1,0 +1,861 @@
+<meta charset="utf-8">
+<title>Query Planner Config Sweep</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>/* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.
+   Host apps override the --host-* tokens only; everything else derives from them. */
+:root{
+  --host-accent:#1f5fbf;
+  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;
+  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;
+  --line:#e1e5eb; --base:#c3cad4;
+  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s5:#6250d6;
+  --good:#0b7f0b; --good-wash:#e3f3e3; --warn:#a86a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
+  --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
+  --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#ffffff; --seq-t4:#ffffff; --seq-t5:#ffffff;
+  --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
+  --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --t-xs:.75rem; --t-sm:.8125rem; --t-base:.9375rem; --t-md:1.0625rem; --t-lg:1.375rem; --t-xl:1.875rem; --t-hero:2.25rem;
+  --col:44rem; --wide:68rem; --r:6px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
+  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
+  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
+  --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
+  --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
+  --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
+  --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:var(--t-base);line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 4rem}
+.page{max-width:var(--wide);margin:0 auto}
+.prose{max-width:var(--col)}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:-.005em}
+h1{font-size:var(--t-hero);line-height:1.12;font-weight:600}
+h2{font-size:var(--t-lg);font-weight:600;line-height:1.2}
+h3{font-size:var(--t-md);font-weight:600}
+p{margin:0}
+a{color:var(--accent)}
+code,.mono{font-family:var(--f-mono);font-size:.92em}
+.num{font-variant-numeric:tabular-nums}
+
+/* masthead */
+.mast{display:flex;flex-wrap:wrap;gap:.25rem 1rem;align-items:baseline;padding-block:1.5rem .75rem;border-bottom:1px solid var(--line);
+  font-size:var(--t-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.mast b{color:var(--ink-2);font-weight:600}
+.mast .kind{color:var(--accent);font-weight:600}
+.bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
+.bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
+.decision{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.decision>div{background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
+.decision .k{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.decision .v{font-size:var(--t-base)}
+.decision .v strong{font-weight:600}
+.decision .rec{background:var(--accent-wash)}
+.decision .rec .k{color:var(--accent)}
+
+/* sections */
+section{padding-block:2.25rem 0;display:grid;gap:1rem}
+section>header{display:grid;gap:.35rem;max-width:var(--col)}
+.eyebrow{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.takeaway{color:var(--ink-2)}
+.part{margin-top:2.5rem;padding-top:1rem;border-top:2px solid var(--ink);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:baseline}
+.part h2{font-size:var(--t-xl)}
+.part span{font-size:var(--t-sm);color:var(--muted)}
+
+/* figure */
+.fig{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:1rem 1rem .75rem;min-width:0}
+.fig .cap{font-size:var(--t-xs);color:var(--muted);margin-top:.5rem}
+.chart{width:100%;min-width:0;position:relative}
+.chart svg{display:block;overflow:visible}
+.chart text{font-family:var(--f-body);fill:var(--ink-2)}
+.chart .tick{font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+.chart .lbl{font-size:12px;fill:var(--ink-2)}
+.chart .lbl-strong{font-size:12px;fill:var(--ink);font-weight:600}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .axis{stroke:var(--base);stroke-width:1}
+.chart .floor{stroke:var(--ink-2);stroke-width:1.25;stroke-dasharray:3 3}
+.chart [data-tip]{cursor:default}
+.legend{display:flex;flex-wrap:wrap;gap:.35rem 1rem;font-size:var(--t-sm);color:var(--ink-2);margin-bottom:.5rem}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.4rem;vertical-align:-1px}
+.legend i.sq{border-radius:2px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,30rem),1fr));gap:1rem}
+.mult{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,15.5rem),1fr));gap:1rem}
+.mult .fig{padding:.8rem .8rem .5rem;display:flex;flex-direction:column}
+.mult .fig .chart{margin-top:auto;padding-top:.4rem}
+.mult h4{margin:0 0 .15rem;font-family:var(--f-display);font-size:var(--t-base);font-weight:600}
+.mult .sub{font-size:var(--t-xs);color:var(--muted)}
+
+/* tooltip */
+#tip{position:fixed;z-index:20;pointer-events:none;background:var(--ink);color:var(--bg);font-size:var(--t-sm);line-height:1.4;
+  padding:.45rem .6rem;border-radius:4px;max-width:17rem;opacity:0;transition:opacity .08s}
+#tip.on{opacity:1}
+#tip b{font-weight:600}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
+th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+tr.hl td{background:var(--accent-wash)}
+tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+td.wrap{white-space:normal;min-width:14rem}
+th.sort{cursor:pointer;user-select:none}
+th.sort:hover{color:var(--ink)}
+th.sort[aria-sort]::after{content:" ↓";color:var(--accent)}
+th.sort[aria-sort="ascending"]::after{content:" ↑"}
+
+/* status pills: always icon + label */
+.pill{display:inline-flex;align-items:center;gap:.3rem;font-size:var(--t-xs);font-weight:600;padding:.1rem .45rem;border-radius:999px;white-space:nowrap}
+.pill.good{background:var(--good-wash);color:var(--good)}
+.pill.warn{background:var(--warn-wash);color:var(--warn)}
+.pill.bad{background:var(--bad-wash);color:var(--bad)}
+.pill.neutral{background:var(--sunk);color:var(--ink-2)}
+.sw{display:inline-block;width:.65rem;height:.65rem;border-radius:50%;margin-right:.4rem;vertical-align:0}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:.75rem 1.5rem;align-items:end;padding:1rem;background:var(--sunk);border-radius:var(--r)}
+.ctl{display:grid;gap:.25rem;font-size:var(--t-sm);color:var(--ink-2);min-width:0}
+.ctl label{font-weight:600;font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.ctl output{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+input[type=range]{accent-color:var(--accent);width:12rem;max-width:100%}
+select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid var(--base);border-radius:4px;background:var(--surface);color:var(--ink)}
+.seg{display:inline-flex;border:1px solid var(--base);border-radius:5px;overflow:hidden}
+.seg button{font:inherit;font-size:var(--t-sm);border:0;background:var(--surface);color:var(--ink-2);padding:.35rem .7rem;cursor:pointer}
+.seg button+button{border-left:1px solid var(--base)}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--on-fill)}
+.toggle{display:flex;align-items:center;gap:.45rem;font-size:var(--t-sm);color:var(--ink-2);cursor:pointer}
+.toggle input{accent-color:var(--accent);width:1rem;height:1rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.result{display:grid;gap:.75rem}
+.callout{border-left:3px solid var(--accent);padding:.6rem .9rem;background:var(--surface);font-size:var(--t-sm);color:var(--ink-2)}
+.callout.warn{border-color:var(--warn)}
+.stat{display:grid;gap:.1rem}
+.stat .big{font-size:var(--t-xl);font-weight:600;line-height:1.1}
+.stat .lab{font-size:var(--t-xs);color:var(--muted)}
+.stats{display:flex;flex-wrap:wrap;gap:1rem 2.25rem}
+.method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
+.method dt{font-weight:600;color:var(--ink)}
+.method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
+@media (max-width:640px){h1{font-size:1.75rem}.part h2{font-size:var(--t-lg)}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
+.armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:var(--on-fill);font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}
+.vsum{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media (max-width:820px){.vsum{grid-template-columns:1fr}}
+.flag{display:flex;gap:.6rem;align-items:flex-start;font-size:var(--t-sm);color:var(--ink-2);background:var(--warn-wash);border-radius:var(--r);padding:.6rem .8rem;max-width:var(--col)}
+.flag b{color:var(--warn)}
+.flag ul{margin:.3rem 0 0;padding-left:1.1rem}
+.flag li{margin:.15rem 0}
+.flag li.checked{color:var(--muted);list-style:"✓  "}
+.keytbl td.spec{font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:normal}
+.mini h3{font-size:var(--t-base);margin-bottom:.15rem}
+.mini .cap{margin:0 0 .4rem}
+.ex{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,28rem),1fr));gap:1rem}
+.excard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:.9rem 1rem;display:grid;gap:.5rem;min-width:0}
+.excard .top{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;font-size:var(--t-xs);color:var(--muted)}
+.excard .reason{font-size:var(--t-sm)}
+.excard pre{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);color:var(--ink-2);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--sunk);padding:.5rem .6rem;border-radius:4px;max-height:9rem;overflow:auto}
+/* gate matrix: a pill, the binding reasons and the cost per cell; the cheapest passing cell washed */
+.gate td,.gate th{white-space:normal;vertical-align:top}
+.gate td.cell{min-width:9.5rem}
+.gate .why{display:block;font-size:var(--t-xs);color:var(--muted);margin-top:.25rem;line-height:1.35}
+.gate .cost{display:block;font-size:var(--t-xs);color:var(--ink-2);margin-top:.15rem;font-variant-numeric:tabular-nums}
+.gate td.pick{background:var(--accent-wash)}
+.gate .pickmark{font-size:var(--t-xs);font-weight:600;color:var(--accent);display:block;margin-top:.2rem}
+.gate .task b{display:block;font-weight:600;color:var(--ink)}
+.gate .task span{font-size:var(--t-xs);color:var(--muted)}
+.gate .task span.xc{font-weight:600;color:var(--warn);text-transform:uppercase;letter-spacing:.05em;display:block;margin-top:.25rem}
+/* lattice of tiles for two crossed factors; columns set inline from the data */
+.lattice{display:grid;gap:2px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+/* in its .tbl frame, which draws the border: never narrower than its tiles' floor, so it scrolls instead */
+.tbl>.lattice{border:0;border-radius:0;min-width:min-content}
+.lattice>.rh{min-width:auto;white-space:nowrap}
+.lattice>div{background:var(--surface);padding:.7rem .8rem;min-width:0}
+.lattice .hd{background:var(--sunk);font-size:var(--t-xs);font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:end}
+.lattice .rh{background:var(--sunk);font-family:var(--f-display);font-weight:600;display:flex;align-items:center}
+.lattice .cell{display:grid;gap:.3rem;align-content:start}
+.lattice .acc{font-size:var(--t-xl);font-weight:600;line-height:1}
+.lattice .meta{font-size:var(--t-xs);color:var(--ink-2);font-variant-numeric:tabular-nums}
+.lattice .cell.rec{box-shadow:inset 0 0 0 2px var(--accent)}
+.lattice .bar{height:4px;border-radius:2px;background:var(--sunk);position:relative}
+.lattice .bar i{position:absolute;inset:0 auto 0 0;border-radius:2px;background:var(--s1)}
+/* cell grids: heatmap, difference heatmap, confusion */
+.mx{display:grid;gap:2px;font-size:var(--t-sm)}
+.mx .h{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .35rem;display:flex;align-items:end;justify-content:center;text-align:center}
+.mx .rl{font-size:var(--t-xs);color:var(--muted);font-weight:600;padding:.25rem .5rem .25rem 0;display:flex;align-items:center;justify-content:flex-end}
+.mx .c{border-radius:3px;padding:.5rem .35rem;text-align:center;font-variant-numeric:tabular-nums;display:grid;gap:.05rem;min-width:0}
+.mx .c b{font-size:var(--t-md);font-weight:600}
+.mx .c span{font-size:var(--t-xs);opacity:.85}
+.mx .c.low{outline:2px solid var(--bad);outline-offset:-2px}
+.excard .q{font-weight:600}
+.excard dl{display:grid;grid-template-columns:4.5rem 1fr;gap:.25rem .6rem;margin:0;font-size:var(--t-sm)}
+.excard dt{color:var(--muted)}
+.excard dd{margin:0;font-family:var(--f-mono);font-size:var(--t-xs);overflow-wrap:anywhere;min-width:0}
+.excard dd.bad{color:var(--bad)}
+.excard .note{font-size:var(--t-sm);color:var(--ink-2)}
+.chart .legend svg{display:inline-block}
+@media (max-width:560px){.lattice .acc{font-size:var(--t-lg)}.lattice>div{padding:.5rem}}
+
+</style>
+<div class="page">
+<div class="mast"><span class="kind">Inner tool model</span><span><b>Research query planner</b></span><span>18 configurations · 1,200 test cases · exact-match grading</span><span>Run 2026-10-23</span><span>Synthetic example data</span></div>
+
+<div class="bluf">
+  <h1>Use Brisk-S with low reasoning and one retry. It is the only configuration that passes 97% within 600 ms.</h1>
+  <p class="lede">The retry is the cheapest lever in the sweep: it adds about 2 points of pass rate for 5% more cost. More reasoning helps every model, but its latency cost knocks Atlas-M and high-reasoning Brisk-S out of the budget.</p>
+  <div class="decision">
+    <div class="rec"><span class="k">Recommendation</span><span class="v" id="b-rec"></span></div>
+    <div><span class="k">Efficiency</span><span class="v" id="b-eff"></span></div>
+    <div><span class="k">Risk</span><span class="v" id="b-risk"></span></div>
+    <div><span class="k">Where it fails</span><span class="v" id="b-fail"></span></div>
+  </div>
+  <div class="grid2"><div class="fig mini"><h3>Failure rate, configurations within 600 ms</h3><p class="cap" style="margin:0 0 .4rem">Share of tasks that fail; the budget is 3%. Lower is better.</p><div class="chart" id="sum-fail" data-kind="bars"></div></div>
+  <div class="fig mini"><h3>Cost per month, same configurations</h3><p class="cap" style="margin:0 0 .4rem">At 4 million planner calls a month.</p><div class="chart" id="sum-cost" data-kind="bars"></div></div></div>
+  <div class="tbl"><table id="opt"></table></div>
+</div>
+
+<section>
+  <header><span class="eyebrow">All 18 configurations against both gates</span><h2>Only one configuration lands in the box.</h2>
+  <p class="takeaway">Each line follows one model from reasoning off to low to high. Solid lines have one retry, faint lines have none. Moving up costs latency; Atlas-M starts outside the budget.</p></header>
+  <div class="fig"><div class="chart" id="sweep" data-kind="gate_scatter"></div><p class="cap">Latency axis is log scale. Shaded region meets both gates: pass rate at least 97% and p95 at most 600 ms. Dot size grows with reasoning budget (off, low, high); hollow dots have no retry.</p></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">What each lever buys</span><h2>A retry buys accuracy for almost nothing. Reasoning buys accuracy with latency.</h2>
+  <p class="takeaway">Average effect of each change, by model. Rows are sorted within each lever by pass-rate gain.</p></header>
+  <div class="chart" id="levers" data-kind="diverging_bars"></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">Failure anatomy, recommended configuration</span><h2>The retry fixes malformed calls. It barely helps with wrong arguments.</h2>
+  <p class="takeaway">Failure rate by type, before and after one retry. Wrong arguments are now the largest remaining failure, and date windows cause most of them.</p></header>
+  <div class="grid2">
+    <div class="fig"><div class="chart" id="anat" data-kind="bars"></div></div>
+    <div class="fig"><h3 style="margin-bottom:.25rem">Extra calls per task</h3><p class="cap" style="margin:0 0 .5rem">Share of passing tasks that used more calls than the minimum. Brisk-S at low reasoning wastes a call on 9% of tasks.</p><div class="chart" id="eff" data-kind="bars"></div></div>
+  </div>
+</section>
+
+<section>
+  <header><span class="eyebrow">By task type</span><h2>Multi-hop questions are the weak spot for every fast configuration.</h2>
+  <p class="takeaway">Pass rate by task type for the six configurations within the latency budget, plus the most accurate one for reference.</p></header>
+  <div class="tbl"><table id="types"></table></div>
+</section>
+
+<section>
+  <header><span class="eyebrow">What the failures look like</span><h2>Four representative failures</h2></header>
+  <div class="chart" id="ex" data-kind="examples"></div>
+</section>
+
+<div class="part"><h2>Explore the sweep</h2><span>Pick any configuration</span></div>
+<section>
+  <div class="controls">
+    <div class="ctl"><label>Model</label><div class="seg" id="e-m"></div></div>
+    <div class="ctl"><label>Reasoning budget</label><div class="seg" id="e-b"></div></div>
+    <div class="ctl"><label>Retry on failure</label><div class="seg" id="e-r"></div></div>
+  </div>
+  <div class="result">
+    <div class="stats" id="e-stats"></div>
+    <div class="callout" id="e-note"></div>
+    <div class="fig"><div class="chart" id="e-types"></div></div>
+  </div>
+</section>
+
+<div class="part"><h2>Full results</h2><span>All 18 configurations</span></div>
+<section>
+  <div class="tbl"><table id="full"></table></div>
+  <dl class="method">
+    <dt>Test set</dt><dd>1,200 planner inputs captured from the research tool, labeled with gold call sequences. Task mix: single lookup 40%, multi-hop 25%, date and unit math 20%, ambiguous entity 15%.</dd>
+    <dt>Pass</dt><dd>The executed call sequence returns the gold result, or asks for clarification where the gold answer does. Extra calls still pass but are counted against efficiency.</dd>
+    <dt>Minimum calls</dt><dd>The gold sequence averages 1.38 calls per task.</dd>
+    <dt>Intervals</dt><dd>95% binomial intervals on pass rate (about ±1 point at n = 1,200).</dd>
+    <dt>Cost</dt><dd>Measured tokens times list price per 1,000 planner calls, including retries. Volume is about 4 million calls per month.</dd>
+  </dl>
+</section>
+</div>
+
+<script>// Minimal chart kit: pixel-true SVG rendered at container width, shared tooltip, sortable tables, and one
+// declarative entry point: every div.chart[data-kind][data-chart] is drawn from its JSON (drawCharts).
+const NS="http://www.w3.org/2000/svg";
+function S(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const k in attrs){if(k==="text")e.textContent=attrs[k];else e.setAttribute(k,attrs[k]);}if(parent)parent.appendChild(e);return e;}
+function H(tag,attrs={},html){const e=document.createElement(tag);for(const k in attrs)e.setAttribute(k,attrs[k]);if(html!=null)e.innerHTML=html;return e;}
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function lin(d0,d1,r0,r1){const f=x=>r0+(x-d0)/(d1-d0)*(r1-r0);f.inv=y=>d0+(y-r0)/(r1-r0)*(d1-d0);f.d=[d0,d1];return f;}
+function logs(d0,d1,r0,r1){const a=Math.log10(d0),b=Math.log10(d1);const f=x=>r0+(Math.log10(x)-a)/(b-a)*(r1-r0);f.d=[d0,d1];return f;}
+function ticks(a,b,n=5){if(n>1){let k=n,t=ticksRaw(a,b,k);while(t.length>n+1&&k>1){k--;t=ticksRaw(a,b,k);}return t;}return ticksRaw(a,b,n);}
+function ticksRaw(a,b,n=5){const step=Math.pow(10,Math.floor(Math.log10((b-a)/n)));const err=(b-a)/n/step;const m=err>=7.5?10:err>=3.5?5:err>=1.5?2:1;const s=m*step;const out=[];for(let v=Math.ceil(a/s)*s;v<=b+1e-9;v+=s)out.push(+v.toFixed(10));return out;}
+// nice ticks whose labels are all distinct: a format that rounds (an integer count) would otherwise print
+// "1" at 0.5 and at 1, so the step widens until each label names one position
+function kFmtTicks(a,b,n,f){for(let k=n;k>1;k--){const t=ticks(a,b,k),L=t.map(f);if(new Set(L).size===L.length)return t;}return ticks(a,b,2);}
+// explicit tick values, thinned left to right so no two labels touch at the drawn width
+function kThinTicks(vals,x,f){const out=[];let last=-1e9;for(const v of vals){const half=f(v).length*3.2;if(x(v)-half<last+6)continue;out.push(v);last=x(v)+half;}return out;}
+// computed ticks, at most n, fewer until no two neighbours' labels touch at the drawn scale x (kThinTicks's measure):
+// a nice step can land closer than the count asked for implies
+function kFitTicks(a,b,n,f,x){for(let k=Math.max(2,n);k>1;k--){const t=kFmtTicks(a,b,k,f);if(t.every((v,i)=>!i||x(v)-x(t[i-1])>=(f(v).length+f(t[i-1]).length)*3.2+6))return t;}
+  return kThinTicks(kFmtTicks(a,b,2,f),x,f);}
+const kClamp=(v,a,b)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),v));
+const fmt={
+  pct:(v,d=1)=>v.toFixed(d)+"%",
+  // money by its size: whole dollars from $10, cents from ten cents, three significant figures below; grouped, the
+  // sign before the dollar sign (the package's look.figure_text and summary.dollars_text write it by the same rule)
+  usd:v=>{const a=Math.abs(v),t=a>=10?Math.round(a).toLocaleString("en-US"):a===0?"0":a>=.1?a.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):a.toFixed(2-Math.floor(Math.log10(a)));return (v<0&&a!==0?"-":"")+"$"+t;},
+  s:v=>v.toFixed(v<10?1:0)+"s", ms:v=>Math.round(v)+" ms", x:v=>v.toFixed(1)+"×"
+};
+// named formats for chart data: "name" or "name:digits", with a leading "+" to sign positive values.
+// Without digits a value prints as many decimals as it needs, up to two (usd and ms keep their own rounding).
+const kShort=(v,d)=>d==null?String(+(+v).toFixed(2)):(+v).toFixed(d);
+const K_FMTS={
+  num:kShort, int:v=>Math.round(v).toLocaleString("en-US"), pct:(v,d)=>kShort(v,d)+"%", pts:(v,d)=>kShort(v,d)+" pts",
+  usd:(v,d)=>d==null?fmt.usd(v):(v<0?"-":"")+"$"+Math.abs(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d}),
+  usdk:v=>Math.abs(v)>=1000?"$"+(v/1000).toFixed(1)+"k":"$"+Math.round(v).toLocaleString("en-US"),
+  // dollars per 1,000 with the mark, a total under a cent drawn as stored: $0.008 reads $8.00/1000 (the package's
+  // MoneyForm per 1,000); an exact zero is $0, no measurement of a scale
+  usdpk:(v,d)=>v===0?"$0":K_FMTS.usd(v*1000,d==null?2:d)+"/1000",
+  ms:(v,d)=>(d==null?String(Math.round(v)):v.toFixed(d))+" ms", s:(v,d)=>kShort(v,d)+" s",
+  dur:v=>v>=1000?kShort(v/1000)+"s":kShort(v)+"ms", x:(v,d)=>v.toFixed(d==null?1:d)+"×", k:(v,d)=>(v/1000).toFixed(d==null?1:d)+"k"
+};
+function namedFmt(spec){const m=typeof spec==="string"&&/^(\+?)([a-z]+)(?::(\d))?$/.exec(spec);
+  if(!m||!Object.hasOwn(K_FMTS,m[2]))throw new Error(`fmt ${JSON.stringify(spec)} is not one of ${Object.keys(K_FMTS).join(", ")} (optionally "+name" or "name:digits")`);
+  const f=K_FMTS[m[2]],d=m[3]==null?null:+m[3],signed=m[1]==="+";return v=>{const t=f(v,d);return signed&&v>0?"+"+t:t;};}
+// chart data is untrusted text: escape everything that lands in markup, and accept colors only as token names
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+function kTok(c,fallback){if(c==null)return fallback;if(typeof c!=="string"||!/^--[a-z][a-z0-9-]*$/.test(c))throw new Error(`color ${JSON.stringify(c)} is not a token name such as "--s1"`);return c;}
+// a number that reaches a style or a size: finite, or refused, so data can never write CSS of its own
+function kNum(v,dflt,what){if(v==null)return dflt;if(typeof v!=="number"||!Number.isFinite(v))throw new Error(`${what} ${JSON.stringify(v)} is not a finite number`);return v;}
+// the kit reads a null field as one not set, as the package's models do: nulls are dropped from every object
+function kNoNulls(v){if(Array.isArray(v))return v.map(kNoNulls);if(v&&typeof v==="object")return Object.fromEntries(Object.entries(v).filter(([,x])=>x!=null).map(([k,x])=>[k,kNoNulls(x)]));return v;}
+const K_STATUS=["good","warn","bad","neutral"];
+function kStatus(k){if(!K_STATUS.includes(k))throw new Error(`status ${JSON.stringify(k)} is not one of ${K_STATUS.join(", ")}`);return k;}
+// a tooltip is a list of text lines; the first is set in bold
+function tipHTML(t){if(t==null)return null;return (Array.isArray(t)?t:[t]).map((l,i)=>i?esc(l):`<b>${esc(l)}</b>`).join("<br>");}
+// text width in the chart font, measured; charts redraw once web fonts load, so widths match what is drawn
+let kCanvas;function textW(t,size=12,weight=400){kCanvas=kCanvas||document.createElement("canvas").getContext("2d");
+  kCanvas.font=`${weight} ${size}px ${css("--f-body")||"sans-serif"}`;return kCanvas.measureText(String(t)).width;}
+// tooltip
+const tip=H("div",{id:"tip",role:"tooltip"});document.addEventListener("DOMContentLoaded",()=>document.body.appendChild(tip));
+function showTip(html,x,y){tip.innerHTML=html;tip.classList.add("on");const w=tip.offsetWidth,h=tip.offsetHeight;
+  let L=x+14,T=y+14;if(L+w>innerWidth-8)L=x-w-14;if(T+h>innerHeight-8)T=y-h-14;tip.style.left=Math.max(8,L)+"px";tip.style.top=Math.max(8,T)+"px";}
+function hideTip(){tip.classList.remove("on");}
+document.addEventListener("pointermove",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t)showTip(t.getAttribute("data-tip"),e.clientX,e.clientY);else hideTip();});
+document.addEventListener("focusin",e=>{const t=e.target.closest&&e.target.closest("[data-tip]");if(t){const r=t.getBoundingClientRect();showTip(t.getAttribute("data-tip"),r.right,r.top);}});
+document.addEventListener("focusout",hideTip);
+// responsive render: fn(el,width) called on resize and once fonts load; the returned redraw() carries its observer as .ro
+function chart(el,fn){const go=()=>{const w=Math.max(180,Math.floor(el.clientWidth));if(el._w===w)return;el._w=w;el.innerHTML="";fn(el,w);};
+  go();const ro=new ResizeObserver(go);ro.observe(el);const redraw=()=>{el._w=0;go();};redraw.ro=ro;kRedraws.add(redraw);return redraw;}
+const kRedraws=new Set();if(document.fonts)document.fonts.ready.then(()=>{for(const r of kRedraws)r();});
+function svgIn(el,w,h){return S("svg",{width:w,height:h,viewBox:`0 0 ${w} ${h}`,role:"img"},el);}
+// hit target helper: transparent rect larger than mark; html is already-escaped tooltip markup
+function hit(g,x,y,w,h,html){const r=S("rect",{x,y,width:w,height:h,fill:"transparent","data-tip":html,tabindex:0},g);return r;}
+// sortable tables: th.sort[data-k], rows rendered by fn(sortedRows)
+function sortable(tableEl,rows,render,defKey,defDir=-1){let key=defKey,dir=defDir;
+  const ths=tableEl.querySelectorAll("th.sort");
+  const draw=()=>{ths.forEach(th=>{th.removeAttribute("aria-sort");if(th.dataset.k===key)th.setAttribute("aria-sort",dir<0?"descending":"ascending");});
+    const s=[...rows].sort((a,b)=>{const A=a[key],B=b[key];return (A>B?1:A<B?-1:0)*dir;});render(s);};
+  ths.forEach(th=>{th.tabIndex=0;const f=()=>{if(key===th.dataset.k)dir=-dir;else{key=th.dataset.k;dir=-1;}draw();};th.onclick=f;th.onkeydown=e=>{if(e.key==="Enter")f();};});draw();}
+function pill(kind,text){const ic={good:"✓",warn:"!",bad:"✕",neutral:"–"}[kind];return `<span class="pill ${kind}"><span aria-hidden="true">${ic}</span>${text}</span>`;}
+// colors are applied via style="fill:var(--token)" so theme changes need no re-render
+// label placement: try right, left, above, below, then nudges up and down; avoids other labels and obstacle boxes [x0,y0,x1,y1].
+// A label's box is its measured 12px text plus a little air, so two placed labels never touch; above and below clear
+// the label's own mark (radius it.r, default 5.5). An obstacle may carry a fifth number, its cost (default 10): a
+// reference line costs 1, so crossing it beats colliding with a label. A spot costs more the further its box is from
+// its own mark, and a spot nearer another mark than its own costs 3, so a label strays from its mark only to avoid a
+// collision and never sits beside another arm's mark. marks: [[x,y]] of every mark drawn (default: the items').
+function placeLabels(items,bounds,obstacles=[],marks){const W=(t,strong)=>textW(t,12,strong?600:400)+3;const placed=[...obstacles];
+  const pts=marks||items.map(it=>[it.px,it.py]);const near=(b,x,y)=>Math.hypot(Math.max(b[0]-x,0,x-b[2]),Math.max(b[1]-y,0,y-b[3]));
+  for(const it of items){const w=W(it.text,it.strong),g=(it.r==null?5.5:it.r)+2,R=it.px+g+1.5,L=it.px-g-1.5,up=it.py-g-4.5,dn=it.py+g+13;
+    const opts=[[R,it.py+4,"start"],[L,it.py+4,"end"],[it.px,up,"middle"],[it.px,dn,"middle"]];
+    for(const d of [-6,6,12,-12,24,-24,36,-36])opts.push([R,it.py+4+d,"start"],[L,it.py+4+d,"end"]);
+    opts.push([it.px,up-14,"middle"],[it.px,dn+14,"middle"]);
+    const box=o=>{const x0=o[2]==="end"?o[0]-w:o[2]==="middle"?o[0]-w/2:o[0];return [x0,o[1]-12.5,x0+w,o[1]+4];};
+    const score=b=>{let s=b[0]<bounds[0]||b[2]>bounds[2]||b[1]<bounds[1]||b[3]>bounds[3]?100:0;
+      for(const p of placed)if(b[0]<p[2]&&b[2]>p[0]&&b[1]<p[3]&&b[3]>p[1])s+=p[4]==null?10:p[4];
+      const own=near(b,it.px,it.py);s+=own*.06;
+      if(pts.some(([x,y])=>(x!==it.px||y!==it.py)&&near(b,x,y)<Math.max(own,4)))s+=3;return s;};
+    let pick=opts[0],bs=1e9;opts.forEach((o,i)=>{const sc=score(box(o))+i*.08;if(sc<bs){bs=sc;pick=o;}});
+    it.x=pick[0];it.y=pick[1];it.anchor=pick[2];placed.push(box(pick));}
+  return items;}
+// a reference line's label (a gate, a budget, a margin), beside its line at rx and inside [x0,x1] (x1 short of
+// anything else in its band, such as the level): on one line to the right of the line where it fits, else to its left,
+// else wrapped at its spaces to the wider side's width (a line still wider than that side sits against x1). Returns
+// its lines, where they start (x, anchor) and the widest (w).
+function kRefLabel(rx,text,x0,x1){const W=t=>textW(t,11),tw=W(text),lx=Math.min(rx-4,x1),R=x1-rx-4,L=lx-x0;
+  if(tw<=R)return {x:rx+4,anchor:"start",lines:[text],w:tw};if(tw<=L)return {x:lx,anchor:"end",lines:[text],w:tw};
+  const room=Math.max(R,L),lines=[];let cur="";
+  for(const wd of text.split(" ")){const nx=cur?cur+" "+wd:wd;if(cur&&W(nx)>room){lines.push(cur);cur=wd;}else cur=nx;}lines.push(cur);
+  const w=Math.max(...lines.map(W));if(w>room)return {x:x1,anchor:"end",lines,w};
+  return R>=L?{x:rx+4,anchor:"start",lines,w}:{x:lx,anchor:"end",lines,w};}
+// the label drawn as one text, its lines 13px apart: stacked up to baseline y (up), else down from it
+function kRefText(s,o,y,up){const n=o.lines.length,t=S("text",{x:o.x,y:up?y-(n-1)*13:y,"text-anchor":o.anchor,class:"tick"},s);
+  o.lines.forEach((l,i)=>S("tspan",{x:o.x,dy:i?13:0,text:i<n-1?l+" ":l},t));return t;}
+// its box [x0,y0,x1,y1] for placeLabels, its first baseline at y
+const kRefBox=(o,y)=>{const a=o.anchor==="end"?o.x-o.w:o.x;return [a,y-10,a+o.w,y+3+(o.lines.length-1)*13];};
+// marks: one shape per arm where color alone would carry identity; hollow marks a failure or an absent setting
+function mark(g,shape,x,y,r,color,hollow){const st=hollow?`fill:var(--surface);stroke:var(${color});stroke-width:2`:`fill:var(${color});stroke:var(--surface);stroke-width:2`;
+  if(shape==="square")return S("rect",{x:x-r*.88,y:y-r*.88,width:r*1.76,height:r*1.76,rx:1.5,style:st},g);
+  if(shape==="triangle")return S("path",{d:`M${x},${y-r*1.1}L${x+r*1.05},${y+r*.8}L${x-r*1.05},${y+r*.8}Z`,style:st},g);
+  if(shape==="diamond")return S("path",{d:`M${x},${y-r*1.15}L${x+r*1.1},${y}L${x},${y+r*1.15}L${x-r*1.1},${y}Z`,style:st},g);
+  return S("circle",{cx:x,cy:y,r,style:st},g);}
+const K_SHAPES=["circle","square","triangle","diamond"];
+function kShape(s){if(s==null)return "circle";if(!K_SHAPES.includes(s))throw new Error(`shape ${JSON.stringify(s)} is not one of ${K_SHAPES.join(", ")}`);return s;}
+// patterns: a fill told apart by its texture, not its color alone (one status hue, several causes). The box is
+// washed in its token and the texture drawn over it in the token as plain lines and dots, clipped to the box by
+// geometry, so a pattern references nothing outside its own marks.
+const K_PATTERNS=["hatch","cross","dots","rows","cols"];
+function kPatternName(name){if(!K_PATTERNS.includes(name))throw new Error(`pattern ${JSON.stringify(name)} is not one of ${K_PATTERNS.join(", ")}`);return name;}
+function kTexture(g,name,x,y,w,h,color,opacity=1){kPatternName(name);const t=S("g",{style:`opacity:${opacity}`},g),P=6;
+  S("rect",{x,y,width:w,height:h,rx:2,style:`fill:color-mix(in oklab, var(${color}) 22%, var(--surface));stroke:var(${color});stroke-width:1`},t);
+  if(w<=0||h<=0)return t;const d=[];
+  // a diagonal from (sx,sy) along (1,dir) for h, cut to the box's x range
+  const diag=(sx,sy,dir)=>{const a=Math.max(0,x-sx),b=Math.min(h,x+w-sx);if(b>a)d.push(`M${sx+a},${sy+dir*a}L${sx+b},${sy+dir*b}`);};
+  if(name==="hatch"||name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y+h,-1);
+  if(name==="cross")for(let k=-h;k<w;k+=P)diag(x+k,y,1);
+  if(name==="rows")for(let v=y+P/2;v<y+h;v+=P)d.push(`M${x},${v}H${x+w}`);
+  if(name==="cols")for(let v=x+P/2;v<x+w;v+=P)d.push(`M${v},${y}V${y+h}`);
+  if(d.length)S("path",{d:d.join(""),style:`fill:none;stroke:var(${color});stroke-width:${name==="cross"?1:1.4}`},t);
+  if(name==="dots")for(let i=x+P/2;i<x+w;i+=P)for(let j=y+P/2;j<y+h;j+=P)S("circle",{cx:i,cy:j,r:1.4,style:`fill:var(${color})`},t);
+  return t;}
+
+// ---------- arm naming ----------
+// arms: [{id, role:'control'|'challenger', alias?, spec:{model, ...}}]; attrs: [{k, fmt(v)}] in display order
+// short = alias, else only the attributes that differ from control (model trimmed of the shared prefix); tag = A, B, C…
+// (AA after Z), never P, which is the control's alone
+const kCandidateTag=n=>{let t="";for(n++;n;n=Math.floor((n-1)/26))t=String.fromCharCode(65+(n-1)%26)+t;return t;};
+function armLabels(arms,attrs,controlName="Production"){
+  const ctl=arms.find(a=>a.role==="control");const fmtA=(k,v)=>{const a=attrs.find(x=>x.k===k);return a&&a.fmt?a.fmt(v):String(v);};
+  const trimModel=(m,base)=>{if(!base||m===base)return m;let i=0;while(i<m.length&&i<base.length&&m[i]===base[i])i++;
+    if(!(i===base.length&&/[-_ .]/.test(m[i]||"")))while(i>0&&!/[-_ .]/.test(m[i-1]))i--;const rest=m.slice(i).replace(/^[-_ .]+/,"");return i>=4&&rest?rest:m;};
+  let n=0;
+  for(const a of arms){a.long=attrs.map(x=>fmtA(x.k,a.spec[x.k])).join(" · ");
+    if(a===ctl){a.short=a.alias||controlName;a.tag="P";continue;}
+    do a.tag=kCandidateTag(n++);while(a.tag==="P");
+    if(a.alias){a.short=a.alias;continue;}
+    const diffs=attrs.filter(x=>a.spec[x.k]!==ctl.spec[x.k]);
+    a.short=diffs.map(x=>x.k==="model"?trimModel(a.spec.model,ctl.spec.model):(x.sfmt?x.sfmt(a.spec[x.k]):fmtA(x.k,a.spec[x.k]))).join(" · ")||a.long;}
+  // collisions: append the next attribute that separates them
+  const seen={};for(const a of arms){(seen[a.short]=seen[a.short]||[]).push(a);}
+  for(const k in seen)if(seen[k].length>1)for(const a of seen[k]){const extra=attrs.find(x=>seen[k].some(b=>b!==a&&b.spec[x.k]!==a.spec[x.k]));if(extra)a.short+=" · "+fmtA(extra.k,a.spec[extra.k]);}
+  return arms;}
+// a tag's letter on its arm's color: on-fill, except on the control's ink-gray, which is light in the dark theme
+const kOnTag=c=>c==="--ink-2"?"--surface":"--on-fill";
+function armChip(a,color){return `<span class="armchip"><span class="tag" style="background:var(${color});color:var(${kOnTag(color)})">${a.tag}</span>${a.short}</span>`;}
+function kArmChip(tag,label,color){const s=H("span",{class:"armchip"});const t=H("span",{class:"tag"}),c=kTok(color,"--ink-2");t.style.background=`var(${c})`;t.style.color=`var(${kOnTag(c)})`;t.textContent=tag;s.append(t,document.createTextNode(label));return s;}
+
+// ---------- horizontal bars (optionally diverging, stacked, grouped, with whiskers and a reference line) ----------
+// rows:[{label, sl?, value | segments:[{value,color}], lo?, hi?, color, strong?, muted?, note?, tip?, group?}]; lo without hi
+// is an interval open above
+// opt:{domain:[a,b], fmt, tickFmt?, ticks?, ref?:{value,label}, origin?, originLabel?, level?, labelW?, rowH?}
+function barsH(el,w,rows,opt){const rowH=opt.rowH||28,narrow=w<480,tagW=rows.some(r=>r.tag!=null)?22:0,lw=opt.labelW||(narrow?Math.min(130,w*.36):Math.min(220,w*.3));
+  const m={l:lw,r:narrow?52:70,t:opt.ref||opt.level||opt.originLabel?20:6,b:22};const [d0,d1]=opt.domain;const x=opt.log?logs(d0,d1,m.l,w-m.r):lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(opt.ref.value),opt.ref.label,0,opt.level?w-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const grouped=rows.some(r=>r.group!=null);let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(grouped?14:0);const s=svgIn(el,w,h);
+  const tf=opt.tickFmt||opt.fmt;const tw=Math.max(...[d0,d1,(d0+d1)/2].map(v=>tf(v).length))*6.4+14;
+  const tv=opt.ticks?kThinTicks(opt.ticks,x,tf):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),tf,x);
+  for(const v of tv){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:tf(v)},s);}
+  const o=opt.origin||0;const z=x(kClamp(o,d0,d1));S("line",{x1:z,x2:z,y1:m.t-2,y2:h-m.b,class:"axis"},s);
+  if(opt.originLabel)S("text",{x:z+4,y:m.t-8,class:"tick",text:opt.originLabel},s);
+  let y0=m.t+(grouped?14:0);
+  rows.forEach((r,i)=>{if(grouped&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group==null?"":r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const val=r.segments?r.segments.reduce((a,sg)=>a+sg.value,0):r.value;const v=kClamp(val,d0,d1);
+    // the label, else its short label, else (where the row has a tag) the tag alone, else the short or long label cut
+    const maxC=Math.floor((m.l-14-tagW)/6.6);let lab=r.label;if(lab.length>maxC)lab=r.sl&&r.sl.length<=maxC?r.sl:r.tag!=null?"":(r.sl||lab).slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10-tagW,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    if(r.tag!=null){const tc=r.color||"--ink-2";S("rect",{x:m.l-26,y:cy-8,width:16,height:16,rx:3,style:`fill:var(${tc})`},g);
+      S("text",{x:m.l-18,y:cy+3.5,"text-anchor":"middle",class:"tag",style:`fill:var(${kOnTag(tc)});font-size:10px;font-weight:600`,text:r.tag},g);}
+    if(r.segments){let acc=o;r.segments.forEach((sg,j)=>{const a=x(kClamp(acc,d0,d1)),b=x(kClamp(acc+sg.value,d0,d1));const c=sg.color||r.color||"--s1";
+        const sx=Math.min(a,b)+(j?1:0),sw=Math.max(0,Math.abs(b-a)-(j?1:0)),sy=cy-(rowH*.28),sh=rowH*.56;
+        if(sg.pattern!=null)kTexture(g,sg.pattern,sx,sy,sw,sh,c,r.muted?.45:1);
+        else S("rect",{x:sx,y:sy,width:sw,height:sh,rx:2,style:`fill:var(${c});opacity:${r.muted?.45:1}`},g);acc+=sg.value;});}
+    else{const x0=Math.min(z,x(v)),bw=Math.max(1.5,Math.abs(x(v)-z));
+      S("rect",{x:x0,y:cy-(rowH*.28),width:bw,height:rowH*.56,rx:3,style:`fill:var(${r.color||"--s1"});opacity:${r.muted?.45:1}`},g);}
+    // a low end with no high end is an interval open above: its whisker runs on to the axis's end, capped only at
+    // the low end and opening into a chevron there, never read as a point
+    const open=r.lo!=null&&r.hi==null,hi=open?d1:r.hi;
+    if(r.lo!=null){S("line",{x1:x(Math.max(d0,r.lo)),x2:x(Math.min(d1,hi)),y1:cy,y2:cy,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      for(const e of open?[r.lo]:[r.lo,r.hi])S("line",{x1:x(kClamp(e,d0,d1)),x2:x(kClamp(e,d0,d1)),y1:cy-4,y2:cy+4,style:"stroke:var(--ink);stroke-width:1.25"},g);
+      if(open){const ex=x(d1);S("path",{d:`M${ex-5},${cy-4}L${ex},${cy}L${ex-5},${cy+4}`,style:"fill:none;stroke:var(--ink);stroke-width:1.25"},g);}}
+    const right=val>=o;const edge=r.lo!=null?(right?x(Math.min(d1,hi)):x(Math.max(d0,r.lo))):x(v);
+    let nt=(r.note!=null?r.note:opt.fmt(val));if(right&&edge+6+nt.length*6.4>w)nt=opt.fmt(val);let nw=nt.length*6.4;const flip=!right&&edge-6-nw<m.l+4;
+    const past=Math.max(z,x(Math.min(d1,hi!=null?hi:o)));
+    if(flip&&past+6+nw>w){nt=opt.fmt(val);nw=nt.length*6.4;}
+    S("text",{x:right?edge+6:flip?past+6:edge-6,y:cy+4,"text-anchor":right||flip?"start":"end",class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,opt.fmt(val)+(r.lo==null?"":open?` (from ${opt.fmt(r.lo)} up, no upper bound)`:` (${opt.fmt(r.lo)} to ${opt.fmt(r.hi)})`)]));});
+  if(opt.ref){const rx=x(opt.ref.value);S("line",{x1:rx,x2:rx,y1:m.t-6,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  if(opt.level)S("text",{x:w,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  return s;}
+
+// ---------- line chart over ordered categories ----------
+// cats:[label], series:[{name, color, values:[...], lo?:[], hi?:[], strong?, dash?, endLabel?}], opt:{domain, fmt, xTitle?, h?, level?}
+function lineChart(el,w,cats,series,opt){const narrow=w<480;const h=opt.h||(narrow?260:300);const m={l:44,r:narrow?92:130,t:opt.level?24:14,b:opt.xTitle?44:28};const s=svgIn(el,w,h);
+  const x=i=>m.l+(cats.length===1?0:i/(cats.length-1))*(w-m.l-m.r),[d0,d1]=opt.domain,y=lin(d0,d1,h-m.b,m.t);
+  for(const v of kFmtTicks(d0,d1,5,opt.fmt)){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>d0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:opt.fmt(v)},s);}
+  cats.forEach((c,i)=>S("text",{x:x(i),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:c},s));
+  if(opt.xTitle)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:opt.xTitle},s);
+  if(opt.level)S("text",{x:w-m.r,y:12,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  const ends=[];const obs=[];
+  for(const se of series){if(se.lo)S("path",{d:"M"+se.hi.map((v,i)=>`${x(i)},${y(v)}`).join("L")+"L"+se.lo.map((v,i)=>[i,v]).reverse().map(([i,v])=>`${x(i)},${y(v)}`).join("L")+"Z",style:`fill:var(${se.color});opacity:.12`},s);}
+  for(const se of series){S("path",{d:"M"+se.values.map((v,i)=>`${x(i)},${y(v)}`).join("L"),style:`fill:none;stroke:var(${se.color});stroke-width:${se.strong?2.5:2};${se.dash?"stroke-dasharray:5 4;":""}`},s);
+    se.values.forEach((v,i)=>{const g=S("g",{},s);S("circle",{cx:x(i),cy:y(v),r:se.strong?4.5:3.5,style:`fill:var(${se.color});stroke:var(--surface);stroke-width:2`},g);obs.push([x(i)-5,y(v)-5,x(i)+5,y(v)+5]);
+      hit(g,x(i)-10,y(v)-10,20,20,tipHTML([`${se.name} · ${cats[i]}`,`${opt.fmt(v)}${se.lo?` (${opt.fmt(se.lo[i])}–${opt.fmt(se.hi[i])})`:""}`]));});
+    ends.push({px:x(cats.length-1),py:y(se.values.at(-1)),text:se.endLabel||se.name,strong:se.strong});}
+  // end labels stacked to avoid collisions, to the right of the last point
+  ends.sort((a,b)=>a.py-b.py);let last=-1e9;for(const e of ends){e.y=Math.max(e.py+4,last+16);last=e.y;}
+  const maxE=Math.floor((m.r-12)/6.6);for(const e of ends)S("text",{x:e.px+10,y:e.y,class:e.strong?"lbl-strong":"lbl",text:e.text.length>maxE?e.text.slice(0,maxE-1)+"…":e.text},s);
+  return s;}
+
+// ---------- forest plot: change against a control, with interval and an optional margin ----------
+// rows:[{label, value, lo, hi, color, strong?, note?, group?, tip?}] opt:{domain:[a,b], fmt, ref?:{value,label} (margin band from value up), level?}
+function forest(el,w,rows,opt){const narrow=w<480,rowH=opt.rowH||30,need=Math.max(...rows.map(r=>r.label.length))*6.6+18,lw=opt.labelW||Math.min(need,narrow?w*.42:Math.min(230,w*.32));
+  const m={l:lw,r:narrow?60:96,t:22,b:24};let gaps=0;rows.forEach((r,i)=>{if(i&&r.group!==rows[i-1].group)gaps++;});const [d0,d1]=opt.domain;const x=lin(d0,d1,m.l,w-m.r);
+  const rl=opt.ref&&opt.ref.label?kRefLabel(x(Math.max(d0,opt.ref.value)),opt.ref.label,0,opt.level?w-m.r-textW(`${opt.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length+gaps*14+(rows.some(r=>r.group)?14:0);const s=svgIn(el,w,h);
+  if(opt.ref){const mx=x(Math.max(d0,opt.ref.value));S("rect",{x:mx,y:m.t,width:x(d1)-mx,height:h-m.t-m.b,style:"fill:var(--good-wash);opacity:.6"},s);
+    S("line",{x1:mx,x2:mx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  for(const v of kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/(Math.max(opt.fmt(d0).length,opt.fmt(d1).length)*6.4+16)),opt.fmt,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:opt.fmt(v)},s);}
+  S("line",{x1:x(0),x2:x(0),y1:m.t-4,y2:h-m.b,class:"axis",style:"stroke-width:1.5"},s);
+  if(opt.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${opt.level} intervals`},s);
+  let y0=m.t+(rows.some(r=>r.group)?14:0);
+  rows.forEach((r,i)=>{if(r.group&&(i===0||r.group!==rows[i-1].group)){if(i)y0+=14;S("text",{x:0,y:y0-4,class:"lbl-strong",text:r.group},s);}
+    const cy=y0+rowH/2;y0+=rowH;const g=S("g",{},s);const cl=v=>x(Math.max(d0,Math.min(d1,v)));
+    const maxC=Math.floor((m.l-14)/6.6);const lab=r.label.length<=maxC?r.label:(r.sl&&r.sl.length<=maxC)?r.sl:r.label.slice(0,maxC-1)+"…";
+    S("text",{x:m.l-10,y:cy+4,"text-anchor":"end",class:r.strong?"lbl-strong":"lbl",text:lab},g);
+    S("line",{x1:cl(r.lo),x2:cl(r.hi),y1:cy,y2:cy,style:`stroke:var(${r.color||"--s1"});stroke-width:3;stroke-linecap:round`},g);
+    S("rect",{x:cl(r.value)-5,y:cy-5,width:10,height:10,rx:2,style:`fill:var(${r.color||"--s1"});stroke:var(--surface);stroke-width:2`},g);
+    let nt=r.note!=null?r.note:opt.fmt(r.value);if(nt.length*6.4>m.r-10)nt=opt.fmt(r.value);S("text",{x:w-m.r+8,y:cy+4,class:r.strong?"lbl-strong":"tick",text:nt},g);
+    hit(g,0,cy-rowH/2,w,rowH,tipHTML(r.tip||[r.label,`${opt.fmt(r.value)} [${opt.fmt(r.lo)}, ${opt.fmt(r.hi)}]`]));});
+  return s;}
+
+// ---------- declarative renderers: each takes the chart's JSON (kit/API.md "Chart data") ----------
+function kNeed(d,keys){for(const k of keys)if(d[k]==null)throw new Error(`"${k}" is required`);}
+function kList(d,k){if(!Array.isArray(d[k]))throw new Error(`"${k}" must be a list`);return d[k];}
+// GENERATOR §5.2: an interval-bearing chart prints its level, so a chart drawing intervals without one is refused
+function kNeedLevel(d,rows){if(!d.level&&rows.some(r=>r.lo!=null||r.hi!=null))throw new Error(`rows carry intervals, so "level" is required`);}
+const kLabelW=(d,w)=>(w<480?d.label_width_narrow:d.label_width)||null;
+const kIsEm=(d,id)=>d.emphasis!=null&&id!=null&&id===d.emphasis;
+
+function kBars(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);
+  const ref=d.reference;const pref=ref&&ref.kind==="no_preference";
+  barsH(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id),
+      segments:r.segments&&r.segments.map(sg=>({value:sg.value,color:kTok(sg.color,null),pattern:sg.pattern}))})),
+    {domain:d.domain,fmt:f,tickFmt:d.tick_fmt?namedFmt(d.tick_fmt):null,ticks:d.ticks,ref:ref&&!pref?ref:null,origin:pref?ref.value:0,originLabel:pref?ref.label:null,
+     level:d.level,labelW:kLabelW(d,w),rowH:d.row_height,log:d.log});}
+
+function kForest(el,w,d){kNeed(d,["domain","fmt","level"]);const rows=kList(d,"rows");
+  forest(el,w,rows.map(r=>({...r,sl:r.short_label,color:kTok(r.color,"--s1"),strong:r.strong||kIsEm(d,r.id)})),
+    {domain:d.domain,fmt:namedFmt(d.fmt),ref:d.reference||null,level:d.level,labelW:kLabelW(d,w),rowH:d.row_height});}
+
+function kLines(el,w,d){kNeed(d,["domain","fmt"]);const series=kList(d,"series");const cats=kList(d,"categories");
+  if(!d.level&&series.some(se=>se.lo||se.hi))throw new Error(`series carry bands, so "level" is required`);
+  lineChart(el,w,cats,series.map(se=>({...se,color:kTok(se.color,"--s1"),endLabel:se.end_label})),{domain:d.domain,fmt:namedFmt(d.fmt),xTitle:d.x_title,h:d.height,level:d.level});}
+
+// scatter: two measures that trade off. gate=true shades where both references pass (gate_scatter).
+function kScatter(el,w,d,gate){kNeed(d,["x_domain","y_domain","x_fmt","y_fmt"]);const pts=kList(d,"points");
+  if(gate&&(!d.reference||!d.x_reference))throw new Error(`gate_scatter needs "reference" (y) and "x_reference" (x)`);
+  const xf=namedFmt(d.x_fmt),yf=namedFmt(d.y_fmt),narrow=w<560;const [x0,x1]=d.x_domain,[y0,y1]=d.y_domain;
+  const yt=d.y_ticks||kFmtTicks(y0,y1,5,yf);const h=d.height||Math.round(Math.min(380,Math.max(300,w*.45)));
+  const m={l:Math.max(30,Math.max(...yt.map(v=>yf(v).length))*6.6+16),r:18,t:16,b:40};const s=svgIn(el,w,h);
+  const x=d.x_log?logs(x0,x1,m.l,w-m.r):lin(x0,x1,m.l,w-m.r),y=lin(y0,y1,h-m.b,m.t);const obs=[];
+  const passSide=(r,lo,hi,dflt)=>((r.kind||dflt)==="budget"?[lo,r.value]:[r.value,hi]);
+  if(gate){const [ax,bx]=passSide(d.x_reference,x0,x1,"budget"),[ay,by]=passSide(d.reference,y0,y1,"floor");
+    S("rect",{x:x(ax),y:y(by),width:x(bx)-x(ax),height:y(ay)-y(by),style:"fill:var(--good-wash)"},s);
+    if(d.region_label){S("text",{x:x(ax)+8,y:y(by)+16,class:"lbl",style:"fill:var(--good);font-weight:600",text:d.region_label},s);obs.push([x(ax)+8,y(by)+6,x(ax)+8+d.region_label.length*6.6,y(by)+19]);}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("path",{d:`M${x(0)},${y(0)}L${x(x1)},${y(0)}L${x(x1)},${y(Math.max(y0,yAt(x1)))}L${x(lx)},${y(Math.max(y0,yAt(lx)))}Z`,style:"fill:var(--good-wash)"},s);}
+  for(const v of yt){S("line",{x1:m.l,x2:w-m.r,y1:y(v),y2:y(v),class:"grid"},s);if(v>y0)S("text",{x:m.l-8,y:y(v)+4,"text-anchor":"end",class:"tick",text:yf(v)},s);}
+  for(const v of kThinTicks(d.x_ticks||kFmtTicks(x0,x1,5,xf),x,xf)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-m.b+16,"text-anchor":"middle",class:"tick",text:xf(v)},s);}
+  if(d.x_title)S("text",{x:(m.l+w-m.r)/2,y:h-6,"text-anchor":"middle",class:"tick",text:d.x_title},s);
+  if(d.y_title){S("text",{x:m.l+6,y:h-m.b-8,class:"tick",text:d.y_title},s);obs.push([m.l+6,h-m.b-20,m.l+6+d.y_title.length*6.4,h-m.b-6]);}
+  if(d.x_reference){const rx=x(d.x_reference.value);S("line",{x1:rx,x2:rx,y1:m.t,y2:h-m.b,class:"floor"},s);obs.push([rx-2,m.t,rx+2,h-m.b,1]);
+    if(d.x_reference.label){const rl=kRefLabel(rx,d.x_reference.label,m.l,w-m.r);kRefText(s,rl,m.t+12,false);obs.push(kRefBox(rl,m.t+12));}}
+  if(d.reference){const ry=y(d.reference.value);S("line",{x1:m.l,x2:w-m.r,y1:ry,y2:ry,class:"floor"},s);obs.push([m.l,ry-2,w-m.r,ry+2,1]);
+    if(d.reference.label){const rl=kRefLabel(w-m.r+4,d.reference.label,m.l,w-m.r);kRefText(s,rl,ry+13,false);obs.push(kRefBox(rl,ry+13));}}
+  if(d.price_line){const p=d.price_line.value,yAt=v=>-(v/Math.max(1e-9,p)),lx=Math.min(x1,p*-y0);
+    S("line",{x1:x(0),y1:y(0),x2:x(lx),y2:y(Math.max(y0,yAt(lx))),style:"stroke:var(--good);stroke-width:1.5;stroke-dasharray:5 4"},s);
+    if(d.price_line.label){const mx=lx*.55,t=d.price_line.label,tx=x(mx)+8,ty=y(Math.max(y0,yAt(mx)))+16;S("text",{x:tx,y:ty,class:"tick",style:"fill:var(--good)",text:t},s);obs.push([tx,ty-10,tx+t.length*6.4,ty+3]);}
+    if(d.price_line.region_label){const t=d.price_line.region_label;S("text",{x:w-m.r-8,y:m.t+16,"text-anchor":"end",class:"lbl",style:"fill:var(--good);font-weight:600",text:t},s);obs.push([w-m.r-8-t.length*6.6,m.t+6,w-m.r-8,m.t+19]);}}
+  const at=p=>[x(kClamp(p.x,x0,x1)),y(kClamp(p.y,y0+(y1-y0)*.025,y1))];const byId=Object.fromEntries(pts.filter(p=>p.id!=null).map(p=>[p.id,p]));
+  if(d.frontier){let best=-Infinity;const fr=[];for(const p of [...pts].sort((a,b)=>a.x-b.x))if(p.y>best){fr.push(p);best=p.y;}
+    S("path",{d:"M"+fr.map(p=>at(p).join(",")).join("L"),style:"fill:none;stroke:var(--base);stroke-width:1.5"},s);}
+  for(const pa of d.paths||[]){const ps=kList(pa,"ids").map(id=>{if(!byId[id])throw new Error(`path names point "${id}", which is not in "points"`);return byId[id];});
+    S("path",{d:"M"+ps.map(p=>at(p).join(",")).join("L"),style:`fill:none;stroke:var(${kTok(pa.color,"--base")});stroke-width:${kNum(pa.width,2,"path width")};opacity:${kNum(pa.opacity,1,"path opacity")}`},s);}
+  for(const p of pts){const [px,py]=at(p),r=kNum(p.size,5.5,"point size"),g=S("g",{},s);const c=kTok(p.color,"--s1");const mk=mark(g,kShape(p.shape),px,py,r,c,p.hollow);if(p.muted)mk.style.opacity=.45;
+    if(kIsEm(d,p.id))S("circle",{cx:px,cy:py,r:r+4.5,style:"fill:none;stroke:var(--ink);stroke-width:1.5"},g);obs.push([px-r-2,py-r-2,px+r+2,py+r+2]);
+    hit(g,px-12,py-12,24,24,tipHTML(p.tip||[p.label||p.id||"",`${xf(p.x)} · ${yf(p.y)}`]));}
+  // the emphasized point is labelled first, then left to right, so it gets the best spot
+  const labs=pts.map(p=>({p,text:narrow?p.narrow_label:p.label})).filter(l=>l.text).map(l=>{const [px,py]=at(l.p);return {...l,px,py,r:kNum(l.p.size,5.5,"point size")};})
+    .map(l=>({...l,strong:kIsEm(d,l.p.id)})).sort((a,b)=>(b.strong?1:0)-(a.strong?1:0)||a.px-b.px);
+  placeLabels(labs,[m.l,0,w,h-m.b],obs,pts.map(at)).forEach(l=>S("text",{x:l.x,y:l.y,"text-anchor":l.anchor,class:kIsEm(d,l.p.id)?"lbl-strong":"lbl",text:l.text},s));
+  return s;}
+
+// one rate per candidate against a floor: dot, interval, floor dashed
+function kDotInterval(el,w,d){kNeed(d,["domain","fmt"]);const rows=kList(d,"rows");kNeedLevel(d,rows);const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const rowH=d.row_height||28,need_=Math.max(...rows.map(r=>r.label.length))*6.6+18,m={l:kLabelW(d,w)||Math.min(need_,w*.42),r:14,t:22,b:22},maxC=Math.floor((m.l-12)/6.6);
+  const x=lin(d0,d1,m.l,w-m.r);const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,d.level?w-m.r-textW(`${d.level} intervals`,11)-8:w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+rowH*rows.length;const s=svgIn(el,w,h);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  rows.forEach((r,i)=>{const cy=m.t+rowH*i+rowH/2,c=kTok(r.color,"--s1"),g=S("g",{},s);
+    S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:r.strong||kIsEm(d,r.id)?"lbl-strong":"lbl",text:r.label.length<=maxC?r.label:r.label.slice(0,maxC-1)+"…"},g);
+    if(r.lo!=null)S("line",{x1:x(kClamp(r.lo,d0,d1)),x2:x(kClamp(r.hi,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:3;stroke-linecap:round;opacity:.35`},g);
+    mark(g,kShape(r.shape),x(kClamp(r.value,d0,d1)),cy,5,c,r.hollow);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,tipHTML(r.tip||[r.label,f(r.value)+(r.lo!=null&&r.hi!=null?` (${f(r.lo)} to ${f(r.hi)})`:"")]));});
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-4,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-8,true);}
+  if(d.level)S("text",{x:w-m.r,y:m.t-8,"text-anchor":"end",class:"tick",text:`${d.level} intervals`},s);
+  return s;}
+
+// latency distributions: one bar per row from "from" to "to" (p50 to p95), grouped, with a budget line
+function kRangeBars(el,w,d){kNeed(d,["domain","fmt"]);const groups=kList(d,"groups");const f=namedFmt(d.fmt);const [d0,d1]=d.domain;
+  const band=g=>kList(g,"rows").length*13+20,m={l:Math.min(190,w*.36),r:16,t:16,b:26};const x=lin(d0,d1,m.l,w-m.r);
+  const rl=d.reference&&d.reference.label?kRefLabel(x(d.reference.value),d.reference.label,0,w):null;if(rl)m.t+=(rl.lines.length-1)*13;
+  const h=m.t+m.b+groups.reduce((a,g)=>a+band(g),0);const s=svgIn(el,w,h);
+  const tw=Math.max(f(d0).length,f(d1).length)*6.4+16;
+  for(const v of d.ticks?kThinTicks(d.ticks,x,f):kFitTicks(d0,d1,Math.floor((w-m.l-m.r)/tw),f,x)){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-8,"text-anchor":"middle",class:"tick",text:f(v)},s);}
+  let top=m.t;for(const gr of groups){const y0=top+10;top+=band(gr);
+    S("text",{x:m.l-12,y:y0+gr.rows.length*13/2+3,"text-anchor":"end",class:"lbl-strong",text:w<480&&gr.short_label?gr.short_label:gr.label},s);
+    gr.rows.forEach((r,i)=>{const cy=y0+i*13+4,c=kTok(r.color,"--s1"),g=S("g",{},s);
+      S("line",{x1:x(kClamp(r.from,d0,d1)),x2:x(kClamp(r.to,d0,d1)),y1:cy,y2:cy,style:`stroke:var(${c});stroke-width:6;stroke-linecap:round`},g);
+      mark(g,kShape(r.shape),x(kClamp(r.to,d0,d1)),cy,4,c,r.hollow);
+      hit(g,m.l,cy-6.5,w-m.l-m.r,13,tipHTML(r.tip||[`${r.label} · ${gr.label}`,`${f(r.from)} to ${f(r.to)}`]));});}
+  if(d.reference){const rx=x(d.reference.value);S("line",{x1:rx,x2:rx,y1:m.t-8,y2:h-m.b,class:"floor"},s);if(rl)kRefText(s,rl,m.t-2,true);}
+  return s;}
+
+// HTML renderers: drawn once, sized by CSS
+function kTxt(tag,cls,t){const e=H(tag,cls?{class:cls}:{});e.textContent=t==null?"":t;return e;}
+function kPill(kind,text){const s=H("span",{},pill(kStatus(kind),esc(text)));return s.firstChild;}
+function kWithTip(e,t){if(t!=null){e.setAttribute("data-tip",tipHTML(t));e.tabIndex=0;}return e;}
+const kGridCols=n=>`auto repeat(${n},minmax(0,1fr))`;
+
+// pass/fail per candidate × task: pill, the binding reasons, cost; the cheapest passing cell highlighted
+function kGateMatrix(el,d){const cols=kList(d,"columns"),rows=kList(d,"rows");const cf=d.cost_fmt?namedFmt(d.cost_fmt):null;
+  const wrap=H("div",{class:"tbl"}),t=H("table",{class:"gate"}),hr=H("tr");hr.appendChild(kTxt("th","",d.row_header||""));for(const c of cols)hr.appendChild(kTxt("th","",c.label));
+  const th=H("thead");th.appendChild(hr);const tb=H("tbody");
+  for(const r of rows){const tr=H("tr"),td=H("td",{class:"task"});td.append(kTxt("b","",r.label));if(r.detail)td.append(kTxt("span","",r.detail));if(r.flag)td.append(kTxt("span","xc",r.flag));tr.appendChild(td);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cd=H("td",{class:c.pick?"cell pick":"cell"});if(c.label)cd.appendChild(kPill(c.status,c.label));
+      if(c.reasons&&c.reasons.length)cd.appendChild(kTxt("span","why",c.reasons.join("; ")));
+      if(c.cost!=null){if(!cf)throw new Error(`cells carry "cost", so "cost_fmt" is required`);cd.appendChild(kTxt("span","cost",cf(c.cost)+(d.cost_unit?" "+d.cost_unit:"")));}
+      if(c.pick&&d.pick_label)cd.appendChild(kTxt("span","pickmark",d.pick_label));tr.appendChild(cd);}
+    tb.appendChild(tr);}
+  t.append(th,tb);wrap.appendChild(t);el.appendChild(wrap);}
+
+// two crossed factors: a tile per cell with the metric, a bar, cost and latency, and a status pill
+function kLattice(el,d){kNeed(d,["fmt"]);const cols=kList(d,"columns"),rows=kList(d,"rows");const f=namedFmt(d.fmt),cf=d.cost_fmt?namedFmt(d.cost_fmt):null,lf=d.latency_fmt?namedFmt(d.latency_fmt):null;
+  const bd=d.bar_domain||null;const box=H("div",{class:"lattice"});box.style.gridTemplateColumns=`auto repeat(${cols.length},minmax(6.5rem,1fr))`;box.appendChild(kTxt("div","hd",""));
+  for(const c of cols)box.appendChild(kTxt("div","hd",c.label));
+  for(const r of rows){const rh=H("div",{class:"rh"});if(r.color){const sw=H("span",{class:"sw"});sw.style.background=`var(${kTok(r.color)})`;rh.appendChild(sw);}rh.append(document.createTextNode(r.label));box.appendChild(rh);
+    const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    for(const c of cells){const cell=kWithTip(H("div",{class:kIsEm(d,c.id)?"cell rec":"cell"}),c.tip);cell.appendChild(kTxt("span","acc",f(c.value)));
+      if(bd){const bar=H("div",{class:"bar"}),i=H("i");i.style.width=kClamp((c.value-bd[0])/(bd[1]-bd[0])*100,0,100)+"%";bar.appendChild(i);cell.appendChild(bar);}
+      const meta=[c.cost!=null&&cf?cf(c.cost)+(d.cost_unit?" "+d.cost_unit:""):null,c.latency!=null&&lf?lf(c.latency):null].filter(Boolean);
+      if(meta.length)cell.appendChild(kTxt("span","meta",meta.join(" · ")));if(c.status)cell.appendChild(kPill(c.status,c.status_label||""));box.appendChild(cell);}}
+  // tiles keep a legible width; where the columns do not fit, the lattice scrolls inside its own frame, as a table does
+  const wrap=H("div",{class:"tbl"});wrap.appendChild(box);el.appendChild(wrap);}
+
+// grids of cells (heatmap, difference heatmap, confusion) share the .mx layout
+function kMxGrid(cols,rows,cell){const box=H("div",{class:"mx"});box.style.gridTemplateColumns=kGridCols(cols.length);box.appendChild(H("div"));
+  for(const c of cols)box.appendChild(kTxt("div","h",c));
+  rows.forEach((r,i)=>{box.appendChild(kTxt("div","rl",r.label));const cells=kList(r,"cells");if(cells.length!==cols.length)throw new Error(`row "${r.label}" has ${cells.length} cells for ${cols.length} columns`);
+    cells.forEach((c,j)=>box.appendChild(cell(c,i,j)));});return box;}
+function kMxCell(bg,fg,main,sub,t){const e=kWithTip(H("div",{class:"c"}),t);e.style.background=bg;e.style.color=fg;e.appendChild(kTxt("b","",main));if(sub!=null)e.appendChild(kTxt("span","",sub));return e;}
+
+// target matrix of cells: sequential shading in six steps over the domain, n per cell, outline below the floor
+function kHeatmap(el,d){kNeed(d,["domain","fmt"]);const f=namedFmt(d.fmt),nf=d.n_fmt?namedFmt(d.n_fmt):null,[d0,d1]=d.domain;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const k=kClamp(Math.floor((c.value-d0)/(d1-d0)*6),0,5);
+    const e=kMxCell(`var(--seq-${k})`,`var(--seq-t${k})`,f(c.value),c.n!=null&&nf?nf(c.n):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(c.value)+(c.n!=null?` · n = ${c.n.toLocaleString("en-US")}`:"")]);
+    if(d.reference&&c.value<d.reference.value)e.classList.add("low");return e;}));}
+
+// difference between two configs: diverging shading, gray within ±neutral, full color at ±saturate
+function kDiffHeatmap(el,d){kNeed(d,["fmt"]);const f=namedFmt(d.fmt),df=d.detail_fmt?namedFmt(d.detail_fmt):null,nu=d.neutral==null?.5:d.neutral,sat=d.saturate||8;const cols=kList(d,"columns").map(c=>c.label);
+  el.appendChild(kMxGrid(cols,kList(d,"rows"),(c,i,j)=>{const v=c.value,mag=Math.min(1,Math.abs(v)/sat),flat=Math.abs(v)<nu;
+    const bg=flat?"var(--div-mid)":`color-mix(in oklab, var(${v>0?"--div-pos":"--div-neg"}) ${Math.round(18+mag*72)}%, var(--surface))`;
+    return kMxCell(bg,mag>.55&&!flat?"var(--on-fill)":"var(--ink)",f(v),c.detail!=null&&df?df(c.detail):null,c.tip||[`${d.rows[i].label} · ${cols[j]}`,f(v)]);}));}
+
+// errors between classes, rows normalized to 100: the diagonal tinted, off-diagonal cells warn and bad by share
+function kConfusion(el,d){const labels=kList(d,"labels"),M=kList(d,"matrix");const f=namedFmt(d.fmt||"pct:1"),warnAt=d.warn_at==null?1:d.warn_at,badAt=d.bad_at==null?3:d.bad_at;
+  if(M.length!==labels.length)throw new Error(`"matrix" has ${M.length} rows for ${labels.length} labels`);
+  const rows=M.map((r,i)=>{if(!Array.isArray(r))throw new Error(`"matrix" row ${i} must be a list`);const tot=r.reduce((a,v)=>a+v,0);return {label:labels[i],cells:d.normalized===false?r.map(v=>tot?v/tot*100:0):r};});
+  el.appendChild(kMxGrid(labels,rows,(v,i,j)=>{const bg=i===j?"var(--seq-1)":v>=badAt?"var(--bad-wash)":v>=warnAt?"var(--warn-wash)":"var(--sunk)";
+    return kMxCell(bg,"var(--ink)",f(v),null,[`${labels[i]} → ${labels[j]}`,`${f(v)} of the row`]);}));}
+
+// what failures look like: cards with a meta line, then the question, fields, judge reason, excerpt and a note
+function kExamples(el,d){const cards=kList(d,"cards");const box=H("div",{class:"ex"});if(d.card_min_rem!=null)box.style.gridTemplateColumns=`repeat(auto-fit,minmax(min(100%,${kNum(d.card_min_rem,0,"card_min_rem")}rem),1fr))`;
+  for(const c of cards){const card=H("div",{class:"excard"}),top=H("div",{class:"top"});
+    for(const it of c.meta||[])top.appendChild(it.status?kPill(it.status,it.label):it.tag?kArmChip(it.tag,it.label,it.color):kTxt("span",it.mono?"mono":"",it.text));card.appendChild(top);
+    if(c.question!=null)card.appendChild(kTxt("div","q",c.question));
+    if(c.fields&&c.fields.length){const dl=H("dl");for(const fl of c.fields){dl.appendChild(kTxt("dt","",fl.term));dl.appendChild(kTxt("dd",fl.tone==="bad"?"bad":"",fl.text));}card.appendChild(dl);}
+    if(c.reason!=null)card.appendChild(kTxt("div","reason",c.reason));if(c.excerpt!=null)card.appendChild(kTxt("pre","",c.excerpt));if(c.note!=null)card.appendChild(kTxt("div","note",c.note));
+    box.appendChild(card);}
+  el.appendChild(box);}
+
+// legend: [{label, color?, mark?: dot|square|line|circle|triangle|diamond, hollow?, opacity?, pattern?}]
+function kLegend(items){if(!Array.isArray(items))throw new Error(`"legend" must be a list`);const box=H("div",{class:"legend"});
+  for(const it of items){const sp=H("span"),c=kTok(it.color,"--ink-2"),mk=it.mark||"dot";
+    if(it.pattern!=null){const sv=S("svg",{width:12,height:12,style:"vertical-align:-1px;margin-right:.4rem"});kTexture(sv,it.pattern,.5,.5,11,11,c);sp.appendChild(sv);}
+    else if(mk==="dot"||mk==="square"){const i=H("i",mk==="square"?{class:"sq"}:{});i.style.background=it.hollow?"var(--surface)":`var(${c})`;if(it.hollow)i.style.boxShadow=`inset 0 0 0 2px var(${c})`;sp.appendChild(i);}
+    else if(mk==="line"){const sv=S("svg",{width:22,height:10,style:"vertical-align:0;margin-right:.35rem"});S("line",{x1:1,x2:21,y1:5,y2:5,style:`stroke:var(${c});stroke-width:2;opacity:${kNum(it.opacity,1,"legend opacity")}`},sv);sp.appendChild(sv);}
+    else{const sv=S("svg",{width:14,height:14,style:"vertical-align:-2px;margin-right:.35rem"});mark(sv,kShape(mk),7,7,5,c,it.hollow);sp.appendChild(sv);}
+    sp.append(document.createTextNode(it.label));box.appendChild(sp);}
+  return box;}
+
+// ---------- dispatcher ----------
+const K_KINDS={bars:{draw:kBars},diverging_bars:{draw:kBars},forest:{draw:kForest},lines:{draw:kLines},
+  scatter_frontier:{draw:(el,w,d)=>kScatter(el,w,d,false)},gate_scatter:{draw:(el,w,d)=>kScatter(el,w,d,true)},
+  dot_interval:{draw:kDotInterval},range_bars:{draw:kRangeBars},
+  gate_matrix:{html:kGateMatrix},lattice:{html:kLattice},heatmap:{html:kHeatmap},diff_heatmap:{html:kDiffHeatmap},confusion:{html:kConfusion},examples:{html:kExamples}};
+const K_NOT_DRAWN={table:"a table is written as an HTML table (sortable() adds sorting); the kit does not draw it"};
+const K_PANEL_TEXT=["title","subtitle","tag","color"];
+function kUnmount(st){for(const r of st.ro){r.ro.disconnect();kRedraws.delete(r);}st.ro=[];}
+function kMount(host){const st=host._kit;kUnmount(st);host.innerHTML="";const kind=host.getAttribute("data-kind");
+  try{if(!Object.hasOwn(K_KINDS,kind))throw new Error(Object.hasOwn(K_NOT_DRAWN,kind)?K_NOT_DRAWN[kind]:`unknown kind; the kit draws ${Object.keys(K_KINDS).join(", ")}`);const R=K_KINDS[kind];
+    let d;try{d=JSON.parse(host.getAttribute("data-chart"));}catch(e){throw new Error(`data-chart is not JSON (${e.message})`);}
+    if(!d||typeof d!=="object"||Array.isArray(d))throw new Error("data-chart must be a JSON object");d=kNoNulls(d);
+    if(d.legend)host.appendChild(kLegend(d.legend));
+    const one=(box,data)=>{if(R.html)R.html(box,data);else st.ro.push(chart(box,(e,w)=>R.draw(e,w,data)));};
+    if(d.panels==null){const box=H("div");host.appendChild(box);one(box,d);return;}
+    // small multiples: each panel is the chart's own fields overlaid with the panel's
+    kList(d,"panels");const {panels,legend,panel_min_rem,...shared}=d;const grid=H("div",{class:"mult"});
+    if(panel_min_rem!=null)grid.style.gridTemplateColumns=`repeat(auto-fill,minmax(min(100%,${kNum(panel_min_rem,0,"panel_min_rem")}rem),1fr))`;host.appendChild(grid);
+    for(const p of panels){const fig=H("div",{class:"fig"});grid.appendChild(fig);const h4=H("h4");if(p.tag)h4.appendChild(kArmChip(p.tag,p.title||"",p.color));else h4.textContent=p.title||"";fig.appendChild(h4);
+      if(p.subtitle)fig.appendChild(kTxt("div","sub",p.subtitle));
+      if(Object.keys(p).some(k=>!K_PANEL_TEXT.includes(k))){const box=H("div",{class:"chart"});fig.appendChild(box);one(box,{...shared,...p});}}}
+  catch(e){kUnmount(st);host.innerHTML="";console.error(`kit: chart "${kind}"${host.id?" #"+host.id:""}: ${e.message}`);}}
+// draws every div.chart[data-kind][data-chart] under root, once; a later change to data-chart redraws that chart
+function drawCharts(root=document){const sel="div.chart[data-kind][data-chart]";const els=[...root.querySelectorAll(sel)];if(root.matches&&root.matches(sel))els.unshift(root);
+  for(const el of els){if(el._kit)continue;el._kit={ro:[]};new MutationObserver(()=>kMount(el)).observe(el,{attributes:true,attributeFilter:["data-chart","data-kind"]});kMount(el);}}
+// a page script that builds chart data from its own input sets it with setChart(); the JSON is pure data
+function setChart(el,data){el.setAttribute("data-chart",JSON.stringify(data));}
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",()=>drawCharts());else setTimeout(()=>drawCharts());
+
+const D={"n":1200,"optimal_calls":1.38,"models":[{"id":"atlas-m","name":"Atlas-M"},{"id":"brisk-s","name":"Brisk-S"},{"id":"nano-xs","name":"Nano-XS"}],"budgets":[{"id":"off","name":"Off"},{"id":"low","name":"Low"},{"id":"high","name":"High"}],"task_types":[{"id":"single","name":"Single lookup","share":0.4},{"id":"multihop","name":"Multi-hop (2 to 3 calls)","share":0.25},{"id":"datemath","name":"Date and unit math","share":0.2},{"id":"disamb","name":"Ambiguous entity","share":0.15}],"criteria":{"pass_rate":97.0,"p95":600},"configs":[{"id":"atlas-m.off.r0","model":"atlas-m","budget":"off","retry":0,"pass_rate":94.0,"calls":1.539,"cost":1.0,"p50":405.0,"p95":900.0,"outcomes":{"pass_clean":81.97,"pass_extra":12.03,"pass_retry":0.0,"wrong_args":2.52,"missing_call":1.02,"wrong_tool":0.6,"malformed":1.56,"timeout":0.3},"by_type":{"single":97.2,"multihop":90.2,"datemath":93.7,"disamb":92.2},"excess_dist":[87.2,9.2,2.6,1.0]},{"id":"atlas-m.off.r1","model":"atlas-m","budget":"off","retry":1,"pass_rate":96.37,"calls":1.599,"cost":1.06,"p50":405.0,"p95":1019.0,"outcomes":{"pass_clean":81.97,"pass_extra":12.03,"pass_retry":2.37,"wrong_args":1.76,"missing_call":0.77,"wrong_tool":0.48,"malformed":0.47,"timeout":0.15},"by_type":{"single":98.3,"multihop":94.1,"datemath":96.2,"disamb":95.3},"excess_dist":[87.2,9.2,2.6,1.0]},{"id":"atlas-m.low.r0","model":"atlas-m","budget":"low","retry":0,"pass_rate":96.57,"calls":1.469,"cost":1.6,"p50":628.0,"p95":1395.0,"outcomes":{"pass_clean":89.62,"pass_extra":6.95,"pass_retry":0.0,"wrong_args":1.44,"missing_call":0.58,"wrong_tool":0.34,"malformed":0.89,"timeout":0.17},"by_type":{"single":98.6,"multihop":94.1,"datemath":96.4,"disamb":95.4},"excess_dist":[92.8,5.2,1.4,0.6]},{"id":"atlas-m.low.r1","model":"atlas-m","budget":"low","retry":1,"pass_rate":97.93,"calls":1.504,"cost":1.655,"p50":628.0,"p95":1500.0,"outcomes":{"pass_clean":89.62,"pass_extra":6.95,"pass_retry":1.36,"wrong_args":1.01,"missing_call":0.44,"wrong_tool":0.27,"malformed":0.27,"timeout":0.09},"by_type":{"single":99.2,"multihop":96.4,"datemath":97.8,"disamb":97.2},"excess_dist":[92.8,5.2,1.4,0.6]},{"id":"atlas-m.high.r0","model":"atlas-m","budget":"high","retry":0,"pass_rate":97.74,"calls":1.43,"cost":3.4,"p50":1094.0,"p95":2430.0,"outcomes":{"pass_clean":93.83,"pass_extra":3.91,"pass_retry":0.0,"wrong_args":0.95,"missing_call":0.38,"wrong_tool":0.23,"malformed":0.59,"timeout":0.11},"by_type":{"single":98.7,"multihop":96.6,"datemath":97.7,"disamb":97.2},"excess_dist":[96.0,2.9,0.8,0.3]},{"id":"atlas-m.high.r1","model":"atlas-m","budget":"high","retry":1,"pass_rate":98.63,"calls":1.452,"cost":3.477,"p50":1094.0,"p95":2551.0,"outcomes":{"pass_clean":93.83,"pass_extra":3.91,"pass_retry":0.89,"wrong_args":0.66,"missing_call":0.29,"wrong_tool":0.18,"malformed":0.18,"timeout":0.06},"by_type":{"single":99.2,"multihop":97.9,"datemath":98.6,"disamb":98.3},"excess_dist":[96.0,2.9,0.8,0.3]},{"id":"brisk-s.off.r0","model":"brisk-s","budget":"off","retry":0,"pass_rate":91.1,"calls":1.579,"cost":0.18,"p50":135.0,"p95":300.0,"outcomes":{"pass_clean":76.52,"pass_extra":14.58,"pass_retry":0.0,"wrong_args":3.74,"missing_call":1.51,"wrong_tool":0.89,"malformed":2.31,"timeout":0.44},"by_type":{"single":94.3,"multihop":87.3,"datemath":90.8,"disamb":89.3},"excess_dist":[84.0,11.5,3.2,1.3]},{"id":"brisk-s.off.r1","model":"brisk-s","budget":"off","retry":1,"pass_rate":94.62,"calls":1.668,"cost":0.196,"p50":135.0,"p95":359.0,"outcomes":{"pass_clean":76.52,"pass_extra":14.58,"pass_retry":3.52,"wrong_args":2.62,"missing_call":1.13,"wrong_tool":0.71,"malformed":0.69,"timeout":0.22},"by_type":{"single":96.6,"multihop":92.3,"datemath":94.4,"disamb":93.5},"excess_dist":[84.0,11.5,3.2,1.3]},{"id":"brisk-s.low.r0","model":"brisk-s","budget":"low","retry":0,"pass_rate":95.27,"calls":1.492,"cost":0.288,"p50":209.0,"p95":465.0,"outcomes":{"pass_clean":86.7,"pass_extra":8.57,"pass_retry":0.0,"wrong_args":1.99,"missing_call":0.8,"wrong_tool":0.47,"malformed":1.23,"timeout":0.24},"by_type":{"single":97.4,"multihop":92.8,"datemath":95.1,"disamb":94.1},"excess_dist":[91.0,6.5,1.8,0.7]},{"id":"brisk-s.low.r1","model":"brisk-s","budget":"low","retry":1,"pass_rate":97.14,"calls":1.539,"cost":0.302,"p50":209.0,"p95":513.0,"outcomes":{"pass_clean":86.7,"pass_extra":8.57,"pass_retry":1.87,"wrong_args":1.39,"missing_call":0.6,"wrong_tool":0.38,"malformed":0.37,"timeout":0.12},"by_type":{"single":98.4,"multihop":95.6,"datemath":97.0,"disamb":96.4},"excess_dist":[91.0,6.5,1.8,0.7]},{"id":"brisk-s.high.r0","model":"brisk-s","budget":"high","retry":0,"pass_rate":96.64,"calls":1.442,"cost":0.612,"p50":364.0,"p95":810.0,"outcomes":{"pass_clean":91.81,"pass_extra":4.83,"pass_retry":0.0,"wrong_args":1.41,"missing_call":0.57,"wrong_tool":0.34,"malformed":0.87,"timeout":0.17},"by_type":{"single":97.6,"multihop":95.5,"datemath":96.6,"disamb":96.1},"excess_dist":[95.0,3.6,1.0,0.4]},{"id":"brisk-s.high.r1","model":"brisk-s","budget":"high","retry":1,"pass_rate":97.97,"calls":1.476,"cost":0.633,"p50":364.0,"p95":870.0,"outcomes":{"pass_clean":91.81,"pass_extra":4.83,"pass_retry":1.33,"wrong_args":0.99,"missing_call":0.43,"wrong_tool":0.27,"malformed":0.26,"timeout":0.08},"by_type":{"single":98.5,"multihop":97.3,"datemath":97.9,"disamb":97.6},"excess_dist":[95.0,3.6,1.0,0.4]},{"id":"nano-xs.off.r0","model":"nano-xs","budget":"off","retry":0,"pass_rate":81.04,"calls":1.698,"cost":0.03,"p50":63.0,"p95":140.0,"outcomes":{"pass_clean":60.29,"pass_extra":20.75,"pass_retry":0.0,"wrong_args":7.96,"missing_call":3.22,"wrong_tool":1.9,"malformed":4.93,"timeout":0.95},"by_type":{"single":86.8,"multihop":74.2,"datemath":80.5,"disamb":77.8},"excess_dist":[74.4,18.4,5.1,2.0]},{"id":"nano-xs.off.r1","model":"nano-xs","budget":"off","retry":1,"pass_rate":88.54,"calls":1.888,"cost":0.036,"p50":63.0,"p95":198.0,"outcomes":{"pass_clean":60.29,"pass_extra":20.75,"pass_retry":7.5,"wrong_args":5.57,"missing_call":2.42,"wrong_tool":1.52,"malformed":1.48,"timeout":0.47},"by_type":{"single":92.0,"multihop":84.4,"datemath":88.2,"disamb":86.6},"excess_dist":[74.4,18.4,5.1,2.0]},{"id":"nano-xs.low.r0","model":"nano-xs","budget":"low","retry":0,"pass_rate":87.92,"calls":1.559,"cost":0.048,"p50":98.0,"p95":217.0,"outcomes":{"pass_clean":75.26,"pass_extra":12.66,"pass_retry":0.0,"wrong_args":5.07,"missing_call":2.05,"wrong_tool":1.21,"malformed":3.14,"timeout":0.6},"by_type":{"single":91.7,"multihop":83.5,"datemath":87.6,"disamb":85.8},"excess_dist":[85.6,10.4,2.9,1.2]},{"id":"nano-xs.low.r1","model":"nano-xs","budget":"low","retry":1,"pass_rate":92.7,"calls":1.68,"cost":0.054,"p50":98.0,"p95":275.0,"outcomes":{"pass_clean":75.26,"pass_extra":12.66,"pass_retry":4.78,"wrong_args":3.55,"missing_call":1.54,"wrong_tool":0.97,"malformed":0.94,"timeout":0.3},"by_type":{"single":95.0,"multihop":90.0,"datemath":92.5,"disamb":91.4},"excess_dist":[85.6,10.4,2.9,1.2]},{"id":"nano-xs.high.r0","model":"nano-xs","budget":"high","retry":0,"pass_rate":91.31,"calls":1.479,"cost":0.102,"p50":170.0,"p95":378.0,"outcomes":{"pass_clean":84.01,"pass_extra":7.3,"pass_retry":0.0,"wrong_args":3.65,"missing_call":1.48,"wrong_tool":0.87,"malformed":2.26,"timeout":0.43},"by_type":{"single":93.0,"multihop":89.3,"datemath":91.1,"disamb":90.3},"excess_dist":[92.0,5.8,1.6,0.6]},{"id":"nano-xs.high.r1","model":"nano-xs","budget":"high","retry":1,"pass_rate":94.75,"calls":1.566,"cost":0.111,"p50":170.0,"p95":450.0,"outcomes":{"pass_clean":84.01,"pass_extra":7.3,"pass_retry":3.44,"wrong_args":2.55,"missing_call":1.11,"wrong_tool":0.7,"malformed":0.68,"timeout":0.22},"by_type":{"single":95.8,"multihop":93.5,"datemath":94.7,"disamb":94.2},"excess_dist":[92.0,5.8,1.6,0.6]}],"examples":[{"id":"TQ-0418","type":"multihop","config":"brisk-s.low.r1","outcome":"missing_call","q":"Who chaired the committee that approved the 2019 grid budget?","expected":"search(committee, grid budget 2019) \u2192 lookup(chair)","got":"search(grid budget 2019 chair)","note":"Collapsed two hops into one query; returned the budget author, not the chair."},{"id":"TQ-0772","type":"datemath","config":"brisk-s.low.r1","outcome":"wrong_args","q":"Filings in the 90 days before the March 3 hearing","expected":"date_from=2026-12-03, date_to=2027-03-03","got":"date_from=2026-12-04, date_to=2027-03-03","note":"Off-by-one on the window start. The most common wrong-args pattern (9 of 17)."},{"id":"TQ-1103","type":"disamb","config":"brisk-s.low.r1","outcome":"wrong_tool","q":"Latest on Mercury's pricing","expected":"ask_clarify(company or planet?)","got":"search(Mercury pricing)","note":"Picked the company without asking. Scored wrong because the gold answer requires clarification."},{"id":"TQ-0051","type":"single","config":"nano-xs.low.r1","outcome":"malformed","q":"Population of Bozeman","expected":"{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"}","got":"{\"tool\":\"lookup\",\"entity\":\"Bozeman, MT\"","note":"Truncated JSON. Retry recovers 70% of these."}]};
+const MN=Object.fromEntries(D.models.map(m=>[m.id,m.name])),BN=Object.fromEntries(D.budgets.map(b=>[b.id,b.name]));
+const COL={"atlas-m":"--s2","brisk-s":"--s3","nano-xs":"--s1"};
+const C=Object.fromEntries(D.configs.map(c=>[c.id,c]));const CR=D.criteria;const VOL=4e6;
+const ci=p=>1.96*Math.sqrt(p/100*(1-p/100)/D.n)*100;
+const label=c=>`${MN[c.model]} · reasoning ${BN[c.budget].toLowerCase()} · ${c.retry?"1 retry":"no retry"}`;
+const short=c=>`${MN[c.model]} ${BN[c.budget].toLowerCase()}${c.retry?" +retry":""}`;
+const ok=c=>c.pass_rate>=CR.pass_rate&&c.p95<=CR.p95;
+const gates=c=>{const a=c.pass_rate>=CR.pass_rate,b=c.p95<=CR.p95;return a&&b?pill("good","Both gates"):!a&&!b?pill("bad","Fails both"):!a?pill("bad","Pass rate"):pill("bad","Latency");};
+const passing=D.configs.filter(ok).sort((a,b)=>a.cost-b.cost);const REC=passing[0];
+const monthly=c=>c.cost*VOL/1000;
+const TT=D.task_types;
+
+// BLUF
+const worstT=TT.map(t=>({t,v:REC.by_type[t.id]})).sort((a,b)=>a.v-b.v)[0];
+document.getElementById("b-rec").innerHTML=`<strong>${label(REC)}.</strong> ${REC.pass_rate.toFixed(1)}% pass, p95 ${fmt.ms(REC.p95)}, ${fmt.usd(REC.cost)} per 1k calls (about ${fmt.usd(monthly(REC))} a month).`;
+document.getElementById("b-eff").innerHTML=`${REC.calls.toFixed(2)} calls per task against a minimum of ${D.optimal_calls.toFixed(2)}, so ${Math.round((REC.calls/D.optimal_calls-1)*100)}% overhead. Most of it is a wasted first search on multi-hop questions.`;
+document.getElementById("b-risk").innerHTML=`The pass rate clears 97% by only ${(REC.pass_rate-97).toFixed(1)} points, inside its ±${ci(REC.pass_rate).toFixed(1)} interval. Run 3,000 more cases before locking it in.`;
+document.getElementById("b-fail").innerHTML=`${worstT.t.name}: ${worstT.v.toFixed(1)}% pass. Wrong arguments are the largest remaining failure; most are off-by-one date windows.`;
+
+// options table
+(function(){const best=[...D.configs].sort((a,b)=>b.pass_rate-a.pass_rate)[0];const cheap=[...D.configs].sort((a,b)=>a.cost-b.cost)[0];
+  const near=D.configs.filter(c=>c.p95<=CR.p95&&!ok(c)).sort((a,b)=>b.pass_rate-a.pass_rate)[0];
+  const rows=[[REC,"Recommended"],[near,"Best within latency, misses pass rate"],[best,"Most accurate"],[cheap,"Cheapest"]];
+  document.getElementById("opt").innerHTML=`<thead><tr><th>Configuration</th><th>Role</th><th>Gates</th><th class="r">Pass rate</th><th class="r">p95</th><th class="r">Cost / 1k</th><th class="r">Per month</th><th class="r">Calls / task</th></tr></thead><tbody>`+
+  rows.map(([c,r])=>`<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${label(c)}${c===REC?"</strong>":""}</td><td>${r}</td><td>${gates(c)}</td><td class="r">${c.pass_rate.toFixed(1)}%</td><td class="r">${fmt.ms(c.p95)}</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${fmt.usd(monthly(c))}</td><td class="r">${c.calls.toFixed(2)}</td></tr>`).join("")+"</tbody>";})();
+
+// summary bars
+(function(){const rows=D.configs.filter(c=>c.p95<=CR.p95).sort((a,b)=>a.pass_rate>b.pass_rate?-1:1);
+  setChart(document.getElementById("sum-fail"),{domain:[0,20],fmt:"pct:0",reference:{value:100-CR.pass_rate,label:`budget ${100-CR.pass_rate}%`,kind:"budget"},row_height:24,
+    rows:rows.map(c=>({id:c.id,label:short(c),value:100-c.pass_rate,color:COL[c.model],muted:!ok(c),strong:c===REC,note:(100-c.pass_rate).toFixed(1)+"%"}))});
+  setChart(document.getElementById("sum-cost"),{domain:[0,1400],fmt:"usd:0",row_height:24,
+    rows:rows.map(c=>({id:c.id,label:short(c),value:monthly(c),color:COL[c.model],muted:!ok(c),strong:c===REC,note:fmt.usd(monthly(c))}))});})();
+
+// sweep scatter: every configuration against both gates, a path per model and retry setting through the budgets
+(function(){const shown=[REC,C["atlas-m.high.r1"],C["nano-xs.off.r0"],C["nano-xs.high.r1"],C["brisk-s.high.r1"]];
+  const paths=[];for(const mo of D.models)for(const r of [1,0])paths.push({ids:D.budgets.map(b=>`${mo.id}.${b.id}.r${r}`),color:COL[mo.id],opacity:r?1:.35});
+  setChart(document.getElementById("sweep"),{
+    legend:D.models.map(m=>({label:m.name,color:COL[m.id]})).concat([{label:"1 retry",mark:"line"},{label:"No retry",mark:"line",opacity:.35}]),
+    x_domain:[100,3000],x_log:true,x_ticks:[100,200,300,600,1000,2000,3000],x_fmt:"dur",x_title:"p95 latency (log)",y_domain:[80,100],y_fmt:"pct:0",
+    reference:{value:CR.pass_rate,kind:"floor"},x_reference:{value:CR.p95,kind:"budget"},region_label:"Meets both gates",emphasis:REC.id,paths,
+    points:D.configs.map(c=>({id:c.id,x:c.p95,y:c.pass_rate,color:COL[c.model],size:c.budget==="off"?3.5:c.budget==="low"?5:6.5,hollow:!c.retry,
+      label:c===REC?"Recommended: "+short(c):shown.includes(c)?short(c):null,narrow_label:c===REC?"Recommended":null,
+      tip:[label(c),`Pass ${c.pass_rate.toFixed(1)}% ±${ci(c.pass_rate).toFixed(1)} · p95 ${fmt.ms(c.p95)}`,`${fmt.usd(c.cost)} per 1k calls · ${c.calls.toFixed(2)} calls/task`]}))});})();
+
+// levers: average change from one setting step, per model, in each measure
+(function(){const rows=[];const avg=a=>a.reduce((s,v)=>s+v,0)/a.length;
+  const levers=[["Add one retry",(mo)=>D.budgets.map(b=>[C[`${mo}.${b.id}.r0`],C[`${mo}.${b.id}.r1`]])],
+    ["Reasoning off → low",(mo)=>[0,1].map(r=>[C[`${mo}.off.r${r}`],C[`${mo}.low.r${r}`]])],
+    ["Reasoning low → high",(mo)=>[0,1].map(r=>[C[`${mo}.low.r${r}`],C[`${mo}.high.r${r}`]])]];
+  for(const [name,f] of levers){const grp=D.models.map(mo=>{const pairs=f(mo.id);return {lever:name,m:mo.id,dp:avg(pairs.map(([a,b])=>b.pass_rate-a.pass_rate)),dl:avg(pairs.map(([a,b])=>b.p95-a.p95)),dc:avg(pairs.map(([a,b])=>(b.cost/a.cost-1)*100))};}).sort((a,b)=>b.dp-a.dp);rows.push(...grp);}
+  const sign=v=>(v>0?"+":"");const tip=r=>[`${r.lever}, ${MN[r.m]}`,`Pass ${sign(r.dp)}${r.dp.toFixed(1)} pts · p95 ${sign(r.dl)}${Math.round(r.dl)} ms · cost ${sign(r.dc)}${Math.round(r.dc)}%`];
+  const panel=(title,k,domain,fmtName)=>({title,domain,fmt:fmtName,rows:rows.map(r=>({group:r.lever,label:MN[r.m],value:r[k],color:COL[r.m],tip:tip(r)}))});
+  setChart(document.getElementById("levers"),{panel_min_rem:18,row_height:24,
+    panels:[panel("Pass rate","dp",[0,8],"+pts:1"),panel("p95 latency","dl",[0,1600],"+ms"),panel("Cost","dc",[0,140],"+pct:0")]});})();
+
+// failure anatomy for REC: what one retry recovers, by failure type
+(function(){const r0=C[`${REC.model}.${REC.budget}.r0`];const types=[["wrong_args","Wrong arguments"],["malformed","Malformed call"],["missing_call","Missing call"],["wrong_tool","Wrong tool"],["timeout","Timeout"]];
+  setChart(document.getElementById("anat"),{legend:[{label:"Still failing after retry",color:"--s2",mark:"square"},{label:"Recovered by retry",color:"--seq-1",mark:"square"}],
+    domain:[0,2.2],ticks:[0,.5,1,1.5,2],fmt:"pct",row_height:30,
+    rows:types.map(([k,n])=>{const after=REC.outcomes[k],before=r0.outcomes[k];const rec=before?Math.round((1-after/before)*100):0;
+      return {label:n,segments:[{value:after,color:"--s2"},{value:Math.max(0,before-after),color:"--seq-1"}],note:rec+"% fixed",
+        tip:[n,`${before.toFixed(2)}% of tasks without retry`,`${after.toFixed(2)}% with one retry (${rec}% recovered)`]};})});})();
+
+// efficiency: extra-call distribution for retry configs
+(function(){const rows=D.configs.filter(c=>c.retry===1);const steps=["--seq-2","--seq-4","--seq-5"];
+  setChart(document.getElementById("eff"),{legend:["+1 call","+2","+3 or more"].map((t,i)=>({label:t,color:steps[i],mark:"square"})),domain:[0,30],fmt:"pct:0",row_height:22,
+    rows:rows.map(c=>{const ex=c.excess_dist.slice(1);return {id:c.id,label:`${MN[c.model]} · ${BN[c.budget]}`,strong:c===REC,segments:ex.map((v,j)=>({value:v,color:steps[j]})),
+      note:ex.reduce((a,v)=>a+v,0).toFixed(0)+"%",tip:[label(c),`${c.excess_dist[1]}% used 1 extra call, ${c.excess_dist[2]}% used 2, ${c.excess_dist[3]}% used 3+`]};})});})();
+
+// by type table (heat cells)
+(function(){const cs=D.configs.filter(c=>c.p95<=CR.p95).sort((a,b)=>b.pass_rate-a.pass_rate).slice(0,6);const best=[...D.configs].sort((a,b)=>b.pass_rate-a.pass_rate)[0];cs.push(best);
+  const heat=v=>v>=97?"var(--good-wash)":v>=94?"var(--warn-wash)":"var(--bad-wash)";
+  document.getElementById("types").innerHTML=`<thead><tr><th>Configuration</th>${TT.map(t=>`<th class="r">${t.name}<br><span style="font-weight:400;text-transform:none;letter-spacing:0">${Math.round(t.share*100)}% of traffic</span></th>`).join("")}<th class="r">Overall</th></tr></thead><tbody>`+
+  cs.map(c=>`<tr class="${c===REC?"hl":""}"><td>${c===REC?"<strong>":""}${short(c)}${c===REC?"</strong>":""}${c===best?' <span style="color:var(--muted)">(over latency)</span>':""}</td>${TT.map(t=>`<td class="r" style="background:${heat(c.by_type[t.id])}">${c.by_type[t.id].toFixed(1)}%</td>`).join("")}<td class="r"><strong>${c.pass_rate.toFixed(1)}%</strong></td></tr>`).join("")+"</tbody>";})();
+document.getElementById("types").insertAdjacentHTML("afterend",`<p class="cap" style="font-size:var(--t-xs);color:var(--muted)">Green at least 97%, amber 94 to 97%, red below 94%.</p>`);
+
+// examples
+(function(){const on={wrong_args:"Wrong arguments",missing_call:"Missing call",wrong_tool:"Wrong tool",malformed:"Malformed call"};
+  setChart(document.getElementById("ex"),{card_min_rem:22,cards:D.examples.map(e=>({meta:[{text:e.id,mono:true},{text:TT.find(t=>t.id===e.type).name},{status:"bad",label:on[e.outcome]},{text:short(C[e.config])}],
+    question:e.q,fields:[{term:"Expected",text:e.expected},{term:"Got",text:e.got,tone:"bad"}],note:e.note}))});})();
+
+// explorer
+const sel={m:REC.model,b:REC.budget,r:REC.retry};
+function seg(id,opts,key){const el=document.getElementById(id);el.innerHTML=opts.map(([v,t])=>`<button type="button" data-v="${v}">${t}</button>`).join("");
+  el.querySelectorAll("button").forEach(b=>b.onclick=()=>{sel[key]=key==="r"?+b.dataset.v:b.dataset.v;explore();});}
+seg("e-m",D.models.map(m=>[m.id,m.name]),"m");seg("e-b",D.budgets.map(b=>[b.id,b.name]),"b");seg("e-r",[["0","None"],["1","One"]],"r");
+let redrawTypes;
+function explore(){for(const [id,k] of [["e-m","m"],["e-b","b"],["e-r","r"]])document.querySelectorAll(`#${id} button`).forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.v==String(sel[k]))));
+  const c=C[`${sel.m}.${sel.b}.r${sel.r}`];const d=(v,u,f=1)=>{const x=v;return (x>0?"+":"")+x.toFixed(f)+u;};
+  document.getElementById("e-stats").innerHTML=[[c.pass_rate.toFixed(1)+"%","Pass rate",d(c.pass_rate-REC.pass_rate," pts")],[fmt.ms(c.p95),"p95 latency",d(c.p95-REC.p95," ms",0)],[fmt.usd(c.cost),"Cost per 1k calls",d((c.cost/REC.cost-1)*100,"%",0)],[c.calls.toFixed(2),"Calls per task",d(c.calls-REC.calls,"",2)]]
+    .map(([v,l,dd])=>`<div class="stat"><span class="big">${v}</span><span class="lab">${l}${c===REC?"":` · ${dd} vs. recommended`}</span></div>`).join("")+`<div class="stat" style="align-self:center">${gates(c)}</div>`;
+  const note=document.getElementById("e-note");
+  if(c===REC){note.textContent="This is the recommended configuration. Change one setting to see what it costs or buys.";}
+  else{const why=[];if(c.pass_rate<CR.pass_rate)why.push(`pass rate is ${(CR.pass_rate-c.pass_rate).toFixed(1)} points short of 97%`);if(c.p95>CR.p95)why.push(`p95 is ${Math.round(c.p95-CR.p95)} ms over budget`);
+    note.textContent=why.length?`Not eligible: ${why.join(" and ")}.`:`Eligible, but ${fmt.usd(c.cost)} per 1k calls is ${Math.round((c.cost/REC.cost-1)*100)}% more than the recommended configuration.`;}
+  redrawTypes&&redrawTypes();}
+explore();
+redrawTypes=chart(document.getElementById("e-types"),(el,w)=>{const c=C[`${sel.m}.${sel.b}.r${sel.r}`];const rowH=32,m={l:Math.min(170,w*.38),r:56,t:24,b:24};const h=m.t+m.b+rowH*TT.length;const s=svgIn(el,w,h);const x=lin(85,100,m.l,w-m.r);
+  S("text",{x:0,y:12,class:"lbl-strong",text:"Pass rate by task type"},s);
+  for(const v of [85,90,95,100]){S("line",{x1:x(v),x2:x(v),y1:m.t,y2:h-m.b,class:"grid"},s);S("text",{x:x(v),y:h-6,"text-anchor":"middle",class:"tick",text:v+"%"},s);}
+  S("line",{x1:x(97),x2:x(97),y1:m.t-4,y2:h-m.b,class:"floor"},s);
+  TT.forEach((t,i)=>{const cy=m.t+rowH*i+rowH/2,v=c.by_type[t.id],rv=REC.by_type[t.id];const g=S("g",{},s);
+    S("text",{x:m.l-8,y:cy+4,"text-anchor":"end",class:"lbl",text:t.name},g);
+    S("line",{x1:x(Math.max(85,Math.min(v,rv))),x2:x(Math.max(85,Math.max(v,rv))),y1:cy,y2:cy,style:"stroke:var(--base);stroke-width:2"},g);
+    S("circle",{cx:x(Math.max(85,rv)),cy,r:4,style:"fill:var(--surface);stroke:var(--muted);stroke-width:1.5"},g);
+    S("circle",{cx:x(Math.max(85,v)),cy,r:6,style:`fill:var(${COL[c.model]});stroke:var(--surface);stroke-width:2`},g);
+    S("text",{x:x(Math.max(85,Math.max(v,rv)))+10,y:cy+4,class:"tick",text:v.toFixed(1)+"%"},g);
+    hit(g,m.l,cy-rowH/2,w-m.l-m.r,rowH,`<b>${t.name}</b><br>This config ${v.toFixed(1)}% · recommended ${rv.toFixed(1)}%`);});
+  S("text",{x:w-m.r+50,y:12,"text-anchor":"end",class:"tick",text:"○ recommended  ● selected"},s);});
+
+// full table
+(function(){const rows=D.configs.map(c=>({...c,name:label(c),mo:MN[c.model],ok:ok(c)?1:0}));const tbl=document.getElementById("full");
+  tbl.innerHTML=`<thead><tr><th class="sort" data-k="mo">Model</th><th>Reasoning</th><th>Retry</th><th>Gates</th><th class="sort r" data-k="pass_rate">Pass rate</th><th class="sort r" data-k="p95">p95</th><th class="sort r" data-k="cost">Cost / 1k</th><th class="sort r" data-k="calls">Calls / task</th>${TT.map(t=>`<th class="r">${t.name.split(" ")[0]}</th>`).join("")}</tr></thead><tbody></tbody>`;
+  sortable(tbl,rows,s=>{tbl.querySelector("tbody").innerHTML=s.map(c=>`<tr class="${c.id===REC.id?"hl":""}"><td><span class="sw" style="background:var(${COL[c.model]})"></span>${c.mo}</td><td>${BN[c.budget]}</td><td>${c.retry?"One":"None"}</td><td>${gates(c)}</td><td class="r">${c.pass_rate.toFixed(1)}% <span style="color:var(--muted)">±${ci(c.pass_rate).toFixed(1)}</span></td><td class="r">${fmt.ms(c.p95)}</td><td class="r">${fmt.usd(c.cost)}</td><td class="r">${c.calls.toFixed(2)}</td>${TT.map(t=>`<td class="r">${c.by_type[t.id].toFixed(1)}%</td>`).join("")}</tr>`).join("");},"pass_rate",-1);})();
+</script>

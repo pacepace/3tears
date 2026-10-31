@@ -52,12 +52,13 @@ arms (named and derived, :func:`~threetears.evals.analysis.campaigns.campaign_ar
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from statistics import NormalDist, variance
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.depth import Depth, Precision, precision
@@ -70,7 +71,6 @@ from threetears.evals.analysis.report.decision import (
     FloorReadings,
     RateReading,
     SampleProjection,
-    aspect_pass_rate,
     case_cost_usd,
     evaluate_floor,
     floor_readings,
@@ -111,6 +111,9 @@ __all__ = [
     "campaign_kind",
     "campaign_readings",
 ]
+
+#: The fields of the readings that hold an arm's label, which :meth:`CampaignReadings.relabelled` prints by a name.
+_LABEL_FIELDS = frozenset({"arm_label", "control_label", "first_label", "second_label", "ahead_label"})
 
 #: What one aspect × candidate row shows against the control. ``better``: the gain is shown, its Holm-adjusted p
 #: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise. ``within_margin``: neither,
@@ -273,6 +276,20 @@ class AspectReading(EvalDocumentModel):
         ),
     )
 
+    @field_validator("precision")
+    @classmethod
+    def _control_side_first(cls, precision: Precision | None, info: ValidationInfo) -> Precision | None:
+        """Each arm's own half-width in the order the comparison read its sides: the control's, then the candidate's.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so it is put back on every read, where the planner's message and the page read
+        the sides in it.
+        """
+        arm = info.data.get("arm")
+        if precision is None or arm not in precision.half_widths:
+            return precision
+        return _in_side_order(precision, sorted(precision.half_widths, key=lambda key: key == arm))
+
 
 class PairReading(EvalDocumentModel):
     """Two arms of a choice on one aspect: the difference between them, how sure, and which is shown ahead.
@@ -348,6 +365,22 @@ class PairReading(EvalDocumentModel):
             "limiting it, and the between-case share of its variance. None with no interval."
         ),
     )
+
+    @field_validator("precision")
+    @classmethod
+    def _sides_in_key_order(cls, precision: Precision | None) -> Precision | None:
+        """Each arm's own half-width in the order the pair's comparison read its sides: by variant key.
+
+        Put back on every read, as a candidate's reading puts its sides back: a store keeps no mapping's key order.
+        """
+        return None if precision is None else _in_side_order(precision, sorted(precision.half_widths))
+
+
+def _in_side_order(precision: Precision, sides: Sequence[str]) -> Precision:
+    """``precision`` with each side's own half-width in ``sides``' order; the same object when it already is."""
+    if list(precision.half_widths) == list(sides):
+        return precision
+    return precision.model_copy(update={"half_widths": {side: precision.half_widths[side] for side in sides}})
 
 
 class BarStatus(EvalDocumentModel):
@@ -630,6 +663,39 @@ class CampaignReadings(EvalDocumentModel):
         labels.update({status.arm: status.arm_label for status in self.bars})
         return labels
 
+    def relabelled(self, names: Mapping[str, str]) -> CampaignReadings:
+        """The readings as a page prints them, each arm ``names`` names by that name: in every label field and in every
+        reason sentence that names it, the label as read replaced, bounded, by the name. For print only: what was read,
+        and the readings a bundle freezes and fingerprints, keep the labels they were read under.
+
+        :param names: The name each arm is printed by, by variant key (:func:`~threetears.evals.analysis.report.words.
+            printed_arm_labels`); an arm it does not name keeps its label.
+        :ptype names: Mapping[str, str]
+        :return: The readings, relabelled; these very readings where no name differs from its label.
+        :rtype: CampaignReadings
+        """
+        held = self.arm_labels()
+        moved = {held[key]: name for key, name in names.items() if key in held and held[key] and held[key] != name}
+        if not moved:
+            return self
+        found = re.compile("|".join(rf"(?<!\w){re.escape(old)}(?!\w)" for old in sorted(moved, key=len, reverse=True)))
+
+        def walked(node: object) -> object:
+            if isinstance(node, dict):
+                return {
+                    key: moved.get(value, value)
+                    if key in _LABEL_FIELDS and isinstance(value, str)
+                    else found.sub(lambda match: moved[match.group(0)], value)
+                    if key == "reason" and isinstance(value, str)
+                    else walked(value)
+                    for key, value in node.items()
+                }
+            if isinstance(node, list):
+                return [walked(item) for item in node]
+            return node
+
+        return CampaignReadings.model_validate(walked(self.model_dump(mode="json")))
+
     def on_aspect(self, aspect: str) -> list[AspectReading]:
         """The rows read on one aspect, in candidate order.
 
@@ -650,6 +716,31 @@ _CASE_FLOOR = SMALL_N_BAND_FLOOR
 
 #: The share range the pass rate's per-case values lie in.
 _RATE_RANGE = (0.0, 1.0)
+
+
+class _Floors:
+    """One read's floor readings, each arm pair on each bundle read once at the nominal level.
+
+    A campaign's readings read one pair's floor readings for its row, its pass rate
+    (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`, the overall rate among them) and its change
+    across aspects; each reading bisects bounded intervals afresh, so each pair is read here once and every one of
+    those takes it from here. Keyed by the bundle's identity, which the memo holds, so a key is never reused.
+    """
+
+    def __init__(self) -> None:
+        self._read: dict[tuple[int, str, str], tuple[AnalysisContextBundle, FloorReadings]] = {}
+
+    def readings(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> FloorReadings:
+        """:func:`~threetears.evals.analysis.report.decision.floor_readings` at its defaults, read once."""
+        key = (id(bundle), control, candidate)
+        if key not in self._read:
+            self._read[key] = (bundle, floor_readings(bundle, control, candidate))
+        return self._read[key][1]
+
+    def pass_rate(self, bundle: AnalysisContextBundle, control: str, candidate: str) -> RateReading | None:
+        """:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate` at its defaults: the overall rate of
+        :meth:`readings`, the one carrying no measure."""
+        return next((rate for rate in self.readings(bundle, control, candidate).rates if rate.measure is None), None)
 
 
 @dataclass
@@ -981,6 +1072,7 @@ def campaign_readings(
     labels = [aspect.label for aspect in campaign.aspects]
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
+    memo = _Floors()
     if kind != "change" or control is None:
         return _aggregated(
             CampaignReadings(
@@ -992,11 +1084,12 @@ def campaign_readings(
                 readings=[],
                 floors=[],
                 kind=kind,
-                pairs=_pair_readings(campaign, checked, every, alpha) if kind == "choice" else [],
+                pairs=_pair_readings(campaign, checked, every, alpha, memo) if kind == "choice" else [],
                 bars=bars,
                 measures=_measure_readings(campaign, checked, every) if kind == "measurement" else [],
             ),
             checked,
+            memo,
         )
     candidates = _candidates(campaign, every)
     rows: list[_Row] = []
@@ -1009,7 +1102,7 @@ def campaign_readings(
         for arm in candidates:
             if arm.variant_key == control_key:
                 continue
-            rate = aspect_pass_rate(bundle, control_key, arm.variant_key)
+            rate = memo.pass_rate(bundle, control_key, arm.variant_key)
             if rate is None:
                 continue
             rows.append(
@@ -1019,7 +1112,7 @@ def campaign_readings(
                     control_key=control_key,
                     control_label=control.label,
                     arm=arm,
-                    base=floor_readings(bundle, control_key, arm.variant_key),
+                    base=memo.readings(bundle, control_key, arm.variant_key),
                     rate=rate,
                     confirmatory=bundle.question_declared,
                     per_case_usd=per_case,
@@ -1126,6 +1219,7 @@ def campaign_readings(
             bars=bars,
         ),
         checked,
+        memo,
     )
 
 
@@ -1181,7 +1275,11 @@ class _Pair:
 
 
 def _pair_readings(
-    campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm], alpha: float
+    campaign: EvalCampaign,
+    bundles: Mapping[str, AnalysisContextBundle],
+    arms: Sequence[CampaignArm],
+    alpha: float,
+    memo: _Floors,
 ) -> list[PairReading]:
     """Every pair of a choice's arms on every aspect both ran on: the difference, its interval and which arm is shown
     ahead, by one step-down over every pair × aspect (a pair has no direction, so one family, not two)."""
@@ -1194,7 +1292,7 @@ def _pair_readings(
             for second in present[index + 1 :]:
                 flipped = first.variant_key > second.variant_key
                 low, high = (second, first) if flipped else (first, second)
-                rate = aspect_pass_rate(bundle, low.variant_key, high.variant_key)
+                rate = memo.pass_rate(bundle, low.variant_key, high.variant_key)
                 if rate is None:
                     continue
                 pairs.append(
@@ -1203,7 +1301,7 @@ def _pair_readings(
                         first=first,
                         second=second,
                         flipped=flipped,
-                        base=floor_readings(bundle, low.variant_key, high.variant_key),
+                        base=memo.readings(bundle, low.variant_key, high.variant_key),
                         rate=rate,
                         confirmatory=bundle.question_declared,
                         rigs=_shared_rigs(bundle, low.variant_key, high.variant_key),
@@ -1472,9 +1570,12 @@ _CHANGE_BOUNDS = (-100.0, 100.0)
 _COST_BOUNDS = (0.0, math.inf)
 
 
-def _aggregated(readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]) -> CampaignReadings:
-    """The readings with every arm's figures across aspects read off them and the bundles."""
-    return readings.model_copy(update={"aggregate": campaign_aggregate(readings, bundles)})
+def _aggregated(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
+) -> CampaignReadings:
+    """The readings with every arm's figures across aspects read off them and the bundles, each pair's floor readings
+    taken from ``memo``, where the readings left them."""
+    return readings.model_copy(update={"aggregate": _aggregate(readings, bundles, memo)})
 
 
 def campaign_aggregate(
@@ -1497,6 +1598,13 @@ def campaign_aggregate(
     :return: The figures; None for a measurement, and where fewer than two arms were compared on any aspect.
     :rtype: CampaignAggregate | None
     """
+    return _aggregate(readings, bundles, _Floors())
+
+
+def _aggregate(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
+) -> CampaignAggregate | None:
+    """:func:`campaign_aggregate`, each pair's floor readings read through ``memo``."""
     if readings.kind == "change" and readings.control is not None:
         keys = [readings.control, *dict.fromkeys(row.arm for row in readings.readings)]
     elif readings.kind == "choice":
@@ -1521,7 +1629,7 @@ def campaign_aggregate(
                     {label: _pass_rate_on(bundle, key) for label, bundle in held.items()}, weights, _RATE_BOUNDS
                 ),
                 change=_figure(
-                    {label: _change_on(readings, bundle, label, key) for label, bundle in held.items()},
+                    {label: _change_on(readings, bundle, label, key, memo) for label, bundle in held.items()},
                     weights,
                     _CHANGE_BOUNDS,
                 )
@@ -1568,14 +1676,14 @@ def _pass_rate_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float
 
 
 def _change_on(
-    readings: CampaignReadings, bundle: AnalysisContextBundle, label: str, key: str
+    readings: CampaignReadings, bundle: AnalysisContextBundle, label: str, key: str, memo: _Floors
 ) -> tuple[float, float] | None:
     """A candidate's change against the control on an aspect in points, the row's own, and its standard error over
     the per-case shares the row reads; None where it has no row there or too few cases to read one."""
     row = next((row for row in readings.on_aspect(label) if row.arm == key), None)
     if row is None or readings.control is None:
         return None
-    rate = aspect_pass_rate(bundle, readings.control, key)
+    rate = memo.pass_rate(bundle, readings.control, key)
     if rate is None or rate.samples is None:
         return None
     error = _difference_error(*rate.samples, paired=rate.paired)

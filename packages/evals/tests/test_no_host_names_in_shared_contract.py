@@ -201,6 +201,13 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/carried_measures.py",
     "kernel/surface.py",
     "kernel/authored.py",
+    # The report plan the planner writes and the renderer draws: the engine's vocabulary for a campaign page.
+    "kernel/report_plan.py",
+    # The snapshot every analyst tool reads: one report input frozen whole, in the engine's vocabulary.
+    "kernel/report_snapshot.py",
+    # The report document the analyst writes from a snapshot, and its stored form: the engine's vocabulary too.
+    "kernel/report_doc.py",
+    "kernel/analyst_gap.py",
     "kernel/analysis_measures.py",
     # The engine's own Pydantic base. Shared contract by construction — it exists precisely so
     # that the models above it can be constructed in a host that has none of the first host installed —
@@ -288,6 +295,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/provider.py",
     # The completion port itself, split from how the engine reads what it returns.
     "schema/completion.py",
+    # The tool-turn port: the shape a tool-calling loop sends and gets back, named for no host.
+    "schema/turns.py",
     "run/fidelity.py",
     # The criteria judge. It left the host-coupled set when its last host reach went: the JSON
     # parser it calls now lives in the kernel, and it logs under its own module name rather than the
@@ -507,6 +516,14 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # where its price came from and the ledger stores that, so a provider name arriving here would
     # be one host's pricing claimed for every host's dollars.
     "kernel/usage_capture.py",
+    # Which build of the engine is installed, from its own distribution metadata: the engine's own name only.
+    "kernel/build_stamp.py",
+    # A stored result as the engine's readers read it, and the protocol a result and its reading share: the
+    # result's own field names, and nothing a host names.
+    "kernel/result_reading.py",
+    # Where a read's wall time went, as the one eval.read_tier line a host's log store reads: the engine's own
+    # phase and field names.
+    "kernel/phase_log.py",
     # A cell's world events and the session every world-bearing kind seeds, fires and reads back
     # through: dimension names and conditions are the host's words carried as data. A host noun here
     # would be one host's world written into every kind's cell.

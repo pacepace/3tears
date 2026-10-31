@@ -22,7 +22,7 @@ from collections.abc import Callable
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.schema import DEFAULT_JOB_LEASE_S
-from threetears.evals.schema import EvalRun, WorldSeed
+from threetears.evals.schema import EvalRun, RunDisclosure, WorldSeed
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import CompletionClients, HostProfile
 from threetears.evals.schema import TraceSink
@@ -136,6 +136,7 @@ def toyhost_launch_host(
     kind_cell_timeout_s: float | None = None,
     job_lease_s: float = DEFAULT_JOB_LEASE_S,
     kind_max_concurrent_cells: int | None = None,
+    run_disclosure: Callable[[], RunDisclosure] | None = None,
 ) -> tuple[LaunchHost, ScriptedExtractionClient]:
     """The toy host as a launching host: its :class:`~threetears.evals.kernel.host.EvalHost`, plus its launch registry.
 
@@ -162,6 +163,8 @@ def toyhost_launch_host(
     :param kind_max_concurrent_cells: The width the extractor declares it is safe at, which the launcher hands
         the launch (``KindWiring.max_concurrent_cells``); ``None`` declares no limit of its own.
     :ptype kind_max_concurrent_cells: int | None
+    :param run_disclosure: What the host discloses about each launch; ``None`` discloses nothing.
+    :ptype run_disclosure: Callable[[], RunDisclosure] | None
     :return: The host, and the scripted client its extractor calls — so a caller can see what was asked.
     :rtype: tuple[LaunchHost, ScriptedExtractionClient]
     """
@@ -257,6 +260,7 @@ def toyhost_launch_host(
         world_placements=place,
         cell_executor=cell_executor,
         job_lease_s=job_lease_s,
+        run_disclosure=run_disclosure,
     )
     return launch_host, client
 

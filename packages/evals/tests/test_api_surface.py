@@ -551,6 +551,13 @@ def test_the_main_tag_flow_follows_a_release_tagged_where_develop_cannot_reach_i
     assert surface.newest_release_tag(["v0.64.0", "v0.65.0", "v0.66.0"], "0.65.0") == "v0.65.0"
 
 
+def test_a_local_label_follows_the_release_it_builds_on() -> None:
+    """``0.66.0+line.1`` is a build of 0.66.0: it follows v0.66.0, and a later release stays above it."""
+    every = ["v0.65.0", "v0.66.0", "v0.67.0"]
+    assert surface.newest_release_tag(every, "0.66.0+line.1") == "v0.66.0"
+    assert surface.newest_release_tag(every, "0.65.0+line.2") == "v0.65.0"
+
+
 def test_release_order_is_numeric_and_a_non_release_tag_is_not_one() -> None:
     every = ["v0.9.0", "v0.10.0", "nightly", "v0.66", "release-0.67.0", "v0.11.0-rc.1"]
     assert surface.newest_release_tag(every, "1.0.0") == "v0.10.0"

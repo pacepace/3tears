@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261025-a94d2be04a65",
+  "input": "r3",
+  "input_digest": "8ed49915119167ef21cff1f2fafe46ccf65af216b00f381724c01ea19af772a0",
+  "plan_digest": "bc15aa7a13a233fbb5cb2eaa69d509ce16efb9817456f9140b7db3ff340d32b7",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "f22320aad5cf7deb7d6e65c1fbdfd9bf3532240ce3a71df688126db1bd8bad60",
+    "contract_digest": "d633628a4bf781225146719e712eb941c001887b44ee7208a08a282fc8c5ff0d"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, it names the options table's recommended row, and the gate matrix shows Brisk-S Few-shot clearing every gate.",
+      "quote": "Select {arm:brisk-s.few} as the turn router. It satisfies every accuracy gate and tail latency budget at modest operating cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "The lede is two sentences: a supporting fact with figures, then the threshold change that would make a cheaper arm win.",
+      "quote": "Lowering the cell floor threshold would allow cheaper options like {arm:nano-xs.few}.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The plan has no flag, the input has no caveats, and no caveat is stated twice.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The heatmap shows Brisk-S Few-shot falling from 97.1% on simple conversational turns to 82.9% on complex news turns, so 'maintains accuracy across all combinations' is a claim the chart does not show (and the gate matrix in section 1 does not show cost, which its 'lowest-cost' claim rests on).",
+      "quote": "{arm:brisk-s.few} maintains accuracy across all complexity and domain combinations",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the prose uses reader names for arms, measures and cells (for example 'complex news turns', 'Balanced accuracy'), with no run ids, hashes or measure keys.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch names the complex news cell floor (82.9% against 80%, a 2.9-point margin), but the weakest margin under the call is overall balanced accuracy at 90.7% against the 90% gate, 0.7 points.",
+      "quote": "Accuracy on complex news turns remains the tightest margin across all smaller candidate models.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "The sentences are short and active, with no hedges and no statistician's grammar above the fold.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "fail",
+      "reason": "The first screen says what to do and why, but never states the main risk: the lede offers 90.7% as strength although it clears the 90% overall gate by only 0.7 points, and Watch points at a different, wider margin.",
+      "quote": "Accuracy on complex news turns remains the tightest margin across all smaller candidate models.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete experiment, measuring Brisk-S tail latency on live production traffic, and its decisive direction is clear from context: a live p95 above the 250 ms budget would change the call.",
+      "quote": "Validate {arm:brisk-s.few} under live production turn latency distribution.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The plan has no confidence clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Each figure is the named arm's own value on the measure its sentence names: 90.7% balanced accuracy is the overall gate's measure, 184 ms is the p95, and $40 is the cost per million turns.",
+      "quote": "It clears the overall accuracy threshold with {measure.balanced_accuracy.brisk-s.few.mean}%, holds every cell floor, and meets tail latency at {measure.latency_ms.brisk-s.few.p95} ms.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-26T00:00:00Z"
+}

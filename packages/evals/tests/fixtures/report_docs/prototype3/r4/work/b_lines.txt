@@ -1,0 +1,28 @@
+rendered block
+block_kind: lines
+query:
+  source: strata
+  aspect: 
+  measures: [persona]
+  arms: [prod, f64]
+  strata: [depth:1-2, depth:3-5, depth:6-10, depth:11+]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [, P · Production, A · f64]
+rows (4):
+  - cells: [1–2, 93.5%, 91.5%]
+  - cells: [3–5, 92.0%, 87.5%]
+  - cells: [6–10, 90.0%, 79.0%]
+  - cells: [11+, 87.5%, 70.0%]
+total: 4
+offset: 0
+truncated: False
+notes: []

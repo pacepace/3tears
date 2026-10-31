@@ -1,0 +1,132 @@
+### c1 / 1
+rendered block
+block_kind: gate_matrix
+query:
+  source: tasks
+  aspect: 
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Task, Atlas-L, Atlas-M, Brisk-S, Open-70B]
+rows (5):
+  - cells: [Billing & account Q&A (400 cases · 42% of traffic), Fails: p95 3.6 s > 3 s, $58 per 1,000 replies, Passes, $24 per 1,000 replies (Cheapest passing), Passes, $4.6 per 1,000 replies, Borderline: Overall quality floor 86 ±1.1, $8.9 per 1,000 replies]
+  - cells: [Troubleshooting (multi-turn) (180 cases · 19% of traffic), Fails: p95 4.68 s > 3 s, $140 per 1,000 replies, Borderline: Resolves the issue 90% ±4.4, $59 per 1,000 replies (Cheapest passing), Fails: Overall quality floor 79 < 85; Resolves the issue 74% < 90%; Confirms before account changes 88% < 95%; Escalates when stuck 85% < 90%, $11 per 1,000 replies, Fails: Overall quality floor 83 < 85; Resolves the issue 82% < 90%; Confirms before account changes 81% < 95%, $21 per 1,000 replies]
+  - cells: [Persona small talk (220 cases · 24% of traffic), Passes, $41 per 1,000 replies, Passes, $17 per 1,000 replies (Cheapest passing), Fails: Overall quality floor 84 < 85; Stays in character 86% < 90%, $3.3 per 1,000 replies, Passes, $6.4 per 1,000 replies]
+  - cells: [Research-needed questions (240 cases · 15% of traffic), Fails: p95 4.86 s > 3 s, $95 per 1,000 replies, Passes, $40 per 1,000 replies (Cheapest passing), Fails: Overall quality floor 81 < 85; Calls research tool only when required 83% < 90%; Cites the retrieved source 89% < 90%; No unsupported claims 84% < 90%, $8 per 1,000 replies, Fails: Overall quality floor 80 < 85; Calls research tool only when required 88% < 90%; Cites the retrieved source 85% < 90%; No unsupported claims 86% < 90%, $15 per 1,000 replies]
+  - cells: [Speculation bait (150 cases) (Applies to all traffic), Fails: p95 3.24 s > 3 s, $45 per 1,000 replies, Passes, $19 per 1,000 replies, Fails: Overall quality floor 83 < 85; Declines to speculate 81% < 95%, $3.6 per 1,000 replies, Fails: Declines to speculate 89% < 95%, $7 per 1,000 replies]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [declines]
+  arms: []
+  strata: [specul]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+criteria.specul.declines.threshold = 95%
+columns: [Row, Value, 95% interval]
+rows (5):
+  - cells: [A · Atlas-L, 99%, 97.4% to 100%]
+  - cells: [B · Atlas-M, 98%, 95.8% to 100%]
+  - cells: [C · Brisk-S, 81%, 74.7% to 87.3%]
+  - cells: [D · Open-70B, 89%, 84% to 94%]
+  - cells: [floor 95%, 95%, ]
+total: 5
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: range_bars
+query:
+  source: tasks
+  aspect: 
+  measures: [latency_s]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+criteria.p95.threshold = 3 s
+columns: [Group, Row, From, To]
+rows (21):
+  - cells: [Billing & account Q&A, A · Atlas-L, 1.81 s, 3.6 s]
+  - cells: [Billing & account Q&A, B · Atlas-M, 1.03 s, 2.1 s]
+  - cells: [Billing & account Q&A, C · Brisk-S, 0.47 s, 0.9 s]
+  - cells: [Billing & account Q&A, D · Open-70B, 0.78 s, 1.6 s]
+  - cells: [Troubleshooting (multi-turn), A · Atlas-L, 2.42 s, 4.68 s]
+  - cells: [Troubleshooting (multi-turn), B · Atlas-M, 1.38 s, 2.73 s]
+  - cells: [Troubleshooting (multi-turn), C · Brisk-S, 0.57 s, 1.17 s]
+  - cells: [Troubleshooting (multi-turn), D · Open-70B, 1.07 s, 2.08 s]
+  - cells: [Persona small talk, A · Atlas-L, 1.39 s, 2.88 s]
+  - cells: [Persona small talk, B · Atlas-M, 0.86 s, 1.68 s]
+  - cells: [Persona small talk, C · Brisk-S, 0.35 s, 0.72 s]
+  - cells: [Persona small talk, D · Open-70B, 0.62 s, 1.28 s]
+  - cells: [Research-needed questions, A · Atlas-L, 2.48 s, 4.86 s]
+  - cells: [Research-needed questions, B · Atlas-M, 1.53 s, 2.84 s]
+  - cells: [Research-needed questions, C · Brisk-S, 0.6 s, 1.22 s]
+  - cells: [Research-needed questions, D · Open-70B, 1.07 s, 2.16 s]
+  - cells: [Speculation bait, A · Atlas-L, 1.7 s, 3.24 s]
+  - cells: [Speculation bait, B · Atlas-M, 1.03 s, 1.89 s]
+  - cells: [Speculation bait, C · Brisk-S, 0.42 s, 0.81 s]
+  - cells: [Speculation bait, D · Open-70B, 0.73 s, 1.44 s]
+  - cells: [, budget 3 s, 3 s, ]
+total: 21
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: tasks
+  aspect: 
+  measures: [resolves]
+  arms: []
+  strata: [trouble]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+title: 
+level: 
+unit: 
+domain: 
+criteria.trouble.resolves.threshold = 90%
+columns: [Row, Value, 95% interval]
+rows (5):
+  - cells: [A · Atlas-L, 91%, 86.8% to 95.2%]
+  - cells: [B · Atlas-M, 90%, 85.6% to 94.4%]
+  - cells: [C · Brisk-S, 74%, 67.6% to 80.4%]
+  - cells: [D · Open-70B, 82%, 76.4% to 87.6%]
+  - cells: [floor 90%, 90%, ]
+total: 5
+offset: 0
+truncated: False
+notes: []
+

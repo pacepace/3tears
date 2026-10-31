@@ -38,6 +38,18 @@ What a completion carries, member by member:
 ``None`` saying why (logged), never a lower figure; rows older than ``Catalogue.ceiling_stale_after`` bound nothing.
 A host handing the catalogue its own ``httpx`` client matches :data:`CATALOGUE_FETCH_TIMEOUT_S` on it.
 
+**What a host pays is the host's to say.** ``Model(..., pricer=...)`` takes a :class:`Pricer`, the host's port, asked
+for every call, completion and tool turn alike. Before a call it answers the rates the call is billed at
+(:class:`HostRates`: the :class:`ModelRates` and whether the host guarantees them), and the model computes the bound
+from them, as an estimate when they are not guaranteed; after it, it prices the reply from its raw usage block
+(OpenRouter's reported and upstream cost, Anthropic's cache writes split by lifetime) and the served upstream, as a
+:class:`CallPrice` (``usd=None`` with the reason when it cannot, never ``0``). A call it answers no rates for is left
+to the default, end to end: OpenRouter's reported figure, else the catalogue, as above.
+:class:`AnthropicPublishedRates`, Anthropic's published rates shipped with the package, is the default for standalone
+and development use: a model handed neither a ``pricer`` nor a ``catalogue`` gets it, so a developer's direct
+Anthropic model is priced and bounded with no network read. A host that hands its models a catalogue, as ``Clients``
+does, is priced from it unchanged; it replaces the default by handing each model its own pricer.
+
 **This module is the package's public root** for the client. A host imports from here and from no module below it,
 and only the names in ``__all__``.
 """
@@ -47,17 +59,23 @@ from __future__ import annotations
 from threetears.evals.providers.catalogue import CATALOGUE_FETCH_TIMEOUT_S, Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, describe_failure
 from threetears.evals.providers.model import Clients, Completion, Model
+from threetears.evals.providers.pricing import AnthropicPublishedRates, CallPrice, HostRates, ModelRates, Pricer
 from threetears.evals.providers.retry import DeclinedRetry
 from threetears.evals.providers.wire import PriceSource
 
 __all__ = [
     "CATALOGUE_FETCH_TIMEOUT_S",
+    "AnthropicPublishedRates",
+    "CallPrice",
     "Catalogue",
     "Clients",
     "Completion",
     "DeclinedRetry",
+    "HostRates",
     "Model",
+    "ModelRates",
     "PriceRefresh",
+    "Pricer",
     "PriceSource",
     "Provider",
     "ProviderError",

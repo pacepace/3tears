@@ -42,7 +42,7 @@ from threetears.evals.run import (
     quote_launch,
     start_run,
 )
-from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, JudgeEvidence
+from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgeConfig, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
@@ -185,7 +185,7 @@ class _JudgeCampaign:
         [arm] = (await launch_estimate(OpsHost(launch=self.host), arguments, TOYHOST_SCOPE)).arms
         return arm
 
-    async def launch(self, max_cost_usd: float) -> list[Any]:
+    async def launch(self, max_cost_usd: float, *, overlays: dict[str, Any] | None = None) -> list[Any]:
         runs = await start_run(
             self.host,
             template_id=_TEMPLATE_ID,
@@ -194,6 +194,7 @@ class _JudgeCampaign:
             k_runs=1,
             max_cost_usd=max_cost_usd,
             scope_id=TOYHOST_SCOPE,
+            overlays=overlays,
         )
         async with asyncio.timeout(10):
             while any(self.host.job_manager.is_active(run.id) for run in runs):
@@ -244,6 +245,26 @@ async def test_a_cap_at_or_above_one_calls_ceiling_is_admitted() -> None:
     runs = await campaign.launch(0.59)
     assert len(runs) == 1
     assert len(campaign.client.calls) == 6, "every case's call was admitted and made"
+
+
+async def test_a_launch_overlaying_a_stored_judge_config_reads_it_off_the_event_loop() -> None:
+    # A config overlay is a store read while the kind is built; the store refuses a call on the loop's thread, so a
+    # launch that built the kind there failed before its run started, though pricing (built off the loop) passed.
+    campaign = off_loop(_JudgeCampaign)
+    config = JudgeConfig(
+        scope_id=TOYHOST_SCOPE,
+        name="transcript-production",
+        rubric_dim_id=TRANSCRIPT_DIM_ID,
+        prompt_template="Score the transcript as the production judge does.",
+    )
+    off_loop(campaign.host.eval_host.storage.save_judge_config, config)
+
+    runs = await campaign.launch(0.59, overlays={"config_ids": {TRANSCRIPT_DIM_ID: config.id}})
+
+    assert len(runs) == 1
+    assert len(campaign.client.calls) == 6, "the overlaid kind was built and judged every case"
+    [stored] = off_loop(campaign.host.eval_host.storage.query_eval_runs, TOYHOST_SCOPE)
+    assert stored.overlays is not None and stored.overlays["config_ids"] == {TRANSCRIPT_DIM_ID: config.id}
 
 
 async def test_a_call_above_the_hosts_own_ceiling_is_named_as_the_hosts_to_raise() -> None:

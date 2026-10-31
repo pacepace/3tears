@@ -1,0 +1,169 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 1,
+          "reason": "The headline, the decision block and c1 make the hold clear, give the reason (the two configurations that hold 97% in every task have overall p95s of 870 ms and 2551 ms) and name the main risk. But the lede and the Recommendation say a budget at or above 870 ms 'would change the answer'. The overall p95 is only the lowest such a budget could be. The latency gate applies within each task, so at least one task's p95 for Brisk-S · reasoning high · 1 retry must be at or above 870 ms. A latency owner who moves the budget to 870 ms would not be enough to qualify it."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "I checked each claim row by row against its block and the appendix. c1 holds: only Atlas-M · high · retry (97.9%) and Brisk-S · high · retry (97.3%) pass multi-hop, and every other configuration misses there. c2 holds: J at 513 ms, I at 465 ms and S at 450 ms are under 600 ms, and each misses some task. c3's gaps (95.6%, 96.4%, 97.0%) and c4's 5.5× ($3.477 vs $0.633) match the data. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 1,
+          "reason": "L's thin clearances are shown, with wrong-side odds of 37.4%, 29.9% and 16.5%, which I confirmed. But the hold also depends on the closest configuration under the budget, Brisk-S · low · retry, really missing the gate, and that is framed more firmly than the data allow. The per-task clause says its 1.4-point multi-hop miss means 'the hold does not rest on' the counts. Assuming each task got its traffic share of cases, that miss reads on the wrong side 11.9% of the time, the 0.6-point ambiguous-entity miss 33.3%, and date math sits on the line at 50%. None of J's margins appear in Watch."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted would change the decision. Nano-XS misses in every task; overall pass rate, calls per task and p50 latency are not gated; and the snapshot holds no figures for extra calls or outcome."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 1,
+          "reason": "The overall-only latency reading is handled well: if the tasks split the cases, the overall p95 above 600 ms forces at least one task over 600 ms. The unnamed provider is not handled where it matters. Method says the routing behind the costs is unknown, but c4 and the 'Why not the others' line give the 5.5× ratio and $11,376 a month as if they belonged to the models."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names an action and what it would settle: per-task p95, a declaration on the budget, a fix-and-rerun on the two weak tasks, and a 22,911-case confirmation, which I checked against the two-sided 80% size. The second step's '870 ms' target inherits the problem in item 1."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "c3's claim is about gaps (1.4 points, 0.6, exactly on the line), but its block shows only three failure examples, so none of those figures is drawn. c2's second half (every configuration under the budget misses the pass rate somewhere) is not drawn in its latency block either. c1's heatmap and c4's bars and interval do fit their claims."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "c4",
+          "severity": "must_fix",
+          "finding": "c4, its caption and the decision's 'costs 5.5 times as much' line compare costs ($3.48 vs $0.63 per 1,000 calls, $11,376 a month) with no provider named for either model. The snapshot does not say who served Atlas-M or Brisk-S, and only Method mentions that. Fix: say in the c4 sentence and in the decision line that no provider is named for either configuration, so the 5.5× ratio and the monthly gap reflect this run's unnamed routing and may not hold under another one.",
+          "id": "f1.1",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "must_fix",
+          "finding": "The lede ('A budget at or above that p95… would change the answer') and the second next step ('could rise to 870 ms') treat 870 ms as enough for Brisk-S · reasoning high · 1 retry. The page's own argument in the latency clause shows the opposite. The gate applies within each task, and if the tasks split the cases, at least one task's p95 must be at or above the overall 870 ms. Multi-hop, with 2 to 3 calls, is likely slower still. Fix: say the budget would need to cover L's slowest task's p95, which is at least 870 ms and has not been read. Make the per-task latency read the first thing that would change the answer, and phrase the budget declaration as 'at least 870 ms, exact level pending the per-task read'.",
+          "id": "f1.2",
+          "since": 1
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "Confidence and Watch understate the risk on the side of the hold that could flip it toward a ship. The per-task-counts clause says configurations under the budget miss 'by at least 1.4 points somewhere, so the hold does not rest on them'. Assuming each task got its traffic share of cases, Brisk-S · low · retry's 1.4-point multi-hop miss reads on the wrong side 11.9% of the time, its 0.6-point ambiguous-entity miss 33.3%, and its date math is on the line. Fix: quote the 11.9% in that clause and add J's multi-hop and ambiguous-entity margins to Watch, since a rerun there is what could turn the hold into a pick. Separately, the best-of-n clause says a lower re-read of L would 'leave no configuration holding the pass rate everywhere'. That is wrong, because Atlas-M · high · retry clears multi-hop by 0.9 points and ambiguous entities by 1.3. Say 'would leave only Atlas-M · high · retry holding'.",
+          "id": "f1.3",
+          "since": 1
+        },
+        {
+          "claim": "c3",
+          "severity": "should_fix",
+          "finding": "c3's sentence rests on J's per-task gaps (multi-hop 95.6%, ambiguous entity 96.4%, date math 97.0% against 97%), but its block holds only three failure examples, so the claim's own figures are not drawn. c2's second half (every configuration under the budget misses somewhere) has the same problem. Fix: give c3 a block showing per-task pass rates against the 97% line for the configurations under the budget (J, I, S), and keep the examples as a second block. Also fix the examples caption: it says 'one per task where it struggles', but J holds date math at exactly 97.0%. It also lists the examples in the order first, third, second, and does not say how many failures each was kept from.",
+          "id": "f1.4",
+          "since": 1
+        },
+        {
+          "claim": "c4",
+          "severity": "should_fix",
+          "finding": "The $11,376-a-month gap prices the 4,000,000 monthly volume as calls. Method says the volume's unit is not stated, and these configurations make about 1.45 calls per task. If the volume counts tasks, the gap is about 45% larger. Say in the caption that the monthly gap assumes the volume counts calls. A smaller point: the dot reads -0.7 while the options table's rounded rates (98.0% vs 98.6%) suggest -0.6. Add a note that the difference is computed before rounding.",
+          "id": "f1.5",
+          "since": 1
+        }
+      ],
+      "resolved": [],
+      "total": 10,
+      "passes": false,
+      "must_fix": true,
+      "blocking": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5"
+      ]
+    },
+    {
+      "round": 2,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline, lede and decision block say what to do: ship none yet. They say why: the only two configurations that hold 97% in every task, Brisk-S high with a retry and Atlas-M high with a retry, read overall p95s of 870 ms and 2551 ms against a 600 ms budget. They also name the main risks: per-task latency was never read, the hold-side configuration Brisk-S low with a retry could flip on a rerun, and Brisk-S high with a retry clears multi-hop by only 0.3 points. c1 then shows the per-task pass-rate picture."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "c1 is the pass-rate filter, c2 the latency filter and c3 shows that nothing under the budget clears every task. c4 compares the two survivors. Each sentence matches its table. c1's multi-hop rows and c3's ten under-budget configurations all sit below 97% on multi-hop. c3's 95.6%, 96.4% and 97.0% match the gate figures. c2 rests on the fact that a configuration's slowest task is at least as slow as its overall p95, which holds if the tasks split the cases. The code also reads the two survivors as undecided only on latency."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "Watch gives Brisk-S high with a retry's thin margins (0.3, 0.6 and 0.9 points; 37.4%, 29.9% and 16.5% wrong-side odds on assumed counts). It also gives the hold-side margins of Brisk-S low with a retry (11.9%, 33.3% and 50%, which I confirmed). c4 says the two survivors' pass rates are not told apart (-0.7, interval -1.7 to +0.4). The cost ratio is limited to this run's unnamed routing."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "None of the omitted items would move the hold. The Nano-XS configurations miss every task. The overall pass rate and the grid effects do not decide the gates. p50 and calls per task are not gated. The gate sweep from 94% to 98% never changes the call, because latency is unread for every arm."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "The page carries the unread per-task latency, the unstated per-task counts (with the assumption stated each time), best-of-18, the missing control and the unnamed provider routing. Each appears in the story, the confidence clauses and the next steps. The confidence clauses say what would make each caveat matter and why the hold stands until then."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each step names a read, a declaration or a rerun, with case counts I confirmed (1,685 and 7,567 for Brisk-S low with a retry), and says what it would settle. One overreach is noted below."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 2,
+          "reason": "c1 and c3 draw their per-task rates against the 97% line. c2 draws the overall p50-to-p95 ranges against the budget, and its caption says the gate is per task. c4 draws both the cost bars and the interval on the pass-rate gap, with the rounding note. c3's example caption now matches its order and says the examples show kinds of failure, not shares."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "The third next step reruns Brisk-S low with a retry on multi-hop and ambiguous-entity cases and says the result settles whether it 'holds every task and becomes the pick'. Two things that step does not settle also stand in the way. Its date-math pass rate is exactly on the 97% line, so on assumed counts it reads the wrong way half the time. And its overall p95 is 513 ms, so its slowest task is at least that slow and has not been read against 600 ms. Fix: add date-math cases to the rerun, and change the outcome to 'becomes the pick only if date math also holds and its per-task p95 stays under 600 ms'. Match the confidence clause's 'pending per-task latency' wording.",
+          "id": "f2.1",
+          "since": 2
+        }
+      ],
+      "resolved": [
+        "f1.1",
+        "f1.2",
+        "f1.3",
+        "f1.4",
+        "f1.5"
+      ],
+      "total": 14,
+      "passes": true,
+      "must_fix": false,
+      "blocking": []
+    }
+  ]
+}

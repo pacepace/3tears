@@ -49,8 +49,9 @@ from threetears.evals.kernel.candidate_kind import (
     CellSpanWindow,
     VariantConfig,
 )
-from threetears.evals.kernel.capped_completion import call_ceiling, refresh_prices
+from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
     JUDGE_KIND,
@@ -618,9 +619,12 @@ def freeze_judge_cases(
         run = storage.load_eval_run(run_id, scope_id)
         if run is None:
             raise NotFoundError("run", run_id, remedy=FIND_RUN)
-        for result in storage.query_eval_results_by_run(run.id, scope_id):
-            if wanted is not None and result.id not in wanted:
-                continue
+        # The run's keys, then its results by id a page at a time (the named ones alone when results are named),
+        # each frozen and let go before the next page is read.
+        keys = storage.query_eval_result_keys_by_run(run.id, scope_id)
+        for result in iter_keyed_results(
+            storage, scope_id, [key for key in keys if wanted is None or key.id in wanted]
+        ):
             found.add(result.id)
             try:
                 frozen = _cases_of_result(storage, template, run, result, scope_id, dims)
@@ -818,6 +822,16 @@ class JudgeKind:
         if sent not in self._built:
             self._built[sent] = self._clients("judge", self._model, temperature=sent)
         return self._built[sent]
+
+    def ceiling_is_estimate(self) -> bool:
+        """Whether the judge clients this kind has built bound their calls on estimates (rates the host's pricer does
+        not guarantee): asked once its cases are priced, for its largest call's
+        :attr:`~threetears.evals.run.CallCeiling.estimate`.
+
+        :return: Whether any of them does.
+        :rtype: bool
+        """
+        return any(ceiling_is_estimate(client) for client in self._built.values())
 
     async def aclose(self) -> None:
         """Release every client this kind built, the first failure re-raised after all were offered a release."""
@@ -1251,12 +1265,14 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:
             priced = [(ceiling, case.id) for case in cases if (ceiling := kind.price_case(case)) is not None]
+            estimate = kind.ceiling_is_estimate()
         finally:
             await kind.aclose()
         if not priced:
             return None
         usd, case_id = max(priced)
         return CallCeiling(
+            estimate=estimate,
             usd=usd,
             call=(
                 f"the judge call on case {case_id!r} ({JUDGE_CALL_ATTEMPTS} request(s): the first and its parse "
@@ -1275,7 +1291,10 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         host = launching.eval_host
         model = require_candidate_model(request, None)
         overlays = request.overlays_as(JudgeKindOverlays) if request.overlays is not None else JudgeKindOverlays()
-        kind = judge_kind(
+        # Building the kind reads each overlaid judge config from the store, so it is built off the loop.
+        kind = await run_blocking(
+            host.blocking_executor,
+            judge_kind,
             host.storage,
             host.completion_clients("a judge campaign"),
             model=model,

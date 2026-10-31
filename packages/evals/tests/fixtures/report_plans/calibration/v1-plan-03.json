@@ -1,0 +1,15 @@
+{
+  "items": [
+    {"id": "R2", "verdict": "fail", "reason": "The headline gives the instruction with no reason, so it is not a full decision.", "quote": "Keep September.", "labeled_by": "model"},
+    {"id": "R3", "verdict": "fail", "reason": "The lede is background and page navigation, with no supporting fact and nothing on what would change the answer.", "quote": "This page reports the second round of the persona campaign. The sections below hold the evidence.", "labeled_by": "model"},
+    {"id": "R4", "verdict": "fail", "reason": "The caveat that stratum intervals are uncorrected appears both in the strata section's takeaway and in Method, and the scoped confound and short-run caveats assigned to Watch are not stated anywhere.", "quote": "Bold rows are separated from zero before any correction; read them as leads.", "labeled_by": "model"},
+    {"id": "R5", "verdict": "fail", "reason": "The strata section's headline claims a share of each candidate's loss, which a diverging-bar chart of per-stratum change does not show.", "quote": "Off-lane asks, the largest stratum, carry about 50% of each candidate's loss", "labeled_by": "model"},
+    {"id": "R6", "verdict": "fail", "reason": "The first section's takeaway, above Full results, names the aspect by its internal key.", "quote": "keep Kairo in character on dj_character_v2 at least as well as September", "labeled_by": "model"},
+    {"id": "R7", "verdict": "fail", "reason": "Watch points to Method instead of naming the weakest margin or any scoped confound.", "quote": "Method lists what to keep in mind.", "labeled_by": "model"},
+    {"id": "R8", "verdict": "pass", "reason": "Sentences are short and active, with no hedges or statistician's grammar on the first screen.", "quote": "", "labeled_by": "model"},
+    {"id": "R9", "verdict": "fail", "reason": "The first screen says what to do but leaves the reason to the sections.", "quote": "The sections below compare the candidates.", "labeled_by": "model"},
+    {"id": "R10", "verdict": "fail", "reason": "Next names a concrete experiment but does not say which result would move the call off September, and it adds a to-do (calibrate the judge).", "quote": "The experiment that could change the answer: a candidate priced at or below September, run on the same cases with off-lane asks oversampled, since that stratum carries about 50% of each candidate's loss. Calibrate the judge against human ratings first, so the in-character figures can carry the call.", "labeled_by": "model"},
+    {"id": "R11", "verdict": "pass", "reason": "Each clause names the condition under which its caveat would matter, and the judge clause says the deciding cost finding does not rest on it.", "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.", "labeled_by": "model"}
+  ],
+  "scored_at": "2026-10-25T22:33:56Z"
+}

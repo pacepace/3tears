@@ -9,12 +9,16 @@ tiers). Terms such as campaign, arm and analysis are defined in [Concepts](conce
 
 Every campaign is read through one **page**, and every door into it returns the same one: the quick path's
 `result.page`, the command line's `report`, the `report_read` operation behind the MCP action, and
-`campaign_report(host, campaign_id, scope_id)`. It opens on the campaign's first screen, the whole decision at a
-glance, and then holds one fold per aspect, each that aspect's own page. Each door builds it with the one builder over
-the campaign's evidence, so none adds, drops or reorders anything. Most of what a reader needs is countable — who
-ran, what got lost and why, which case failed, what the judge said — so code writes all of it; a model's analysis,
-when one was written, adds only a summary across the aspects, findings and a recommendation, each finding and the
-recommendation pinned to the evidence it rests on.
+`campaign_report(host, campaign_id, scope_id)`. Each door builds it with the one builder over the campaign's
+evidence, so none adds, drops or reorders anything. Which page that is depends on what was written over the campaign:
+
+- **The analyst's page**, once a report was written (`analysis_generate`): the report document an analyst model wrote
+  over a frozen snapshot, with every number code's and every part no analyst writes drawn by code
+  ([the analyst's report](#the-analysts-report-written-over-frozen-evidence)).
+- **The code-only page**, before one is: everything countable — who ran, what got lost and why, which case failed,
+  what the judge said — written by code. It opens on the campaign's first screen, the whole decision at a glance, and
+  then holds one fold per aspect, each that aspect's own page. The rest of this section describes it. A campaign
+  whose analysis is an older memo reads as this page with the memo's summary, findings and recommendation set in it.
 
 ```python
 page = result.page                                           # the quick path
@@ -22,8 +26,9 @@ page = campaign_report(host, campaign_id, scope_id)          # a host
 files = page.write("eval-report")  # report.html, report.md, campaign.json, bundle-<aspect>.json
 ```
 
-`report.html` needs nothing beside it: no script, no stylesheet, no image, no URL but `#` links to places on the
-page; its marks are inline SVG, and drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
+`report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page and the
+kit's fonts. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
+it; without it, every chart reads as its values table. Drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
 printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
 (by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
 ([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
@@ -55,7 +60,7 @@ a choice with no clear winner open on what they found too. A page with no memo h
 recommendation goes that none was written (a measurement, which recommends nothing, says nothing there).
 
 What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
-`<p class="warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
+`<p class="flag warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
 overrides the 10-point floor it breaks on billing.`) and naming the aspects, never a rate, an expression or an
 interval: the tables print those. Where the memo recommends an arm over a bar it misses or a floor it breaks, the
 writer's why follows that line at once. A warning only warns: nothing on the page picks an arm, and the bars and
@@ -240,7 +245,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
   no invented total.` No floor writes this line.
 - **A broken floor**, where one is: one bold line per candidate under the verdict, never above the title (in HTML a
-  `<p class="warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
+  `<p class="flag warning">`, never `role="alert"`): `Adopting v2 overrides the 5-point floor it breaks on routing.` The
   rate that broke it and its interval are the Floors section's. A floor warns and never decides: the verdict above
   it still says what the contrasts came to.
 - **A report-wide caveat**, where one holds, once: criteria set after their readings were visible, results with no
@@ -309,7 +314,7 @@ heading.
   On a campaign's page the findings are a section of their own, **Findings**, and the next steps another,
   **Next steps**, both before the aspect folds. A campaign's summary and recommendation are on its first screen, not
   in a fold; the writer's summary of the aspect
-  opens the fold ([one memo per campaign](#having-a-model-write-the-analysis-over-frozen-evidence)).
+  opens the fold ([memos](#memos-and-planned-reports)).
   **Each finding traces to its evidence, in HTML.** Each figure in its table links to a cell printing the same
   figure of the same reading on the same arm: a contrast's arm or control, a guardrail's mean, a one-arm page's
   reading, an arm's cost per reply; a figure printed only in the closed `Bars` table links to that fold. A figure is
@@ -388,12 +393,26 @@ dark alike.
 
 ### Embedding the page in a host
 
-Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`
-with a strict content security policy (`default-src 'none'; style-src 'unsafe-inline'` holds: the page has no
-script and inline SVG needs no `img-src`); or show that route in an `<iframe sandbox>` with no `allow-scripts`,
-changing the host's own `frame-ancestors` to `'self'`. Linking to the route needs no change at all.
+Serve the directory `write` produces as static files; or keep a route that returns `report_read(format="html")`.
+The default page carries the package's `kit.js` inline and links the kit's fonts, so it needs a policy that allows
+that one inline script (by its hash, which changes only when the package's `kit.js` does) and the Google Fonts hosts:
+`style-src` and `font-src` for `fonts.googleapis.com` and `fonts.gstatic.com`. Without those the page still reads, its
+text in the system faces the kit's stylesheet names after each Plex face.
 
-`Report.basis` says whether an analysis wrote the memo (`analysis`) or none did (`code_only`); `report.verdicts`
+A host whose policy runs and loads nothing asks for `report_read(format="html", static=True)` (or
+`report_html(report, static=True)`, `campaign_report_html(report, static=True)`): that page needs no `script-src` at
+all. It has no `<script>` and no `<link>`, its text is in the system faces, and it carries its charts as inline SVG,
+drawn on the server by the kit's geometry and colour tokens, so they follow the page's light and dark themes; each
+mark's tooltip is its `<title>`, and each chart's values table stays under it for a screen reader and for copying the
+numbers out. A gate matrix, a lattice, example cards and interval rows are shown as their tables, each saying so in
+one line. `default-src 'none'; style-src 'unsafe-inline'` holds over it. Either page can also be shown in an
+`<iframe sandbox>` with no `allow-scripts`, changing the host's own `frame-ancestors` to `'self'`; the default page
+then reads as its tables, the static page with its charts. Linking to the route needs no change at all.
+
+A host that shows the page as an administrative view can frame the static page as an iframe's `srcdoc` with an
+empty `sandbox`: nothing on it needs a script, a link or a URL, so it reads whole there, the analyst's page included.
+
+`Report.basis` says whether an analysis wrote the page's words (`analysis`) or none did (`code_only`); `report.verdicts`
 holds every verdict typed — each guardrail, each bar on each arm, each contrast — for a program to branch on.
 
 ## Reading a comparison
@@ -645,73 +664,114 @@ unit of analysis: a case's repeats are averaged first, because they are not inde
 
 The [simulation suite](measuring-soundly.md) checks each method's error rate against a known truth.
 
-## Having a model write the analysis, over frozen evidence
+## The analyst's report, written over frozen evidence
 
-An analysis is written from the campaign's **bundle** alone (`AnalysisContextBundle`), and every figure
-in it is a reference code resolves against that bundle. Save the bundle (`bundle.to_json()`), reload it
-(`AnalysisContextBundle.from_json`) and its `fingerprint()` is unchanged, so `generate_analysis` over the
-saved file under a second prompt compares the two prompts and nothing else; each analysis records the
-fingerprint it read on `generation.bundle_fingerprint`.
+**Why an analyst.** A page laid out per kind of campaign fits the campaigns someone anticipated, and a writer that
+reads one closed bundle in one call cannot check what it suspects. So a report is written as an expert analyst
+writes one: it investigates the campaign, decides what the story is, and writes it, while code computes every
+number and verifies the draft. Code never chooses what leads, what is grouped or what is left out, and nothing
+branches on what kind of eval it is. The full design is [ANALYST.md](../../../docs/eval-report-kit/ANALYST.md).
 
-A fingerprint is `v2:` and the sha256 of the bundle's canonical JSON with every float rounded to twelve significant
-figures. The bundle's intervals and multipliers come from C maths (`math.lgamma`, `NormalDist().inv_cdf`) whose last
-bits differ between two builds of one Python, so the rounding is what makes one evidence fingerprint alike on a
-laptop, in a container image and on another architecture, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. The rounding is in the fingerprint only: the bundle keeps
-its figures as computed. A fingerprint recorded before the rounding has no prefix, and every comparison computes the
-fresh one in the recorded one's version (`fingerprint(like=recorded)`), so an analysis or a reporter case recorded then
-still matches its evidence on the machine that recorded it. The insight-ledger cutoff (`bundle_assembled_at`),
-the generation time and its cost are on that provenance, not in the bundle.
+**How one is written.** `analysis_generate` starts it as a job:
 
-The provenance also records the bundle `schema_version` the generation ran over and the
-`host_declarations_digest`, a digest of the host's declared sweepables and world dimensions computed from its
-registries. Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares fingerprints, and when they
-differ `mismatch_cause` names why: `package_shape` (the bundle schema moved), `host_declarations` (the host added,
-removed or renamed a declaration), or `evidence` (neither moved, so the runs, results or insights did).
+1. **Freeze.** The campaign's evidence is frozen as a [snapshot](concepts.md#report-snapshot). The same evidence
+   names the same snapshot, every tool reads only it, and runs added later change nothing under the report.
+2. **Investigate.** The analyst, the host's `analyst` model, reads the snapshot through read-only tools (the
+   `evals_analyst` tool): readings and contrasts, examples with the judge's reasons, the caveats code assigns, where
+   a call or a reading flips, where a difference is concentrated, which options dominate, the price of a point. A
+   skill the package ships guides it: principles, story forms, charts, statistics, writing, and reasoning notes on
+   worked campaigns.
+3. **Write.** It submits a report document: a headline, a lede and an optional flag; the arms it recommends; its
+   confidence and caveats; decision entries; claims in reading order, each with one or two evidence blocks; what it
+   left out and why; next steps, each with what it would settle; and method. Every number is a figure key, which code
+   renders; a digit typed outside one is refused.
+4. **Check.** Code holds the draft to six mechanical invariants: numbers through keys, every block resolves and
+   draws, every caveat that bears on the call is shown, the confidence form fits the caveats left open, no internal
+   id above the appendix, and the appendix and method are present. A failing draft goes back with each fault and its
+   remedy, and costs no review.
+5. **Review.** An editor (the same model, in a fresh context that never sees the analyst's reasoning) reads the page
+   as a reader will, with facts code computed for it to weigh, and scores seven items from 0 to 2: the first screen,
+   a coherent story, honest emphasis, sound elision, confounds handled, actionable next steps, and evidence that fits
+   its claims. Code adds the scores. A review passes with no 0, at least 11 of 14 and no must-fix finding. A review
+   that passes with no blocking finding open clears the report; otherwise the analyst revises, at most twice. In the
+   first review every finding blocks. In a later one, each finding says which earlier finding it continues, or that
+   it is new, and lists the earlier ones now resolved; every must-fix blocks, and so does every earlier finding still
+   open, while a should-fix first raised in that review does not: it is listed open on the page, and the report is
+   finished.
+6. **Store.** The document is stored with its snapshot, how the writing ended, the editor's findings left open, the
+   cost of each role, round and turn, and each session's transcript.
 
-Prior insights reach the bundle bounded: the newest live insight per claim, at most a fixed number of them, with
-`prior_insights_omitted` counting the rest. `refused_merges` and `next_experiments` are capped the same way, with
-`refused_merges_omitted` and `next_experiments_omitted`. A generation that restates a live insight's claim (same
-words, ignoring case, spacing and a final period) replaces that insight in the ledger rather than adding a second
-one, so regenerating over unchanged evidence leaves the ledger its size. Archiving the analysis that minted an
-insight retracts it; each insight's `invalidation_trigger` states both rules. The `insights_list` and `insight_get`
-actions show the ledger and each insight's standing (live, retracted or orphaned); `insight_delete` removes one wrong
-insight.
+A write that ends `stored`, or `stored_with_findings` once both revisions are spent, is the campaign's report. One the
+budget stops keeps its last reviewed draft with that review's findings, and stores nothing if no draft was reviewed.
+Only `stored` is a finished report. Any other stored report is a draft: its page says so on its first line under the
+masthead ("Draft: its editor's review left 6 findings open."), its appendix lists those findings, and `draft` is true
+on the stored document, on `report_read`'s result and on its line in `analyses_list`, so a host's list can show it.
+One that runs out of bounces, whose editor's answer cannot be read twice, or that a provider fails, stores nothing,
+and the job fails with its ending and reason.
 
-**One memo per campaign: a summary, findings, one recommendation, a summary per aspect.** The writer authors no
-headline, no chart and no count: the warnings and readings are code's. It reads the campaign bundle (each aspect's
-readings, trials, their states, causes, failed checks and the judge's reasons) and writes one `summary`, its read
-across every aspect in a sentence, required of every kind and laid out after the warnings and the question; findings,
-each naming in `trials` the trials it is drawn from; at most one recommendation (`Recommendation`: an arm, reasons,
-confidence, the findings it `rests_on`); one summary per aspect (what changed, how sure, what it means here), laid out
-at the top of that aspect's fold; and next steps. The summary is prose like a finding's body: a number in it is a
-figure reference code renders, an empty one is refused through the one repair round, and the page prints it as
-written. Code holds the recommendation to the campaign's kind, refusing it through the one repair round:
+### Reading the analyst's page
 
-| Kind | The writer must | The writer may not |
+Top to bottom, simplest first:
+
+| Part | Whose | What it says |
 |---|---|---|
-| measurement | write findings and summaries | recommend anything |
-| choice | pick an arm, or say no clear winner | pick at more than `low` confidence when no pair separated its pick ahead; leave unanswered an aspect where another arm is shown ahead (`behind_on`) |
-| change | recommend a switch or keeping the control | switch on exploratory evidence alone, to a candidate with no better reading or improved contrast on any asked aspect and not every floor held on them (each asked aspect declaring one), or to one that breached a guardrail |
+| Masthead | code's | what kind of eval it is, the system under test, its counts and when it ran |
+| Draft line | code's | on a draft only: that its editor's review left findings open, and how many |
+| Headline, lede, flag | the analyst's | the finding, in a sentence; the flag only for what a reader must know first |
+| Confidence | both | the form in code's words, then each caveat: the analyst's clause for what would make it matter, or code's line that it was checked and cannot change the call |
+| Decision | the analyst's | the call and its whys, or for a tradeoff the trade, where it flips, the lean and what would settle it |
+| Options | code's | every arm, with its settings, served model and cost (with its price source, the provider that served it and the share of calls priced); the recommended arms marked |
+| Claims | the analyst's words, code's blocks | the story in order, each with the evidence that shows it and the caveats that touch it |
+| Explore, next steps | the analyst's | what a reader could change and what it would do; each next step and what it would settle |
+| Appendix | code's | the arms key, every table the snapshot holds, what was left out and why, method, the editor's open findings, and the made line: the models, the served models, the cost, the skill's version and the date |
 
-Every kind answers its pick's warnings, each once and each with a why: a broken floor in `floors_overridden`, a
-missed bar in `bars_missed`. A switch rests on at least one finding; keeping the control may rest on none. The page
-sets each why beside the warning it answers, and a floor the memo overrides still warns on the first screen.
+**Confidence** says how sure the call is, read from the method and the variance of the evidence, never the result
+alone ([confidence](concepts.md#confidence)). `high` means nothing is open; `high, if the caveats below aren't material`
+lists each open caveat with its condition; `low` is always allowed. A lead's risk of reading the wrong way is stated
+beside the lead, and does not lower the form by itself.
 
-**A finding's title never states a null its evidence did not establish, and names only arms its evidence reads.**
-"Halving the budget does not change latency, cost or delivery" decides as surely as a measured result does, and over
-a contrast that did not separate it asserts a result the campaign never measured; a title naming an arm none of its
-finding's readings is taken at states a result the reader is shown nothing of. Both are the prompt's rule 9, and a host's
-reporter eval can measure them on the dimensions its rubric declares. The generator once refused such titles by an English phrase list and by matching arm
-names in the title; it reads no prose now (owner, 2026-10-24).
+**Cost is stated with where it came from.** The options table gives each arm's cost per run, or per 1,000 runs where any arm's is
+too small for cents, in one form down the column, with the price source, the provider that served it and the share of
+calls priced. A partly unpriced arm says how many calls were priced, and never shows a smaller total. Prices are the
+host's ([who sets the prices](cost-and-budgets.md#who-sets-the-prices)). Monthly figures appear only where the
+campaign declares a volume.
 
-**The analysis keeps its evidence.** A stored analysis carries the bundle it was written over (`EvalAnalysis.bundle`),
-so its report is laid out over that frozen evidence, whatever is archived or re-run afterwards.
+**A stored report reads as written.** A report is never edited: regenerating writes a new one, and the page shows the
+newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
+resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. A
+report written in a shape this version no longer reads gets the code-only page and one line: written in a shape this
+version no longer reads; regenerate with `analysis_generate`.
 
-The bundle stays closed: the generator has no tools to fetch more context, such as a `runs_bisect` or `scope_pivot`
-drill-down. A generator that fetched its own context would read different inputs on every call, so nothing could
-be fingerprinted before generation and two prompts could no longer be compared on one bundle. A question the
-bundle cannot answer is answered by adding a field to it.
-[`tests/fixtures/generate_analysis/llm_analysis.py`](../tests/fixtures/generate_analysis/llm_analysis.py) does all of it in one file.
+**The transcripts are kept.** Each session, the analyst's and each editor round's, is stored whole beside the report,
+so `report_read` with a report's id and `include_sessions` returns what the analyst read and did, for an audit.
+Reading or listing reports otherwise loads none of them.
+
+**What the analyst could not do is collected.** When it works around a missing capability, or a result looks wrong,
+the analyst records a capability gap. Gaps are stored with their provenance, and `analyst_gaps_list` returns them
+grouped and ranked, each group as text ready to file as an issue ([serving](serving.md#the-analysts-tool)).
+
+### Memos and planned reports
+
+Earlier writers left two kinds of analysis. A **memo** (`generate_analysis`) read one campaign bundle in one call and
+wrote a summary, findings and one recommendation, every figure a reference code resolved; its page is the code-only
+page with the memo's parts set in it, and the reporter kind still evaluates memo writers. A **planned report** chose
+a page from a fixed vocabulary of sections and charts; it now reads as the code-only page with the regenerate line.
+
+Either one carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
+sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence
+fingerprints alike across builds and machines (except, rarely, a value exactly on a rounding boundary); a fingerprint
+recorded before the rounding has no prefix, and every comparison computes the fresh one in the recorded one's version
+(`fingerprint(like=recorded)`). Re-assembling a stored analysis's bundle (`inspect_analysis_bundle`) compares
+fingerprints, and when they differ `mismatch_cause` names why: `package_shape` (the bundle schema moved),
+`host_declarations` (the host added, removed or renamed a declaration), or `evidence` (the runs, results or insights
+did).
+
+**Insights.** A claim the analyst marks durable becomes an insight later campaigns read in their overview. Two claims
+stating one thing mint it once, and a later analysis restating a claim retires the earlier insight, so regenerating
+over unchanged evidence leaves the ledger its size. Archiving
+the analysis that minted an insight retracts it; each insight's `invalidation_trigger` states the rules. The
+`insights_list` and `insight_get` actions show the ledger and each insight's standing (live, retracted or orphaned);
+`insight_delete` removes one wrong insight.
 
 ## How a measure and a question are named
 

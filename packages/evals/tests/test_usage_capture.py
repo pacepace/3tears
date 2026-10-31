@@ -186,6 +186,34 @@ def test_work_still_in_flight_when_the_cell_ended_is_costed():
     assert (row.role, row.cost_usd, row.prompt_tokens, row.completion_tokens) == ("inner_agent", 0.02, 40, None)
 
 
+def test_the_model_a_deliverys_responses_named_is_its_inner_agent_rows_served_model():
+    """The requested model stays the row's ``model``; what answered is its ``served_model``, never read off ``model``."""
+    (row,) = async_delivery_usage([_work(cost_usd=0.01, served_model="inner-2026-10")], rate_table=None)
+    assert (row.model, row.served_model) == ("inner", "inner-2026-10")
+    (unnamed,) = async_delivery_usage([_work(cost_usd=0.01)], rate_table=None)
+    assert unnamed.served_model is None
+
+
+def test_work_one_model_had_answered_by_two_is_two_rows():
+    rows = async_delivery_usage(
+        [_work(cost_usd=0.01, served_model="inner-a"), _work(cost_usd=0.02, served_model="inner-b")], rate_table=None
+    )
+    assert [(row.model, row.served_model, row.cost_usd) for row in rows] == [
+        ("inner", "inner-a", 0.01),
+        ("inner", "inner-b", 0.02),
+    ]
+
+
+def test_a_delivery_naming_no_served_model_is_stored_as_before_the_field_existed():
+    assert "served_model" not in _work(cost_usd=0.01).to_dict()
+    assert _work(cost_usd=0.01, served_model="inner-a").to_dict()["served_model"] == "inner-a"
+
+
+def test_a_substituted_delivery_names_no_model_that_answered_it():
+    with pytest.raises(ValidationError, match="answered by no model"):
+        AsyncDelivery(tool="scout_ahead", status="delivered", substituted=True, served_model="inner-a")
+
+
 def test_an_unreported_call_count_stays_unknown_rather_than_one():
     (row,) = async_delivery_usage([_work(cost_usd=0.01)], rate_table=None)
     assert row.call_count is None

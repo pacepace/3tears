@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "fail",
+      "reason": "The headline gives the instruction but no reason, and a decision headline needs both.",
+      "quote": "Keep September.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "fail",
+      "reason": "The lede is background about the page and says nothing on the supporting fact or on what would change the answer.",
+      "quote": "This page reports the second round of the persona campaign. The sections below hold the evidence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "fail",
+      "reason": "The scoped caveats code landed on Watch (the reasoning-ratio and model confounds, the two short runs) are never said: Watch defers to Method, which does not carry them.",
+      "quote": "Method lists what to keep in mind, qwen3.8-flash (A) first.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The examples section's headline claims most failures answer an off-topic question, but the example cards it draws are mostly machinery explanations and an off-lane reply that does brush off the question, and off-lane asks carry only about half the loss, so the chart does not show 'most'.",
+      "quote": "Most failures answer an off-topic question instead of brushing it off",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Above Full results the page uses the given arm names and reader words; run ids, hashes and the latency mode key appear only in Method.",
+      "quote": "Method lists what to keep in mind, qwen3.8-flash (A) first.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch names no margin and no confound; it only points to Method.",
+      "quote": "Method lists what to keep in mind, qwen3.8-flash (A) first.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Sentences are short and active with no hedges or jargon; the faults here are missing content, not style.",
+      "quote": "The sections below compare the candidates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "fail",
+      "reason": "The first screen gives only the instruction; the reason and the main risk are pushed to the sections and Method.",
+      "quote": "The sections below compare the candidates.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete rerun (a candidate priced at or below September, same cases, off-lane asks oversampled) and states both decisive directions.",
+      "quote": "if it holds character within the margin, it replaces September; if not, September stays.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Each clause names the condition under which its caveat would matter (a misread judge, a different aspect or control favoring a candidate) and the judge clause says the deciding cost finding does not rest on it.",
+      "quote": "Material only if it misreads in-character replies; cost, the deciding finding, is measured and doesn't depend on it.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "The only figure in the first-screen prose is the off-lane loss share, which is a share of the candidates' loss as stated; the sections' figures match the input.",
+      "quote": "since they carry about 50% of each candidate's loss",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:25Z"
+}

@@ -28,7 +28,7 @@ reader judges. Data age is no signal: a run whose measurement context is unchang
 and arms measured minutes, hours or days apart are one experiment while nothing that decides their result changed.
 Each aspect keeps the time it was asked, so adopting it into a later campaign never re-dates it.
 
-**Code reports, the writer recommends, a person decides.**
+**Code reports, the analyst recommends, a person decides.**
 Code reads each aspect against the control: shown better, shown worse, no worse than the margin or unclear, on an
 interval. A model may
 write the recommendation over that evidence; neither decides. A floor (a typed clause, never words a parser reads)
@@ -58,10 +58,10 @@ recorded as witnessed rather than left to chance. See [the world model](evaluati
 
 **Code checks facts, a judge assesses judgment, and people check the judge; the three never swap.**
 Code never grades a model's prose: a deterministic gate over free text never converges, because each
-generation finds a phrasing it does not parse. The verdict and every count on a report are code's, a recommendation
-names the findings it rests on, and code reads no word of a finding's title: a title stating a null its evidence did not
-establish is the prompt's rule to prevent
-([Having a model write the analysis](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
+generation finds a phrasing it does not parse. The verdict and every count on a report are code's, every number in
+its prose is a figure key code resolves, and code judges no sentence: whether a claim overstates its evidence is the
+editor's to catch
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 A judge never grades a count or order code can check, and a prompt never coaches toward a grader's words, which
 measures obedience.
 
@@ -119,20 +119,42 @@ Spend is recorded per role: the candidate's calls and the work they start are wh
 judging, simulation and spend outside any run are measurement ([cost and budgets](cost-and-budgets.md)). A
 total over several roles says which.
 
+**The engine counts; the host prices.**
+The engine cannot know what a host pays: a negotiated rate, its own key on a router, a subscription, a local model.
+So it reports what each call used (tokens, the model asked for and the model that answered) and asks the host's
+pricer for the money: the rates it is billed before a call, from which the engine computes the call's bound, and the
+price of the usage after it. The pricer the package ships, published first-party rates and then a router's
+catalogue, is a default for standalone and development use, which a host replaces. A report still shows cost against
+quality, in the host's prices, and says so where a call went unpriced: unknown cost is `None`, never `$0`.
+
 ### Reports
 
-**Code states the facts, the model interprets, and an eval grades the interpretation.**
-The writer cites figures as references that code resolves against the frozen bundle, and confidence is a
-closed tier, so no field can hold a model's probability. No check reads the prose itself, so a figure typed
-into a sentence still passes: this rule is kept for references, not for every number. The schema
-checks structure and nothing else ([what the schema checks](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
-Whether the prose is accurate and useful is measured by evaluating the analysis writer as a subject. "We
-could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
+**Code computes and verifies; the analyst chooses the story; an editor reviews it.**
+A report is written by an analyst model that investigates the campaign through tools over a frozen snapshot, and it
+decides what the story is, what leads and what is left out. Code never chooses structure, emphasis or framing, and no
+code path branches on what kind of eval it is: an eval nobody anticipated is shown with the same tools, and a table
+and prose are always available. What code does hold is mechanical: every number is a figure key it resolves, every
+block draws, every caveat that bears on the call is shown, the confidence form fits the caveats left open, and no
+internal id reaches the reader above the appendix
+([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)). Whether the story is
+sound is judged, not checked: an editor in a fresh context reviews the page before it is stored, and acceptance campaigns
+are re-run whenever the skill changes. Grading the analyst as a subject of its own eval is open
+([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)). "We could not answer this, because X, and fixing X costs Y" is a legitimate bottom
+line.
+
+**Confidence rests on the method and the variance, never on the result alone.**
+A report's confidence is one of three closed forms, so no field holds a probability a model made up: high; high if
+the caveats below aren't material, each open caveat with what would make it matter; or low. Its basis is the method
+and the variance of the evidence: the design, criteria set after the results, the judge's standing, confounds, how
+well the evidence separates the arms. A striking result on weak evidence is still low; a pick nothing separates is the
+usual low. A lead's risk of reading the wrong way is stated beside the lead, and does not lower the form by itself.
 
 **The first screen carries the result and every fact that changes how it reads; the rest is one step down.**
-A broken floor, then the title, the declared question quoted whole, the arms and the design, the verdict and the
-scoreboard come first; contrasts follow as one table, and cases, trials, what was not tested, the methods and the
-glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
+On the analyst's page: the headline and lede, a flag for what a reader must know first, the confidence with its open
+caveats, the decision and the options table, with every arm's cost and its price source; the claims follow, and the full
+results, what was left out and why, and the method sit in the appendix. On the code-only page: a broken floor, then
+the title, the declared question quoted whole, the arms and the design, the verdict and the scoreboard; contrasts
+follow as one table, and cases, trials, what was not tested, the methods and the glossary start folded. A figure is stated in the reader's terms (a rate as a percent, its change in points) with its
 interval beside it, and the only picture besides the outcome bar is each interval drawn in the row that states it
 ([the page](reading-reports.md#the-report-one-page-result-first)).
 
@@ -183,8 +205,17 @@ of it (its launch's history pricer included) and an offer of one, a second judge
 past `EXPORT_PAGE_RESULTS` pass over the run once for its results' keys, then read its results by id a page at a
 time (`threetears.evals.kernel.run_pages`, `RUN_RESULTS_PAGE`): one page of results and one small key per result. The
 pass is over the scope's result rows the store filters by run, made once a walk rather than once a page, plus one
-read by key a page. `tests/test_run_reads_paged.py` records every read each makes; nothing yet
-measures the run loop's own peak, and some readers still read a run whole (the CHANGELOG lists them).
+read by key a page. Every other reader of a whole run (a comparison of two runs, a run written lost, a result
+listing, a delete, a calibration, the judge passes) walks it the same way in the store's order,
+so its figures are the whole read's, and one that keeps every result keeps it without its verbatim fields
+(`world_events`, `kind_payload`). `tests/test_run_reads_paged.py` and `tests/test_whole_run_reads_paged.py` record
+every read each makes; nothing yet measures the run loop's own peak. A launch's planning block walks each earlier
+run of its template the same way, keeping of each result only its per-case values (`tests/test_power_preflight.py`
+measures its peak). A campaign's bundle, a regression watch's judged tiers, the read tier's aggregates (`pivot`, `history`, `frontier`,
+`comparison_sets`, and the spend lenses' grouped figures) and an export's reads (but for a run too large for one page, read by id a page at a time) still read many runs' results
+in one read each, without their verbatim fields, which none of them reads (`tests/test_bundle_read_leaves_out_verbatim_fields.py` measures the
+bundle's peak); each is refused past its measured read budget (`threetears.evals.analysis.reads`) by its runs'
+matrices before any is read.
 
 ## Rationale
 
@@ -368,14 +399,14 @@ no recommendation), several with no control a **choice** (every pair read both w
 margin or a relative floor
 needs a control, so a campaign naming none is refused one and held to absolute bars. Each candidate's aspects are one
 Holm family, gains and drops apart, read on the same bounded interval a floor reads, so a one-aspect campaign's floor
-and reading cannot disagree; there is no correction across candidates, and the page says so. One memo is written
-over the whole campaign, its one recommendation answering every warning its arm raises with a why, and a person's
+and reading cannot disagree; there is no correction across candidates, and the page says so. One report is written
+over the whole campaign, its call weighed against every warning its arms raise, and a person's
 call (`campaign_record`) is recorded against code's readings, refused while it leaves a broken floor or missed bar of
 its arm unnamed.
 
 **Rejected.** A separate decision object beside the campaign (a second thing to keep in step with the first); a
 floor that blocks adoption (it would decide on evidence that at a few cases is mostly unclear, and hide the
-tradeoff the reader is there to weigh); one memo per aspect (the writer could not weigh one aspect against
+tradeoff the reader is there to weigh); one report per aspect (the writer could not weigh one aspect against
 another); one Holm family over every candidate (a candidate's evidence would weaken as unrelated arms joined);
 a call that may skip a warning (the override would leave no record of what it overrode).
 
@@ -442,46 +473,45 @@ production path, and a decision logged where nothing ingested it.
   but its coverage check was deleted, because rubric dimensions and goal checks mint measure names no
   registry enumerates, so the check called every honest name "uncovered".
 
-### The analysis: from gated prose to an evaluated document
+### The report: from gated prose to an analyst
 
 **Prose gates did not converge.** A deterministic gate checking the numbers in the
 [analysis](concepts.md#analysis)'s sentences grew to 4,099 lines in 33 days and was deleted, because every real
 generation found a claim shape it could not parse. The writer's prompt grew 12× in 23 days, mostly defence
 against past incidents, and a test asserting prompt text passed while the writer did what the text forbade.
 
-**Code renders the numbers.** The writer is asked to cite every figure as a reference,
-`{{c1|<measure>|<reading>|<stat>}}`, and code substitutes the value from the decision surface
-(`analysis/prose_refs.py`). A reference that does not resolve is refused, with one repair round naming
-what exists; the words around it are never read, so a figure typed into a sentence passes unchecked. The grammar
-is appended from the parser's constants, because a copy in a stored prompt went stale.
+**Code renders the numbers.** The writer cites every figure by a key, and code substitutes the value from the
+frozen evidence. A key that does not resolve is refused, naming what exists. This one rule survived every version of
+the writer, and in the report document it is complete: a digit typed outside a key is refused too.
 
-**Typed shape, freeform content** (2026-09-25). A strict schema derived from the stored analysis was
-refused by some providers as a grammar too large. The authored document (`kernel/authored.py`) types
-only its parts (findings, decisions, question answers, next steps), their order, links by position and
-the readings code fills, under a measured slot budget; everything said is prose. The evidence tier is read
-off the readings a finding names, never chosen by the writer.
-
-**The writer is graded by its own eval.** The reporter is a candidate kind (`analysis/reporter_kind.py`):
-a case is a frozen campaign bundle, and the judge reads what the writer read and the memo as written. Code
-checks the structure of model output and never its prose; a judge never grades a fact code can check.
-
-**The first screen is code's, not the memo's** (2026-10). A headline said halving a token budget "does not change"
+**The first screen was code's, not the memo's** (2026-10). A headline said halving a token budget "does not change"
 latency, cost or delivery, over a contrast that did not separate at five cases; another memo headlined "keep the
 current model — adopted" over a run whose judge had been cut off at its output cap on ten of the challenger's twelve
-trials, while the word "truncated" appeared nowhere a reader would look. Most of what a reader needs is countable, so
-the report's first screen — the basis, the verdict and each arm's census of passed, failed and lost trials, by cause
-— is written by code from the bundle, and the memo authors findings and recommendations only, each recommendation
-pinned to its findings and each finding to its trials. (The campaign page later gave the writer one sentence on its
-first screen, the summary across the aspects, below every warning code raised; see below.) The null rule moved onto
-finding titles, where a phrase list once refused a title saying arms are alike over no established null. Code reads
-no prose now (owner, 2026-10-24: "Bad judgment is fixed by improved prompts and/or oversight and calibration, not by
-code"): the rule is the prompt's, and a host's reporter eval can measure it on the rubric dimensions it declares.
+trials, while the word "truncated" appeared nowhere a reader would look. So the census, the verdict and every count
+moved to code, and the memo authored findings and a recommendation only. That is still the code-only page's shape.
 
-**The memo's summary opens the campaign's page, after code's warnings** (2026-10, #864). The owner asked for a
-holistic summary first, then the recommendation, then the aspects. A measurement's memo and a no-clear-winner
-choice's held no prose reading across the aspects at all, so every kind's memo carries one `summary`, held to the
-reference rules a finding's body is, and the page reads warnings, question, summary, recommendation, then
-code's readings by aspect. The verdict, the readings and every number stay code's.
+**A planner from a fixed vocabulary still overfit** (2026-10). The next writer planned the page: code classified the
+campaign into a shape, fixed the first chart (the spine) and the modes it allowed, and one model call filled the
+sections. Each campaign nobody had anticipated needed a new shape, spine or rule, and each rule was a branch on what
+kind of eval it was.
+
+**An analyst with tools, over evidence that holds still** (2026-10-26). A report is now written as an expert writes
+one: the analyst investigates (where a call flips, where a loss sits, which options dominate, what the failures look
+like), outlines, drafts and checks its own page. The old rule that the writer reads a closed bundle and fetches
+nothing existed so that two writers could be compared on the same evidence; a frozen, content-addressed snapshot
+keeps that guarantee while allowing tools, because every tool is a function of the snapshot alone. Code verifies
+only what is mechanical (keys, blocks, caveat coverage, the confidence form, no internal ids, the appendix), and
+sends a failing draft back with remedies rather than repairing it. Judgment is reviewed, not checked: an editor in a
+fresh context reads the page as a reader would, scores a fixed rubric, and code adds the scores and decides the pass.
+"Bad judgment is fixed by improved prompts and/or oversight and calibration, not by code" (owner, 2026-10-24). The
+guidance lives in a skill of principles, story forms, chart and statistics notes and worked reasoning notes, rewritten
+from lookups into judgment, and the reasoning notes carry the most: a finished page shows what good looks like, a
+note shows how it was reached.
+
+**The writer is graded by its own eval.** The reporter is a candidate kind: a case is a frozen campaign, and the
+judge reads what the writer read and what it wrote. Its cases still judge memos and planned reports; the analyst's
+report has the editor's rubric instead, whose thresholds stay starting points until stored reports scored against
+people's labels set them.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
@@ -566,7 +596,7 @@ Most of what follows is established practice; what the engine adds is narrower
 | [Mitchell et al., Model Cards](https://arxiv.org/abs/1810.03993) (2019) | Use fixed sections that end in caveats, and report results disaggregated by subgroup. | Adapted | A caveat attaches to the finding it qualifies, not to a closing section. [Strata](reading-reports.md#results-by-kind-of-case-strata) give the disaggregation. |
 | [HELM, Liang et al.](https://arxiv.org/abs/2211.09110) (2022) | Never report a single number: measure many metrics, expose trade-offs, and name what is not covered. | Adopted | Reports give a frontier and bars, never an unqualified winner, and disclosures name what was not measured. |
 | [van der Bles et al.](https://doi.org/10.1098/rsos.181870) (2019) | Keep direct uncertainty (the range) apart from indirect uncertainty (the quality of the evidence). | Adopted | Intervals and [evidence tiers](concepts.md#evidence-tier) render as separate axes. |
-| [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. Confidence is a closed tier, so no field can carry a probability a model made up; nothing calibrates one. |
+| [Padilla et al.](https://doi.org/10.3389/fpsyg.2020.579267) (2021) | Show verbal confidence alongside quantified uncertainty, never instead of it. | Adapted | Tier words sit beside n and intervals. A report's confidence is one of three closed forms, conditional on its open caveats, so no field can carry a probability a model made up; nothing calibrates one. |
 | [Frans et al.](https://pmc.ncbi.nlm.nih.gov/articles/PMC10623599/) (2023) | Quantile dot plots were read more accurately than error bars, with no clear effect on decision quality. | Not adopted | An interval is drawn as a small glyph in the table row that states its figure, so rows compare at a glance, with every value also written as text. Quantile dot plots are not built. |
 | [NeurIPS paper checklist](https://neurips.cc/Conferences/2022/PaperInformation/PaperChecklist), statistical significance item | Put error bars on main claims, say what variability they capture, and draw no impossible bounds. | Adopted | Intervals are computed over cases, never repeats; each column's header states its level (`Interval (99%)`), and intervals are clipped to the measure's scale. |
 | [GRADE](https://book.gradepro.org/guideline/overview-of-the-grade-approach) | Rate certainty high, moderate, low or very low, downgrading for bias, imprecision and inconsistency. | Adapted | Evidence tiers are GRADE-like, but they grade the judge (`calibrated`, `separation`, `incidental`, `undetermined`), and code assigns them. |
@@ -588,8 +618,9 @@ The principle behind each is in [principles](#principles).
 - **The denominator is part of the number:** a run short of its promised trials says so on every surface.
 - **Evidence tiers instead of "calibrate first":** every judged reading carries the tier its judge's measured
   agreement reached, so judged scores stay usable while their standing stays visible.
-- **Code renders every number in a written analysis, and an eval grades its prose**
-  ([reading reports](reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence)).
+- **A model writes the report, and code renders every number in it:** an analyst investigates frozen evidence
+  with tools, code verifies the draft mechanically, and an editor reviews it before it is stored
+  ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)).
 - **"Best" is never unqualified:** a quality–cost–latency frontier plus bars (satisficing thresholds); the
   cheapest contestant above the bar is named only when a test shows it cheaper than each other one, otherwise
   the set the data cannot order (`cost_decision`, `tied_with`).

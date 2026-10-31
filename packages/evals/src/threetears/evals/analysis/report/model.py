@@ -1,7 +1,7 @@
 """The ``Report`` — the one page every door into a campaign's report renders, and the evidence it was computed from.
 
-**One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — the
-campaign's name —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
+**One page, result first.** A report is an ordered list of blocks in its sections: the first screen (the title — what the
+campaign compares, its name a qualifier —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
 it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
 means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
@@ -43,7 +43,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.hashing import round_floats
 from threetears.evals.analysis.report.blocks import (
     FINDING_ROLES,
@@ -84,6 +84,8 @@ from threetears.evals.analysis.report.blocks import (
     reading_anchor,
     table_row,
 )
+from threetears.evals.analysis.report.doc_page.model import DocPage
+from threetears.evals.analysis.report.plan_page.model import PlannedPage
 from threetears.evals.analysis.report.serialize_html import campaign_report_html, report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 
@@ -131,8 +133,8 @@ class Report(EvalDocumentModel):
     title: str = Field(
         min_length=1,
         description=(
-            "The title line, a name: the campaign's, with what it compares where no question was declared "
-            "(`invoices: does v2 do better than v1?`)."
+            "The title line: what the campaign compares and on what, with its name as a qualifier, built by code "
+            "(`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict."
         ),
     )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
@@ -256,9 +258,11 @@ class Report(EvalDocumentModel):
     def write(self, out_dir: Path | str) -> dict[ReportFile, Path]:
         """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
 
-        ``report.html`` needs nothing beside it — no script, no stylesheet, no image — and ``bundle.json`` is the
-        bundle with its ``schema_version``, so the fingerprint the page names is the one a reader computes from the
-        file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
+        ``report.html`` needs nothing beside it — no script file, no stylesheet file, no image; its one script, the kit's
+        chart drawing, is inlined in it; it loads the kit's fonts
+        from Google Fonts where it can reach them and reads the same in the system's faces where it cannot — and
+        ``bundle.json`` is the bundle with its ``schema_version``, so the fingerprint the page names is the one a reader
+        computes from the file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
         unprefixed one was taken before ``v2:``). ``report.md`` is the same page as Markdown.
 
         :param out_dir: The directory; created when missing.
@@ -344,10 +348,22 @@ class CampaignReport(EvalDocumentModel):
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
     nothing else, and a code-only campaign page (no memo) holds none.
+
+    **A planned analysis's page** holds no blocks: its :attr:`plan_page` is the page its report plan draws, which the
+    serializers write in place of the first screen and headed sections, the folds a closed appendix after its
+    Method.
+
+    **A report document's page** holds no blocks either: its :attr:`doc_page` is the page its stored report document
+    draws on its own snapshot, which the serializers write whole in place of the campaign's page (the document's own
+    appendix holds every table), and its :attr:`report_doc` is the stored document the JSON form carries. The folds
+    stay, as the JSON form's readings and bundles, and with :attr:`doc_trials` as the document's evidence record.
     """
 
     basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
-    title: str = Field(min_length=1, description="The title line: the campaign's name.")
+    title: str = Field(
+        min_length=1,
+        description="The title line: what the campaign compares and on what, with its name as a qualifier.",
+    )
     campaign_id: str = Field(min_length=1, description="The campaign.")
     campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
     scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
@@ -362,7 +378,11 @@ class CampaignReport(EvalDocumentModel):
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
     recommendation: Recommendation | None = Field(
-        default=None, description="The writer's recommendation, as the memo holds it; None with no memo."
+        default=None,
+        description=(
+            "The writer's recommendation, as the memo holds it; None with no memo. A report document's page carries "
+            "none here: the arms its document recommends are `report_doc.doc.recommends`."
+        ),
     )
     recommended_variant_key: str | None = Field(
         default=None,
@@ -371,6 +391,56 @@ class CampaignReport(EvalDocumentModel):
             "The variant key of the arm the recommendation names, as the analysis recorded it when it was saved "
             "(`EvalAnalysis.recommended_variant_key`): what a reader matches a call's `variant_key` to, whatever "
             "later relabels the arm. Set exactly when the page holds a recommendation."
+        ),
+    )
+    plan_page: PlannedPage | None = Field(
+        default=None,
+        description=(
+            "The page a planned analysis's report plan draws, in GENERATOR §2 order, which the serializers write in "
+            "place of the blocks (the aspects' folds a closed appendix after its Method); None for a memo or a "
+            "code-only page. Set only on an analysis's page, and then with no blocks of its own."
+        ),
+    )
+    doc_page: DocPage | None = Field(
+        default=None,
+        description=(
+            "The page a stored report document draws on its own snapshot, read as a stored document is (degrading, "
+            "never refusing), which the serializers write whole in place of the blocks; None for any other page. Set "
+            "only on an analysis's page, with no blocks of its own, and exactly when `report_doc` is."
+        ),
+    )
+    report_doc: VerbatimJsonObject | None = Field(
+        default=None,
+        description=(
+            "The stored report document the page draws, as the JSON form carries it: its `id`, `snapshot_id`, "
+            "`created_at`, `ending`, `doc` (`report-doc/1`), `findings`, `made` (the page's made line) and "
+            "`generation` (the generation record: each session by digest, turns and ref, never a transcript); None "
+            "for any other page."
+        ),
+    )
+    unread_analysis_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The campaign's analysis this version no longer reads, which this code-only page stands in for, its first "
+            "screen saying so in the one regenerate line; None for any other page. Set only on a code-only page."
+        ),
+    )
+    needs_regeneration: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "On a code-only page standing in for an analysis or a report document this version no longer reads: the "
+            "one regenerate line, then why in parentheses; None for any other page, so a stand-in's JSON never reads "
+            "as a campaign that was never analysed. Set only on a code-only page."
+        ),
+    )
+    doc_trials: bool = Field(
+        default=False,
+        description=(
+            "On a report document's page, whether the campaign's folds (each aspect's page, every failed or lost "
+            "trial's record in it, as the code-only page draws them with trials='all') follow the document as its "
+            "evidence record; False lays out the document alone."
         ),
     )
 
@@ -385,6 +455,49 @@ class CampaignReport(EvalDocumentModel):
                 "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
                 "holds a recommendation"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_planned_page_is_an_analysiss_and_holds_no_blocks(self) -> Self:
+        """Refuse a planned page on a code-only page, or beside blocks of the page's own: the plan's page is the whole
+        of what the page says above its folds.
+
+        :raises ValueError: ``plan_page`` is set and ``basis`` is not ``analysis``, or ``blocks`` is not empty.
+        """
+        if self.plan_page is None:
+            return self
+        if self.basis != "analysis":
+            raise ValueError(f"a planned page lays out an analysis, and this page's basis is {self.basis}")
+        if self.blocks:
+            raise ValueError(
+                f"a planned page is the page's whole first part, and this page holds {len(self.blocks)} blocks"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_document_page_is_an_analysiss_and_holds_no_blocks(self) -> Self:
+        """Refuse a report document's page on a code-only page, beside blocks or a planned page, or without the
+        document it draws; and an unread analysis named on any page but a code-only one.
+
+        :raises ValueError: ``doc_page`` is set and ``basis`` is not ``analysis``, ``blocks`` or ``plan_page`` is set
+            too, or ``report_doc`` is set without it or it without ``report_doc``; or ``unread_analysis_id`` is set and
+            ``basis`` is not ``code_only``.
+        """
+        if (self.unread_analysis_id is not None or self.needs_regeneration is not None) and self.basis != "code_only":
+            raise ValueError(
+                f"an analysis this version no longer reads is named on the code-only page standing in for it, and "
+                f"this page's basis is {self.basis}"
+            )
+        if self.doc_trials and self.doc_page is None:
+            raise ValueError("the folds follow a report document's page only, and this page draws none")
+        if (self.doc_page is None) != (self.report_doc is None):
+            raise ValueError("a report document's page carries the document it draws: set both or neither")
+        if self.doc_page is None:
+            return self
+        if self.basis != "analysis":
+            raise ValueError(f"a report document's page lays out an analysis, and this page's basis is {self.basis}")
+        if self.blocks or self.plan_page is not None:
+            raise ValueError("a report document's page is the page's whole first part, beside no blocks or plan")
         return self
 
     @model_validator(mode="after")
@@ -539,7 +652,11 @@ class CampaignReport(EvalDocumentModel):
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
         the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
         and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
-        and when (``late_criteria``, empty where none was), since its readings read the same either way.
+        and when (``late_criteria``, empty where none was), since its readings read the same either way; and
+        ``report_doc``, the stored report document a document's page draws (:attr:`report_doc`, never a session's
+        transcript; the arms it recommends are ``report_doc.doc.recommends``, ``recommendation`` being a memo's),
+        ``None`` on every other page; and ``needs_regeneration``, the one regenerate line and why, on a code-only page
+        standing in for an analysis or a document this version no longer reads, ``None`` on every other.
 
         Every float in it is served to twelve significant figures (:func:`~threetears.evals.schema.hashing.round_floats`):
         a figure code computed carries bits past that which two Python builds compute differently, so one campaign
@@ -575,6 +692,8 @@ class CampaignReport(EvalDocumentModel):
                 }
                 for fold in self.aspects
             ],
+            "report_doc": self.report_doc,
+            "needs_regeneration": self.needs_regeneration,
         }
         served: dict[str, object] = round_floats(document)
         return served

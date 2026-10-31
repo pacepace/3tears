@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with its reason, matching the recommended row; Brisk-S low reasoning with one retry is the only arm at or above 97% with p95 under 600 ms, and the gate scatter emphasises it.",
+      "quote": "Use Brisk-S · reasoning low · 1 retry (J). It is the only configuration that passes both the pass-rate gate and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the pick's pass rate, p95 and cost, then the change (a looser latency budget) that would admit a more accurate configuration.",
+      "quote": "A looser latency budget would let the more accurate Atlas-M · reasoning high · 1 retry (F) in, at several times the cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No caveats or flag; the one-point interval appears beside the margin it qualifies and in Method's interval entry, which is a definition.",
+      "quote": "inside the interval of about one point at this sample size.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The failure section's headline says the remaining failures are collapsed hops and date windows, but its example cards for the pick include a disambiguation failure (wrong tool), and those two kinds are under half of its failures.",
+      "quote": "The remaining failures are collapsed hops and off-by-one date windows",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Configurations, tasks and measures appear by reader names above Full results; no case ids or keys show outside the example cards.",
+      "quote": "Only Brisk-S · reasoning low · 1 retry (J) lands inside both gates",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin (0.1 points over the pass-rate gate, inside the one-point interval) and then the largest remaining failure.",
+      "quote": "The weakest margin: Brisk-S · reasoning low · 1 retry (J) clears the 97% pass-rate gate at 97.1%, by 0.1 points, inside the interval of about one point at this sample size.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Short active sentences with no hedges; cost keeps one name (per 1,000 replies, defined in Method as planner calls).",
+      "quote": "It passes 97.1% of tasks with a p95 latency of 513 ms, inside the 600 ms budget, at $0.30 per 1,000 replies.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede and decision slots above the options table say what to use, why, and the main risk (the 0.1-point margin).",
+      "quote": "It is the only configuration that passes both the pass-rate gate and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete rerun on a larger multi-hop and date-math sample and states the result that would change the call.",
+      "quote": "if its pass rate drops below the gate there, the answer becomes Brisk-S · reasoning high · 1 retry (L) with a looser latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high with no clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Figures match their claims: 97.1%, 513 ms, $0.30, 98.6% and 2,551 ms are the named arms' own, the 0.1-point margin is 97.14 minus 97, and the retry's two points match 95.27 to 97.14.",
+      "quote": "The retry is the cheapest lever in the sweep: it adds about two points of pass rate for little extra cost.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:25Z"
+}

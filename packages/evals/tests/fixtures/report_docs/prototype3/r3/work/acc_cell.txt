@@ -1,0 +1,227 @@
+measure figures
+measure: accuracy
+by: cell
+level: 95%
+held: [mean, half_width]
+not_shown: []
+slices (5):
+  - slice: simple.science; aspect: none
+    cells.simple.science.name = Simple × Science
+    cells.simple.science.n_cases = 3120
+  - slice: simple.conv; aspect: none
+    cells.simple.conv.name = Simple × Conversational
+    cells.simple.conv.n_cases = 14880
+  - slice: simple.news; aspect: none
+    cells.simple.news.name = Simple × News
+    cells.simple.news.n_cases = 4410
+  - slice: medium.science; aspect: none
+    cells.medium.science.name = Medium × Science
+    cells.medium.science.n_cases = 4260
+  - slice: medium.conv; aspect: none
+    cells.medium.conv.name = Medium × Conversational
+    cells.medium.conv.n_cases = 7350
+rows (40):
+  - aspect: none; slice: simple.science
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (2):
+      cells.simple.science.atlas-m.zero.accuracy.mean = 93.8%
+      cells.simple.science.atlas-m.zero.accuracy.half_width = 0.8%
+  - aspect: none; slice: simple.science
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (2):
+      cells.simple.science.atlas-m.few.accuracy.mean = 96.3%
+      cells.simple.science.atlas-m.few.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.science
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (2):
+      cells.simple.science.atlas-m.rubric.accuracy.mean = 97.5%
+      cells.simple.science.atlas-m.rubric.accuracy.half_width = 0.5%
+  - aspect: none; slice: simple.science
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (2):
+      cells.simple.science.brisk-s.zero.accuracy.mean = 90.1%
+      cells.simple.science.brisk-s.zero.accuracy.half_width = 1%
+  - aspect: none; slice: simple.science
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (2):
+      cells.simple.science.brisk-s.few.accuracy.mean = 95.1%
+      cells.simple.science.brisk-s.few.accuracy.half_width = 0.8%
+  - aspect: none; slice: simple.science
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (2):
+      cells.simple.science.brisk-s.rubric.accuracy.mean = 95.5%
+      cells.simple.science.brisk-s.rubric.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.science
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (2):
+      cells.simple.science.nano-xs.zero.accuracy.mean = 84.4%
+      cells.simple.science.nano-xs.zero.accuracy.half_width = 1.3%
+  - aspect: none; slice: simple.science
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (2):
+      cells.simple.science.nano-xs.few.accuracy.mean = 96.2%
+      cells.simple.science.nano-xs.few.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.science
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (2):
+      cells.simple.science.nano-xs.rubric.accuracy.mean = 89.5%
+      cells.simple.science.nano-xs.rubric.accuracy.half_width = 1.1%
+  - aspect: none; slice: simple.conv
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (2):
+      cells.simple.conv.atlas-m.zero.accuracy.mean = 95.8%
+      cells.simple.conv.atlas-m.zero.accuracy.half_width = 0.3%
+  - aspect: none; slice: simple.conv
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (2):
+      cells.simple.conv.atlas-m.few.accuracy.mean = 97.8%
+      cells.simple.conv.atlas-m.few.accuracy.half_width = 0.2%
+  - aspect: none; slice: simple.conv
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (2):
+      cells.simple.conv.atlas-m.rubric.accuracy.mean = 99.2%
+      cells.simple.conv.atlas-m.rubric.accuracy.half_width = 0.1%
+  - aspect: none; slice: simple.conv
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (2):
+      cells.simple.conv.brisk-s.zero.accuracy.mean = 92.1%
+      cells.simple.conv.brisk-s.zero.accuracy.half_width = 0.4%
+  - aspect: none; slice: simple.conv
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (2):
+      cells.simple.conv.brisk-s.few.accuracy.mean = 97.1%
+      cells.simple.conv.brisk-s.few.accuracy.half_width = 0.3%
+  - aspect: none; slice: simple.conv
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (2):
+      cells.simple.conv.brisk-s.rubric.accuracy.mean = 97.9%
+      cells.simple.conv.brisk-s.rubric.accuracy.half_width = 0.2%
+  - aspect: none; slice: simple.conv
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (2):
+      cells.simple.conv.nano-xs.zero.accuracy.mean = 86.4%
+      cells.simple.conv.nano-xs.zero.accuracy.half_width = 0.6%
+  - aspect: none; slice: simple.conv
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (2):
+      cells.simple.conv.nano-xs.few.accuracy.mean = 98.2%
+      cells.simple.conv.nano-xs.few.accuracy.half_width = 0.2%
+  - aspect: none; slice: simple.conv
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (2):
+      cells.simple.conv.nano-xs.rubric.accuracy.mean = 92.5%
+      cells.simple.conv.nano-xs.rubric.accuracy.half_width = 0.4%
+  - aspect: none; slice: simple.news
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (2):
+      cells.simple.news.atlas-m.zero.accuracy.mean = 93.1%
+      cells.simple.news.atlas-m.zero.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.news
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (2):
+      cells.simple.news.atlas-m.few.accuracy.mean = 94.9%
+      cells.simple.news.atlas-m.few.accuracy.half_width = 0.6%
+  - aspect: none; slice: simple.news
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (2):
+      cells.simple.news.atlas-m.rubric.accuracy.mean = 96.1%
+      cells.simple.news.atlas-m.rubric.accuracy.half_width = 0.6%
+  - aspect: none; slice: simple.news
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (2):
+      cells.simple.news.brisk-s.zero.accuracy.mean = 89.4%
+      cells.simple.news.brisk-s.zero.accuracy.half_width = 0.9%
+  - aspect: none; slice: simple.news
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (2):
+      cells.simple.news.brisk-s.few.accuracy.mean = 94%
+      cells.simple.news.brisk-s.few.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.news
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (2):
+      cells.simple.news.brisk-s.rubric.accuracy.mean = 94.5%
+      cells.simple.news.brisk-s.rubric.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.news
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (2):
+      cells.simple.news.nano-xs.zero.accuracy.mean = 82.4%
+      cells.simple.news.nano-xs.zero.accuracy.half_width = 1.1%
+  - aspect: none; slice: simple.news
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (2):
+      cells.simple.news.nano-xs.few.accuracy.mean = 94.5%
+      cells.simple.news.nano-xs.few.accuracy.half_width = 0.7%
+  - aspect: none; slice: simple.news
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (2):
+      cells.simple.news.nano-xs.rubric.accuracy.mean = 88.2%
+      cells.simple.news.nano-xs.rubric.accuracy.half_width = 1%
+  - aspect: none; slice: medium.science
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (2):
+      cells.medium.science.atlas-m.zero.accuracy.mean = 88.8%
+      cells.medium.science.atlas-m.zero.accuracy.half_width = 0.9%
+  - aspect: none; slice: medium.science
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (2):
+      cells.medium.science.atlas-m.few.accuracy.mean = 90.8%
+      cells.medium.science.atlas-m.few.accuracy.half_width = 0.9%
+  - aspect: none; slice: medium.science
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (2):
+      cells.medium.science.atlas-m.rubric.accuracy.mean = 92%
+      cells.medium.science.atlas-m.rubric.accuracy.half_width = 0.8%
+  - aspect: none; slice: medium.science
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (2):
+      cells.medium.science.brisk-s.zero.accuracy.mean = 85.1%
+      cells.medium.science.brisk-s.zero.accuracy.half_width = 1.1%
+  - aspect: none; slice: medium.science
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (2):
+      cells.medium.science.brisk-s.few.accuracy.mean = 89.9%
+      cells.medium.science.brisk-s.few.accuracy.half_width = 0.9%
+  - aspect: none; slice: medium.science
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (2):
+      cells.medium.science.brisk-s.rubric.accuracy.mean = 91%
+      cells.medium.science.brisk-s.rubric.accuracy.half_width = 0.9%
+  - aspect: none; slice: medium.science
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (2):
+      cells.medium.science.nano-xs.zero.accuracy.mean = 77.8%
+      cells.medium.science.nano-xs.zero.accuracy.half_width = 1.2%
+  - aspect: none; slice: medium.science
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (2):
+      cells.medium.science.nano-xs.few.accuracy.mean = 89.4%
+      cells.medium.science.nano-xs.few.accuracy.half_width = 0.9%
+  - aspect: none; slice: medium.science
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (2):
+      cells.medium.science.nano-xs.rubric.accuracy.mean = 83.6%
+      cells.medium.science.nano-xs.rubric.accuracy.half_width = 1.1%
+  - aspect: none; slice: medium.conv
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (2):
+      cells.medium.conv.atlas-m.zero.accuracy.mean = 90.8%
+      cells.medium.conv.atlas-m.zero.accuracy.half_width = 0.7%
+  - aspect: none; slice: medium.conv
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (2):
+      cells.medium.conv.atlas-m.few.accuracy.mean = 93.3%
+      cells.medium.conv.atlas-m.few.accuracy.half_width = 0.6%
+  - aspect: none; slice: medium.conv
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (2):
+      cells.medium.conv.atlas-m.rubric.accuracy.mean = 94.4%
+      cells.medium.conv.atlas-m.rubric.accuracy.half_width = 0.5%
+  - aspect: none; slice: medium.conv
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (2):
+      cells.medium.conv.brisk-s.zero.accuracy.mean = 87.2%
+      cells.medium.conv.brisk-s.zero.accuracy.half_width = 0.8%
+total: 81
+offset: 0
+next: action='measure_read', snapshot_id='report-snapshot:780eb5ac76107dd14521e9e7268f064c', measure_key='accuracy', by='cell', offset=40
+=====

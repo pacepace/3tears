@@ -1,4 +1,9 @@
-"""Seed default for the ``eval_analysis_gen`` prompt type.
+"""Seed default for the ``eval_analysis_gen`` prompt type, the memo writer's.
+
+**Retired as the default; kept for memo reporter cases.** A new analysis is written by the report planner
+(:mod:`threetears.evals.analysis.plan_prompt`), and no generation resolves this prompt. It stays registered because a
+memo reporter case (kind version 1) that generates a memo candidate still needs the writer's prompt, and old memos
+are still read. It will be removed in a future minor release.
 
 The system prompt that steers the analysis generator
 (:func:`threetears.evals.analysis.generator.generate_analysis`) when it turns a campaign's

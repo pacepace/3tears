@@ -39,10 +39,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.agreement import JudgeAgreement, judge_agreement
 from threetears.evals.analysis.reporter_kind import (
     LABEL_BANDS,
+    MEMO_CASE_VERSION,
+    WRITER_MESSAGE_DIFFERS,
     LabelCriterion,
     LabelDirection,
     LabelVerdict,
     ReporterCase,
+    ReporterKindVersion,
     ReporterLabel,
     WriterMessageCheck,
     message_check,
@@ -62,6 +65,7 @@ def case_limits(
     recorded_fingerprint: str | None = None,
     writer_message: str | None = None,
     recorded_message_digest: str | None = None,
+    kind_version: ReporterKindVersion = MEMO_CASE_VERSION,
 ) -> list[str]:
     """State, as sentences, what a judgement grounded on this bundle cannot reach.
 
@@ -80,6 +84,8 @@ def case_limits(
       something other than what the memo's generation recorded sending, over the same bundle, so
       the way bundles are rendered changed in between. Stated only when the bundle reproduces:
       when it does not, the message differs as a consequence and the sentence above already says so.
+      The sentence is the one :data:`WRITER_MESSAGE_DIFFERS` holds for what the case judges: a plan
+      case's speaks of the planner and the report input it was shown, not of a memo's writer.
     - **an arm whose levels are unavailable** — its variant was keyed by a predicate this build
       cannot reproduce, so the bundle shows it measured and pooled but cannot say what it RAN. A
       memo's claim naming that arm's configuration cannot be checked against this case.
@@ -99,6 +105,9 @@ def case_limits(
     :param recorded_message_digest: The pinned memo's ``generation.user_message_digest``, or ``None``
         when the case pins no memo.
     :ptype recorded_message_digest: str | None
+    :param kind_version: What the case judges: a memo (``MEMO_CASE_VERSION``) or a report plan
+        (``PLAN_CASE_VERSION``), whose sentence on a message that differs is its own.
+    :ptype kind_version: ReporterKindVersion
     :return: The limits — the reproduction or rendering sentence first, then per arm in
         ``variant_index`` order; empty when the bundle and its rendering reproduce and every
         variant is described and has a cell.
@@ -120,13 +129,7 @@ def case_limits(
         and recorded_message_digest is not None
         and message_check(writer_message, recorded_message_digest) == "differs"
     ):
-        limits.append(
-            f"The bundle reproduces the one the recorded memo was written from, but the writer message frozen here "
-            f"is not the one its generator was sent (recorded digest {recorded_message_digest}): how a bundle is "
-            "rendered changed between the generation and this freeze. The memo is judged against a message its "
-            "writer did not read, so a claim resting on something only the older rendering showed scores as "
-            "ungrounded here."
-        )
+        limits.append(WRITER_MESSAGE_DIFFERS[kind_version].format(recorded=recorded_message_digest))
     index = list({entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}.values())
     if not index:
         limits.append(
@@ -384,6 +387,18 @@ class FrozenReporterCase(BaseModel):
     archived_reason: str | None = Field(
         description="Why it was retired, in the operator's words — None when it is live, or was retired without one."
     )
+    kind_version: ReporterKindVersion = Field(
+        description=(
+            "What the case judges: 1, a memo (the memo writer's); 2, a report plan (the planner's), its figure keys "
+            "written out against the report input the case froze. Cases of the two are calibrated apart."
+        )
+    )
+    report_input_digest: str | None = Field(
+        description="A plan case's frozen report input digest, which its figure keys resolve against; None on a memo case."
+    )
+    planner_prompt_version: str | None = Field(
+        description="The prompt version the recorded plan's planner ran; None on a memo case."
+    )
 
 
 def frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase:
@@ -418,6 +433,9 @@ def frozen_case_receipt(test_case: EvalTestCase) -> FrozenReporterCase:
         writer_message_check=writer_message_check(case),
         archived=test_case.archived,
         archived_reason=test_case.archived_reason,
+        kind_version=case.kind_version,
+        report_input_digest=case.report_input_digest,
+        planner_prompt_version=case.planner_prompt_version,
     )
 
 
@@ -574,6 +592,38 @@ class CalibrationCase(BaseModel):
         default_factory=list,
         description="One entry per stored result of this case, ordered by (model, repeat). Empty when none was stored.",
     )
+    kind_version: ReporterKindVersion = Field(
+        description="What the case judges: 1, a memo; 2, a report plan. Its cells are read only beside cases of the same."
+    )
+    prompt_version: str | None = Field(
+        description="The prompt version the case's recorded output was written under, where the case froze one: a plan "
+        "case's planner prompt version; None on a memo case."
+    )
+
+
+class CalibrationGroup(BaseModel):
+    """The cases of one run that one calibration reads together: one reporter kind version, one recorded prompt.
+
+    A memo and a plan are different subjects scored on rubrics written for each, and two prompts are two writers, so
+    agreement is read within a group and never pooled across groups.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind_version: ReporterKindVersion = Field(description="What the group's cases judge: 1, a memo; 2, a report plan.")
+    prompt_version: str | None = Field(
+        description="The prompt version the group's recorded outputs were written under; None for memo cases, which "
+        "froze none."
+    )
+    template_digest: str | None = Field(
+        description="What the run's template measured at launch (its rubric among it, ``EvalRun.template_digest``), the "
+        "same for every group of one run; None when the run recorded none."
+    )
+    test_case_ids: list[str] = Field(description="The group's cases, in run order.")
+    rating_agreement: JudgeAgreement = Field(
+        default_factory=JudgeAgreement,
+        description="People's calibration ratings of the group's results read against them, as the run-wide read does.",
+    )
 
 
 class ReporterCalibration(BaseModel):
@@ -608,13 +658,21 @@ class ReporterCalibration(BaseModel):
             "cannot be read, so the calibration covers fewer cases than the run measured."
         ),
     )
-    rating_agreement: JudgeAgreement = Field(
+    rating_agreement: JudgeAgreement | None = Field(
         default_factory=JudgeAgreement,
         description=(
             "The run's results read against people's calibration ratings of them, per dimension and judge — the "
             "same read the bundle's `judge_agreement` makes. A label places a memo in a band (a direction) or passes "
             "or fails it (a verdict) and a rating gives it a score, so the two are read side by side rather than "
-            "pooled: labels in `cases`, ratings here."
+            "pooled: labels in `cases`, ratings here. None when the run's cases fall in more than one group: "
+            "agreement is never pooled across reporter kind versions or prompts, so each group's is in `groups`."
+        ),
+    )
+    groups: list[CalibrationGroup] = Field(
+        default_factory=list,
+        description=(
+            "The run's cases by reporter kind version and recorded prompt version, each with its own rating "
+            "agreement, in order of each group's first case."
         ),
     )
 
@@ -663,8 +721,13 @@ def read_calibration(
     effective_judges: Mapping[str, str] | None,
     ratings: Sequence[CalibrationRating],
     missing_case_ids: Sequence[str] = (),
+    template_digest: str | None = None,
 ) -> ReporterCalibration:
     """Set every labelled dimension's judge score beside its label, per case and per result.
+
+    **Grouped, never pooled.** Cases are grouped by their reporter kind version (a memo or a plan) and the prompt
+    version their recorded output was written under, and people's ratings are read against each group's results
+    alone. The run-wide ``rating_agreement`` is read only when the run holds one group.
 
     :param run_id: The run.
     :ptype run_id: str
@@ -699,6 +762,9 @@ def read_calibration(
     :ptype ratings: Sequence[CalibrationRating]
     :param missing_case_ids: Cases the run froze that did not load, carried through for disclosure.
     :ptype missing_case_ids: Sequence[str]
+    :param template_digest: What the run's template measured at launch (``EvalRun.template_digest``), carried onto
+        each group.
+    :ptype template_digest: str | None
     :return: The calibration read.
     :rtype: ReporterCalibration
     """
@@ -763,6 +829,27 @@ def read_calibration(
                 archived_reason=archived.get(test_case_id),
                 writer_message_check=writer_message_check(case),
                 cells=cells,
+                kind_version=case.kind_version,
+                prompt_version=case.planner_prompt_version,
+            )
+        )
+    grouped: dict[tuple[ReporterKindVersion, str | None], list[str]] = {}
+    for read in read_cases:
+        grouped.setdefault((read.kind_version, read.prompt_version), []).append(read.test_case_id)
+    groups = []
+    for (kind_version, prompt_version), case_ids in grouped.items():
+        members = set(case_ids)
+        group_results = [result for result in results if result.test_case_id in members]
+        rated = {result.id for result in group_results}
+        groups.append(
+            CalibrationGroup(
+                kind_version=kind_version,
+                prompt_version=prompt_version,
+                template_digest=template_digest,
+                test_case_ids=case_ids,
+                rating_agreement=judge_agreement(
+                    [rating for rating in ratings if rating.result_id in rated], group_results
+                ),
             )
         )
     return ReporterCalibration(
@@ -774,7 +861,8 @@ def read_calibration(
         effective_judges=None if effective_judges is None else dict(effective_judges),
         cases=read_cases,
         missing_case_ids=list(missing_case_ids),
-        rating_agreement=judge_agreement(ratings, results),
+        rating_agreement=judge_agreement(ratings, results) if len(groups) <= 1 else None,
+        groups=groups,
     )
 
 
@@ -804,6 +892,7 @@ __all__ = [
     "AmbiguousPair",
     "CalibrationCase",
     "CalibrationCell",
+    "CalibrationGroup",
     "CriterionDrift",
     "DimensionReading",
     "FrozenReporterCase",

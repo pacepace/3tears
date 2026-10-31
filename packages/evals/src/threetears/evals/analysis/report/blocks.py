@@ -12,13 +12,29 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
-from typing import Annotated, Literal, Self, get_args
+from collections.abc import Callable, Mapping, Sequence
+from typing import Annotated, Any, Literal, Self, get_args
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement, TrialState
-from threetears.evals.analysis.quantities import PERCENT, number_in, render_cell, unit_label, with_unit
+from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, render_cell, unit_label, with_unit
+from threetears.evals.analysis.report.charts import (
+    KIT_CHARTS,
+    BarRow,
+    BarSegment,
+    BarsChart,
+    ChartPattern,
+    ChartStatus,
+    KitChart,
+    LegendItem,
+    ScatterChart,
+    ScatterPoint,
+    Token,
+)
+from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
+from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
+from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
@@ -486,6 +502,53 @@ class TableCell(EvalDocumentModel):
             "serializer prints it after the value, in parentheses. None for none."
         ),
     )
+    decimals: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
+            "column holds; None for none, and the number rule spells the number."
+        ),
+    )
+    per_thousand: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="For a money number with `decimals`, whether its column reads per 1,000 (`$8.00/1000`).",
+    )
+    status: ChartStatus | None = Field(
+        default=None,
+        description=(
+            "A status the cell reads as, drawn in HTML as the kit's pill: its colour and icon beside the cell's text, "
+            "which says the status in words, so it never rests on a colour alone. Markdown prints the words. None for "
+            "none."
+        ),
+    )
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "An arm's letter tag, where the cell names an arm: HTML draws the cell as the kit's arm chip, the tag on "
+            "the arm's identity colour (`color`) before the cell's text, its name; Markdown prints `<tag> · <name>`. "
+            "None for none."
+        ),
+    )
+    color: Token | None = Field(
+        default=None,
+        description="The arm chip's colour token, set with `tag`; the kit's ink-gray where the chip names none.",
+    )
+
+    @model_validator(mode="after")
+    def _a_chip_or_a_pill_is_drawn_whole(self) -> Self:
+        """Refuse a chip's colour with no chip, and a pill and a chip on one cell.
+
+        :raises ValueError: ``color`` is set without ``tag``, or ``status`` and ``tag`` are both set.
+        """
+        if self.color is not None and self.tag is None:
+            raise ValueError("a cell's colour colours its arm chip's tag, and this cell has no tag")
+        if self.status is not None and self.tag is not None:
+            raise ValueError("a cell is drawn as a status pill or as an arm chip, and this cell sets both")
+        return self
 
     @model_validator(mode="after")
     def _a_unit_qualifies_a_number(self) -> Self:
@@ -516,6 +579,25 @@ class TableCell(EvalDocumentModel):
             raise ValueError(f"the cell's interval runs from {self.low} down to {self.high}")
         return self
 
+    def _money_form(self) -> MoneyForm | None:
+        """The one form a money number in this cell is written in, its column's (``decimals``, ``per_thousand``);
+        None where the cell holds no money number, or no form was given, so the number rule spells it."""
+        if self.decimals is None or not self.is_number or not is_money(self.unit):
+            return None
+        return MoneyForm(per_thousand=self.per_thousand, decimals=self.decimals)
+
+    def amount(self, number: float) -> str:
+        """A number of this cell's (its value, or an end of its interval) as the cell writes it: in its money form where
+        it holds one, else in its unit by the number rule.
+
+        :param number: The number, in the cell's unit.
+        :ptype number: float
+        :return: Its text.
+        :rtype: str
+        """
+        form = self._money_form()
+        return form.spell(number) if form is not None else with_unit(number, self.unit)
+
     @property
     def is_number(self) -> bool:
         """Whether the cell holds a number (a boolean is not one)."""
@@ -526,10 +608,70 @@ class TableCell(EvalDocumentModel):
         """``value`` as every serializer prints it, its ``flag`` after it in parentheses; the interval, where the cell
         has one, is the glyph's and the row's own interval column's, never spelled here twice."""
         if self.unit and isinstance(self.value, int | float) and not isinstance(self.value, bool):
-            said = with_unit(self.value, self.unit)
+            said = self.amount(self.value)
         else:
             said = render_cell(self.value)
         return said if self.flag is None else f"{said} ({self.flag})"
+
+
+def money_columns(
+    rows: Sequence[Mapping[str, TableCell]], *, by_row: Sequence[str | None] | None = None, marked: bool = True
+) -> list[dict[str, TableCell]]:
+    """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
+    table shows, across its rows and columns: by default a column's (a table of arms by measure); where ``by_row``
+    names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
+    the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
+    :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
+    such cell is written in it (:meth:`TableCell.amount`). A set under a cent reads per 1,000 with its mark, unless
+    the table states the count its money is drawn per (``marked`` False: its head or its row names it), where a set
+    still under a cent at the ruler's cap reads in dollars to the decimals its least amount needs, never with the
+    mark beside that count. The values are as stored, so
+    the shared decimals state no digit a value does not hold; a cell of words, of another unit, or already carrying a
+    form its builder chose from a wider set, is left as it is.
+
+    :param rows: The table's rows, by column key.
+    :ptype rows: Sequence[Mapping[str, TableCell]]
+    :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set by
+        its column); unset for a table whose every set is a column.
+    :ptype by_row: Sequence[str | None] | None
+    :param marked: Whether a set under a cent may carry the per-1,000 mark; False for a table that names the count
+        its money is drawn per.
+    :ptype marked: bool
+    :return: The rows, each money cell carrying its set's form.
+    :rtype: list[dict[str, TableCell]]
+    """
+
+    def chosen(cell: TableCell) -> bool:
+        return cell.is_number and is_money(cell.unit) and cell.decimals is None
+
+    def set_of(at: int, key: str) -> tuple[str, str]:
+        kind = by_row[at] if by_row is not None else None
+        return ("row", kind) if kind is not None else ("column", key)
+
+    held: dict[tuple[str, str], list[float]] = {}
+    for at, row in enumerate(rows):
+        for key, cell in row.items():
+            if chosen(cell):
+                held.setdefault(set_of(at, key), []).extend(
+                    float(number)
+                    for number in (cell.value, cell.low, cell.high)
+                    if isinstance(number, int | float) and not isinstance(number, bool)
+                )
+    forms = {name: money_form(amounts, marked=marked) for name, amounts in held.items()}
+    return [
+        {
+            key: cell.model_copy(
+                update={
+                    "decimals": forms[set_of(at, key)].decimals,
+                    "per_thousand": forms[set_of(at, key)].per_thousand,
+                }
+            )
+            if chosen(cell)
+            else cell
+            for key, cell in row.items()
+        }
+        for at, row in enumerate(rows)
+    ]
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -593,8 +735,51 @@ class TableBlock(_Block):
         return [{key: cell.value for key, cell in row.items()} for row in self.rows]
 
 
-#: The charts a report draws: an outcome bar, interval rows, and a campaign's cost against its pass rate.
-ChartKind = Literal["outcome_bar", "interval_rows", "cost_quality"]
+#: The charts a report draws: the report's own three (an outcome bar, interval rows, and a campaign's cost against its
+#: pass rate), each drawn by the eval report kit as its nearest kind; and the kit's own kinds
+#: (:data:`~threetears.evals.analysis.report.charts.KIT_CHARTS`), each carrying its data as the kit's contract names
+#: it. A plan's ``table`` kind is a :class:`TableBlock`, which the kit does not draw.
+ChartKind = Literal[
+    "outcome_bar",
+    "interval_rows",
+    "cost_quality",
+    "bars",
+    "diverging_bars",
+    "forest",
+    "lines",
+    "scatter_frontier",
+    "gate_scatter",
+    "dot_interval",
+    "range_bars",
+    "gate_matrix",
+    "lattice",
+    "heatmap",
+    "diff_heatmap",
+    "confusion",
+    "examples",
+]
+
+#: The report's own chart kinds, which carry their marks in fields of the block rather than as the kit's data.
+_OWN_CHARTS = frozenset({"outcome_bar", "interval_rows", "cost_quality"})
+
+#: The textures a failure cause or a loss cause takes, in order.
+_PATTERNS: tuple[ChartPattern, ...] = ("hatch", "cross", "dots", "rows", "cols")
+
+#: Each outcome's look on an outcome bar, by state, as ``(colour token, pattern)``, each cause taking the next in its
+#: state's order. Status colours, never a series colour, since series colours name arms (GENERATOR.md §5.2): passed is
+#: the kit's good, solid; every failure cause is the kit's bad, each under a texture of its own, so a failure never
+#: reads as a pass even without colour, and the five failure causes (``FailCause``) are five looks; a loss cause is a
+#: neutral, solid and then textured, so a loss reads as neither. Loss causes past the twelfth repeat a look; the
+#: legend and the tooltip name every cause in words.
+_OUTCOME_STYLES: dict[TrialState, tuple[tuple[str, ChartPattern | None], ...]] = {
+    "passed": (("--good", None),),
+    "failed": tuple(("--bad", pattern) for pattern in _PATTERNS),
+    "lost": (
+        ("--base", None),
+        ("--muted", None),
+        *((token, pattern) for pattern in _PATTERNS for token in ("--base", "--muted")),
+    ),
+}
 
 
 class OutcomeSegment(EvalDocumentModel):
@@ -610,6 +795,22 @@ class OutcomeBar(EvalDocumentModel):
 
     arm: str = Field(min_length=1, description="The arm, as the report names it.")
     segments: list[OutcomeSegment] = Field(description="Passed, then failed, then lost, each cause its own segment.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it names "
+            "the arm in tight places and picks its colour. None for a bar stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The arm's short name, drawn where `arm` does not fit: its given label, else what differs from the "
+            "control (GENERATOR.md §6.1). None to cut `arm`."
+        ),
+    )
 
     @property
     def total(self) -> int:
@@ -642,6 +843,19 @@ class CostQualityPoint(EvalDocumentModel):
     """One arm on a cost/quality chart: what a reply costs it, on x, and its pass rate, on y, each with its interval."""
 
     arm: str = Field(min_length=1, description="The arm, as the page names it.")
+    tag: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z]+$",
+        description=(
+            "The arm's letter tag (GENERATOR.md §6.1): P for the control, then A, B, C… in the page's order; it labels "
+            "the point on a phone and picks its colour and mark. None for a point stored before arms carried one."
+        ),
+    )
+    short_name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The arm's short name, the point's label: its given label, else what differs from the control.",
+    )
     cost: float = Field(ge=0, allow_inf_nan=False, description="What a reply costs the arm, in the chart's `unit`.")
     cost_low: float = Field(allow_inf_nan=False, description="The low end of the cost's interval.")
     cost_high: float = Field(allow_inf_nan=False, description="The high end of the cost's interval.")
@@ -666,10 +880,14 @@ class CostQualityPoint(EvalDocumentModel):
 
 
 class ChartBlock(_Block):
-    """One of the charts a report draws, with every value it draws, so it prints as a table too."""
+    """One of the charts a report draws, with every value it draws, so it prints as a table too.
+
+    A report's own kinds (``outcome_bar``, ``interval_rows``, ``cost_quality``) carry their marks in ``bars``, ``rows``
+    and ``points``; every other kind carries ``data``, the kit's chart data for that kind, field for field as the
+    kit's contract names it."""
 
     kind: Literal["chart"] = Field(default="chart", description="Which kind of block this is.")
-    chart: ChartKind = Field(description="`outcome_bar`, `interval_rows` or `cost_quality`.")
+    chart: ChartKind = Field(description="Which chart: one of the report's own three, or one of the kit's kinds.")
     title: str = Field(min_length=1, description="What the chart shows.")
     bars: list[OutcomeBar] = Field(default_factory=list, description="An outcome bar's arms, one bar each.")
     rows: list[IntervalRow] = Field(default_factory=list, description="An interval chart's rows, in drawn order.")
@@ -678,28 +896,176 @@ class ChartBlock(_Block):
     )
     unit: str = Field(
         default="",
-        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none.",
+        description="The unit an interval chart's values, or a cost/quality chart's costs, are stated in; for a kit "
+        "chart of what an analysis computes (two arms' difference, a lever's effect), the unit its values table spells "
+        "its values at where its format names none (a point to one decimal); empty for none.",
     )
     zero_line: bool = Field(default=False, description="Whether the chart draws a line at zero (a difference's).")
     margin: float | None = Field(
         default=None, description="A margin band either side of zero, on the chart's ruler; None when none declared."
     )
+    data: KitChart | None = Field(
+        default=None,
+        description=(
+            "A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's "
+            "own three kinds."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _data_of_its_kind(cls, data: Any) -> Any:
+        """Read a kit chart's data as the model of the kind the block names, since several kinds' data share field
+        names and only the kind tells them apart."""
+        if isinstance(data, dict) and isinstance(data.get("data"), dict) and data.get("chart") in KIT_CHARTS:
+            return {**data, "data": KIT_CHARTS[data["chart"]].model_validate(data["data"])}
+        return data
 
     @model_validator(mode="after")
     def _draws_what_its_kind_draws(self) -> Self:
         """Refuse a chart with nothing to draw, or one carrying another kind's marks.
 
         :raises ValueError: An outcome bar with rows, points or no bar; an interval chart with bars, points or no
-            row; or a cost/quality chart with bars, rows or fewer than two points, since a chart is never drawn for
-            one point.
+            row; a cost/quality chart with bars, rows or fewer than two points, since a chart is never drawn for
+            one point; one of those three with kit data; or a kit kind without its data, with data of another kind,
+            or with an outcome bar's, interval chart's or cost/quality chart's marks.
         """
+        if self.chart in _OWN_CHARTS and self.data is not None:
+            raise ValueError(f"a {self.chart} chart carries its marks in its own fields, not kit data")
         if self.chart == "outcome_bar" and (self.rows or self.points or not self.bars):
             raise ValueError("an outcome bar draws one bar per arm and no interval row")
         if self.chart == "interval_rows" and (self.bars or self.points or not self.rows):
             raise ValueError("an interval chart draws at least one row and no outcome bar")
         if self.chart == "cost_quality" and (self.bars or self.rows or len(self.points) < 2):
             raise ValueError("a cost/quality chart draws one point per arm, for two arms or more, and nothing else")
+        if self.chart in KIT_CHARTS:
+            if not isinstance(self.data, KIT_CHARTS[self.chart]):
+                raise ValueError(f"a {self.chart} chart carries the kit's {self.chart} data")
+            if self.bars or self.rows or self.points:
+                raise ValueError(f"a {self.chart} chart draws its data, not an outcome bar's, interval or cost marks")
         return self
+
+    def kit_chart(self) -> tuple[str, dict[str, JsonValue]] | None:
+        """The chart as the eval report kit draws it: its kind and its ``data-chart`` JSON.
+
+        A kit kind is its data. An outcome bar is ``bars``, each arm's census stacked from zero, a look per outcome
+        named in the legend, each arm's tag in its colour beside its label. A cost/quality chart is
+        ``scatter_frontier``, each arm in its colour and mark at its cost per 1,000 replies across and its pass rate
+        up, on axes from zero; its intervals are in the chart's table. Interval rows are ``None``: they carry no
+        interval level, and the kit never draws an interval without one, so they read as their table alone.
+
+        :return: ``(kind, data)``, or None for a chart the kit does not draw.
+        :rtype: tuple[str, dict[str, JsonValue]] | None
+        """
+        if self.data is not None:
+            return self.chart, self.data.kit_data()
+        if self.chart == "outcome_bar":
+            return "bars", self._outcome_bars().kit_data()
+        if self.chart == "cost_quality":
+            return "scatter_frontier", self._cost_quality_scatter().kit_data()
+        return None
+
+    def _outcome_bars(self) -> BarsChart:
+        """An outcome bar as the kit's stacked bars: one row per arm, its tag in its colour beside its label (its short
+        name where the label does not fit), a segment per outcome, each outcome's look (:data:`_OUTCOME_STYLES`) the
+        same on every arm and named in the legend, the whole label and the census in each row's tooltip."""
+        looks: dict[str, tuple[str, ChartPattern | None]] = {}
+        used = dict.fromkeys(_OUTCOME_STYLES, 0)
+        for bar in self.bars:
+            for segment in bar.segments:
+                if segment.label not in looks:
+                    styles = _OUTCOME_STYLES[segment.state]
+                    looks[segment.label] = styles[used[segment.state] % len(styles)]
+                    used[segment.state] += 1
+        longest = max(bar.total for bar in self.bars)
+        rows = [
+            BarRow(
+                label=bar.arm,
+                short_label=bar.short_name if bar.short_name != bar.arm else None,
+                tag=bar.tag,
+                color=arm_token(bar.tag),
+                segments=[
+                    BarSegment(value=segment.count, color=looks[segment.label][0], pattern=looks[segment.label][1])
+                    for segment in bar.segments
+                ],
+                note=f"{bar.total} trials",
+                tip=[bar.arm, f"{bar.total} trials", *(f"{s.label} {s.count}" for s in bar.segments)],
+            )
+            for bar in self.bars
+        ]
+        legend = [
+            LegendItem(label=label, color=colour, mark="square", pattern=pattern)
+            for label, (colour, pattern) in looks.items()
+        ]
+        return BarsChart(rows=rows, domain=(0, longest or 1), fmt="int", legend=legend)
+
+    def _cost_drawn(self) -> tuple[Callable[[float], str], float, str]:
+        """How a cost/quality chart draws its costs: the speller of one cost as stored, the scale it is drawn at, and
+        the words of the count it is drawn per. Money is on the one owner's ruler over every point's cost and its
+        interval's ends (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or
+        per 1,000,000 where a cost is under a cent per 1,000, every amount in the chart's one form; any other unit per
+        1,000 replies by the number rule."""
+        if not is_money(self.unit):
+            return (
+                lambda amount: with_unit(amount * _REPLIES_PER_COST_UNIT, self.unit),
+                _REPLIES_PER_COST_UNIT,
+                per_count(REPLIES),
+            )
+        ruler = money_ruler(
+            (amount for point in self.points for amount in (point.cost, point.cost_low, point.cost_high)),
+            per=1,
+            start=_REPLIES_PER_COST_UNIT,
+        )
+        return ruler.spell, ruler.scale, ruler.words(REPLIES)
+
+    def _cost_quality_scatter(self) -> ScatterChart:
+        """A cost/quality chart as the kit's scatter: each arm a point in its colour and mark at its cost per 1,000
+        replies and its pass rate, labelled by its short name (by its tag on a phone), the legend naming each tag's
+        arm; the cost axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to
+        flatter a gap. Cost is drawn per 1,000 replies, since a reply's own cost is a fraction of a cent an axis
+        cannot print, and the axis carries the digits its ticks need (:func:`~threetears.evals.analysis.report.plan_page.look.cost_axis_format`). No frontier is
+        drawn, since none is tested. Money's ruler is the one owner's over every point's cost and interval
+        (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per 1,000,000
+        where a cost is under a cent per 1,000, each tip's cost and its interval in the chart's one form."""
+        cost, scale, per = self._cost_drawn()
+        top = max(point.cost for point in self.points) * scale * 1.15 or 1
+        unit = f" ({unit_label(self.unit)})" if self.unit else ""
+        tagged = all(point.tag is not None for point in self.points)
+        points = [
+            ScatterPoint(
+                x=point.cost * scale,
+                y=point.pass_rate,
+                label=point.short_name or point.arm,
+                narrow_label=point.tag or point.short_name or point.arm,
+                color=arm_token(point.tag),
+                shape=arm_shape(point.tag),
+                tip=[
+                    point.arm,
+                    f"{cost(point.cost)} [{cost(point.cost_low)}, {cost(point.cost_high)}] {per}",
+                    f"pass rate {with_unit(point.pass_rate, PERCENT)} "
+                    f"[{with_unit(point.pass_rate_low, PERCENT)}, {with_unit(point.pass_rate_high, PERCENT)}]",
+                ],
+            )
+            for point in self.points
+        ]
+        legend = (
+            [
+                LegendItem(label=f"{point.tag} · {point.arm}", color=arm_token(point.tag), mark=arm_shape(point.tag))
+                for point in self.points
+            ]
+            if tagged
+            else None
+        )
+        return ScatterChart(
+            points=points,
+            x_domain=(0, top),
+            y_domain=(0, 100),
+            x_fmt=cost_axis_format(top, money=is_money(self.unit)),
+            y_fmt="pct",
+            x_title=f"Cost {per}{unit}",
+            y_title="Pass rate",
+            legend=legend,
+        )
 
     def values_table(self) -> tuple[list[str], list[list[str]]]:
         """The chart's values as a table — what Markdown prints and what HTML keeps beside the picture.
@@ -707,6 +1073,8 @@ class ChartBlock(_Block):
         :return: ``(headers, rows)``, each row's cells as text.
         :rtype: tuple[list[str], list[list[str]]]
         """
+        if self.data is not None:
+            return self.data.values_table(self.unit)
         if self.chart == "outcome_bar":
             labels = list(dict.fromkeys(segment.label for bar in self.bars for segment in bar.segments))
             headers = ["Arm", "ran", *labels]
@@ -716,13 +1084,24 @@ class ChartBlock(_Block):
                 body.append([bar.arm, str(bar.total), *(str(counts.get(label, 0)) for label in labels)])
             return headers, body
         if self.chart == "cost_quality":
+            # On the chart's own scale, per 1,000 replies, and saying so, so the table beside the figure (or in its
+            # place where no script runs) reads what the axis does; each figure's interval follows it, as the pass
+            # rate's does.
             cost = f" ({unit_label(self.unit)})" if self.unit else ""
-            headers = ["Arm", f"Cost{cost}", f"Cost interval{cost}", "Pass rate (%)", "Interval (%)"]
+            spelled, scale, per = self._cost_drawn()
+
+            def bare(amount: float) -> str:
+                # The head carries the sign, so a cell reads the number alone: money in the chart's one form.
+                return (
+                    spelled(amount).replace("$", "", 1) if is_money(self.unit) else number_in(amount * scale, self.unit)
+                )
+
+            headers = ["Arm", f"Cost {per}{cost}", f"Interval{cost}", "Pass rate (%)", "Interval (%)"]
             return headers, [
                 [
                     point.arm,
-                    interval_value_text(point.cost, self.unit),
-                    interval_text(point.cost_low, point.cost_high, self.unit),
+                    bare(point.cost),
+                    f"[{bare(point.cost_low)}, {bare(point.cost_high)}]",
                     interval_value_text(point.pass_rate, PERCENT),
                     interval_text(point.pass_rate_low, point.pass_rate_high, PERCENT),
                 ]
@@ -748,6 +1127,11 @@ class ChartBlock(_Block):
                 cells.append(row.verdict or "—")
             body.append(cells)
         return headers, body
+
+
+#: The replies a cost/quality chart states each cost over: a reply's cost per 1,000 replies, as the scoreboard's
+#: cost ruler states a cost under a cent.
+_REPLIES_PER_COST_UNIT = 1000
 
 
 def interval_value_text(value: float, unit: str = "") -> str:
@@ -896,5 +1280,6 @@ __all__ = [
     "interval_text",
     "interval_value_text",
     "reading_anchor",
+    "money_columns",
     "table_row",
 ]

@@ -37,6 +37,13 @@ from threetears.evals.kernel.campaign import EvalGenerationSlot, EvalSweep, Swee
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileAgreement
+from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenance, report_plan_id
+from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
+from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
+from packages.evals.tests.report_doc_support import converted_doc
+from packages.evals.tests.report_plan_support import r5_input, r5_plan
+from threetears.evals.analysis.analyst.snapshot import report_snapshot
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -285,6 +292,75 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     "EvalCassette": _cassette,
     "EvalInsight": make_insight,
+    # The r5 reference input, frozen bare, as a local analyst server seeds a fixture snapshot.
+    "EvalReportSnapshot": lambda: report_snapshot(
+        ReportInput.model_validate(r5_input()),
+        scope_id="uni-1",
+        campaign_id=None,
+        source="report_input",
+        created_by="agent:test",
+    ),
+    # The third prototype's Kairo document, as the writing loop stores one with a finding it left open.
+    "EvalReportDoc": lambda: EvalReportDoc(
+        scope_id="uni-1",
+        snapshot_id="report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb",
+        campaign_id="campaign-1",
+        doc=converted_doc("prototype3/kairo"),
+        ending="stored_with_findings",
+        findings=[{"claim": "c4", "severity": "should_fix", "finding": "The off-lane share is a lead."}],
+        generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
+        created_by="agent:test",
+    ),
+    # A suspect gap the analyst noted during a write, with what reproduces it and where it came from.
+    "EvalAnalystGap": lambda: EvalAnalystGap(
+        id="gap:0b5b9abb32a03ae7",
+        scope_id="uni-1",
+        kind="suspect",
+        need="the cost per reply of one arm reads lower than its trials' costs",
+        why="each of its trials costs more than the mean the key reads",
+        workaround="named the arms' order and no figure",
+        claim_ids=["c2"],
+        figure_keys=["{cost_per_1k.qwen3.8-flash}"],
+        calls=[GapToolCall(action="measure_read", arguments={"measure_key": "cost", "by": "arm"})],
+        snapshot_id="report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb",
+        report_doc_id="01a180c7-821a-73b1-88ea-98d87dc63523",
+        role="analyst",
+        session="analyst",
+        model="report-writer-model",
+        transcript_digest="8" * 64,
+        created_by="agent:test",
+    ),
+    # The analyst's session of a report, as the store gate writes it beside its report document.
+    "EvalReportSession": lambda: EvalReportSession(
+        id=report_session_id("01a180c7-821a-73b1-88ea-98d87dc63523", "analyst"),
+        scope_id="uni-1",
+        report_doc_id="01a180c7-821a-73b1-88ea-98d87dc63523",
+        name="analyst",
+        digest="8" * 64,
+        turns=2,
+        session={"format": 2, "snapshot": "report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb", "session": {}},
+    ),
+    # The reference Kairo plan, as a planned generation stores it beside its analysis.
+    "EvalReportPlan": lambda: EvalReportPlan(
+        id=report_plan_id("analysis-1"),
+        scope_id="uni-1",
+        analysis_id="analysis-1",
+        campaign_id="campaign-1",
+        report_input_digest="0" * 64,
+        plan=r5_plan(),
+        generation=ReportPlanProvenance(
+            prompt_id="eval_report_plan",
+            prompt_version="abcdef012345",
+            generator_model="planner-a",
+            calls=3,
+            repair_attempts=1,
+            structure_refusal="the report plan is refused (1 fault(s)): `mode` is 'tradeoff'",
+            prose_refusal=None,
+            token_cost=0.12,
+            user_message_digest="1" * 64,
+            generated_at="2026-10-25T00:00:00+00:00",
+        ),
+    ),
     # Judged as the judge service records it: the score's axis, temperature, sent settings and label key, the dim's
     # judge identity, and the judge's usage row with what its calls were sent with, so the frozen corpus holds every
     # field a judge phase writes.

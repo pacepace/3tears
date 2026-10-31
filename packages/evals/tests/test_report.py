@@ -79,10 +79,10 @@ class TestTheToyAnalysisSerializesTwoWays:
         finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
-        # The campaign's name is the title; the declared question is quoted whole under it, then the arms;
-        # who wrote the memo is in the methods.
+        # The title is code's (what is compared and on what, the campaign's name a qualifier); the declared question is
+        # quoted whole on its own line under it, then the arms; who wrote the memo is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "chunk width sweep"
+        assert report.title == "256tok vs 1024tok · extract_invoice_fields (chunk width sweep)"
         # The title is the first line: nothing stands above it.
         top = lines.index(f"# {report.title}")
         assert top == 0
@@ -109,10 +109,10 @@ class TestTheToyAnalysisSerializesTwoWays:
         assert page.index("<header>") < page.index(f"<h1>{_escaped(report.title)}</h1>") < page.index("</header>")
         header = page[page.index("<header>") + len("<header>") : page.index("</header>")]
         assert header.lstrip().startswith("<h1>") and 'role="alert"' not in page
-        # The outcome bar is the page's one chart, beside its hidden table; the finding's intervals are glyphs in
-        # its readings table, whose rows already print every figure a glyph draws.
-        assert 'data-chart="outcome_bar"' in page and 'data-chart="interval_rows"' not in page
-        assert page.count('<svg class="viz"') == page.count('<table class="visually-hidden">') == 1
+        # The outcome bar is the page's one chart, beside its table; the finding's intervals are glyphs in its
+        # readings table, whose rows already print every figure a glyph draws.
+        assert 'data-figure="outcome_bar"' in page and 'data-figure="interval_rows"' not in page
+        assert page.count('data-kind="') == page.count('class="tbl chart-values"') == 1
         assert page.count('<svg class="viz-glyph"') == 2
 
 
@@ -431,7 +431,7 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
         assert markdown.startswith(f"# {report.title}\n")
         assert markdown.count(NO_ANALYSIS) == 1
         page = report_html(report)
-        assert 'data-basis="code_only"' in page and 'data-chart="outcome_bar"' in page
+        assert 'data-basis="code_only"' in page and 'data-figure="outcome_bar"' in page
 
     def test_a_time_axis_withheld_says_why(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only

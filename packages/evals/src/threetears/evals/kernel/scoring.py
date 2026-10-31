@@ -51,9 +51,7 @@ from threetears.evals.schema.models import (
     CellTermination,
     EvalResult,
     EvalRun,
-    LatencyMetrics,
     RubricDim,
-    RubricScore,
     RunCompleteness,
 )
 from threetears.evals.kernel.result_condition import (
@@ -64,8 +62,9 @@ from threetears.evals.kernel.result_condition import (
     delivered_a_turn,
     trial_exclusion,
 )
+from threetears.evals.kernel.result_reading import LatencyView, ResultView, ScoreView
 from threetears.evals.kernel.identity import StateCoordinateError, resolve_context_identity
-from threetears.evals.kernel.usage_capture import production_replicating_cost, resolve_result_usage
+from threetears.evals.kernel.usage_capture import count_substituted_deliveries, production_replicating_cost
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.profile import HostProfile
@@ -168,7 +167,7 @@ def summarize_completeness(run: EvalRun, cells: Sequence[CellSummary]) -> RunCom
     )
 
 
-def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> RunCompleteness:
+def reconstruct_completeness(run: EvalRun, results: Iterable[ResultView]) -> RunCompleteness:
     """Count what a run delivered from the rows it left behind, its own tally being gone.
 
     For the one stop :func:`~threetears.evals.kernel.scoring.summarize_completeness` cannot describe: a hard kill
@@ -187,21 +186,26 @@ def reconstruct_completeness(run: EvalRun, results: Sequence[EvalResult]) -> Run
 
     :param run: The abandoned run being reclaimed — the source of the promised matrix.
     :ptype run: EvalRun
-    :param results: Every result stored against that run.
-    :ptype results: Sequence[EvalResult]
+    :param results: Every result stored against that run, walked once and none of it kept, so a reader can hand them
+        over a page at a time (:func:`~threetears.evals.kernel.run_pages.iter_stored_results`).
+    :ptype results: Iterable[ResultView]
     :return: The counts, ready to store on the run.
     :rtype: RunCompleteness
     """
+    persisted = excluded = 0
+    for result in results:
+        persisted += 1
+        excluded += classify_result(result) is ResultOutcome.INFRA_EXCLUDE
     return RunCompleteness(
         expected_cells=run.expected_cells,
-        produced_cells=len(results),
-        persisted_cells=len(results),
-        infra_excluded_cells=sum(1 for result in results if classify_result(result) is ResultOutcome.INFRA_EXCLUDE),
+        produced_cells=persisted,
+        persisted_cells=persisted,
+        infra_excluded_cells=excluded,
         counted_from="stored_results",
     )
 
 
-def capability_scores(result: EvalResult) -> list[RubricScore]:
+def capability_scores(result: ResultView) -> list[ScoreView]:
     """The result's rubric scores on the capability axis — the ones a composite or pass^k may combine.
 
     A boundary dimension (:data:`~threetears.evals.schema.models.RubricAxis`) is a guardrail: something the
@@ -227,7 +231,7 @@ def boundary_dim_names(rubric: Iterable[RubricDim]) -> frozenset[str]:
     return frozenset(dim.name for dim in rubric if dim.axis == "boundary")
 
 
-def result_composite(result: EvalResult) -> float | None:
+def result_composite(result: ResultView) -> float | None:
     """Normalize one result's capability rubric dims to a single 0–1 quality score.
 
     Composite = mean of the result's capability ``rubric_scores`` (:func:`capability_scores`), each put on
@@ -254,7 +258,7 @@ def result_composite(result: EvalResult) -> float | None:
     :func:`classify_result` itself — :func:`~threetears.evals.kernel.scoring._group_case_composites` does.
 
     :param result: The eval result to score.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The 0–1 composite, ``0.0`` for a candidate failure, or ``None`` when
         there is no scoreable quality signal (infra-excluded or no rubric dims).
     :rtype: float | None
@@ -270,7 +274,7 @@ def result_composite(result: EvalResult) -> float | None:
     return sum(s.normalized for s in scores) / len(scores)
 
 
-def composite_basis(result: EvalResult) -> list[str] | None:
+def composite_basis(result: ResultView) -> list[str] | None:
     """The dimensions one result's composite was meaned over, sorted — None exactly when it has no composite.
 
     Read off the same scores :func:`result_composite` means (:func:`capability_scores`), so the basis names
@@ -278,7 +282,7 @@ def composite_basis(result: EvalResult) -> list[str] | None:
     nothing: a candidate failure's ``0.0`` is a score by policy, not an average of any dimension.
 
     :param result: The eval result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: The sorted dimension names, ``[]`` for a composite set by policy, or None when there is no composite.
     :rtype: list[str] | None
     """
@@ -336,7 +340,7 @@ def pool_composite_bases(bases: Iterable[Sequence[str] | None]) -> CompositeBasi
     )
 
 
-def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
+def _result_passes(result: ResultView, *, rubric_threshold: int) -> bool:
     """A result passes iff every goal-state and every capability rubric dim cleared the bar.
 
     A boundary dim is a guardrail, decided on its own, and takes no part (:func:`capability_scores`).
@@ -368,7 +372,7 @@ def _result_passes(result: EvalResult, *, rubric_threshold: int) -> bool:
     return True
 
 
-def _already_failed(result: EvalResult, *, rubric_threshold: int) -> bool:
+def _already_failed(result: ResultView, *, rubric_threshold: int) -> bool:
     """Whether what the trial has already shown decides it as a fail, whatever its unscored dims say.
 
     A failed goal-state check or a scored rubric dim under the bar fails the trial on its own, so
@@ -455,7 +459,7 @@ NO_PASS_CRITERION_REASON = (
 )
 
 
-def has_pass_criterion(result: EvalResult) -> bool:
+def has_pass_criterion(result: ResultView) -> bool:
     """Whether pass^k has anything to conjoin on this result: a goal-state check, a capability criterion, or a judge.
 
     A result with none — a classifier scored only against its expected label, no goal check and no judge — is
@@ -464,7 +468,7 @@ def has_pass_criterion(result: EvalResult) -> bool:
     not: its criteria were asked, so a judged arm whose candidate failed before the judge ran still fails.
 
     :param result: The eval result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: True when pass^k can decide the attempt.
     :rtype: bool
     """
@@ -477,7 +481,7 @@ def has_pass_criterion(result: EvalResult) -> bool:
     )
 
 
-def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | None, bool]:
+def _trial_pass(result: ResultView, *, rubric_threshold: int) -> tuple[bool | None, bool]:
     """Whether one attempt passed, ``None`` when it is left out — and whether it left as cannot-tell.
 
     Infra-excluded attempts (judge_error, a cell timeout charged to the rig —
@@ -502,7 +506,7 @@ def _trial_pass(result: EvalResult, *, rubric_threshold: int) -> tuple[bool | No
     ), False
 
 
-def _no_criterion_count(results: Iterable[EvalResult]) -> int:
+def _no_criterion_count(results: Iterable[ResultView]) -> int:
     """The attempts pass^k leaves out because they carry no pass criterion (:func:`has_pass_criterion`).
 
     Only those it would otherwise have read: an attempt left out for a fault or a judge's can't-tell is counted
@@ -540,7 +544,7 @@ def _pass_hat_k_entry(
 
 
 def compute_pass_hat_k(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     *,
     rubric_threshold: int = 3,
     k: int | None = None,
@@ -569,7 +573,7 @@ def compute_pass_hat_k(
     :func:`pool_pass_hat_k`, which is what a cross-run surface calls.
 
     :param results: The results to score.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
     :ptype rubric_threshold: int
     :param k: The depth of the headline ``pass_hat_k``. ``None`` takes each group's deepest
@@ -838,7 +842,7 @@ def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[Unp
 
 
 def pool_pass_hat_k_attempts(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     *,
     cell_of_run: Mapping[str, Hashable],
     rubric_threshold: int = 3,
@@ -850,7 +854,7 @@ def pool_pass_hat_k_attempts(
     one keying that produced the headline rather than re-deriving it.
 
     :param results: The pool.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`; a run absent from it is its own cell.
     :ptype cell_of_run: Mapping[str, Hashable]
     :param rubric_threshold: The 1–5 score a rubric dimension must reach to pass.
@@ -895,7 +899,7 @@ def case_pass_hat_k(attempts: Sequence[bool], k: int) -> float | None:
 
 
 def pool_pass_hat_k(
-    results: Sequence[EvalResult],
+    results: Sequence[ResultView],
     *,
     cell_of_run: Mapping[str, Hashable],
     k: int,
@@ -914,7 +918,7 @@ def pool_pass_hat_k(
     contestant at a time.
 
     :param results: The pool — typically one contestant's results across runs.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :param cell_of_run: Run id → its cell, from :func:`pass_hat_k_cell`. A run absent from the map is
         its own cell, which is the direction that cannot produce a wrong merge.
     :ptype cell_of_run: Mapping[str, Hashable]
@@ -1058,7 +1062,7 @@ def median_unbiased_quantile(sorted_values: Sequence[float], q: float) -> float 
 
 
 def compute_latency_summary(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Aggregate per-result :class:`LatencyMetrics` by ``(model, eval_run_id)``.
 
@@ -1121,7 +1125,7 @@ def compute_latency_summary(
         (total also absorbs framework overhead, so the three need not sum).
     :rtype: dict[tuple[str, str], dict[str, Any]]
     """
-    grouped: dict[tuple[str, str], list[LatencyMetrics]] = {}
+    grouped: dict[tuple[str, str], list[LatencyView]] = {}
     for r in results:
         # Dropped before the null check, and on the same predicate compute_pass_hat_k
         # uses: a harness failure's timings are a measurement of the harness.
@@ -1171,7 +1175,7 @@ def compute_latency_summary(
 
 
 def compute_async_delivery_summary(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Roll each ``(model, eval_run_id)`` group's background work up into the six async-delivery measures.
 
@@ -1245,7 +1249,7 @@ def compute_async_delivery_summary(
 
 
 def compute_cost_summary(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Aggregate per-result ``cost_usd`` by ``(model, eval_run_id)``.
 
@@ -1316,13 +1320,13 @@ def compute_cost_summary(
     """
     grouped: dict[tuple[str, str], list[tuple[float | None, float | None]]] = {}
     for r in results:
-        # The canonical resolution, so this aggregate answers "does this result have a
-        # prod cost" the same way the single-result surfaces do.
-        resolved_r = resolve_result_usage(r)
+        # What the canonical resolution (`resolve_result_usage`) reads, so this aggregate answers "does this result
+        # have a prod cost" the same way the single-result surfaces do: the result's own rows on every arm, and the
+        # substituted deliveries it counts. Read off the result itself, so a compact reading answers alike.
         prod = (
             production_replicating_cost(
-                resolved_r.usage,
-                substituted_deliveries=resolved_r.substituted_deliveries,
+                r.usage,
+                substituted_deliveries=count_substituted_deliveries(r),
                 candidate_kind=r.candidate_kind,
             )
             if delivered_a_turn(r)
@@ -1355,7 +1359,7 @@ def compute_cost_summary(
 
 
 def compute_dimension_summary(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str, str], dict[str, Any]]:
     """Aggregate per-result ``rubric_scores`` by ``(model, eval_run_id, dim)``.
 
@@ -1384,7 +1388,7 @@ def compute_dimension_summary(
     of the candidate: money spent on a cell the harness broke was still spent. Its
     production-replicating axis compares configurations, and drops them like this does.
 
-    Only the template rubric dimensions are aggregated: ``EvalResult.rubric_scores``
+    Only the template rubric dimensions are aggregated: ``ResultView.rubric_scores``
     holds the judge-scored template dims (the run loop assembles it from
     ``template.rubric`` alone), while the reserved dual-score axes
     (``__transcript__`` / ``__outcome__``) live in the separate
@@ -1452,7 +1456,7 @@ def compute_dimension_summary(
 
 
 def _group_case_composites(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Group results into per-``(model, run)`` per-test-case composite scores.
 
@@ -1508,7 +1512,7 @@ def _group_case_composites(
 
 
 def compute_composite_summary(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Aggregate the mean-composite quality score by ``(model, eval_run_id)``.
 
@@ -1545,7 +1549,7 @@ def compute_composite_summary(
 
 
 def compute_per_case_composites(
-    results: list[EvalResult],
+    results: Sequence[ResultView],
 ) -> dict[tuple[str, str, str], float]:
     """Per-``(model, run, test_case)`` composite scores — the pairing atom.
 

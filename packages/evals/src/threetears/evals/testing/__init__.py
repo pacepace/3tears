@@ -1,11 +1,14 @@
 """What the engine ships for an adopter's own test suite: conformance kits a host runs against itself.
 
-It holds three kits and two checks. The store conformance kit: every rule of the
+It holds four kits and two checks. The store conformance kit: every rule of the
 :class:`~threetears.evals.schema.DocumentStore` port as a :class:`StoreConformanceCase`, collected
 in :data:`STORE_CONFORMANCE_CASES`. An adapter's test suite hands each case a fresh, empty store and
 parametrises over the tuple; a broken rule raises :class:`StoreConformanceFailure` naming the case and
-the rule. The reader conformance kit: every promise a host's readers make — JSON-safe, deterministic,
-order-independent, side-effect free, an open family's members its own, every run deriving a variant key —
+the rule. Beside it, the readings conformance kit: every rule of the optional
+:class:`~threetears.evals.schema.ResultReadings` capability as a :class:`ResultReadingsConformanceCase`, in
+:data:`RESULT_READINGS_CONFORMANCE_CASES`, for a store that offers it; each case also takes a hook that counts or
+fails the queries the store issues (:mod:`threetears.evals.testing.readings_conformance`). The reader conformance
+kit: every promise a host's readers make — JSON-safe, deterministic, order-independent, side-effect free, an open family's members its own, every run deriving a variant key —
 as a :class:`ReaderConformanceCase` over a :class:`ReaderSample` (the profile and runs it produced), in
 :data:`READER_CONFORMANCE_CASES`. The completion check: :func:`check_completion_conformance` takes an instance of a
 host's completion type and raises :class:`CompletionConformanceFailure` naming every attribute eval reads off a
@@ -16,7 +19,11 @@ path returns ``JobsStarted`` and its job makes at least one — watched through 
 wraps its client factory in (:mod:`threetears.evals.testing.jobs_conformance`). Beside the kits, one client: the
 recorded completions, :class:`RecordedCompletions`, which records the calls a host's real completion client answers
 into a JSONL file once and replays them exactly with no network, refusing by name a prompt the recording does not hold
-(:mod:`threetears.evals.testing.recorded_completions`). The negotiation check: :func:`check_refusal_negotiation` scripts
+(:mod:`threetears.evals.testing.recorded_completions`). Beside it, the recorded tool turns,
+:class:`RecordedTurns`, which keep a tool-calling loop's replies alone, per named session and in order, with the
+snapshot id a placeholder, and replay them while the tools run live, a session asked one turn more than it holds
+refused naming the turn (:mod:`threetears.evals.testing.recorded_turns`). The negotiation check:
+:func:`check_refusal_negotiation` scripts
 three routers that refuse a host's own client (its temperature under enforcement; any enforced request; its output
 cap and effort word, naming what is taken), and raises :class:`NegotiationConformanceFailure` naming each mistake
 unless the client resends in order, reports what the served request carried, and remembers what it proved and
@@ -51,6 +58,10 @@ from threetears.evals.testing.negotiation_conformance import (
     RouterTransport,
     check_refusal_negotiation,
 )
+from threetears.evals.testing.readings_conformance import (
+    RESULT_READINGS_CONFORMANCE_CASES,
+    ResultReadingsConformanceCase,
+)
 from threetears.evals.testing.reader_conformance import (
     READER_CONFORMANCE_CASES,
     ReaderConformanceCase,
@@ -63,6 +74,7 @@ from threetears.evals.testing.recorded_completions import (
     RecordingRefused,
     ReplayedCompletion,
 )
+from threetears.evals.testing.recorded_turns import RecordedTurns
 from threetears.evals.testing.store_conformance import (
     STORE_CONFORMANCE_CASES,
     StoreConformanceCase,
@@ -84,13 +96,16 @@ __all__ = [
     "RouterTransport",
     "check_refusal_negotiation",
     "READER_CONFORMANCE_CASES",
+    "RESULT_READINGS_CONFORMANCE_CASES",
     "STORE_CONFORMANCE_CASES",
     "CompletionConformanceFailure",
     "ReaderConformanceCase",
     "ReaderConformanceFailure",
     "ReaderSample",
+    "ResultReadingsConformanceCase",
     "RecordedCompletions",
     "RecordedPrompt",
+    "RecordedTurns",
     "RecordingRefused",
     "ReplayedCompletion",
     "StoreConformanceCase",

@@ -1,0 +1,19 @@
+{
+  "snapshot_of": "kairo",
+  "model": "claude-opus-5-5",
+  "budget_usd": 20.0,
+  "withhold": [
+    "kairo-round2.md"
+  ],
+  "ending": "stored",
+  "reason": "",
+  "stored": true,
+  "analyst_rounds": 3,
+  "editor_rounds": 3,
+  "tally": {
+    "turns": 43,
+    "tool_calls": 63,
+    "bounces": 1,
+    "cost_usd": 4.139236399999999
+  }
+}

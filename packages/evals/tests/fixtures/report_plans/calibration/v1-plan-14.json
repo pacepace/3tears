@@ -1,0 +1,75 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with its reason that matches the recommended row and the data: Brisk-S few-shot is the cheapest configuration passing all three gates, consistent with the lattice.",
+      "quote": "Use Brisk-S · Few-shot (12 ex.) (E). It is the cheapest configuration that clears the overall gate, every cell floor and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the supporting figures, then what would change the answer.",
+      "quote": "If complex news turns improved for Nano-XS · Few-shot (12 ex.) (H), the far cheaper model would win.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "No flag and no caveats in the input; nothing is repeated.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The cells headline claims a finding for every configuration and about Nano-XS, but its heatmap draws only Brisk-S few-shot's cells.",
+      "quote": "Complex news is the hardest cell for every configuration, and the one that rules out Nano-XS",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Configurations, cells and measures use reader names above Full results; no keys or ids appear.",
+      "quote": "Brisk-S · Few-shot (12 ex.) (E)",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "fail",
+      "reason": "Watch names complex news (82.9% vs an 80% floor) as the weakest margin, but the pick's balanced accuracy of 90.7% against the 90% overall gate is thinner.",
+      "quote": "Complex news is the pick's weakest cell, the closest of its margins to the cell floor.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Short active sentences, no hedges, one name per measure, no statistician's grammar above the fold.",
+      "quote": "Its errors are mostly medium turns labeled complex and the reverse; domain errors are rare.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede and decision slots give what to do, why (cheapest passing all gates) and the main risk (the complex news cell) without a section.",
+      "quote": "Use Brisk-S · Few-shot (12 ex.) (E).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Re-testing the same Nano-XS few-shot configuration on more complex news turns could not realistically change the call: it sits at 76.7% with a ±1.4 interval on 3,600 turns, wholly below the 80% floor.",
+      "quote": "Collect more complex news turns and re-test Nano-XS · Few-shot (12 ex.) (H) on that cell: if it clears the floor, it takes the recommendation at a fraction of the cost.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "Confidence form is high with no clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T22:35:33Z"
+}

@@ -289,6 +289,13 @@ class CompletionClient(Protocol):
     provider that enforces it, or translates to the nearest mode its provider has (JSON mode, a tool's input
     schema); the engine validates the reply on return either way. ``None`` lets the provider default apply.
 
+    **A client that is not the shipped ``Model`` prices its own calls.** The pricing port
+    (``threetears.evals.providers.Pricer``) covers every ``Model`` call, which is every client the engine
+    ships. A host's own client is its own pricer: its ``price_ceiling``, where it has one, is the bound the engine
+    holds each call to (``None``, or no such member, is a call it cannot bound), and its completion's ``cost_usd``
+    and ``price_source`` are recorded exactly as reported. A missing cost is recorded and read as unpriced, never as
+    ``$0``.
+
     **``generate`` must be safe to call concurrently on one instance.** The judge
     caches one client per ``(model, temperature)`` and scores a result's dimensions
     at once on it (``eval.judge_concurrency``), so an implementation that binds a
@@ -383,10 +390,11 @@ class PricedCompletion(Protocol):
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
 
-        A CEILING, not an estimate: the host's rate for :attr:`model_name` applied to a bound on the
-        prompt's tokens and to the output cap it built this client with, reasoning included, times
+        A ceiling on the rates it is built from: the host's rate for :attr:`model_name` applied to a bound on
+        the prompt's tokens and to the output cap it built this client with, reasoning included, times
         every attempt the client makes for one request (a re-sent severed body is billed twice). A
-        figure below what the call can cost lets a call past the cap it was admitted under.
+        figure below what the call can cost at those rates lets a call past the cap it was admitted under.
+        The shipped ``Model`` says when those rates are an estimate (``Model.ceiling_is_estimate``).
 
         ``None`` is "this client cannot bound the call" — no rate for its model — and an out-of-run
         call under an enforced cap is then refused rather than made, since unknown is not $0.

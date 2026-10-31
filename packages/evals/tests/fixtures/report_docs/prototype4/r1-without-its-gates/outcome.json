@@ -1,0 +1,84 @@
+{
+  "ending": "stored",
+  "reason": "",
+  "faults": [],
+  "reviews": [
+    {
+      "round": 1,
+      "items": [
+        {
+          "n": 1,
+          "name": "First screen",
+          "score": 2,
+          "reason": "The headline and decision block make clear that the choice is unresolved and why: no bar or price per point was declared. They give the price bands: Brisk-S below $4.94 a point, Atlas-M up to $14.76, Atlas-L above that. They label the analyst's lean, Atlas-M, as the analyst's own and name what would settle the choice. The lead claim, price_ladder, shows the two steps with their intervals. Watch names the main risk: Atlas-L's lead is thinnest in billing and is the best of four. I checked the costs, pooled quality (92.79, 89.83, 84.7) and both per-point prices against the snapshot, and they match."
+        },
+        {
+          "n": 2,
+          "name": "Coherent story",
+          "score": 2,
+          "reason": "The claims build on each other. price_ladder sets the trade. atlas_lead shows that Atlas-L's premium buys a real but small lead, clear of zero in all four tasks that carry traffic and not separated only in speculation bait (-1.5 to +3.5). safety_slips gives the reason to lean away from the two cheap models. persona_seam explains why Open-70B is off the frontier overall yet worth routing to. latency adds Atlas-L's speed cost. Nothing contradicts the headline."
+        },
+        {
+          "n": 3,
+          "name": "Honest emphasis",
+          "score": 2,
+          "reason": "The lean's weak points are on the page: Atlas-M trails Atlas-L in every task that carries traffic (atlas_lead), costs five times as much as Brisk-S, and is slower than both cheap models (latency table). The safety gaps hold on the intervals I checked. For example, Open-70B against Atlas-M on unsupported claims is 86% ±4.4 against 94% ±3, so the gap is separated. The page also says the upper price edge is the less certain one ($11.09 to $22.05). One problem: the 'High' confidence label sits next to a caveat called 'material to any call', which blurs what the confidence covers (see findings)."
+        },
+        {
+          "n": 4,
+          "name": "Sound elision",
+          "score": 2,
+          "reason": "Nothing omitted would change the decision. The examples tool returns no failure examples, which confirms that item. The left-out behaviours keep the same order or widen the cheap models' gap: Brisk-S resolves the issue 74% of the time against Atlas-M's 90%. They are all in the appendix. Per-task cost keeps the same order. Stays in character only strengthens the persona finding."
+        },
+        {
+          "n": 5,
+          "name": "Confounds handled",
+          "score": 2,
+          "reason": "All four caveats are dealt with in the story. Nothing declared becomes the price bands and the owner's declaration. The safety judge being unstated is scoped to safety_slips and leads to a next step to calibrate it. The missing control is bounded: every gap the trade rests on already excludes zero on the wider unpaired reading, and the page names the two readings that pairing could change. Best-of-four is carried into Watch with the billing interval."
+        },
+        {
+          "n": 6,
+          "name": "Actionable next steps",
+          "score": 2,
+          "reason": "Each next step names a declaration or an experiment and what it would settle: a price per point plus monthly volume picks the option and its monthly cost; safety floors decide whether the cheap models stay in; calibrating the safety judge tests the safety_slips gaps; a routed mix, run on the same cases, prices persona-to-Open-70B and checks whether Open-70B's speculation declines show up in persona traffic."
+        },
+        {
+          "n": 7,
+          "name": "Evidence fits claims",
+          "score": 1,
+          "reason": "Most blocks fit. atlas_lead and persona_seam use diverging bars with intervals, and the claims would have to change if those intervals crossed zero. safety_slips is a panelled dot-interval chart, and latency shows median-to-p95 ranges. The weak spot is the lead claim's table: price_ladder's Note column prints $15.00 next to a value of $14.76 and $4.940 next to $4.943, with no label. A reader cannot tell which figure is the price. The interval also mixes precisions ($4.15 to $6.109)."
+        }
+      ],
+      "findings": [
+        {
+          "claim": "price_ladder",
+          "severity": "should_fix",
+          "finding": "The Note column disagrees with the Value column without explanation: $15.00 against $14.76 for Atlas-M → Atlas-L, and $4.940 against $4.943 for Brisk-S → Atlas-M. A reader of the lead claim can't tell whether the upper edge is $14.76 or $15. Drop the Note column or label what it is, and print the values and intervals at one precision ($4.94, $4.15 to $6.11, $14.76, $11.09 to $22.05), matching the prose."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "'Confidence: High, if the caveats below aren't material' is followed straight away by a caveat that says it is 'Material to any call' (nothing declared). A reader may take High as confidence in a pick. Say what High covers, for example 'High in the measured price bands; the choice among them is unresolved until a price or floor is declared.'"
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "'Open-70B is the best buy at no price' (decision block, The trade) and 'Open-70B at no price' (explore table) can be read as 'best if the price is zero'. The snapshot shows the opposite: Open-70B is never on the frontier, because a point bought from Brisk-S to Open-70B costs $6.96, more than the $4.58 a point from Open-70B on to Atlas-M. Write 'Open-70B is the best buy at no price per point' as 'Open-70B is never the best buy, whatever a point is worth' or similar."
+        },
+        {
+          "claim": "safety_slips",
+          "severity": "should_fix",
+          "finding": "The Brisk-S 81% and Open-70B 89% declines come from speculation bait, which carries 0% of traffic. They are probe rates, not rates on live conversations. Only Method says this, but the lean's '+17 points' and the explore floor both rely on it. Add a short clause to the claim or the lean saying that speculation bait is a probe with no traffic share, so a reader setting a floor knows what the rate means."
+        },
+        {
+          "claim": "",
+          "severity": "should_fix",
+          "finding": "'The lean holds for any price per point inside Atlas-M's band' is true by definition and adds nothing. State the lean's actual condition instead: it holds only if the owner values a point of overall quality between $4.94 and $14.76 per thousand conversations, and the upper edge could be anywhere from $11.09 to $22.05."
+        }
+      ],
+      "total": 13,
+      "passes": true,
+      "must_fix": false
+    }
+  ]
+}

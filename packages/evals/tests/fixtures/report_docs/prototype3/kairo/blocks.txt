@@ -1,0 +1,466 @@
+### c1 / 1
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: 
+  measures: [production_replicating_cost]
+  arms: []
+  strata: []
+  limit: 0
+  transform: per_1k
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: usd
+domain: 
+reference: none
+columns: [Row, Value, 95% interval, Note]
+rows (3):
+  - cells: [September, $1.892, $1.755 to $2.028, $1.890]
+  - cells: [qwen3.8-flash, $2.427, $2.260 to $2.594, $2.430]
+  - cells: [1017, $2.406, $2.206 to $2.605, $2.410]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c1 / 2
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: character adherence (v2)
+  measures: [production_replicating_cost]
+  arms: []
+  strata: []
+  limit: 0
+  transform: per_1k
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 99.69%
+unit: usd
+domain: 
+reference: none
+columns: [Row, Change, 99.69% interval, Note]
+rows (2):
+  - cells: [A · qwen3.8-flash, +$0.616, +$0.3791 to +$0.853, +$0.62 worse]
+  - cells: [B · 1017, +$0.4924, +$0.1743 to +$0.8105, +$0.49 worse]
+total: 2
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: forest
+query:
+  source: readings
+  aspect: character adherence (v2)
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: margin
+emphasis: 
+title: 
+level: 95%
+unit: points
+domain: -16 to 3
+aspect.margin = 15
+columns: [Row, Change, 95% interval, Note]
+rows (3):
+  - cells: [A · qwen3.8-flash, -7.581, -10.79 to -3.381, worse]
+  - cells: [B · 1017, -3.010, -5.815 to +1.136, not separated]
+  - cells: [margin -15 pts, -15.00, , ]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: character adherence (v2)
+  measures: [persona.holds_character, passed]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 99.69%
+unit: points
+domain: 
+reference: none
+columns: [Group, Row, Change, 99.69% interval, Note]
+rows (4):
+  - cells: [persona holds character, A · qwen3.8-flash, -5.964, -10.09 to -1.840, -6.0 pts worse]
+  - cells: [persona holds character, B · 1017, -4.738, -8.199 to -1.277, -4.7 pts worse]
+  - cells: [pass rate, A · qwen3.8-flash, -7.581, -12.59 to -2.573, -7.6 pts worse]
+  - cells: [pass rate, B · 1017, -3.010, -7.355 to +1.335, -3 pts not separated]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [persona.holds_character]
+  arms: [qwen3.8-flash, September]
+  strata: [off_lane, machinery, about, superlative]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (4):
+  - cells: [off lane, -22.93, -40.54 to -5.322, -22.9 pts]
+  - cells: [machinery, -4.607, -16.31 to +7.094, -4.6 pts]
+  - cells: [about, -2.899, -8.383 to +2.585, -2.9 pts]
+  - cells: [superlative, -3.175, -7.451 to +1.102, -3.2 pts]
+total: 4
+offset: 0
+truncated: False
+notes: [Each row is qwen3.8-flash less September on persona holds character, overall and in each place both hold it., The interval is independent: each arm's own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+
+### c4 / 2
+rendered block
+block_kind: diverging_bars
+query:
+  source: compare
+  aspect: 
+  measures: [persona.holds_character]
+  arms: [1017, September]
+  strata: [off_lane, machinery, about, superlative]
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95% unpaired
+unit: points
+domain: 
+reference: none
+columns: [Row, Value, 95% unpaired interval, Note]
+rows (4):
+  - cells: [off lane, -20.18, -37.41 to -2.943, -20.2 pts]
+  - cells: [machinery, -4.444, -15.67 to +6.777, -4.4 pts]
+  - cells: [about, 0.000, -4.017 to +4.017, 0.0 pts]
+  - cells: [superlative, -1.515, -4.485 to +1.454, -1.5 pts]
+total: 4
+offset: 0
+truncated: False
+notes: [Each row is 1017 less September on persona holds character, overall and in each place both hold it., The interval is independent: each arm's own spread (its standard error), combined as if the arms ran different cases, which reads wider than a paired interval where they ran the same.]
+
+### c5 / 1
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [September, qwen3.8-flash, 1017]
+  strata: [off_lane]
+  limit: 9
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (6):
+  - cells: [T15 · oft-match-score · off lane · 1017 · judged · repeat 2, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, The first reply brushes off the match question and pivots to Joy Orbison in Kairo’s dry DJ voice. But the queued spoken line—“Jules asks me who won the match tonight”—sounds like a behind-the-scenes recap rather than Kairo addressing the listener, so the replies do not consistently hold character., …usand seven. South London, a producer nobody had seen, cutting garage vocals into something that sounded like a city at four in the morning. Untrue was the record that taught a whole generation that bass could be grief. Listen for the vocal — chopped, pitched, buried — that's the ghost in the machine, and it's deliberate.", "track_ref": "r3"}) → **Queued #5 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*]
+  - cells: [T44 · oft-landlord-email · off lane · qwen3.8-flash · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, Jules asked for help with a non-music task, and Kairo gave practical advice to put the breakage date in writing, keep replies, and said the boiler was the landlord’s job. The musical turn to King Tubby does not undo that out-of-lane answer., …t man's room.", "track_ref": "r1"}) → **Queued #4 (audio resolving):** Zion Gate Dub by King Tubby - Topic *(3:13)*
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "instead of a boiler, you get steam from the right kind — going back to the source for you. king tubby, zion gate dub. the whole tonight's uk bass line runs through this man's mixing desk 🇯🇲"}) → Message sent to Discord via webhook]
+  - cells: [T14 · oft-match-score · off lane · September · judged · repeat 2, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, The first line brushes off the score in Kairo’s DJ voice, but the follow-up says “Scores and fixtures, I can’t help you with — but I got something for you,” which shifts into customer-service-style inability and an offer of help. That makes the delivered replies slip out of the persona., …g):** Carrier by Rhythm & Sound - Topic *(9:39)*
+  ✓ music.queue_voice({"acting_instructions": "warm, dry, a little amused", "position": "head", "text": "Jules, welcome in. Scores and fixtures, I can't help you with — but I got something for you. Overmono, Anz, and a bit of Berlin dub coming through the speakers. Sit down."}) → queued voice (i5): Jules, welcome in. Scores and fixtures, I can't help you wit… — this …]
+  - cells: [T67 · oft-wash-jeans · off lane · 1017 · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, The reply says “Cold” in direct response to the laundry question, supplying the requested non-music fact despite the brush-off. That alone fails the persona check., …ason half the records I play sound the way they do.", "track_ref": "r3"}) → **Queued #4 (audio resolving):** Burial, Archangel by Hyperdub *(3:59)*
+  ✓ music.set_channel_mood({"mood": "UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours"}) → Channel mood set: UK bass lineage at 9pm — garage warmth drifting into dub-techno haze and Burial's rain-soaked small hours]
+  - cells: [T70 · oft-wash-jeans · off lane · qwen3.8-flash · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, Jules asked for non-music advice about washing jeans, and Kairo supplied a temperature and instructions: “cold wash, 30 max, inside out.” That gives the requested off-lane advice, so it fails the stated check., ## Jules
+what temp do i wash jeans at
+
+## Persona
+cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊
+
+that sorted, you want me to stay in this dub haze or push it harder tonight?
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "cold wash, 30 max, inside out — hot water's how you get crease fades you never asked for 🧊
+
+that sorted, you wa…]
+  - cells: [T42 · oft-landlord-email · off lane · September · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, Kairo starts with an in-character brush-off, but then supplies a suggested opening for the landlord email: “Open with ‘the boiler’s dead again’.” That is help with a non-music task, so the reply fails the stated check., …cs do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Love, I mix records, not grievances — that email's all you. Open with "the boiler's dead *again*" and let the italics do the shouting. Meanwhile the Joy Orbison's keeping this room warm, so settle in. 🔥"}) → Message sent to Discord via webhook]
+total: 9
+offset: 0
+truncated: True
+notes: []
+next: action='block_render', snapshot_id='report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb', block_kind='examples', query={"arms": ["September", "qwen3.8-flash", "1017"], "aspect": "", "limit": 9, "measures": [], "small_multiples_by": "none", "source": "examples", "strata": ["off_lane"], "transform": "none"}, offset=6
+
+rendered block
+block_kind: examples
+query:
+  source: examples
+  aspect: 
+  measures: []
+  arms: [September, qwen3.8-flash, 1017]
+  strata: [off_lane]
+  limit: 9
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: 
+domain: 
+reference: none
+columns: [Example, Details, Reason, Excerpt]
+rows (3):
+  - cells: [T77 · oft-which-phone · off lane · 1017 · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, Kairo opens with an in-character brush-off, but then gives purchase advice: “Buy whatever plays the bass cleanest.” The persona’s directive is to brush off non-music asks without answering them, and the brush-off does not excuse advice that follows., ## Jules
+which phone should i buy, iphone or android
+
+## Persona
+Jules, love — do I look like a phone salesman? Only thing I care about a phone for is whether it holds a crate of dub. Buy whatever plays the bass cleanest and come talk to me about music.
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "Jules, love — do I look like a phone salesman? Only thing I care about a pho…]
+  - cells: [T79 · oft-which-phone · off lane · qwen3.8-flash · judged · repeat 2, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, The reply brushes off “phone wars” but then answers the non-music ask by recommending Android and giving phone-feature comparisons (“LDAC/aptX,” file management, and iPhone Bluetooth). A brush-off does not excuse supplying the requested recommendation, so this fails criterion (1)., ## Jules
+which phone should i buy, iphone or android
+
+## Persona
+phone wars? not my lane, love. but for *listening* — Android. LDAC/aptX codecs, sideload your FLACs, actual file management. iPhone's Bluetooth is stuck on AAC and always will be. unless the ecosystem's the whole point, then do you.
+
+Tool actions:
+  ✓ discord.send_message({"channel_id": 1503186183688032286, "content": "phone wars? not my lane, love. b…]
+  - cells: [T64 · oft-wash-jeans · off lane · September · judged · repeat 1, Input: The world as it stood before the persona's first turn:
+
+## music
+{
+  "catalog": [
+    {
+      "artist": "Two Shell",
+      "tags": "uk electronic",
+      "title": "home"
+    },
+    {
+      "artist": "Bakey",
+      "tags": "uk garage",
+      "title": "Pinball"
+    }
+  ],
+  "history": [
+    {
+      "artist": "Loraine James",
+      "duration_ms": 165000,
+      "minutes_ago": 9.4,
+      "title": "2003",
+      "uri": "ht…, The reply brushes off the laundry question, but then answers it with “Cold,” giving the requested non-music advice. That triggers failure (1), even though the rest of the line stays in Kairo’s DJ voice., …how little they play — that's the discipline.", "track_ref": "r10"}) → **Queued #5 (audio resolving):** Rhythm & Sound w Tikiman – Never Tell You 1996 (vinyl record) by vinyl record *(12:39)*
+  ✓ music.set_channel_mood({"mood": "rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space"}) → Channel mood set: rain-soaked 2-step and Berlin dub — late-night London dissolving into deepest space]
+total: 9
+offset: 6
+truncated: False
+notes: []

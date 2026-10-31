@@ -1316,7 +1316,18 @@ def exact_decimal(value: float | Fraction) -> Fraction:
     :return: The exact rational.
     :rtype: Fraction
     """
-    return value if isinstance(value, Fraction) else Fraction(repr(float(value)))
+    return value if isinstance(value, Fraction) else _decimal_of(float(value))
+
+
+@lru_cache(maxsize=4096)
+def _decimal_of(value: float) -> Fraction:
+    """The shortest decimal that round-trips ``value``, as an exact rational, parsed once per value.
+
+    A read converts the same few per-case shares and scores many thousands of times over, and parsing the decimal is
+    the cost. A :class:`~fractions.Fraction` is immutable, so one parse serves every caller; equal floats share a
+    key and a value (``-0.0`` and ``0.0`` parse to the same zero).
+    """
+    return Fraction(repr(value))
 
 
 def no_spread_p(a: Sequence[Fraction], b: Sequence[Fraction], *, paired: bool) -> float | None:
@@ -1911,10 +1922,14 @@ def _betting_p_staked(scaled: Sequence[float], stakes: Sequence[float], m: float
     if m >= 1.0:
         return 1.0
     cap = _BET_CAP / m
+    log1p = math.log1p
     log_capital = best = 0.0
+    # min() and max() spelled as comparisons, which pick the same float, without a builtin call per value: the
+    # bisection runs this loop over every value 33 times a bound.
     for z, stake in zip(scaled, stakes):
-        log_capital += math.log1p(min(stake, cap) * (z - m))
-        best = max(best, log_capital)
+        log_capital += log1p((cap if cap < stake else stake) * (z - m))
+        if log_capital > best:
+            best = log_capital
     return min(1.0, math.exp(-best))
 
 

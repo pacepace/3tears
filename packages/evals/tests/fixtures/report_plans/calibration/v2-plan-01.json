@@ -1,0 +1,82 @@
+{
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "A decision with its reason, naming the recommended row, and it holds: Brisk-S few-shot is the cheapest arm clearing the 90% gate, every cell floor (worst 82.9%) and the latency budget, and the lattice emphasises it.",
+      "quote": "Use Brisk-S · Few-shot (12 ex.) (E). It is the cheapest configuration that clears the overall gate, every cell floor and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "Two sentences: the pick's balanced accuracy and p95 against the budget, then the change (complex news improving for Nano-XS few-shot) that would flip the answer.",
+      "quote": "If complex news turns improved for Nano-XS · Few-shot (12 ex.) (H), the far cheaper model would win.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "The input has no caveats and the plan has no flag; the Method entries are definitions, not repeated caveats.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "pass",
+      "reason": "Each section headline is a directional finding its chart shows: few-shot lifts Nano-XS by about 12 points vs about 2 for Atlas-M, complex news is the pick's lowest cell at 82.9% above 80%, and off-by-two complexity errors are under 1% of rows.",
+      "quote": "Complex news is the pick's weakest cell, and it still clears the floor",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Arms, measures and cells appear by reader names (with tag letters) above Full results; no ids, hashes or measure keys show.",
+      "quote": "Use Brisk-S · Few-shot (12 ex.) (E).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch names the weakest margin (0.7 points over the overall gate, smaller than the cell-floor or latency margins) and then the weakest cell.",
+      "quote": "The weakest margin: Brisk-S · Few-shot (12 ex.) (E) clears the 90% gate on Overall accuracy at 90.7%, by 0.7 points.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "pass",
+      "reason": "Short active sentences with no hedges; 'Overall accuracy' appears only as the gate's name, while the measure stays 'balanced accuracy' throughout.",
+      "quote": "It reaches 90.7% balanced accuracy with a p95 latency of 184 ms, inside the 250 ms budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "Headline, lede and decision slots above the options table say what to use, why, and the main risk (the 0.7-point margin).",
+      "quote": "It is the cheapest configuration that clears the overall gate, every cell floor and the latency budget.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "pass",
+      "reason": "Next names a concrete re-test of Nano-XS few-shot with more complex-news examples and states both outcomes for the call.",
+      "quote": "if it clears the cell floor, it takes the recommendation at a fraction of the cost; if not, Brisk-S · Few-shot (12 ex.) (E) stands.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "pass",
+      "reason": "The confidence is high with no clauses.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "pass",
+      "reason": "Every figure is the arm's own value or the stated gap: 90.7%, 184 ms, 93.2%, and a 0.7-point margin that equals 90.7 minus 90.",
+      "quote": "clears the 90% gate on Overall accuracy at 90.7%, by 0.7 points.",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-10-25T23:29:25Z"
+}

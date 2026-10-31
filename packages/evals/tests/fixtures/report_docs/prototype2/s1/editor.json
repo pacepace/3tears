@@ -1,0 +1,101 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline, the decision slots and c1 together say what to do (keep production), why (v2 drops 60 points on billing, clear of the 10-point margin; v4 breaks the policy-citation floor) and the main risk (v4 is the option that could reverse the call, at 50% lower cost). v3 is also dealt with: it costs the same and gains nothing. One wording fault is scored under item 3."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "c1 (v2 loses on billing), c2 (v4 loses citations), c3 (only v4 is cheaper), c4 (v2's only gain comes with its billing loss) and c5 (refunds cannot show a loss) each follow from the rule in the question and lead to the headline. The Watch slot addresses the one counter-reading head on: options_dominance names v2 as dominating production because it does not treat the broken billing floor as a gate. It also notes that v2's tone 'gain' is a totals gain (tone totals contrast +0.4, citations delta 0), which the data confirm."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "The headline says v4 'stops citing policy on tone replies'. It cites on 8 of 20 (0.4, interval 0.22 to 0.61), so the wording is stronger than the data. The recommended option's weak axes are only partly visible. Production's 0 of 20 refund totals is shown (c5). Production's tone pass rate of 10 of 20, the reason v2 can beat it by 40 points there, appears nowhere: c4 shows only the change."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 2,
+      "reason": "I checked each omission against the snapshot. Citation on billing and refunds is delta 0 for every arm. Failure examples carry no excerpt, input or expected value (examples_list). Cost contrasts read not_separated only because no value_range was declared. Dominance is addressed in Watch. decision_sensitivity on margin:billing, margin:tone and the tone citation floor gives holds=True with no call change at any flip, so nothing left out would change the decision. Leaving out the reading intervals is the one omission that misleads, and it is scored under item 7."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 1,
+      "reason": "Every caveat is shown, and the apparatus set feeds the fifth next step. But the material_if of unsettled:refunds is inverted. If the total check is sound, production really gets 0 of 20 right and no candidate can lose ground, so the caveat is immaterial. It matters if the check is broken, which is what next step 3 says. Nine apparatus:world lines are the same boilerplate sentence. vendor_template, the template totals are graded against, is the one confound that could explain production's 0 of 20 refund totals, and it is not tied to next step 3."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "Each of the five next steps names an experiment or a declaration and says what it settles: fix v4's citations, re-run v4 with more cases, hand-check the refund totals, declare a tone grader, record the apparatus. Two minor faults. Steps 1 and 2 overlap. Neither gives a case count, and settle_cases cannot size one because no declared criterion reads v4, which the step could say."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "c1, c4, c5 and c3 fit their claims, and the counterfactual holds: if those values flipped, the claims would change. Three faults. First, c1's chart shows v4's worst billing drop as 11.1 (corrected interval -11.1 to +21.1), but Watch and Explore cite 15.9, from the omitted 98% reading interval (-15.9 to +30.5), and Method wrongly says the charted intervals are the wider ones. Second, c2's evidence is the uncorrected 95% per-arm rate plus a floor table whose 'Largest drop' column reads 78.5, while the claim cites 23.9. The corrected contrast the lede rests on (-60 points, -96.15 to -23.85, p_adj 0.0004) is not on the page. Third, the floor table marks v2 and v3 'unclear' with no explanation, although both cite policy on every reply."
+    }
+  ],
+  "total": 11,
+  "passes": true,
+  "findings": [
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The Method 'Margin verdicts' entry says the charts show the corrected contrasts, 'whose intervals are wider'. For most arms this is false. Billing v4: reading -15.9 to +30.5 at 98%, corrected -11.1 to +21.1 at 99.55%. Billing v3: -20.9 to +15.9 against -21.1 to +11.1. Tone v4: -32.4 to +12.7 against -32.1 to +12.1. As a result, the c1 chart puts v4's worst billing drop at 11.1 while Watch and Explore cite {aspects.billing.flip_margin.v4} = 15.9, and Method's account of the gap points the wrong way. Fix the sentence. Then either show v4's reading interval or say that the margin verdict uses a different, wider interval than the chart."
+    },
+    {
+      "claim": "report",
+      "severity": "must_fix",
+      "finding": "The material_if of caveat unsettled:refunds is inverted. It reads 'only if the refund total check is sound'. If the check is sound, production truly gets 0 of 20 and no candidate can lose ground, so the caveat is immaterial. It is material if the check is broken, as next step 3 says ('Whether refunds is a real measure or a broken check')."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The headline says v4 'stops citing policy on tone replies'. It cites on 8 of 20 (0.4) to production's 20 of 20. Say how far it drops instead, for example 'cites policy on far fewer tone replies', as c2 already does."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The lede says both losses are clear of zero after correction, but c2 shows only the uncorrected 95% rate. Add or point to the corrected contrast: aspects.tone.contrast.v4.goal_state:reply.cites_policy, -0.6, -0.9615 to -0.2385, regressed. The floor table's 'Largest drop 78.5' sits next to the claim's 23.9 with nothing explaining that 23.9 is the near end of the -78.5 to -23.9 interval. The v2 and v3 rows read 'unclear' (worst drop 19 against a 15-point floor) even though both cite on 20 of 20 (40 of 40 for v3). Say that twenty cases cannot show a 100% rate holding within 15 points."
+    },
+    {
+      "claim": "c4",
+      "severity": "should_fix",
+      "finding": "Production's own tone pass rate, 10 of 20 (aspects.tone.reading.v2.control_passed), is never shown. The recommended option fails half the tone set, and that is the weak axis behind v2's +40. One clause in c4 or Watch would make it visible."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Explore says the citation floor binds 'v4 alone'. decision_sensitivity on that floor also flips v2 and v3, which read unclear at the declared 15 and hold only above 19. The call does not change, but 'binds v4 alone' is not what the data show. Say that it decides only v4."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The apparatus caveats repeat one sentence nine times. Tie apparatus:world:vendor_template ('the template the totals are graded against') and apparatus:grader_version to the refund-total check in next step 3: they are the confounds most likely to explain production's 0 of 20 refund totals."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Next steps 1 and 2 overlap: both re-run v4 on tone. Merge them, and give a case count or say why none can be given yet. settle_cases finds no declared criterion reading v4."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "Watch says 'Code's dominance reading' and the Omitted list says 'Code's options_dominance reading'. These name the tool's internals to the reader. Describe the reading itself instead: a reading that counts the tone gain and treats no floor as a gate."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: the Omitted list names the tool action 'options_dominance' ('Code's options_dominance reading'). If Omitted renders above the appendix, this is an internal id on the page.",
+    "Invariant 1: Method prints a typed count, 'Each reply gets two scripted checks', that is not resolved through a figure key.",
+    "All 17 figure keys resolve (figure_keys_check, status reads for every key), and all 17 snapshot caveats are shown with a material_if. Invariants 1 (otherwise), 3 and 4 hold."
+  ],
+  "calls": 19
+}

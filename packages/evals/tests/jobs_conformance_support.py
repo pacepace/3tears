@@ -4,8 +4,8 @@ The toy host's kind is graded by code and calls no model, so a run of it would l
 nothing to ask: the kit's positive control would call it vacuous, rightly. This host's kind is judged — through the
 :class:`~threetears.evals.kernel.host.EvalHost`'s client factory, which the kit wraps — on a two-dimension rubric,
 by a scripted judge answering every dimension 3 (inside the scale, so a temperature comparison has borderline cases).
-The analysis writer answers with a payload the generator refuses: a generation's job still calls it, which is all the
-kit asks of it. Harness support, not part of any fixture host.
+The ``analyst`` role's client is a scripted turn model whose analyst never submits a document: a generation's job still
+sends its turns, which is all the kit asks of it. Harness support, not part of any fixture host.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Any
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.actions import Caller, ConformanceSample
 from threetears.evals.kernel.host import CompletionClients
-from threetears.evals.ops import AnalysisGeneration, OpsHost
+from threetears.evals.ops import AnalysisGeneration, OpsHost, ReportBudget
 from threetears.evals import Judge
 from threetears.evals.quick.one_call import JUDGED_CALLABLE_KIND, callable_host, callable_kind
 from threetears.evals.run import (
@@ -41,6 +41,8 @@ from threetears.evals.schema import (
     SubjectSnapshot,
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
+from threetears.evals.schema.turns import TurnText
+from packages.evals.tests.doc_writer_support import FakeAnalystClient, scripted_reply
 from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
 
@@ -53,6 +55,8 @@ _SUBJECT = "subject-judged"
 _CANDIDATE = "candidate-a"
 _JUDGE = "judge/first"
 _SECOND = "judge/second"
+#: The analyst's replies a generation reads: its draft and each of its three bounces, none holding a document.
+_ANALYST_REPLIES = 4
 #: Judged 1-5, so the judge's 3 is a borderline score.
 _RUBRIC = [
     RubricDim(name="answer.faithful", description="Says only what the case supports.", scale="ordinal"),
@@ -106,8 +110,12 @@ class ScriptedClients:
 
     built: list[_ScriptedClient] = field(default_factory=list)
 
-    def __call__(self, role: Any, model: str | None, *, temperature: float | None = None) -> _ScriptedClient:
-        """Build one client."""
+    def __call__(
+        self, role: Any, model: str | None, *, temperature: float | None = None
+    ) -> _ScriptedClient | FakeAnalystClient:
+        """Build one client: the ``analyst`` role's a turn model whose every reply holds no document."""
+        if role == "analyst":
+            return FakeAnalystClient({"analyst": [scripted_reply(TurnText("{}")) for _ in range(_ANALYST_REPLIES)]})
         client = _ScriptedClient(str(role), model or f"{role}/default", temperature)
         self.built.append(client)
         return client
@@ -198,14 +206,8 @@ def conformance_host(
         job_timeout_factory=default_job_timeout,
     )
 
-    async def prompt() -> str:
-        return "Write the analysis."
-
     host = OpsHost(
-        launch=launching,
-        generation=AnalysisGeneration(
-            prompt_id="conformance", resolve_prompt=prompt, max_output_tokens=1000, budget_s=60.0
-        ),
+        launch=launching, generation=AnalysisGeneration(report_budget=lambda: ReportBudget(usd=1.0), budget_s=60.0)
     )
     return JobsConformanceHost(
         host=host,

@@ -1,4 +1,4 @@
-"""The reflective measure walk: every measure a campaign's results carry, pooled into the bundle's measure surface.
+"""The measure walk: every measure a campaign's results carry, pooled into the bundle's measure surface.
 
 :func:`_collect_measures` walks each result's scalar leaves, record carriers, derived and lineage leaves and open
 maps, keeps the measures the registry describes as reportable, and summarises each over its own population
@@ -7,9 +7,24 @@ maps, keeps the measures the registry describes as reportable, and summarises ea
 
 from __future__ import annotations
 
+from array import array
 from collections.abc import Collection, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from itertools import chain
-from typing import TYPE_CHECKING, Any
+from types import UnionType
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    NamedTuple,
+    TypeAliasType,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel
 
@@ -21,6 +36,7 @@ from threetears.evals.analysis.stats import (
     proportion_interval,
     small_sample_case_means,
 )
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.scoring import median_unbiased_quantile
 from threetears.evals.kernel.host.profile import HostProfile
@@ -43,12 +59,15 @@ from threetears.evals.kernel.metrics import (
 )
 from threetears.evals.kernel.covariates import undeclarable_covariates
 
+from threetears.evals.kernel.result_reading import ResultView
+
 # At runtime for its field set, which tells a result-level measure from a row-level one.
 from threetears.evals.schema.models import (
     goal_check_proofs_as_read,
     stale_goal_check_proofs,
     EvalResult,
     GoalCheckProof,
+    RubricScore,
 )
 from threetears.evals.kernel.result_condition import (
     ResultOutcome,
@@ -192,20 +211,68 @@ def _value_fits(descriptor: MetricDescriptor, value: float | str) -> bool:
     return not isinstance(value, (str, bool))
 
 
-def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
-    """Yield ``(field_name, value)`` for each present numeric/string scalar on a model.
+def _scalar_leaves(model: object, names: tuple[str, ...]) -> Iterator[tuple[str, float | str]]:
+    """Yield ``(field_name, value)`` for each present numeric/string scalar of ``names`` on a model.
 
-    Booleans are excluded despite being ints in Python: a boolean measure is a
-    condition, and averaging one into a percentile reads as a rate nobody computed.
+    ``names`` is the model type's walked fields (:data:`_LINEAGE_FIELDS`, or a carrier's in :data:`_CARRIERS`), read by
+    name, so an ``EvalResult`` and its compact reading are walked alike, and a reading without a walked field fails
+    loudly. Booleans are excluded despite being ints in Python: a boolean measure is a condition, and averaging one into
+    a percentile reads as a rate nobody computed.
     """
-    for field_name in type(model).model_fields:
-        value = getattr(model, field_name, None)
+    for field_name in names:
+        value = getattr(model, field_name)
         if value is None or isinstance(value, bool):
             continue
         if isinstance(value, (int, float)):
             yield field_name, float(value)
         elif isinstance(value, str):
             yield field_name, value
+
+
+#: The judge's prose, by the model type that holds it and its field: a score's ``reasoning`` and the result's
+#: ``judge_reasoning``. Text the judge wrote is never a measure, so the walk never reads it, and a compact reading of
+#: a result need not carry it. Named by type and field, not by name alone: a host measure called ``reasoning`` or
+#: ``judge_reasoning`` (on ``host_measures``, or a field of any other carrier) is walked and pooled as any other.
+_WALK_PROSE: frozenset[tuple[type[BaseModel], str]] = frozenset(
+    {(RubricScore, "reasoning"), (EvalResult, "judge_reasoning")}
+)
+
+
+def _hint_types(hint: object) -> Iterator[object]:
+    """Every type a field's resolved hint admits, through unions, ``Annotated``, ``Literal`` and type aliases."""
+    if isinstance(hint, TypeAliasType):
+        yield from _hint_types(hint.__value__)
+        return
+    origin = get_origin(hint)
+    if origin is Literal:
+        yield from (type(value) for value in get_args(hint))
+    elif origin is Annotated:
+        yield from _hint_types(get_args(hint)[0])
+    elif origin is Union or origin is UnionType:
+        for arm in get_args(hint):
+            yield from _hint_types(arm)
+    else:
+        yield hint
+
+
+def _admits_scalar(hint: object) -> bool:
+    """Whether a field so hinted can hold a value :func:`_scalar_leaves` yields: a number or text, never a boolean."""
+    return any(
+        isinstance(admitted, type) and admitted is not bool and issubclass(admitted, (int, float, str))
+        for admitted in _hint_types(hint)
+    )
+
+
+def _walked_fields(model: type[BaseModel]) -> tuple[str, ...]:
+    """A model type's walked fields: each field that can hold a number or text, but the judge's prose, in field order.
+
+    A field that only ever holds a boolean, a list, a mapping or a model never yields a scalar leaf, so leaving it out
+    walks exactly what reading every field did.
+    """
+    hints = get_type_hints(model)
+    return tuple(
+        name for name in model.model_fields if (model, name) not in _WALK_PROSE and _admits_scalar(hints[name])
+    )
 
 
 #: Result fields whose sub-models RECORD something done to the result rather than something
@@ -219,7 +286,37 @@ def _scalar_leaves(model: BaseModel) -> Iterator[tuple[str, float | str]]:
 RECORD_CARRIERS: frozenset[str] = frozenset({"judge_rescores", "judge_repeats", "judge_seconds"})
 
 
-def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _carrier_fields() -> tuple[tuple[str, bool, tuple[str, ...]], ...]:
+    """Each result field the walk reads as a carrier: ``(field, repeatable, the item model's walked fields)``.
+
+    A carrier is a field holding a model, or a list of them (repeatable); a record carrier (:data:`RECORD_CARRIERS`)
+    and a verbatim field (:data:`~threetears.evals.kernel.run_pages.VERBATIM_RESULT_FIELDS`) are not. A world's event
+    log is what the world did, verbatim, not what the cell measured: walked, each event's ``turn`` would pool into any
+    measure a host declares as ``turn`` that the result did not report itself, and a reader of figures reads results
+    without it.
+    """
+    hints = get_type_hints(EvalResult)
+    carriers: list[tuple[str, bool, tuple[str, ...]]] = []
+    for name in EvalResult.model_fields:
+        if name in RECORD_CARRIERS or name in VERBATIM_RESULT_FIELDS:
+            continue
+        for admitted in _hint_types(hints[name]):
+            repeatable = get_origin(admitted) is list
+            item = get_args(admitted)[0] if repeatable else admitted
+            if isinstance(item, type) and issubclass(item, BaseModel):
+                carriers.append((name, repeatable, _walked_fields(item)))
+                break
+    return tuple(carriers)
+
+
+#: The result's own walked fields (:func:`_walked_fields`), read as its lineage leaves.
+_LINEAGE_FIELDS: tuple[str, ...] = _walked_fields(EvalResult)
+
+#: The result's carriers (:func:`_carrier_fields`), each with the walked fields of its item model, in field order.
+_CARRIERS: tuple[tuple[str, bool, tuple[str, ...]], ...] = _carrier_fields()
+
+
+def _carrier_leaves(result: ResultView, *, describe: _Describer) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield ``(name, value, report_gaps, carrier, observation_unit)`` for every sub-model's leaves.
 
     This is the whole subject-agnostic mechanism: a result announces what it measured
@@ -258,23 +355,20 @@ def _carrier_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     is the only place the difference can be observed, and it says so by name rather than
     leaving each comparison site to re-derive it.
     """
-    for field_name in type(result).model_fields:
-        if field_name in RECORD_CARRIERS:
+    for field_name, repeatable, names in _CARRIERS:
+        value = getattr(result, field_name)
+        if value is None:
             continue
-        value = getattr(result, field_name, None)
-        repeatable = isinstance(value, list)
-        carriers: list[Any] = [value] if isinstance(value, BaseModel) else value if isinstance(value, list) else []
+        carriers: Sequence[Any] = value if repeatable else (value,)
         observation_unit = f"{field_name}[]" if repeatable else _PER_RESULT
         for item in carriers:
-            if not isinstance(item, BaseModel):
-                continue
-            leaves = list(_scalar_leaves(item))
-            report_gaps = any(describe_measure(name, profile.measures).family is not None for name, _ in leaves)
+            leaves = list(_scalar_leaves(item, names))
+            report_gaps = any(describe(name).family is not None for name, _ in leaves)
             for name, leaf in leaves:
                 yield name, leaf, report_gaps, field_name, observation_unit
 
 
-def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _derived_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield the measures a result implies but does not carry, in the carrier-leaf shape.
 
     Two. ``candidate_output_tokens_per_s`` is the candidate provider's output rate — see
@@ -305,13 +399,13 @@ def _derived_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool
         yield "candidate_output_tokens_per_s", throughput, True, "latency", _PER_RESULT
 
 
-def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult]) -> list[GoalCheckProofReading]:
+def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[ResultView]) -> list[GoalCheckProofReading]:
     """Each goal check the runs' results graded, with the proof its runs froze at launch, in the order first met.
 
     :param runs: The member runs.
     :ptype runs: Sequence[EvalRun]
     :param results: Their results.
-    :ptype results: Iterable[EvalResult]
+    :ptype results: Iterable[ResultView]
     :return: One reading per check.
     :rtype: list[GoalCheckProofReading]
     """
@@ -367,7 +461,7 @@ def goal_check_proofs_of(runs: Sequence[EvalRun], results: Iterable[EvalResult])
     return readings
 
 
-def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _goal_check_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield each goal-state check's verdict on this observation, 1.0 passed and 0.0 not.
 
     The mechanical tier's verdicts, which the bundle carries unconditionally: a bar is a
@@ -390,7 +484,7 @@ def _goal_check_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, b
         yield goal_check_measure(outcome.expression), 1.0 if passed else 0.0, False, "goal_state_outcomes", _PER_RESULT
 
 
-def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str, list[EvalResult]]:
+def _failures_as_misses(results_by_run: dict[str, list[ResultView]]) -> dict[str, list[ResultView]]:
     """Each run's results, with a classifier's failure that landed no verdict read as a miss.
 
     A classifier kind lands ``match`` on every classification, and a call its model refused lands nothing
@@ -413,41 +507,61 @@ def _failures_as_misses(results_by_run: dict[str, list[EvalResult]]) -> dict[str
     Copied, never written back: what the kind stored is untouched.
 
     :param results_by_run: Each run's stored results.
-    :ptype results_by_run: dict[str, list[EvalResult]]
+    :ptype results_by_run: dict[str, list[ResultView]]
     :return: The same results, each such failure replaced by a copy carrying ``match`` False.
-    :rtype: dict[str, list[EvalResult]]
+    :rtype: dict[str, list[ResultView]]
     """
     classified_cases = {
-        result.test_case_id
-        for members in results_by_run.values()
-        for result in members
-        if isinstance(result.host_measures.get(MATCH_MEASURE), bool)
+        result.test_case_id for members in results_by_run.values() for result in members if _classifies(result)
     }
     grading_otherwise = {
         run_id
         for run_id, members in results_by_run.items()
-        if any(
-            result.test_case_id in classified_cases
-            and MATCH_MEASURE not in result.host_measures
-            and classify_result(result) is ResultOutcome.OK
-            for result in members
+        if _grades_otherwise(
+            (result.test_case_id for result in members if _answered_unclassified(result)), classified_cases
         )
     }
 
-    def read(run_id: str, result: EvalResult) -> EvalResult:
-        if (
-            run_id not in grading_otherwise
-            and result.test_case_id in classified_cases
-            and MATCH_MEASURE not in result.host_measures
-            and classify_result(result) is ResultOutcome.CANDIDATE_FAIL
-        ):
-            return result.model_copy(update={"host_measures": {**result.host_measures, MATCH_MEASURE: False}})
+    def read(run_id: str, result: ResultView) -> ResultView:
+        if _miss_counts(result.test_case_id, classified_cases, grading_otherwise=run_id in grading_otherwise):
+            return _as_miss(result) or result
         return result
 
     return {run_id: [read(run_id, result) for result in members] for run_id, members in results_by_run.items()}
 
 
-def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, bool, str, str]]:
+def _classifies(result: ResultView) -> bool:
+    """Whether the result landed a verdict, making its case a classification (:func:`_failures_as_misses`)."""
+    return isinstance(result.host_measures.get(MATCH_MEASURE), bool)
+
+
+def _answered_unclassified(result: ResultView) -> bool:
+    """Whether the result was delivered without failing and landed no verdict: on a classified case, its run grades by
+    something else (:func:`_failures_as_misses`)."""
+    return MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.OK
+
+
+def _grades_otherwise(answered_unclassified: Iterable[str], classified_cases: Collection[str]) -> bool:
+    """Whether a run that answered these cases without failing and without a verdict grades by something else: it
+    answered a case some run classified (:func:`_failures_as_misses`)."""
+    return any(case_id in classified_cases for case_id in answered_unclassified)
+
+
+def _miss_counts(case_id: str, classified_cases: Collection[str], *, grading_otherwise: bool) -> bool:
+    """Whether a failure on ``case_id`` that landed no verdict is read as a miss: its case is a classification and its
+    run classifies (:func:`_failures_as_misses`)."""
+    return not grading_otherwise and case_id in classified_cases
+
+
+def _as_miss(result: ResultView) -> ResultView | None:
+    """The result read as a miss when it is a candidate failure that landed no verdict, else ``None``; whether it is
+    read so turns on its case and its run (:func:`_failures_as_misses`)."""
+    if MATCH_MEASURE not in result.host_measures and classify_result(result) is ResultOutcome.CANDIDATE_FAIL:
+        return result.model_copy(update={"host_measures": {**result.host_measures, MATCH_MEASURE: False}})
+    return None
+
+
+def _accuracy_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield the observation's classifier accuracy, 1.0 matched and 0.0 not, derived from its ``match``.
 
     ``match`` is the boolean a classifier kind lands, and a boolean summarises as a rate with no
@@ -470,7 +584,7 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
     kind that classifies nothing, and yields nothing: an accuracy for it would be invented.
 
     :param result: The observation.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :yield: ``("accuracy", 1.0 | 0.0, True, "host_measures", "result")`` at most once.
     :rtype: Iterator[tuple[str, float | str, bool, str, str]]
     """
@@ -480,7 +594,7 @@ def _accuracy_leaves(result: EvalResult) -> Iterator[tuple[str, float | str, boo
         yield ACCURACY_MEASURE, 1.0 if hit else 0.0, True, "host_measures", _PER_RESULT
 
 
-def _candidate_output_throughput(result: EvalResult) -> float | None:
+def _candidate_output_throughput(result: ResultView) -> float | None:
     """The candidate's output tokens per second of its own model-call time, or None.
 
     Both halves are the CANDIDATE's: ``llm_ms`` sums the candidate's model-call spans, and the
@@ -490,7 +604,7 @@ def _candidate_output_throughput(result: EvalResult) -> float | None:
     rate, and zero would read as a provider that produced nothing.
 
     :param result: The observation.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: Tokens per second, or None when the candidate's output tokens or a non-zero ``llm_ms``
         is missing.
     :rtype: float | None
@@ -504,7 +618,7 @@ def _candidate_output_throughput(result: EvalResult) -> float | None:
     return sum(counted) / (llm_ms / 1000.0)
 
 
-def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> list[str]:
+def _withheld_derived(results: list[ResultView], reported: Collection[str]) -> list[str]:
     """Name a derived measure no result could produce, with the reason it could not.
 
     A derived measure is the one kind that can vanish from the bundle without anything
@@ -520,7 +634,7 @@ def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> l
     ``absent_scopes`` is the right place for.
 
     :param results: The results the collection was built from.
-    :ptype results: list[EvalResult]
+    :ptype results: list[ResultView]
     :param reported: Measure names the walk successfully summarised.
     :ptype reported: Collection[str]
     :return: Entries of the form ``name (reason)``, empty when nothing was withheld. The
@@ -539,7 +653,7 @@ def _withheld_derived(results: list[EvalResult], reported: Collection[str]) -> l
     return [f"orchestration_ms ({reasons.pop()})" if len(reasons) == 1 else "orchestration_ms"]
 
 
-def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
+def _lineage_leaves(result: ResultView, *, describe: _Describer) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
     """Yield the result's own top-level scalars.
 
     Mostly lineage and provenance — ids, a schema version, the k index — with a couple of
@@ -557,10 +671,10 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
     :attr:`AnalysisContextBundle.cost_unmeasured` says why.
     """
     observed = spend_observed(result.usage, result.cost_roles)
-    for name, value in _scalar_leaves(result):
+    for name, value in _scalar_leaves(result, _LINEAGE_FIELDS):
         if name == _COST_MEASURE and not observed:
             continue
-        yield name, value, describe_measure(name, profile.measures)
+        yield name, value, describe(name)
     # The candidate's own spend, where the result measured one: what the arm costs, beside ``cost_usd``, what
     # it cost to measure (the judge's and simulator's spend included). Derived here rather than stored, so every
     # slicing the walk serves — a cell, a run, a case, a stratum — reads the one figure a contrast on cost tests.
@@ -570,11 +684,11 @@ def _lineage_leaves(result: EvalResult, *, profile: HostProfile) -> Iterator[tup
         candidate_kind=result.candidate_kind,
     )
     if candidate_spend is not None:
-        yield _CANDIDATE_SPEND, candidate_spend, describe_measure(_CANDIDATE_SPEND, profile.measures)
+        yield _CANDIDATE_SPEND, candidate_spend, describe(_CANDIDATE_SPEND)
 
 
 def _open_map_leaves(
-    result: EvalResult, *, profile: HostProfile
+    result: ResultView, *, describe: _Describer
 ) -> Iterator[tuple[str, float | str, MetricDescriptor]]:
     """Yield the result's covariate, phase-timing and host-measure entries — all open key spaces.
 
@@ -594,10 +708,10 @@ def _open_map_leaves(
     stray = set(undeclarable_covariates(result.covariates))
     for name, value in result.covariates.items():
         if name.strip() and name not in stray:
-            yield name, value, describe_measure(name, profile.measures)
+            yield name, value, describe(name)
     for name, value in result.phase_timings.items():
         if name.strip():
-            yield name, float(value), describe_phase_timing(name)
+            yield name, float(value), describe.phase(name)
     # Host-declared measures resolve through `describe_measure`, which consults the
     # host's measure registry between the seeded core and the goal-state branch. So a name the host
     # declared arrives with the host's own descriptor — merit axis and direction included — and
@@ -617,10 +731,10 @@ def _open_map_leaves(
     smuggled = set(undeclarable_host_measures(result.host_measures))
     for name, value in result.host_measures.items():
         if name.strip() and name not in smuggled:
-            yield name, value, describe_measure(name, profile.measures)
+            yield name, value, describe(name)
 
 
-def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
+def _undeclarable_host_entries(results: Sequence[ResultView]) -> list[str]:
     """The unreported-observation entries for host-measure keys the walk dropped as engine-owned.
 
     Each entry is the key with its reason in parentheses, the form
@@ -629,7 +743,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     beside it and the bare name would read as a gap in the engine's reading rather than a drop of the host's.
 
     :param results: The results the walk read.
-    :ptype results: Sequence[EvalResult]
+    :ptype results: Sequence[ResultView]
     :return: One entry per dropped key, sorted.
     :rtype: list[str]
     """
@@ -644,7 +758,7 @@ def _undeclarable_host_entries(results: Sequence[EvalResult]) -> list[str]:
     ]
 
 
-def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
+def in_population(population: MeasurePopulation, result: ResultView) -> bool:
     """Whether a result is an observation of a measure read over ``population``.
 
     The one membership rule the measure walk applies, per measure and per result: a result the harness
@@ -657,7 +771,7 @@ def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
         (:func:`~threetears.evals.kernel.metrics.summary_population`).
     :ptype population: MeasurePopulation
     :param result: The result.
-    :ptype result: EvalResult
+    :ptype result: ResultView
     :return: True when the result's observations of the measure count.
     :rtype: bool
     """
@@ -671,9 +785,241 @@ def in_population(population: MeasurePopulation, result: EvalResult) -> bool:
 #: One measure's pooled observations: its descriptor, its values, and each value's test case.
 _PooledMeasure = tuple[MetricDescriptor, list[float | str], list[str]]
 
+#: Where a leaf of a result's walk came from: the result's own scalars and open maps (``outer``), a carrier's leaves
+#: or a measure the result implies (``carrier``), or a verdict derived from a goal check or a ``match``
+#: (``verdict``). The walk pools ``outer`` against the other two; a mechanism reads ``outer`` and ``carrier``.
+_LeafSource = Literal["outer", "carrier", "verdict"]
+
+#: What a surface does with a leaf of a result that is in the leaf's population: pools it, reports it as an observation
+#: it could not summarise, or passes it over quietly. A result outside the population is passed over quietly whatever
+#: the leaf's verdict. See :func:`_pool_measures`.
+_Verdict = Literal["pooled", "unreported", "quiet"]
+
+#: Every population a measure can be read over, in a fixed order: bit ``i`` of a walk's memberships is the ``i``-th.
+_POPULATIONS: tuple[MeasurePopulation, ...] = get_args(MeasurePopulation)
+
+#: The most slots a walk indexes in two bytes each; a memo holding more indexes in four.
+_SHORT_SLOTS = 1 << 16
+
+
+class _Slot(NamedTuple):
+    """Everything about one leaf of a result's walk but its value, which many results' leaves share."""
+
+    source: _LeafSource
+    name: str
+    descriptor: MetricDescriptor
+    #: The carrier field it rides on; None for an ``outer`` leaf.
+    carrier: str | None
+    #: What one observation of it describes (:func:`_collect_measures`).
+    unit: str
+    #: What a surface does with it when the result is in its population.
+    verdict: _Verdict
+
+
+def _verdict(
+    descriptor: MetricDescriptor, value: float | str, *, report_gaps: bool, measures: MeasureRegistry
+) -> _Verdict:
+    """What a surface does with a leaf whose result is in its population: the walk's branch order, population aside."""
+    if not _is_reportable(descriptor, measures):
+        # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
+        # measurement the code emits that the registry cannot explain. Three things stay
+        # quiet, each for its own reason — an undescribed string (almost always an
+        # identifier: a trace id, a role, a price source), a measure a deliberate filter
+        # excluded (a directionless count, a judged family), and anything from the
+        # result's lineage fields, where "undescribed" means "not a measure" rather than
+        # "a measure nobody described".
+        if report_gaps and descriptor.family is None and not isinstance(value, str):
+            return "unreported"
+        return "quiet"
+    return "pooled" if _value_fits(descriptor, value) else "unreported"
+
+
+class _Describer:
+    """The registry's descriptions over one registry, each name resolved once.
+
+    :func:`~threetears.evals.kernel.metrics.describe_measure` and :func:`describe_phase_timing` are functions of their
+    inputs alone, so a name resolved twice resolves alike; held here, the descriptor first returned is handed back
+    rather than built again. One entry per distinct name, so its size is the vocabulary's, never the results'. The
+    registry is held too, so its identity, which a memo keys a describer by, cannot be reused while the describer lives.
+    """
+
+    __slots__ = ("measures", "_descriptors", "_phases")
+
+    def __init__(self, measures: MeasureRegistry) -> None:
+        self.measures = measures
+        self._descriptors: dict[str, MetricDescriptor] = {}
+        self._phases: dict[str, MetricDescriptor] = {}
+
+    def __call__(self, name: str) -> MetricDescriptor:
+        descriptor = self._descriptors.get(name)
+        if descriptor is None:
+            descriptor = self._descriptors[name] = describe_measure(name, self.measures)
+        return descriptor
+
+    def phase(self, name: str) -> MetricDescriptor:
+        """A phase-timing key's descriptor (:func:`describe_phase_timing`)."""
+        descriptor = self._phases.get(name)
+        if descriptor is None:
+            descriptor = self._phases[name] = describe_phase_timing(name)
+        return descriptor
+
+
+class _CompactWalk:
+    """One result's walk, as compact as it can be held: its slots by index, its pooled values, its populations.
+
+    About a hundred leaves a result, each held as a two-byte index into the memo's slots; a value is kept only for a
+    leaf a surface can pool, and the result's membership of each population is one bit. The result and the registry
+    are held, so neither identity a memo keys the walk by can be reused while it lives.
+    """
+
+    __slots__ = ("result", "measures", "slots", "values", "members")
+
+    def __init__(self, result: ResultView, describe: _Describer, memo: _WalkMemo) -> None:
+        self.result = result
+        self.measures = describe.measures
+        ids: list[int] = []
+        values: list[float | str] = []
+        for slot, value in _walk_leaves(result, describe):
+            ids.append(memo.slot_id(slot))
+            if slot.verdict == "pooled":
+                values.append(value)
+        self.slots = array("H" if len(memo.slots) <= _SHORT_SLOTS else "I", ids)
+        self.values = tuple(values)
+        self.members = sum(1 << bit for bit, population in enumerate(_POPULATIONS) if in_population(population, result))
+
+    def member(self, population: MeasurePopulation) -> bool:
+        """Whether the result is an observation of a measure read over ``population`` (:func:`in_population`)."""
+        return bool(self.members >> _POPULATIONS.index(population) & 1)
+
+
+class _WalkMemo:
+    """One assembly's walks, by result; its describers, by registry; and the slots its walks index.
+
+    Slots are interned: one per distinct leaf identity (its source, name, descriptor, carrier, unit and verdict), so the
+    table's size is the vocabulary's, and each slot's population on a surface is resolved once.
+    """
+
+    __slots__ = ("walks", "describers", "slots", "_slot_ids", "_populations")
+
+    def __init__(self) -> None:
+        self.walks: dict[int, _CompactWalk] = {}
+        self.describers: dict[int, _Describer] = {}
+        self.slots: list[_Slot] = []
+        self._slot_ids: dict[tuple[str, str, int, str | None, str, str], int] = {}
+        self._populations: dict[MeasurePopulation, list[int]] = {}
+
+    def describer(self, measures: MeasureRegistry) -> _Describer:
+        """The describer over ``measures``, made on first use."""
+        held = self.describers.get(id(measures))
+        if held is None or held.measures is not measures:
+            held = self.describers[id(measures)] = _Describer(measures)
+        return held
+
+    def slot_id(self, slot: _Slot) -> int:
+        """``slot``'s index in :attr:`slots`, interned on first sight."""
+        # The descriptor by identity: it is held in `slots`, so its id is not reused while the memo lives.
+        key = (slot.source, slot.name, id(slot.descriptor), slot.carrier, slot.unit, slot.verdict)
+        found = self._slot_ids.get(key)
+        if found is None:
+            found = self._slot_ids[key] = len(self.slots)
+            self.slots.append(slot)
+        return found
+
+    def population_bits(self, undeclared: MeasurePopulation) -> list[int]:
+        """Each slot's population on a surface whose undeclared population is ``undeclared``, as its membership bit
+        (:attr:`_CompactWalk.members`), aligned with :attr:`slots`."""
+        known = self._populations.setdefault(undeclared, [])
+        known.extend(
+            1 << _POPULATIONS.index(summary_population(slot.descriptor, undeclared))
+            for slot in self.slots[len(known) :]
+        )
+        return known
+
+
+_WALK_MEMO: ContextVar[_WalkMemo | None] = ContextVar("bundle_measure_walk_memo", default=None)
+
+
+@contextmanager
+def _measure_walk_memo() -> Iterator[None]:
+    """Resolve each measure name once, and walk each result once, however many surfaces of one assembly pool it.
+
+    A bundle's folds pool the same results many times over (per cell, per stratum, per run, per level, per case),
+    and each pooling once re-walked every result's leaves and re-resolved every name through the registry. Inside this
+    context each name is described once (:class:`_Describer`) and each result's walk is held compactly
+    (:class:`_CompactWalk`: a two-byte slot index per leaf and its poolable values, bounded per result by
+    ``packages/evals/tests/test_measure_walk_memory.py``), keyed by identity: a result copied with a change
+    (``model_copy``) is a different object and is walked afresh. **A result must not be changed in place inside the
+    context**, or a pooling would read its walk as it was. What is pooled does not change, only how often it is
+    computed. Re-entered, the outer context's memo is shared; it is dropped on exit, an exception's included.
+
+    :return: A context manager; used as a decorator, one context per call.
+    :rtype: Iterator[None]
+    """
+    if _WALK_MEMO.get() is not None:
+        yield
+        return
+    token = _WALK_MEMO.set(_WalkMemo())
+    try:
+        yield
+    finally:
+        _WALK_MEMO.reset(token)
+
+
+def _describer(measures: MeasureRegistry) -> _Describer:
+    """The active memo's describer over ``measures``, or a fresh one outside any memo."""
+    memo = _WALK_MEMO.get()
+    return _Describer(measures) if memo is None else memo.describer(measures)
+
+
+def _walk_leaves(result: ResultView, describe: _Describer) -> Iterator[tuple[_Slot, float | str]]:
+    """Every leaf the measure walk reads off one result, with its value, in the order :func:`_pool_measures` pools."""
+    measures = describe.measures
+    outer: tuple[tuple[bool, Iterable[tuple[str, float | str, MetricDescriptor]]], ...] = (
+        (False, _lineage_leaves(result, describe=describe)),
+        (True, _open_map_leaves(result, describe=describe)),
+    )
+    for report_gaps, leaves in outer:
+        for name, value, descriptor in leaves:
+            verdict = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
+            yield _Slot("outer", name, descriptor, None, _PER_RESULT, verdict), value
+    inner: tuple[tuple[_LeafSource, Iterable[tuple[str, float | str, bool, str, str]]], ...] = (
+        ("carrier", chain(_carrier_leaves(result, describe=describe), _derived_leaves(result))),
+        ("verdict", chain(_goal_check_leaves(result), _accuracy_leaves(result))),
+    )
+    for source, carried in inner:
+        for name, value, report_gaps, carrier, unit in carried:
+            descriptor = describe(name)
+            verdict = _verdict(descriptor, value, report_gaps=report_gaps, measures=measures)
+            yield _Slot(source, name, descriptor, carrier, unit, verdict), value
+
+
+def _result_walks(results: Iterable[ResultView], measures: MeasureRegistry) -> Iterator[tuple[_WalkMemo, _CompactWalk]]:
+    """Each result's walk, beside the memo whose slots it indexes: the active memo's, else a memo of this call alone."""
+    active = _WALK_MEMO.get()
+    memo = _WalkMemo() if active is None else active
+    describe = memo.describer(measures)
+    for result in results:
+        walk = memo.walks.get(id(result)) if active is not None else None
+        if walk is None or walk.result is not result or walk.measures is not measures:
+            walk = _CompactWalk(result, describe, memo)
+            if active is not None:
+                memo.walks[id(result)] = walk
+        yield memo, walk
+
+
+class _MeasurePool(NamedTuple):
+    """The measure walk's pooled observations, before any is summarised (:func:`_pool_measures`)."""
+
+    #: Each pooled measure's descriptor, values and cases, the outer level winning a name both levels carry.
+    pooled: dict[str, _PooledMeasure]
+    #: Each pooled measure's observation unit.
+    units: dict[str, str]
+    #: Names the walk reached but could not pool: undescribed numbers, misfit values, ambiguous carriers.
+    unreported: set[str]
+
 
 def _measure_collection(
-    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+    results: list[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> MeasureCollection:
     """Build the scope-tagged measure surface over a set of results.
 
@@ -683,8 +1029,130 @@ def _measure_collection(
     return _collect_measures(results, profile=profile, undeclared=undeclared)[0]
 
 
+def _pool_measures(
+    results: Iterable[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
+) -> _MeasurePool:
+    """Pool every measure the results carry, each over its own population, without summarising any.
+
+    The first half of :func:`_collect_measures`, which summarises what this pools; a caller that needs only a
+    measure's values or its mean (:func:`_pooled_means`) reads them here and builds no summary.
+
+    :param results: Every result in scope, faulted and failed ones included.
+    :ptype results: Iterable[ResultView]
+    :param profile: The host whose registry describes each name.
+    :ptype profile: HostProfile
+    :param undeclared: The population of the surface asking, for a measure that declares none.
+    :ptype undeclared: MeasurePopulation
+    :return: The pooled observations, their units and the names left unreported.
+    :rtype: _MeasurePool
+    """
+    # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
+    # observations from 5 cases repeated 3 times, and the two license very different intervals —
+    # pooling k repeats as independent draws narrows every interval by roughly sqrt(k). So the
+    # summary computes its spread over the cases and counts them, from the very observations it
+    # pooled: a name's two levels never contribute cases to each other.
+    outer: dict[str, _PooledMeasure] = {}
+    inner: dict[str, _PooledMeasure] = {}
+    unreported: set[str] = set()
+    carriers_by_name: dict[str, set[str]] = {}
+    inner_units: dict[str, str] = {}
+
+    for memo, walk in _result_walks(results, profile.measures):
+        case_id = walk.result.test_case_id
+        slots = memo.slots
+        bits = memo.population_bits(undeclared)
+        members = walk.members
+        values = iter(walk.values)
+        for slot_id in walk.slots:
+            source, name, descriptor, carrier, unit, verdict = slots[slot_id]
+            # A value is held for every leaf a surface can pool, so it is read off in step whether or not this one does.
+            value = next(values) if verdict == "pooled" else None
+            # Outside its population before anything else: a faulted result is not an observation of a
+            # `scored` or `delivered` measure at all, nor a failure that took no turn one of a `delivered`
+            # measure, so it can neither contribute a value nor be reported as one lost.
+            if members & bits[slot_id]:
+                if value is not None:
+                    if carrier is not None:
+                        carriers_by_name.setdefault(name, set()).add(carrier)
+                    _, pooled_values, cases = (outer if source == "outer" else inner).setdefault(
+                        name, (descriptor, [], [])
+                    )
+                    pooled_values.append(value)
+                    cases.append(case_id)
+                elif verdict == "unreported":
+                    unreported.add(name)
+            if source != "outer":
+                inner_units[name] = unit
+
+    # Two DIFFERENT carriers using the same leaf name are two different quantities that
+    # happen to share a word — an inner agent's elapsed_ms and some future subsystem's are
+    # not one distribution, and averaging them would report a number describing neither,
+    # under whichever descriptor's prose won the name. Refuse to pool and say so, rather
+    # than producing a plausible number nobody can trace.
+    ambiguous = {name for name, carriers in carriers_by_name.items() if len(carriers) > 1 and name not in outer}
+    for name in ambiguous:
+        inner.pop(name, None)
+        unreported.add(name)
+
+    # Outer wins outright — both the values and the metadata — so a colliding inner
+    # name can never contribute half of a measure. A name that is a field of the result itself
+    # is the result-level measure even where no result here observed one — an unpriced result's
+    # ``cost_usd`` is None — so the per-role rows that decompose it never stand in for it: a
+    # sum of the priced rows under ``cost_usd`` is exactly the partial figure unpriced spend
+    # must never become.
+    pooled = {**{name: entry for name, entry in inner.items() if name not in EvalResult.model_fields}, **outer}
+    # Outer names describe the result itself by construction; an inner name keeps whatever
+    # the walk saw carrying it, and loses to the outer level on a collision — the same
+    # precedence the values follow, so a measure's unit always describes the values pooled
+    # under it. Names dropped along the way (unreportable, ambiguous) are excluded, so the
+    # map is exactly the collection's own vocabulary.
+    units = {**inner_units, **dict.fromkeys(outer, _PER_RESULT)}
+    return _MeasurePool(pooled, {name: units[name] for name in pooled}, unreported)
+
+
+def _summarised_by_mean(descriptor: MetricDescriptor) -> bool:
+    """Whether a measure's summary is a distribution with a mean: every data type but text, boolean and categorical."""
+    return descriptor.data_type not in ("text", "boolean", "categorical")
+
+
+def _mean_and_sorted(observed: Sequence[float]) -> tuple[float, list[float]]:
+    """A numeric measure's mean, summed over its observations sorted ascending, and the sorted observations.
+
+    The one arithmetic every mean of the walk takes (:func:`_measure_summary`, :func:`_pooled_means`), so the two
+    agree to the last bit.
+    """
+    numeric = sorted(observed)
+    return sum(numeric) / len(numeric), numeric
+
+
+def _pooled_means(pool: _MeasurePool) -> dict[str, float]:
+    """Every mean the pool's collection would carry, by measure name, without building the collection.
+
+    Exactly the ``mean`` of each summary :func:`_collect_measures` builds over the same pool that has one: a numeric
+    measure's (:func:`_mean_and_sorted`, as :func:`_measure_summary` takes it), and each label's
+    F1 where the pool carries a confusion matrix (as :func:`_classifier_label_summaries` derives it). In name order,
+    the collection's own.
+
+    :param pool: The pooled observations (:func:`_pool_measures`).
+    :ptype pool: _MeasurePool
+    :return: ``{name: mean}``.
+    :rtype: dict[str, float]
+    """
+    means = {
+        name: _mean_and_sorted([float(value) for value in values])[0]
+        for name, (descriptor, values, _cases) in pool.pooled.items()
+        if _summarised_by_mean(descriptor)
+    }
+    if CONFUSION_CELL_MEASURE in pool.pooled:
+        _, cells, cell_cases = pool.pooled[CONFUSION_CELL_MEASURE]
+        for statistics in label_statistics([(str(cell), case) for cell, case in zip(cells, cell_cases)]):
+            if statistics.f1 is not None:
+                means[classifier_label_measure("f1", statistics.label)] = statistics.f1
+    return dict(sorted(means.items()))
+
+
 def _collect_measures(
-    results: list[EvalResult], *, profile: HostProfile, undeclared: MeasurePopulation
+    results: list[ResultView], *, profile: HostProfile, undeclared: MeasurePopulation
 ) -> tuple[MeasureCollection, dict[str, str], dict[str, _PooledMeasure]]:
     """Build the measure surface, and say what one observation of each measure describes.
 
@@ -731,95 +1199,8 @@ def _collect_measures(
     The third return value is the pooled observations each summary was computed from, beside their
     cases, for a lens that tests between levels over per-case values rather than reading summaries.
     """
-    # Each observation is pooled beside its test case. `n` alone cannot distinguish 15 independent
-    # observations from 5 cases repeated 3 times, and the two license very different intervals —
-    # pooling k repeats as independent draws narrows every interval by roughly sqrt(k). So the
-    # summary computes its spread over the cases and counts them, from the very observations it
-    # pooled: a name's two levels never contribute cases to each other.
-    outer: dict[str, _PooledMeasure] = {}
-    inner: dict[str, _PooledMeasure] = {}
-    unreported: set[str] = set()
-    carriers_by_name: dict[str, set[str]] = {}
-    inner_units: dict[str, str] = {}
-
-    def record(
-        level: dict[str, _PooledMeasure],
-        name: str,
-        value: float | str,
-        descriptor: MetricDescriptor,
-        *,
-        report_gaps: bool,
-        case_id: str,
-        result: EvalResult,
-        carrier: str | None = None,
-    ) -> None:
-        # Outside its population before anything else: a faulted result is not an observation of a
-        # `scored` or `delivered` measure at all, nor a failure that took no turn one of a `delivered`
-        # measure, so it can neither contribute a value nor be reported as one lost.
-        if not in_population(summary_population(descriptor, undeclared), result):
-            return
-        if not _is_reportable(descriptor, profile.measures):
-            # An undescribed NUMBER from a telemetry source is the loss worth reporting: a
-            # measurement the code emits that the registry cannot explain. Three things stay
-            # quiet, each for its own reason — an undescribed string (almost always an
-            # identifier: a trace id, a role, a price source), a measure a deliberate filter
-            # excluded (a directionless count, a judged family), and anything from the
-            # result's lineage fields, where "undescribed" means "not a measure" rather than
-            # "a measure nobody described".
-            if report_gaps and descriptor.family is None and not isinstance(value, str):
-                unreported.add(name)
-            return
-        if not _value_fits(descriptor, value):
-            unreported.add(name)
-            return
-        if carrier is not None:
-            carriers_by_name.setdefault(name, set()).add(carrier)
-        _, values, cases = level.setdefault(name, (descriptor, [], []))
-        values.append(value)
-        cases.append(case_id)
-
-    for result in results:
-        case_id = result.test_case_id
-        for name, value, descriptor in _lineage_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=False, case_id=case_id, result=result)
-        for name, value, descriptor in _open_map_leaves(result, profile=profile):
-            record(outer, name, value, descriptor, report_gaps=True, case_id=case_id, result=result)
-        for name, value, report_gaps, carrier, observation_unit in chain(
-            _carrier_leaves(result, profile=profile),
-            _derived_leaves(result),
-            _goal_check_leaves(result),
-            _accuracy_leaves(result),
-        ):
-            record(
-                inner,
-                name,
-                value,
-                describe_measure(name, profile.measures),
-                report_gaps=report_gaps,
-                case_id=case_id,
-                result=result,
-                carrier=carrier,
-            )
-            inner_units[name] = observation_unit
-
-    # Two DIFFERENT carriers using the same leaf name are two different quantities that
-    # happen to share a word — an inner agent's elapsed_ms and some future subsystem's are
-    # not one distribution, and averaging them would report a number describing neither,
-    # under whichever descriptor's prose won the name. Refuse to pool and say so, rather
-    # than producing a plausible number nobody can trace.
-    ambiguous = {name for name, carriers in carriers_by_name.items() if len(carriers) > 1 and name not in outer}
-    for name in ambiguous:
-        inner.pop(name, None)
-        unreported.add(name)
-
-    # Outer wins outright — both the values and the metadata — so a colliding inner
-    # name can never contribute half of a measure. A name that is a field of the result itself
-    # is the result-level measure even where no result here observed one — an unpriced result's
-    # ``cost_usd`` is None — so the per-role rows that decompose it never stand in for it: a
-    # sum of the priced rows under ``cost_usd`` is exactly the partial figure unpriced spend
-    # must never become.
-    pooled = {**{name: entry for name, entry in inner.items() if name not in EvalResult.model_fields}, **outer}
-
+    pool = _pool_measures(results, profile=profile, undeclared=undeclared)
+    pooled = pool.pooled
     measures = [
         _measure_summary(*pooled[name], population=summary_population(pooled[name][0], undeclared))
         for name in sorted(pooled)
@@ -836,18 +1217,12 @@ def _collect_measures(
         measures=measures,
         absent_scopes=[scope for scope in _ATTRIBUTION_SCOPES if scope not in present],
         unreported_observations=sorted(
-            (unreported - set(pooled))
+            (pool.unreported - set(pooled))
             | set(_withheld_derived(results, pooled))
             | set(_undeclarable_host_entries(results))
         ),
     )
-    # Outer names describe the result itself by construction; an inner name keeps whatever
-    # the walk saw carrying it, and loses to the outer level on a collision — the same
-    # precedence the values follow, so a measure's unit always describes the values pooled
-    # under it. Names dropped along the way (unreportable, ambiguous) are excluded, so the
-    # map is exactly the collection's own vocabulary.
-    units = {**inner_units, **dict.fromkeys(outer, _PER_RESULT)}
-    return collection, {name: units[name] for name in pooled}, pooled
+    return collection, pool.units, pooled
 
 
 def _classifier_label_summaries(
@@ -963,8 +1338,7 @@ def _measure_summary(
         shape = {"categories": counts}
     else:
         observed = [float(value) for value in values]
-        numeric = sorted(observed)
-        mean = sum(numeric) / len(numeric)
+        mean, numeric = _mean_and_sorted(observed)
         sem = clustered_standard_error(observed, cases)
         interval = observed_mean_interval(
             observed, cases=cases, value_range=descriptor.value_range, floor=descriptor.interval_floor

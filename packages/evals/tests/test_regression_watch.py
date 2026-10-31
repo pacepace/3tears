@@ -7,12 +7,14 @@ baseline run is stored, a second run's job writes its results and completes, and
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from typing import Any
 
 import pytest
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID, EvalResult, EvalRun
 from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
@@ -47,6 +49,56 @@ class _BrokenSink(RegressionSink):
     async def __call__(self, alert: RegressionAlert) -> None:
         self.calls += 1
         raise RuntimeError("the pager is down")
+
+
+class _RecordsResultReads(InMemoryDocumentStore):
+    """Records what each read of results asked the store to leave out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.excluded: list[frozenset[str]] = []
+
+    def by_doc_type(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        order_by: str | None = None,
+        descending: bool = True,
+        limit: int | None = None,
+        exclude: Sequence[str] = (),
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> list[dict[str, Any]]:
+        if doc_type == "eval_result":
+            self.excluded.append(frozenset(exclude))
+        return super().by_doc_type(
+            doc_type,
+            scope_id,
+            order_by=order_by,
+            descending=descending,
+            limit=limit,
+            exclude=exclude,
+            field_in=field_in,
+            **field_eq,
+        )
+
+    def iter_narrowed(
+        self,
+        doc_type: str,
+        scope_id: str,
+        *,
+        exclude: Sequence[str] = (),
+        exclude_in_items: Mapping[str, Sequence[str]] = {},
+        field_in: Mapping[str, Sequence[Any]] | None = None,
+        **field_eq: Any,
+    ) -> Iterator[dict[str, Any]]:
+        # The store's own narrowed read, which a read of readings makes on the store's path.
+        if doc_type == "eval_result":
+            self.excluded.append(frozenset(exclude))
+        return super().iter_narrowed(
+            doc_type, scope_id, exclude=exclude, exclude_in_items=exclude_in_items, field_in=field_in, **field_eq
+        )
 
 
 def _results(run: EvalRun, *, cost: float, transcript: int) -> list[EvalResult]:
@@ -87,9 +139,10 @@ async def _drive(
     measures: Sequence[str],
     calibrate: bool = False,
     declined_cost: float = 0.05,
+    store: InMemoryDocumentStore | None = None,
 ) -> tuple[EvalStorage, EvalRun]:
     """Store a baseline run, then complete a second one through the launching host's job manager."""
-    storage = EvalStorage(InMemoryDocumentStore())
+    storage = EvalStorage(store if store is not None else InMemoryDocumentStore())
     baseline = make_eval_run(
         id="run-a", scope_id=_SCOPE, test_case_ids=_CASES, status="completed", created_at="2026-10-01T00:00:00Z"
     )
@@ -151,6 +204,16 @@ async def test_a_judged_regression_fires_once_its_judge_is_calibrated() -> None:
     assert [(alert.measure, alert.graded_by, alert.evidence_tier) for alert in sink.alerts] == [
         (TRANSCRIPT_DIM_ID, "judge", "calibrated")
     ]
+
+
+async def test_the_judged_tiers_read_results_without_their_verbatim_fields() -> None:
+    """A judged step's evidence tiers read every result of the run's history, and no tier reads a world's event log or
+    a kind's payload, so the store is asked to leave both out."""
+    store = _RecordsResultReads()
+
+    await _drive(_RecordingSink(), measures=(TRANSCRIPT_DIM_ID,), calibrate=True, store=store)
+
+    assert any(frozenset(VERBATIM_RESULT_FIELDS) <= excluded for excluded in store.excluded), store.excluded
 
 
 async def test_a_measure_that_did_not_move_past_the_threshold_delivers_nothing() -> None:

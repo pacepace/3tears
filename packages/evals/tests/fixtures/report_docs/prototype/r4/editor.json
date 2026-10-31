@@ -1,0 +1,91 @@
+{
+  "items": [
+    {
+      "n": 1,
+      "name": "First screen",
+      "score": 2,
+      "reason": "The headline states the trade in two figures ($7,560 a month saved against 6.1 points of character). The decision slots give the flip price ($1,239 a point-month, band $1,036 to $1,543), a labelled lean, and the main risk (f64's thin guardrail clearance, 1.4 and 2.1 points). c1 repeats the trade. A reader can say what is on the table, who decides, and what could break it."
+    },
+    {
+      "n": 2,
+      "name": "Coherent story",
+      "score": 2,
+      "reason": "The claims run in order: c1 sets the trade, c2 and c3 locate the loss in long conversations and support the lean, c4 and c5 rule out the other options, and c6 adds f64's secondary strengths. our_lean is labelled a lean and does not contradict the flag that the owner decides. Nothing on the page contradicts the headline."
+    },
+    {
+      "n": 3,
+      "name": "Honest emphasis",
+      "score": 1,
+      "reason": "f64's weak axes are visible: the character loss, which the lede says has an interval of -7.3 to -4.9, and the thin guardrail clearance in watch. Two framings go further than the evidence. First, the thin-margin doubt is applied one way only. f64's clearances of 1.4 and 2.1 points are treated as possibly failing, while f16's 0.6-point miss on music facts is treated as settled. c5's caption even says 'how far under the floor f16 truly sits', which assumes it is under. Second, c3 states the blind-rater pattern (52% against 61%, from 240 ratings in total, no interval) flatly, and the judge caveat and our_lean then cite it as independent support."
+    },
+    {
+      "n": 4,
+      "name": "Sound elision",
+      "score": 0,
+      "reason": "The omitted item 'f64 against f16' and the music-facts explore row both treat f16 as outside the call. If f16 cleared the facts floor, f64 would be the best buy at no price. Going from f16 to f64 costs $3,120 a month for 1.3 points, which is $2,400 a point-month. That is above the $1,239 line between f64 and Production, and f16 against Production flips at about $1,443. The trade would then be f16 against Production, and the f64 re-run in what_settles_it would not settle it. f16's miss is 0.6 points on a point estimate with no interval. By the report's own proxy (the reach of the contrast interval), f16's facts contrast of -5.4 to -1.8 allows a rate above 90%. So this omission could change the decision. Separately, the cases-share omission (long conversations are 30% of trials but 64% of f64's loss) leaves out the figure that sizes the mix our_lean waits for."
+    },
+    {
+      "n": 5,
+      "name": "Confounds handled",
+      "score": 2,
+      "reason": "Each confound is either carried into the story or shown not to matter. The judge is undescribed: it is a caveat and next step 4. Contrasts are uncorrected: a caveat, and the losses that drive the call (-6.1 and -5.3) sit well clear of zero. Strata were read after the fact: labelled a lead in the caption and in Method. Machine placement is unrecorded: Method reads latency as reported. Switching model mid-conversation is untested: next step 3 names it. The judge caveat leans on the blind raters, whose own uncertainty is unstated (scored under item 3)."
+    },
+    {
+      "n": 6,
+      "name": "Actionable next steps",
+      "score": 2,
+      "reason": "All four steps name an experiment or a declaration and say what it settles: a guardrail re-run, a price per point from the persona owner, the length-routed mix, and judge calibration. The re-run should also cover f16's music-facts cases, since that outcome decides whether f64 stays in the trade (see item 4)."
+    },
+    {
+      "n": 7,
+      "name": "Evidence fits claims",
+      "score": 1,
+      "reason": "Most blocks fit their claims: the forests in c1, c4, c5 and c6, the floor dot plots in c4 and c5, the lines in c2 and the latency range in c6. Each counterfactual holds. Two gaps remain. c1's lead claim opens with 'the only challenger that holds both guardrails', but c1's blocks (a persona forest and cost bars) show nothing about guardrails; that evidence sits two and three claims down. And the headline's 'most of the loss in long conversations' has no block: c2's lines draw means, the page prints only the 6–10 share (36%), and the 11+ share (28%) appears only in the appendix."
+    }
+  ],
+  "total": 10,
+  "passes": false,
+  "findings": [
+    {
+      "claim": "c5",
+      "severity": "must_fix",
+      "finding": "f16's exclusion rests on a 0.6-point miss (89.4% against a 90% floor) on a point estimate with no interval. That is a thinner margin than f64's clearances, which the report treats as possibly failing. Its facts contrast against Production (-5.4 to -1.8) allows a rate above the floor, by the same proxy the watch slot uses for f64. If f16 clears, f64 is the best buy at no price. f16 to f64 is $3,120 a month for 1.3 points, or $2,400 a point-month, above the $1,239 line between f64 and Production. f16 against Production flips at about $1,443. The trade then becomes f16 against Production. To fix: add a caveat for f16's facts miss, with its material_if; correct the music-facts explore outcome, which now says f16 'joins the trade as the cheapest, least in-character option' when it would replace f64; rewrite the omitted f64-against-f16 reason; and widen the next-step re-run and what_settles_it to cover f16's music-facts cases. Note that the 1.3-point character gap between f16 and f64 has no interval of its own."
+    },
+    {
+      "claim": "c3",
+      "severity": "should_fix",
+      "finding": "The blind-rater shares (52% for 1–5 turns, 61% for 6+) come from 240 ratings across two bins and carry no interval. The difference may well sit inside the noise. Even so, the claim sentence states the pattern flatly, and the judge_not_described caveat and our_lean both cite it as independent support. Print the count in each bin, call it a lead in the claim sentence as c2's caption does, and soften its use in the judge caveat."
+    },
+    {
+      "claim": "c2",
+      "severity": "should_fix",
+      "finding": "The headline says 'most of the loss in long conversations', but the page shows only the 6–10 share (36%). That claim needs the 11+ share (28%) as well, together 64%, and the fact that these conversations are 30% of trials (6–10 at 20%, 11+ at 10%). That pairing is the argument for the mix in our_lean and next step 3. It is now omitted as 'no block draws both', but one sentence with figure keys would carry it."
+    },
+    {
+      "claim": "c1",
+      "severity": "should_fix",
+      "finding": "The lead claim opens with f64 being the only challenger that holds both guardrails, but neither c1 block shows a guardrail. A first-screen reader sees the guardrail evidence only at c4 and c5. Add a block to c1 that shows each arm against both floors, or move the guardrail half of the claim to where its evidence is."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The speculation-floor explore row says cor 'enters only if the floor is loosened to 92%' but not what follows. If cor entered, it would be the best buy from about $462 to about $2,618 a point-month. That covers the $1,239 line between f64 and Production, so f64 would be best only below about $462. Say so, or say why it does not matter."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "The watch slot reads the reach of the paired-difference interval as if it were uncertainty on f64's own rate. That is a stand-in, and the page should say so. It should also apply the same reading to f16 (see the c5 finding)."
+    },
+    {
+      "claim": "report",
+      "severity": "should_fix",
+      "finding": "where_it_flips and the explore price row print the flip line to the cent ($1,239.34, $1,035.62, $1,542.86). The band runs about $500 wide and rests on an uncalibrated judge, so cents are false precision. Use a rounded figure-key filter if one exists."
+    }
+  ],
+  "invariant_concerns": [
+    "Invariant 5: Method's Source row prints meta.provenance, which contains a repository path (docs/eval-report-kit/references/r4-tradeoff.json). If Method renders above the full-results appendix, that is an internal path above the appendix.",
+    "Invariant 1, at the edge: the contrasts_uncorrected caveat types the count as a word ('the three challengers') rather than through n_candidates. It is not a digit, so the check passes, but the count is still typed.",
+    "Invariant 3 and 4, for the record: campaign_overview and caveats_list both hold no caveats for this snapshot. The report's three caveats were authored by the analyst, and the high_if_immaterial form fits them. Nothing here fails, but code cannot check that these caveats are complete. They miss f16's thin facts miss (see the c5 finding)."
+  ],
+  "calls": 21
+}

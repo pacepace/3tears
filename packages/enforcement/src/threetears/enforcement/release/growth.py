@@ -17,6 +17,9 @@ released to compare against. Past it, a missing tag means a release was never
 tagged or the clone cannot see tags (a CI checkout needs ``fetch-depth: 0``), and
 the gate refuses rather than passing. A version BELOW the latest tag is refused.
 A tag whose tree or objects this clone lacks is refused, not read as empty.
+A declared version carrying a PEP 440 local label (``0.80.0+analyst.1``, a line
+pinned between releases) is read as its public part: the label orders above the
+plain release, so the gate holds it to that release's minor line.
 
 **It is never vacuous.** Every run reads the working tree and requires each
 configured anchor -- a name the repo is known to export -- so a reader that stops
@@ -32,6 +35,8 @@ somewhere else supplies an extractor for it.
 
 from __future__ import annotations
 
+import re
+import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,7 +51,7 @@ from threetears.enforcement.release.surface import (
 from threetears.enforcement.release.versions import (
     Version,
     format_version,
-    project_version,
+    parse_version,
     release_tags,
 )
 
@@ -158,6 +163,29 @@ def _growth_since(config: ApiGrowthConfig, tag_name: str, now: dict[str, TreeSur
     return findings
 
 
+#: a PEP 440 local label on a declared version: ``+`` then dot-separated letters and digits.
+_LOCAL_LABEL = re.compile(r"\+[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$")
+
+
+def _public_version(pyproject_text: str) -> Version:
+    """the ``[project] version`` a pyproject declares, read past any PEP 440 local label.
+
+    ``0.80.0+analyst.1`` reads ``(0, 80, 0)``: a local label marks a build of that public version, never a
+    release of its own, so growth is measured on that version's minor line. Anything else that is not
+    ``X.Y.Z`` is refused as :func:`~threetears.enforcement.release.versions.project_version` refuses it.
+
+    :param pyproject_text: ``pyproject.toml`` contents
+    :ptype pyproject_text: str
+    :return: the declared version's public part
+    :rtype: Version
+    :raises ValueError: if there is no ``[project] version`` or its public part is not ``X.Y.Z``
+    """
+    project = tomllib.loads(pyproject_text).get("project", {})
+    if "version" not in project:
+        raise ValueError("no [project] version is declared")
+    return parse_version(_LOCAL_LABEL.sub("", str(project["version"]).strip()))
+
+
 def api_growth_findings(config: ApiGrowthConfig) -> list[str]:
     """everything wrong with a repository's declared version against its public surface.
 
@@ -167,7 +195,7 @@ def api_growth_findings(config: ApiGrowthConfig) -> list[str]:
     :rtype: list[str]
     """
     now, findings = _working_tree(config)
-    current = project_version((config.repo_root / config.version_file).read_text(encoding="utf-8"))
+    current = _public_version((config.repo_root / config.version_file).read_text(encoding="utf-8"))
     shown = format_version(current)
     tags = release_tags(config.repo_root)
     if not tags and current != config.first_release:

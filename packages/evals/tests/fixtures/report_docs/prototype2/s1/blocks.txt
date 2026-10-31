@@ -1,0 +1,237 @@
+### c1 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: billing
+  measures: [passed]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: margin
+emphasis: 
+title: 
+level: 99.55%
+unit: points
+domain: 
+aspects.billing.margin = 10
+columns: [Row, Change, 99.55% interval, Note]
+rows (4):
+  - cells: [A · v2, -60, -96.15 to -23.85, -60 pts worse]
+  - cells: [B · v3, -5, -21.08 to +11.08, -5 pts not separated]
+  - cells: [C · v4, +5, -11.08 to +21.08, +5 pts not separated]
+  - cells: [margin -10 pts, -10, , ]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c1 / 2
+rendered block
+block_kind: forest
+query:
+  source: readings
+  aspect: billing
+  measures: []
+  arms: [v3, v4]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: margin
+emphasis: 
+title: 
+level: 98.33%
+unit: points
+domain: -22 to 32
+aspects.billing.margin = 10
+columns: [Row, Change, 98.33% interval, Note]
+rows (3):
+  - cells: [B · v3, -5, -20.93 to +15.87, not separated]
+  - cells: [C · v4, +5, -15.87 to +30.51, not separated]
+  - cells: [margin -10 pts, -10, , ]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: tone
+  measures: [goal_state:reply.cites_policy]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 99.55%
+unit: 
+domain: 
+reference: none
+columns: [Row, Change, 99.55% interval, Note]
+rows (3):
+  - cells: [A · v2, 0.0, -0.2888 to +0.2888, 0 not separated]
+  - cells: [B · v3, 0.0, -0.2888 to +0.2888, 0 not separated]
+  - cells: [C · v4, -0.6, -0.9615 to -0.2385, -0.6 worse]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c2 / 2
+rendered block
+block_kind: table
+query:
+  source: floors
+  aspect: tone
+  measures: []
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: points
+domain: 
+reference: none
+columns: [Floor, Arm, Status, Largest drop, Margin]
+rows (3):
+  - cells: [tone/rate drop/reply cites policy, A · v2, unclear, 19.0 pts, 15.0 pts]
+  - cells: [tone/rate drop/reply cites policy, B · v3, unclear, 19.0 pts, 15.0 pts]
+  - cells: [tone/rate drop/reply cites policy, C · v4, broken, 78.5 pts, 15.0 pts]
+total: 3
+offset: 0
+truncated: False
+notes: []
+
+### c3 / 1
+rendered block
+block_kind: bars
+query:
+  source: measures
+  aspect: billing
+  measures: [cost_usd]
+  arms: []
+  strata: []
+  limit: 0
+  transform: per_1k
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: usd
+domain: 
+reference: none
+columns: [Row, Value, 95% interval, Note]
+rows (4):
+  - cells: [production, $2, $2 to $2, $2]
+  - cells: [v2, $2, $2 to $2, $2]
+  - cells: [v3, $2, $2 to $2, $2]
+  - cells: [v4, $1, $1 to $1, $1]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c4 / 1
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: tone
+  measures: [passed]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: margin
+emphasis: 
+title: 
+level: 99.55%
+unit: points
+domain: 
+aspects.tone.margin = 10
+columns: [Row, Change, 99.55% interval, Note]
+rows (4):
+  - cells: [A · v2, +40, +3.852 to +76.15, +40 pts better]
+  - cells: [B · v3, 0, -16.50 to +16.50, 0 pts not separated]
+  - cells: [C · v4, -10, -32.14 to +12.14, -10 pts not separated]
+  - cells: [margin -10 pts, -10, , ]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 1
+rendered block
+block_kind: dot_interval
+query:
+  source: measures
+  aspect: refunds
+  measures: [goal_state:reply.total == case.total]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: 
+domain: 
+reference: none
+columns: [Row, Value, 95% interval]
+rows (4):
+  - cells: [P · production, 0.00, 0 to 0.1611]
+  - cells: [A · v2, 0.25, 0.1119 to 0.4687]
+  - cells: [B · v3, 0.00, 0 to 0.1611]
+  - cells: [C · v4, 0.10, 0.02787 to 0.301]
+total: 4
+offset: 0
+truncated: False
+notes: []
+
+### c5 / 2
+rendered block
+block_kind: forest
+query:
+  source: contrasts
+  aspect: refunds
+  measures: [passed]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: margin
+emphasis: 
+title: 
+level: 99.55%
+unit: points
+domain: 
+aspects.refunds.margin = 10
+columns: [Row, Change, 99.55% interval, Note]
+rows (4):
+  - cells: [A · v2, +25, -6.95 to +56.95, +25 pts not separated]
+  - cells: [B · v3, 0, -28.88 to +28.88, 0 pts not separated]
+  - cells: [C · v4, +10, -12.14 to +32.14, +10 pts not separated]
+  - cells: [margin -10 pts, -10, , ]
+total: 4
+offset: 0
+truncated: False
+notes: []
+

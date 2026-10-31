@@ -12,22 +12,24 @@ from typing import Any
 from threetears.evals.analysis import (
     Report,
     TableBlock,
+    assemble_campaign_bundle,
     build_report,
-    prepare_analysis_generation,
     report_markdown,
-    run_analysis_generation,
 )
+from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.host import EvalHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.toyhost_memo import PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
     "page_violations",
+    "stored_memo_analysis",
     "toy_campaign_host",
     "toy_report",
 ]
@@ -62,23 +64,40 @@ def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:
     return host, campaign
 
 
-async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
-    """The toy campaign generated through the host, and its one aspect's page laid out over the stored analysis."""
-    built: list[FixturedClient] = []
+async def stored_memo_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """An analysis the memo writer wrote over the campaign, stored with its insights: the shape of every analysis
+    stored before the report planner wrote new ones, which still lists, reads and renders.
 
-    def clients(role: str, model: str | None, *, temperature: float | None = None) -> FixturedClient:
-        client = FixturedClient("")
-        built.append(client)
-        return client
+    The memo writer is called directly (``generate_analysis``), since a generation through the host is the planner's.
 
-    host, campaign = off_loop(toy_campaign_host, clients)
-
-    async def prompt() -> str:
-        return PROMPT
-
-    prepared = await prepare_analysis_generation(
-        host, campaign.id, campaign.scope_id, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
+    :param host: The host holding the campaign's runs and results.
+    :param campaign: The campaign.
+    :return: The stored analysis and its insights.
+    """
+    assembled_at = utc_now_iso()
+    bundle = off_loop(assemble_campaign_bundle, host, campaign.id, campaign.scope_id)
+    client = FixturedClient(json.dumps(memo_payload(bundle)))
+    analysis, insights = await generate_analysis(
+        bundle,
+        prompt=PROMPT,
+        model=MODEL,
+        client=client,
+        prompt_id=PROMPT_ID,
+        bundle_assembled_at=assembled_at,
+        profile=host.profile,
     )
-    built[0].completion.content = json.dumps(memo_payload(prepared.bundle))
-    analysis, _ = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
+
+    def store() -> None:
+        host.storage.save_analysis(analysis)
+        for insight in insights:
+            host.storage.save_insight(insight)
+
+    off_loop(store)
+    return analysis, insights
+
+
+async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
+    """The toy campaign's memo analysis, stored, and its one aspect's page laid out over it."""
+    host, campaign = off_loop(toy_campaign_host)
+    analysis, _ = await stored_memo_analysis(host, campaign)
     return host, analysis, build_report(analysis, campaign_name=campaign.name)

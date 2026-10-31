@@ -127,6 +127,11 @@ ALLOWED: dict[tuple[str, str], str] = {
         "interleave a line or give two calls one index. It holds no value and nothing a host reads; a file is "
         "process-wide, so a per-host lock would let two hosts in one process corrupt a shared recording"
     ),
+    ("threetears/evals/testing/recorded_turns.py", "_APPEND_LOCK"): (
+        "serialises appends to turn recording files in the process, as recorded_completions' lock does for "
+        "completions: two sessions recording onto one file never interleave a line. It holds no value and "
+        "nothing a host reads; a file is process-wide, so a per-host lock would let two hosts corrupt it"
+    ),
     ("threetears/evals/kernel/campaign_writes.py", "_CAMPAIGN_WRITES"): (
         "serialises every read-modify-write of a campaign in the process. Shared across hosts, which "
         "over-serialises and never leaks: it holds no value, and a per-store lock would be weaker, "
@@ -151,6 +156,16 @@ ALLOWED: dict[tuple[str, str], str] = {
         "a ContextVar, so its value is per load and per task, never per process: loading_eval_file sets it around "
         "one eval file's execution and resets it on leaving; it holds that file's directory, never a host, and a "
         "second host in the same process cannot observe another task's value"
+    ),
+    ("threetears/evals/kernel/phase_log.py", "_OPEN"): (
+        "a ContextVar, so its value is per task, never per process: phase_logged sets it around one call's read and "
+        "resets it on leaving; it holds that call's open log lines and phase charges, never a host, and a second "
+        "host in the same process cannot observe another task's value"
+    ),
+    ("threetears/evals/analysis/bundle/measures.py", "_WALK_MEMO"): (
+        "a ContextVar, so its value is per task, never per process: one bundle assembly sets it around its folds and "
+        "resets it on leaving, raised or not; it holds that assembly's measure walks of the results it read, never "
+        "a host, and a second host in the same process cannot observe another task's value"
     ),
     ("threetears/evals/kernel/job_context.py", "_RUNNING_JOB"): (
         "a ContextVar, so its value is per task, never per process: the job manager sets it around one job's work, "

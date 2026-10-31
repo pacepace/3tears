@@ -1,0 +1,26 @@
+settle
+reads_as: code's arithmetic on the frozen input: the cases a design needs, sized on today's estimate and its spread (a normal approximation), and how often today's design would read the other way if the truth equals today's estimate; it plans a run, it tests nothing
+sided: one-sided at the snapshot's level: a bound centred on today's figure sits wholly on today's side of the line, which clears the line where today's figure passes (settles: clears) and confirms the miss where it misses (settles: misses); cases_needed is the size at which half such designs do if the truth equals today's figure, cases_needed_80 the size at which four in five do. A page prints two-sided intervals, which need more: cases_needed_two_sided and cases_needed_two_sided_80 are the same sizes for the two-sided interval at the level. Each size counts what count_of says the count counts: trials, not cases, on a repeated design
+hypothetical: True
+arms: [arm:v4]
+rows (1):
+  - where: overall; name: none; against: the hypothetical line; settles: clears; unsettled:
+    estimate (1):
+      measure.goal_state:reply.total == case.total.v4.mean = 0.95
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.line = 0.8
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.distance = +0.15
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.cases_needed = 9
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.cases_needed_80 = 19
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.cases_needed_two_sided = 12
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.cases_needed_two_sided_80 = 24
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.wrong_side = 0.5%
+    settle.hypothetical.0.8.v4.goal_state:reply.total == case.total.overall.level = 95% one-sided
+    counts (1):
+      spread.v4.goal_state:reply.total == case.total.overall.n = 20
+    count_of (1):
+      spread.v4.goal_state:reply.total == case.total.overall.counts = cases
+    basis (1):
+      spread.v4.goal_state:reply.total == case.total.overall.basis = its stated interval
+total: 1
+offset: 0
+notes: []

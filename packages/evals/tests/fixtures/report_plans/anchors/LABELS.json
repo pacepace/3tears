@@ -1,0 +1,544 @@
+{
+  "schema": "plan-anchor-labels/2",
+  "anchors": [
+    {
+      "plan": "r1/anchor.plan.json",
+      "input": "r1",
+      "expect": "pass",
+      "plan_digest": "fc4ecada6e2af4d3e72de0996a44cf05fff9b26f55a046c3d4dd54cf2596e9cb",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
+      "note": "Hand-written from references/r1-model-selection.html."
+    },
+    {
+      "plan": "r2/anchor.plan.json",
+      "input": "r2",
+      "expect": "pass",
+      "plan_digest": "95be032a55bed2e96fae5472fe38e9a13eb3bf1a15eff44095b18a37a5baff0e",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
+      "note": "Hand-written from references/r2-config-sweep.html."
+    },
+    {
+      "plan": "r3/anchor.plan.json",
+      "input": "r3",
+      "expect": "pass",
+      "plan_digest": "1198e95aab5bc83edc4cdd1aa79ad1da1399de6afae57796251b3b69317d9fb6",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
+      "note": "Hand-written from references/r3-classifier.html."
+    },
+    {
+      "plan": "r4/anchor.plan.json",
+      "input": "r4",
+      "expect": "pass",
+      "plan_digest": "a790781ff85d9c8ee5ab49493c66c9a4e090ca4d5f80aede5cded69c0d33853e",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
+      "note": "Hand-written from references/r4-tradeoff.html."
+    },
+    {
+      "plan": "r5/anchor.plan.json",
+      "input": "r5",
+      "expect": "pass",
+      "plan_digest": "808cf96de10cf23bc1ee65bf418d2b96b14dbf6e0c13d2da2105ad8c0ff9b09c",
+      "labeled_by": "owner",
+      "labeled_at": "2026-10-26",
+      "note": "references/r5-kairo-round2.plan.json: a two-sentence lede, no hedge above the fold, no quoted question, a Watch citing the weakest margin code found, and a Next naming the experiment that would change the answer and which way."
+    },
+    {
+      "plan": "anchors/weak/refused-facts-shape.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "facts",
+      "faults": [
+        [
+          "shape",
+          "the signals look up shape 'D'"
+        ]
+      ],
+      "plan_digest": "74c9fab2ea1cebaa783e3aab8ef15951ece17651664ca4d673bf5724219a5a96",
+      "labeled_by": "pending_owner",
+      "note": "The shape is not the one code looks up from the signals."
+    },
+    {
+      "plan": "anchors/weak/refused-spine.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "spine",
+      "faults": [
+        [
+          "sections[0].chart.kind",
+          "shape D's spine, code's fact, is a 'forest'"
+        ]
+      ],
+      "plan_digest": "cb4530fa14b9d9941993d6518b102212627fe978db53b7a4b8c62a8633a28793",
+      "labeled_by": "pending_owner",
+      "note": "The strata section opens the evidence, ahead of the forest that is shape D's spine."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-headline-kind.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "headline_kind",
+          "a decide plan's headline is a 'decision'"
+        ]
+      ],
+      "plan_digest": "8c8773c1b860ada5819ee2068125ca6d5561989a01114ca67a2c3198c4961c13",
+      "labeled_by": "pending_owner",
+      "note": "A decide plan with a trade headline."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-slots.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "decision.slots",
+          "in that order"
+        ]
+      ],
+      "plan_digest": "33d9943e0132039c952454f7cc1c5a64bffb965165abf047ad5f79e049c231e5",
+      "labeled_by": "pending_owner",
+      "note": "Watch and Next out of the mode's order."
+    },
+    {
+      "plan": "anchors/weak/refused-mode-roles.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "mode",
+      "faults": [
+        [
+          "options.rows",
+          "recommends exactly one option"
+        ]
+      ],
+      "plan_digest": "bc3001249cdecc79d848d41d2de5b4a3e09a20495b172b445b1f6e06489b7315",
+      "labeled_by": "pending_owner",
+      "note": "Two options marked recommended."
+    },
+    {
+      "plan": "anchors/weak/refused-allowed-mode.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "allowed_mode",
+      "faults": [
+        [
+          "mode",
+          "code allows only ['decide']"
+        ]
+      ],
+      "plan_digest": "2da34e8bdf0acfa7cc1d17bfbd5f7ed0a03eb236bc32ce519518f5dc63eb96f5",
+      "labeled_by": "pending_owner",
+      "note": "A no call where code allows only decide (one survivor dominates)."
+    },
+    {
+      "plan": "anchors/weak/refused-ids.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "ids",
+      "faults": [
+        [
+          "sections",
+          "name the section id 'question' 2 times"
+        ]
+      ],
+      "plan_digest": "d8c7ca5ba27665c2bbaea3285c6c27f39c2f8f4b644bd6fa2fb6e2acb3461c3b",
+      "labeled_by": "pending_owner",
+      "note": "Two sections share an id."
+    },
+    {
+      "plan": "anchors/weak/refused-recommendation.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "recommendation",
+      "faults": [
+        [
+          "options.rows[0].option",
+          "which is no arm"
+        ]
+      ],
+      "plan_digest": "7299dfc04250f978180404e1ae3f67986a6149aef53d3839d32dc4681fb5ef17",
+      "labeled_by": "pending_owner",
+      "note": "Recommends an option that is no arm."
+    },
+    {
+      "plan": "anchors/weak/refused-answers.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "answers",
+      "faults": [
+        [
+          "answers[0].warning",
+          "which code did not raise"
+        ]
+      ],
+      "plan_digest": "4113710e3aa1886702132bb3938d2115e96e4af5a1b0be54576aad582cc068d2",
+      "labeled_by": "pending_owner",
+      "note": "Answers a warning code never raised."
+    },
+    {
+      "plan": "anchors/weak/refused-confidence.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "confidence",
+      "faults": [
+        [
+          "decision.confidence.form",
+          "open caveats remain"
+        ]
+      ],
+      "plan_digest": "05738ce61954ee4dc7de1c9c8c622c3733570456d8bab7242b009c70db650f1c",
+      "labeled_by": "pending_owner",
+      "note": "Plain high while report-wide caveats are open."
+    },
+    {
+      "plan": "anchors/weak/refused-flag-no-rule-in-decide.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "flag",
+      "faults": [
+        [
+          "flag[0].discloses",
+          "holds 'no_rule'"
+        ]
+      ],
+      "plan_digest": "67764227daf32c54324c0c25c2f36f7ca7c6fcf994c080260b4c15fac62187f6",
+      "labeled_by": "pending_owner",
+      "note": "A decide plan disclosing no rule set in advance."
+    },
+    {
+      "plan": "anchors/weak/refused-flag-no-rule-missing.plan.json",
+      "input": "r4",
+      "from": "r4/anchor.plan.json",
+      "expect": "refused",
+      "rule": "flag",
+      "faults": [
+        [
+          "flag",
+          "must disclose 'no_rule'"
+        ]
+      ],
+      "plan_digest": "fb6aeb9395546b1cfd1282bca02cd9080851f97c3f759b213464b88c2c89c07c",
+      "labeled_by": "pending_owner",
+      "note": "A tradeoff plan with no rule declared and no flag saying so."
+    },
+    {
+      "plan": "anchors/weak/refused-coverage.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "coverage",
+      "faults": [
+        [
+          "method",
+          "drop the caveat 'latency'"
+        ]
+      ],
+      "plan_digest": "0e43c58a37a8c36edd3640fe5e17d1a967c4dcf9bc86d90b895410d74622d3ea",
+      "labeled_by": "pending_owner",
+      "note": "The latency caveat lands nowhere."
+    },
+    {
+      "plan": "anchors/weak/refused-charts-kind.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "charts",
+      "faults": [
+        [
+          "summary[0].kind",
+          "cannot draw 'contrasts'"
+        ]
+      ],
+      "plan_digest": "3be1d99b20ed304e0343a98659b54a6794a536ebe025783285ef412616c3c39b",
+      "labeled_by": "pending_owner",
+      "note": "A lines chart over contrasts, which it cannot draw."
+    },
+    {
+      "plan": "anchors/weak/refused-charts-summary-order.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "charts",
+      "faults": [
+        [
+          "summary[1].query.arms",
+          "in its order"
+        ]
+      ],
+      "plan_digest": "529233a66b767cd8c6803a98d0fbada4fa2f634ab9f969d632d016f26bb702c2",
+      "labeled_by": "pending_owner",
+      "note": "A summary chart's arms out of the options table's order."
+    },
+    {
+      "plan": "anchors/weak/refused-keys.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "keys",
+      "faults": [
+        [
+          "lede",
+          "reading.qwen3.8-flash.drop"
+        ]
+      ],
+      "plan_digest": "ff833d8d389667754fc9089b82a0329369d66f1cfdb1ece7e25a72608f7ef53e",
+      "labeled_by": "pending_owner",
+      "note": "A figure key naming a statistic no reading has."
+    },
+    {
+      "plan": "anchors/weak/refused-literal-digits.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "literal_digits",
+      "faults": [
+        [
+          "lede",
+          "types the number(s) ['3.4']"
+        ]
+      ],
+      "plan_digest": "7a3935bb1a03377c009e95056ea0d7824796f7b32fdf49205e984065ffc41795",
+      "labeled_by": "pending_owner",
+      "note": "A typed number in prose (D3)."
+    },
+    {
+      "plan": "anchors/weak/refused-weakest.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "weakest",
+      "faults": [
+        [
+          "decision.slots[2].text",
+          "names no weakest margin"
+        ]
+      ],
+      "plan_digest": "04986db0f8f7fd3365196a7cb928b7544d85e4b7681562768fa81e8367abe2e8",
+      "labeled_by": "pending_owner",
+      "note": "A decide plan's Watch citing no weakest-margin key."
+    },
+    {
+      "plan": "anchors/weak/refused-reader-ids.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "reader_ids",
+      "faults": [
+        [
+          "decision.slots[1].text",
+          "types the judged id 'persona.holds_character'"
+        ]
+      ],
+      "plan_digest": "3cdbc3658a75d14c502d60400604269b23743b7c0f7b07f18acf2e3af3fcf1ba",
+      "labeled_by": "pending_owner",
+      "note": "An internal id typed above Full results where its reader name differs."
+    },
+    {
+      "plan": "anchors/weak/refused-reader-ids-question.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "reader_ids",
+      "faults": [
+        [
+          "sections[0].takeaway",
+          "quotes the campaign's question"
+        ]
+      ],
+      "plan_digest": "00899319fe87800ba0c3c5a8f611d7e6ebdd3fceaf4b12a558e8c51dd5162082",
+      "labeled_by": "pending_owner",
+      "note": "The campaign's question quoted above Full results, in the campaign's own ids."
+    },
+    {
+      "plan": "anchors/weak/refused-units.plan.json",
+      "input": "r2",
+      "from": "r2/anchor.plan.json",
+      "expect": "refused",
+      "rule": "units",
+      "faults": [
+        [
+          "lede",
+          "writes 'ms' right after"
+        ]
+      ],
+      "plan_digest": "19e49e2e5025f4ccc9c603b1375c254e49b15ae1e1d19276d88a5fdb45a35346",
+      "labeled_by": "pending_owner",
+      "note": "A unit written right after a key that prints it (the key spells 513 ms, and the prose adds ms)."
+    },
+    {
+      "plan": "anchors/weak/refused-units-sub-cent.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "units",
+      "faults": [
+        [
+          "decision.slots[0].text",
+          "under one cent"
+        ]
+      ],
+      "plan_digest": "038d92c57022c2f798bb9e5eea23d1aac3f43d8ffa2be4c7c72fc732f6f9496f",
+      "labeled_by": "pending_owner",
+      "note": "A cost per reply under one cent, on a page that states its costs per 1,000 replies."
+    },
+    {
+      "plan": "anchors/weak/refused-columns.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "columns",
+      "faults": [
+        [
+          "options.columns[5]",
+          "is no column family code renders"
+        ]
+      ],
+      "plan_digest": "7b009841b411057438da6c93f4f992bd374d7b14293a95aa898d2436459a01a1",
+      "labeled_by": "pending_owner",
+      "note": "An options column outside the column families code renders."
+    },
+    {
+      "plan": "anchors/weak/refused-small-multiples.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "refused",
+      "rule": "small_multiples",
+      "faults": [
+        [
+          "summary[0].query.small_multiples_by",
+          "draws no small multiples of a 'forest'"
+        ]
+      ],
+      "plan_digest": "8caa40a9e9cf7b3b30a510f06e0c267a8acbc7941fce9c6016cf475e88c00b31",
+      "labeled_by": "pending_owner",
+      "note": "Small multiples asked of a forest, which the kit does not panel."
+    },
+    {
+      "plan": "anchors/weak/item-R2.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R2",
+      "plan_digest": "c3a54d99098e5919b6b97b24c4161d9544b307569ba9c5166a69a3cc12dc354a",
+      "labeled_by": "pending_owner",
+      "note": "The headline names a topic, not the call."
+    },
+    {
+      "plan": "anchors/weak/item-R3.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R3",
+      "plan_digest": "4940b286d6c2718b79971a557700e45249e4ddfc257983bf70c705a043a5a5f7",
+      "labeled_by": "pending_owner",
+      "note": "The lede is background in three sentences, with no supporting fact and nothing on what would change the answer."
+    },
+    {
+      "plan": "anchors/weak/item-R4.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R4",
+      "plan_digest": "829180116d8de70cf510dd5745360c8dbb782d8f7828d1a49fa2505dbdae6cac",
+      "labeled_by": "pending_owner",
+      "note": "The lede repeats caveats the confidence already carries."
+    },
+    {
+      "plan": "anchors/weak/item-R5.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R5",
+      "plan_digest": "415ceb8c5955ad79442f25d24160da37bc903259c4ae972e7d0d084995c5dcfb",
+      "labeled_by": "pending_owner",
+      "note": "Every section headline is a topic label."
+    },
+    {
+      "plan": "anchors/weak/item-R6.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R6",
+      "plan_digest": "9aa8e8368d350d34b4149b2ac3425b8b20df38d3a5de65f69dfbd06db215ae92",
+      "labeled_by": "pending_owner",
+      "note": "Why not the others names the judged measure by a fragment of its key, which no code check matches."
+    },
+    {
+      "plan": "anchors/weak/item-R7.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R7",
+      "plan_digest": "572234ef5f57f32f46b144b40318a06ea60dd307f13672614281f0d18b12ecd5",
+      "labeled_by": "pending_owner",
+      "note": "Watch cites the weakest margin's arm but is generic monitoring advice and names no margin."
+    },
+    {
+      "plan": "anchors/weak/item-R8.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R8",
+      "plan_digest": "0cfd9ae768b692fc28af7d8300be4d1f73d985fc2eef9caaf58a2c6097c48c31",
+      "labeled_by": "pending_owner",
+      "note": "The lede is long, passive and hedged."
+    },
+    {
+      "plan": "anchors/weak/item-R9.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R9",
+      "plan_digest": "13f810cc65d1e33a817b769315f6271bf4a08468c4eec1165a712cea03c4af85",
+      "labeled_by": "pending_owner",
+      "note": "The first screen says to keep the control but not why or what the main risk is."
+    },
+    {
+      "plan": "anchors/weak/item-R10.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R10",
+      "plan_digest": "e337c46aa4aee2096659b99318613017a49354a6ffe79ce257ea5beffebbbff5",
+      "labeled_by": "pending_owner",
+      "note": "Next names no experiment that could change the answer."
+    },
+    {
+      "plan": "anchors/weak/item-R11.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R11",
+      "plan_digest": "c037872146faa5866eb396d45e4f83df17440a85b36f29419f435b1560d719c7",
+      "labeled_by": "pending_owner",
+      "note": "Each confidence clause restates its caveat without saying what would make it material."
+    },
+    {
+      "plan": "anchors/weak/item-R12.plan.json",
+      "input": "r5",
+      "from": "r5/anchor.plan.json",
+      "expect": "fails_item",
+      "item": "R12",
+      "plan_digest": "f6dc18d0973d60c05611ccb7e6b02dc52b467eedf25d7ab8ba5bf1b1d11d7468",
+      "labeled_by": "pending_owner",
+      "note": "Why not gives a candidate's own cost as what it costs more than the control."
+    }
+  ]
+}

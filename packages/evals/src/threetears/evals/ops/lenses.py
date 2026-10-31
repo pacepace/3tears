@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 from datetime import UTC, datetime
 from functools import partial
@@ -30,6 +30,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.analysis import reads as read_tier
 from threetears.evals.analysis.reads import (
     RunLister,
     bisect_runs,
@@ -37,6 +38,7 @@ from threetears.evals.analysis.reads import (
     export_results,
     frontier,
     history,
+    hold_to_read_budget,
     pivot,
 )
 
@@ -96,6 +98,7 @@ from threetears.evals.run.reads import list_runs
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
+from threetears.evals.kernel.result_reading import ResultView
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -151,7 +154,7 @@ def scope_pivot(
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
         :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
-        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
+        :data:`~threetears.evals.analysis.reads.PIVOT_READ_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -217,7 +220,7 @@ def scope_history(
     :return: The series.
     :rtype: HistoryResult
     :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
-        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
+        :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -260,7 +263,7 @@ def scope_frontier(
     :return: The frontier.
     :rtype: FrontierResult
     :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
-        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs
         that fit.
     """
     return FrontierResult.model_validate(
@@ -427,7 +430,8 @@ def _pair_disclosures(
     windows = [
         window
         for run in runs
-        if (window := measurement_window(run.id, storage.query_eval_results_by_run(run.id, scope_id))) is not None
+        # When each result was stored is on its key, so the window reads the run's keys and none of its results.
+        if (window := measurement_window(run.id, storage.query_eval_result_keys_by_run(run.id, scope_id))) is not None
     ]
     completeness = {
         run.id: sentence for run in runs if (sentence := completeness_disclosure(run.completeness)) is not None
@@ -531,6 +535,9 @@ class ArmEstimate(EvalBaseModel):
     :ivar call_ceiling_lower_bound: Whether ``call_ceiling_usd`` is a floor under the arm's largest call rather than
         its exact ceiling — a subject kind's, priced with its transcripts left out
         (:attr:`~threetears.evals.run.CallCeiling.lower_bound`). Its largest call is reserved at that or more.
+    :ivar call_ceiling_estimate: Whether ``call_ceiling_usd`` is built on rates the host's pricer does not guarantee
+        (:attr:`~threetears.evals.run.CallCeiling.estimate`): the arm's cap is checked against an estimate. Left out
+        of the JSON while false.
     """
 
     described: str
@@ -549,6 +556,7 @@ class ArmEstimate(EvalBaseModel):
     band_high_usd: float | None = None
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
+    call_ceiling_estimate: bool = Field(default=False, exclude_if=lambda value: value is False)
 
 
 class DetectableEffect(EvalBaseModel):
@@ -739,7 +747,9 @@ async def launch_estimate(
     :rtype: LaunchEstimate
     :raises NotFoundError: The template is not in the scope.
     :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
-        below one.
+        below one. The template's earlier runs past the read tier's budget refuse no estimate: the planning block
+        says so in its ``cannot_estimate``, and the price is returned (:func:`detectable_effects` called directly
+        refuses).
     """
     quote = await quote_launch(
         host.launch,
@@ -766,7 +776,7 @@ async def launch_estimate(
     detectable = await run_blocking(
         host.eval_host.blocking_executor,
         partial(
-            detectable_effects,
+            _planning_block,
             host.eval_host,
             scope_id,
             quote.template_id,
@@ -790,6 +800,53 @@ async def launch_estimate(
         computed_at=datetime.now(UTC).isoformat(),
         detectable_effect=detectable,
     )
+
+
+def _planning_block(
+    host: EvalHost, scope_id: str, template_id: str, *, n_cases: int | None, k_runs: int, n_arms: int
+) -> DetectableEffects:
+    """A launch estimate's planning block: :func:`detectable_effects`, or, when the template's earlier runs are past
+    the read tier's budget, the block saying so in ``cannot_estimate``.
+
+    The price does not depend on the block, so a planning read past the budget blocks only the block: it is a
+    disclosure on the estimate, never a refusal of it. :func:`detectable_effects` refuses runs past the budget by
+    their matrices before reading any result, and a read that returned more results than the budget once its walk is
+    done; either refusal is logged at WARNING. Every other refusal propagates.
+    """
+    try:
+        return detectable_effects(host, scope_id, template_id, n_cases=n_cases, k_runs=k_runs, n_arms=n_arms)
+    except ValidationFailedError as refused:
+        if "result_budget" not in refused.details:
+            raise
+        details = refused.details
+        held = (
+            f"hold about {details['results_estimated']} results by their matrices"
+            if "results_returned" not in details
+            else f"returned {details['results_returned']} results"
+        )
+        # No reading reaches the block (none was read, or the read was refused once walked), so the family is the one
+        # contrast per arm a launch of these arms would test.
+        family_size = max(1, n_arms - 1)
+        return DetectableEffects(
+            n_cases=n_cases,
+            k_runs=k_runs,
+            family_size=family_size,
+            per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
+            cannot_estimate=(
+                f"the earlier runs of template {template_id!r} {held}, past the read tier's budget of "
+                f"{details['result_budget']}, so their variances were not read; {refused.remedy}"
+            ),
+        )
+
+
+#: The operation a launch's planning read past the read budget is refused as.
+_PLANNING_LENS = "detectable_effects"
+
+#: How a launch's planning read past the read budget narrows: the refusal's remedy begins with it.
+_NARROW_THE_PLANNING_READ = (
+    "archive the template's earlier runs the plan need not read (it leaves archived runs out), or estimate a launch "
+    "of a template with fewer earlier runs"
+)
 
 
 def detectable_effects(
@@ -823,11 +880,36 @@ def detectable_effects(
     :ptype n_arms: int
     :return: The block.
     :rtype: DetectableEffects
+    :raises ValidationFailedError: The template's earlier runs are estimated past
+        :data:`~threetears.evals.analysis.reads.PLANNING_READ_BUDGET` results by their matrices (refused before any result
+        is read), or their read returned more than it (refused once the read is walked). A launch estimate reports
+        that in the block's ``cannot_estimate`` instead, and is still priced (:func:`launch_estimate`).
     """
     runs = [run for run in list_runs(host, scope_id) if run.template_id == template_id]
-    results_by_run = {run.id: host.storage.query_eval_results_by_run(run.id, scope_id) for run in runs}
-    runs = [run for run in runs if results_by_run[run.id]]
-    readings = planning_readings(runs, results_by_run, profile=host.profile) if runs else []
+    # Every result of every earlier run is read, so the read is held to the read tier's budget as the aggregates are:
+    # estimated off the listing above before any result is read, then counted as the read is walked.
+    hold_to_read_budget(
+        _PLANNING_LENS, scope_id, runs, budget=read_tier.PLANNING_READ_BUDGET, how=_NARROW_THE_PLANNING_READ
+    )
+    # One read of every earlier run's results, as their compact readings, walked once a page at a time in the store's
+    # own order across the runs (``in_store_order``), each reading read down to its values before the next page
+    # (:func:`planning_readings`, which groups by run itself, so the order across runs reaches no answer): a template's
+    # history read whole held every result of every run at once. The read holds one page of results and their readings
+    # at a time, on either path; on the engine's path its key read is one call for every run.
+    read_counts: dict[str, int] = {}
+    walk = _counted(
+        host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True), read_counts
+    )
+    readings = planning_readings(runs, walk, profile=host.profile)
+    hold_to_read_budget(
+        _PLANNING_LENS,
+        scope_id,
+        runs,
+        budget=read_tier.PLANNING_READ_BUDGET,
+        how=_NARROW_THE_PLANNING_READ,
+        returned=sum(read_counts.values()),
+    )
+    runs = [run for run in runs if run.id in read_counts]
     family_size = max(1, len(readings)) * max(1, n_arms - 1)
     block = DetectableEffects(
         n_cases=n_cases,
@@ -861,6 +943,22 @@ def detectable_effects(
         for reading in readings
     ]
     return block.model_copy(update={"effects": effects})
+
+
+def _counted(readings: Iterable[ResultView], counts: dict[str, int]) -> Iterator[ResultView]:
+    """``readings``, each handed on as it is read, counted per run into ``counts``: which runs the planning read found
+    results of, and how many, known once the walk ends.
+
+    :param readings: The read's readings, walked once.
+    :ptype readings: Iterable[ResultView]
+    :param counts: Where each run's count is added.
+    :ptype counts: dict[str, int]
+    :return: The readings, in their order.
+    :rtype: Iterator[ResultView]
+    """
+    for reading in readings:
+        counts[reading.eval_run_id] = counts.get(reading.eval_run_id, 0) + 1
+        yield reading
 
 
 def _detectable_effect(
@@ -959,6 +1057,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         remedy=arm.remedy,
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
+        call_ceiling_estimate=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.estimate,
     )
 
 
@@ -1453,6 +1552,11 @@ def estimate_text(estimate: LaunchEstimate) -> str:
         )
         # one line: an arm's description is its repr'd model and template id and its counts (run.launch)
         lines.append(f"- {arm.described}: {figure} — {arm.outcome}; {arm.basis}")
+        if arm.call_ceiling_estimate:
+            lines.append(
+                "  its cap is checked against estimated rates: its largest call is bounded on rates the host's "
+                "pricer does not guarantee"
+            )
         if arm.refusal is not None:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")

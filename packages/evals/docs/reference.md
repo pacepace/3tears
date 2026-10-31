@@ -137,13 +137,21 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`RubricDim`** · *host contract* · model · One judge-scored rubric dimension.
 - **`RubricProposal`** · model · The validated DRAFT the rubric proposer returns for operator review.
 - **`RubricScore`** · model · Outcome of one rubric judge dimension.
+- **`RunDisclosure`** · model · What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
 - **`SecondJudge`** · model · A judge other than the one a run was scored by: a model, the prompt per dimension, and a temperature.
 - **`StoreCalledOnEventLoop`** · *host contract* · exception · A store call was made on a thread that is running an event loop.
 - **`StoreClock`** · *host contract* · protocol · A store's own clock: the optional capability a `DocumentStore` may offer beside its methods.
 - **`StoreConflict`** · *host contract* · exception · A conditional write lost its race: the stored document no longer carries `if_match`.
 - **`SubjectSnapshot`** · *host contract* · model · The subject a set of observations was taken against, frozen at capture.
 - **`SweepableValue`** · *host contract* · model · One level of one swept input: what it *is*, what to call it, and what kind of axis it is on.
+- **`ThinkingBinding`** · dataclass · The provider checking that a replayed thinking block's conversation is unchanged: the Messages API's `thinking.block_binding`, under the `thinking-binding-controls-2026-08-01` beta.
+- **`ToolResultClearing`** · dataclass · The provider clearing old tool results from a long conversation itself: server-side context editing.
+- **`ToolTurnClient`** · protocol · The client a tool-calling loop is handed: one turn at a time, priced before it is sent.
 - **`TraceSink`** · *host contract* · protocol · The engine's whole reach into a host's tracing.
+- **`TurnCeiling`** · dataclass · The most one tool turn can cost, as its client bounds it before it is sent.
+- **`TurnMessage`** · dataclass · One message of the conversation a turn sends.
+- **`TurnReply`** · dataclass · The model's next message, why it stopped, what it used and what it cost.
+- **`TurnToolSpec`** · dataclass · One tool the model may call: its name, what it does, and its arguments' JSON schema.
 - **`VariationAxis`** · model · One axis along which test cases vary for a template.
 - **`VariationCounts`** · model · How many test cases a launch asked generation for, and how many it froze.
 - **`WorldSeed`** · *host contract* · model · Initial state for the eval's stateful world.
@@ -192,7 +200,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 7`
+  <br>`= 11`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -205,7 +213,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 3`
+  <br>`= 7`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 16`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -243,7 +251,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`count_substituted`** · function · Count the deliveries a harness supplied, over the delivery record itself.
   <br>`count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int`
 - **`count_substituted_deliveries`** · function · Count the async deliveries in `result` whose payload a harness supplied.
-  <br>`count_substituted_deliveries(result: EvalResult) -> int`
+  <br>`count_substituted_deliveries(result: ResultView) -> int`
 - **`default_job_timeout`** · *host contract* · function · Enforce a job budget with `asyncio.timeout` and nothing else.
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
 - **`extract_json`** · function · Extract a JSON object from provider output.
@@ -255,7 +263,7 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`judge_case_of`** · function · The judge case a test case carries, or `None` when it carries none.
   <br>`judge_case_of(test_case: EvalTestCase) -> JudgeCase | None`
 - **`production_replicating_cost`** · function · Observed cost of the roles a production deployment would also pay for.
-  <br>`production_replicating_cost(usage: list[RoleUsage], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None`
+  <br>`production_replicating_cost(usage: Sequence[UsageView], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None`
 - **`prompt_drift`** · function · Read a stored copy of a catalogue prompt against the package's shipped default.
   <br>`prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift`
 - **`resolve_variant_identity`** · function · Return the variant identity a reader should show for `run`'s observations.
@@ -428,7 +436,7 @@ The host contract — what a consuming product declares, and what the engine nev
 **Types**
 
 - **`CompletionRole`** · *host contract* · literal · The apparatus roles the engine asks a host for a completion client in.
-  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'`
+  <br>`'judge'` | `'simulator'` | `'analysis'` | `'variation'` | `'proposer'` | `'analyst'`
 
 **Constants**
 
@@ -487,8 +495,8 @@ The engine's run package: launching and executing a run, judging it, metering it
   <br>`launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWiring) -> EvalRun`
 - **`launchable_judge_kind`** · function · The judge kind's entry in a host's launch registry: each arm one judge over the template's frozen cases.
   <br>`launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKind`
-- **`list_results`** · *host contract* · function · List every result for one eval run within its scope.
-  <br>`list_results(storage: ResultStore, run_id: str, scope_id: str) -> list[EvalResult]`
+- **`list_results`** · *host contract* · function · List every result for one eval run within its scope, read a page at a time in the store's order.
+  <br>`list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]`
 - **`list_runs`** · function · List eval runs in a scope, optionally filtered by status.
   <br>`list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]`
 - **`load_seed_corpus`** · *host contract* · function · Read a corpus off disk, constructing each document through its model in `scope_id`.
@@ -625,19 +633,19 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
   <br>`inspect_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str, *, aspect: str | None = None) -> BundleInspection`
 - **`inter_judge_agreement`** · function · Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
-  <br>`inter_judge_agreement(results: Iterable[EvalResult], *, pass_id: str | None = None) -> InterJudgeAgreement`
+  <br>`inter_judge_agreement(results: Iterable[ResultView], *, pass_id: str | None = None) -> InterJudgeAgreement`
 - **`judge_agreement`** · function · Pair each rating with the judge's score on its dimension, on its result or the same output, and read agreement.
-  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[EvalResult]) -> JudgeAgreement`
+  <br>`judge_agreement(ratings: Iterable[CalibrationRating], results: Iterable[ResultView]) -> JudgeAgreement`
 - **`judge_drift`** · function · Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
-  <br>`judge_drift(results: Iterable[EvalResult], *, pass_id: str | None = None) -> JudgeDrift`
+  <br>`judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) -> JudgeDrift`
 - **`judge_evidence_tiers`** · function · Decide the evidence tier of every judge's readings on every dimension, from the two agreements.
   <br>`judge_evidence_tiers(agreement: JudgeAgreement, self_agreement: JudgeSelfAgreement, judged: Iterable[JudgeKey]) -> list[JudgeEvidenceTier]`
 - **`judge_key`** · function · The judge behind `result`'s score on `dim`, or None when it holds no score there.
-  <br>`judge_key(result: EvalResult, dim: str) -> JudgeKey | None`
+  <br>`judge_key(result: ResultView, dim: str) -> JudgeKey | None`
 - **`judge_kind_readings`** · function · Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
-  <br>`judge_self_agreement(results: Iterable[EvalResult]) -> JudgeSelfAgreement`
+  <br>`judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
   <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`prompt_content_version`** · function · The version a generation records for its prompt — a short hash of what the model is told.
@@ -646,8 +654,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Refuse a reporter template that asks for apparatus a memo writer cannot honour, or gives its judge nothing to score.
   <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
-- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page that needs no script.
-  <br>`report_html(report: Report) -> str`
+- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
+  <br>`report_html(report: Report, *, static: bool = False) -> str`
 - **`report_markdown`** · *host contract* · function · Render a report as Markdown.
   <br>`report_markdown(report: Report) -> str`
 - **`reporter_cell_timeout_s`** · function · The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
@@ -655,7 +663,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`reporter_kind_contract`** · function · The reporter's contract, also seating apparatus dimensions of the host's own that its runs record.
   <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
 - **`serialize_report`** · function · A report in one of its three forms: an aspect's page, or a campaign's.
-  <br>`serialize_report(report: Report | CampaignReport, format: ReportFormat) -> str`
+  <br>`serialize_report(report: Report | CampaignReport, format: ReportFormat, *, static: bool = False) -> str`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
   <br>`tier_sentence(tier: JudgeEvidenceTier) -> str`
 
@@ -691,12 +699,13 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
+- **`EVAL_REPORT_PLAN_DEFAULT`** · *host contract* · constant (str) · The report planner's default system prompt.
 - **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
 - **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
-- **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · How many results one aggregating read-tier call may read, as its runs' listing estimates them before any is read; also how many projected score records one call may carry before its observer line is logged at WARNING (#652).
-  <br>`= 50000`
+- **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
+  <br>`= 66003`
 - **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · *host contract* · constant (KindContract) · The reporter kind's contract, for a profile's `kinds`: its overlay is the prompt preset, and it seats the judge and the spend ceiling. `reporter_kind_contract` builds it with a host's own seats added.
@@ -861,7 +870,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`price_largest_reporter_call`** · async function · A reporter arm's largest generator call, priced before launch, for its `LaunchableKind.price_largest_call`.
   <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: ReporterPrompts, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
-  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table') -> ReportDocument`
+  <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False, report_doc_id: str | None = None, include_sessions: bool = False) -> ReportDocument`
 - **`reporter_case_archive`** · function · Retire a reporter case, or restore one: a retired case is never launched again and stays readable.
   <br>`reporter_case_archive(host: EvalHost, test_case_id: str, scope_id: str, *, archived: bool, reason: str | None = None) -> FrozenReporterCase`
 - **`run_get`** · function · One run, summarised from its stored results.
@@ -885,13 +894,15 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Classes**
 
-- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job.
+- **`AnalysisGeneration`** · dataclass · How this host generates an analysis as a background job: the report writer, on the host's model and budget.
+- **`AnalystLimits`** · dataclass · What the analyst's rounds are held to (plan §4.3).
 - **`CampaignDefinition`** · model · What creating a campaign names: what it is called, its subject and behavior, its question, arms, aspects and floors, and the campaigns whose aspects it adopts.
 - **`CampaignLine`** · model · One campaign, as a listing shows it.
 - **`CampaignListing`** · model · A scope's campaigns, newest first.
 - **`CaseRenamed`** · *host contract* · model · A renamed case: which, and its name before and after.
 - **`CaseSetLine`** · model · One version of a named case set.
 - **`CaseSetMint`** · model · What minting a case set's next version names: the set, its template and its cases in order.
+- **`EditorLimits`** · dataclass · What each review round is held to (plan §4.3).
 - **`JobHandle`** · model · A started job: the id to poll, and what it is working on.
 - **`JobsStarted`** · model · What starting long work returns: one handle per job, in the order the work was asked for.
 - **`JobStatus`** · model · Where one job stands, read from the record its work writes.
@@ -900,10 +911,13 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`LaunchArguments`** · model · What a launch names: the template, the subject, one arm per model, and the run's own limits.
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
+- **`ReportBudget`** · class · The host's cap for one report, shared by every session that writes it: dollars, or tokens, and either with turns.
 - **`ReporterAdmitted`** · dataclass · What `admit_reporter_launch` resolved of a reporter arm it can honour.
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
+- **`SessionLimits`** · dataclass · What every turn of a session is held to (plan §4.3).
 - **`TemplateListing`** · model · A scope's templates.
+- **`WriterLimits`** · dataclass · What the writing loop is held to (plan §4.3).
 
 **Types**
 
@@ -914,7 +928,7 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Constants**
 
-- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): assembling the bundle, the prompt, the client, the default-writer check and the first call's price — in seconds.
+- **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
   <br>`= 900.0`
 - **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · The launch arguments a reporter arm cannot honour, for its `LaunchableKind`: it drives no simulated user, calls no tool a cassette could record, and generates no case — each is frozen from a campaign.
 
@@ -929,9 +943,11 @@ The action catalogue: every eval action, declared once, for any transport to mou
 
 **Functions**
 
+- **`analyst_tools`** · function · The one tool carrying the analyst's actions: `<prefix>_analyst`, cut for the analyst or for its editor.
+  <br>`analyst_tools(prefix: str = 'evals', *, writes: bool = True, role: Literal['analyst', 'editor'] = 'analyst') -> tuple[ToolSpec]`
 - **`definition_drift_actions`** · *host contract* · function · `definitions_drift` and `definitions_reset`, for the host's catalogue.
   <br>`definition_drift_actions(corpus: Callable[[str], SeedCorpus], *, seeded_digests: Callable[[str], Mapping[str, str]] | None = None) -> tuple[Action, Action]`
-- **`eval_catalogue`** · function · The engine's catalogue, with the host's own actions after the engine's.
+- **`eval_catalogue`** · function · The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
   <br>`eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue`
 - **`render_jobs_started`** · *host contract* · function · What a start returned: each job, and how to poll it.
   <br>`render_jobs_started(started: JobsStarted) -> str`
@@ -1030,9 +1046,11 @@ The completion client: a model id in, the engine's completion port out, over eac
 
 **Classes**
 
+- **`AnthropicPublishedRates`** · class · The default pricer: Anthropic's published rates for a direct Anthropic call, the catalogue for anything else.
 - **`Catalogue`** · *host contract* · class · OpenRouter's model catalogue, refreshed every `refresh_after`, and what providers refused, for every model that reads it.
 - **`Clients`** · *host contract* · class · A host's role factory (`EvalHost.clients`): one `Model` per role, model id and temperature.
 - **`Completion`** · dataclass · One reply: the completion port's ten members, and five of the client's own.
+- **`Pricer`** · protocol · What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 - **`PriceRefresh`** · *host contract* · dataclass · What one read of the price catalogue found: what `Model.refresh_prices()` and `Clients.refresh_prices()` return, and `Model.last_price_refresh` keeps.
 - **`PriceSource`** · *host contract* · enum · The words the shipped client writes as a completion's `price_source`: who priced the call.
   <br>values: `'openrouter:reported'`, `'openrouter:reported+upstream'`, `'openrouter-catalogue'`
@@ -1105,7 +1123,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `basis` | `ReportBasis` | required | `analysis` over a generated memo, `code_only` over the evidence alone. |
-| `title` | `str` | required | The title line, a name: the campaign's, with what it compares where no question was declared (`invoices: does v2 do better than v1?`). |
+| `title` | `str` | required | The title line: what the campaign compares and on what, with its name as a qualifier, built by code (`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict. |
 | `finding_count` | `int` | required | How many findings the memo holds. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
@@ -1179,14 +1197,15 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
-| `chart` | `ChartKind` | required | `outcome_bar`, `interval_rows` or `cost_quality`. |
+| `chart` | `ChartKind` | required | Which chart: one of the report's own three, or one of the kit's kinds. |
 | `title` | `str` | required | What the chart shows. |
 | `bars` | `list[OutcomeBar]` | `[]` | An outcome bar's arms, one bar each. |
 | `rows` | `list[IntervalRow]` | `[]` | An interval chart's rows, in drawn order. |
 | `points` | `list[CostQualityPoint]` | `[]` | A cost/quality chart's arms, one point each, in drawn order. |
-| `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; empty for none. |
+| `unit` | `str` | `''` | The unit an interval chart's values, or a cost/quality chart's costs, are stated in; for a kit chart of what an analysis computes (two arms' difference, a lever's effect), the unit its values table spells its values at where its format names none (a point to one decimal); empty for none. |
 | `zero_line` | `bool` | `False` | Whether the chart draws a line at zero (a difference's). |
 | `margin` | `float \| None` | `None` | A margin band either side of zero, on the chart's ruler; None when none declared. |
+| `data` | `KitChart \| None` | `None` | A kit kind's chart data, as the kit's `data-chart` contract names it (kit/API.md); None for the report's own three kinds. |
 
 #### `DisclosureBlock`
 
@@ -1222,6 +1241,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `aspect` | `str` | required | The label of the campaign's aspect this bundle reads: one template's runs, its design and its floors. |
 | `short_name` | `str \| None` | `None` | What a page prints for this aspect in place of its label, as the campaign declares it. |
 | `goal_check_names` | `dict[str, str]` | `{}` | What a page prints for a goal check, by its expression, as the member runs' templates declare it (`EvalTemplate.goal_check_names`). |
+| `stratum_names` | `dict[str, str]` | `{}` | What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare it (`EvalTemplate.stratum_names`). |
 | `template_id` | `str \| None` | `None` | Referenced eval_template (the Behavior), or None. |
 | `scope_id` | `str` | required | Storage scope the member runs were loaded from. |
 | `run_ids` | `list[str]` | `[]` | Resolved member-run ids (sorted). |
@@ -1569,12 +1589,12 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Action | Class | Parameters | Description |
 |---|---|---|---|
 | `campaign_create` | `write` | `name`, `subject_id`, `behavior`, `description?`, `question?`, `campaign_arms?`, `aspects?`, `floors?`, `margins?`, `aspects_from?`, `exploratory?` | Create a campaign: one question asked of its arms, measured on one or more aspects. |
-| `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `question?`, `aspects?`, `floors?`, `short_names?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run. |
+| `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `question?`, `aspects?`, `floors?`, `short_names?`, `arm_short_names?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run. |
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids`, `aspect?` | Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids`, `aspect?` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
 | `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?` | Record a person's call on a campaign: the arm decided, why, and each warning it overrides. |
-| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Generate a campaign's analysis with a paid model call, as a job to poll. |
-| `analysis_estimate` | `read` | `campaign_id`, `model?` | Price a campaign's analysis generation against the host's out-of-run cap, without spending. |
+| `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll. |
+| `analysis_estimate` | `read` | `campaign_id`, `model?` | State the report budget a campaign's analysis generation would be held to, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
 | `judge_second_estimate` | `read` | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Price a second judge's pass over a run against the host's out-of-run cap, without spending. |
 | `judge_drift_check` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?` | Re-score every judged result of a run under a changed judge, as a job; read how far each moved. |
@@ -1584,7 +1604,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insights_list` | `read` | `subject_filter?`, `campaign_filter?` | List the scope's insights — the durable claims analyses minted — newest first. |
 | `insight_get` | `read` | `insight_id` | Read one insight in full: its statement, evidence runs, provenance and standing. |
 | `analyses_undescribable` | `read` | — | List the scope's analyses holding an arm whose levels this build cannot describe. |
-| `report_read` | `read` | `campaign_id`, `format?`, `trials?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `report_read` | `read` | `campaign_id`, `format?`, `trials?`, `static?`, `report_doc_id?`, `include_sessions?` | Read a campaign's report — its analysis, else its evidence alone — as Markdown, JSON or HTML. |
+| `analyst_gaps_list` | `read` | `since?` | List the capability gaps analysts noted, and code's notices, grouped and ranked as issue text. |
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
@@ -1632,17 +1653,18 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
 | `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, which costs nothing and absorbs a provider's bad minute across every arm. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
+| `arm_short_names` | `object` or `null` | A named arm's label to its short name, what a page prints for it where space is tight (at most 32 characters, no other arm's label or short name), or to null to let the page compute one. An arm not named keeps its own. Editable once runs have joined, since it changes nothing any run measures. |
 | `arms` | array of `object` | The arms, in the order they launch and take their turns: each {model, label?, overlays?, apparatus_settings?, judge_model?, simulator_model?} — its own model and what it sets differently from its siblings. |
 | `aspect` | `string` or `null` | The label of the aspect the runs join or leave. Omitted, each run joins the one aspect gathered on the template it ran (a campaign of one aspect takes every run), and leaves the aspect holding it. |
 | `aspects` (on `campaign_create`) | array of `object` | Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in table cells and sentences, at most 32 characters and no other aspect's label or short name; omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse, which a declared aspect states when the campaign asks a question and names a control, and a campaign naming no control never states (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |
 | `aspects` (on `campaign_update`) | array of `object` or `null` | Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in table cells and sentences, at most 32 characters and no other aspect's label or short name; omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse, which a declared aspect states when the campaign asks a question and names a control, and a campaign naming no control never states (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |
-| `aspects_from` | array of `string` or `object` | Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. An adopted aspect keeps its short_name. Two aspects under one label or printed alike, or one run in two of them, are refused. |
+| `aspects_from` | array of `string` or `object` | Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. An adopted aspect keeps its short_name, and an adopted arm its own. Two aspects under one label or printed alike, or one run in two of them, are refused. |
 | `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
 | `bars_overridden` | array of `string` | Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect label holds no slash), the aspect and measure the page's bars table names it by. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
 | `call_reason` | `string` | Why the call was made, in the decider's words. |
-| `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...]}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
+| `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...], short_name?}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. short_name is what a page prints for the arm where space is tight (chart labels, table cells), at most 32 characters and no other arm's label or short name; omitted, the page computes one from what differs from the control. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
@@ -1677,9 +1699,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `floors` (on `campaign_create`) | array of `object` | Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} (no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once. |
 | `floors` (on `campaign_update`) | array of `object` or `null` | Lines a candidate is warned for crossing, each {aspect, clause}: clause {kind: rate_drop, max_points, reading?} (no pass rate, or the named one, may drop by more than max_points) or {kind: cost_lower} (it must cost less per reply). A floor only warns, on an aspect that declares a design, of a campaign that names a control: without one a floor is read against nothing, and a bar is declared instead. Each aspect, kind and reading once. |
 | `floors_overridden` | array of `string` | The key of each broken floor of the decided arm the call overrides, as the page names it. |
-| `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (script-free). |
+| `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (one page; its one script is the kit's, which draws its charts). |
 | `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
+| `include_sessions` | `boolean` | With json, add the full transcripts of the report document the page draws, as report_doc.sessions: every session that wrote it, by name. Refused with markdown or html, which never hold a transcript. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `intent` | `string` | What its judge campaign measures, in a sentence a reader of its report is told. |
 | `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
@@ -1706,8 +1729,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |
-| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it. |
-| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it. |
+| `name` (on `campaign_create`) | `string` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
+| `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
 | `note` | `string` | Why the output must get that verdict, in the author's words. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |
@@ -1723,8 +1746,9 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `rating_source` | `string` | Where the person gave the rating, e.g. a blind read's id. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
-| `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; omitted freezes the bundle alone, which only a generating candidate can run. |
+| `recorded_analysis_id` | `string` or `null` | A stored analysis of the campaign whose memo the case pins as the one it got, as analyses_list names it; one the report planner wrote pins its plan, as a plan case; omitted freezes the bundle alone, which only a generating candidate can run. |
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
+| `report_doc_id` | `string` or `null` | A stored report document of the campaign, any version (analyses_list names each analysis's report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, the campaign's report. |
 | `reporter_case_id` | `string` | A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it. |
 | `result_id` | `string` | A result's id, as results_list names it. |
 | `result_ids` | array of `string` or `null` | A run's result ids, as results_list names them; omitted for every result of the run. |
@@ -1744,6 +1768,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
+| `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
+| `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
 | `subject` | `string` or `null` | Who or what produced the output, as the judge should know it; omitted for none. |
 | `subject_filter` | `string` or `null` | Read only this subject's runs or insights; omitted reads every subject. |
@@ -1848,8 +1874,8 @@ options:
                         the host to work in
   --scope SCOPE         the scope to read and write in
   --format {markdown,json,html}
-                        markdown (default), html (one page, needs no script) or json (the bundle
-                        the report was computed from)
+                        markdown (default), html (one page, charts drawn by its inlined kit
+                        script) or json (the bundle the report was computed from)
   --trials {table,all}  table (default): each failed or lost trial's row and stored result; all:
                         each one's full record too
   --out DIR             write report.html, report.md and bundle.json into DIR instead of printing
@@ -1989,6 +2015,8 @@ The engine's own measures (`METRIC_DESCRIPTORS`), grouped by family in the order
 | `completion_tokens` | — | — | tokens | Output tokens a role produced. |
 | `reasoning_tokens` | — | — | tokens | The reasoning share of completion_tokens. |
 | `call_count` | — | — | calls | How many calls a role made — and it counts a different thing per role: LLM rounds for the candidate, attempts including parse retries for the judge, searches for external. |
+| `unanswered_retried` | — | — | calls | A usage row's calls a forced tool choice was refused on and that were answered unforced in the same call: beside the row's call_count, never in it, and in no cost. |
+| `unanswered_lost` | — | — | calls | A usage row's calls sent and never answered, so the turn they belonged to ended in error: beside the row's call_count, never in it, and in no cost. |
 | `provider_units` | — | — | provider-defined | Units of a provider's own metered quantity that an external role consumed — a search API's credits, a video API's quota units — named by the row's provider_unit. |
 | `context_tokens_in` | — | — | tokens | How much context the candidate was carrying — a stratification covariate, not a quality measure. |
 | `reasoning_ratio` | — | — | — | How much of the candidate's output was reasoning. |

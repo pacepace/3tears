@@ -1,0 +1,1482 @@
+{
+  "id": "01a18940-ca74-7507-8b2e-7885eb9aa7e2",
+  "doc_type": "eval_report_doc",
+  "schema_version": 14,
+  "scope_id": "toyhost-scope",
+  "snapshot_id": "report-snapshot:0d5f1d10bda1a44e6a0a2c413ea25524",
+  "campaign_id": null,
+  "doc": {
+    "schema": "report-doc/1",
+    "story": "tradeoff",
+    "headline": "Quality costs: Atlas-M trails Atlas-L by {price.atlas-m.atlas-l.overall.gain|abs} points at {price.atlas-m.atlas-l.overall.cost_gap|abs|usd} less per 1,000 conversations; Brisk-S is cheapest but slips on safety checks.",
+    "lede": "On the calibrated overall-quality score, each step up the cost ladder buys a separated gain: a point costs {price.brisk-s.atlas-m.overall.per_point|usd_per_1k} from Brisk-S to Atlas-M and {price.atlas-m.atlas-l.overall.per_point|usd_per_1k} from Atlas-M to Atlas-L. A declared price per point would pick the option, except inside the bands where the pick flips.",
+    "flag": "Nothing was declared before the run: no control, gate, floor or price per point. The choice among these options is the assistant owner's to make.",
+    "recommends": [],
+    "confidence": {
+      "form": "high_if_immaterial",
+      "caveats": [
+        {
+          "id": "analyst:cost-routing-unknown",
+          "label": "Cost routing unknown",
+          "material_if": "The high covers the quality order and the separated quality gains, which do not depend on price. The dollar bands hold only at this run's provider routing, which names no provider: they stay open until production pricing is confirmed, and matter if any model is served at a different price there.",
+          "checked": null
+        },
+        {
+          "id": "nothing_declared",
+          "label": null,
+          "material_if": "Only if the owner's price per point lands inside one of the flip bands, where this run does not say which option is the better buy.",
+          "checked": null
+        },
+        {
+          "id": "no_control",
+          "label": null,
+          "material_if": "Only if an unpaired interval hides a reversal. Each model ran the same task types at the same counts, so paired intervals, were they computed, would likely read narrower and keep every gap called separated here separated; they could also settle where Open-70B sits against Brisk-S.",
+          "checked": null
+        },
+        {
+          "id": "best_of_n",
+          "label": null,
+          "material_if": "Only if Atlas-L's lead is mostly chance; a re-run would likely read it lower, which makes the step from Atlas-M to Atlas-L dearer per point and favours the cheaper options.",
+          "checked": null
+        },
+        {
+          "id": "judge_unstated",
+          "label": null,
+          "material_if": "Only if the unnamed judge of the task checks is harsher on Brisk-S's or Open-70B's style; the price ladder itself rests on the overall-quality judge, calibrated on {judged.overall.calibration_ratings} human ratings at {judged.overall.agreement} agreement.",
+          "checked": null
+        }
+      ]
+    },
+    "decision": [
+      {
+        "slot": "the_trade",
+        "text": "Pooled over task types, Atlas-L reads {pooled.overall.atlas-l.mean} on overall quality at {cost_per_1k.atlas-l|usd_per_1k}; Atlas-M reads {pooled.overall.atlas-m.mean} at {cost_per_1k.atlas-m|usd_per_1k}; Brisk-S reads {pooled.overall.brisk-s.mean} at {cost_per_1k.brisk-s|usd_per_1k}. Open-70B, at {cost_per_1k.open-70b|usd_per_1k}, is off the frontier on the point estimates, but its gain over Brisk-S ({price.brisk-s.open-70b.overall.gain_interval_unpaired|interval} points) does not rule it out at low prices."
+      },
+      {
+        "slot": "where_it_flips",
+        "text": "Brisk-S is the best buy if a point of overall quality is worth less than somewhere from {price.brisk-s.atlas-m.overall.per_point_low_unpaired|usd_per_1k} to {price.brisk-s.atlas-m.overall.per_point_high_unpaired|usd_per_1k}; Atlas-L if it is worth more than somewhere from {price.atlas-m.atlas-l.overall.per_point_low_unpaired|usd_per_1k} to {price.atlas-m.atlas-l.overall.per_point_high_unpaired|usd_per_1k}; Atlas-M in between. In the low band, within the intervals, Open-70B could also be the best buy. Inside either band this run does not settle the pick."
+      },
+      {
+        "slot": "our_lean",
+        "text": "Ours, not a recommendation: Atlas-M, for any price per point between the two bands. It is not told apart from Atlas-L on the task checks where Brisk-S and Open-70B slip: declining speculation, confirming before account changes, resolving troubleshooting."
+      },
+      {
+        "slot": "what_settles_it",
+        "text": "The assistant's owner declares a price per point of overall quality, or floors on the safety checks; either turns this trade into a decision, at the routing confirmed for production."
+      },
+      {
+        "slot": "watch",
+        "text": "Atlas-M's widest gap to Atlas-L is troubleshooting, {compare.atlas-l.atlas-m.overall.task.trouble.difference|abs} points ({compare.atlas-l.atlas-m.overall.task.trouble.interval|interval}). Every dollar figure is this run's provider routing, which no arm names."
+      }
+    ],
+    "claims": [
+      {
+        "id": "ladder",
+        "text": "Moving from Brisk-S to Atlas-M buys {price.brisk-s.atlas-m.overall.gain|abs} points of overall quality at {price.brisk-s.atlas-m.overall.per_point|usd_per_1k} a point; moving on to Atlas-L buys {price.atlas-m.atlas-l.overall.gain|abs} more at {price.atlas-m.atlas-l.overall.per_point|usd_per_1k} a point.",
+        "weight": "lead",
+        "evidence": [
+          {
+            "block": "table",
+            "query": {
+              "source": "prices",
+              "aspect": "",
+              "measures": [
+                "overall"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Price per point of pooled overall quality at each step of the frontier, with unpaired intervals."
+          }
+        ],
+        "caveats": [
+          "no_control"
+        ],
+        "durable": false
+      },
+      {
+        "id": "open-70b",
+        "text": "Open-70B sits off the frontier only on its point estimates: a point bought from Brisk-S to Open-70B can cost as little as {price.brisk-s.open-70b.overall.per_point_low_unpaired|usd_per_1k}, and one bought on to Atlas-M as much as {price.open-70b.atlas-m.overall.per_point_high_unpaired|usd_per_1k}, so within the intervals it could be the best buy in the low band where Brisk-S and Atlas-M swap. By task type it reads above Brisk-S in troubleshooting, persona small talk and speculation bait, and below it in billing.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "overall"
+              ],
+              "arms": [
+                "open-70b",
+                "brisk-s"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Open-70B less Brisk-S on overall quality in each task type, with unpaired intervals; task types only, no overall row is drawn."
+          }
+        ],
+        "caveats": [
+          "no_control"
+        ],
+        "durable": false
+      },
+      {
+        "id": "cost",
+        "text": "Atlas-L costs the most in every task type and Brisk-S the least; troubleshooting is the dearest task for every model, {task.trouble.atlas-l.cost_per_1k.mean|usd_per_1k} on Atlas-L.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "bars",
+            "query": {
+              "source": "tasks",
+              "aspect": "",
+              "measures": [
+                "cost_per_1k"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Cost per 1,000 conversations by task type, on a log scale; no provider is named for any model."
+          }
+        ],
+        "caveats": [
+          "analyst:cost-routing-unknown"
+        ],
+        "durable": false
+      },
+      {
+        "id": "atlas-gap",
+        "text": "Atlas-L reads above Atlas-M in every task type but speculation bait, where the two are not told apart; the widest gap is troubleshooting at {compare.atlas-l.atlas-m.overall.task.trouble.difference|abs} points.",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "overall"
+              ],
+              "arms": [
+                "atlas-l",
+                "atlas-m"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Atlas-L less Atlas-M on overall quality in each task type, with unpaired intervals; task types only, no overall row is drawn."
+          }
+        ],
+        "caveats": [
+          "best_of_n"
+        ],
+        "durable": false
+      },
+      {
+        "id": "safety",
+        "text": "Brisk-S's saving comes with drops on the checks that protect users: Atlas-M declines speculation bait more often by {compare.atlas-m.brisk-s.declines.task.specul.difference|abs} points ({compare.atlas-m.brisk-s.declines.task.specul.interval|interval}). Both cheaper models confirm before account changes less often than the Atlas pair, Open-70B behind Atlas-M by {compare.atlas-m.open-70b.confirms.task.trouble.difference|abs} points; Brisk-S and Open-70B are not told apart there ({compare.brisk-s.open-70b.confirms.task.trouble.interval|interval}).",
+        "weight": "support",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "declines"
+              ],
+              "arms": [
+                "atlas-m",
+                "brisk-s"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Atlas-M less Brisk-S on declining speculation bait, with its unpaired interval; no overall row is drawn."
+          },
+          {
+            "block": "table",
+            "query": {
+              "source": "tasks",
+              "aspect": "",
+              "measures": [
+                "declines",
+                "confirms",
+                "unsupported",
+                "resolves",
+                "toolcall"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Pass rates on the task checks, each in the task type it applies to, with uncorrected intervals; these are normal approximations, so near a perfect score an upper end can print past the ceiling."
+          }
+        ],
+        "caveats": [
+          "judge_unstated"
+        ],
+        "durable": false
+      },
+      {
+        "id": "persona",
+        "text": "In persona small talk Open-70B is not told apart from either Atlas model on overall quality, Atlas-L ahead by {task.persona.price.open-70b.atlas-l.overall.gain|abs} ({task.persona.price.open-70b.atlas-l.overall.gain_interval_unpaired|interval}), and it reads highest on staying in character, {task.persona.open-70b.character.mean}, at {task.persona.open-70b.cost_per_1k.mean|usd_per_1k} against {task.persona.atlas-l.cost_per_1k.mean|usd_per_1k} for Atlas-L.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "diverging_bars",
+            "query": {
+              "source": "compare",
+              "aspect": "",
+              "measures": [
+                "overall"
+              ],
+              "arms": [
+                "open-70b",
+                "atlas-m"
+              ],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Open-70B less Atlas-M on overall quality in each task type, with unpaired intervals; task types only, no overall row is drawn."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      },
+      {
+        "id": "latency",
+        "text": "Latency follows cost: Brisk-S has the shortest p95 in every task type, and Atlas-L's p95 reaches {task.research.atlas-l.latency_s.p95} on research questions. No arm lost a case, so no short tail was bought by declining work.",
+        "weight": "detail",
+        "evidence": [
+          {
+            "block": "range_bars",
+            "query": {
+              "source": "tasks",
+              "aspect": "",
+              "measures": [
+                "latency_s"
+              ],
+              "arms": [],
+              "strata": [],
+              "limit": 0,
+              "transform": "none",
+              "small_multiples_by": "none"
+            },
+            "reference": null,
+            "emphasis": "",
+            "caption": "Latency p50 to p95 by task type; no latency budget was declared."
+          }
+        ],
+        "caveats": [],
+        "durable": false
+      }
+    ],
+    "explore": [
+      {
+        "control": "Price of one point of overall quality, per 1,000 conversations",
+        "binds": "Which measured option is the best buy",
+        "outcome": "Brisk-S below a band from {price.brisk-s.atlas-m.overall.per_point_low_unpaired|usd_per_1k} to {price.brisk-s.atlas-m.overall.per_point_high_unpaired|usd_per_1k}; Atlas-M between the bands; Atlas-L above a band from {price.atlas-m.atlas-l.overall.per_point_low_unpaired|usd_per_1k} to {price.atlas-m.atlas-l.overall.per_point_high_unpaired|usd_per_1k}. Open-70B is never best on the point estimates, but within the intervals it could be anywhere from {price.brisk-s.open-70b.overall.per_point_low_unpaired|usd_per_1k} to {price.open-70b.atlas-m.overall.per_point_high_unpaired|usd_per_1k}. Every dollar holds at this run's routing only."
+      }
+    ],
+    "omitted": [
+      {
+        "what": "Gives clear steps, escalates when stuck, cites the retrieved source and stays in character, beyond the persona claim",
+        "why": "Atlas-M and Atlas-L are not told apart on any of them, and Brisk-S or Open-70B reads lowest on each; none changes the trade. Full figures in the appendix."
+      },
+      {
+        "what": "Open-70B's lead over Brisk-S on resolving troubleshooting and declining speculation",
+        "why": "It reads higher on both, but neither gap is separated on unpaired intervals; the paired re-read in Next would settle it alongside the overall-quality question."
+      },
+      {
+        "what": "A dominance call naming Brisk-S",
+        "why": "It reads cost alone, since quality is held only per task type; the cheapest option is not shown good enough by anything declared."
+      },
+      {
+        "what": "Per-task price ladders beyond persona small talk",
+        "why": "Only persona small talk was priced on its own, because it is where Open-70B moves onto the frontier; the pooled ladder carries the trade."
+      },
+      {
+        "what": "Failure examples",
+        "why": "The snapshot keeps none."
+      }
+    ],
+    "next": [
+      {
+        "text": "The assistant's owner declares a price per point of overall quality, or floors on declining speculation and confirming before account changes.",
+        "settles": "Which option is the best buy; turns the trade into a decision."
+      },
+      {
+        "text": "Confirm the provider and price each model would be served at in production.",
+        "settles": "Whether the dollar bands, which hold only at this run's routing, can be acted on."
+      },
+      {
+        "text": "Re-read overall quality as paired per-case differences between the models, since they ran the same task types.",
+        "settles": "Where Open-70B sits against Brisk-S, and so whether it belongs on the frontier in the low band."
+      },
+      {
+        "text": "Declare the monthly volume of conversations.",
+        "settles": "What each step costs per month, so the price per point reads against a budget."
+      },
+      {
+        "text": "Run a routed option, Open-70B for persona small talk and Atlas-M elsewhere, on the same cases.",
+        "settles": "Whether routing lowers Atlas-M's cost without losing quality; nobody ran this mix, so no figure states it yet."
+      },
+      {
+        "text": "Name the judge of the task checks and calibrate it against human ratings.",
+        "settles": "Whether Brisk-S's and Open-70B's drops on the safety checks are real or the judge's."
+      }
+    ],
+    "method": [
+      {
+        "term": "Cases",
+        "text": "{scoreboard.atlas-l.cases|int} conversations per model, spread over the task types; no repeats are stated and no arm lost or failed a case.",
+        "caveats": []
+      },
+      {
+        "term": "Overall quality",
+        "text": "A judged score per conversation, calibrated on {judged.overall.calibration_ratings} human ratings at {judged.overall.agreement} agreement. Pooled figures weight each task type by its traffic share as the input states it.",
+        "caveats": []
+      },
+      {
+        "term": "Task checks",
+        "text": "Pass or fail per conversation, each read only in the task type it applies to. The input does not say who judged them.",
+        "caveats": [
+          "judge_unstated"
+        ]
+      },
+      {
+        "term": "Intervals",
+        "text": "Read at {compare.atlas-l.atlas-m.overall.task.billing.level} per task type, as normal approximations, so a pass rate near a perfect score can show an upper end past the ceiling. Differences between models combine each model's own spread as if independent, uncorrected; with no control nothing is paired, so they read wider than paired intervals would.",
+        "caveats": [
+          "no_control"
+        ]
+      },
+      {
+        "term": "Cost",
+        "text": "Cost per 1,000 conversations, pooled by traffic share. No provider is named for any model and no monthly volume is declared, so no monthly figure is stated.",
+        "caveats": []
+      },
+      {
+        "term": "Latency",
+        "text": "p50 and p95 per task type; no budget was declared.",
+        "caveats": []
+      },
+      {
+        "term": "What was not compared",
+        "text": "No control, gate, floor or exchange rate was declared, so no option is ruled out and nothing ranks the axes.",
+        "caveats": []
+      },
+      {
+        "term": "Source",
+        "text": "{meta.campaign}, run {meta.run_date}; {meta.provenance}.",
+        "caveats": []
+      }
+    ]
+  },
+  "ending": "stored",
+  "findings": [
+    {
+      "claim": "open-70b",
+      "severity": "should_fix",
+      "finding": "The claim's lead sentence rests on pooled figures its block does not draw. Those are Open-70B's pooled gain over Brisk-S, +0.79 (-0.1893 to +1.769), and the price ends $3.11 (Brisk-S to Open-70B) and $5.91 (Open-70B to Atlas-M). The block shows per-task differences only, so if the pooled figures moved, nothing on the block would change. Fix: add the pooled gain as a row, or a small table of the two pooled steps with their per-point price and unpaired interval. Also reword the explore row 'it could be anywhere from $3.11 to $5.91' to say it could be the best buy at a price per point somewhere in that range.",
+      "id": "f2.1",
+      "since": 2
+    },
+    {
+      "claim": "persona",
+      "severity": "should_fix",
+      "finding": "The claim's figures are not in its block. Those are Atlas-L ahead of Open-70B by 1 (-1.121 to +3.121), Open-70B's 97% on staying in character, and $6.40 vs $41.00 per 1,000 conversations. The block draws Open-70B less Atlas-M in all five task types, which is mostly about other tasks. Fix: draw persona small talk only, with Open-70B against both Atlas models, plus the in-character rates and the persona costs. Or narrow the sentence to what the block shows.",
+      "id": "f2.2",
+      "since": 2
+    },
+    {
+      "claim": "",
+      "severity": "should_fix",
+      "finding": "The page says persona is the only task where Open-70B joins the frontier, and gives that as the reason for leaving out per-task price ladders. That is wrong on the point estimates. Open-70B is also on the frontier in troubleshooting (83 vs Brisk-S 79 at $21 vs $11: $2.50 a point, then $7.60 a point on to Atlas-M) and in speculation bait ($1.13 a point, then $4.00). In persona it beats Atlas-M outright (90 vs 88, $6.40 vs $17.00). Fix: correct the reason. Then either add a sentence to claim open-70b that it sits on the per-task frontier in three of five task types, or widen the routed-option next step to say which mix it would test.",
+      "id": "f2.3",
+      "since": 2
+    },
+    {
+      "claim": "ladder",
+      "severity": "should_fix",
+      "finding": "The claim states the gains bought at each step, 5.13 points (Brisk-S to Atlas-M) and 2.96 (Atlas-M to Atlas-L). The lede calls both separated. The table shows only the price per point. Add a gain column with its unpaired interval (+4.151 to +6.109 and +1.981 to +3.939), so a reader sees the separated gains the High stands on.",
+      "id": "f2.4",
+      "since": 2
+    }
+  ],
+  "generation": {
+    "format": 2,
+    "model": "claude-opus-5-5",
+    "skill": {
+      "analyst": "e39d3f6370beca3eb08e0e1285ae5dde3c037de9c683427fa5d555b866f41736",
+      "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
+      "package": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a"
+    },
+    "tally": {
+      "turns": [
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 36781,
+          "output_tokens": 620,
+          "reasoning_tokens": 93,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 36777,
+          "cost_usd": 0.196301,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.005767127964646,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 42684,
+          "output_tokens": 659,
+          "reasoning_tokens": 75,
+          "cache_read_tokens": 36777,
+          "cache_write_tokens": 5905,
+          "cost_usd": 0.0500684,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.037633503088728,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 48474,
+          "output_tokens": 1007,
+          "reasoning_tokens": 391,
+          "cache_read_tokens": 42682,
+          "cache_write_tokens": 5790,
+          "cost_usd": 0.0576344,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 9.093983337050304,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 51583,
+          "output_tokens": 862,
+          "reasoning_tokens": 96,
+          "cache_read_tokens": 48472,
+          "cache_write_tokens": 3109,
+          "cost_usd": 0.0424874,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.340541211888194,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 55028,
+          "output_tokens": 879,
+          "reasoning_tokens": 362,
+          "cache_read_tokens": 51581,
+          "cache_write_tokens": 3445,
+          "cost_usd": 0.0451292,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 8.361819795100018,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 60377,
+          "output_tokens": 582,
+          "reasoning_tokens": 205,
+          "cache_read_tokens": 55026,
+          "cache_write_tokens": 5349,
+          "cost_usd": 0.0493982,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.557742294156924,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 6,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 67959,
+          "output_tokens": 2571,
+          "reasoning_tokens": 2087,
+          "cache_read_tokens": 60375,
+          "cache_write_tokens": 7582,
+          "cost_usd": 0.101413,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 28.158698887797073,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 7,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 71309,
+          "output_tokens": 443,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 67957,
+          "cache_write_tokens": 3350,
+          "cost_usd": 0.0392094,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.002398335840553,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 8,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 76970,
+          "output_tokens": 639,
+          "reasoning_tokens": 108,
+          "cache_read_tokens": 71307,
+          "cache_write_tokens": 5661,
+          "cost_usd": 0.0553544,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 7.327787794871256,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 9,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 79992,
+          "output_tokens": 3025,
+          "reasoning_tokens": 2052,
+          "cache_read_tokens": 76968,
+          "cache_write_tokens": 3022,
+          "cost_usd": 0.0910116,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 30.63282668008469,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 10,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 85432,
+          "output_tokens": 8107,
+          "reasoning_tokens": 3334,
+          "cache_read_tokens": 79990,
+          "cache_write_tokens": 5440,
+          "cost_usd": 0.205346,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 66.36228473787196,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 11,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 94718,
+          "output_tokens": 4994,
+          "reasoning_tokens": 200,
+          "cache_read_tokens": 85430,
+          "cache_write_tokens": 9286,
+          "cost_usd": 0.163404,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 34.579272598959506,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 12,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 104955,
+          "output_tokens": 5459,
+          "reasoning_tokens": 643,
+          "cache_read_tokens": 94716,
+          "cache_write_tokens": 10237,
+          "cost_usd": 0.1793162,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 37.8433872659225,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 1,
+          "turn": 13,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 112989,
+          "output_tokens": 5659,
+          "reasoning_tokens": 392,
+          "cache_read_tokens": 104953,
+          "cache_write_tokens": 8034,
+          "cost_usd": 0.1743486,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 39.756300810026005,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 14877,
+          "output_tokens": 278,
+          "reasoning_tokens": 63,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 8284,
+          "cost_usd": 0.0483138,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 2.5022212099283934,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 17974,
+          "output_tokens": 320,
+          "reasoning_tokens": 75,
+          "cache_read_tokens": 14873,
+          "cache_write_tokens": 3099,
+          "cost_usd": 0.0248776,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 3.0556085840798914,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 20638,
+          "output_tokens": 3742,
+          "reasoning_tokens": 3396,
+          "cache_read_tokens": 17972,
+          "cache_write_tokens": 2664,
+          "cost_usd": 0.0917624,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 34.496252056909725,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 25740,
+          "output_tokens": 685,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 20636,
+          "cache_write_tokens": 5102,
+          "cost_usd": 0.0433452,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.516603253083304,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 31379,
+          "output_tokens": 1646,
+          "reasoning_tokens": 1310,
+          "cache_read_tokens": 25738,
+          "cache_write_tokens": 5639,
+          "cost_usd": 0.0662706,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 15.543459923006594,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 35722,
+          "output_tokens": 2095,
+          "reasoning_tokens": 1639,
+          "cache_read_tokens": 31377,
+          "cache_write_tokens": 4343,
+          "cost_usd": 0.0698984,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 20.089063341962174,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-1",
+          "role": "editor",
+          "round": 1,
+          "turn": 6,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 38048,
+          "output_tokens": 2887,
+          "reasoning_tokens": 471,
+          "cache_read_tokens": 35720,
+          "cache_write_tokens": 2326,
+          "cost_usd": 0.076522,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 26.71093217888847,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 14,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 121078,
+          "output_tokens": 892,
+          "reasoning_tokens": 383,
+          "cache_read_tokens": 112987,
+          "cache_write_tokens": 8087,
+          "cost_usd": 0.0808884,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 14.543142590206116,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 15,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 126014,
+          "output_tokens": 904,
+          "reasoning_tokens": 225,
+          "cache_read_tokens": 121074,
+          "cache_write_tokens": 4938,
+          "cost_usd": 0.0669928,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 11.871420338982716,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 16,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 129741,
+          "output_tokens": 1256,
+          "reasoning_tokens": 761,
+          "cache_read_tokens": 126012,
+          "cache_write_tokens": 3727,
+          "cost_usd": 0.0689654,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 13.08488012989983,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 17,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 131238,
+          "output_tokens": 5955,
+          "reasoning_tokens": 57,
+          "cache_read_tokens": 129739,
+          "cache_write_tokens": 1497,
+          "cost_usd": 0.1525408,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 42.975479227956384,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "analyst",
+          "role": "analyst",
+          "round": 2,
+          "turn": 18,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 142335,
+          "output_tokens": 6915,
+          "reasoning_tokens": 534,
+          "cache_read_tokens": 131236,
+          "cache_write_tokens": 11019,
+          "cost_usd": 0.2199622,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 49.5500222730916,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 0,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 17252,
+          "output_tokens": 3380,
+          "reasoning_tokens": 3025,
+          "cache_read_tokens": 6589,
+          "cache_write_tokens": 10659,
+          "cost_usd": 0.1222288,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 30.753799472935498,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 1,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 22309,
+          "output_tokens": 461,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 17248,
+          "cache_write_tokens": 5059,
+          "cost_usd": 0.0379726,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 4.6858625849708915,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 2,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 26284,
+          "output_tokens": 583,
+          "reasoning_tokens": 88,
+          "cache_read_tokens": 22307,
+          "cache_write_tokens": 3975,
+          "cost_usd": 0.0360044,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 5.376989835873246,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 3,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 32883,
+          "output_tokens": 649,
+          "reasoning_tokens": 343,
+          "cache_read_tokens": 26282,
+          "cache_write_tokens": 6599,
+          "cost_usd": 0.0512394,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 6.610014379024506,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 4,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 35804,
+          "output_tokens": 1685,
+          "reasoning_tokens": 1573,
+          "cache_read_tokens": 32881,
+          "cache_write_tokens": 2921,
+          "cost_usd": 0.0548892,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "tool_use",
+          "wall_s": 16.161777090048417,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        },
+        {
+          "session": "editor-2",
+          "role": "editor",
+          "round": 2,
+          "turn": 5,
+          "model": "claude-opus-5-5",
+          "served_model": "claude-opus-5-5",
+          "input_tokens": 40076,
+          "output_tokens": 3767,
+          "reasoning_tokens": 1327,
+          "cache_read_tokens": 35802,
+          "cache_write_tokens": 4272,
+          "cost_usd": 0.1038684,
+          "price_source": "anthropic-published:2026-10-28",
+          "pricing_failure": null,
+          "stop_reason": "end_turn",
+          "wall_s": 32.72575459792279,
+          "refused": null,
+          "admitted_on_estimate": false,
+          "sent_binding": "error",
+          "input_transformations": []
+        }
+      ],
+      "by_role": {
+        "analyst": {
+          "turns": 19,
+          "input_tokens": 1639657,
+          "output_tokens": 51428,
+          "reasoning_tokens": 11998,
+          "cache_read_tokens": 1497282,
+          "cache_write_tokens": 142255,
+          "cost_usd": 2.0397714,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 46,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 425.085388940759
+        },
+        "editor": {
+          "turns": 13,
+          "input_tokens": 358986,
+          "output_tokens": 22178,
+          "reasoning_tokens": 13310,
+          "cache_read_tokens": 294014,
+          "cache_write_tokens": 64942,
+          "cost_usd": 0.8271928000000001,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 23,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 204.2283385086339
+        }
+      },
+      "by_round": {
+        "analyst:1": {
+          "turns": 14,
+          "input_tokens": 989251,
+          "output_tokens": 35506,
+          "reasoning_tokens": 10038,
+          "cache_read_tokens": 876234,
+          "cache_write_tokens": 112987,
+          "cost_usd": 1.4504218,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 38,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 293.06044438062236
+        },
+        "analyst:2": {
+          "turns": 5,
+          "input_tokens": 650406,
+          "output_tokens": 15922,
+          "reasoning_tokens": 1960,
+          "cache_read_tokens": 621048,
+          "cache_write_tokens": 29268,
+          "cost_usd": 0.5893496,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 8,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 132.02494456013665
+        },
+        "editor:1": {
+          "turns": 7,
+          "input_tokens": 184378,
+          "output_tokens": 11653,
+          "reasoning_tokens": 6954,
+          "cache_read_tokens": 152905,
+          "cache_write_tokens": 31457,
+          "cost_usd": 0.42099,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 12,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 107.91414054785855
+        },
+        "editor:2": {
+          "turns": 6,
+          "input_tokens": 174608,
+          "output_tokens": 10525,
+          "reasoning_tokens": 6356,
+          "cache_read_tokens": 141109,
+          "cache_write_tokens": 33485,
+          "cost_usd": 0.4062028,
+          "unpriced_turns": 0,
+          "unpriced_reasons": [],
+          "admitted_on_estimate": 0,
+          "tool_calls": 11,
+          "bounces": 0,
+          "bounce_kinds": {},
+          "wall_s": 96.31419796077535
+        }
+      },
+      "total": {
+        "turns": 32,
+        "input_tokens": 1998643,
+        "output_tokens": 73606,
+        "reasoning_tokens": 25308,
+        "cache_read_tokens": 1791296,
+        "cache_write_tokens": 207197,
+        "cost_usd": 2.8669642,
+        "unpriced_turns": 0,
+        "unpriced_reasons": [],
+        "admitted_on_estimate": 0,
+        "tool_calls": 69,
+        "bounces": 0,
+        "bounce_kinds": {},
+        "wall_s": 629.3137274493929
+      },
+      "transcripts": {
+        "analyst": "b215f53c0118726bda080842e1cac5333919affecc90212e375aac5e80a45b2d",
+        "editor-1": "d51f9cb72173c90195fa3c1e4dc6ebedfd9d8a59fd5ffd11582568f1ef256e46",
+        "editor-2": "a77211a66ce4b70aabc6fbc35f0bf96d0a22f90d2b8dcd7c63e01c97d38afd3a"
+      }
+    },
+    "reviews": [
+      {
+        "round": 1,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline, decision block and claim ladder together tell a reader that the run leaves a trade, not a decision. Brisk-S → Atlas-M costs $4.94 per point (band $4.15 to $6.11) and Atlas-M → Atlas-L costs $14.76 per point (band $11.09 to $22.05). I re-read both steps with price_tradeoff and they match. The page leans to Atlas-M and names the main risks: Brisk-S slipping on the safety checks, and the bands where the pick is unsettled."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 1,
+            "reason": "Most sentences match their tables. Claim atlas-gap's 'above in every task type but speculation bait' agrees with its five rows, and the cost and latency orderings hold in every task. But claim safety says 'Open-70B confirms before account changes least often, 81%', and its own table gives Open-70B 75.3% to 86.7% against Brisk-S at 83.3% to 92.7%. The difference is +7 (-0.4 to +14.4), so the two are not told apart. Also, Open-70B being 'never the best buy at any price' rests on point estimates its intervals do not support (see item 3)."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 1,
+            "reason": "Atlas-M's weak spot is visible: Watch names its 5-point troubleshooting gap. Open-70B's exclusion is framed too strongly, though. The trade paragraph, the explore row and claim persona all say it wins at no price. Its pooled gain over Brisk-S is only +0.79, with an interval of -0.19 to +1.77 (price.brisk-s.open-70b.overall.gain_interval_unpaired). A point bought from Brisk-S to Open-70B can cost as little as $3.11, and a point bought on to Atlas-M as much as $5.91. Inside the intervals, then, Open-70B can sit on the frontier across roughly the same low band where Brisk-S and Atlas-M swap."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 2,
+            "reason": "The four omitted checks follow the pattern the page already states. Per-task ladders would roughly repeat the pooled per-point prices, apart from persona small talk, which the page covers. The dominance call was rightly withheld, and the snapshot keeps no examples. Nothing left out moves the trade."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 1,
+            "reason": "Two confounds are handled well. The missing control is argued: same tasks, same counts, so paired intervals would be narrower. The unnamed judge is set against the calibrated overall-quality judge. But the cost routing caveat is where every dollar and every band comes from, and the High confidence only says a different price 'moves every step'. It never says why the ladder can be acted on until a provider is named."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an action and what it would settle: declaring a price per point or safety floors, declaring monthly volume, the routed persona mix, calibrating the task-check judge, and confirming production pricing."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Claim safety's main figure, a gap of +17 points (+10.3 to +23.7), is not in its block. The table shows only each arm's rate, and two of its intervals run past 100% (97.4% to 100.6%, 95.8% to 100.2%). In claims persona and atlas-gap, the note under the bars promises 'overall and in each place' but the blocks have no overall row. The ladder, cost, gap and latency blocks fit their claims."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "",
+            "severity": "must_fix",
+            "finding": "The page states as certain that Open-70B is never the best buy at any price: in the trade paragraph, in the explore row ('Open-70B wins at no price') and in claim persona. That holds only on point estimates. Open-70B's pooled gain over Brisk-S is +0.79 (-0.19 to +1.77, unpaired), so a point bought from Brisk-S to Open-70B costs $3.11 or more, and one bought from Open-70B to Atlas-M costs up to $5.91. Within those intervals Open-70B can be the best buy across a low band that overlaps the Brisk-S/Atlas-M flip band. It also beats Brisk-S on resolving troubleshooting (82% vs 74%) and on declining speculation (89% vs 81%), which matters to a reader buying cheap. Fix: say Open-70B is off the frontier at the point estimates but not ruled out by the intervals, near the low band. Add a next step: compute paired per-case differences on overall quality to settle where Open-70B and Brisk-S sit.",
+            "id": "f1.1",
+            "since": 1
+          },
+          {
+            "claim": "",
+            "severity": "must_fix",
+            "finding": "The confidence reads High over the cost routing caveat without standing behind it. Every price per point and both flip bands come from this run's unnamed provider routing, and the clause only says a different price 'moves every step on the ladder'. It doesn't say why the bands can be acted on now. Fix: say what the High covers, namely the quality ordering and the separated gains, which don't depend on price. Then say that the dollar bands hold only at this run's routing and stay open until production pricing is confirmed. Otherwise make the confidence low for the price bands.",
+            "id": "f1.2",
+            "since": 1
+          },
+          {
+            "claim": "safety",
+            "severity": "should_fix",
+            "finding": "The claim's main figure, Atlas-M ahead of Brisk-S on declining speculation by +17 points (+10.3 to +23.7), is not in its block, which shows only each arm's rate. Add the gap rows the claim leans on, as diverging bars or a difference column. Also, 'Open-70B confirms before account changes least often, 81%' is not separated from Brisk-S's 88% (difference +7, -0.4 to +14.4). Say both cheaper models fall below the Atlas pair (98%), with Open-70B and Brisk-S not told apart.",
+            "id": "f1.3",
+            "since": 1
+          },
+          {
+            "claim": "safety",
+            "severity": "should_fix",
+            "finding": "Several pass-rate intervals print above 100%: Atlas-L declines speculation at 97.4% to 100.6%, Atlas-M at 95.8% to 100.2%. Cap the upper ends at 100%, or note that these are normal approximations that run over the limit near the ceiling, so a reader doesn't take them for a mistake.",
+            "id": "f1.4",
+            "since": 1
+          },
+          {
+            "claim": "persona",
+            "severity": "should_fix",
+            "finding": "The claim compares Open-70B in persona small talk only with Atlas-M. Open-70B is also not told apart from Atlas-L there: +1 for Atlas-L (-1.12 to +3.12), at $6.40 against $41.00 per 1,000 conversations. It also reads highest on staying in character, at 97%. Say so, since this is the strongest case for the routed-option next step. Also fix the note under the bars, which says 'overall and in each place' over a block with no overall row; the same note appears in claim atlas-gap.",
+            "id": "f1.5",
+            "since": 1
+          }
+        ],
+        "resolved": [],
+        "total": 10,
+        "passes": false,
+        "must_fix": true,
+        "blocking": [
+          "f1.1",
+          "f1.2",
+          "f1.3",
+          "f1.4",
+          "f1.5"
+        ]
+      },
+      {
+        "round": 2,
+        "items": [
+          {
+            "n": 1,
+            "name": "First screen",
+            "score": 2,
+            "reason": "The headline, decision block and claim ladder give the trade on their own. Brisk-S to Atlas-M costs $4.94 a point and Atlas-M to Atlas-L costs $14.76 a point, with flip bands of $4.15 to $6.11 and $11.09 to $22.05. The owner has to declare a price per point, and Atlas-M is a labelled lean. The main risks are on the first screen too: the provider routing is unknown, and Brisk-S slips on the safety checks."
+          },
+          {
+            "n": 2,
+            "name": "Coherent story",
+            "score": 2,
+            "reason": "Each sentence matches its values table row by row. Claim atlas-gap: Atlas-L is ahead in four task types and not told apart in speculation bait (+1, -1.546 to +3.546). Claim open-70b: above Brisk-S in troubleshooting, persona and speculation bait, below in billing, with research not separated. Claim safety: the Atlas-M gap on declining speculation is +17 (+10.3 to +23.7), and Brisk-S and Open-70B are not told apart on confirming (-0.4 to +14.4). Claim cost: troubleshooting is the dearest task for every model. Claim latency: Brisk-S has the shortest p95 in every task. Nothing contradicts the headline."
+          },
+          {
+            "n": 3,
+            "name": "Honest emphasis",
+            "score": 2,
+            "reason": "Atlas-M's weak axis is visible: Watch names its widest gap to Atlas-L, 5 points in troubleshooting. Open-70B is now called off the frontier only on the point estimates, with the interval window ($3.11 to $5.91) shown. The confidence now limits the High to the quality order and separated gains. It leaves the dollar bands open until production pricing is confirmed. Every cost on the page is flagged as this run's unnamed routing."
+          },
+          {
+            "n": 4,
+            "name": "Sound elision",
+            "score": 1,
+            "reason": "The reason given for leaving out per-task price ladders is wrong. It says persona is the only task where Open-70B moves onto the frontier. On point estimates Open-70B is also on the frontier in troubleshooting (Brisk-S to Open-70B $2.50 a point, then $7.60 on to Atlas-M) and in speculation bait ($1.13, then $4.00). In persona it beats Atlas-M outright (90 vs 88 at $6.40 vs $17.00). This does not move the pooled call, but it bears on the routed-option next step and on a low-price buyer. The other omissions hold: Open-70B's leads over Brisk-S on resolving and declining are not separated on unpaired intervals, and no failure examples are kept."
+          },
+          {
+            "n": 5,
+            "name": "Confounds handled",
+            "score": 2,
+            "reason": "Four confounds are each carried into the story and into a next step. Unknown routing leads to confirming production pricing. The undescribed task-check judge leads to naming and calibrating it. The missing control leads to a paired re-read. Best-of-several is explained as favouring the cheaper options. The overall-quality judge is calibrated (200 ratings, 86% agreement), and the page says so."
+          },
+          {
+            "n": 6,
+            "name": "Actionable next steps",
+            "score": 2,
+            "reason": "Each step names an action and what it settles: declaring a price per point or safety floors; confirming production pricing; a paired per-case re-read to place Open-70B against Brisk-S; declaring a monthly volume; running the routed mix on the same cases; calibrating the task-check judge."
+          },
+          {
+            "n": 7,
+            "name": "Evidence fits claims",
+            "score": 1,
+            "reason": "Three blocks leave out the figures their claims lean on. Claim open-70b rests on pooled figures: the gain over Brisk-S (-0.1893 to +1.769) and the price ends $3.11 and $5.91. Its block draws per-task rows only, and its caption says no overall row is drawn. Claim persona cites Atlas-L ahead by 1 (-1.121 to +3.121), Open-70B's 97% in character, and $6.40 vs $41.00. Its block shows only Open-70B less Atlas-M, in every task. Claim ladder's 5.13 and 2.96 point gains are not in its table. The safety and atlas-gap blocks now fit their claims."
+          }
+        ],
+        "findings": [
+          {
+            "claim": "open-70b",
+            "severity": "should_fix",
+            "finding": "The claim's lead sentence rests on pooled figures its block does not draw. Those are Open-70B's pooled gain over Brisk-S, +0.79 (-0.1893 to +1.769), and the price ends $3.11 (Brisk-S to Open-70B) and $5.91 (Open-70B to Atlas-M). The block shows per-task differences only, so if the pooled figures moved, nothing on the block would change. Fix: add the pooled gain as a row, or a small table of the two pooled steps with their per-point price and unpaired interval. Also reword the explore row 'it could be anywhere from $3.11 to $5.91' to say it could be the best buy at a price per point somewhere in that range.",
+            "id": "f2.1",
+            "since": 2
+          },
+          {
+            "claim": "persona",
+            "severity": "should_fix",
+            "finding": "The claim's figures are not in its block. Those are Atlas-L ahead of Open-70B by 1 (-1.121 to +3.121), Open-70B's 97% on staying in character, and $6.40 vs $41.00 per 1,000 conversations. The block draws Open-70B less Atlas-M in all five task types, which is mostly about other tasks. Fix: draw persona small talk only, with Open-70B against both Atlas models, plus the in-character rates and the persona costs. Or narrow the sentence to what the block shows.",
+            "id": "f2.2",
+            "since": 2
+          },
+          {
+            "claim": "",
+            "severity": "should_fix",
+            "finding": "The page says persona is the only task where Open-70B joins the frontier, and gives that as the reason for leaving out per-task price ladders. That is wrong on the point estimates. Open-70B is also on the frontier in troubleshooting (83 vs Brisk-S 79 at $21 vs $11: $2.50 a point, then $7.60 a point on to Atlas-M) and in speculation bait ($1.13 a point, then $4.00). In persona it beats Atlas-M outright (90 vs 88, $6.40 vs $17.00). Fix: correct the reason. Then either add a sentence to claim open-70b that it sits on the per-task frontier in three of five task types, or widen the routed-option next step to say which mix it would test.",
+            "id": "f2.3",
+            "since": 2
+          },
+          {
+            "claim": "ladder",
+            "severity": "should_fix",
+            "finding": "The claim states the gains bought at each step, 5.13 points (Brisk-S to Atlas-M) and 2.96 (Atlas-M to Atlas-L). The lede calls both separated. The table shows only the price per point. Add a gain column with its unpaired interval (+4.151 to +6.109 and +1.981 to +3.939), so a reader sees the separated gains the High stands on.",
+            "id": "f2.4",
+            "since": 2
+          }
+        ],
+        "resolved": [
+          "f1.1",
+          "f1.2",
+          "f1.3",
+          "f1.4",
+          "f1.5"
+        ],
+        "total": 12,
+        "passes": true,
+        "must_fix": false,
+        "blocking": []
+      }
+    ],
+    "sessions": {
+      "analyst": {
+        "digest": "b215f53c0118726bda080842e1cac5333919affecc90212e375aac5e80a45b2d",
+        "turns": 19,
+        "ref": "01a18940-ca74-7507-8b2e-7885eb9aa7e2:session:analyst"
+      },
+      "editor-1": {
+        "digest": "d51f9cb72173c90195fa3c1e4dc6ebedfd9d8a59fd5ffd11582568f1ef256e46",
+        "turns": 7,
+        "ref": "01a18940-ca74-7507-8b2e-7885eb9aa7e2:session:editor-1"
+      },
+      "editor-2": {
+        "digest": "a77211a66ce4b70aabc6fbc35f0bf96d0a22f90d2b8dcd7c63e01c97d38afd3a",
+        "turns": 6,
+        "ref": "01a18940-ca74-7507-8b2e-7885eb9aa7e2:session:editor-2"
+      }
+    }
+  },
+  "created_by": "agent:test",
+  "created_at": "2026-10-29T20:01:27.158376+00:00"
+}

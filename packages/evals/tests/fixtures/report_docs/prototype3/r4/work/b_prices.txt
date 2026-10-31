@@ -1,0 +1,25 @@
+rendered block
+block_kind: bars
+query:
+  source: prices
+  aspect: 
+  measures: [persona]
+  arms: []
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 95%
+unit: dollars
+domain: 
+reference: none
+columns: [Row, Value, 95% interval, Note]
+rows (1):
+  - cells: [f64 → Production, $1,239, $1,036 to $1,543, $1,239]
+total: 1
+offset: 0
+truncated: False
+notes: [Each step's price per point a month at the declared volume: where the best option moves as a point's price rises.]

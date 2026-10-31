@@ -50,6 +50,7 @@ from packages.evals.tests.g2_support import CANDIDATE, PRODUCTION, answering
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import toy_report
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.page_contract_support import without_kit_script
 
 #: Production passes 30 of its 36 trials, the candidate 6: a contrast on accuracy the page tests and states.
 _CASES = [{"text": f"queue request {index}", "label": "queued"} for index in range(12)]
@@ -246,7 +247,7 @@ def _trace_links_land_in_sight(page: str) -> list[str]:
         assert parsed.held[href[1:]] <= shut, f"{href} lands inside a closed fold"
         if table in _TRACE_TABLES:
             targets.append(href[1:])
-    assert "<base" not in page
+    assert "<base" not in without_kit_script(page)
     return targets
 
 
@@ -325,7 +326,7 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     nav = campaign_html[campaign_html.index("<nav>") : campaign_html.index("</nav>")]
     assert f'href="#aspect-{fold_id}"' in nav and "-body" not in nav
     # A case's trial ids, inside the aspect's fold, land on that fold's Trials section, which the reader then opens.
-    assert f'href="#a-{fold_id}-trials"' in campaign_html
+    assert f'href="#a-{fold_id}--trials"' in campaign_html
     _trace_links_land_in_sight(campaign_html)
 
 
@@ -352,9 +353,9 @@ async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
     campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
-    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}-trials"') :]
+    folded = campaign_html[campaign_html.index(f'id="a-{fold_id}--trials"') :]
     table = folded[folded.index('data-table="trials"') :].split("</table>", 1)[0]
-    assert f'<a href="#a-{fold_id}-{first}">{first}</a>' in table and f'id="a-{fold_id}-{first}"' in campaign_html
+    assert f'<a href="#a-{fold_id}--{first}">{first}</a>' in table and f'id="a-{fold_id}--{first}"' in campaign_html
 
 
 async def test_a_figure_never_lands_on_another_number() -> None:

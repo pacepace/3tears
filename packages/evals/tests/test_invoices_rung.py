@@ -38,6 +38,7 @@ from packages.evals.tests.ladder_support import (
 )
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
+from packages.evals.tests.page_contract_support import what_runs
 
 RUNG = EXAMPLES / "3-invoices"
 EXTRACT = RUNG / "extract.py"
@@ -83,7 +84,8 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     result = await module.invoices.run(store=":memory:")
     # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
     lines = report_markdown(result.report).splitlines()
-    assert lines[0] == "# invoices: does v2 do better than v1?"
+    # The title is code's: what is compared and on what, the campaign's name the qualifier (no question was declared).
+    assert lines[0] == "# v1 vs v2 · classify (invoices)"
     assert lines[1].startswith("v1 (control) vs v2 · ")
     # Never "no difference": a contrast not separated claims none.
     assert lines[3] == (
@@ -141,11 +143,14 @@ async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
     # A guardrail warns as loudly as a broken floor, under the title and the question, and picks no arm.
-    assert lines[0] == "# invoices"
+    assert lines[0] == "# v1 vs v2 · classify (invoices)"
     warning = "v2 is not yet shown safe on the no invented total guardrail on classify."
     assert f"**{warning}**" in lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
     html = campaign_report_html(result.page)
-    assert f'<p class="warning"><strong>{warning}' in html and 'role="alert"' not in html[: html.index("</header>")]
+    assert (
+        f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
+        and 'role="alert"' not in html[: html.index("</header>")]
+    )
     assert "not adopted" not in "\n".join(lines)
     # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
     assert "No margin was declared on classify, so no arm is ever shown worse there." in lines
@@ -162,7 +167,7 @@ def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(
     out = capsys.readouterr().out
     assert out.startswith("invoices: ") and "v1 (control): 90 result(s)" in out
     html = (copy / "report" / "report.html").read_text(encoding="utf-8")
-    assert "<script" not in html
+    assert what_runs(html) == [], "the page runs the kit's script and nothing else"
     (written,) = (copy / "report").glob("bundle-*.json")
     bundle = AnalysisContextBundle.from_json(written.read_text(encoding="utf-8"))
     assert bundle.fingerprint() in html

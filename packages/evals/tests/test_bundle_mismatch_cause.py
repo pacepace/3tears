@@ -10,7 +10,6 @@ stored before either was recorded.
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from typing import Any
 
@@ -27,7 +26,8 @@ from threetears.evals.kernel.host.sweepables import Sweepable, SweepableRegistry
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.toyhost_memo import PROMPT_ID
+from packages.evals.tests.toyhost_plan import PlanWriter
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -46,7 +46,7 @@ def _with_a_lamp(profile: HostProfile, *, name: str = "bench_lamp") -> HostProfi
 
 
 def _corpus_host(profile: HostProfile | None = None) -> tuple[EvalHost, str, str]:
-    host = toyhost_host(profile=profile, clients=lambda role, model, *, temperature=None: FixturedClient(""))
+    host = toyhost_host(profile=profile, clients=lambda role, model, *, temperature=None: PlanWriter())
     campaign, corpus = toyhost_campaign()
     for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
         host.storage.save_eval_run(run)
@@ -64,7 +64,7 @@ async def _generated(host: EvalHost, campaign_id: str, scope_id: str) -> EvalAna
     prepared = await prepare_analysis_generation(
         host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
     )
-    prepared.client.completion.content = json.dumps(memo_payload(prepared.bundle))  # type: ignore[attr-defined]
+    prepared.client.report_input = prepared.report_input  # type: ignore[attr-defined]
     analysis, _insights = await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
     return analysis
 

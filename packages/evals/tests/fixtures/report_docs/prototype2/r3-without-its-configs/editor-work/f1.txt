@@ -1,0 +1,46 @@
+measure figures
+measure: macro_f1
+by: arm
+level: none
+held: [mean]
+not_shown: []
+slices: []
+rows (9):
+  - aspect: none; slice: none
+    arm:atlas-m.zero = Atlas-M · Zero-shot (A)
+    figures (1):
+      measure.macro_f1.atlas-m.zero.mean = 88.7%
+  - aspect: none; slice: none
+    arm:atlas-m.few = Atlas-M · Few-shot (12 ex.) (B)
+    figures (1):
+      measure.macro_f1.atlas-m.few.mean = 91%
+  - aspect: none; slice: none
+    arm:atlas-m.rubric = Atlas-M · Rubric + reasoning (C)
+    figures (1):
+      measure.macro_f1.atlas-m.rubric.mean = 92.1%
+  - aspect: none; slice: none
+    arm:brisk-s.zero = Brisk-S · Zero-shot (D)
+    figures (1):
+      measure.macro_f1.brisk-s.zero.mean = 84.9%
+  - aspect: none; slice: none
+    arm:brisk-s.few = Brisk-S · Few-shot (12 ex.) (E)
+    figures (1):
+      measure.macro_f1.brisk-s.few.mean = 89.6%
+  - aspect: none; slice: none
+    arm:brisk-s.rubric = Brisk-S · Rubric + reasoning (F)
+    figures (1):
+      measure.macro_f1.brisk-s.rubric.mean = 90.4%
+  - aspect: none; slice: none
+    arm:nano-xs.zero = Nano-XS · Zero-shot (G)
+    figures (1):
+      measure.macro_f1.nano-xs.zero.mean = 77.1%
+  - aspect: none; slice: none
+    arm:nano-xs.few = Nano-XS · Few-shot (12 ex.) (H)
+    figures (1):
+      measure.macro_f1.nano-xs.few.mean = 89%
+  - aspect: none; slice: none
+    arm:nano-xs.rubric = Nano-XS · Rubric + reasoning (I)
+    figures (1):
+      measure.macro_f1.nano-xs.rubric.mean = 82.8%
+total: 9
+offset: 0

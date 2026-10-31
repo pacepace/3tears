@@ -41,7 +41,7 @@ from threetears.evals.schema import (
     RubricScore,
     omit_paths,
 )
-from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, resolve_variant_identity
+from threetears.evals.kernel import EvalAnalysis, EvalInsight, EvalJudgeProfile, ResultKey, resolve_variant_identity
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.schema import SubjectSnapshot, SweepableValue
 from threetears.evals.schema import WorldPlacement
@@ -314,14 +314,47 @@ class ToyhostStorage:
             listed.append(copy)
         return listed
 
-    def query_eval_results_by_run(self, run_id: str, scope_id: str) -> list[EvalResult]:
-        """Every observation of this batch in this scope."""
-        return [r for r in self._results_by_run.get(run_id, []) if r.scope_id == scope_id]
-
-    def query_eval_results_by_runs(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
-        """Every observation of these batches in this scope, in one read."""
+    def query_eval_results_by_run(self, run_id: str, scope_id: str, *, elide: Sequence[str] = ()) -> list[EvalResult]:
+        """Every observation of this batch in this scope, without the fields ``elide`` names."""
         return [
-            result for run_id in dict.fromkeys(run_ids) for result in self.query_eval_results_by_run(run_id, scope_id)
+            r.model_copy(update=dict.fromkeys(elide)) if elide else r
+            for r in self._results_by_run.get(run_id, [])
+            if r.scope_id == scope_id
+        ]
+
+    def query_eval_results_by_runs(
+        self, run_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """Every observation of these batches in this scope, in one read, without the fields ``elide`` names."""
+        return [
+            result.model_copy(update=dict.fromkeys(elide)) if elide else result
+            for run_id in dict.fromkeys(run_ids)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
+        """Every observation of these batches in this scope, each as a reader reads it: here, the observation itself,
+        which carries every attribute its reading would."""
+        return self.query_eval_results_by_runs(run_ids, scope_id)
+
+    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str) -> list[ResultKey]:
+        """The key of every observation of this batch in this scope, in one read — a paged reader's pass over it."""
+        return [
+            ResultKey(result.id, result.test_case_id, result.k_iteration, result.model, result.scored_at)
+            for result in self.query_eval_results_by_run(run_id, scope_id)
+        ]
+
+    def load_eval_results(
+        self, result_ids: Sequence[str], scope_id: str, *, elide: Sequence[str] = ()
+    ) -> list[EvalResult]:
+        """The observations with these ids in this scope, in one read by id — a page of a paged reader's — without the
+        fields ``elide`` names."""
+        wanted = set(result_ids)
+        return [
+            result.model_copy(update=dict.fromkeys(elide)) if elide else result
+            for results in self._results_by_run.values()
+            for result in results
+            if result.id in wanted and result.scope_id == scope_id
         ]
 
     def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:

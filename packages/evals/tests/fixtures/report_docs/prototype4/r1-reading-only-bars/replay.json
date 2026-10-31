@@ -1,0 +1,19 @@
+{
+  "snapshot_of": "r1 reading only bars",
+  "model": "claude-opus-5-5",
+  "budget_usd": 4.0,
+  "withhold": [
+    "r1-model-selection.md"
+  ],
+  "ending": "stored",
+  "reason": "",
+  "stored": true,
+  "analyst_rounds": 1,
+  "editor_rounds": 1,
+  "tally": {
+    "turns": 22,
+    "tool_calls": 53,
+    "bounces": 0,
+    "cost_usd": 1.5775006
+  }
+}

@@ -15,7 +15,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 
 from threetears.evals.analysis.agreement import (
     JudgeAgreement,
@@ -55,7 +55,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.analysis_measures import BarAdjudication, MeasureCollection
 from threetears.evals.kernel.campaign import CampaignWindow, EvalInsight, VariantIndexEntry
-from threetears.evals.kernel.declaration import ASPECT_PRESENTATION_FIELDS
+from threetears.evals.kernel.declaration import ARM_PRESENTATION_FIELDS, ASPECT_PRESENTATION_FIELDS
 from threetears.evals.kernel.covariates import REASONING_RATIO_KEY
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.result_condition import ExclusionCause
@@ -73,10 +73,13 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import (
     TEMPLATE_PRESENTATION_FIELDS,
     ApparatusProvenance,
+    ArmSchedule,
     CaseSetRef,
     ClientRequestSettings,
     GoalCheckProof,
     RubricAxis,
+    RubricScale,
+    RunDisclosure,
 )
 from threetears.evals.kernel.surface import (
     CellFacts,
@@ -1077,6 +1080,86 @@ class TokenRollup(EvalDocumentModel):
     )
 
 
+class RunApparatus(EvalDocumentModel):
+    """The rig one run was measured with, as the run recorded it at launch, beside the levers it ran at.
+
+    Copied off the run (:class:`~threetears.evals.schema.models.EvalRun`), never derived: which model each judged
+    dimension was asked of, what every judge call was asked for and at what temperature, the simulated user's model,
+    whether latency was under test, how the run's arm shared time with the others, how many cells ran at once, the
+    scale each rubric dimension was answered on, the execution mode each result recorded, and what the launching host
+    disclosed about the launch. A field the run left unset is None (or empty) here too: not recorded, never a default
+    standing in for it.
+
+    Provisional: shaped by the first host that read a report's apparatus, and kept or removed by whether a second
+    host's adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
+    """
+
+    effective_judges: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "The model each judged dimension was asked of (`EvalRun.effective_judges`); None = the run recorded none: "
+            "it pinned no judge, or its writer recorded no attribution."
+        ),
+    )
+    judge_asked_settings: ClientRequestSettings | None = Field(
+        default=None,
+        description="What every judge call was asked for (`EvalRun.judge_asked_settings`); None = not recorded.",
+    )
+    judge_temperature: float | None = Field(
+        default=None,
+        description=(
+            "The temperature judge calls with no JudgeConfig were asked at (`EvalRun.judge_temperature`); None = not "
+            "recorded, or no judge was pinned."
+        ),
+    )
+    simulator_model: str | None = Field(
+        default=None,
+        description="The simulated user's resolved model (`EvalRun.simulator_model`); None = none was pinned.",
+    )
+    measure_latency: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the launch declared latency under test (`EvalRun.measure_latency`); None = a run its host "
+            "assembled without a launch, which declared nothing."
+        ),
+    )
+    arm_schedule: ArmSchedule | None = Field(
+        default=None,
+        description="How the run's arm shared time with the comparison's other arms (`EvalRun.arm_schedule`); None = "
+        "not recorded.",
+    )
+    cell_concurrency: int = Field(ge=1, description="How many of the run's cells executed at once; 1 is serial.")
+    rubric_scales: dict[str, RubricScale] = Field(
+        default_factory=dict,
+        description="The scale each template rubric dimension was answered on (`EvalRun.rubric_scales`); empty for a "
+        "template with no rubric.",
+    )
+    execution_modes: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "The run's results by the execution mode each recorded (`serial`, `concurrent`); a result that recorded "
+            "none is counted under no mode. Empty = no result recorded one."
+        ),
+    )
+    # Left out of the document while unset, so a run whose host disclosed nothing summarises, and is fingerprinted, as
+    # one did before the field existed.
+    run_disclosure: RunDisclosure | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What the launching host disclosed about the launch (`EvalRun.run_disclosure`): its machine, load and how "
+            "it measures. A disclosure, never a coordinate: no cell, confound or apparatus class reads it. None = the "
+            "host disclosed nothing."
+        ),
+    )
+
+    @property
+    def recorded(self) -> bool:
+        """Whether the run recorded anything here past a serial run that pinned and declared nothing: the condition
+        on which a run summary carries its apparatus at all (``RunSummary.apparatus``)."""
+        return self != RunApparatus(cell_concurrency=1)
+
+
 class RunSummary(EvalDocumentModel):
     """One run's compact digest — the levers it RAN at + its key telemetry.
 
@@ -1206,6 +1289,18 @@ class RunSummary(EvalDocumentModel):
         description=(
             "Each model that both judged the run's answers and produced them, sorted: a model tends to rate its own "
             "output higher, so a judged reading of this run's arm may favour it for that reason alone. Empty when none."
+        ),
+    )
+    # Left out of the document when unset, so a run that recorded nothing past the defaults summarises, and is
+    # fingerprinted, as one did before the field existed.
+    apparatus: RunApparatus | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The rig the run was measured with, as it recorded it at launch (`RunApparatus`). None = it recorded "
+            "nothing past running its cells one at a time with no judge or simulated user pinned, no latency "
+            "declaration, no arm schedule, no rubric scale and no execution mode on any result; or the bundle was "
+            "assembled before the field existed (its shape names no apparatus, so read it as not carried)."
         ),
     )
 
@@ -1583,6 +1678,13 @@ class VerdictOrder(EvalDocumentModel):
 #: measure's declared margin by an equivalence test; ``untested`` = no test could run (fewer than two cases a
 #: side), which is neither a separation nor its absence.
 ComparisonVerdict = Literal["improved", "regressed", "equivalent", "not_separated", "untested"]
+
+#: The comparison verdicts that separate an arm from the control, or establish it alike: what a corrected comparison
+#: settles. Every reader asking whether a comparison settled reads this one set: the writer's view and the report
+#: input's trims, the report decision's modes and spine, and a quick result's verdict line. The campaign verdict's
+#: line (``report.verdict``) reads only the directional two, improved and regressed, since it names the better arm and
+#: an ``equivalent`` verdict names none.
+SEPARATED_VERDICTS: frozenset[ComparisonVerdict] = frozenset({"improved", "regressed", "equivalent"})
 
 
 #: What a family comparison reads: a measure, a judged dimension, or how each trial ended (``trial``), which is
@@ -2400,6 +2502,96 @@ class TrialRow(EvalDocumentModel):
     result_id: str = Field(min_length=1, description="The stored result, for `result_get`.")
 
 
+class RoleUnanswered(EvalDocumentModel):
+    """One role's unanswered calls over one arm's trials, summed off its usage rows (``RoleUsage.unanswered_*``).
+
+    Beside the arm's cost, never inside it: the cost, and ``calls`` here, count the answered calls. Summed from what
+    each row counted, a row that counted nothing adding nothing, so a sum some trials did not count is "at least this
+    many", and ``results_uncounted`` says how many trials those were.
+
+    Provisional: shaped by the first host that counted unanswered calls, and kept or removed by whether a second host's
+    adoption uses it (``docs/adopting-a-host.md``, "Provisional mechanisms").
+    """
+
+    role: str = Field(min_length=1, description="The usage role whose calls these are.")
+    retried: int | None = Field(
+        ge=0,
+        description="Calls a forced tool choice was refused on and that were answered unforced in the same call, summed; "
+        "None = no row of the role counted them.",
+    )
+    lost: int | None = Field(
+        ge=0, description="Calls sent and never answered, summed; None = no row of the role counted them."
+    )
+    reasons: dict[str, int] | None = Field(
+        default=None, description="The calls each host reason word accounts for, summed; None = no row counted any."
+    )
+    calls: int | None = Field(
+        ge=0,
+        description=(
+            "The answered calls of the rows that counted their unanswered ones (their `call_count`): with the counts, "
+            "every call those rows sent. None = some such row did not count its calls."
+        ),
+    )
+    share: float | None = Field(
+        ge=0.0,
+        le=1.0,
+        description=(
+            "The unanswered calls (retried and lost) as a share of every call the counting rows sent (answered and "
+            "unanswered). None where `calls` is, where a counting row counted only one of the two kinds (not counted, "
+            "never zero), or where nothing was sent."
+        ),
+    )
+    results_uncounted: int = Field(
+        ge=0,
+        description=(
+            "The arm's trials with a row in this role that counted no unanswered call: absent from the sums, not zero, "
+            "so a nonzero value reads the sums as 'at least this many'."
+        ),
+    )
+
+    @field_validator("reasons")
+    @classmethod
+    def _the_most_calls_first(cls, reasons: dict[str, int] | None) -> dict[str, int] | None:
+        """Each reason the most calls first, then by word: put back on every read, since a store keeps no mapping's
+        key order."""
+        return None if reasons is None else dict(sorted(reasons.items(), key=lambda item: (-item[1], item[0])))
+
+
+class ArmPricing(EvalDocumentModel):
+    """How one arm's cost was priced, read off the usage rows of the roles its production cost counts.
+
+    Beside the arm's cost, so a page says where the cost comes from (the price source, the provider that served the
+    model's calls) and how much of it was priced: ``priced_calls`` under ``calls`` is a cost over part of the arm's
+    calls, never the whole.
+
+    **A model's providers are its model rows' alone.** ``providers`` reads the token-metered rows (every role but
+    ``external``), so it names who served the model and never a tool the model called: a web-search API metered as an
+    ``external`` row is in ``tool_providers``, and its spend stays in the cost, its calls in ``calls``, as before.
+    """
+
+    sources: list[str] = Field(default_factory=list, description="Each price source a priced row names, sorted.")
+    providers: list[str] = Field(
+        default_factory=list,
+        description="Each provider a model row (every role but external) names as serving its calls, sorted; empty "
+        "where none does.",
+    )
+    # Left out of the document while empty, so an arm whose rows named no tool provider reads as it did before.
+    tool_providers: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Each provider an external row names (a tool the model called, such as a web-search API), "
+        "sorted: tool spend the cost counts, never a provider of the model.",
+    )
+    calls: int | None = Field(
+        default=None, ge=0, description="The calls the rows counted; None = some row did not count its calls."
+    )
+    priced_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description="Those of them on a row that observed a price; None = some row did not count its calls.",
+    )
+
+
 class ArmScoreboard(EvalDocumentModel):
     """One arm's census: how many trials it ran, lost, could use, passed and failed, and what it cost."""
 
@@ -2431,6 +2623,38 @@ class ArmScoreboard(EvalDocumentModel):
             "case, fewest, median and most. None with no usable trial."
         ),
     )
+    # Left out of the document while empty, so an arm no row counted unanswered calls for is censused, and
+    # fingerprinted, as one was before the field existed.
+    unanswered: list[RoleUnanswered] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "Each role's unanswered calls over the arm's trials, in the order the roles are known, for every role a "
+            "usage row counted them in. Empty = no row counted any: not counted, never none."
+        ),
+    )
+    # Left out of the document while unset, so an arm assembled before the field existed reads as it did; and left out
+    # of the fingerprint whether set or not (_NOT_ARM_EVIDENCE, owner ruling 2026-10-28), so two bundles over the same
+    # runs priced differently share one.
+    pricing: ArmPricing | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the arm's production cost was priced: its price sources, serving providers and priced calls. None = "
+            "no row of a production role was recorded."
+        ),
+    )
+
+    @field_validator("lost", "failed")
+    @classmethod
+    def _the_most_trials_first(cls, causes: dict[str, int]) -> dict[str, int]:
+        """Each cause the most trials first, then by name: the order the census reads, put back on every read.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so a census read back from a stored analysis would otherwise hand the planner
+        and the page its causes in the store's order.
+        """
+        return dict(sorted(causes.items(), key=lambda item: (-item[1], item[0])))
 
     @model_validator(mode="after")
     def _the_census_adds_up(self) -> ArmScoreboard:
@@ -2540,8 +2764,16 @@ class AnalysisContextBundle(EvalDocumentModel):
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
-    # Unmoved by declared names: `short_name` and `goal_check_names` are written only when declared and are no part of
+    # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
+    # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
+    # `scoreboard[].unanswered` are written only when the run recorded one or a usage row counted them, so a bundle over
+    # runs that recorded neither is this shape byte for byte and its fingerprint stays put. A run recording either moves
+    # its bundle's fingerprint, as any evidence the bundle reads does. So does a run's host disclosure
+    # (`apparatus.run_disclosure`), written only when its host disclosed one.
+    # Unmoved by pricing: each arm's `scoreboard[].pricing` (its price sources, providers and priced calls) is written
+    # only when a production usage row was recorded, and is no part of the fingerprint whether written or not (owner
+    # ruling, 2026-10-28), so a bundle over unchanged runs fingerprints as it did.
     schema_version: int = Field(
         default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -2581,6 +2813,15 @@ class AnalysisContextBundle(EvalDocumentModel):
             "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
             "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
             "`measure_catalog`, whose names every reading is read under."
+        ),
+    )
+    stratum_names: dict[str, str] = Field(
+        default_factory=dict,
+        exclude_if=lambda names: not names,
+        description=(
+            "What a page prints for a stratum, by the stratum id a case declares, as the member runs' templates declare "
+            "it (`EvalTemplate.stratum_names`). A stratum absent here is printed as its id. Presentation only: written "
+            "only when a name is declared and no part of the bundle's fingerprint."
         ),
     )
     template_id: str | None = Field(default=None, description="Referenced eval_template (the Behavior), or None.")
@@ -2716,6 +2957,21 @@ class AnalysisContextBundle(EvalDocumentModel):
             "do not share. The sentence is the same one every run-level surface renders."
         ),
     )
+
+    @field_validator("incomplete_runs", "short_runs")
+    @classmethod
+    def _in_run_order(cls, by_run: dict[str, str], info: ValidationInfo) -> dict[str, str]:
+        """The runs in the order assembly read them, ``run_summaries``' order, on assembly and on every read.
+
+        The order is held only by the mapping's keys, and a store keeps no mapping's key order (a ``jsonb`` column
+        holds its keys shortest first), so it is put back from the list the runs were summarized in, which a store
+        keeps: a bundle read back renders its runs as the live one did. A run no summary names keeps its place after
+        them.
+        """
+        summaries: list[RunSummary] = info.data.get("run_summaries") or []
+        place = {summary.run_id: index for index, summary in enumerate(summaries)}
+        return dict(sorted(by_run.items(), key=lambda item: place.get(item[0], len(place))))
+
     completeness_unknown_run_ids: list[str] = Field(
         default_factory=list,
         description=(
@@ -3112,6 +3368,29 @@ class AnalysisContextBundle(EvalDocumentModel):
             "there is no design or it says nothing about combinations, so no unrun combination is read either way."
         ),
     )
+
+    @field_validator("declared_crossing")
+    @classmethod
+    def _levels_in_axis_order(cls, crossing: DeclaredCrossing | None, info: ValidationInfo) -> DeclaredCrossing | None:
+        """Each cell's levels in the order the design declares its axes, on assembly and on every read.
+
+        A cell's levels are a mapping by axis, whose key order a store does not keep (a ``jsonb`` column holds its keys
+        shortest first), and the page names a cell by its levels in that order. The order is put back from the
+        declared design's axes, which are a list; a level on an axis the design does not declare keeps its place after
+        them.
+        """
+        declared: AspectDeclaration | None = info.data.get("declared")
+        if crossing is None or declared is None:
+            return crossing
+        place = {axis.axis_id: index for index, axis in enumerate(declared.design.axes)}
+        cells = [
+            cell.model_copy(
+                update={"levels": dict(sorted(cell.levels.items(), key=lambda item: place.get(item[0], len(place))))}
+            )
+            for cell in crossing.cells
+        ]
+        return crossing.model_copy(update={"cells": cells})
+
     arm_mechanisms: list[ArmMechanismReading] = Field(
         default_factory=list,
         description=(
@@ -3394,6 +3673,12 @@ _NOT_EVIDENCE: frozenset[str] = (
     frozenset({"package_version", "first_result_at"}) | ASPECT_PRESENTATION_FIELDS | TEMPLATE_PRESENTATION_FIELDS
 )
 
+#: The fields of each arm's census (``scoreboard[]``) :meth:`AnalysisContextBundle.fingerprint` leaves out: how the
+#: arm's cost was priced (:class:`ArmPricing`), which says where a cost comes from, not what the arm did. Owner ruling,
+#: 2026-10-28: the price source is no part of a fingerprint, so a bundle assembled before the census read pricing and
+#: one assembled after fingerprint alike over the same runs, and so do two bundles whose runs were priced differently.
+_NOT_ARM_EVIDENCE: frozenset[str] = frozenset({"pricing"})
+
 #: What a fingerprint of the current version starts with. Version 1 had no prefix: the bare sha256 of the canonical
 #: JSON, floats at full precision. Version 2 rounds every float to twelve significant figures first, so one
 #: evidence fingerprints alike across Python builds, except, rarely, a value that falls exactly on a 12th-figure rounding boundary. A
@@ -3425,7 +3710,15 @@ def fingerprint_digest(payload: Any, *, like: str | None = None) -> str:
 
 
 def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
-    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``).
+    """A bundle document's fingerprint: the digest of every field but what built it (``package_version``), how a page
+    prints it (:data:`_NOT_EVIDENCE`, and the declared control's
+    :data:`~threetears.evals.kernel.declaration.ARM_PRESENTATION_FIELDS`), and how each arm's cost was priced
+    (:data:`_NOT_ARM_EVIDENCE`).
+
+    **Two bundles may share a fingerprint with different pricing** (owner ruling, 2026-10-28: "I recognize the
+    implications, but it's ok"). The same runs priced by another source, or served by another provider, fingerprint
+    alike; a page built from either still prints its own pricing, and a report snapshot's content address
+    (``report_input_digest``) still tells the two inputs apart.
 
     The one derivation :meth:`AnalysisContextBundle.fingerprint` uses, for a reader that holds the stored document
     rather than the model — a frozen reporter case checks the bundle it holds against the fingerprint it recorded.
@@ -3438,7 +3731,22 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     :return: The fingerprint.
     :rtype: str
     """
-    return fingerprint_digest({key: value for key, value in document.items() if key not in _NOT_EVIDENCE}, like=like)
+    evidence = {key: value for key, value in document.items() if key not in _NOT_EVIDENCE}
+    if isinstance(scoreboard := evidence.get("scoreboard"), list):
+        # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
+        evidence["scoreboard"] = [
+            {key: value for key, value in row.items() if key not in _NOT_ARM_EVIDENCE}
+            if isinstance(row, Mapping)
+            else row
+            for row in scoreboard
+        ]
+    declared = evidence.get("declared")
+    if isinstance(declared, Mapping) and isinstance(control := declared.get("control"), Mapping):
+        # How a page prints the control (ARM_PRESENTATION_FIELDS) is no part of what the bundle read; a control naming
+        # none carries no key to drop.
+        unnamed = {key: value for key, value in control.items() if key not in ARM_PRESENTATION_FIELDS}
+        evidence["declared"] = {**declared, "control": unnamed}
+    return fingerprint_digest(evidence, like=like)
 
 
 class BundleInspection(EvalDocumentModel):
@@ -3686,6 +3994,7 @@ __all__ = [
     "AliasedFactors",
     "AnalysisContextBundle",
     "ArmMechanismReading",
+    "ArmPricing",
     "ArmServedModel",
     "BundleInspection",
     "CANDIDATE_SERVED_MODEL_CONFOUND",
@@ -3694,6 +4003,7 @@ __all__ = [
     "ComparisonFamily",
     "ComparisonReading",
     "ComparisonVerdict",
+    "SEPARATED_VERDICTS",
     "Confound",
     "DeclaredCellCoverage",
     "DeclaredCrossing",
@@ -3740,6 +4050,8 @@ __all__ = [
     "QuestionScope",
     "ReadingScope",
     "RealizedDesign",
+    "RoleUnanswered",
+    "RunApparatus",
     "REASONING_SHARE_DIVERGENCE",
     "RunSummary",
     "ScopeDivergence",

@@ -40,7 +40,7 @@ from threetears.evals.kernel.metrics import (
     goal_check_measure,
     summary_population,
 )
-from threetears.evals.schema.models import EvalResult
+from threetears.evals.kernel.result_reading import ResultView
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.analysis.bundle.schema import (
     MeritTier,
@@ -167,7 +167,7 @@ def _applicable_bars(
 
 
 def _bar_reading(
-    bar: BarName, members: list[EvalResult], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
+    bar: BarName, members: list[ResultView], judged_rows: dict[str, list[ScoreRecord]], *, profile: HostProfile
 ) -> _BarReading | None:
     """Read one bar's value over one cell's results, from where its kind is carried.
 
@@ -176,7 +176,7 @@ def _bar_reading(
     :param members: The cell's results, faulted ones included. A measure is read over its own population
         (:func:`_collect_measures` leaves a fault out of a ``scored`` one); a judged dimension over
         the non-faulted results, as every score is.
-    :ptype members: list[EvalResult]
+    :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id, for a judged dimension.
     :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
@@ -220,7 +220,7 @@ def _bar_reading(
 
 def _judged_bar_tier(
     bar: BarName,
-    members: list[EvalResult],
+    members: list[ResultView],
     judged_rows: dict[str, list[ScoreRecord]],
     *,
     tiers: list[JudgeEvidenceTier],
@@ -245,7 +245,7 @@ def _judged_bar_tier(
 def _bar_adjudications(
     behavior: str,
     design: AspectDesign | None,
-    results_by_cell: dict[_CellKey, list[EvalResult]],
+    results_by_cell: dict[_CellKey, list[ResultView]],
     records: list[ScoreRecord],
     *,
     tiers: list[JudgeEvidenceTier],
@@ -270,7 +270,7 @@ def _bar_adjudications(
     :param design: The campaign's declaration.
     :ptype design: AspectDesign | None
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[_CellKey, list[EvalResult]]
+    :ptype results_by_cell: dict[_CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where a judged dimension's name survives.
     :ptype records: list[ScoreRecord]
     :param tiers: The judges' evidence tiers (``judge_evidence_tiers``).

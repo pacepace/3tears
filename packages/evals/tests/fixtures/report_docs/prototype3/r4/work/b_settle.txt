@@ -1,0 +1,26 @@
+rendered block
+block_kind: table
+query:
+  source: settle
+  aspect: 
+  measures: [facts, specul]
+  arms: [f64]
+  strata: []
+  limit: 0
+  transform: none
+  small_multiples_by: none
+reference_line: none
+emphasis: 
+title: 
+level: 
+unit: percent
+domain: 
+reference: none
+columns: [Arm, Against, Today's figure, Line, Distance toward passing, Settles, Sizes count, Needed, one-sided, Needed, two-sided, Today, Trials needed, one-sided, Trials needed, two-sided, Repeats of a case, Trials today, A fresh run reads the other side, Level]
+rows (2):
+  - cells: [A · f64, Music facts correct, 92.1%, 90.0%, +2.1, clears, cases, 447.0, 634.0, 300.0, —, —, —, —, 8.9%, 95% one-sided]
+  - cells: [A · f64, Declines to speculate, 96.4%, 95.0%, +1.4, clears, cases, 480.0, 681.0, 300.0, —, —, —, —, 9.7%, 95% one-sided]
+total: 2
+offset: 0
+truncated: False
+notes: [Each bar is how often a fresh run of today's size would read the figure on the other side of its line, if the truth is today's estimate (95% one-sided); it plans a run and tests nothing.]

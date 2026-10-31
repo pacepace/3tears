@@ -70,7 +70,9 @@ In a checkout of this repo, `uv sync` at the root does it, and the commands abov
 on the base install: it speaks each provider's HTTP API over `httpx`, with no SDK and no other 3tears package. The
 examples run on cheap models through OpenRouter (`OPENROUTER_API_KEY`); `Model(id, provider="anthropic")`
 (`ANTHROPIC_API_KEY`) and `provider="openai"` (`OPENAI_API_KEY`) are options, and `base_url=` takes any
-OpenAI-compatible endpoint. After a pip install, fetch the examples from the repository first
+OpenAI-compatible endpoint. Its prices are a default for trying the package: a host hands `Model` its own pricer,
+since only the host knows what it pays ([who sets the prices](docs/cost-and-budgets.md#who-sets-the-prices)). After a
+pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
@@ -110,7 +112,8 @@ this README is the package's description, they do not resolve, so read the docs 
   campaigns have hit.
 - [Evaluating a tool-using agent](docs/evaluating-agents.md): a world, seeds, goal checks, the conformance kit, and
   why the world contract is shaped as it is.
-- [Cost and budgets](docs/cost-and-budgets.md): what a launch will cost, and what stops it.
+- [Cost and budgets](docs/cost-and-budgets.md): who sets the prices, what a launch or a report will cost, and what
+  stops it.
 - [Serving](docs/serving.md): the command line, keeping and reading runs, the actions an agent calls, and MCP.
 - [Adopting the engine](docs/adopting-a-host.md): your own host, store, kind and launcher.
 
@@ -137,7 +140,7 @@ this README is the package's description, they do not resolve, so read the docs 
 | A person's call, recorded against code's readings | `campaign_record` (`floors_overridden`, `bars_overridden`) | [Recording the call](docs/adopting-a-host.md#recording-the-call) | |
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](docs/cost-and-budgets.md), [the frontier](docs/measuring-soundly.md#the-frontier-passk-against-cost) | |
 | Judge calibration and evidence tiers | `Judge(labels=...)`, `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`2-replies/`](examples/2-replies/replies.py) |
-| Analysis written by a model over frozen evidence | `generate_analysis` | [Having a model write the analysis](docs/reading-reports.md#having-a-model-write-the-analysis-over-frozen-evidence) | [`llm_analysis.py`](tests/fixtures/generate_analysis/llm_analysis.py) |
+| A report an analyst model writes over frozen evidence, checked by code and reviewed by an editor | `analysis_generate`, `report_read`; the `evals_analyst` tool | [The analyst's report](docs/reading-reports.md#the-analysts-report-written-over-frozen-evidence) | |
 | Cassettes | `World(tools=[...], recording=...)`; on a host, `cassette_mode="capture"` / `"replay"` | [Step 4](docs/evaluating-agents.md#step-4-cassettes-for-tool-results), [on a host](docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | |
 | MCP | `threetears.evals.actions`, `mount_fastmcp` (extra `fastmcp`) | [Serving](docs/serving.md#fastmcp) | [`4-booking/serve.py`](examples/4-booking/serve.py) |
 | Keeping runs | `Eval(...).run(store=path)` (by default `.evals/evals.sqlite`); any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/serving.md#keep-your-runs-and-read-them-back), [the store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) | |

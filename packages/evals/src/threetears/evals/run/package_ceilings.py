@@ -23,12 +23,12 @@ from threetears.evals.run.simulator import (
 class Ceilings:
     """The package's inner ceilings a host derives its outer budgets from, so a budget cannot drift below one.
 
-    ``Ceilings()`` is this build's: every field is one of the six inner ceilings, the only way the package exposes
+    ``Ceilings()`` is this build's: every field is one of the inner ceilings, the only way the package exposes
     them (the separate names ``run.SCHEDULER_CALL_ATTEMPTS``, ``run.SIMULATOR_MAX_TOKENS``,
     ``run.SIMULATOR_ANSWER_BUDGET_TOKENS``, ``gen.PROPOSER_MAX_TOKENS``, ``analysis.generation_ceiling_s`` and
     ``analysis.judge_phase_ceiling_s`` left the public surface in ``.33``), and none is set by the caller. A host computes each outer budget from a field (a scheduling call's retry budget from
     ``scheduler_call_attempts``, the simulator's and proposer's client caps from the token fields, a generation's or
-    a judge phase's deadline from the two ceiling functions over its own per-request ceiling) instead of restating
+    a report's or a judge phase's deadline from the ceiling functions over its own per-request ceiling) instead of restating
     the number, so a release that raises an inner ceiling raises the budget over it.
     """
 
@@ -45,6 +45,12 @@ class Ceilings:
     generation_ceiling_s: Callable[..., float] = field(
         default_factory=lambda: inner_ceilings.generation_ceiling_s, init=False
     )
+    #: The wall-clock ceiling of one report the writer writes (``analysis_generate``'s job), in seconds, from the loop's
+    #: limits and the host's per-request ceiling (``writer_ceiling_s(limits, request_s=..., turns=...)``, over the same
+    #: limits the host sets as ``AnalysisGeneration.limits``): every turn the loop can send, each at its session's
+    #: output cap, or the report budget's turn cap (``ReportBudget.turns``) where that is fewer.
+    #: ``AnalysisGeneration.budget_s`` sits above it.
+    writer_ceiling_s: Callable[..., float] = field(default_factory=lambda: inner_ceilings.writer_ceiling_s, init=False)
     #: The wall-clock ceiling of one cell's judge phase, in seconds, from the host's per-request ceiling
     #: (``judge_phase_ceiling_s(judge_dims=..., judge_concurrency=..., judge_call_attempts=..., judge_max_tokens=...,
     #: request_s=...)``).

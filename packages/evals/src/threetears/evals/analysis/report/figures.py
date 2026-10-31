@@ -19,7 +19,9 @@ from collections.abc import Iterable, Mapping
 from typing import Any, NamedTuple
 
 from threetears.evals.analysis.quantities import MONEY, PERCENT, display_scale, is_money
+from threetears.evals.analysis.report.cost_unit import money_ruler
 from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, classifier_label_of, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 
@@ -52,6 +54,12 @@ REPLY_COST_FLOOR = 0.01
 PER_THOUSAND_REPLIES = "per 1,000 replies"
 PER_THOUSAND_LABEL = "($/1,000 replies)"
 
+#: The heading's words for money drawn per 1,000,000 replies.
+PER_MILLION_LABEL = "($/1,000,000 replies)"
+
+#: The words a cost stated per 1,000,000 replies carries, as a measure in ``usd_per_1m`` declares it.
+PER_MILLION_REPLIES = "per 1,000,000 replies"
+
 
 def surface_order_sentence(*, has_control_row: bool) -> str:
     """The row-order sentence for a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`.
@@ -78,14 +86,18 @@ class MeasureRuler(NamedTuple):
     factor: float
     unit: str
     per: str = ""
+    money: MoneyForm | None = None
 
     def scaled(self, heading: str) -> str:
         """``heading`` with the scale a reader needs to read its figures, where the figures do not carry it.
 
-        A cost stated per 1,000 replies says so beside its name, since ``$0.0459`` alone reads as a cost per reply;
-        every other ruler's figures carry their own unit, so the heading stands alone.
+        A cost stated per 1,000 replies (or per 1,000,000, where it is under a cent per 1,000) says so beside its
+        name, since ``$0.0459`` alone reads as a cost per reply; every other ruler's figures carry their own unit, so
+        the heading stands alone.
         """
-        return f"{heading} {PER_THOUSAND_LABEL}" if self.per else heading
+        if not self.per:
+            return heading
+        return f"{heading} {PER_MILLION_LABEL if self.per == PER_MILLION_REPLIES else PER_THOUSAND_LABEL}"
 
     def labelled(self, heading: str) -> str:
         """``heading`` with its unit, for a row whose figures are stated as bare numbers beside it.
@@ -155,11 +167,12 @@ def _is_share(name: str, facts: MeasureFacts, described: MetricDescriptor | None
 
 
 def _money_ruler(amounts: Iterable[float | None]) -> MeasureRuler:
-    """Money's ruler over the per-reply amounts it will state: per 1,000 replies when every one is under the floor."""
-    stated = [amount for amount in amounts if amount is not None]
-    if stated and all(abs(amount) < REPLY_COST_FLOOR for amount in stated):
-        return MeasureRuler(1000.0, MONEY, PER_THOUSAND_REPLIES)
-    return MeasureRuler(1.0, MONEY)
+    """Money's ruler over the per-reply amounts it will state, by the one owner of money's scale
+    (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per reply, or per 1,000 (1,000,000)
+    replies where some amount is under a cent per reply (per 1,000), its form chosen from every amount."""
+    ruler = money_ruler(amounts, per=1, start=1)
+    per = {1000: PER_THOUSAND_REPLIES, 1_000_000: PER_MILLION_REPLIES}.get(ruler.counted, "")
+    return MeasureRuler(ruler.scale, MONEY, per, ruler.form)
 
 
 def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
@@ -167,7 +180,8 @@ def reply_cost_ruler(costs: Iterable[float | None]) -> MeasureRuler:
 
     :param costs: Each arm's cost per reply; None for an arm whose cost was not measured.
     :ptype costs: Iterable[float | None]
-    :return: Money per reply, or per 1,000 replies when every measured cost is under :data:`REPLY_COST_FLOOR`.
+    :return: Money per reply, or per 1,000 (1,000,000) replies where some measured cost is under a cent per reply (per
+        1,000), as the one owner of money's scale states it.
     :rtype: MeasureRuler
     """
     return _money_ruler(costs)
@@ -235,6 +249,7 @@ def analysis_rulers(analysis: EvalAnalysis, aspect: str) -> Rulers:
 
 __all__ = [
     "NO_SUCCESSFUL_RESULTS",
+    "PER_MILLION_REPLIES",
     "PER_THOUSAND_LABEL",
     "PER_THOUSAND_REPLIES",
     "REFERENCE_MARK",

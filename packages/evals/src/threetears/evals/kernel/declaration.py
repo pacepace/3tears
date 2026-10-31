@@ -67,6 +67,7 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     RubricScale,
     declared_name,
+    rubric_dim_scale,
     utc_now_iso,
 )
 
@@ -790,6 +791,17 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
             "without one is dated by the build accepting it, the only predicate it can have been read under."
         ),
     )
+    short_name: str | None = Field(
+        default=None,
+        # Presentation only: written only when declared, so an arm naming none is stored as it was before the field.
+        exclude_if=lambda name: name is None,
+        description=(
+            f"What a page prints for this arm in tight places (a chart's labels, a table cell, a sentence), at most "
+            f"{DECLARED_NAME_CHARS} characters; the label is printed once beside it. It is no other arm's label or "
+            "short name. None = the page computes one from what differs from the control. No part of any identity, "
+            "key or fingerprint, so naming an arm changes no reading."
+        ),
+    )
     named_at: str | None = Field(
         default=None,
         description=(
@@ -833,6 +845,18 @@ class CampaignArm(EvalDocumentModel, CoreShapeModel):
         return value
 
     @model_validator(mode="after")
+    def _a_short_name_is_short(self) -> CampaignArm:
+        """Refuse a short name that is blank or longer than :data:`~threetears.evals.schema.models.DECLARED_NAME_CHARS`.
+
+        :return: The validated arm.
+        :rtype: CampaignArm
+        :raises ValueError: The short name is blank or too long.
+        """
+        if self.short_name is not None:
+            declared_name(self.short_name, what=f"arm {self.label!r}")
+        return self
+
+    @model_validator(mode="after")
     def _the_pre_image_is_the_arm_s_own(self) -> CampaignArm:
         """The lever map, under this build's predicate, digests to the arm's key.
 
@@ -867,6 +891,12 @@ def resolve_control_arm(arm: CampaignArm | None) -> ResolvedControl:
     if arm is None:
         return ResolvedControl(variant_keys=[], identity_version=None, source="undeclared")
     return _resolve_control_key(arm.variant_key, arm.levers, arm.identity_version)
+
+
+#: The fields of an arm that say only how a page prints it: the one list every reader that must not see them reads. A
+#: campaign bundle's fingerprint leaves them out of its arms and its declaration's arms, and an aspect bundle's leaves
+#: them out of its declared control, so naming an arm stales no analysis and moves no reporter case.
+ARM_PRESENTATION_FIELDS: Final[frozenset[str]] = frozenset({"short_name"})
 
 
 #: The fields of an aspect that say only how a page prints it: the one list every reader that must not see them reads.
@@ -1285,7 +1315,7 @@ def resolve_bar_name(
         return BarName(
             name,
             "judged",
-            describe_rubric_dim(name, scale="ordinal" if name in RESERVED_DIM_IDS else rubric_dimensions[name]),
+            describe_rubric_dim(name, scale=rubric_dim_scale(name, rubric_dimensions)),
         )
     if name in goal_state_checks:
         # The check's RATE, which is what a bar on it reads — not the check's boolean observation.
