@@ -429,8 +429,11 @@ def _served(tool: MountedTool) -> list[str]:
 #: read on (the figure-key grammar it serves).
 #: The evals tool moved again when the campaign name's cap came into its parameters' schema (maxLength) and the
 #: campaign line's report gained draft.
+#: The editor's moved again when an aspect's keys gained its pass rule (`graded_by`, `pass_rule`, `pass_threshold`,
+#: `no_criterion`) and a contrast's what its test counted (`n_cases`, `control_n_cases`, `paired`, `pairing_r`), in the
+#: figure-key grammar it serves.
 _EVALS_BYTES = "1e68c866224e976f52cd14198beff388fb1fed04b7a74248d34b72ae59cd9fa0"
-_EDITOR_BYTES = "60cf01b3676e6dda92c5897678d6012062417ae05c8b3f8bdf7a21615cd51aa3"
+_EDITOR_BYTES = "960348b40611705af529b4f3535002eea67dd867a02d2283b92cf68608c57ed9"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
