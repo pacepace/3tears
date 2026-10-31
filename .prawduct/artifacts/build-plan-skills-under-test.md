@@ -52,6 +52,8 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - 04: `writer_case_mint` takes a campaign, an analysis or a frozen snapshot. A case is keyed on its source: an exact re-mint returns the stored case, and a different one is refused, because stored cases never change.
 - 04: the split goes by group. A host names a group for related campaigns, or the source key is the group. A group keeps its recorded side; a new group's side comes from the sha256 of `writer-split:<group>` against `held_out_fraction` (default 0.3). Seed: 5 held-out (Kairo, the four r2 cases), 7 dev. Inferred defaults (the fraction and the prefix), not owner words.
 - 04: `WriterCase.case_version = 1` with `origin` (host, minted_by, source, campaign or analysis, group, side, set, fraction, the skill digest the notes were checked against).
+- 03: the scoring rubric's one source is the shipped editor.md, read once (`ops/report_writer/rubric.py`, `shipped_rubric()`); editor.py's item names come from the same read. `writer_scoring_rubric()` makes seven 1–5 dims `report_writer.<item>` on the built-in judge prompt (editor 2/1/0 → 5/3/1). A host seeds the template from it at creation, and the stored template then holds the text, frozen per run in `template_digest`. Consequence: promoting a new editor.md moves the scoring rubric for templates created after it; campaigns already created keep theirs.
+- 03: the engine reports a judge change between arms but does not refuse one, so `refuse_unfixed_scoring_judge(runs)` refuses a campaign whose arms differ in template, rubric revision, judge model, configs or temperature.
 
 **Level:** Medium. The kind's shape is clear from `analysis_reporter`. Unknown: whether a full writer run (a multi-session tool loop) fits a single cell's invoke under the existing cell timeout and cost seats. Chunk 02's first step checks that against one replayed prototype5 case.
 
@@ -79,6 +81,7 @@ Type: code
 - Every bounce kind the analyst records (unparsed, shape, validity, invariant, max_tokens) is a measure, read through a typed accessor on `Tally`, not bare strings.
 - The revisions cap has one public source.
 - One shared failure-owner mapping replaces the three copies (reporter, judge and writer kinds).
+- The launcher calls chunk 03's `refuse_undeliverable_writer_template` at every launch. The judge-family rule (owner: the judge comes from a different model family than the writer) is refused at launch wherever the engine can tell a model's family; otherwise the gap is recorded.
 - The launcher admits a launch over a named case set (chunk 04's sets), as the reporter's does over its bank.
 - A writer-case retire op, so a moved campaign can be re-minted (chunk 04's refusal names it).
 - New tests: the failure routing, prepare's refusals, and the launcher's deadline.
