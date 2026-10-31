@@ -268,7 +268,6 @@ _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
     (_CHART_SVG, "_rounded(size)", ","): _KIT_FORMAT + "whole dollars from $10",
     (_CHART_SVG, "_rounded(value)", ","): _KIT_FORMAT + "a whole amount, grouped",
     (_CHART_SVG, "n", ",.3f"): _KIT_FORMAT + "a tooltip's count, as toLocaleString writes it",
-    (_CHART_SVG, "value", ".1f"): "an SVG coordinate, to a tenth of a px",
     (_CHART_SVG, "joined.width or 2", "g"): "an SVG stroke width",
     (_CHART_SVG, "1 if joined.opacity is None else joined.opacity", "g"): "an SVG opacity",
     (_CHART_SVG, "1 if item.opacity is None else item.opacity", "g"): "an SVG opacity",

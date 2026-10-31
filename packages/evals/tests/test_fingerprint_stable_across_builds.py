@@ -51,7 +51,7 @@ from threetears.evals.analysis.campaign_bundle import (
     writer_view,
 )
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock
+from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.reporter_bank import case_limits
 from threetears.evals.analysis.reporter_kind import rebuild_bundle, reporter_case_of, reporter_case_payload
 from threetears.evals.run import rate_result
@@ -213,18 +213,46 @@ def test_readings_moved_one_ulp_serve_the_same_page_json(toward: float) -> None:
     assert json.dumps(nudged.json_document()) == json.dumps(report.json_document())
 
 
-def _charts_nudged(blocks: list[ReportBlock], toward: float) -> list[ReportBlock]:
-    """``blocks`` with every float of every chart among them one ULP toward ``toward``, each chart validated again."""
+def _figures_nudged(blocks: list[ReportBlock], toward: float) -> list[ReportBlock]:
+    """``blocks`` with every float of every chart and table among them one ULP toward ``toward`` (a table's interval
+    cells are what its glyphs draw), each validated again."""
     return [
-        ChartBlock.model_validate(_nudged(block.model_dump(), toward)) if isinstance(block, ChartBlock) else block
+        type(block).model_validate(_nudged(block.model_dump(), toward))
+        if isinstance(block, ChartBlock | TableBlock)
+        else block
         for block in blocks
     ]
 
 
+def _page_nudged(report: CampaignReport, toward: float) -> CampaignReport:
+    """``report`` with its own and every aspect page's charts and tables nudged (:func:`_figures_nudged`)."""
+    folds = [
+        fold.model_copy(
+            update={"report": fold.report.model_copy(update={"blocks": _figures_nudged(fold.report.blocks, toward)})}
+        )
+        for fold in report.aspects
+    ]
+    return report.model_copy(update={"blocks": _figures_nudged(report.blocks, toward), "aspects": folds})
+
+
+def _glyph_cells(report: CampaignReport) -> list[Any]:
+    """Every interval cell a glyph draws, on the page and in its folds."""
+    blocks = [*report.blocks, *(block for fold in report.aspects for block in fold.report.blocks)]
+    return [
+        cell
+        for block in blocks
+        if isinstance(block, TableBlock)
+        for row in block.rows
+        for cell in row.values()
+        if cell.low is not None and cell.zero_line
+    ]
+
+
 @pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
-def test_charts_moved_one_ulp_serve_the_same_page_in_every_form(toward: float) -> None:
-    """A chart's figures are computed, so their last bits differ between builds: the kit's ``data-chart`` JSON serves
-    them to twelve figures, as the page's JSON form does, and every form of the page is the same bytes."""
+def test_charts_and_tables_moved_one_ulp_serve_the_same_page_in_every_form(toward: float) -> None:
+    """A chart's figures and a table's intervals are computed, so their last bits differ between builds: the kit's
+    ``data-chart`` JSON serves them to twelve figures, as the page's JSON form does, the static page's SVG and each
+    interval glyph round their coordinates there first, and every form of the page is the same bytes."""
     shape = s1_change()
     report = campaign_report(shape.host(), shape.campaign.id, shape.campaign.scope_id)
     assert isinstance(report, CampaignReport)
@@ -232,10 +260,12 @@ def test_charts_moved_one_ulp_serve_the_same_page_in_every_form(toward: float) -
     assert [
         value for chart in charts for value in _floats(list(chart.kit_chart() or ())) if round_figures(value) != value
     ], "the page draws a chart whose figures run past twelve"
-    nudged = report.model_copy(update={"blocks": _charts_nudged(report.blocks, toward)})
+    nudged = _page_nudged(report, toward)
     assert [block.kit_chart() for block in nudged.blocks if isinstance(block, ChartBlock)] != [
         chart.kit_chart() for chart in charts
     ], "the charts did move"
+    assert _glyph_cells(report), "the page draws an interval glyph"
+    assert _glyph_cells(nudged) != _glyph_cells(report), "the glyphs' intervals did move"
 
     for form, static in (("html", False), ("html", True), ("markdown", False), ("json", False)):
         assert serialize_report(nudged, form, static=static) == serialize_report(report, form, static=static), form
