@@ -261,6 +261,11 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
             Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)),),
             Principal.TOOL_POD: (str(Subjects.tools_internal(_TOOL_POD_ID)),),
         },
+        # the same call subject in the held queue group: a held replica answering its control tools
+        "packages/agent/tools/src/threetears/agent/tools/server.py::ToolServer._join_held_when_asked": {
+            Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)),),
+            Principal.TOOL_POD: (str(Subjects.tools_internal(_TOOL_POD_ID)),),
+        },
         "packages/channels/src/threetears/channels/presence/fanout.py::RoomFanout._subscribe_locked": _NOT_WIRED,
         "packages/core/src/threetears/core/collections/registry.py::CollectionRegistry.start_invalidation_listener": every,
         "packages/core/src/threetears/core/collections/scoped_snapshot.py::ScopedSnapshot._follow": _ON_THE_INBOX,

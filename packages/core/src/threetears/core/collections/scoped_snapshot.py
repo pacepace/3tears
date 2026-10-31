@@ -138,6 +138,7 @@ __all__ = [
     "SnapshotTable",
     "StagedScope",
     "VersionedRead",
+    "WRITE_CHECK",
     "decode_chunk",
     "encode_chunk",
     "open_tool_pod_snapshot",
@@ -230,10 +231,10 @@ def _raise_first(results: Sequence[object], *, log: Any, what: str) -> None:
 #: how many times a rebuild reads again after a write committed while it read
 _REBUILD_ATTEMPTS: Final = 3
 
-#: how often a rebuild reading a scope from L3 asks whether a write has begun since it started, in seconds: a write
+#: how often a rebuild reading a scope from L3 asks whether a write has begun since it started, by default: a write
 #: that began (a reset's clear, which empties the tables) ends the read within this, rather than after the scope's
 #: last page -- minutes for a large scope, while the write waits on the rows the read holds open
-_WRITE_CHECK_SECONDS: Final = 5.0
+WRITE_CHECK: Final = timedelta(seconds=5)
 
 #: how many times a compare-and-set on a pointer or the index is tried against a racing writer
 _CAS_ATTEMPTS: Final = 16
@@ -1486,6 +1487,9 @@ class ScopedSnapshot:
     :ptype chunk_reads: int
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
+    :param write_check: how often a rebuild reading a scope asks whether a write has begun, which stops the read
+        (:data:`WRITE_CHECK`)
+    :ptype write_check: timedelta
     :param claim_ttl: how long a rebuild's claim, or a write claim, lasts once its holder stops renewing
         it (it died); renewed while held
     :ptype claim_ttl: timedelta
@@ -1519,6 +1523,7 @@ class ScopedSnapshot:
         apply_batch: int = _DEFAULT_APPLY_BATCH,
         chunk_reads: int = _DEFAULT_CHUNK_READS,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
+        write_check: timedelta = WRITE_CHECK,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
         recheck: timedelta = _DEFAULT_RECHECK,
         pointer_watch_heartbeat: timedelta = timedelta(seconds=5),
@@ -1545,6 +1550,7 @@ class ScopedSnapshot:
         self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
         self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
+        self._write_check = write_check
         self._claim_ttl = claim_ttl
         self._recheck = recheck
         self._heartbeat = pointer_watch_heartbeat
@@ -4092,7 +4098,7 @@ class ScopedSnapshot:
         async def moved() -> bool:
             # a write that began (a reset's clear empties the tables being read) stops the read: asked between pages,
             # at most every few seconds, so a scope's read stops within that rather than after its last page
-            if self._settled is None or time.monotonic() - asked[0] < _WRITE_CHECK_SECONDS:
+            if self._settled is None or time.monotonic() - asked[0] < self._write_check.total_seconds():
                 return False
             asked[0] = time.monotonic()
             return bool(await self._settled() != before)

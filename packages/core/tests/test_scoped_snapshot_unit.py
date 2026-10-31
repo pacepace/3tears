@@ -3685,13 +3685,12 @@ async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one
 
 
 async def test_a_write_that_begins_mid_rebuild_stops_its_reads_and_the_copy_opens_on_what_the_write_published(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A reset's clear while a replica rebuilds its copy (cobalt prod, 2026-10-31): the rebuild must stop reading what
     the clear empties -- not read on for the rest of a scope of millions of rows -- and the copy opens on the cleared
     scopes the clear publishes."""
-    monkeypatch.setattr(scoped_snapshot_module, "_WRITE_CHECK_SECONDS", 0.0)
-    snapshot, pointers, _, l3 = _snapshot(l3_concurrency=1)
+    snapshot, pointers, _, l3 = _snapshot(l3_concurrency=1, write_check=timedelta(0))
     began: list[str] = []
 
     def a_clear_begins(scope: str) -> None:
