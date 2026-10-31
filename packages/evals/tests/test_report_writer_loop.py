@@ -13,7 +13,9 @@ Contracts held here:
   ``should_fix`` first raised after round 1 is sent back while a revision remains and never makes a draft, and a
   revision it sends that ends short stores the report it cleared, finished (owner ruling 2026-10-31);
 - **endings** (plan §4.4): ``over_budget`` stores the last reviewed document with its review's findings, or nothing
-  when no review was read; ``refused``, ``review_failed`` and ``failed`` store nothing, and the tally keeps every turn;
+  when no review was read; ``refused`` and ``review_failed`` store nothing, and ``failed`` nothing ever; the tally
+  keeps every turn. A revision a cleared review sent that ends ``over_budget``, ``refused`` or ``review_failed`` ends
+  ``stored`` instead, as the rounds say;
 - **the editor**: an unreadable answer is asked for once more, and a second ends ``review_failed``; its request
   carries nothing of the analyst's session, and its function cannot be handed any; code adds its scores up;
 - **budgets** refuse a turn before it is sent;
@@ -381,6 +383,50 @@ async def test_a_refused_revision_after_a_cleared_review_stores_the_cleared_repo
     assert result.ending == "stored" and "ended refused" in result.outcome.reason
     assert model.asked == ["analyst", "editor-1", "editor-2"], "a refused submission costs no editor call"
     assert result.stored is not None and not result.stored.draft and result.stored.doc["method"]
+
+
+async def test_a_review_of_the_revision_a_cleared_review_sent_unreadable_twice_stores_the_cleared_report() -> None:
+    host = off_loop(seeded_host)
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+        editor_3=FakeToolTurnClient(
+            reply(TurnText('```json\n{"items": []}\n```')), reply(TurnText('```json\n{"items": []}\n```'))
+        ),
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert "cleared the report, ended review_failed" in result.outcome.reason
+    assert model.asked == ["analyst", "editor-1", "editor-2", "editor-3"]
+    (stored,) = _stored(host)
+    assert stored.ending == "stored" and not stored.draft and stored.findings == [kept(LATE, "f2.1", 2)]
+    assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC), "the reviewed report, not a later one"
+
+
+async def test_the_budget_refusing_the_review_of_the_revision_a_cleared_review_sent_stores_the_cleared_report() -> None:
+    host = off_loop(seeded_host)
+    third = FakeToolTurnClient(reply(review()))
+    third.ceilings[0] = 1000.0
+    model = FakeTurnModel(
+        analyst=analyst(reply(submitted()), reply(submitted()), reply(submitted(revised()))),
+        editor_1=editor(reply(review(findings=[SHOULD_FIX]))),
+        editor_2=FakeToolTurnClient(reply(review(findings=[marked(LATE, "new")], resolved=["f1.1"]))),
+        editor_3=third,
+    )
+
+    result = await written(model, host=host)
+
+    assert result.ending == "stored", result.outcome.reason
+    assert "cleared the report, ended over_budget" in result.outcome.reason
+    assert third.requests == [], "the editor's turn was refused before it was sent"
+    (stored,) = _stored(host)
+    assert stored.ending == "stored" and not stored.draft and stored.findings == [kept(LATE, "f2.1", 2)]
+    assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC), (
+        "the reviewed report, not the revision"
+    )
 
 
 async def test_a_client_failure_in_the_revision_a_cleared_review_sent_still_ends_failed() -> None:
