@@ -37,7 +37,12 @@ S3 or parquet stays a fallback only. L3 is the truth, and NATS is a cache rebuil
 - **A rebuild claim.** It is a `KVLease` hold on `{name}.rebuild` in the pointer bucket, with a
   NATS per-key TTL, renewed while the holder works and released only while still its own. It is
   contended, so a lost one is never taken back: the rebuild that lost it says so and leaves the
-  store's sweep to a rebuild that held its claim throughout.
+  store's sweep to a rebuild that held its claim throughout. Renewal is not progress: a rebuild or
+  catch-up that takes no step (a page read, a chunk read or written, a commit, a pointer moved) for
+  `rebuild_stall` (10 minutes) lets the claim go and ends with a `TimeoutError`, and a writer's
+  `holding_rebuilds` renews it no longer than that, so a holder stuck on one await never keeps the
+  other replicas out (cobalt prod, 2026-10-31: a catch-up's first read beside a write never answered
+  and its claim, renewed by its own task, held every catch-up off all night).
 - **Compare-and-set on pointers and the index.** A pointer never moves to a lower epoch. The
   index merges what racing writers added. A replica's L1 never goes back to a lower epoch of a
   scope.
