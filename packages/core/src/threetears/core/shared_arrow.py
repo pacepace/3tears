@@ -48,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import functools
 import hashlib
 import multiprocessing
 import os
@@ -838,6 +839,8 @@ class SharedArrowStore:
         self._slots: dict[str, int] = {}
         #: results claimed and not yet closed
         self._claimed: set[str] = set()
+        #: each claimed result's bytes, counted once at its claim, until its files are gone (a publish's room)
+        self._claimed_bytes: dict[str, int] = {}
         self._published = 0
         self._retired = 0
         self._refused = 0
@@ -1143,6 +1146,7 @@ class SharedArrowStore:
             written = path.is_dir()
             if written:
                 self._claimed.add(slot.slot_id)
+                self._claimed_bytes[slot.slot_id] = _directory_bytes(path, set())
         if not written:
             self.sweep()
             return None
@@ -1195,6 +1199,9 @@ class SharedArrowStore:
         with self._state:
             self._claimed.discard(slot_id)
         self.sweep()
+        # counted until the sweep removed its files: a publish's room grows only once they are gone
+        with self._state:
+            self._claimed_bytes.pop(slot_id, None)
 
     def _committed_bytes(self) -> int:
         """the bytes the directory may be holding: what its files hold, except an open slot's, which counts at its
@@ -1287,15 +1294,15 @@ class SharedArrowStore:
             self._staging = staging_name
             # what the directory holds but for open slots, as this write starts (its staging directory not yet made)
             files = self._committed_bytes() - sum(self._slots.values())
-            # the results counted in ``files``: any other result is an open slot's, counted at its max_bytes
-            counted = {entry.name for entry in self._segments.iterdir() if _slot_of(entry.name) not in self._slots}
+            # the results claimed before this write are in ``files``; one claimed during it counts from its claim
+            claimed_before = set(self._claimed_bytes)
 
         def room() -> int:
             # asked before every batch: a slot reserved while this writes takes its room from this write, never
             # from the bound (reserve counts what this write has staged so far); a slot claimed while this writes
             # stops counting at its max_bytes, so its result's files count from then on instead
             with self._state:
-                claimed = _results_bytes(self._segments, skip=counted, open_slots=self._slots)
+                claimed = sum(size for slot, size in self._claimed_bytes.items() if slot not in claimed_before)
                 return self._max_bytes - files - claimed - sum(self._slots.values())
 
         try:
@@ -1555,26 +1562,6 @@ class SharedArrowReader:
         self.close()
 
 
-def _results_bytes(segments: Path, *, skip: set[str], open_slots: Mapping[str, int]) -> int:
-    """the bytes of every result directory but those in ``skip`` and an open slot's (counted at its ``max_bytes``).
-
-    :param segments: the results directory
-    :ptype segments: Path
-    :param skip: directory names already counted
-    :ptype skip: set[str]
-    :param open_slots: the open slots
-    :ptype open_slots: Mapping[str, int]
-    :return: bytes
-    :rtype: int
-    """
-    seen: set[tuple[int, int]] = set()
-    return sum(
-        _directory_bytes(entry, seen)
-        for entry in segments.iterdir()
-        if entry.is_dir() and entry.name not in skip and _slot_of(entry.name) not in open_slots
-    )
-
-
 def _slot_of(name: str) -> str:
     """the slot a result directory belongs to: its name, or its staging name's slot.
 
@@ -1724,7 +1711,20 @@ class _Handoff:
         """
         slot = self.slot
         if slot is not None:
-            future.add_done_callback(lambda _: self._store.discard(slot))
+            future.add_done_callback(lambda _: self._discard(slot))
+
+    def _discard(self, slot: SegmentSlot) -> None:
+        """discard ``slot``, logging a failure: it runs as a future's callback, where a raise would reach no caller.
+
+        :param slot: the slot
+        :ptype slot: SegmentSlot
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            self._store.discard(slot)
+        except Exception as exc:  # noqa: BLE001 -- a callback has no caller to raise to; contained, so it is counted
+            contain(exc, log=log, what="a shared Arrow result could not be discarded")
 
     def release_all(self) -> None:
         """release what was taken, the job never submitted.
@@ -1738,6 +1738,37 @@ class _Handoff:
             self._store.discard(self.slot)
 
 
+def _off_loop(work: Callable[..., object], *args: Any, what: str) -> None:
+    """run ``work(*args)`` on a thread, never the event loop this is called on, and log what it raises.
+
+    :param work: the blocking work (a discard sweeps the directory; a close removes files)
+    :ptype work: Callable[..., object]
+    :param args: its arguments
+    :ptype args: Any
+    :param what: what failed, for the log
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    """
+    running = asyncio.get_running_loop().run_in_executor(None, work, *args)
+    running.add_done_callback(functools.partial(_said_if_failed, what=what))
+
+
+def _said_if_failed(done: asyncio.Future[Any], *, what: str) -> None:
+    """contain what a thread's work raised, so a failure is logged and counted, not left to a warning at collection.
+
+    :param done: the work's future, done
+    :ptype done: asyncio.Future[Any]
+    :param what: what failed
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    """
+    failed = None if done.cancelled() else done.exception()
+    if isinstance(failed, Exception):
+        contain(failed, log=log, what=what)
+
+
 def _abandon_submitted(submitting: asyncio.Future[Any]) -> None:
     """a submission whose caller stopped waiting: once it is done, its slot is discarded when its worker is done.
 
@@ -1749,7 +1780,7 @@ def _abandon_submitted(submitting: asyncio.Future[Any]) -> None:
     if not submitting.cancelled() and submitting.exception() is None:
         handoff, future = submitting.result()
         # a discard sweeps the directory: on a thread, never the event loop this is called on
-        asyncio.get_running_loop().run_in_executor(None, handoff.abandon, future)
+        _off_loop(handoff.abandon, future, what="an abandoned shared Arrow result could not be discarded")
 
 
 def _close_claimed(claiming: asyncio.Future[Any]) -> None:
@@ -1764,7 +1795,7 @@ def _close_claimed(claiming: asyncio.Future[Any]) -> None:
         segment = claiming.result()
         if segment is not None:
             # closing removes its files: on a thread, never the event loop this is called on
-            asyncio.get_running_loop().run_in_executor(None, segment.close)
+            _off_loop(segment.close, what="an abandoned claimed shared Arrow result could not be closed")
 
 
 class SharedArrowPool:
@@ -1895,7 +1926,7 @@ class SharedArrowPool:
         finally:
             if not claimed:
                 # a discard sweeps the directory, and runs at once on a job already done: on a thread, never the loop
-                asyncio.get_running_loop().run_in_executor(None, handoff.abandon, future)
+                _off_loop(handoff.abandon, future, what="a failed shared Arrow job's result could not be discarded")
 
     def _submit(
         self, read: bool | str, result_bytes: int | None, job: Callable[..., Any], args: tuple[Any, ...]

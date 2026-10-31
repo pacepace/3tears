@@ -121,10 +121,6 @@ __all__ = [
 ]
 
 
-# Drift threshold for the dedicated drift-event log ("actual - scheduled
-# > 60s"). The histogram in :mod:`threetears.scheduled_jobs.metrics`
-# observes EVERY fire's drift; this constant only gates whether we ALSO
-# emit a structured drift event.
 #: the longest pause before a fire's one retry (``JobFireResult.retry_after_seconds``), whatever the dispatcher
 #: asks: the field is for a failure a moment fixes, and the row stays 'dispatching' meanwhile, well inside every
 #: reap threshold
@@ -133,6 +129,10 @@ _FIRE_RETRY_MAX_SECONDS: Final[float] = 30.0
 #: the retries running now, held so none is collected mid-pause
 _RETRYING: set[asyncio.Task[None]] = set()
 
+# Drift threshold for the dedicated drift-event log ("actual - scheduled
+# > 60s"). The histogram in :mod:`threetears.scheduled_jobs.metrics`
+# observes EVERY fire's drift; this constant only gates whether we ALSO
+# emit a structured drift event.
 _DRIFT_LOG_THRESHOLD_SECONDS: Final[float] = 60.0
 
 

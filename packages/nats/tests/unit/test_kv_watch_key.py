@@ -569,25 +569,57 @@ class TestOnlyItsOwnConsumer:
         assert len({name[:8] for name in names}) > 40
 
 
-def _listed(key: str, *, pending: int, consumer: str = _OWN, stream: str = _STREAM, reply: str | None = None) -> Msg:
-    """a key listing delivery: headers only, the key's subject, ``num_pending`` in the ack reply.
+# parity-exempt: the JetStream context an object read meets: the metadata read by subject, and the chunks' named consumer
+class _ObjectJetStream(_JetStream):
+    """answers the object's metadata by direct read, and records the consumer its chunk read creates."""
 
-    :param key: the key
-    :ptype key: str
-    :param pending: the messages the consumer still has to deliver after this one
-    :ptype pending: int
-    :param consumer: the consumer the ack reply names; :data:`_OWN` is the listing's own
-    :ptype consumer: str
-    :param stream: the stream the ack reply names
-    :ptype stream: str
-    :param reply: a reply some other sender chose, in place of an ack reply
-    :ptype reply: str | None
-    :return: the message
-    :rtype: Msg
-    """
-    ack = f"$JS.ACK.{stream}.{consumer}.1.5.5.1700000000000000000.{pending}"
-    chosen = ack if reply is None else reply
-    return Msg(_client=None, subject=f"$KV.{_BUCKET}.{key}", reply=chosen, data=b"", headers=None)  # type: ignore[arg-type]
+    def __init__(self, log: list[str], metadata: bytes, *, pending: int) -> None:
+        super().__init__(log, pending=pending)
+        self._metadata = metadata
+
+    async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=self._metadata, subject=subject, seq=1, headers=None)
+
+
+class TestAnObjectReadTakesOnlyItsOwnConsumersChunks:
+    """an object's chunks are read through a named consumer, onto an inbox any client can get bytes delivered to:
+    only what the read's own consumer delivered counts, or a forged chunk would become the object's bytes."""
+
+    async def test_forged_chunks_are_refused_and_the_object_is_its_own_bytes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import base64
+        import hashlib
+        import json
+
+        from threetears.nats import NatsObjectStore
+
+        stream = "OBJ_pods"
+        chunks = [b"the object's ", b"own bytes"]
+        data = b"".join(chunks)
+        digest = "SHA-256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode("ascii")
+        metadata = json.dumps(
+            {"name": "a/b", "bucket": "pods", "nuid": "n1", "size": len(data), "chunks": len(chunks), "digest": digest}
+        ).encode()
+        forged = [
+            _delivered(b"forged by another stream", sequence=1, stream="OBJ_forger"),
+            _delivered(b"forged by another consumer", sequence=2, stream=stream, consumer="og_someone_else"),
+        ]
+        own = [_delivered(chunk, sequence=3 + n, stream=stream) for n, chunk in enumerate(chunks)]
+        log: list[str] = []
+        raw = _Raw([[forged[0], own[0], forged[1], own[1]]], log)
+        js = _ObjectJetStream(log, metadata, pending=len(chunks))
+        store = NatsObjectStore(client=_Client(raw, js), full_name="pods")  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
+            read = await asyncio.wait_for(store.get("a/b"), timeout=2)
+
+        assert read == data
+        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
+        assert len(refusals) == len(forged)
+        assert all(r.getMessage().startswith("object store read ") for r in refusals)
 
 
 class TestForgeriesAreNoProofOfLife:

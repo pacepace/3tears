@@ -325,6 +325,24 @@ class TestResultsComeBackMapped:
         await _until(lambda: bool(threads), "the result discarded")
         assert threads[0] is not threading.main_thread()
 
+    async def test_a_discard_that_fails_off_the_loop_is_logged(
+        self,
+        store: SharedArrowStore,
+        single: SharedArrowPool,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """the discard runs on a thread nothing awaits: what it raises is logged, not left to a warning at collection."""
+
+        def failing(slot: Any) -> None:
+            raise OSError("the slot's directory would not go")
+
+        monkeypatch.setattr(store, "discard", failing)
+        caplog.set_level(logging.WARNING)
+        with pytest.raises(ValueError, match="after writing"):
+            await single.run(jobs.write_then_fail, read=False, result_bytes=1 << 20)
+        await _until(lambda: "result could not be discarded" in caplog.text, "the failed discard logged")
+
     async def test_a_worker_that_dies_mid_write_leaves_nothing(
         self, store: SharedArrowStore, single: SharedArrowPool
     ) -> None:
