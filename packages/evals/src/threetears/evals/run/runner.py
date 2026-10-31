@@ -95,7 +95,13 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.timeouts import EvalCellTimeout
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    describe_measure,
+    measure_value_misfit,
+    undeclarable_host_measures,
+)
 from threetears.evals.kernel.result_condition import ExclusionCause, trial_exclusion
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
@@ -151,6 +157,7 @@ from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedErro
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.host.world import WorldRegistry
+    from threetears.evals.kernel.host.measures import MeasureRegistry
     from threetears.evals.run.budget import CapBreach
 
 log = get_logger(__name__)
@@ -1564,6 +1571,7 @@ async def _run_one_result(
     # every cell would do it, and judging the cell first would spend on a record that cannot be built.
     refuse_inner_agent_usage(telemetry.usage)
     refuse_engine_derived_host_measures(candidate.host_measures)
+    refuse_misfit_host_measures(candidate.host_measures, host.profile.measures)
 
     # The trace sink's record of the candidate's own work, handed to the assembly whole: it reads
     # the spans and the three named latency buckets off it. ``None`` for a cell that wired no sink,
@@ -1999,6 +2007,38 @@ def refuse_engine_derived_host_measures(host_measures: Mapping[str, bool | float
             f"a candidate kind landed {', '.join(repr(name) for name in taken)} on host_measures, which only the "
             "engine measures — a host cannot declare a measure so named, and its values would pool into the "
             "engine's own observations of it; declare the host's measure under a name of its own"
+        )
+
+
+def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str], measures: MeasureRegistry) -> None:
+    """Refuse a kind's ``host_measures`` whose value contradicts the data type its measure declares.
+
+    Each name resolves as the analysis resolves it (:func:`~threetears.evals.kernel.metrics.describe_measure`), so the
+    descriptor held here is the one the bundle would read the value under, and the type rule is the bundle's own
+    (:func:`~threetears.evals.kernel.metrics.measure_value_misfit`). Nothing is coerced: a ``1.0`` under a boolean
+    measure is refused, never read as ``True``. Refused rather than dropped, for
+    :func:`refuse_engine_derived_host_measures`'s reason: a kind's measures are its own code, so every cell would carry
+    the misfit, and a stored misfit is dropped from every statistic of its measure. Called by the runner before its
+    judge phase pays for anything, and by a witnessed cell's recording before its judge does. A name no registry
+    describes declares no type and passes; the analysis names it as an undescribed measurement.
+
+    :param host_measures: What the kind measured, by name.
+    :ptype host_measures: Mapping[str, bool | float | str]
+    :param measures: The host's measure registry.
+    :ptype measures: MeasureRegistry
+    :raises ValueError: A value's type contradicts its measure's declared data type; the message names each such
+        measure, its declared type and the type recorded.
+    """
+    misfits = [
+        f"{name!r} ({misfit})"
+        for name, value in sorted(host_measures.items())
+        if name.strip() and (misfit := measure_value_misfit(describe_measure(name, measures), value)) is not None
+    ]
+    if misfits:
+        raise ValueError(
+            f"a candidate kind landed {', '.join(misfits)} on host_measures; a measure's value is typed by its "
+            "declared data type and is never coerced: a bool for a boolean measure, a number for a numeric one, a "
+            "string for a categorical or text one"
         )
 
 

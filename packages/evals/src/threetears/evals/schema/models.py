@@ -6419,8 +6419,9 @@ class EvalResult(CoreDocumentModel):
     # measure was not taken for this observation.
     #
     # A value is typed by its descriptor's data type: a number for a numeric measure, a bool for
-    # a boolean one, a string for a categorical or text one. The bundle drops (and reports) a value
-    # whose type contradicts its descriptor rather than coercing it.
+    # a boolean one, a string for a categorical or text one, never coerced. The runner refuses a
+    # value whose type contradicts its descriptor before the result is written; one already stored
+    # is dropped by the bundle and named, with its reason, among the unreported observations.
     host_measures: dict[str, bool | float | str]
 
     # **There is no ``graph_version_hash`` here, and no subject-side ``system_graph_version_hash``

@@ -354,6 +354,15 @@ async def test_a_kind_landing_the_derived_accuracy_is_refused() -> None:
     assert (await _record(host, run, case, _output(host_measures={"match": True})))[0].host_measures == {"match": True}
 
 
+async def test_a_host_measure_its_declared_type_does_not_fit_is_refused_and_never_coerced() -> None:
+    host, run, case = _witnessed_run()
+    with pytest.raises(ValueError, match=r"landed 'match' \(declared boolean, recorded as a number\) on host_measures"):
+        await _record(host, run, case, _output(host_measures={"match": 1.0}))
+    assert (await _record(host, run, case, _output(host_measures={"match": False})))[0].host_measures == {
+        "match": False
+    }
+
+
 # --- a case under no template --------------------------------------------------------------------
 
 

@@ -158,6 +158,7 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "classifier_label_of",
     "confusion_cell",
     "confusion_of",
+    "measure_value_misfit",
     "undeclarable_host_measures",
     "engine_owned_names",
     "describe_classifier_label",
@@ -2695,6 +2696,42 @@ def confusion_of(cell: str) -> tuple[str, str] | None:
     if len(parts) != 2 or not all(part.strip() for part in parts):
         return None
     return _percent_decoded(parts[0]), _percent_decoded(parts[1])
+
+
+def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str) -> str | None:
+    """How a value's Python type contradicts the data type its descriptor declares, or None when it fits.
+
+    The one type rule for a measure's value, held where a result is written (a kind's ``host_measures`` is refused
+    on it) and where one is read (a stored value it refuses is dropped from the statistics and named with this
+    reason). Nothing is coerced: a ``1.0`` is not a ``True``, whatever it was meant to say. A boolean measure takes a
+    ``bool``, a numeric one a number that is not a ``bool``, a categorical or text one a string, and a
+    ``confusion_cell`` a string :func:`confusion_of` splits. A descriptor declaring no data type declares nothing a
+    value could contradict.
+
+    :param descriptor: The measure's descriptor.
+    :ptype descriptor: MetricDescriptor
+    :param value: One observation of it.
+    :ptype value: bool | float | str
+    :return: ``declared <type>, recorded as <what the value is>``, or None.
+    :rtype: str | None
+    """
+    declared = descriptor.data_type
+    if declared is None:
+        return None
+    if isinstance(value, bool):
+        recorded = "true or false"
+        fits = declared == "boolean"
+    elif isinstance(value, str):
+        recorded = "text"
+        fits = declared in ("categorical", "text")
+    else:
+        recorded = "a number"
+        fits = declared == "numeric"
+    if fits and descriptor.name == CONFUSION_CELL_MEASURE and confusion_of(str(value)) is None:
+        # A confusion cell is categorical AND has a format: one that does not split into its two labels
+        # could not be counted into the matrix the per-label statistics are derived from.
+        return f"declared {declared}, recorded as text that is not one expected{CONFUSION_SEPARATOR}predicted pair"
+    return None if fits else f"declared {declared}, recorded as {recorded}"
 
 
 #: The per-label statistics a classifier's confusion matrix yields, each minted per label.
