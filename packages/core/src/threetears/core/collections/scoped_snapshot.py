@@ -230,6 +230,11 @@ def _raise_first(results: Sequence[object], *, log: Any, what: str) -> None:
 #: how many times a rebuild reads again after a write committed while it read
 _REBUILD_ATTEMPTS: Final = 3
 
+#: how often a rebuild reading a scope from L3 asks whether a write has begun since it started, in seconds: a write
+#: that began (a reset's clear, which empties the tables) ends the read within this, rather than after the scope's
+#: last page -- minutes for a large scope, while the write waits on the rows the read holds open
+_WRITE_CHECK_SECONDS: Final = 5.0
+
 #: how many times a compare-and-set on a pointer or the index is tried against a racing writer
 _CAS_ATTEMPTS: Final = 16
 
@@ -796,6 +801,10 @@ async def _abandon(tasks: Sequence[asyncio.Task[Any]], *, unwinding: bool) -> No
         raise failures[0]
     for error in failures:
         log.warning("a read abandoned while its run ended had failed: %s: %s", type(error).__name__, error)
+
+
+class _WriteBegan(Exception):
+    """a write began while a rebuild read a scope: what it read is not the scope at its epoch, and the read stops."""
 
 
 class _Lost(Exception):
@@ -3772,7 +3781,9 @@ class ScopedSnapshot:
             scopes.update(str(scope) for scope in found)
         return scopes
 
-    async def _read_scope(self, scope: str) -> list[PartitionReplacement]:
+    async def _read_scope(
+        self, scope: str, moved: Callable[[], Awaitable[bool]] | None = None
+    ) -> list[PartitionReplacement]:
         """every row of one scope in each table, from L3, as the replacements that make this L1 hold them.
 
         Read a page at a time, and each page typed by this L1 as it arrives (the backend's
@@ -3783,8 +3794,11 @@ class ScopedSnapshot:
 
         :param scope: the scope
         :ptype scope: str
+        :param moved: asked between pages: whether a write has begun since the read started, which stops it
+        :ptype moved: Callable[[], Awaitable[bool]] | None
         :return: one replacement per table, its rows an Arrow table (``None`` for none)
         :rtype: list[PartitionReplacement]
+        :raises _WriteBegan: when ``moved`` says a write began
         """
         result: list[PartitionReplacement] = []
         for table in self._tables:
@@ -3792,7 +3806,7 @@ class ScopedSnapshot:
             types = _rail_types(self._backend.column_types(table.name)) if isinstance(self._l3, ArrowL3Reader) else None
             if types is not None:
                 try:
-                    parts = await self._read_table(table, scope, types)
+                    parts = await self._read_table(table, scope, types, moved)
                 except ReplyNotArrowError as exc:
                     # NOSILENT: a value the rail answers otherwise than its column's Arrow type: read as dict rows
                     log.info(
@@ -3800,7 +3814,7 @@ class ScopedSnapshot:
                         extra={"extra_data": {"table": table.name, "scope": scope, "error": str(exc)}},
                     )
             if parts is None:
-                parts = await self._read_table(table, scope, None)
+                parts = await self._read_table(table, scope, None, moved)
             result.append(
                 PartitionReplacement(
                     table=table.name,
@@ -3812,7 +3826,13 @@ class ScopedSnapshot:
             )
         return result
 
-    async def _read_table(self, table: SnapshotTable, scope: str, types: Mapping[str, Any] | None) -> list[Any]:
+    async def _read_table(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        types: Mapping[str, Any] | None,
+        moved: Callable[[], Awaitable[bool]] | None = None,
+    ) -> list[Any]:
         """one table's rows of a scope from L3, each page typed by this L1 as it arrives (:meth:`_read_scope`).
 
         With ``types`` the rail's pages are read straight into Arrow (``fetch_arrow``: no row is a Python object
@@ -3825,9 +3845,12 @@ class ScopedSnapshot:
         :ptype scope: str
         :param types: each column's Arrow type as the rail answers it (:func:`_rail_types`), or None for dict rows
         :ptype types: Mapping[str, pyarrow.DataType] | None
+        :param moved: asked between pages: whether a write has begun since the read started
+        :ptype moved: Callable[[], Awaitable[bool]] | None
         :return: the scope's rows as the L1 keeps them, a part a page
         :rtype: list[pyarrow.Table]
         :raises ReplyNotArrowError: with ``types``, when a value is not its column's Arrow type
+        :raises _WriteBegan: when ``moved`` says a write began
         """
         columns = tuple(self._backend.column_types(table.name))
         where = {table.scope_column: scope}
@@ -3844,6 +3867,8 @@ class ScopedSnapshot:
             async for page in pages:
                 if len(page):
                     parts.append(await self._export(table, scope, page))
+                if moved is not None and await moved():
+                    raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
         return parts
 
     def _claim(self) -> _RebuildClaim:
@@ -4059,13 +4084,24 @@ class ScopedSnapshot:
         :rtype: list[str] | None
         """
         spent = {"read_l3": 0.0, "publish": 0.0}
+        read_seconds: dict[str, float] = {}
         pending = [scope for scope in scopes if not self._rebuilt_at(scope, int(epochs.get(scope, 0)), done)]
         self._progress = replace(self._progress, scopes_done=len(scopes) - len(pending))
+        asked = [time.monotonic()]
+
+        async def moved() -> bool:
+            # a write that began (a reset's clear empties the tables being read) stops the read: asked between pages,
+            # at most every few seconds, so a scope's read stops within that rather than after its last page
+            if self._settled is None or time.monotonic() - asked[0] < _WRITE_CHECK_SECONDS:
+                return False
+            asked[0] = time.monotonic()
+            return bool(await self._settled() != before)
 
         async def read(scope: str) -> list[PartitionReplacement]:
             began = time.perf_counter()
-            rows = await self._read_scope(scope)
-            spent["read_l3"] += time.perf_counter() - began
+            rows = await self._read_scope(scope, moved)
+            read_seconds[scope] = time.perf_counter() - began
+            spent["read_l3"] += read_seconds[scope]
             return rows
 
         async def publish(scope: str, rows: list[PartitionReplacement]) -> bool:
@@ -4086,12 +4122,37 @@ class ScopedSnapshot:
                 # still leaves nothing superseded behind for the scopes it did move
                 await self._sweeper.retire_older(scope, epoch)
             done[scope] = epoch
-            spent["publish"] += time.perf_counter() - began
+            published_seconds = time.perf_counter() - began
+            spent["publish"] += published_seconds
             self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+            # the line an operator watches a rebuild of hours by: each scope as it lands, its rows and its seconds
+            log.info(
+                "scoped snapshot %s: rebuilt scope %r from L3 (%d of %d)",
+                self._name,
+                scope,
+                self._progress.scopes_done,
+                self._progress.scopes_total,
+                extra={
+                    "extra_data": {
+                        "scope": scope,
+                        "epoch": epoch,
+                        "rows": sum(0 if r.arrow is None else int(r.arrow.num_rows) for r in rows),
+                        "read_seconds": round(read_seconds.get(scope, 0.0), 2),
+                        "publish_seconds": round(published_seconds, 2),
+                        "done": self._progress.scopes_done,
+                        "total": self._progress.scopes_total,
+                    }
+                },
+            )
             return True
 
         published: list[str] | None = None
-        whole = await _in_order(pending, read, publish, ahead=self._l3_concurrency)
+        try:
+            whole = await _in_order(pending, read, publish, ahead=self._l3_concurrency)
+        except _WriteBegan as stopped:
+            # NOSILENT: logged; the next attempt finds the write in progress and waits for it, keeping what was published
+            log.info("scoped snapshot %s: %s; the rebuild stops reading and waits for it", self._name, stopped)
+            return None
         # once more after the last scope: the index is written whole only when no write committed during
         # the attempt, even one that left no scope to read (L3 read empty, or every scope published)
         after = await self._settled() if self._settled is not None and whole else before

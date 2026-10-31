@@ -3682,3 +3682,60 @@ async def test_a_staged_publish_of_many_scopes_lists_the_store_once_and_asks_one
     assert store.listings == 1, f"the publish listed the store {store.listings} times"
     assert len(asks) == 1, f"the publish asked the declarer {len(asks)} times"
     await snapshot.stop()
+
+
+async def test_a_write_that_begins_mid_rebuild_stops_its_reads_and_the_copy_opens_on_what_the_write_published(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reset's clear while a replica rebuilds its copy (cobalt prod, 2026-10-31): the rebuild must stop reading what
+    the clear empties -- not read on for the rest of a scope of millions of rows -- and the copy opens on the cleared
+    scopes the clear publishes."""
+    monkeypatch.setattr(scoped_snapshot_module, "_WRITE_CHECK_SECONDS", 0.0)
+    snapshot, pointers, _, l3 = _snapshot(l3_concurrency=1)
+    began: list[str] = []
+
+    def a_clear_begins(scope: str) -> None:
+        # the write begins while the first scope's rows are read
+        if not began:
+            began.append(scope)
+            l3.writing = True
+
+    l3.after_read = a_clear_begins
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+    reads = l3.statements
+    assert began == ["DE"]
+    assert not snapshot.is_ready
+    assert any("the rebuild stops reading" in r.getMessage() for r in caplog.records)
+    await asyncio.sleep(0.2)
+    assert l3.statements - reads <= 4, "the rebuild went on reading rows while the write ran"
+
+    # the clear: every row gone, every scope at its epoch, staged empty and published
+    l3.rows.clear()
+    l3.epochs = {"TX": 2, "DE": 2}
+    staged = [await snapshot.stage(scope, 2, {"results": []}) for scope in ("DE", "TX")]
+    l3.writing = False
+    await snapshot.publish_staged(staged, carry_at={"DE": 0, "TX": 0}, whole=True)
+
+    await snapshot.wait_ready(timeout=5)
+    assert _held_votes(snapshot, "TX") == [] and _held_votes(snapshot, "DE") == []
+    assert snapshot.status().phase is SnapshotPhase.READY
+    await snapshot.stop()
+
+
+async def test_a_rebuild_says_each_scope_it_publishes_with_its_rows_and_seconds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    snapshot, pointers, _, _ = _snapshot()
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=5)
+    lines = [r for r in caplog.records if "rebuilt scope" in r.getMessage()]
+    assert [r.extra_data["scope"] for r in lines] == ["DE", "TX"]  # type: ignore[attr-defined]
+    assert [(r.extra_data["done"], r.extra_data["total"], r.extra_data["rows"]) for r in lines] == [  # type: ignore[attr-defined]
+        (1, 2, 1),
+        (2, 2, 1),
+    ]
+    assert all("read_seconds" in r.extra_data and "publish_seconds" in r.extra_data for r in lines)  # type: ignore[attr-defined]
+    await snapshot.stop()
