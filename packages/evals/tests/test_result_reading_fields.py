@@ -388,6 +388,12 @@ def read_bundle(read: Campaign, part: str) -> list[str]:
     return [report_read(read.host, read.campaign_id, read.scope_id, format=form, trials=trials).body]
 
 
+def read_whole_bundle(read: Campaign) -> list[str]:
+    """The bundle family whole, its parts in :data:`BUNDLE_PARTS` order: every aspect's bundle and its fingerprint, the
+    campaign's frame, then the code-only pages."""
+    return [output for part in BUNDLE_PARTS for output in read_bundle(read, part)]
+
+
 def regressed_steps(read: Campaign) -> list[tuple[str, str]]:
     """Each tracked measure's first run whose step into it reads ``regressed``, as ``(measure, run_id)``.
 

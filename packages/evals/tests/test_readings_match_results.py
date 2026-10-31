@@ -102,7 +102,7 @@ from packages.evals.tests.test_result_reading_fields import (
     Campaign,
     campaign,
     read_aggregates,
-    read_bundle,
+    read_whole_bundle,
     read_planning,
     regressed_steps,
 )
@@ -218,10 +218,10 @@ class TestEveryFamilyReadsReadingsAsResults:
         monkeypatch.setattr(analysis_service, "utc_now_iso", lambda: REPORT_NOW)
         read = campaign(name)
 
-        outputs, handed = self._as_results(read_bundle, read)
+        outputs, handed = self._as_results(read_whole_bundle, read)
 
         assert handed > 0, "the bundle read no reading, so it read no result in a reading's place"
-        assert read_bundle(read) == outputs
+        assert read_whole_bundle(read) == outputs
 
     @pytest.mark.parametrize("name", (*CAMPAIGNS, "regressed"))
     def test_the_aggregates(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
