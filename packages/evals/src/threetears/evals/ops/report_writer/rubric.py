@@ -21,7 +21,9 @@ from functools import cache
 
 from threetears.evals.analysis.analyst.skill import load_skill
 
-__all__ = ["EditorRubric", "RubricItem", "shipped_rubric"]
+#: The names with a caller outside this module: the editor's answer check and the writer template's scoring rubric
+#: read the rubric through :func:`shipped_rubric`; neither names its types.
+__all__ = ["shipped_rubric"]
 
 #: The rubric's section, from its heading to the next heading of its level.
 _SECTION = re.compile(r"^## The rubric\n(?P<body>.*?)(?=^## )", re.DOTALL | re.MULTILINE)

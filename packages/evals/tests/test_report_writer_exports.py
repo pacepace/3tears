@@ -5,7 +5,9 @@ names the checker, not its verdicts). ``actions/report_writing.py``, the report 
 writer's launch registry entry and what only it builds, whose caller is a host's registry. The writer kind's modules
 (``writer_kind.py``, ``writer_contract.py``, ``writer_launch.py``) export what the kind's factory, the kind, its
 launcher and its case bank call; the rest awaits a host's profile. The case bank (``writer_bank.py``) exports what the
-launch reads; a host's mint and retirement are the callers of the rest.
+launch reads; a host's mint, retirement and template creation are the callers of the rest. The promotion read
+(``writer_promotion.py``) awaits a host that reads a decision, and the rubric (``rubric.py``) exports only the read its
+callers make.
 ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
 (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from its ``__all__``, so it cannot
 see the names left out. This test keeps the promise checkable: :data:`_AWAITING_A_CALLER` lists every public name
@@ -27,6 +29,8 @@ import threetears.evals.ops.report_writer.writer_bank as writer_bank
 import threetears.evals.ops.report_writer.writer_contract as writer_contract
 import threetears.evals.ops.report_writer.writer_kind as writer_kind
 import threetears.evals.ops.report_writer.writer_launch as writer_launch
+import threetears.evals.ops.report_writer.writer_promotion as writer_promotion
+import threetears.evals.ops.report_writer.rubric as rubric
 
 #: Every workspace member's ``src`` tree.
 _REPO = Path(__file__).resolve().parents[3]
@@ -51,13 +55,19 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
             "WriterCaseMint",
             "WriterSplit",
             "WriterSplitSets",
+            "WriterTemplateCreate",
             "log",
             "writer_case_archive",
             "writer_case_mint",
             "writer_group_side",
             "writer_split",
+            "writer_template_create",
         }
     ),
+    # A host reads a promotion decision when a person asks whether to promote, outside this repo and not written yet.
+    writer_promotion: frozenset({"PromotionDecision", "WriterPromotion", "writer_promotion"}),
+    # The rubric's readers call shipped_rubric and never name its types.
+    rubric: frozenset({"EditorRubric", "RubricItem"}),
 }
 
 

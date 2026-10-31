@@ -125,8 +125,8 @@ from threetears.evals.kernel.report_doc import Claim, ReportDoc, report_doc_pros
 from threetears.evals.kernel.report_plan import ChartQuery, WarningRef
 
 #: The names with a caller outside this module: the writing loop's editor turn, whose user message carries the facts.
-#: ``EditorFactKind`` joins them with its first production caller outside this module.
-__all__ = ["EditorFact", "editor_facts"]
+#: ``EditorFact`` and ``EditorFactKind`` join them with their first production caller outside this module.
+__all__ = ["editor_facts"]
 
 #: What a fact is about, one word per fact this module computes, in the order :func:`editor_facts` lists them.
 EditorFactKind = Literal[

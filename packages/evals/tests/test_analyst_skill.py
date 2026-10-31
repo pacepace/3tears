@@ -161,7 +161,14 @@ def test_every_skill_file_reaches_a_built_wheel(tmp_path: Path) -> None:
             for name in wheel.namelist()
             if name.startswith(WHEEL_PREFIX)
         }
-    assert shipped == _source_files(), "the wheel's skill/ is not the source tree's"
+    # Every file, not only the Markdown the skill is read from: the skill ledger (PROMOTIONS.toml) ships beside it.
+    source = {
+        path.relative_to(SKILL).as_posix(): path.read_text(encoding="utf-8")
+        for path in sorted(SKILL.rglob("*"))
+        if path.is_file()
+    }
+    assert "PROMOTIONS.toml" in source
+    assert shipped == source, "the wheel's skill/ is not the source tree's"
 
 
 # One home

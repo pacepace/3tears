@@ -41,13 +41,17 @@ from typing import Annotated, Final
 from pydantic import Field, ValidationError, model_validator
 
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_TEMPLATE, FIND_TEST_CASE
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND,
+    refuse_undeliverable_writer_template,
+    writer_scoring_rubric,
+)
 from threetears.evals.ops.report_writer.writer_kind import (
     WriterCase,
     WriterCaseOrigin,
@@ -56,7 +60,7 @@ from threetears.evals.ops.report_writer.writer_kind import (
     writer_case_of,
     writer_case_payload,
 )
-from threetears.evals.ops.runs import LaunchArguments
+from threetears.evals.ops.runs import LaunchArguments, TemplateLine
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
 from threetears.evals.schema.base import EvalBaseModel
@@ -593,6 +597,71 @@ def writer_split(
     return WriterSplitSets(dev=dev_set, held_out=held_out_set)
 
 
-#: The writer's launch reads a bank (``writer_case_bank``); a host's mint and retirement (Discodon, then metallm) are
-#: the callers of the rest, none in this repo yet, so each waits for one (``tests/test_report_writer_exports.py``).
+class WriterTemplateCreate(EvalBaseModel):
+    """What authoring a report writer template names: what it is called and what its campaigns set out to measure.
+
+    Nothing else: its rubric is the scoring judge's, seeded from the shipped skill, and its cases are minted into it.
+    """
+
+    template_name: str = Field(min_length=1, description="The writer template's name, unique in the scope.")
+    intent: str = Field(
+        min_length=1, description="What its campaigns measure, in a sentence a reader of their reports is told."
+    )
+
+
+def writer_template_create(host: OpsHost, create: WriterTemplateCreate, scope_id: str) -> TemplateLine:
+    """Write a template of the report writer kind, its scoring rubric seeded from the skill this build ships.
+
+    The rubric is the editor rubric's items as the shipped ``editor.md`` states them
+    (:func:`~threetears.evals.ops.report_writer.writer_contract.writer_scoring_rubric`), copied into the template now,
+    so the scoring judge of every campaign launched on it asks what it asked when the template was written, whatever
+    skill an arm runs or a later build ships. Refused on a host whose launch registry has no writer kind, where it
+    could never run.
+
+    :param host: The launching host, whose registry must launch the writer kind and whose store receives the template.
+    :ptype host: OpsHost
+    :param create: What the template is called and measures.
+    :ptype create: WriterTemplateCreate
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :return: The template as written.
+    :rtype: TemplateLine
+    :raises ValidationFailedError: The host launches no writer kind.
+    :raises ConflictError: A template of that name is already in the scope.
+    :raises StorageError: The template could not be written.
+    """
+    if WRITER_KIND not in host.launch.kinds:
+        raise ValidationFailedError(
+            f"host {host.eval_host.profile.host_id!r} launches no {WRITER_KIND!r} kind, so a writer template could "
+            f"never run here: its LaunchHost registers no {WRITER_KIND!r} kind (launchable_report_writer_kind)",
+            remedy="ask this host's operator to enable report writer campaigns, a setting of the host no action changes",
+        )
+    storage = host.eval_host.storage
+    if storage.load_template_by_name(create.template_name, scope_id) is not None:
+        raise ConflictError(
+            f"a template named '{create.template_name}' already exists",
+            remedy=f"name the writer template something else, or mint into the existing one ({FIND_TEMPLATE})",
+        )
+    template = EvalTemplate(
+        scope_id=scope_id,
+        name=create.template_name,
+        intent=create.intent,
+        candidate_kind=WRITER_KIND,
+        rubric=writer_scoring_rubric(),
+    )
+    refuse_undeliverable_writer_template(template)
+    storage.save_template(template)
+    return TemplateLine(
+        id=template.id,
+        name=template.name,
+        revision=template.revision,
+        candidate_kind=template.candidate_kind,
+        intent=template.intent,
+        archived=template.archived,
+    )
+
+
+#: The writer's launch reads a bank (``writer_case_bank``); a host's mint, retirement and template creation (Discodon,
+#: then metallm) are the callers of the rest, none in this repo yet, so each waits for one
+#: (``tests/test_report_writer_exports.py``).
 __all__ = ["writer_case_bank"]
