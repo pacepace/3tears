@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### ci: the event-loop timing tests run apart and serially, in CI and the release check
+
+**Fixed:** The three test files with tight wall-clock event-loop bounds (`test_versioned_answers_off_loop`,
+`test_shared_arrow_loop`, `test_shared_arrow_handoff`) carry a `loop_timing` marker and run once, serially, after the
+parallel sessions (`scripts/ci-unit-tests.sh`). Beside three busy xdist workers on a 4-core runner the kernel preempts
+the thread holding the interpreter lock, and v0.87.0's release check failed one of them twice (the loop 34.9 ms late
+against a 25.4 ms bound; locally the encoder holds it at most 6.6 ms), so v0.87.0 never published. The live scoped
+snapshot test asserts v0.87.0's fill-from-L3 outcome. No package code changes.
+
 ## v0.87.0 -- 2026-10-31
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
