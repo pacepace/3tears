@@ -1088,6 +1088,22 @@ def hedges_j(df: int) -> float | None:
     of freedom, 25% at four, 9% at nine. Multiplying by ``J`` removes the bias exactly for normal data
     (``tests/test_simulated_separation.py``).
 
+    **Computed without cancellation**, so ``J`` is the same to a few ULP on every platform. The textbook form,
+    ``exp(lgamma(df/2) − lgamma((df − 1)/2))``, subtracts two log-gammas that grow as ``df·ln df``: at 128 degrees of
+    freedom each is about 200, so the platform's last-bit difference in ``lgamma`` (about 3e-14 there) became a 1e-14
+    relative difference in ``J``, enough to round a ``hedges_g`` to neighbouring twelfth figures on two platforms and
+    split a bundle's fingerprint. Instead, with ``x = df/2``:
+
+    - **Below** :data:`_HEDGES_SERIES_FROM` **degrees of freedom**, exactly: the ratio ``Γ(x)/Γ(x − ½)`` follows
+      ``R(df + 2) = R(df) · df/(df − 1)`` from ``R(2) = 1/√π`` and ``R(3) = √π/2``, so it is a rational product
+      (:func:`_hedges_ratio_product`, exact as a :class:`~fractions.Fraction`) times ``√π`` or ``1/√π``, and
+      ``J = R/√x``: a handful of correctly rounded operations, and no maths library call.
+    - **From there**, Stirling's series for the difference of the two log-gammas, arranged so nothing large cancels:
+      ``ln J = −(x − 1)·log1p(−1/(2x)) − ½ + S(x) − S(x − ½)``, where ``S(z) = Σ B₂ₖ / (2k(2k − 1) z²ᵏ⁻¹)`` for
+      ``k = 1..5``. The ``½ ln x`` terms cancel exactly in the algebra rather than in floating point; every term left
+      is at most about ½, so the platform's last bit in ``log1p`` and ``exp`` moves ``J`` by about one ULP. The first
+      term the series leaves out is below 1e-21 from ``x = 50``, and the two forms agree there to within an ULP.
+
     :param df: The degrees of freedom of the SD the effect is standardized by.
     :ptype df: int
     :return: ``J``, or ``None`` below two degrees of freedom: at one, ``E[1/s]`` diverges, so no factor makes
@@ -1096,7 +1112,36 @@ def hedges_j(df: int) -> float | None:
     """
     if df < 2:
         return None
-    return math.exp(math.lgamma(df / 2.0) - math.lgamma((df - 1) / 2.0)) / math.sqrt(df / 2.0)
+    if df < _HEDGES_SERIES_FROM:
+        product = _hedges_ratio_product(df)
+        ratio = float(product) / _SQRT_PI if df % 2 == 0 else float(product) * _SQRT_PI
+        return ratio / math.sqrt(df / 2.0)
+    x = df / 2.0
+    stirling = sum(
+        coefficient * (x ** (1 - 2 * k) - (x - 0.5) ** (1 - 2 * k))
+        for k, coefficient in enumerate(_STIRLING_COEFFICIENTS, start=1)
+    )
+    return math.exp(-(x - 1.0) * math.log1p(-0.5 / x) - 0.5 + stirling)
+
+
+#: The degrees of freedom from which :func:`hedges_j` reads Stirling's series rather than the exact product.
+_HEDGES_SERIES_FROM: Final[int] = 100
+
+#: ``√π``, correctly rounded (``sqrt`` is exact to the half-ULP in IEEE arithmetic, and ``math.pi`` is a constant).
+_SQRT_PI: Final[float] = math.sqrt(math.pi)
+
+#: Stirling's series coefficients ``B₂ₖ / (2k(2k − 1))`` for ``k = 1..5``: 1/12, −1/360, 1/1260, −1/1680, 1/1188.
+_STIRLING_COEFFICIENTS: Final[tuple[float, ...]] = (1 / 12, -1 / 360, 1 / 1260, -1 / 1680, 1 / 1188)
+
+
+@functools.cache
+def _hedges_ratio_product(df: int) -> Fraction:
+    """The rational part of ``Γ(df/2)/Γ((df − 1)/2)``: ``Π m/(m − 1)`` over ``m = base, base + 2, …, df − 2``, from
+    ``base`` 2 for an even ``df`` (the ratio is this over ``√π``) or 3 for an odd one (this times ``√π/2``)."""
+    product = Fraction(1) if df % 2 == 0 else Fraction(1, 2)
+    for m in range(2 if df % 2 == 0 else 3, df, 2):
+        product *= Fraction(m, m - 1)
+    return product
 
 
 class SignificanceResult(NamedTuple):

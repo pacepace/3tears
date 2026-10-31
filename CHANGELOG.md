@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: Hedges' g's small-sample correction is computed without cancellation, so its fingerprint is the same on every platform
+
+**Fixed:** `hedges_j` is computed without subtracting two large log-gammas (an exact rational product below 100 degrees
+of freedom, Stirling's series from there), so a bundle's Hedges' g, and the bundle's fingerprint, are the same on
+every platform. It is now within 3 ULP of the exact value at every df; the old form was off by up to 1e-9 relative at a
+million degrees of freedom, past the 12th figure for most df above about 50. A g shown at its four figures moves
+only where that error straddled the fourth figure's rounding boundary.
+
 ### evals: a served page's chart data and SVG coordinates are rounded to twelve figures, as its JSON already was
 
 **Changed:** the HTML page's chart data (the JSON in each chart's `data-chart` attribute) now gives every float to 12
