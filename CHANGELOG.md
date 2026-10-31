@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.87.1 -- 2026-10-31
+
 ### ci: the event-loop timing tests run apart and serially, in CI and the release check
 
 **Fixed:** The three test files with tight wall-clock event-loop bounds (`test_versioned_answers_off_loop`,
