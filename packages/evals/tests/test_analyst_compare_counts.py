@@ -8,7 +8,9 @@ Contracts held here (``threetears.evals.analysis.analyst.compare`` and the ``com
   ``none`` it says not corrected, and where no one family or no correction is stated it says so; never "corrected
   within its family" against a family that says none (the W2 regression prototype's r4 contradiction);
 - **what the interval counts**: an independent row cites what each arm's count counts (its ``spread.`` key); a
-  paired row says its contrast states no count (``counted_unstated``) and the page's notes say so once;
+  paired row cites the cases its contrast's test read (``cases``) where the contrast states them, and is then never
+  marked, since its interval counts cases; one whose contrast states no count says so (``counted_unstated``) and the
+  page's notes say so once;
 - **may be too narrow**: a row is marked where what its interval counts is trials, observations or unstated, its
   spread was not read on distinct cases, and an arm ran more trials than cases, citing each such arm's trials and
   cases; never where every arm's trials equal its cases. Expectations are computed from each input. The note says it
@@ -140,13 +142,26 @@ def _more_trials_than_cases(held: ReportInput, arm: str) -> bool:
     return trials is not None and trials > board.cases
 
 
+def _stated_cases(held: ReportInput, first: str, second: str, key: str) -> Contrast | None:
+    """The contrast pairing the two arms on the measure overall, where it states the cases its test read."""
+    return next(
+        (
+            contrast
+            for contrast in _paired_contrasts(held)
+            if contrast.arm in (first, second) and contrast.measure == key and contrast.n_cases is not None
+        ),
+        None,
+    )
+
+
 def _expected_loose(held: ReportInput, first: str, second: str, key: str, row: ComparisonRow) -> list[str]:
-    """The arms whose trials may make a row's interval too narrow, read from the input: on a paired row both; on an
-    independent row each whose count counts trials or observations with no distinct cases stated there."""
+    """The arms whose trials may make a row's interval too narrow, read from the input: on a paired row both, unless
+    its contrast states its cases; on an independent row each whose count counts trials or observations with no
+    distinct cases stated there."""
     if row.interval is None:
         return []
     if row.paired_with is not None:
-        candidates = [first, second]
+        candidates = [] if _stated_cases(held, first, second, key) is not None else [first, second]
     else:
         candidates = []
         for arm in (first, second):
@@ -183,7 +198,14 @@ def test_a_row_says_what_its_interval_counts_and_when_it_may_be_too_narrow(name:
             assert [figure.key for figure in row.nested] == expected_keys, where
             for figure in row.nested:
                 assert resolve(figure.key, held).value == figure.value
-            assert row.counted_unstated == (row.interval is not None and row.paired_with is not None), where
+            stated = _stated_cases(held, first, second, comparison.measure) if row.paired_with is not None else None
+            assert row.counted_unstated == (
+                row.interval is not None and row.paired_with is not None and stated is None
+            ), where
+            if row.interval is not None and stated is not None:
+                assert row.cases[0].key.endswith(".n_cases") and row.cases[0].value == stated.n_cases, where
+            else:
+                assert row.cases == [], where
             if row.interval is not None and row.paired_with is None:
                 assert all(figure.key.endswith(".counts") for figure in row.counts), where
             else:

@@ -173,6 +173,7 @@ __all__ = [
     "dominant_options",
     "every_caveat",
     "floors_not_held",
+    "late_subject",
     "margin_sensitivity",
     "report_caveats",
     "report_kind",
@@ -285,6 +286,33 @@ def _comparisons(report_input: ReportInput) -> list[frozenset[str]]:
 
 def _late_id(late: LateCriterion) -> str:
     return f"late:{late.criterion}" if late.name is None else f"late:{late.criterion}:{late.name}"
+
+
+def late_subject(criterion: str, name: str | None) -> tuple[str | None, str | None]:
+    """What a late criterion applies to, as its name says it: the aspect a floor's key names and the reading it reads,
+    or the measure a bar or a guardrail names.
+
+    A floor's key is ``<aspect>/<kind>/<reading>``, its reading ``*`` where the floor reads every pass rate or none;
+    an aspect's label may hold a slash, so the key is split from its end.
+
+    :param criterion: What was set (``floor``, ``bar``, ``guardrail``, ...).
+    :ptype criterion: str
+    :param name: Which one, as :class:`~threetears.evals.analysis.report_input.LateCriterion` names it.
+    :ptype name: str | None
+    :return: The aspect and the measure it names, each None where its name says none; both None for an unnamed
+        criterion or a name of another shape.
+    :rtype: tuple[str | None, str | None]
+    """
+    if not name:
+        return None, None
+    if criterion == "floor":
+        parts = name.rsplit("/", 2)
+        if len(parts) != 3 or not parts[0]:
+            return None, None
+        return parts[0], None if parts[2] in ("", "*") else parts[2]
+    if criterion in ("bar", "guardrail"):
+        return None, name
+    return None, None
 
 
 def _judge_uncalibrated(report_input: ReportInput) -> bool:

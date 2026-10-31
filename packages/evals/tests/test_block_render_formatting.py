@@ -340,8 +340,10 @@ def test_a_compare_blocks_paired_interval_is_called_corrected_only_where_its_fam
             query = _query("compare", arms=[arm, control], measures=[measure], strata=["overall"])
             chart, table = _drawn(held, "diverging_bars", query), _drawn(held, "table", query)
             assert chart is not None and table is not None
-            (said,) = [note for note in chart.notes if note.startswith("The interval is paired:")]
-            (column,) = {cell for cell in _column(table, "Read as") if cell.startswith("paired:")}
+            (said,) = [
+                note for note in chart.notes if note.startswith(("The interval is paired", "The interval is unpaired"))
+            ]
+            (column,) = {cell for cell in _column(table, "Read as") if cell.startswith(("paired", "unpaired"))}
             for basis in (said, column):
                 if correction.lower() == "none":
                     kinds.add("none")
@@ -364,6 +366,63 @@ def test_a_compare_block_whose_arms_ran_each_case_once_says_nothing_of_narrow_in
     assert not any(row.may_be_narrow for row in arms_compare(held, [first, second], key, limit=_EVERY).rows)
     block = _drawn(held, "diverging_bars", _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
     assert block is not None and not any("too narrow" in note for note in block.notes), block.notes
+
+
+def _counted(held: ReportInput, **counts: Any) -> ReportInput:
+    """r4 with its pairing contrast stating what its test counted (``n_cases``, ``paired``, ``control_n_cases``)."""
+    first, _second, key = _paired(held)
+    contrasts = [
+        contrast.model_copy(update=counts) if (contrast.arm, contrast.measure) == (first, key) else contrast
+        for contrast in held.contrasts
+    ]
+    return held.model_copy(update={"contrasts": contrasts})
+
+
+def test_a_paired_interval_whose_contrast_states_its_cases_says_paired_over_them_and_is_never_marked_narrow() -> None:
+    """r4's replies nest in fewer conversations; once its contrast states the cases its test read, the paired row counts
+    cases: it cites them, is not marked possibly narrow, and its basis says paired over that many cases."""
+    held = _counted(_inputs()["r4"], n_cases=60, paired=True)
+    first, second, key = _paired(held)
+    read = arms_compare(held, [first, second], key, limit=_EVERY)
+    row = read.rows[0]
+    assert row.paired_with is not None
+    assert [(figure.key.rpartition(".")[2], figure.value) for figure in row.cases] == [
+        ("n_cases", 60),
+        ("paired", "paired"),
+    ]
+    assert not row.counted_unstated and not row.may_be_narrow and row.nested == []
+    assert not any("counted_unstated" in note for note in read.notes), read.notes
+    query = _query("compare", arms=[first, second], measures=[key], strata=["overall"])
+    for kind in ("diverging_bars", "table"):
+        block = _drawn(held, kind, query)
+        assert block is not None
+        said = " ".join([*block.notes, *(cell for row in block.rows for cell in row.cells)])
+        assert "paired over 60 cases: the contrast of" in said, (kind, said)
+        assert "unit is unstated" not in said and "too narrow" not in said, (kind, said)
+
+
+def test_an_unpaired_contrasts_interval_states_both_sides_cases() -> None:
+    held = _counted(_inputs()["r4"], n_cases=60, paired=False, control_n_cases=58)
+    first, second, key = _paired(held)
+    row = arms_compare(held, [first, second], key, limit=_EVERY).rows[0]
+    assert [figure.key.rpartition(".")[2] for figure in row.cases] == ["n_cases", "paired", "control_n_cases"]
+    assert not row.counted_unstated and not row.may_be_narrow
+    block = _drawn(held, "diverging_bars", _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
+    assert block is not None
+    (basis,) = [note for note in block.notes if note.startswith("The interval is unpaired")]
+    assert "over 60 cases of" in basis and "and 58 of the control" in basis, basis
+
+
+def test_a_paired_interval_whose_contrast_states_no_count_keeps_its_unstated_unit_and_may_be_narrow() -> None:
+    """The control: r4's contrast states no count, so the row keeps the hedge and its basis says paired alone."""
+    held = _inputs()["r4"]
+    first, second, key = _paired(held)
+    row = arms_compare(held, [first, second], key, limit=_EVERY).rows[0]
+    assert row.cases == [] and row.counted_unstated and row.may_be_narrow
+    block = _drawn(held, "diverging_bars", _query("compare", arms=[first, second], measures=[key], strata=["overall"]))
+    assert block is not None
+    assert any(note.startswith("The interval is paired: the contrast of") for note in block.notes), block.notes
+    assert any("unit is unstated" in note for note in block.notes), block.notes
 
 
 # =============================================================================

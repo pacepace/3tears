@@ -433,7 +433,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: `no_criterion`) and a contrast's what its test counted (`n_cases`, `control_n_cases`, `paired`, `pairing_r`), in the
 #: figure-key grammar it serves.
 _EVALS_BYTES = "1e68c866224e976f52cd14198beff388fb1fed04b7a74248d34b72ae59cd9fa0"
-_EDITOR_BYTES = "960348b40611705af529b4f3535002eea67dd867a02d2283b92cf68608c57ed9"
+#: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
+#: contrast's test read (``cases``).
+_EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -457,7 +459,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "dd6b851d39e60508cc69033af1d2ea09a7a08178818eafde1c7cccba3ccd5ac3"
+_ANALYST_BYTES = "bb0e00035634c02c3fcb48f233873ef6a2cc377f649aa3e59f2ce7521594b9e9"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:

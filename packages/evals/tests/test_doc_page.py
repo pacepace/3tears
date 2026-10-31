@@ -449,3 +449,56 @@ def _printed_once(page: DocPage, line: str, label: str) -> None:
     for form in (html.unescape(doc_page_html(page)), doc_page_markdown(page), doc_page_text(page)):
         assert form.count(line) == 1
         assert f"{label}; {label}" not in form
+
+
+# --- a late criterion's label names what it applies to --------------------------------------------------------------
+
+
+def _two_late_floors(name: str) -> tuple[ReportDoc, ReportInput]:
+    """Kairo's input with a second aspect whose floor was set late too, as its first one's, and its document landing
+    that floor beside the first: two late floors, one per aspect."""
+    held = _input(name)
+    first = next(late for late in held.caveats.late_criteria if late.criterion == "floor")
+    aspect = held.aspects[0]
+    key = f"arrival/{first.name.rsplit('/', 2)[1]}/*" if first.name else "arrival/rate_drop/*"
+    second = held.model_copy(
+        update={
+            "aspects": [*held.aspects, aspect.model_copy(update={"id": "arrival", "name": "arrival", "asked": False})],
+            "floors": [
+                *held.floors,
+                *(
+                    r.model_copy(update={"floor": key, "aspect": "arrival"})
+                    for r in held.floors
+                    if r.floor == first.name
+                ),
+            ],
+            "caveats": held.caveats.model_copy(
+                update={"late_criteria": [*held.caveats.late_criteria, first.model_copy(update={"name": key})]}
+            ),
+        }
+    )
+    data = converted_doc(name)
+    at = next(i for i, c in enumerate(data["confidence"]["caveats"]) if c["id"] == f"late:floor:{first.name}")
+    data["confidence"]["caveats"].insert(at + 1, {**data["confidence"]["caveats"][at], "id": f"late:floor:{key}"})
+    return ReportDoc.model_validate(data), second
+
+
+def test_two_aspects_late_floors_each_print_one_line_naming_its_aspect() -> None:
+    """Two aspects whose floors were both set late print two lines, each naming its aspect, never the same line twice."""
+    name = "prototype3/kairo"
+    doc, held = _two_late_floors(name)
+    page = build(doc, held, strict=True)
+    floors = [line.label for line in page.confidence.caveats if line.label.startswith("The floor")]
+    assert floors == [
+        CAVEAT_LABELS["late"].format(name="floor on character adherence (v2)"),
+        CAVEAT_LABELS["late"].format(name="floor on arrival"),
+    ]
+    assert all(line.checked for line in page.confidence.caveats if line.label in floors)
+    markdown = doc_page_markdown(page)
+    assert all(markdown.count(f"**{label}.**") == 1 for label in floors)
+
+
+def test_a_single_aspects_one_late_floor_keeps_its_bare_label() -> None:
+    """One aspect and one late floor: nothing to tell apart, so the line names the floor alone, as before."""
+    page = _page("prototype3/kairo")
+    assert CAVEAT_LABELS["late"].format(name="floor") in [line.label for line in page.confidence.caveats]
