@@ -763,8 +763,7 @@ def held_aspects(query: ChartQuery, report_input: ReportInput) -> list[str]:
     if query.aspect or source not in _ONE_ASPECT_SOURCES:
         return []
     arms = set(query.arms) or {arm.id for arm in report_input.arms}
-    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
-    lead = asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
+    lead = lead_aspect(report_input)
     held: dict[str, None] = {}
     if source == "readings":
         held |= {a.id: None for a in report_input.aspects if any(reading.arm in arms for reading in a.readings)}

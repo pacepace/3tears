@@ -84,7 +84,7 @@ from threetears.evals.analysis.report_input import (
     Stat,
 )
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
-from threetears.evals.analysis.report_margins import criterion_aspect
+from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect, on_aspect
 from threetears.evals.kernel.errors import RefusedInput
 
 __all__ = [
@@ -242,12 +242,6 @@ def _arm_ids(report_input: ReportInput) -> list[str]:
 
 def _control(report_input: ReportInput) -> str | None:
     return next((arm.id for arm in report_input.arms if arm.role == "control"), None)
-
-
-def _lead(report_input: ReportInput) -> str | None:
-    """The lead aspect, whose figures the input's by-arm maps hold: the first asked about, else the first."""
-    asked = [aspect.id for aspect in report_input.aspects if aspect.asked]
-    return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
 
 
 def _arm_figure(report_input: ReportInput, arm_id: str | None) -> CitedFigure | None:
@@ -597,7 +591,7 @@ def _on_aspects(report_input: ReportInput, table: Measure | Judged) -> list[str]
     """The aspects a measure is read on, where it is read on more than the lead one: each the input holds."""
     if not table.by_aspect:
         return []
-    lead = _lead(report_input)
+    lead = lead_aspect(report_input)
     return [
         aspect.id
         for aspect in report_input.aspects
@@ -1251,15 +1245,12 @@ def _on_arm(
     aspect_filter: str | None,
 ) -> list[_Spot]:
     """The arm rows of one measure: overall where it is read on one aspect, else on each aspect it is read on."""
-    lead = _lead(report_input)
-
-    def on(aspect: str) -> Mapping[str, Stat]:
-        return table.per_arm if aspect == lead else table.by_aspect.get(aspect, {})
-
     if aspect_filter is not None:
-        places: list[tuple[str | None, Mapping[str, Stat]]] = [(aspect_filter, on(aspect_filter))]
+        places: list[tuple[str | None, Mapping[str, Stat]]] = [
+            (aspect_filter, on_aspect(report_input, table, aspect_filter))
+        ]
     elif table.by_aspect:
-        places = [(aspect, on(aspect)) for aspect in _on_aspects(report_input, table)]
+        places = [(aspect, on_aspect(report_input, table, aspect)) for aspect in _on_aspects(report_input, table)]
     else:
         places = [(None, table.per_arm)]
     spots: list[_Spot] = []
@@ -1425,7 +1416,7 @@ def measure_read(
     kept = [spot for spot in spots if arm_filter in (None, spot[0])]
     page, next_offset = _page(kept, limit, offset)
     control = _control(report_input)
-    overall: set[str | None] = {None, _lead(report_input)} if by == "arm" else set()
+    overall: set[str | None] = {None, lead_aspect(report_input)} if by == "arm" else set()
     interval_asked = statistics is None or bool({"ci", "half_width"} & set(asked))
     rows = [
         FigureRow(
