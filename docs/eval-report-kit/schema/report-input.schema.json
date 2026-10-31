@@ -677,7 +677,12 @@
      "description": "What was set: aspect, control, margin, floor, gate."
     },
     "name": {"type": ["string", "null"], "description": "Which one, where several could be."},
-    "set_at": {"type": "string", "description": "When it was set."}
+    "set_at": {"type": "string", "description": "When it was set."},
+    "aspect": {"type": ["string", "null"], "description": "A floor's aspect, by its id."},
+    "reading": {
+     "type": ["string", "null"],
+     "description": "The reading a floor names; none for a floor on every pass rate."
+    }
    },
    "additionalProperties": false,
    "description": "A criterion set after the results were visible."
