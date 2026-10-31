@@ -20,7 +20,7 @@ and that work reads, or produces, more data than you want copied per process.
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed or its job ends without a claim. A new store clears what no live process holds. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (each of the last five sweeps the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` hard-links the files it does not rewrite: they exist once, and the store counts them once. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
 

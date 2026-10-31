@@ -14,9 +14,11 @@ packages (bumped in lock-step).
 `ToolServer.answer_while_held()` starts answering them. The replica subscribes the call subject in a queue group of its
 own (`HELD_QUEUE_SUFFIX`), so NATS hands each call to one member of the call group and to one held replica; the held
 replica answers only the named tools and drops every other call, which its siblings answer. A call handed to both is
-run once: the replica that finds its proxy assertion's nonce consumed says nothing, counts the call on /metrics under
-the outcome `answered_by_sibling`, never `failure`, and publishes no audit row; the
-sibling that answers audits it. `serving_calls` (the `calls_open`
+run once: each replica claims the call for the queue group that handed it, and the one whose claim is its group's
+first but finds the proxy assertion's nonce consumed says nothing, counts the call on /metrics under the outcome
+`answered_by_sibling`, never `failure`, and publishes no audit row; the sibling that answers audits it. A replay (a
+second publish of one assertion) finds its group's claim taken and is refused and audited by every replica it reaches,
+as before. `serving_calls` (the `calls_open`
 readiness check) stays False meanwhile. A pod whose every replica was held rebuilding its copy for hours could not be
 reset, asked its status, or have a setting changed (reports, cobalt prod, 2026-10-31). With every replica held, a
 reader's call now waits for the caller's deadline where it found no responder at once.

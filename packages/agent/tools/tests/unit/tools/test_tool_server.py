@@ -834,11 +834,10 @@ class TestToolServerCallGroupMembership:
             held = self._held_subscribes(mock_nc)
             assert len(held) == 1 and held[0].kwargs["queue"] == "testns.tools.internal.calls-pod.held"
             assert held[0].kwargs["subject"].path == "testns.tools.internal.calls-pod"
-            assert server.answering_while_held is True
             assert server.serving_calls is False, "the readiness check stays not ready: readers' calls are held"
             server.open_calls()
             await asyncio.sleep(0.05)
-            assert server.serving_calls is True and server.answering_while_held is False
+            assert server.serving_calls is True
             # the held group drained once the call group took every call
             assert mock_nc.drain.await_count == 1
             await self._stop(server, serve_task)
@@ -856,6 +855,34 @@ class TestToolServerCallGroupMembership:
             server.answer_while_held()
             await asyncio.sleep(0.05)
             assert self._held_subscribes(mock_nc) == [] and server.serving_calls is True
+            await self._stop(server, serve_task)
+
+    async def test_a_held_subscribe_still_in_flight_when_the_replica_leaves_is_drained(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        mock_nc = self._mock_nc()
+        release = asyncio.Event()
+        late = MagicMock(name="late-held-subscription")
+
+        async def subscribe(**kwargs: Any) -> MagicMock:
+            if str(kwargs.get("queue", "")).endswith(".held"):
+                await release.wait()
+                return late
+            return MagicMock(name=kwargs["subject"].path)
+
+        mock_nc.subscribe = AsyncMock(side_effect=subscribe)
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            assert await server.leave_calls(timeout=1.0) is True
+            release.set()
+            await asyncio.sleep(0.05)
+            drained = [c.args[0] if c.args else c.kwargs.get("subscription") for c in mock_nc.drain.await_args_list]
+            assert late in drained, "a subscription that landed after the replica left would be routed calls"
+            assert server.serving_calls is False
             await self._stop(server, serve_task)
 
     async def test_hold_calls_after_serve_is_refused(self) -> None:
@@ -2585,8 +2612,8 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
     async def test_a_control_call_is_answered_and_a_readers_call_is_left_to_the_siblings(self) -> None:
         server, rec, control, reader = self._replica(FakeReplayGuard())
 
-        await server.handle_held_call(self._msg("test.reset"))
-        await server.handle_held_call(self._msg("test.rows"))
+        await server._handle_held_call(self._msg("test.reset"))  # noqa: SLF001 -- the held subscription's callback
+        await server._handle_held_call(self._msg("test.rows"))  # noqa: SLF001 -- the held subscription's callback
 
         assert control.runs == 1 and reader.runs == 0
         assert len(rec.replies) == 1, "the reader's call got an answer from the held replica"
@@ -2599,7 +2626,7 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         serving.open_calls()
         msg = self._msg("test.reset")
 
-        await asyncio.gather(held.handle_held_call(msg), serving.handle_call(msg))
+        await asyncio.gather(held._handle_held_call(msg), serving.handle_call(msg))  # noqa: SLF001 -- held cb
 
         assert held_control.runs + serving_control.runs == 1
         replies = held_rec.replies + serving_rec.replies
@@ -2616,6 +2643,42 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         assert reader.runs == 1
         assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
 
+    async def test_a_replayed_control_call_is_refused_and_audited(self) -> None:
+        """Flips if a control tool's replayed assertion is taken for a sibling's duplicate: the second publish of
+        one assertion is refused and audited as a failure, never counted answered_by_sibling."""
+        server, rec, control, _ = self._replica(FakeReplayGuard())
+        msg = self._msg("test.reset")
+
+        await server.handle_call(msg)
+        await server.handle_call(msg)
+
+        assert control.runs == 1
+        assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+        audits = [
+            json.loads(payload)["outcome"]
+            for subject, payload in rec.published
+            if str(subject).endswith(".audit.tool.call")
+        ]
+        assert audits == ["success", "failure"]
+
+    async def test_a_replayed_control_call_handed_to_both_groups_is_refused_by_both(self) -> None:
+        """Flips if a replay that reaches a held replica and the call group again is silent: one publish is answered
+        once, and its second publish is refused and audited by each replica it is handed to."""
+        guard = FakeReplayGuard()
+        held, held_rec, held_control, _ = self._replica(guard)
+        serving, serving_rec, serving_control, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
+        await serving.handle_call(msg)
+        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
+        await serving.handle_call(msg)
+
+        assert held_control.runs + serving_control.runs == 1
+        refused = [reply for _, reply in held_rec.replies + serving_rec.replies if not reply.success]
+        assert len(refused) == 2 and {r.error_code for r in refused} == {"TOOL_PROXY_ASSERTION_UNVERIFIED"}
+
     async def test_the_replica_that_finds_the_nonce_used_counts_it_answered_by_a_sibling_not_failed(self) -> None:
         """Flips if the silent replica of a call handed to a held replica and the call group counts or audits it as a
         failure: the call ran once, on the sibling, and a failure there is noise on every held control call."""
@@ -2625,7 +2688,7 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
         serving.open_calls()
         msg = self._msg("test.reset")
 
-        await held.handle_held_call(msg)
+        await held._handle_held_call(msg)  # noqa: SLF001 -- the held subscription's callback
         await serving.handle_call(msg)
 
         def outcomes(server: ToolServer) -> dict[str, float]:

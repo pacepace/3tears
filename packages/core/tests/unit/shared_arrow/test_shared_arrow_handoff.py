@@ -212,6 +212,28 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         assert again.handoffs() == ()
 
 
+class TestASweepNeverRetiresAHandOffBeingRegistered:
+    def test_a_sweep_between_the_rename_and_the_registration_keeps_the_hand_off(
+        self, store: SharedArrowStore, executor: ProcessPoolExecutor, monkeypatch: Any
+    ) -> None:
+        rename = os.rename
+        swept: list[list[str]] = []
+
+        def rename_then_sweep(source: Any, target: Any) -> None:
+            rename(source, target)
+            # once, on the staging directory's rename into its final name (a sweep renames too)
+            if Path(source).name.startswith(".staging-") and Path(target).parent.name == "handoffs" and not swept:
+                # another thread's publish, release, claim or discard, landing in the window
+                swept.append(store.sweep())
+
+        monkeypatch.setattr("threetears.core.shared_arrow.os.rename", rename_then_sweep)
+        handed = store.hand({"t": pa.table({"a": [1, 2, 3]})})
+        assert swept, "the window was not staged"
+        assert store.handoffs() == (handed.handoff_id,)
+        assert executor.submit(jobs.digest_of_handed, handed, "t").result()["rows"] == 3
+        store.release(handed)
+
+
 class TestTheHandOffIsBounded:
     def test_a_hand_off_past_the_stores_room_is_refused_and_leaves_nothing(self, tmp_path: Path) -> None:
         small = SharedArrowStore(tmp_path / "shm", max_bytes=1 << 20)
