@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.88.0 -- 2026-10-31
+
 ### core: a catch-up from L3 says how it ended
 
 **Added:** `ScopedSnapshot.catch_up()` runs the catch-up `catch_up_from_l3()` runs and answers a `CatchUpOutcome`
