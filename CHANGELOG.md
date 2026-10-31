@@ -6,6 +6,52 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.88.0 -- 2026-10-31
+
+### core: a catch-up from L3 says how it ended
+
+**Added:** `ScopedSnapshot.catch_up()` runs the catch-up `catch_up_from_l3()` runs and answers a `CatchUpOutcome`
+instead of raising: `result` (`CatchUpResult`: `CAUGHT_UP`, `CLAIM_HELD`, `WAITED`, `STALLED`, `FAILED`), `caught`
+(the scopes republished), `behind` (scope -> `ScopeLag(l3_epoch, pointer_epoch)`: every scope still behind L3, by
+L3's epoch against the pointer this copy has seen, not `SnapshotStatus.behind`'s chunks that could not be applied),
+`holder` and `held_since` from the claim's lease when another replica holds it, and `reason` (the write waited on, or
+the error). A caller no longer infers "another replica holds the claim" from an empty list. `catch_up_from_l3()`
+keeps its return and its raises. New public names: `CatchUpOutcome`, `CatchUpResult`, `ScopeLag` (a minor bump).
+
+### core: a rebuild claim's holder that makes no progress lets the claim go
+
+**Fixed:** The rebuild claim's renewal runs on its own task, so it said nothing of the work: on cobalt prod
+(2026-10-31) a catch-up beside a write ("catching up beside a write: 52 scopes behind L3") stopped at its first scope's
+L3 read, logged nothing more, and renewed the claim every 40 s all night, so every other replica's catch-up logged
+"another replica holds the claim" while L3 ran 30 scopes ahead of the copy. A rebuild, a catch-up and a rebuild of
+scopes that could not be applied now run under a watchdog that counts only their own steps (a page read from L3, a
+chunk read or written, a commit, a pointer or the index moved); once none has come for `rebuild_stall` it logs the
+last step at error, lets the claim go, cancels the run and raises `TimeoutError`, so another replica or the next
+attempt takes the claim. `holding_rebuilds` renews a writer's hold for at most `rebuild_stall`, its block running on
+without it. A catch-up beside a write now counts and logs each scope it lands. New `ScopedSnapshot` keyword:
+`rebuild_stall` (default 10 minutes).
+
+### core: a large cached answer is stored and read without holding the event loop
+
+**Fixed:** `VersionedAnswers` decoded a row's base64 body on the event loop at every L1 or L2 read (9-15 ms at
+9.4 MB of gzip), wrote it with one `b64encode` call, and stored and read the row with `json.dumps` and `json.loads`
+over the whole body on the loop (16 ms and 10 ms). The body is now decoded a megabyte per call on a worker thread (a
+small one inline), and an answer computed here is handed back from the gzip bytes in hand, never decoded. The row's
+L2 bytes are written on the worker thread, a slice of base64 per call, and handed to L2 as written; a row is read by
+its layout, the body taken as it stands, and anything else still goes through `json.loads`. The stored bytes, and
+`GivenAnswer.body`, are exactly what they were. No API changes.
+
+### core: an answer's JSON is never copied whole in one call
+
+**Fixed:** `answer_json` wrote its answer in budgeted pieces, then joined them with one `"".join` into one `str`, and
+`VersionedAnswers` encoded that `str` to bytes for gzip: two copies of the whole answer, each holding the interpreter
+lock for the whole of it (51 MB: 5 ms each on a laptop, 32-40 ms on a 4-core CI runner, where it failed the event
+loop's timing test). `answer_json` now adds each piece to the answer's bytes as it is written and returns them, a
+`bytearray` of the ASCII text that equals the `str` it holds, reads as text (`len`, `in`, `str`, `json.loads`), and
+encodes to UTF-8 as itself; `VersionedAnswers` gzips it as it is. A `compute` may return the text or its UTF-8
+bytes. The bytes are exactly `json.dumps`' as before. No new public names; a caller that annotated `answer_json`'s
+result as `str` annotates it `bytearray`.
+
 ## v0.87.0 -- 2026-10-31
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
