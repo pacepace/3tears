@@ -135,6 +135,24 @@ def test_a_stored_value_its_declared_type_does_not_fit_is_named_with_its_reason_
     assert collection.unreported_observations == [entry]
 
 
+@pytest.mark.parametrize("value", ["two", True])
+def test_text_or_a_bool_stored_under_a_measure_declaring_no_data_type_never_reaches_a_numeric_summary(
+    value: str | bool,
+) -> None:
+    """An untyped measure is read as numeric, so neither value is pooled, and the bundle assembles."""
+    profile = HostProfile(
+        host_id="untyped",
+        host_sweepables=SHARED_CORE,
+        measures=MeasureRegistry((_measure("queue_jumps", None, higher_is_better=False),)),  # type: ignore[arg-type]
+    )
+    results = [_result("c1", queue_jumps=value), _result("c2", queue_jumps=value)]
+
+    bundle = one_batch_bundle(results, profile=profile)
+
+    ((cell,), (run,)) = (bundle.cell_measures, bundle.run_summaries)
+    assert "queue_jumps" not in {summary.name for summary in [*cell.measures.measures, *run.measures.measures]}
+
+
 def test_misfit_values_beside_fitting_ones_are_named_and_only_the_fitting_ones_pool() -> None:
     results = [_result("c1", on_target=True), _result("c2", on_target=False), _result("c3", on_target=1.0)]
 

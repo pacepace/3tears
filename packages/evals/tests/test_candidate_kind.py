@@ -1614,6 +1614,36 @@ def test_a_host_declared_boolean_measure_refuses_every_number_and_names_each_mis
     )
 
 
+def test_a_host_measure_declaring_no_data_type_is_read_as_numeric_and_refuses_text_and_bools() -> None:
+    """The bundle summarises an untyped measure as a distribution of numbers, so only a number fits one."""
+    from threetears.evals.kernel import MetricDescriptor
+    from threetears.evals.kernel.host import MeasureRegistry
+    from threetears.evals.run.runner import refuse_misfit_host_measures
+
+    measures = MeasureRegistry(
+        (
+            MetricDescriptor(
+                name="queue_jumps",
+                reader_name="queue jumps",
+                family="mechanical",
+                transferability_class="mechanical",
+                attribution_scope="end_to_end",
+                description="queue_jumps, for the test.",
+                higher_is_better=False,
+            ),
+        )
+    )
+
+    refuse_misfit_host_measures({"queue_jumps": 2.0, "trace_id": "t-1", "undescribed_flag": True}, measures)
+    for value, recorded in (("two", "text"), (True, "true or false")):
+        with pytest.raises(ValueError) as refused:
+            refuse_misfit_host_measures({"queue_jumps": value}, measures)
+        assert str(refused.value).startswith(
+            f"a candidate kind landed 'queue_jumps' (declared no data type, read as numeric, recorded as {recorded}) "
+            "on host_measures"
+        )
+
+
 def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures() -> None:
     from threetears.evals.kernel.metrics import undeclarable_host_measures
 

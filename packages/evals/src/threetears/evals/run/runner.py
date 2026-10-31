@@ -98,6 +98,7 @@ from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_var
 from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
     MATCH_MEASURE,
+    MetricDescriptor,
     describe_measure,
     measure_value_misfit,
     undeclarable_host_measures,
@@ -2020,7 +2021,9 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
     :func:`refuse_engine_derived_host_measures`'s reason: a kind's measures are its own code, so every cell would carry
     the misfit, and a stored misfit is dropped from every statistic of its measure. Called by the runner before its
     judge phase pays for anything, and by a witnessed cell's recording before its judge does. A name no registry
-    describes declares no type and passes; the analysis names it as an undescribed measurement.
+    describes (neither a data type nor a family) declares nothing and passes; the analysis names a number under one as
+    an undescribed measurement and leaves text alone, as an identifier. A described measure declaring no data type is
+    read as numeric, so text or a ``bool`` under one is refused.
 
     :param host_measures: What the kind measured, by name.
     :ptype host_measures: Mapping[str, bool | float | str]
@@ -2032,7 +2035,9 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
     misfits = [
         f"{name!r} ({misfit})"
         for name, value in sorted(host_measures.items())
-        if name.strip() and (misfit := measure_value_misfit(describe_measure(name, measures), value)) is not None
+        if name.strip()
+        and _described(descriptor := describe_measure(name, measures))
+        and (misfit := measure_value_misfit(descriptor, value)) is not None
     ]
     if misfits:
         raise ValueError(
@@ -2040,6 +2045,11 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
             "declared data type and is never coerced: a bool for a boolean measure, a number for a numeric one, a "
             "string for a categorical or text one"
         )
+
+
+def _described(descriptor: MetricDescriptor) -> bool:
+    """Whether a descriptor describes anything: a data type or a family, which an unclassified name has neither of."""
+    return descriptor.data_type is not None or descriptor.family is not None
 
 
 def _unjudged_record() -> _JudgeRecord:

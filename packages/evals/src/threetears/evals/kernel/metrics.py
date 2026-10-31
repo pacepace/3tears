@@ -2705,8 +2705,8 @@ def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str
     on it) and where one is read (a stored value it refuses is dropped from the statistics and named with this
     reason). Nothing is coerced: a ``1.0`` is not a ``True``, whatever it was meant to say. A boolean measure takes a
     ``bool``, a numeric one a number that is not a ``bool``, a categorical or text one a string, and a
-    ``confusion_cell`` a string :func:`confusion_of` splits. A descriptor declaring no data type declares nothing a
-    value could contradict.
+    ``confusion_cell`` a string :func:`confusion_of` splits. A descriptor declaring no data type is read as numeric,
+    as a summary reads one (a distribution over ``float(value)``), so text or a ``bool`` under it is a misfit.
 
     :param descriptor: The measure's descriptor.
     :ptype descriptor: MetricDescriptor
@@ -2716,8 +2716,6 @@ def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str
     :rtype: str | None
     """
     declared = descriptor.data_type
-    if declared is None:
-        return None
     if isinstance(value, bool):
         recorded = "true or false"
         fits = declared == "boolean"
@@ -2726,7 +2724,9 @@ def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str
         fits = declared in ("categorical", "text")
     else:
         recorded = "a number"
-        fits = declared == "numeric"
+        fits = declared in ("numeric", None)
+    if declared is None:
+        return None if fits else f"declared no data type, read as numeric, recorded as {recorded}"
     if fits and descriptor.name == CONFUSION_CELL_MEASURE and confusion_of(str(value)) is None:
         # A confusion cell is categorical AND has a format: one that does not split into its two labels
         # could not be counted into the matrix the per-label statistics are derived from.
