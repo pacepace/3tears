@@ -39,7 +39,7 @@ from threetears.evals.analysis.report.decision import (
     floor_statement,
     read_floor,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.kernel.declaration import (
     CostLower,
     DecisionClause,
@@ -503,7 +503,8 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
     """The .29 defect: a check's rate read switch off the family's t interval, which overstates its confidence.
 
     Simulated at the margin, that t interval let switch through up to 12% of the time against the 2.5% it states
-    (``docs/measuring-soundly.md``). Here it clears the margin while the bounded interval reaches far past it.
+    (``docs/measuring-soundly.md``). Here it clears the margin while the bounded interval reaches far past it. The
+    family draws the check's rate on its bounded interval too, so no reading of the bundle offers the t interval.
     """
     bundle, control, candidate = await _ruled([3, 3, 3, 3, 3, 3, 2], [3] * 7)
     (check,) = [
@@ -512,15 +513,22 @@ async def test_a_check_floor_never_holds_on_a_t_interval_the_bounded_one_does_no
         for comparison in family.comparisons
         if comparison.name == "accuracy"
     ]
-    assert check.basis == "t" and check.interval is not None
-    assert check.interval[0] > -0.10, "the t interval clears the 10-point margin"
+    assert check.basis == "t" and check.case_values is not None
+    (family,) = bundle.multiple_comparisons.families
+    assert family.interval_level is not None
+    t_interval = difference_interval(
+        *check.case_values, paired=check.test == "paired", confidence=family.interval_level, value_range=(0.0, 1.0)
+    )
+    assert t_interval is not None and t_interval[0] > -0.10, "the t interval clears the 10-point margin"
+    assert check.interval == check.bounded_interval, "the family draws the rate on its bounded interval"
+    assert check.interval is not None and check.interval[0] < -0.10
     readings = floor_readings(bundle, control, candidate)
     (label,) = [rate for rate in readings.rates if rate.name == "Label matched"]
     assert label.interval is not None and label.interval[0] < -0.10, "the bounded interval does not"
     alone = replace(readings, rates=(label,))
     assert _read(G2_FLOORS, alone)[0].outcome == "unclear"
     # Read on the t interval, as .29 read it, the same floor held.
-    on_t = replace(readings, rates=(replace(label, interval=check.interval),))
+    on_t = replace(readings, rates=(replace(label, interval=t_interval),))
     assert _read(G2_FLOORS, on_t)[0].outcome == "held"
 
 

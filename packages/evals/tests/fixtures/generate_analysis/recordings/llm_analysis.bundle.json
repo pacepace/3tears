@@ -306,7 +306,7 @@
   },
   "aspects": [
     {
-      "schema_version": 64,
+      "schema_version": 65,
       "campaign_id": "01a1714e-f3cf-76c9-8407-aae0011aed77",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
@@ -2056,8 +2056,8 @@
                 },
                 "delta": 0.33333333333333326,
                 "interval": [
-                  -0.08050768994554813,
-                  0.7471743566122148
+                  -0.08620112854987383,
+                  0.7676822012290359
                 ],
                 "bounded_interval": [
                   -0.08620112854987383,

@@ -1768,21 +1768,23 @@ class FamilyComparison(EvalDocumentModel):
     interval: tuple[float, float] | None = Field(
         default=None,
         description=(
-            "The interval on `delta` at the family's `interval_level`, from the same test as `p_raw`: simultaneous "
-            "over the family, so every interval in it covers its true difference together at least 95% of the time. "
-            "A separation needs it to exclude zero. Where the values have no spread (every shared case moved by one "
-            "amount, or each side constant) it is the bounded test's on the declared range (`basis` `bounded`). "
-            "None when no test ran."
+            "The interval on `delta` at the family's `interval_level`: simultaneous over the family, so every "
+            "interval in it covers its true difference together at least 95% of the time. A separation needs it to "
+            "exclude zero. On a rate (the pass rate, a check's, a goal check's or accuracy's rate, or a judged "
+            "dimension scored pass or fail) it is `bounded_interval`, the method every reading of a rate is read by, "
+            "from shape 65; on any other reading it is the t interval of "
+            "the test `p_raw` came from, except where the values have no spread (every shared case moved by one "
+            "amount, or each side constant), where it is the bounded test's on the declared range (`basis` "
+            "`bounded`). None when no test ran."
         ),
     )
     bounded_interval: tuple[float, float] | None = Field(
         default=None,
         description=(
             "The bounded test's interval on `delta` on the reading's declared range, at the family's `interval_level`: "
-            "valid for every distribution on the range at every n, where `interval` (a t interval wherever the values "
-            "have spread) is not. A claim that the contrast is no worse than the control by more than a margin, such "
-            "as a floor on a rate, reads this one. None when no test ran, when the reading declares "
-            "no range, and in a bundle before shape 55."
+            "valid for every distribution on the range at every n, where a t interval is not. A claim that the "
+            "contrast is no worse than the control by more than a margin, such as a floor on a rate, reads this one. On a rate it is `interval` itself. None when no test ran, when "
+            "the reading declares no range, and in a bundle before shape 55."
         ),
     )
     case_values: tuple[list[float], list[float]] | None = Field(
@@ -2764,6 +2766,10 @@ class AnalysisContextBundle(EvalDocumentModel):
     # frontier point's delivered `depth`, `n_cases_short_of_k`, common-depth reading (`common_pass_hat_k`,
     # `n_common_cases`, `n_cases_left_out`) and each subject's `common_depth`, `shares_no_case` and `unmeasured_for`; a point's opt-in
     # `model_pass_hat_k` (`basis: "model"`), None unless the host asks for it.
+    # 65: a rate's family contrast (the overall pass rate, a check's, a goal check's or accuracy's rate, a pass/fail
+    # judged dimension) is drawn on its bounded interval, so its `interval` is its `bounded_interval` and its verdict
+    # needs that interval to exclude zero (owner ruling, 2026-10-31); its p's are the t test's still, so no adjusted p
+    # moves, but a rate's interval and verdict move over unchanged runs.
     # Unmoved by declared names: `short_name`, `goal_check_names` and `stratum_names` are written only when declared and are no part of
     # the fingerprint, so a bundle naming nothing is this shape byte for byte and every fingerprint stays put.
     # Unmoved by the run apparatus and the unanswered calls: each run summary's `apparatus` and each arm's
@@ -2775,7 +2781,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # only when a production usage row was recorded, and is no part of the fingerprint whether written or not (owner
     # ruling, 2026-10-28), so a bundle over unchanged runs fingerprints as it did.
     schema_version: int = Field(
-        default=64, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
+        default=65, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
 
     # --- Campaign keys ---

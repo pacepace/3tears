@@ -5,7 +5,12 @@ later. This module is the dataset's one reader:
 
 - **Inputs.** ``r1`` to ``r5`` each hold ``input.json``, a report input (:func:`report_input_of`). The Kairo round 2
   campaign bundle the r5 input was adapted from is committed gzipped (``kairo-round2-bundle.json.gz``,
-  :func:`kairo_bundle`), so ``report_input(bundle)`` runs against the real stored campaign.
+  :func:`kairo_bundle`), so ``report_input(bundle)`` runs against the real stored campaign. It has no generator: it is
+  real data. It is moved across an aspect bundle shape by a migration script that recomputes only what the shape
+  changes from what the bundle holds, and refuses when any other field moves. At shape 65 that was
+  ``migrate_bundle_shape_65.py kairo-round2-bundle.json.gz``, which moved eight rate contrasts' intervals (the pass
+  rate, a goal check and two pass/fail judged dimensions, two arms each) onto their stored bounded intervals, every
+  verdict holding, and the shape.
 - **Plans.** ``rN/anchor.plan.json`` is a hand-written plan for that input; ``anchors/weak/*.plan.json`` are copies
   weakened on one plan-check rule or one rubric item (``weaken_anchors.py`` writes them). ``anchors/LABELS.json`` says
   what each anchor is expected to be and who labeled it: every anchor starts ``pending_owner`` and counts as a label

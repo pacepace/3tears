@@ -272,7 +272,9 @@ def documents() -> dict[str, str]:
     }
 
 
-#: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`).
+#: Every identity and digest of the fixture, as the tree at ``00107a5b7`` computed them (:func:`identities`), but for
+#: those the bundle shape reaches: the shape itself, and each aspect's and the campaign's fingerprint and evidence
+#: digest, re-pinned at shape 65 (see :data:`PINNED_DOCUMENTS`). No run, cell, pool or pairing key moved.
 PINNED: dict[str, str] = {
     "CELL_MODEL_VERSION": "14",
     "IDENTITY_VERSION": "25",
@@ -282,10 +284,10 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under a full queue evidence_digest": (
-        "v2:33bebed6922837b7b39074eeeac1f2dbca69d78d4e58e9a0570c5b48e798426e"
+        "v2:5028269e542226d384d532943019fc2c56c8314d1721f1563d77e103a3eae857"
     ),
     "Queue discipline under a full queue fingerprint": (
-        "v2:33bebed6922837b7b39074eeeac1f2dbca69d78d4e58e9a0570c5b48e798426e"
+        "v2:5028269e542226d384d532943019fc2c56c8314d1721f1563d77e103a3eae857"
     ),
     "Queue discipline under a full queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
@@ -296,19 +298,19 @@ PINNED: dict[str, str] = {
         "c8030ab220f21fa1422945cfff2cfa7e62ca5159aa595e5b93112d321c9"
     ),
     "Queue discipline under an empty queue evidence_digest": (
-        "v2:d49f240f47bd76d1a7b1dfcb2e96a3523ea1203329e9f729ba5292f508dc8a1a"
+        "v2:36097c2f3424273600f794a31e7f1748310e992e871ae1c6520495c295447a90"
     ),
     "Queue discipline under an empty queue fingerprint": (
-        "v2:d49f240f47bd76d1a7b1dfcb2e96a3523ea1203329e9f729ba5292f508dc8a1a"
+        "v2:36097c2f3424273600f794a31e7f1748310e992e871ae1c6520495c295447a90"
     ),
     "Queue discipline under an empty queue measure_catalog": (
         "be7db1240bcd8149ba17c91f78963c8632823d88d0f99674952fa7eb408d3141"
     ),
-    "bundle schema_version": "64",
-    "campaign fingerprint": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
-    "campaign_evidence_digest": "v2:1896767143a9454239aebb4a33710a0d4167bd4fced79c5fd236c217a8f1834b",
-    "campaign fingerprint v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
-    "campaign_evidence_digest v3": "v3:cb6ccb6a69087388493719b47c7035f6763ac2c4e3d90170b3d59fa74bfa85ec",
+    "bundle schema_version": "65",
+    "campaign fingerprint": "v2:a57ea7ebab4848a30fa8c20b524168f920e7b8f0129be4dcc0f65d9014bef251",
+    "campaign_evidence_digest": "v2:a57ea7ebab4848a30fa8c20b524168f920e7b8f0129be4dcc0f65d9014bef251",
+    "campaign fingerprint v3": "v3:16cf447e76171e584d42634605c429e2e889569ff67a411cfe51950cfe51cc8e",
+    "campaign_evidence_digest v3": "v3:16cf447e76171e584d42634605c429e2e889569ff67a411cfe51950cfe51cc8e",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7. It is no part of what
@@ -337,9 +339,11 @@ PINNED: dict[str, str] = {
 #: Re-pinned in W4 (ENGINE) when the bundle's census began reading each arm's pricing off its production usage rows
 #: (``ArmScoreboard.pricing``): the fixture's runs carry such rows, so the writer is sent each arm's price sources,
 #: providers and priced calls. Nothing a name moves; no fingerprint moves (the owner's ruling keeps pricing out of them).
+#: Re-pinned at bundle shape 65, where the fixture's rate contrasts (its pass rate and its goal checks) are drawn on their
+#: bounded intervals, which the writer is shown.
 PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "6a1bbe9f0579ecd673aa57c18e69df4199ea0d66c1f7a1091cfe5ec935db859d",
-    True: "7bf7a21b2370ef488d1bfb06d7dd173188a2214be2008394cb68c0cd553b79cf",
+    False: "a464379ec5aa384f95d5c963135ddb9d3ae1a4ff56a4e904e7f54df16bf9bba7",
+    True: "dd29d6d8e7a2d37b9ed40759d7c286792e9af5545ee6d0dd0b7757d2f422265a",
 }
 
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
@@ -351,9 +355,13 @@ PINNED_WRITER_MESSAGES: dict[bool, str] = {
 #: are pinned byte for byte.
 #: The two bundles were re-pinned in W4 (ENGINE) for the census's pricing alone: less ``scoreboard[].pricing`` each
 #: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
+#: The two bundles, and in :data:`PINNED` each aspect's fingerprint and the campaign's, were re-pinned at bundle shape 65
+#: by building this fixture on this tree: the shape-64 bundles, moved to 65 by
+#: ``fixtures/report_plans/migrate_bundle_shape_65.py`` (the shape and each rate contrast's interval, and nothing
+#: else), are these bundles leaf for leaf, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "2ab949ec0dd4ee2c362000ca8b90ccd5da0a2197874c1660452488a289aab561",
-    "Queue discipline under an empty queue bundle": "f645d767ce42d6cd087f2b9cf75761ce08095a766756ea4990987351c92ee0a7",
+    "Queue discipline under a full queue bundle": "a67c18603bf4e2ae83ad756cdfe39d5931da1ad067c5bdbb70a48065736b3b8e",
+    "Queue discipline under an empty queue bundle": "c6b322fcde806e23cc4b965e05093fd434caa2c0568c615f1062528f6b038825",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

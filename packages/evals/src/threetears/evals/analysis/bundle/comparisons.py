@@ -47,11 +47,13 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
     MeritAxis,
     MetricDescriptor,
     classifier_label_of,
     describe_reported_measure,
     describe_rubric_dim,
+    goal_check_of,
     is_latency_measure,
     materiality,
     summary_population,
@@ -375,6 +377,26 @@ def _family_readings(
 _TRIAL_PASS_RANGE = (0.0, 1.0)
 
 
+def _is_rate(
+    reading: tuple[ComparisonReading, str],
+    catalog: Mapping[str, MetricDescriptor],
+    judged_ranges: Mapping[str, tuple[float, float]],
+) -> bool:
+    """Whether a family reading is a rate: each case's value the share of its trials or observations that passed, on
+    0 to 1, the readings a floor reads as pass rates
+    (:func:`~threetears.evals.analysis.report.decision.floor_readings`). The overall pass rate is one; so is a check
+    (:attr:`~threetears.evals.kernel.metrics.MetricDescriptor.is_check`: a directed boolean read on its rate per case,
+    or a measure declared ``pass_fail``), a goal check's pass rate, a classifier's accuracy (its labels' matches), and
+    a judged dimension scored pass or fail. A numeric score that merely lies on 0 to 1 is not: its per-case value is a
+    mean of scores, not a share."""
+    kind, name = reading
+    if kind == "trial":
+        return True
+    if kind == "judged":
+        return judged_ranges.get(name) == _TRIAL_PASS_RANGE
+    return catalog[name].is_check or goal_check_of(name) is not None or name == ACCURACY_MEASURE
+
+
 def _measure_range(descriptor: MetricDescriptor) -> tuple[float, float] | None:
     """The range a measure's per-case values lie on: a boolean's is its rate's, a share on 0 to 1 as the pass rate's
     is, whatever it declares; any other measure's is its declared range, or None where it declares none."""
@@ -440,6 +462,8 @@ class _Tested(NamedTuple):
     samples: tuple[list[float], list[float]]
     #: The reading's declared range, which bounds the interval on its delta (:func:`difference_interval`).
     value_range: tuple[float, float] | None = None
+    #: Whether the reading is a rate (:func:`_is_rate`), whose contrast is drawn on the bounded interval.
+    rate: bool = False
 
 
 def _compare(
@@ -654,6 +678,12 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
     the time against the 2.5% it states (``docs/measuring-soundly.md``), the failure a guardrail's ``held`` was moved
     off it for. A reading with no declared range has none.
 
+    **A rate is drawn on its bounded interval** (:func:`_is_rate`): its ``interval`` is its ``bounded_interval``, and
+    a separation needs that interval to exclude zero. A rate is read by one method everywhere: a campaign's reading of
+    the pass rate and a floor are the bounded test's on the same per-case shares, so at a looser level either nests
+    inside the contrast's, and the two part only by level, never by method. The p's stay the t test's, so no other
+    comparison's adjusted p moves; the rule only removes separations, so the family's error stays at α.
+
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
     :ptype aspect: str | None
     :param axes: The question's merit axes.
@@ -675,35 +705,9 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
             p_adjusted = next(adjusted)
             equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
             control_sample, contrast_sample = one.samples
-            interval = (
-                # No spread: no t interval exists, and on the declared range the bounded test gives one, so a
-                # separation is never shown with no interval beside it (#597), nor identical values without bounds.
-                bounded_difference_interval(
-                    control_sample,
-                    contrast_sample,
-                    paired=comparison.test == "paired",
-                    value_range=one.value_range,
-                    confidence=interval_level,
-                )
-                if comparison.basis in ("bounded", "identical") and one.value_range is not None
-                else difference_interval(
-                    control_sample,
-                    contrast_sample,
-                    paired=comparison.test == "paired",
-                    confidence=interval_level,
-                    value_range=one.value_range,
-                )
-            )
-            verdict: ComparisonVerdict = "not_separated"
-            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and interval_permits_separation(interval):
-                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
-            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
-                verdict = "equivalent"
             bounded = (
                 None
                 if one.value_range is None
-                else interval
-                if comparison.basis in ("bounded", "identical")
                 else bounded_difference_interval(
                     control_sample,
                     contrast_sample,
@@ -712,6 +716,28 @@ def _corrected_family(aspect: str | None, axes: list[MeritAxis], tested: list[_T
                     confidence=interval_level,
                 )
             )
+            # A rate is drawn on its bounded interval, the method every reading of a rate is read by, so a reading's
+            # interval nests inside its contrast's. With no spread no t interval exists, and the bounded test's stands
+            # for it too, so a separation is never shown with no interval beside it (#597).
+            on_bounded = one.value_range is not None and (one.rate or comparison.basis in ("bounded", "identical"))
+            interval = (
+                bounded
+                if on_bounded
+                else difference_interval(
+                    control_sample,
+                    contrast_sample,
+                    paired=comparison.test == "paired",
+                    confidence=interval_level,
+                    value_range=one.value_range,
+                )
+            )
+            # A rate's separation needs its bounded interval to exist and exclude zero; its p stays the t test's.
+            permits = interval_permits_separation(interval) and (interval is not None or not one.rate)
+            verdict: ComparisonVerdict = "not_separated"
+            if p_adjusted < SIGNIFICANCE_ALPHA and comparison.delta and permits:
+                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < SIGNIFICANCE_ALPHA:
+                verdict = "equivalent"
             comparison = comparison.model_copy(
                 update={
                     "p_adjusted": p_adjusted,
@@ -911,7 +937,10 @@ def _multiple_comparisons(
                 )
                 confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
-                    one._replace(comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}))
+                    one._replace(
+                        comparison=one.comparison.model_copy(update={"mechanism_confounds": confounds}),
+                        rate=_is_rate(reading, catalog, judged_ranges),
+                    )
                 )
         families.append(_corrected_family(family_aspect, axes, tested))
     checks = [

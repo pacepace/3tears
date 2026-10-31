@@ -7827,7 +7827,7 @@
   ],
   "behavior": "extract_invoice_fields",
   "call": null,
-  "created_at": "2026-10-30T14:09:10.104791+00:00",
+  "created_at": "2026-10-31T18:40:41.688653+00:00",
   "created_by": "test:fixture",
   "declared_at": "2026-03-14T09:30:00+00:00",
   "declared_by": "",
@@ -7849,27 +7849,27 @@
   "subject_kind": "extractor_config"
  },
  {
-  "analysis_id": "01a18d24-a0ed-756c-9ba3-6ebe498d23e4",
-  "bundle_fingerprint": "v3:4e910c65de7293f82a61c4840d55c8e499dcfc0e4ab0829f9d27b80ffea9ab64",
+  "analysis_id": "01a19343-932b-75d8-9e11-c1c4663bf46e",
+  "bundle_fingerprint": "v3:0dffedceba180a6b32b9440d1d0e4cdda04c93f90e71c82cf9b4a4cd6b130aad",
   "calls": 2,
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "cancel_request_reason": null,
   "cancel_requested_at": null,
-  "created_at": "2026-10-30T14:09:10.392076+00:00",
+  "created_at": "2026-10-31T18:40:41.777846+00:00",
   "doc_type": "eval_analysis_attempt",
   "error": null,
   "faults": [],
   "generator_model": "toy-analyst-model",
-  "id": "01a18d24-9fea-72b6-af55-7394970d875e",
+  "id": "01a19343-92de-75d9-be8f-00c971e7cd86",
   "lease": {
    "epoch": 0,
-   "expires_at": "2026-10-30T14:10:10.123254+00:00",
-   "holder": "01a18d24-9fde-7173-b658-745924714276"
+   "expires_at": "2026-10-31T18:41:41.694849+00:00",
+   "holder": "01a19343-92db-77a1-a5a3-267ef73070de"
   },
   "lost": null,
   "outcome": "stored",
-  "prompt_id": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a",
-  "prompt_version": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a",
+  "prompt_id": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+  "prompt_version": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
   "refusal": null,
   "refusals": [],
   "reported_models": [
@@ -7884,9 +7884,9 @@
   "unpriced_calls": 0
  },
  {
-  "attempt_id": "01a18d24-9fea-72b6-af55-7394970d875e",
+  "attempt_id": "01a19343-92de-75d9-be8f-00c971e7cd86",
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
-  "claimed_at": "2026-10-30T14:09:10.124381+00:00",
+  "claimed_at": "2026-10-31T18:40:41.695049+00:00",
   "doc_type": "eval_generation_slot",
   "id": "generation-slot:2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "schema_minor": 11,
@@ -9922,7 +9922,7 @@
        "status": "completed"
       }
      ],
-     "schema_version": 64,
+     "schema_version": 65,
      "scope_divergences": [],
      "scope_id": "toyhost-scope",
      "scoreboard": [
@@ -12832,14 +12832,14 @@
    "subject_id": "extractor-config-7",
    "subject_kind": "extractor_config"
   },
-  "bundle_assembled_at": "2026-10-30T14:09:10.160395+00:00",
-  "bundle_fingerprint": "v3:4e910c65de7293f82a61c4840d55c8e499dcfc0e4ab0829f9d27b80ffea9ab64",
+  "bundle_assembled_at": "2026-10-31T18:40:41.712376+00:00",
+  "bundle_fingerprint": "v3:0dffedceba180a6b32b9440d1d0e4cdda04c93f90e71c82cf9b4a4cd6b130aad",
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
-  "created_at": "2026-10-30T14:09:10.315844+00:00",
+  "created_at": "2026-10-31T18:40:41.742211+00:00",
   "created_by": "agent:test",
   "doc_type": "eval_report_snapshot",
   "example_result_ids": {},
-  "id": "report-snapshot:875dd2fa57a605f374e0cb2697f657b7",
+  "id": "report-snapshot:500b261226147e9cb3c19c4fddde15f4",
   "report_input": {
    "arms": [
     {
@@ -12894,11 +12894,11 @@
        "trials": 36
       }
      },
-     "description": null,
+     "description": "A trial passes when its candidate did not fail, every check passed and every judged dimension scored at least 3 of 5.",
      "exploratory_measures": [
       "cost_usd"
      ],
-     "graded_by": null,
+     "graded_by": "judged",
      "id": "extract_invoice_fields",
      "margin": null,
      "name": "extract_invoice_fields",
@@ -12950,6 +12950,22 @@
        "where": "extract_invoice_fields"
       }
      ],
+     "pass_rule": {
+      "boundary": [],
+      "checks": [
+       "goal_state:field_accuracy >= 0.92"
+      ],
+      "criteria": [
+       "goal_checks",
+       "rubric"
+      ],
+      "dimensions": [
+       "extraction.layout_fidelity"
+      ],
+      "label": "pass^k (k=3, every goal check and criterion >= 3 of 5)",
+      "no_criterion": 0,
+      "threshold": 3
+     },
      "readings": [],
      "scoreboard": null
     }
@@ -13383,17 +13399,17 @@
    "target_matrix": null,
    "tasks": []
   },
-  "report_input_digest": "fc6ea5bd7d6c990dc2c92ed24d62b60fd3b380fbd36cfd238965f8f683ca40c1",
+  "report_input_digest": "59ceb18aae572f8a0eaa6ac212ebf593ca92724255addf725defc7b07f3aaa76",
   "schema_version": 13,
   "scope_id": "toyhost-scope",
   "source": "campaign"
  },
  {
-  "digest": "6b590945cf06570e29df5ce6cb80014e11006c1026b8bd4bd2640e7b600a4624",
+  "digest": "283f0e3c731a664f820251135e8527cd5fc67b4ddf8c47f0191da7c552a2b481",
   "doc_type": "eval_report_session",
-  "id": "01a18d24-a0d9-73da-856a-e7927badbd0b:session:analyst",
+  "id": "01a19343-9320-7633-84fb-03b243f424d1:session:analyst",
   "name": "analyst",
-  "report_doc_id": "01a18d24-a0d9-73da-856a-e7927badbd0b",
+  "report_doc_id": "01a19343-9320-7633-84fb-03b243f424d1",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
   "session": {
@@ -13415,14 +13431,14 @@
      "warn_before": 10
     },
     "messages": [
-     "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Write the report on snapshot report-snapshot:875dd2fa57a605f374e0cb2697f657b7: every call you make names it as snapshot_id.\\n\\nSubmit the report as one report-doc/1 document: a single fenced JSON object (```json ... ```) in a message that calls no tool. That message is your submission. Code checks it (the JSON, its shape, the ids it names, then the invariants) and sends it back with every fault until it passes, at most 3 times; then it goes to the editor. This draft has 100 tool calls, and you are warned when 10 are left.\\n\\nThe report-doc/1 JSON schema:\\n```json\\n{\\\"$defs\\\": {\\\"ChartQuery\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"What a chart reads from the report input, structured so code can check it names things that exist.\\\\n\\\\nPlanner-written. An empty list or string means no filter there: every arm, every measure, every stratum, no\\\\naspect, no limit (``limit`` 0).\\\", \\\"properties\\\": {\\\"arms\\\": {\\\"description\\\": \\\"Arm ids to show, in order; empty for every arm.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Arms\\\", \\\"type\\\": \\\"array\\\"}, \\\"aspect\\\": {\\\"description\\\": \\\"The aspect id it reads, for readings and anything per aspect; else empty.\\\", \\\"title\\\": \\\"Aspect\\\", \\\"type\\\": \\\"string\\\"}, \\\"limit\\\": {\\\"description\\\": \\\"The most rows to show (strata by cases, examples); 0 for no limit.\\\", \\\"minimum\\\": 0, \\\"title\\\": \\\"Limit\\\", \\\"type\\\": \\\"integer\\\"}, \\\"measures\\\": {\\\"description\\\": \\\"Measure or judged-dimension keys, as the source spells them.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Measures\\\", \\\"type\\\": \\\"array\\\"}, \\\"small_multiples_by\\\": {\\\"enum\\\": [\\\"none\\\", \\\"arm\\\", \\\"aspect\\\", \\\"task\\\"], \\\"title\\\": \\\"Small Multiples By\\\", \\\"type\\\": \\\"string\\\"}, \\\"source\\\": {\\\"description\\\": \\\"The part of the report input the chart reads.\\\", \\\"enum\\\": [\\\"readings\\\", \\\"contrasts\\\", \\\"measures\\\", \\\"judged\\\", \\\"scoreboard\\\", \\\"floors\\\", \\\"strata\\\", \\\"examples\\\", \\\"tasks\\\", \\\"configs\\\", \\\"cells\\\", \\\"confusion\\\", \\\"human_pref\\\", \\\"prices\\\", \\\"bar_reads\\\", \\\"compare\\\", \\\"settle\\\", \\\"levers\\\"], \\\"title\\\": \\\"Source\\\", \\\"type\\\": \\\"string\\\"}, \\\"strata\\\": {\\\"description\\\": \\\"Stratum or task ids to keep; empty for all.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Strata\\\", \\\"type\\\": \\\"array\\\"}, \\\"transform\\\": {\\\"enum\\\": [\\\"none\\\", \\\"per_1k\\\", \\\"arm_minus_control\\\"], \\\"title\\\": \\\"Transform\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"source\\\", \\\"aspect\\\", \\\"measures\\\", \\\"arms\\\", \\\"strata\\\", \\\"limit\\\", \\\"transform\\\", \\\"small_multiples_by\\\"], \\\"title\\\": \\\"ChartQuery\\\", \\\"type\\\": \\\"object\\\"}, \\\"Claim\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One claim of the story, in page order, with the evidence that shows it and the caveats said beside it.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The ids of the caveats stated beside this claim; may be empty.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"durable\\\": {\\\"default\\\": false, \\\"description\\\": \\\"Whether the claim should outlive this campaign, as an insight later ones read.\\\", \\\"title\\\": \\\"Durable\\\", \\\"type\\\": \\\"boolean\\\"}, \\\"evidence\\\": {\\\"description\\\": \\\"The one or two blocks that show it.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Evidence\\\"}, \\\"maxItems\\\": 2, \\\"minItems\\\": 1, \\\"title\\\": \\\"Evidence\\\", \\\"type\\\": \\\"array\\\"}, \\\"id\\\": {\\\"description\\\": \\\"The claim's id, unique in the document; the editor's findings name it.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Id\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"The claim, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}, \\\"weight\\\": {\\\"description\\\": \\\"How much it carries; it sets the claim's type size and nothing else.\\\", \\\"enum\\\": [\\\"lead\\\", \\\"support\\\", \\\"detail\\\"], \\\"title\\\": \\\"Weight\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"id\\\", \\\"text\\\", \\\"weight\\\", \\\"evidence\\\"], \\\"title\\\": \\\"Claim\\\", \\\"type\\\": \\\"object\\\"}, \\\"DecisionEntry\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One entry of the decision block: the slot word that titles it, and what it says.\\\", \\\"properties\\\": {\\\"slot\\\": {\\\"enum\\\": [\\\"recommendation\\\", \\\"why_not\\\", \\\"watch\\\", \\\"next\\\", \\\"the_trade\\\", \\\"where_it_flips\\\", \\\"our_lean\\\", \\\"what_settles_it\\\", \\\"what_is_tangled\\\", \\\"known_despite_it\\\"], \\\"title\\\": \\\"Slot\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"What the entry says, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"slot\\\", \\\"text\\\"], \\\"title\\\": \\\"DecisionEntry\\\", \\\"type\\\": \\\"object\\\"}, \\\"DocCaveat\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One caveat the call's confidence carries: open, with what would make it material, or checked immaterial.\\\", \\\"properties\\\": {\\\"checked\\\": {\\\"anyOf\\\": [{\\\"const\\\": \\\"immaterial\\\", \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"`immaterial` for a caveat code proves does not move the call; the page prints code's reason. Exactly one of this and `material_if`.\\\", \\\"title\\\": \\\"Checked\\\"}, \\\"id\\\": {\\\"description\\\": \\\"The caveat's id: one code assigns on the snapshot (caveats_list lists them), or `analyst:<slug>` for one code does not assign.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Id\\\", \\\"type\\\": \\\"string\\\"}, \\\"label\\\": {\\\"anyOf\\\": [{\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"The caveat's name as the page prints it. Optional for a code caveat, which code labels by its kind; required for an `analyst:` caveat.\\\", \\\"title\\\": \\\"Label\\\"}, \\\"material_if\\\": {\\\"anyOf\\\": [{\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"For an open caveat: what would make it material, figures by key. Exactly one of this and `checked`.\\\", \\\"title\\\": \\\"Material If\\\"}}, \\\"required\\\": [\\\"id\\\"], \\\"title\\\": \\\"DocCaveat\\\", \\\"type\\\": \\\"object\\\"}, \\\"DocConfidence\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"How sure the call is, in one of three forms, and the caveats it carries, each once.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The caveats the confidence carries, open or checked, each once.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/DocCaveat\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"form\\\": {\\\"enum\\\": [\\\"high\\\", \\\"high_if_immaterial\\\", \\\"low\\\"], \\\"title\\\": \\\"Form\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"form\\\", \\\"caveats\\\"], \\\"title\\\": \\\"DocConfidence\\\", \\\"type\\\": \\\"object\\\"}, \\\"Evidence\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One evidence block under a claim: a kind of block over a query of the snapshot, as ``block_render`` draws it.\\\", \\\"properties\\\": {\\\"block\\\": {\\\"description\\\": \\\"The kind of block, as block_catalog lists it.\\\", \\\"enum\\\": [\\\"forest\\\", \\\"bars\\\", \\\"diverging_bars\\\", \\\"lines\\\", \\\"scatter_frontier\\\", \\\"gate_scatter\\\", \\\"dot_interval\\\", \\\"range_bars\\\", \\\"gate_matrix\\\", \\\"lattice\\\", \\\"heatmap\\\", \\\"diff_heatmap\\\", \\\"confusion\\\", \\\"examples\\\", \\\"table\\\"], \\\"title\\\": \\\"Block\\\", \\\"type\\\": \\\"string\\\"}, \\\"caption\\\": {\\\"description\\\": \\\"The line under the block, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Caption\\\", \\\"type\\\": \\\"string\\\"}, \\\"emphasis\\\": {\\\"default\\\": \\\"\\\", \\\"description\\\": \\\"The one arm, stratum or task the block stresses, by id; empty for none.\\\", \\\"title\\\": \\\"Emphasis\\\", \\\"type\\\": \\\"string\\\"}, \\\"query\\\": {\\\"$ref\\\": \\\"#/$defs/ChartQuery\\\", \\\"description\\\": \\\"What the block reads, every field filled, as block_render returns it: an empty list or string is no filter, `limit` 0 no limit.\\\"}, \\\"reference\\\": {\\\"anyOf\\\": [{\\\"enum\\\": [\\\"floor\\\", \\\"budget\\\", \\\"margin\\\", \\\"no_preference\\\"], \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"The reference line to draw, which code keys from the snapshot; null for none.\\\", \\\"title\\\": \\\"Reference\\\"}}, \\\"required\\\": [\\\"block\\\", \\\"query\\\", \\\"caption\\\"], \\\"title\\\": \\\"Evidence\\\", \\\"type\\\": \\\"object\\\"}, \\\"ExploreRow\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One thing a reader could change and what it would do, in prose.\\\\n\\\\n``outcome`` here, :class:`NextStep`'s ``settles`` and :class:`DocCaveat`'s ``label`` are model prose not typed\\\\n:data:`ModelProse`: the prose scan reads by attribute name, and other models read a structured ``outcome``,\\\\n``settles`` and ``label`` by value.\\\", \\\"properties\\\": {\\\"binds\\\": {\\\"description\\\": \\\"What it decides.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Binds\\\", \\\"type\\\": \\\"string\\\"}, \\\"control\\\": {\\\"description\\\": \\\"What a reader could change.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Control\\\", \\\"type\\\": \\\"string\\\"}, \\\"outcome\\\": {\\\"description\\\": \\\"What happens as it moves, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Outcome\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"control\\\", \\\"binds\\\", \\\"outcome\\\"], \\\"title\\\": \\\"ExploreRow\\\", \\\"type\\\": \\\"object\\\"}, \\\"MethodItem\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One term of the method appendix, and the caveats whose reach is the method.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The ids of the caveats stated in this item; may be empty.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"term\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"Term\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"What it means here, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"term\\\", \\\"text\\\"], \\\"title\\\": \\\"MethodItem\\\", \\\"type\\\": \\\"object\\\"}, \\\"NextStep\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One experiment or declaration to make next, and what it would settle.\\\", \\\"properties\\\": {\\\"settles\\\": {\\\"description\\\": \\\"What its result would settle.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Settles\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"The step, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"text\\\", \\\"settles\\\"], \\\"title\\\": \\\"NextStep\\\", \\\"type\\\": \\\"object\\\"}, \\\"Omitted\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One thing the analyst saw and left out of the body, and why; the appendix still holds it.\\\", \\\"properties\\\": {\\\"what\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"What\\\", \\\"type\\\": \\\"string\\\"}, \\\"why\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"Why\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"what\\\", \\\"why\\\"], \\\"title\\\": \\\"Omitted\\\", \\\"type\\\": \\\"object\\\"}}, \\\"$id\\\": \\\"report-doc/1\\\", \\\"$schema\\\": \\\"https://json-schema.org/draft/2020-12/schema\\\", \\\"additionalProperties\\\": false, \\\"description\\\": \\\"A campaign report as the analyst writes it, report-doc/1: the story, the call and how sure it is, the decision\\\\nblock, the claims in page order with their evidence, and the appendix's parts. Its prose names every figure by key.\\\", \\\"properties\\\": {\\\"claims\\\": {\\\"description\\\": \\\"The story's claims, in page order.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Claim\\\"}, \\\"maxItems\\\": 12, \\\"minItems\\\": 1, \\\"title\\\": \\\"Claims\\\", \\\"type\\\": \\\"array\\\"}, \\\"confidence\\\": {\\\"$ref\\\": \\\"#/$defs/DocConfidence\\\"}, \\\"decision\\\": {\\\"description\\\": \\\"The decision block's entries, in page order; a slot may repeat.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/DecisionEntry\\\"}, \\\"maxItems\\\": 8, \\\"minItems\\\": 1, \\\"title\\\": \\\"Decision\\\", \\\"type\\\": \\\"array\\\"}, \\\"explore\\\": {\\\"description\\\": \\\"What a reader could change; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/ExploreRow\\\"}, \\\"maxItems\\\": 3, \\\"title\\\": \\\"Explore\\\", \\\"type\\\": \\\"array\\\"}, \\\"flag\\\": {\\\"anyOf\\\": [{\\\"maxLength\\\": 300, \\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"One line above the decision for what a reader must know first; null for none.\\\", \\\"title\\\": \\\"Flag\\\"}, \\\"headline\\\": {\\\"description\\\": \\\"The finding, figures by key.\\\", \\\"maxLength\\\": 240, \\\"minLength\\\": 1, \\\"title\\\": \\\"Headline\\\", \\\"type\\\": \\\"string\\\"}, \\\"lede\\\": {\\\"description\\\": \\\"What the headline rests on, figures by key.\\\", \\\"maxLength\\\": 420, \\\"minLength\\\": 1, \\\"title\\\": \\\"Lede\\\", \\\"type\\\": \\\"string\\\"}, \\\"method\\\": {\\\"description\\\": \\\"The method appendix's terms.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/MethodItem\\\"}, \\\"maxItems\\\": 12, \\\"minItems\\\": 1, \\\"title\\\": \\\"Method\\\", \\\"type\\\": \\\"array\\\"}, \\\"next\\\": {\\\"description\\\": \\\"The next steps, after the claims; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/NextStep\\\"}, \\\"maxItems\\\": 6, \\\"title\\\": \\\"Next\\\", \\\"type\\\": \\\"array\\\"}, \\\"omitted\\\": {\\\"description\\\": \\\"What was left out of the body, and why; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Omitted\\\"}, \\\"title\\\": \\\"Omitted\\\", \\\"type\\\": \\\"array\\\"}, \\\"recommends\\\": {\\\"description\\\": \\\"The arms the report recommends, by id, each once; empty for no call. The options table marks them.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Recommends\\\", \\\"type\\\": \\\"array\\\"}, \\\"schema\\\": {\\\"const\\\": \\\"report-doc/1\\\", \\\"title\\\": \\\"Schema\\\", \\\"type\\\": \\\"string\\\"}, \\\"story\\\": {\\\"description\\\": \\\"The story the report tells; no code reads it.\\\", \\\"enum\\\": [\\\"decision\\\", \\\"tradeoff\\\", \\\"diagnosis\\\", \\\"status\\\", \\\"exploratory\\\"], \\\"title\\\": \\\"Story\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"schema\\\", \\\"story\\\", \\\"headline\\\", \\\"lede\\\", \\\"recommends\\\", \\\"confidence\\\", \\\"decision\\\", \\\"claims\\\", \\\"explore\\\", \\\"omitted\\\", \\\"next\\\", \\\"method\\\"], \\\"title\\\": \\\"ReportDoc\\\", \\\"type\\\": \\\"object\\\"}\\n```\\n\\nThe snapshot's campaign_overview, as the tool answers it:\\n\\ncampaign overview\\nsnapshot: report-snapshot:875dd2fa57a605f374e0cb2697f657b7\\nmeta (7):\\n  meta.campaign = chunk width sweep\\n  meta.question = is the wider chunk worth what it costs to retrieve?\\n  meta.behavior = extract_invoice_fields\\n  meta.kind = choice\\n  meta.kind_means = Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm stood out (no clear winner); a pick of an arm shown ahead on no pair rests on cost or simplicity, at low confidence. A pick names every aspect another arm is shown ahead on, in `behind_on`.\\n  meta.design_shape = undesignated\\n  meta.run_date = 2026-03-14\\nn_candidates = 2\\ncases = 12\\nrepeats = 3\\narms (2):\\n  - role: challenger; short_name: none; served_model: extractor-v2\\n    arm:256tok = 256tok (A)\\n    settings (2):\\n      settings.256tok.model = extractor-v2\\n      settings.256tok.chunk_tokens = 256tok\\n    scoreboard (8):\\n      scoreboard.256tok.ran = 36\\n      scoreboard.256tok.usable = 36\\n      scoreboard.256tok.passed = 0\\n      scoreboard.256tok.cases = 12\\n      scoreboard.256tok.lost = 0\\n      scoreboard.256tok.failed = 36\\n      scoreboard.256tok.reply_cost_usd = $0.020\\n      scoreboard.256tok.test_cost_usd = $0.72\\n  - role: challenger; short_name: none; served_model: extractor-v2\\n    arm:1024tok = 1024tok (B)\\n    settings (2):\\n      settings.1024tok.model = extractor-v2\\n      settings.1024tok.chunk_tokens = 1024tok\\n    scoreboard (8):\\n      scoreboard.1024tok.ran = 36\\n      scoreboard.1024tok.usable = 36\\n      scoreboard.1024tok.passed = 16\\n      scoreboard.1024tok.cases = 12\\n      scoreboard.1024tok.lost = 0\\n      scoreboard.1024tok.failed = 20\\n      scoreboard.1024tok.reply_cost_usd = $0.030\\n      scoreboard.1024tok.test_cost_usd = $1.08\\naspects (1):\\n  - aspect: extract_invoice_fields; asked: True; graded_by: none; margin: none; depth: []; holds: [pairs, bars]; same_cases: []\\n    aspects.extract_invoice_fields.cases = 12\\n    aspects.extract_invoice_fields.repeats = 3\\nmeasures (6):\\n  - key: cost_usd; source: measure; unit: usd; higher_is_better: False; merit_axis: none; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.cost_usd.<arm>.<statistic>; judge: []\\n  - key: field_accuracy; source: measure; unit: none; higher_is_better: True; merit_axis: quality; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases]; key_form: measure.field_accuracy.<arm>.<statistic>; judge: []\\n  - key: goal_state:field_accuracy >= 0.92; source: measure; unit: none; higher_is_better: True; merit_axis: quality; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases]; key_form: measure.goal_state:field_accuracy >= 0.92.<arm>.<statistic>; judge: []\\n  - key: production_replicating_cost; source: measure; unit: usd; higher_is_better: False; merit_axis: cost; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.production_replicating_cost.<arm>.<statistic>; judge: []\\n  - key: total_ms; source: measure; unit: ms; higher_is_better: False; merit_axis: latency; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.total_ms.<arm>.<statistic>; judge: []\\n  - key: extraction.layout_fidelity; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: ordinal; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, sem, n, n_cases]; key_form: judged.extraction.layout_fidelity.<arm>.<statistic>\\n    judge (3):\\n      judged.extraction.layout_fidelity.tier = undetermined\\n      judged.extraction.layout_fidelity.calibration = insufficient\\n      judged.extraction.layout_fidelity.calibration_ratings = 0\\ncriteria (1):\\n  - id: extract_invoice_fields/bar/cost_usd; kind: bar; measure: cost_usd; statistic: mean; direction: lower_is_better; scope: overall; task: none; aspect: extract_invoice_fields\\n    criteria.extract_invoice_fields/bar/cost_usd.threshold = $0.025\\ncells: []\\ncaveats (4):\\n  - id: judge_uncalibrated; kind: judge_uncalibrated; reach: report; source: stated\\n  - id: unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.); kind: unreported; reach: method; source: stated\\n  - id: no_control; kind: no_control; reach: report; source: implied\\n  - id: nothing_declared; kind: nothing_declared; reach: report; source: implied\\nlate_criteria: []\\nlate_set_at: none\\nprior_insights: []\\nnames: {\\\"aspect\\\": {\\\"extract_invoice_fields\\\": \\\"extract_invoice_fields\\\"}, \\\"criterion\\\": {\\\"extract_invoice_fields/bar/cost_usd\\\": \\\"Measuring spend, all roles\\\"}, \\\"judged\\\": {\\\"extraction.layout_fidelity\\\": \\\"extraction layout fidelity\\\"}, \\\"measure\\\": {\\\"cost_usd\\\": \\\"Measuring spend, all roles\\\", \\\"field_accuracy\\\": \\\"Field accuracy\\\", \\\"goal_state:field_accuracy >= 0.92\\\": \\\"`field_accuracy >= 0.92`\\\", \\\"production_replicating_cost\\\": \\\"Production cost\\\", \\\"total_ms\\\": \\\"Turn time\\\"}}\\ntotal: 22\\noffset: 0\\nall 22 rows shown\"}]}",
+     "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Write the report on snapshot report-snapshot:500b261226147e9cb3c19c4fddde15f4: every call you make names it as snapshot_id.\\n\\nSubmit the report as one report-doc/1 document: a single fenced JSON object (```json ... ```) in a message that calls no tool. That message is your submission. Code checks it (the JSON, its shape, the ids it names, then the invariants) and sends it back with every fault until it passes, at most 3 times; then it goes to the editor. This draft has 100 tool calls, and you are warned when 10 are left.\\n\\nThe report-doc/1 JSON schema:\\n```json\\n{\\\"$defs\\\": {\\\"ChartQuery\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"What a chart reads from the report input, structured so code can check it names things that exist.\\\\n\\\\nPlanner-written. An empty list or string means no filter there: every arm, every measure, every stratum, no\\\\naspect, no limit (``limit`` 0).\\\", \\\"properties\\\": {\\\"arms\\\": {\\\"description\\\": \\\"Arm ids to show, in order; empty for every arm.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Arms\\\", \\\"type\\\": \\\"array\\\"}, \\\"aspect\\\": {\\\"description\\\": \\\"The aspect id it reads, for readings and anything per aspect; else empty.\\\", \\\"title\\\": \\\"Aspect\\\", \\\"type\\\": \\\"string\\\"}, \\\"limit\\\": {\\\"description\\\": \\\"The most rows to show (strata by cases, examples); 0 for no limit.\\\", \\\"minimum\\\": 0, \\\"title\\\": \\\"Limit\\\", \\\"type\\\": \\\"integer\\\"}, \\\"measures\\\": {\\\"description\\\": \\\"Measure or judged-dimension keys, as the source spells them.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Measures\\\", \\\"type\\\": \\\"array\\\"}, \\\"small_multiples_by\\\": {\\\"enum\\\": [\\\"none\\\", \\\"arm\\\", \\\"aspect\\\", \\\"task\\\"], \\\"title\\\": \\\"Small Multiples By\\\", \\\"type\\\": \\\"string\\\"}, \\\"source\\\": {\\\"description\\\": \\\"The part of the report input the chart reads.\\\", \\\"enum\\\": [\\\"readings\\\", \\\"contrasts\\\", \\\"measures\\\", \\\"judged\\\", \\\"scoreboard\\\", \\\"floors\\\", \\\"strata\\\", \\\"examples\\\", \\\"tasks\\\", \\\"configs\\\", \\\"cells\\\", \\\"confusion\\\", \\\"human_pref\\\", \\\"prices\\\", \\\"bar_reads\\\", \\\"compare\\\", \\\"settle\\\", \\\"levers\\\"], \\\"title\\\": \\\"Source\\\", \\\"type\\\": \\\"string\\\"}, \\\"strata\\\": {\\\"description\\\": \\\"Stratum or task ids to keep; empty for all.\\\", \\\"items\\\": {\\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Strata\\\", \\\"type\\\": \\\"array\\\"}, \\\"transform\\\": {\\\"enum\\\": [\\\"none\\\", \\\"per_1k\\\", \\\"arm_minus_control\\\"], \\\"title\\\": \\\"Transform\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"source\\\", \\\"aspect\\\", \\\"measures\\\", \\\"arms\\\", \\\"strata\\\", \\\"limit\\\", \\\"transform\\\", \\\"small_multiples_by\\\"], \\\"title\\\": \\\"ChartQuery\\\", \\\"type\\\": \\\"object\\\"}, \\\"Claim\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One claim of the story, in page order, with the evidence that shows it and the caveats said beside it.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The ids of the caveats stated beside this claim; may be empty.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"durable\\\": {\\\"default\\\": false, \\\"description\\\": \\\"Whether the claim should outlive this campaign, as an insight later ones read.\\\", \\\"title\\\": \\\"Durable\\\", \\\"type\\\": \\\"boolean\\\"}, \\\"evidence\\\": {\\\"description\\\": \\\"The one or two blocks that show it.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Evidence\\\"}, \\\"maxItems\\\": 2, \\\"minItems\\\": 1, \\\"title\\\": \\\"Evidence\\\", \\\"type\\\": \\\"array\\\"}, \\\"id\\\": {\\\"description\\\": \\\"The claim's id, unique in the document; the editor's findings name it.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Id\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"The claim, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}, \\\"weight\\\": {\\\"description\\\": \\\"How much it carries; it sets the claim's type size and nothing else.\\\", \\\"enum\\\": [\\\"lead\\\", \\\"support\\\", \\\"detail\\\"], \\\"title\\\": \\\"Weight\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"id\\\", \\\"text\\\", \\\"weight\\\", \\\"evidence\\\"], \\\"title\\\": \\\"Claim\\\", \\\"type\\\": \\\"object\\\"}, \\\"DecisionEntry\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One entry of the decision block: the slot word that titles it, and what it says.\\\", \\\"properties\\\": {\\\"slot\\\": {\\\"enum\\\": [\\\"recommendation\\\", \\\"why_not\\\", \\\"watch\\\", \\\"next\\\", \\\"the_trade\\\", \\\"where_it_flips\\\", \\\"our_lean\\\", \\\"what_settles_it\\\", \\\"what_is_tangled\\\", \\\"known_despite_it\\\"], \\\"title\\\": \\\"Slot\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"What the entry says, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"slot\\\", \\\"text\\\"], \\\"title\\\": \\\"DecisionEntry\\\", \\\"type\\\": \\\"object\\\"}, \\\"DocCaveat\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One caveat the call's confidence carries: open, with what would make it material, or checked immaterial.\\\", \\\"properties\\\": {\\\"checked\\\": {\\\"anyOf\\\": [{\\\"const\\\": \\\"immaterial\\\", \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"`immaterial` for a caveat code proves does not move the call; the page prints code's reason. Exactly one of this and `material_if`.\\\", \\\"title\\\": \\\"Checked\\\"}, \\\"id\\\": {\\\"description\\\": \\\"The caveat's id: one code assigns on the snapshot (caveats_list lists them), or `analyst:<slug>` for one code does not assign.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Id\\\", \\\"type\\\": \\\"string\\\"}, \\\"label\\\": {\\\"anyOf\\\": [{\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"The caveat's name as the page prints it. Optional for a code caveat, which code labels by its kind; required for an `analyst:` caveat.\\\", \\\"title\\\": \\\"Label\\\"}, \\\"material_if\\\": {\\\"anyOf\\\": [{\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"For an open caveat: what would make it material, figures by key. Exactly one of this and `checked`.\\\", \\\"title\\\": \\\"Material If\\\"}}, \\\"required\\\": [\\\"id\\\"], \\\"title\\\": \\\"DocCaveat\\\", \\\"type\\\": \\\"object\\\"}, \\\"DocConfidence\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"How sure the call is, in one of three forms, and the caveats it carries, each once.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The caveats the confidence carries, open or checked, each once.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/DocCaveat\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"form\\\": {\\\"enum\\\": [\\\"high\\\", \\\"high_if_immaterial\\\", \\\"low\\\"], \\\"title\\\": \\\"Form\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"form\\\", \\\"caveats\\\"], \\\"title\\\": \\\"DocConfidence\\\", \\\"type\\\": \\\"object\\\"}, \\\"Evidence\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One evidence block under a claim: a kind of block over a query of the snapshot, as ``block_render`` draws it.\\\", \\\"properties\\\": {\\\"block\\\": {\\\"description\\\": \\\"The kind of block, as block_catalog lists it.\\\", \\\"enum\\\": [\\\"forest\\\", \\\"bars\\\", \\\"diverging_bars\\\", \\\"lines\\\", \\\"scatter_frontier\\\", \\\"gate_scatter\\\", \\\"dot_interval\\\", \\\"range_bars\\\", \\\"gate_matrix\\\", \\\"lattice\\\", \\\"heatmap\\\", \\\"diff_heatmap\\\", \\\"confusion\\\", \\\"examples\\\", \\\"table\\\"], \\\"title\\\": \\\"Block\\\", \\\"type\\\": \\\"string\\\"}, \\\"caption\\\": {\\\"description\\\": \\\"The line under the block, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Caption\\\", \\\"type\\\": \\\"string\\\"}, \\\"emphasis\\\": {\\\"default\\\": \\\"\\\", \\\"description\\\": \\\"The one arm, stratum or task the block stresses, by id; empty for none.\\\", \\\"title\\\": \\\"Emphasis\\\", \\\"type\\\": \\\"string\\\"}, \\\"query\\\": {\\\"$ref\\\": \\\"#/$defs/ChartQuery\\\", \\\"description\\\": \\\"What the block reads, every field filled, as block_render returns it: an empty list or string is no filter, `limit` 0 no limit.\\\"}, \\\"reference\\\": {\\\"anyOf\\\": [{\\\"enum\\\": [\\\"floor\\\", \\\"budget\\\", \\\"margin\\\", \\\"no_preference\\\"], \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"The reference line to draw, which code keys from the snapshot; null for none.\\\", \\\"title\\\": \\\"Reference\\\"}}, \\\"required\\\": [\\\"block\\\", \\\"query\\\", \\\"caption\\\"], \\\"title\\\": \\\"Evidence\\\", \\\"type\\\": \\\"object\\\"}, \\\"ExploreRow\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One thing a reader could change and what it would do, in prose.\\\\n\\\\n``outcome`` here, :class:`NextStep`'s ``settles`` and :class:`DocCaveat`'s ``label`` are model prose not typed\\\\n:data:`ModelProse`: the prose scan reads by attribute name, and other models read a structured ``outcome``,\\\\n``settles`` and ``label`` by value.\\\", \\\"properties\\\": {\\\"binds\\\": {\\\"description\\\": \\\"What it decides.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Binds\\\", \\\"type\\\": \\\"string\\\"}, \\\"control\\\": {\\\"description\\\": \\\"What a reader could change.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Control\\\", \\\"type\\\": \\\"string\\\"}, \\\"outcome\\\": {\\\"description\\\": \\\"What happens as it moves, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Outcome\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"control\\\", \\\"binds\\\", \\\"outcome\\\"], \\\"title\\\": \\\"ExploreRow\\\", \\\"type\\\": \\\"object\\\"}, \\\"MethodItem\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One term of the method appendix, and the caveats whose reach is the method.\\\", \\\"properties\\\": {\\\"caveats\\\": {\\\"description\\\": \\\"The ids of the caveats stated in this item; may be empty.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Caveats\\\", \\\"type\\\": \\\"array\\\"}, \\\"term\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"Term\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"What it means here, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"term\\\", \\\"text\\\"], \\\"title\\\": \\\"MethodItem\\\", \\\"type\\\": \\\"object\\\"}, \\\"NextStep\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One experiment or declaration to make next, and what it would settle.\\\", \\\"properties\\\": {\\\"settles\\\": {\\\"description\\\": \\\"What its result would settle.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Settles\\\", \\\"type\\\": \\\"string\\\"}, \\\"text\\\": {\\\"description\\\": \\\"The step, figures by key.\\\", \\\"minLength\\\": 1, \\\"title\\\": \\\"Text\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"text\\\", \\\"settles\\\"], \\\"title\\\": \\\"NextStep\\\", \\\"type\\\": \\\"object\\\"}, \\\"Omitted\\\": {\\\"additionalProperties\\\": false, \\\"description\\\": \\\"One thing the analyst saw and left out of the body, and why; the appendix still holds it.\\\", \\\"properties\\\": {\\\"what\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"What\\\", \\\"type\\\": \\\"string\\\"}, \\\"why\\\": {\\\"minLength\\\": 1, \\\"title\\\": \\\"Why\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"what\\\", \\\"why\\\"], \\\"title\\\": \\\"Omitted\\\", \\\"type\\\": \\\"object\\\"}}, \\\"$id\\\": \\\"report-doc/1\\\", \\\"$schema\\\": \\\"https://json-schema.org/draft/2020-12/schema\\\", \\\"additionalProperties\\\": false, \\\"description\\\": \\\"A campaign report as the analyst writes it, report-doc/1: the story, the call and how sure it is, the decision\\\\nblock, the claims in page order with their evidence, and the appendix's parts. Its prose names every figure by key.\\\", \\\"properties\\\": {\\\"claims\\\": {\\\"description\\\": \\\"The story's claims, in page order.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Claim\\\"}, \\\"maxItems\\\": 12, \\\"minItems\\\": 1, \\\"title\\\": \\\"Claims\\\", \\\"type\\\": \\\"array\\\"}, \\\"confidence\\\": {\\\"$ref\\\": \\\"#/$defs/DocConfidence\\\"}, \\\"decision\\\": {\\\"description\\\": \\\"The decision block's entries, in page order; a slot may repeat.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/DecisionEntry\\\"}, \\\"maxItems\\\": 8, \\\"minItems\\\": 1, \\\"title\\\": \\\"Decision\\\", \\\"type\\\": \\\"array\\\"}, \\\"explore\\\": {\\\"description\\\": \\\"What a reader could change; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/ExploreRow\\\"}, \\\"maxItems\\\": 3, \\\"title\\\": \\\"Explore\\\", \\\"type\\\": \\\"array\\\"}, \\\"flag\\\": {\\\"anyOf\\\": [{\\\"maxLength\\\": 300, \\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, {\\\"type\\\": \\\"null\\\"}], \\\"default\\\": null, \\\"description\\\": \\\"One line above the decision for what a reader must know first; null for none.\\\", \\\"title\\\": \\\"Flag\\\"}, \\\"headline\\\": {\\\"description\\\": \\\"The finding, figures by key.\\\", \\\"maxLength\\\": 240, \\\"minLength\\\": 1, \\\"title\\\": \\\"Headline\\\", \\\"type\\\": \\\"string\\\"}, \\\"lede\\\": {\\\"description\\\": \\\"What the headline rests on, figures by key.\\\", \\\"maxLength\\\": 420, \\\"minLength\\\": 1, \\\"title\\\": \\\"Lede\\\", \\\"type\\\": \\\"string\\\"}, \\\"method\\\": {\\\"description\\\": \\\"The method appendix's terms.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/MethodItem\\\"}, \\\"maxItems\\\": 12, \\\"minItems\\\": 1, \\\"title\\\": \\\"Method\\\", \\\"type\\\": \\\"array\\\"}, \\\"next\\\": {\\\"description\\\": \\\"The next steps, after the claims; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/NextStep\\\"}, \\\"maxItems\\\": 6, \\\"title\\\": \\\"Next\\\", \\\"type\\\": \\\"array\\\"}, \\\"omitted\\\": {\\\"description\\\": \\\"What was left out of the body, and why; may be empty.\\\", \\\"items\\\": {\\\"$ref\\\": \\\"#/$defs/Omitted\\\"}, \\\"title\\\": \\\"Omitted\\\", \\\"type\\\": \\\"array\\\"}, \\\"recommends\\\": {\\\"description\\\": \\\"The arms the report recommends, by id, each once; empty for no call. The options table marks them.\\\", \\\"items\\\": {\\\"minLength\\\": 1, \\\"type\\\": \\\"string\\\"}, \\\"title\\\": \\\"Recommends\\\", \\\"type\\\": \\\"array\\\"}, \\\"schema\\\": {\\\"const\\\": \\\"report-doc/1\\\", \\\"title\\\": \\\"Schema\\\", \\\"type\\\": \\\"string\\\"}, \\\"story\\\": {\\\"description\\\": \\\"The story the report tells; no code reads it.\\\", \\\"enum\\\": [\\\"decision\\\", \\\"tradeoff\\\", \\\"diagnosis\\\", \\\"status\\\", \\\"exploratory\\\"], \\\"title\\\": \\\"Story\\\", \\\"type\\\": \\\"string\\\"}}, \\\"required\\\": [\\\"schema\\\", \\\"story\\\", \\\"headline\\\", \\\"lede\\\", \\\"recommends\\\", \\\"confidence\\\", \\\"decision\\\", \\\"claims\\\", \\\"explore\\\", \\\"omitted\\\", \\\"next\\\", \\\"method\\\"], \\\"title\\\": \\\"ReportDoc\\\", \\\"type\\\": \\\"object\\\"}\\n```\\n\\nThe snapshot's campaign_overview, as the tool answers it:\\n\\ncampaign overview\\nsnapshot: report-snapshot:500b261226147e9cb3c19c4fddde15f4\\nmeta (7):\\n  meta.campaign = chunk width sweep\\n  meta.question = is the wider chunk worth what it costs to retrieve?\\n  meta.behavior = extract_invoice_fields\\n  meta.kind = choice\\n  meta.kind_means = Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm stood out (no clear winner); a pick of an arm shown ahead on no pair rests on cost or simplicity, at low confidence. A pick names every aspect another arm is shown ahead on, in `behind_on`.\\n  meta.design_shape = undesignated\\n  meta.run_date = 2026-03-14\\nn_candidates = 2\\ncases = 12\\nrepeats = 3\\narms (2):\\n  - role: challenger; short_name: none; served_model: extractor-v2\\n    arm:256tok = 256tok (A)\\n    settings (2):\\n      settings.256tok.model = extractor-v2\\n      settings.256tok.chunk_tokens = 256tok\\n    scoreboard (8):\\n      scoreboard.256tok.ran = 36\\n      scoreboard.256tok.usable = 36\\n      scoreboard.256tok.passed = 0\\n      scoreboard.256tok.cases = 12\\n      scoreboard.256tok.lost = 0\\n      scoreboard.256tok.failed = 36\\n      scoreboard.256tok.reply_cost_usd = $0.020\\n      scoreboard.256tok.test_cost_usd = $0.72\\n  - role: challenger; short_name: none; served_model: extractor-v2\\n    arm:1024tok = 1024tok (B)\\n    settings (2):\\n      settings.1024tok.model = extractor-v2\\n      settings.1024tok.chunk_tokens = 1024tok\\n    scoreboard (8):\\n      scoreboard.1024tok.ran = 36\\n      scoreboard.1024tok.usable = 36\\n      scoreboard.1024tok.passed = 16\\n      scoreboard.1024tok.cases = 12\\n      scoreboard.1024tok.lost = 0\\n      scoreboard.1024tok.failed = 20\\n      scoreboard.1024tok.reply_cost_usd = $0.030\\n      scoreboard.1024tok.test_cost_usd = $1.08\\naspects (1):\\n  - aspect: extract_invoice_fields; asked: True; graded_by: judged; counted: [extraction.layout_fidelity]; margin: none; depth: []; holds: [pairs, bars]; same_cases: []\\n    aspects.extract_invoice_fields.pass_rule = pass^k (k=3, every goal check and criterion >= 3 of 5)\\n    aspects.extract_invoice_fields.no_criterion = 0\\n    aspects.extract_invoice_fields.cases = 12\\n    aspects.extract_invoice_fields.repeats = 3\\nmeasures (6):\\n  - key: cost_usd; source: measure; unit: usd; higher_is_better: False; merit_axis: none; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.cost_usd.<arm>.<statistic>; judge: []\\n  - key: field_accuracy; source: measure; unit: none; higher_is_better: True; merit_axis: quality; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases]; key_form: measure.field_accuracy.<arm>.<statistic>; judge: []\\n  - key: goal_state:field_accuracy >= 0.92; source: measure; unit: none; higher_is_better: True; merit_axis: quality; grade: pass_fail; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases]; key_form: measure.goal_state:field_accuracy >= 0.92.<arm>.<statistic>; judge: []\\n  - key: production_replicating_cost; source: measure; unit: usd; higher_is_better: False; merit_axis: cost; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.production_replicating_cost.<arm>.<statistic>; judge: []\\n  - key: total_ms; source: measure; unit: ms; higher_is_better: False; merit_axis: latency; grade: none; level: 95%; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, ci, n, n_cases, p95]; key_form: measure.total_ms.<arm>.<statistic>; judge: []\\n  - key: extraction.layout_fidelity; source: judged; unit: none; higher_is_better: none; merit_axis: none; grade: ordinal; level: none; arms_without: []; aspects: []; slices: [arm]; statistics: [arm: mean, sem, n, n_cases]; key_form: judged.extraction.layout_fidelity.<arm>.<statistic>\\n    judge (3):\\n      judged.extraction.layout_fidelity.tier = undetermined\\n      judged.extraction.layout_fidelity.calibration = insufficient\\n      judged.extraction.layout_fidelity.calibration_ratings = 0\\ncriteria (1):\\n  - id: extract_invoice_fields/bar/cost_usd; kind: bar; measure: cost_usd; statistic: mean; direction: lower_is_better; scope: overall; task: none; aspect: extract_invoice_fields\\n    criteria.extract_invoice_fields/bar/cost_usd.threshold = $0.025\\ncells: []\\ncaveats (4):\\n  - id: judge_uncalibrated; kind: judge_uncalibrated; reach: report; source: stated\\n  - id: unreported:orchestration_ms (llm_ms, tool_ms were not measured, so the parts cannot account for the whole.); kind: unreported; reach: method; source: stated\\n  - id: no_control; kind: no_control; reach: report; source: implied\\n  - id: nothing_declared; kind: nothing_declared; reach: report; source: implied\\nlate_criteria: []\\nlate_set_at: none\\nprior_insights: []\\nnames: {\\\"aspect\\\": {\\\"extract_invoice_fields\\\": \\\"extract_invoice_fields\\\"}, \\\"criterion\\\": {\\\"extract_invoice_fields/bar/cost_usd\\\": \\\"Measuring spend, all roles\\\"}, \\\"judged\\\": {\\\"extraction.layout_fidelity\\\": \\\"extraction layout fidelity\\\"}, \\\"measure\\\": {\\\"cost_usd\\\": \\\"Measuring spend, all roles\\\", \\\"field_accuracy\\\": \\\"Field accuracy\\\", \\\"goal_state:field_accuracy >= 0.92\\\": \\\"`field_accuracy >= 0.92`\\\", \\\"production_replicating_cost\\\": \\\"Production cost\\\", \\\"total_ms\\\": \\\"Turn time\\\"}}\\ntotal: 22\\noffset: 0\\nall 22 rows shown\"}]}",
      "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Here is the report.\\n```json\\n{\\\"schema\\\": \\\"report-doc/1\\\", \\\"story\\\": \\\"status\\\", \\\"headline\\\": \\\"The two token budgets read alike on invoice extraction.\\\", \\\"lede\\\": \\\"Neither arm is shown ahead on this campaign's evidence.\\\", \\\"flag\\\": null, \\\"recommends\\\": [], \\\"confidence\\\": {\\\"form\\\": \\\"low\\\", \\\"caveats\\\": [{\\\"id\\\": \\\"judge_uncalibrated\\\", \\\"label\\\": null, \\\"material_if\\\": \\\"only if the judge grades the two arms differently\\\", \\\"checked\\\": null}, {\\\"id\\\": \\\"no_control\\\", \\\"label\\\": null, \\\"material_if\\\": \\\"only if a baseline would read differently\\\", \\\"checked\\\": null}, {\\\"id\\\": \\\"nothing_declared\\\", \\\"label\\\": null, \\\"material_if\\\": \\\"only if an owner line sits between the arms\\\", \\\"checked\\\": null}]}, \\\"decision\\\": [{\\\"slot\\\": \\\"recommendation\\\", \\\"text\\\": \\\"No call: run more cases before choosing a budget.\\\"}], \\\"claims\\\": [{\\\"id\\\": \\\"c1\\\", \\\"text\\\": \\\"The two token budgets read alike on invoice extraction.\\\", \\\"weight\\\": \\\"lead\\\", \\\"evidence\\\": [{\\\"block\\\": \\\"table\\\", \\\"query\\\": {\\\"source\\\": \\\"measures\\\", \\\"aspect\\\": \\\"extract_invoice_fields\\\", \\\"measures\\\": [], \\\"arms\\\": [], \\\"strata\\\": [], \\\"limit\\\": 0, \\\"transform\\\": \\\"none\\\", \\\"small_multiples_by\\\": \\\"none\\\"}, \\\"reference\\\": null, \\\"emphasis\\\": \\\"\\\", \\\"caption\\\": \\\"Each arm's measures.\\\"}], \\\"caveats\\\": [], \\\"durable\\\": true}], \\\"explore\\\": [], \\\"omitted\\\": [], \\\"next\\\": [], \\\"method\\\": [{\\\"term\\\": \\\"Arms\\\", \\\"text\\\": \\\"Two token budgets.\\\", \\\"caveats\\\": []}]}\\n```\"}]}"
     ],
     "model": "toy-analyst-model",
     "name": "analyst",
     "results": [],
     "role": "analyst",
-    "skill_digest": "3cdf751c3c6d6a184949edf44193be4dc44452c03d691ee43ff5c84e1296f755",
+    "skill_digest": "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b",
     "state": {
      "calls": 100,
      "calls_used": 0,
@@ -13433,16 +13449,16 @@
     },
     "tools_digest": "bbf48caa01f3b0426f599bb77e72efa8b2f71c250489b57a4fc650a91b81d644"
    },
-   "snapshot": "report-snapshot:875dd2fa57a605f374e0cb2697f657b7"
+   "snapshot": "report-snapshot:500b261226147e9cb3c19c4fddde15f4"
   },
   "turns": 1
  },
  {
-  "digest": "ed18c9ea28a4dae5bd2b09b047a08940d63b4e043ef09af7bfa2290363f5ac22",
+  "digest": "52372f42bf965c710cf9bbb3457c6d78030481c9d53008f6c30bc41059f3b14e",
   "doc_type": "eval_report_session",
-  "id": "01a18d24-a0d9-73da-856a-e7927badbd0b:session:editor-1",
+  "id": "01a19343-9320-7633-84fb-03b243f424d1:session:editor-1",
   "name": "editor-1",
-  "report_doc_id": "01a18d24-a0d9-73da-856a-e7927badbd0b",
+  "report_doc_id": "01a19343-9320-7633-84fb-03b243f424d1",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
   "session": {
@@ -13456,7 +13472,7 @@
     "warn_before": 10
    },
    "messages": [
-    "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Review the report written from snapshot report-snapshot:875dd2fa57a605f374e0cb2697f657b7: every call you make names it as snapshot_id. This review has 40 tool calls.\\n\\nThe page, as a reader sees it:\\n\\nChoice \u00b7 candidates compared \u00b7 extract_invoice_fields \u00b7 2 arms \u00b7 extract_invoice_fields \u00b7 12 cases \u00d7 3 repeats \u00b7 Run 2026-03-14\\n\\n# The two token budgets read alike on invoice extraction.\\n\\nNeither arm is shown ahead on this campaign's evidence.\\n\\nConfidence: Low.\\n- The judge is not calibrated. only if the judge grades the two arms differently\\n- No arm is the control. only if a baseline would read differently\\n- Nothing declares what is good enough. only if an owner line sits between the arms\\n\\nRecommendation. No call: run more cases before choosing a budget.\\n\\nOptions\\n| Option | Role | Configuration | Pass rate | Cost per reply |\\n|---|---|---|---|---|\\n| A \u00b7 256tok | Candidate | extractor-v2 \u00b7 chunk tokens 256tok | 0.0% (0 of 36) | $0.020 (all 36 calls priced) |\\n| B \u00b7 1024tok | Candidate | extractor-v2 \u00b7 chunk tokens 1024tok | 44.4% (16 of 36) | $0.030 (all 36 calls priced) |\\n\\n## Claim c1 (lead)\\nThe two token budgets read alike on invoice extraction.\\n\\n[table; level 95%]\\n| Arm | Measuring spend, all roles, per 1,000 replies | 95% interval | Field accuracy | 95% interval | `field_accuracy >= 0.92` | 95% interval | Production cost, per 1,000 replies | 95% interval | Turn time | 95% interval |\\n|---|---|---|---|---|---|---|---|---|---|---|\\n| A \u00b7 256tok | $20 | $19 to $21 | 0.78 | 0.7553 to 0.8047 | 0.0% | 0.0% to 27.1% | $20 | $19 to $21 | 920 ms | 856 ms to 984 ms |\\n| B \u00b7 1024tok | $30 | $28 to $32 | 0.91 | 0.8853 to 0.9347 | 44.4% | 21.2% to 70.5% | $30 | $28 to $32 | 1420 ms | 1320 ms to 1520 ms |\\nEach arm's measures.\\n\\n# Full results\\n\\n## The arms\\nEach arm's full configuration, once. The rest of the page names an arm by its letter tag and name.\\n| Arm | Role | Configuration | Served model | Trials usable |\\n|---|---|---|---|---|\\n| A \u00b7 256tok | Candidate | extractor-v2 \u00b7 chunk tokens 256tok | extractor-v2 | 36 of 36 |\\n| B \u00b7 1024tok | Candidate | extractor-v2 \u00b7 chunk tokens 1024tok | extractor-v2 | 36 of 36 |\\n\\n## Every arm by measure\\n| Arm | Pass rate | extraction layout fidelity | Measuring spend, all roles, per 1,000 replies | Field accuracy | `field_accuracy >= 0.92` | Production cost, per 1,000 replies | Turn time |\\n|---|---|---|---|---|---|---|---|\\n| A \u00b7 256tok | 0.0% (0 of 36) | 3.333 | $20 | 0.78 | 0.0% | $20 | 920 ms |\\n| B \u00b7 1024tok | 44.4% (16 of 36) | 4.333 | $30 | 0.91 | 44.4% | $30 | 1420 ms |\\n\\n## Method\\n- Arms: Two token budgets.\\n\\n\\nWhat the analyst left out, and why (omitted):\\n- nothing\\n\\nComputed facts, for you to weigh. Code computed each from the snapshot; none is a verdict:\\n- [call_vs_dominance] recommends: options_dominance reads 256tok (A) as the one option dominating; the document recommends no arm. (keys: arm:256tok)\\n- [weakest_not_in_watch] decision: The weakest margin is 256tok (A), $0.020 against Measuring spend, all roles at $0.025, a gap of $5.00/1000, on no arm the document recommends; the decision block has no Watch entry. (keys: weakest.arm, weakest.value, weakest.criterion, weakest.threshold, weakest.margin)\\n\\nYour final message, with no tool call in it, is the review: one fenced JSON object, as editor.md says.\"}]}",
+    "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Review the report written from snapshot report-snapshot:500b261226147e9cb3c19c4fddde15f4: every call you make names it as snapshot_id. This review has 40 tool calls.\\n\\nThe page, as a reader sees it:\\n\\nChoice \u00b7 candidates compared \u00b7 extract_invoice_fields \u00b7 2 arms \u00b7 extract_invoice_fields \u00b7 12 cases \u00d7 3 repeats \u00b7 Run 2026-03-14\\n\\n# The two token budgets read alike on invoice extraction.\\n\\nNeither arm is shown ahead on this campaign's evidence.\\n\\nConfidence: Low.\\n- The judge is not calibrated. only if the judge grades the two arms differently\\n- No arm is the control. only if a baseline would read differently\\n- Nothing declares what is good enough. only if an owner line sits between the arms\\n\\nRecommendation. No call: run more cases before choosing a budget.\\n\\nOptions\\n| Option | Role | Configuration | Pass rate | Cost per reply |\\n|---|---|---|---|---|\\n| A \u00b7 256tok | Candidate | extractor-v2 \u00b7 chunk tokens 256tok | 0.0% (0 of 36) | $0.020 (all 36 calls priced) |\\n| B \u00b7 1024tok | Candidate | extractor-v2 \u00b7 chunk tokens 1024tok | 44.4% (16 of 36) | $0.030 (all 36 calls priced) |\\n\\n## Claim c1 (lead)\\nThe two token budgets read alike on invoice extraction.\\n\\n[table; level 95%]\\n| Arm | Measuring spend, all roles, per 1,000 replies | 95% interval | Field accuracy | 95% interval | `field_accuracy >= 0.92` | 95% interval | Production cost, per 1,000 replies | 95% interval | Turn time | 95% interval |\\n|---|---|---|---|---|---|---|---|---|---|---|\\n| A \u00b7 256tok | $20 | $19 to $21 | 0.78 | 0.7553 to 0.8047 | 0.0% | 0.0% to 27.1% | $20 | $19 to $21 | 920 ms | 856 ms to 984 ms |\\n| B \u00b7 1024tok | $30 | $28 to $32 | 0.91 | 0.8853 to 0.9347 | 44.4% | 21.2% to 70.5% | $30 | $28 to $32 | 1420 ms | 1320 ms to 1520 ms |\\nEach arm's measures.\\n\\n# Full results\\n\\n## The arms\\nEach arm's full configuration, once. The rest of the page names an arm by its letter tag and name.\\n| Arm | Role | Configuration | Served model | Trials usable |\\n|---|---|---|---|---|\\n| A \u00b7 256tok | Candidate | extractor-v2 \u00b7 chunk tokens 256tok | extractor-v2 | 36 of 36 |\\n| B \u00b7 1024tok | Candidate | extractor-v2 \u00b7 chunk tokens 1024tok | extractor-v2 | 36 of 36 |\\n\\n## Every arm by measure\\n| Arm | Pass rate | extraction layout fidelity | Measuring spend, all roles, per 1,000 replies | Field accuracy | `field_accuracy >= 0.92` | Production cost, per 1,000 replies | Turn time |\\n|---|---|---|---|---|---|---|---|\\n| A \u00b7 256tok | 0.0% (0 of 36) | 3.333 | $20 | 0.78 | 0.0% | $20 | 920 ms |\\n| B \u00b7 1024tok | 44.4% (16 of 36) | 4.333 | $30 | 0.91 | 44.4% | $30 | 1420 ms |\\n\\n## Method\\n- Arms: Two token budgets.\\n\\n\\nWhat the analyst left out, and why (omitted):\\n- nothing\\n\\nComputed facts, for you to weigh. Code computed each from the snapshot; none is a verdict:\\n- [call_vs_dominance] recommends: options_dominance reads 256tok (A) as the one option dominating; the document recommends no arm. (keys: arm:256tok)\\n- [weakest_not_in_watch] decision: The weakest margin is 256tok (A), $0.020 against Measuring spend, all roles at $0.025, a gap of $5.00/1000, on no arm the document recommends; the decision block has no Watch entry. (keys: weakest.arm, weakest.value, weakest.criterion, weakest.threshold, weakest.margin)\\n\\nYour final message, with no tool call in it, is the review: one fenced JSON object, as editor.md says.\"}]}",
     "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"My review.\\n```json\\n{\\\"items\\\": [{\\\"n\\\": 1, \\\"name\\\": \\\"First screen\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 1 reads so\\\"}, {\\\"n\\\": 2, \\\"name\\\": \\\"Coherent story\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 2 reads so\\\"}, {\\\"n\\\": 3, \\\"name\\\": \\\"Honest emphasis\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 3 reads so\\\"}, {\\\"n\\\": 4, \\\"name\\\": \\\"Sound elision\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 4 reads so\\\"}, {\\\"n\\\": 5, \\\"name\\\": \\\"Confounds handled\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 5 reads so\\\"}, {\\\"n\\\": 6, \\\"name\\\": \\\"Actionable next steps\\\", \\\"score\\\": 1, \\\"reason\\\": \\\"item 6 reads so\\\"}, {\\\"n\\\": 7, \\\"name\\\": \\\"Evidence fits claims\\\", \\\"score\\\": 2, \\\"reason\\\": \\\"item 7 reads so\\\"}], \\\"findings\\\": []}\\n```\"}]}"
    ],
    "model": "toy-analyst-model",
@@ -13478,7 +13494,7 @@
  },
  {
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
-  "created_at": "2026-10-30T14:09:10.362017+00:00",
+  "created_at": "2026-10-31T18:40:41.760821+00:00",
   "created_by": "agent:test",
   "doc": {
    "claims": [
@@ -13617,20 +13633,20 @@
    ],
    "sessions": {
     "analyst": {
-     "digest": "6b590945cf06570e29df5ce6cb80014e11006c1026b8bd4bd2640e7b600a4624",
-     "ref": "01a18d24-a0d9-73da-856a-e7927badbd0b:session:analyst",
+     "digest": "283f0e3c731a664f820251135e8527cd5fc67b4ddf8c47f0191da7c552a2b481",
+     "ref": "01a19343-9320-7633-84fb-03b243f424d1:session:analyst",
      "turns": 1
     },
     "editor-1": {
-     "digest": "ed18c9ea28a4dae5bd2b09b047a08940d63b4e043ef09af7bfa2290363f5ac22",
-     "ref": "01a18d24-a0d9-73da-856a-e7927badbd0b:session:editor-1",
+     "digest": "52372f42bf965c710cf9bbb3457c6d78030481c9d53008f6c30bc41059f3b14e",
+     "ref": "01a19343-9320-7633-84fb-03b243f424d1:session:editor-1",
      "turns": 1
     }
    },
    "skill": {
-    "analyst": "3cdf751c3c6d6a184949edf44193be4dc44452c03d691ee43ff5c84e1296f755",
+    "analyst": "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b",
     "editor": "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611",
-    "package": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a"
+    "package": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8"
    },
    "tally": {
     "by_role": {
@@ -13648,7 +13664,7 @@
       "turns": 1,
       "unpriced_reasons": [],
       "unpriced_turns": 0,
-      "wall_s": 2.6458874344825745e-05
+      "wall_s": 8.582836017012596e-06
      },
      "editor": {
       "admitted_on_estimate": 0,
@@ -13664,7 +13680,7 @@
       "turns": 1,
       "unpriced_reasons": [],
       "unpriced_turns": 0,
-      "wall_s": 1.037493348121643e-05
+      "wall_s": 4.250090569257736e-06
      }
     },
     "by_round": {
@@ -13682,7 +13698,7 @@
       "turns": 1,
       "unpriced_reasons": [],
       "unpriced_turns": 0,
-      "wall_s": 2.6458874344825745e-05
+      "wall_s": 8.582836017012596e-06
      },
      "editor:1": {
       "admitted_on_estimate": 0,
@@ -13698,7 +13714,7 @@
       "turns": 1,
       "unpriced_reasons": [],
       "unpriced_turns": 0,
-      "wall_s": 1.037493348121643e-05
+      "wall_s": 4.250090569257736e-06
      }
     },
     "total": {
@@ -13715,11 +13731,11 @@
      "turns": 2,
      "unpriced_reasons": [],
      "unpriced_turns": 0,
-     "wall_s": 3.6833807826042175e-05
+     "wall_s": 1.2832926586270332e-05
     },
     "transcripts": {
-     "analyst": "6b590945cf06570e29df5ce6cb80014e11006c1026b8bd4bd2640e7b600a4624",
-     "editor-1": "ed18c9ea28a4dae5bd2b09b047a08940d63b4e043ef09af7bfa2290363f5ac22"
+     "analyst": "283f0e3c731a664f820251135e8527cd5fc67b4ddf8c47f0191da7c552a2b481",
+     "editor-1": "52372f42bf965c710cf9bbb3457c6d78030481c9d53008f6c30bc41059f3b14e"
     },
     "turns": [
      {
@@ -13742,7 +13758,7 @@
       "session": "analyst",
       "stop_reason": "end_turn",
       "turn": 0,
-      "wall_s": 2.6458874344825745e-05
+      "wall_s": 8.582836017012596e-06
      },
      {
       "admitted_on_estimate": false,
@@ -13764,21 +13780,21 @@
       "session": "editor-1",
       "stop_reason": "end_turn",
       "turn": 0,
-      "wall_s": 1.037493348121643e-05
+      "wall_s": 4.250090569257736e-06
      }
     ]
    }
   },
-  "id": "01a18d24-a0d9-73da-856a-e7927badbd0b",
+  "id": "01a19343-9320-7633-84fb-03b243f424d1",
   "schema_version": 14,
   "scope_id": "toyhost-scope",
-  "snapshot_id": "report-snapshot:875dd2fa57a605f374e0cb2697f657b7"
+  "snapshot_id": "report-snapshot:500b261226147e9cb3c19c4fddde15f4"
  },
  {
   "bounce": null,
   "calls": [],
   "claim_ids": [],
-  "created_at": "2026-10-30T14:09:10.369125+00:00",
+  "created_at": "2026-10-31T18:40:41.764744+00:00",
   "created_by": "agent:test",
   "doc_type": "eval_analyst_gap",
   "editor_item": {
@@ -13790,19 +13806,19 @@
    "score": 1
   },
   "figure_keys": [],
-  "id": "gap:49edbc16ba74c19c",
+  "id": "gap:e1a1fab67c107a57",
   "kind": "editor_score",
   "model": "toy-analyst-model",
   "must_fix": false,
   "need": "the editor scored rubric item 6, Actionable next steps, below 2",
-  "report_doc_id": "01a18d24-a0d9-73da-856a-e7927badbd0b",
+  "report_doc_id": "01a19343-9320-7633-84fb-03b243f424d1",
   "role": "editor",
   "schema_minor": 7,
   "schema_version": 16,
   "scope_id": "toyhost-scope",
   "session": "editor-1",
-  "snapshot_id": "report-snapshot:875dd2fa57a605f374e0cb2697f657b7",
-  "transcript_digest": "ed18c9ea28a4dae5bd2b09b047a08940d63b4e043ef09af7bfa2290363f5ac22",
+  "snapshot_id": "report-snapshot:500b261226147e9cb3c19c4fddde15f4",
+  "transcript_digest": "52372f42bf965c710cf9bbb3457c6d78030481c9d53008f6c30bc41059f3b14e",
   "why": "item 6 reads so",
   "workaround": null
  },
@@ -13813,10 +13829,10 @@
   "cap_usd": null,
   "completion_tokens": 100,
   "cost_usd": 0.02,
-  "created_at": "2026-10-30T14:09:10.387832+00:00",
+  "created_at": "2026-10-31T18:40:41.775275+00:00",
   "doc_type": "eval_out_of_run_spend",
   "failure": null,
-  "id": "01a18d24-a0f3-7330-97c6-f62902e17c7e",
+  "id": "01a19343-932f-757a-8e62-1587a29eace5",
   "launch_group_id": null,
   "model": "toy-analyst-model",
   "outcome": "completed",
@@ -15681,7 +15697,7 @@
        "status": "completed"
       }
      ],
-     "schema_version": 64,
+     "schema_version": 65,
      "scope_divergences": [],
      "scope_id": "toyhost-scope",
      "scoreboard": [
@@ -18320,7 +18336,7 @@
       "start": "2026-03-14T09:30:00+00:00"
      }
     },
-    "bundle_fingerprint": "v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc",
+    "bundle_fingerprint": "v2:1508841e3272cc16bf86d0a280272e44bf4cb77f5899fe5c337006929940b7f3",
     "coverage": {
      "levers": [
       {
@@ -19286,7 +19302,7 @@
    "aspects": [
     {
      "aspect": "extract_invoice_fields",
-     "fingerprint": "v2:d62f039526232f1f7b12e9d89df7b64dccb7ff4c0db9595ae04fd64eb79cd5bc"
+     "fingerprint": "v2:1508841e3272cc16bf86d0a280272e44bf4cb77f5899fe5c337006929940b7f3"
     }
    ],
    "behavior": "extract_invoice_fields",
@@ -19560,7 +19576,7 @@
    "subject_kind": "extractor_config"
   },
   "campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
-  "created_at": "2026-10-30T14:09:10.387457+00:00",
+  "created_at": "2026-10-31T18:40:41.775141+00:00",
   "design_snapshot": {
    "arms": [],
    "aspects": [
@@ -19635,21 +19651,21 @@
   "doc_type": "eval_analysis",
   "document": null,
   "generation": {
-   "bundle_assembled_at": "2026-10-30T14:09:10.160395+00:00",
-   "bundle_fingerprint": "v3:4e910c65de7293f82a61c4840d55c8e499dcfc0e4ab0829f9d27b80ffea9ab64",
-   "bundle_schema_version": 64,
+   "bundle_assembled_at": "2026-10-31T18:40:41.712376+00:00",
+   "bundle_fingerprint": "v3:0dffedceba180a6b32b9440d1d0e4cdda04c93f90e71c82cf9b4a4cd6b130aad",
+   "bundle_schema_version": 65,
    "cell_model_version": 14,
-   "generated_at": "2026-10-30T14:09:10.362017+00:00",
+   "generated_at": "2026-10-31T18:40:41.760821+00:00",
    "generator_model": "toy-analyst-model",
    "host_declarations_digest": "5aa6aef5acfb7a0a5a02fe886fb331aadc1f4cc778ac810d0021e39f167ab9e1",
-   "prompt_id": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a",
-   "prompt_version": "2a7662d928b0a734f76e2e75cef229af1160ef58b8c4e2face59f9b12bb4647a",
+   "prompt_id": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
+   "prompt_version": "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8",
    "repair_attempts": 0,
    "repaired_refusal": null,
    "token_cost": 0.02,
-   "user_message_digest": "fc6ea5bd7d6c990dc2c92ed24d62b60fd3b380fbd36cfd238965f8f683ca40c1"
+   "user_message_digest": "59ceb18aae572f8a0eaa6ac212ebf593ca92724255addf725defc7b07f3aaa76"
   },
-  "id": "01a18d24-a0ed-756c-9ba3-6ebe498d23e4",
+  "id": "01a19343-932b-75d8-9e11-c1c4663bf46e",
   "judged_tier_rule": "interval_lower_bound",
   "model_versions": {
    "candidate": "extractor-v2"
@@ -19659,7 +19675,7 @@
    "69390405-f834-534a-93bd-36b126c67642"
   ],
   "recommended_variant_key": null,
-  "report_doc_id": "01a18d24-a0d9-73da-856a-e7927badbd0b",
+  "report_doc_id": "01a19343-9320-7633-84fb-03b243f424d1",
   "report_plan_id": null,
   "resolutions": [],
   "schema_version": 13,
@@ -19672,16 +19688,16 @@
   "doc_type": "eval_insight",
   "evidence_result_ids": [],
   "evidence_run_ids": [],
-  "id": "01a18d24-a0f3-7330-97c6-f6285552570b",
-  "invalidation_trigger": "Retracted if analysis 01a18d24-a0ed-756c-9ba3-6ebe498d23e4 is archived; replaced in place when a later analysis of this subject states the same claim.",
+  "id": "01a19343-932f-757a-8e62-1586fc2d448e",
+  "invalidation_trigger": "Retracted if analysis 01a19343-932b-75d8-9e11-c1c4663bf46e is archived; replaced in place when a later analysis of this subject states the same claim.",
   "model_versions": {
    "candidate": "extractor-v2"
   },
-  "observed_at": "2026-10-30T14:09:10.387597+00:00",
+  "observed_at": "2026-10-31T18:40:41.775180+00:00",
   "schema_version": 13,
   "scope": "",
   "scope_id": "toyhost-scope",
-  "source_analysis_id": "01a18d24-a0ed-756c-9ba3-6ebe498d23e4",
+  "source_analysis_id": "01a19343-932b-75d8-9e11-c1c4663bf46e",
   "source_campaign_id": "2d5b8a41-0e37-4c96-b8f2-7a6d9e415c03",
   "statement": "The two token budgets read alike on invoice extraction.",
   "subject_id": "extractor-config-7",
