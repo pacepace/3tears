@@ -3780,6 +3780,13 @@ class ToolServer:
             contain(exc, log=log, what=str(exc), extra={"tool_key": tool_key}, level="error")
             outcome = "error"
             failure_reason = str(exc) if failure_reason is None else f"{failure_reason}; then {exc}"
+        except BaseException as exc:
+            # every other way out reached no recorded result -- cancelled mid-call (a shutdown or a rollout), or
+            # an answer that raised something else -- and is not a success, whatever the tool had reached
+            outcome = "error"
+            ended = "cancelled" if isinstance(exc, asyncio.CancelledError) else f"{type(exc).__name__}: {exc}"
+            failure_reason = f"the call ended before it was answered: {ended}"
+            raise
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             self._count_call(tool_name=tool_name, tool_version=tool_version, outcome=outcome, duration_ms=duration_ms)

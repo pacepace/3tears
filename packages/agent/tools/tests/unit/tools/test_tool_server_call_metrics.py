@@ -163,6 +163,33 @@ async def test_each_outcome_is_counted_apart() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_call_cancelled_mid_tool_is_an_error_on_metrics_and_in_the_audit() -> None:
+    """Flips if a call cut off by a shutdown or a rollout -- the window the metric exists to show -- is counted as a
+    success, on /metrics or in its tool.call audit."""
+    started = asyncio.Event()
+
+    async def hangs() -> ToolResult:
+        started.set()
+        await asyncio.Event().wait()
+        return ToolResult(success=True, content="never")
+
+    server, rec = recording_tool_server(
+        pod_id=_POD_ID, jwks_provider=jwks_provider, assertion_replay_guard=FakeReplayGuard()
+    )
+    server.register(_FakeTool(hangs))
+    call = asyncio.create_task(_call(server))
+    await asyncio.wait_for(started.wait(), 5)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert _sample(server, "threetears_tools_calls_total", tool="test.fake", outcome="error") == 1.0
+    assert _sample(server, "threetears_tools_calls_total", tool="test.fake", outcome="success") is None
+    audits = [json.loads(payload) for subject, payload in rec.published if str(subject).endswith(".audit.tool.call")]
+    assert [audit["outcome"] for audit in audits] == ["error"]
+    assert "cancelled" in audits[0]["details"]["failure_reason"]
+
+
+@pytest.mark.asyncio
 async def test_a_call_refused_before_any_tool_is_named_is_counted_under_no_tool() -> None:
     """Flips if a call the pod could not read goes uncounted: a refused call is load, and a refusal rate is
     worth seeing."""
