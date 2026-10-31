@@ -306,8 +306,24 @@ class TestResultsComeBackMapped:
     ) -> None:
         with pytest.raises(ValueError, match="after writing"):
             await single.run(jobs.write_then_fail, read=False, result_bytes=1 << 20)
-        assert store.segments() == ()
-        assert store.status()["slots_open"] == 0
+        await _until(lambda: store.segments() == () and store.status()["slots_open"] == 0, "the result discarded")
+
+    async def test_a_failed_jobs_result_is_discarded_off_the_event_loop(
+        self, store: SharedArrowStore, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """a discard sweeps the directory (walks, flocks, rmtree): the loop the pool exists to keep free never runs it."""
+        threads: list[threading.Thread] = []
+        discard = store.discard
+
+        def watched(slot: Any) -> None:
+            threads.append(threading.current_thread())
+            discard(slot)
+
+        monkeypatch.setattr(store, "discard", watched)
+        with pytest.raises(ValueError, match="after writing"):
+            await single.run(jobs.write_then_fail, read=False, result_bytes=1 << 20)
+        await _until(lambda: bool(threads), "the result discarded")
+        assert threads[0] is not threading.main_thread()
 
     async def test_a_worker_that_dies_mid_write_leaves_nothing(
         self, store: SharedArrowStore, single: SharedArrowPool
@@ -816,6 +832,32 @@ class TestTheBoundHoldsUnderConcurrentWriters:
         assert len(slots) == 1, "the slot was granted: the publish had written only 2 MiB"
         assert bounded.held_bytes() + slots[0].max_bytes <= bounded.max_bytes
         assert bounded.versions() == ()
+
+    def test_a_slot_claimed_while_a_version_is_written_counts_its_result_against_that_write(self, where: Path) -> None:
+        bounded = SharedArrowStore(where / "bounded", max_bytes=10 << 20)
+        slot = bounded.reserve(6 << 20)
+        slot.write({TABLE: pa.table({"a": pa.array(range(640 * 1024), pa.int64())})})  # 5 MiB
+        schema = pa.schema([("a", pa.int64())])
+        batch = pa.record_batch([pa.array(range(256 * 1024), pa.int64())], schema=schema)  # 2 MiB
+        claimed: list[Any] = []
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            yield batch
+            # the serving process claims the result while the publish writes: its slot stops counting at 6 MiB,
+            # and its 5 MiB of files are still held
+            claimed.append(bounded.claim(slot))
+            yield from [batch] * 2
+
+        try:
+            with pytest.raises(SharedArrowFullError):
+                bounded.publish("v1", {TABLE: pa.RecordBatchReader.from_batches(schema, batches())})
+            assert claimed and claimed[0] is not None
+            assert bounded.held_bytes() <= bounded.max_bytes
+            assert bounded.versions() == ()
+        finally:
+            for segment in claimed:
+                if segment is not None:
+                    segment.close()
 
     def test_a_refused_slot_is_logged(self, where: Path, caplog: pytest.LogCaptureFixture) -> None:
         small = SharedArrowStore(where / "small", max_bytes=1 << 20)

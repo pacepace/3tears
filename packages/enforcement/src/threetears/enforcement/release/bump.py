@@ -162,6 +162,21 @@ class _Run:
         self.out.write(line + "\n")
         self.out.flush()
 
+    def _removal_failed(self, _function: object, path: str, exc: BaseException) -> None:
+        """says which part of a scratch tree would not go, rather than leaving it behind unsaid.
+
+        :param _function: the call that failed
+        :ptype _function: object
+        :param path: what it failed on
+        :ptype path: str
+        :param exc: why
+        :ptype exc: BaseException
+        :return: nothing
+        :rtype: None
+        """
+        if not isinstance(exc, FileNotFoundError):
+            self.err.write(f"warning: could not remove {path} ({exc}); remove it by hand\n")
+
     # ------------------------------------------------------------------ checks
 
     def _git_ok(self, *args: str) -> bool:
@@ -484,7 +499,7 @@ class _Run:
                 if not self._git_ok("worktree", "remove", "--force", str(worktree)):
                     self.err.write(f"warning: could not remove {worktree}; remove it and run `git worktree prune`\n")
             if scratch is not None:
-                shutil.rmtree(scratch, ignore_errors=True)
+                shutil.rmtree(scratch, onexc=self._removal_failed)
                 run_git(self.root, "worktree", "prune")
         return hint
 

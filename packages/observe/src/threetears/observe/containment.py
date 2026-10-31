@@ -36,14 +36,16 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Mapping
+import os
+import shutil
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from types import FrameType, TracebackType
 from typing import Literal
 
 from threetears.observe.metrics import counter
 
-__all__ = ["ContainedLevel", "contain", "contained"]
+__all__ = ["ContainedLevel", "contain", "contained", "remove_tree"]
 
 #: the levels a contained failure is logged at: nothing below WARNING, since a failure logged where
 #: nobody reads it is the silence this exists to end. named rather than numeric so a caller needs no
@@ -189,3 +191,29 @@ def contained(
     :rtype: AbstractContextManager[None]
     """
     return _Contained(what, log, extra)
+
+
+def remove_tree(path: str | os.PathLike[str], *, log: logging.Logger, what: str) -> None:
+    """remove a directory tree, best-effort, recording each part that would not go.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` hides a failed removal from everyone: the tree stays, and whatever
+    counts its bytes or retries it carries on blind. Here a path already gone is the outcome wanted and says
+    nothing; any other failure is contained (:func:`contain`) -- logged with the path and counted -- and the
+    removal carries on with the rest of the tree. Never raises.
+
+    :param path: the tree
+    :ptype path: str | os.PathLike[str]
+    :param log: the calling module's logger
+    :ptype log: logging.Logger
+    :param what: what the tree is, for the record, e.g. ``"retired shared Arrow version"``
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    """
+
+    def _failed(_function: Callable[..., object], failed_path: str, exc: BaseException) -> None:
+        if isinstance(exc, FileNotFoundError) or not isinstance(exc, Exception):
+            return
+        contain(exc, log=log, what=f"{what} could not be removed", extra={"path": str(failed_path)})
+
+    shutil.rmtree(path, onexc=_failed)

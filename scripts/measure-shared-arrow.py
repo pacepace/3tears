@@ -43,7 +43,6 @@ import asyncio
 import json
 import multiprocessing
 import os
-import shutil
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -55,6 +54,9 @@ import duckdb
 from threetears.core.collections.scoped_snapshot import SnapshotTable, VersionedRead
 from threetears.core.collections.shared_snapshot import SharedSnapshot
 from threetears.core.shared_arrow import JobContext, SharedArrowPool, SharedArrowStore
+from threetears.observe import get_logger, remove_tree
+
+log = get_logger(__name__)
 
 #: the scopes a generated scope column holds (states, and the national rows)
 _SCOPES = 51
@@ -180,7 +182,7 @@ async def measure(spec: dict[str, Any], workers: int, root: Path, scope: str | N
     :return: the figures
     :rtype: dict[str, Any]
     """
-    shutil.rmtree(root, ignore_errors=True)
+    remove_tree(root, log=log, what="the measurement's scratch store")
     l1 = duckdb.connect(":memory:", config={"threads": 2})
     started = time.monotonic()
     load(l1, spec, scope)
@@ -282,7 +284,7 @@ async def _measure_store(
     :return: the figures
     :rtype: dict[str, Any]
     """
-    shutil.rmtree(root, ignore_errors=True)
+    remove_tree(root, log=log, what="the measurement's scratch store")
     _SCOPE_OF[0] = scope
     started = time.monotonic()
     l1 = _compressed_copy(spec, scope)
@@ -439,7 +441,7 @@ def main() -> None:
             print(f"   change {label}: {change}")
     if arguments.out is not None:
         arguments.out.write_text(json.dumps(figures, indent=1))
-    shutil.rmtree(arguments.root, ignore_errors=True)
+    remove_tree(arguments.root, log=log, what="the measurement's scratch store")
 
 
 if __name__ == "__main__":

@@ -53,7 +53,6 @@ import multiprocessing
 import os
 import pickle
 import resource
-import shutil
 import threading
 import uuid
 import weakref
@@ -65,7 +64,7 @@ from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
-from threetears.observe import contain, get_logger
+from threetears.observe import contain, get_logger, remove_tree
 
 from threetears.core.utils.atomic_write import atomic_write_sync
 
@@ -671,7 +670,7 @@ class SegmentSlot:
             written = _write_tables(staging, tables, lambda: self.max_bytes)
             os.rename(staging, target)
         except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_tree(staging, log=log, what="a failed result's staging directory")
             raise
         finally:
             if descriptor is not None:
@@ -1153,7 +1152,7 @@ class SharedArrowStore:
             self.retired += len(retired)
         # renamed out of their names under the lock (nothing opens them again); their files go after it
         for path in gone:
-            shutil.rmtree(path, ignore_errors=True)
+            remove_tree(path, log=log, what="a retired shared Arrow directory (a later sweep retries it)")
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
@@ -1261,12 +1260,16 @@ class SharedArrowStore:
             self._staging = staging_name
             # what the directory holds but for open slots, as this write starts (its staging directory not yet made)
             files = self._committed_bytes() - sum(self._slots.values())
+            # the results counted in ``files``: any other result is an open slot's, counted at its max_bytes
+            counted = {entry.name for entry in self._segments.iterdir() if _slot_of(entry.name) not in self._slots}
 
         def room() -> int:
             # asked before every batch: a slot reserved while this writes takes its room from this write, never
-            # from the bound (reserve counts what this write has staged so far)
+            # from the bound (reserve counts what this write has staged so far); a slot claimed while this writes
+            # stops counting at its max_bytes, so its result's files count from then on instead
             with self._state:
-                return self._max_bytes - files - sum(self._slots.values())
+                claimed = _results_bytes(self._segments, skip=counted, open_slots=self._slots)
+                return self._max_bytes - files - claimed - sum(self._slots.values())
 
         try:
             staging.mkdir()
@@ -1281,7 +1284,8 @@ class SharedArrowStore:
             )
             raise
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            # renamed into place on success, so only a failed write's staging is still here to remove
+            remove_tree(staging, log=log, what="a failed version's staging directory")
             with self._state:
                 self._staging = None
 
@@ -1503,6 +1507,26 @@ class SharedArrowReader:
         self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
     ) -> None:
         self.close()
+
+
+def _results_bytes(segments: Path, *, skip: set[str], open_slots: Mapping[str, int]) -> int:
+    """the bytes of every result directory but those in ``skip`` and an open slot's (counted at its ``max_bytes``).
+
+    :param segments: the results directory
+    :ptype segments: Path
+    :param skip: directory names already counted
+    :ptype skip: set[str]
+    :param open_slots: the open slots
+    :ptype open_slots: Mapping[str, int]
+    :return: bytes
+    :rtype: int
+    """
+    seen: set[tuple[int, int]] = set()
+    return sum(
+        _directory_bytes(entry, seen)
+        for entry in segments.iterdir()
+        if entry.is_dir() and entry.name not in skip and _slot_of(entry.name) not in open_slots
+    )
 
 
 def _slot_of(name: str) -> str:
@@ -1806,7 +1830,8 @@ class SharedArrowPool:
             return JobResult(value=value, segment=segment)
         finally:
             if not claimed:
-                handoff.abandon(future)
+                # a discard sweeps the directory, and runs at once on a job already done: on a thread, never the loop
+                asyncio.get_running_loop().run_in_executor(None, handoff.abandon, future)
 
     def _submit(
         self, read: bool | str, result_bytes: int | None, job: Callable[..., Any], args: tuple[Any, ...]
