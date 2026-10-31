@@ -15,8 +15,10 @@ import enum
 import hashlib
 import json
 import threading
+import time
+import weakref
 import uuid
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -101,6 +103,12 @@ class PartitionReplacement:
 
 #: whether this process has said pyarrow is missing (once is enough)
 _ARROW_MISSING_SAID = False
+
+#: the name of a compressed backend's checkpointer thread
+_CHECKPOINTER_THREAD: Final = "duckdb-l1-checkpointer"
+
+#: the in-memory catalog a compressed backend's tables live in (``DuckDBBackend(compressed=True)``)
+_COMPRESSED_CATALOG: Final = "l1"
 
 #: the most rows one Arrow batch of a result is sized for: DuckDB's own default
 _ARROW_BATCH_ROWS = 1_000_000
@@ -357,6 +365,78 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     return arrow is not None
 
 
+class _Checkpointer:
+    """a compressed backend's checkpointer: a thread that checkpoints once per wake, after writes ask. It holds the
+    backend weakly, so a backend dropped without :meth:`DuckDBBackend.reset` is collected and its thread ends.
+
+    :param backend: the backend
+    :ptype backend: DuckDBBackend
+    """
+
+    def __init__(self, backend: DuckDBBackend) -> None:
+        self._wanted = threading.Event()
+        self._stopping = False
+        held = weakref.ref(backend)
+        self._thread = threading.Thread(
+            target=_checkpoint_when_asked,
+            args=(held, self._wanted, lambda: self._stopping),
+            name=_CHECKPOINTER_THREAD,
+            daemon=True,
+        )
+        weakref.finalize(backend, self._wake_to_end)
+        self._thread.start()
+
+    def ask(self) -> None:
+        """ask for a checkpoint.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wanted.set()
+
+    def stop(self) -> None:
+        """end the thread, after any checkpoint it is running.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wake_to_end()
+        self._thread.join()
+
+    def _wake_to_end(self) -> None:
+        self._stopping = True
+        self._wanted.set()
+
+
+def _checkpoint_when_asked(
+    backend: Callable[[], DuckDBBackend | None], wanted: threading.Event, stopping: Callable[[], bool]
+) -> None:
+    """a compressed backend's checkpointer thread (:meth:`DuckDBBackend.request_checkpoint`): wait to be asked, then
+    checkpoint once. The wake is cleared before the stop is read, so a stop set at any moment -- even between the wake
+    and its clear -- is seen before the next wait; and the backend is held only while it checkpoints, so one dropped
+    without a reset is collected and the thread ends.
+
+    :param backend: the backend, or None once it is gone (a weak reference)
+    :ptype backend: Callable[[], DuckDBBackend | None]
+    :param wanted: set by each request (and by a stop)
+    :ptype wanted: threading.Event
+    :param stopping: whether the thread is to end
+    :ptype stopping: Callable[[], bool]
+    :return: nothing
+    :rtype: None
+    """
+    while True:
+        wanted.wait()
+        wanted.clear()
+        if stopping():
+            return
+        held = backend()
+        if held is None:
+            return
+        held.checkpoint()
+        del held
+
+
 class DuckDBBackend:
     """L1 cache backend using DuckDB in-memory database.
 
@@ -376,11 +456,21 @@ class DuckDBBackend:
     Once checkpointed, such a table gives back what was deleted and holds what is kept compressed.
     :meth:`load_parquet` refuses one (DuckDB's ``INSERT OR REPLACE`` needs the key).
 
+    **Compressed.** DuckDB keeps an in-memory database's tables uncompressed, however often it is checkpointed. With
+    ``compressed`` the tables live in an in-memory catalog attached with DuckDB's ``COMPRESS`` option, which a
+    checkpoint compresses as a file-backed database is (real election tables: a quarter of the memory). Every write
+    that commits asks for a checkpoint on a thread of this backend's own (:meth:`request_checkpoint`), off the write's
+    path: what a write added is held uncompressed until that checkpoint runs, and the next write waits for a
+    checkpoint in progress. For a copy that is only written here and read elsewhere (a published shared-memory
+    version, :mod:`threetears.core.shared_arrow`): DuckDB reads compressed tables slower.
+
     :param keyless: the tables to create with no primary key, by name; each must declare one
     :ptype keyless: Collection[str]
+    :param compressed: hold the tables compressed (above)
+    :ptype compressed: bool
     """
 
-    def __init__(self, *, keyless: Collection[str] = ()) -> None:
+    def __init__(self, *, keyless: Collection[str] = (), compressed: bool = False) -> None:
         if not _HAS_DUCKDB:
             raise ImportError("DuckDB backend requires the 'duckdb' package. Install with: pip install 3tears[duckdb]")
         self._keyless_names: frozenset[str] = frozenset(keyless)
@@ -397,10 +487,113 @@ class DuckDBBackend:
         # across their transaction, so opening a read never waits for a write to commit
         self._reader: Any = None
         self._reader_lock: threading.Lock = threading.Lock()
+        self._compressed = compressed
+        #: the thread that checkpoints the compressed tables after writes, once one asks (:meth:`request_checkpoint`)
+        self._checkpointer: _Checkpointer | None = None
+        #: checkpoints run by the checkpointer thread, the seconds they took, and the ones that failed (each logged)
+        self._background_checkpoints = 0
+        self._background_checkpoint_seconds = 0.0
+        self._background_checkpoints_failed = 0
+
+    @property
+    def background_checkpoints(self) -> int:
+        """checkpoints run, on the checkpointer thread or by checkpoint: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints
+
+    @property
+    def background_checkpoint_seconds(self) -> float:
+        """seconds they took: a diagnostic, written only by this object under its write lock.
+
+        :return: the seconds
+        :rtype: float
+        """
+        return self._background_checkpoint_seconds
+
+    @property
+    def background_checkpoints_failed(self) -> int:
+        """checkpoints that failed: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints_failed
+
+    @property
+    def compressed(self) -> bool:
+        """whether the tables are held compressed.
+
+        :return: the flag
+        :rtype: bool
+        """
+        return self._compressed
+
+    def _cursor(self, source: Any) -> Any:
+        """a new cursor of ``source``, reading and writing the tables' catalog (a cursor starts in the default one).
+
+        :param source: a connection or cursor
+        :ptype source: duckdb.DuckDBPyConnection
+        :return: the cursor
+        :rtype: duckdb.DuckDBPyConnection
+        """
+        cursor = source.cursor()
+        if self._compressed:
+            cursor.execute(f"USE {_COMPRESSED_CATALOG}")
+        return cursor
+
+    def request_checkpoint(self) -> None:
+        """ask the checkpointer thread to checkpoint the compressed tables once the writes in progress are done; any
+        number of requests before it runs make one checkpoint. Nothing when the tables are not compressed, or after
+        :meth:`reset`.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self._compressed:
+            return
+        with self._pool_lock:
+            if not self._initialized:
+                return
+            if self._checkpointer is None:
+                self._checkpointer = _Checkpointer(self)
+            checkpointer = self._checkpointer
+        checkpointer.ask()
+
+    def checkpoint(self) -> None:
+        """checkpoint the tables now, under the write lock, counted (``background_checkpoints``); a failure is logged
+        and counted, never raised (only memory waits for the next one). What the checkpointer thread runs.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._db_lock:
+            if self._db is None:
+                return
+            started = time.monotonic()
+            try:
+                self._run_checkpoint()
+            except Exception as exc:  # noqa: BLE001 - only memory waits for the next one
+                self._background_checkpoints_failed += 1
+                contain(exc, log=log, what="the compressed L1 could not be checkpointed; the next write asks again")
+                return
+            self._background_checkpoints += 1
+            self._background_checkpoint_seconds += time.monotonic() - started
+
+    def _run_checkpoint(self) -> None:
+        """checkpoint the tables; the caller holds the write lock. A subclass that must commit something first (DuckDB
+        compresses nothing when a checkpoint follows an append to a keyed table straight away) overrides it.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._db.execute("CHECKPOINT")
 
     def _make_connection(self) -> Any:
         """Create a new cursor/connection from the shared database."""
-        conn = self._db.cursor()
+        conn = self._cursor(self._db)
         with self._pool_lock:
             self._pooled_connections.append(conn)
         return conn
@@ -428,6 +621,9 @@ class DuckDBBackend:
                 # per core, 32 on a large node, which throttles a pod limited to a few CPUs for most of
                 # every period (:mod:`threetears.core.utils.cpu_quota`)
                 self._db = duckdb.connect(":memory:", config={**_DATABASE_CONFIG, "threads": effective_cpu_count()})
+                if self._compressed:
+                    self._db.execute(f"ATTACH ':memory:' AS {_COMPRESSED_CATALOG} (COMPRESS)")
+                    self._db.execute(f"USE {_COMPRESSED_CATALOG}")
             for table in sa_metadata.tables.values():
                 if table.name in self._schema_info:
                     log.debug(f"DuckDB table already registered, skipping: {table.name}")
@@ -439,7 +635,7 @@ class DuckDBBackend:
                 new_tables += 1
                 log.debug(f"Created DuckDB table: {table.name}")
             if not self._initialized:
-                self._reader = self._db.cursor()
+                self._reader = self._cursor(self._db)
                 self._initialized = True
         log.debug(
             "DuckDB L1 cache initialized",
@@ -524,6 +720,7 @@ class DuckDBBackend:
                     self._insert_rows(self._db, table, rows, primary_key)
             else:
                 self._insert_rows(self._db, table, rows, primary_key)
+        self.request_checkpoint()
         return len(rows)
 
     @contextmanager
@@ -696,6 +893,7 @@ class DuckDBBackend:
             finally:
                 if not committed:
                     self._db.execute("ROLLBACK")
+        self.request_checkpoint()
         log.info("replaced an L1 table whole", extra={"extra_data": {"table": table, "rows": len(rows)}})
         return len(rows)
 
@@ -754,6 +952,7 @@ class DuckDBBackend:
                 [str(path)],
             )
             (count,) = self._db.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+        self.request_checkpoint()
         log.info(
             "loaded a Parquet file into an L1 table",
             extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
@@ -1051,6 +1250,7 @@ class DuckDBBackend:
             finally:
                 if not committed:
                     self._db.execute("ROLLBACK")
+        self.request_checkpoint()
         return written
 
     @contextmanager
@@ -1069,7 +1269,7 @@ class DuckDBBackend:
         if not self._initialized:
             raise RuntimeError("DuckDB not initialized - call initialize() first")
         with self._reader_lock:
-            cursor = self._reader.cursor()
+            cursor = self._cursor(self._reader)
         try:
             cursor.execute("BEGIN TRANSACTION")
             # DuckDB starts a transaction's snapshot at its first statement that reads, not at BEGIN:
@@ -1218,6 +1418,7 @@ class DuckDBBackend:
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
+        self.request_checkpoint()
 
     def execute_arrow(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         """run a query and answer its rows as one Arrow table, never one Python object a row.
@@ -1323,6 +1524,12 @@ class DuckDBBackend:
 
     def reset(self) -> None:
         """Close all connections and clear state."""
+        with self._pool_lock:
+            checkpointer, self._checkpointer = self._checkpointer, None
+            # no request after this starts another: request_checkpoint sees the backend uninitialized
+            self._initialized = False
+        if checkpointer is not None:
+            checkpointer.stop()
         with self._pool_lock:
             for conn in self._pooled_connections:
                 try:

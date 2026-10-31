@@ -303,6 +303,8 @@ class PersistedCopyBucket:
         self._bucket: KvBucketLike | None = None
         # whether ``load`` has run to completion; it runs once, at the first declaration that lands.
         self._loaded = False
+        # set once ``load`` has run (wait_loaded)
+        self._loaded_event = asyncio.Event()
         # the background declaration :meth:`start` began, held so it is not collected mid-flight and
         # so :meth:`stop` can end it.
         self._declaring: asyncio.Task[None] | None = None
@@ -324,6 +326,25 @@ class PersistedCopyBucket:
         :rtype: KvBucketLike | None
         """
         return self._bucket
+
+    async def wait_loaded(self, *, timeout: float) -> bool:
+        """wait for the first declaration's ``load`` to have run, at most ``timeout`` seconds.
+
+        For a service that must not act on its in-memory structure before the persisted copy is in it (a registry
+        replica answering calls before its catalog is loaded); the bound keeps a broker that cannot answer from
+        holding it forever.
+
+        :param timeout: the longest to wait, in seconds
+        :ptype timeout: float
+        :return: whether the load has run
+        :rtype: bool
+        """
+        try:
+            await asyncio.wait_for(self._loaded_event.wait(), timeout=timeout)
+        except TimeoutError:
+            # NOSILENT: the answer is False, and the caller says what it does without the load
+            return False
+        return True
 
     async def start(self) -> None:
         """begin declaring the bucket in the background, and return at once.
@@ -394,6 +415,7 @@ class PersistedCopyBucket:
             if not self._loaded:
                 await self._load(bucket)
                 self._loaded = True
+                self._loaded_event.set()
             await self._write_back(bucket)
             landed = True
         except asyncio.CancelledError:

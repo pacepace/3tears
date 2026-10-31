@@ -6,6 +6,137 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.86.0 -- 2026-10-29
+
+### nats: a bucket's live keys by name, for a caller holding only the client
+
+**Added:** `threetears.nats.live_kv_keys(client, bucket)` lists a KV bucket's live keys with no consumer and no bucket
+handle: the same listing `NatsKvBucket.list_keys` makes (`STREAM.INFO` paged past the server's subject cap, a
+subject-carried `DIRECT.GET` per key, delete and purge markers left out). For a caller sweeping buckets it never opened,
+such as the hub's restore flush, in place of nats-py's `KeyValue.keys`, which replays the bucket through a consumer that
+stalls under load. A gone bucket raises `KvBucketNotFoundError`; a refused or unanswered `STREAM.INFO` raises
+`KvError`; a key's read failing for any reason but absence raises as it came, never taken for an absent key.
+
+### agent.audit: the hub's invitation status is classified
+
+**Changed:** the hub's `user.create` and `user.invite` audit events record `invitation` (emailed / not_emailed /
+not_sent: whether the invitation email went, never the address or the link). It is declared safe for those two event
+types in `_BUILT_IN_FAMILY_SAFE_KEYS`, where the hub's eraser reads it; every other family's `invitation` stays masked.
+
+### core: shared-memory Arrow between a serving process and its worker processes
+
+**Added:** `threetears.core.shared_arrow` moves CPU work off a serving process's event loop into worker processes
+without a copy of the data per process and without pickling results. Tables are written once as uncompressed Arrow
+IPC files into a memory-backed directory (`/dev/shm`, or an `emptyDir` with `medium: Memory`) and memory-mapped by
+every process that reads them. Guide: `docs/shared-arrow.md`.
+
+- `SharedArrowStore` (one per directory, in the serving process) publishes data versions (`publish`,
+  `publish_query` streaming a DuckDB answer a batch at a time; a table may be a callable opened when it is written; `epochs_version` names one by a scoped snapshot's
+  epochs) and reserves result slots for workers (`reserve`, `claim`, `discard`).
+- `SharedArrowPool` runs `job(context, *args)` in spawned, long-lived workers: each job reads the version current at
+  submission, leased for its whole run, through `context.version` (mapped tables, or a DuckDB connection over them
+  with no row copied), and may write result tables to `context.result`, claimed back as a mapped `MappedSegment`.
+  A worker whose private memory passes the pool's bound after a job is replaced.
+- Cleanup is by state, never by time: readers and writers hold `flock`s the system drops when they close or die,
+  and a sweep after every publish, release, claim and discard removes every version not current and unheld, every
+  result no slot or claim owns, and every staging directory whose writer is gone. A new store clears what no live
+  process holds.
+- `max_bytes` bounds every version and result together (an open slot counts at its most); a publish, reservation
+  or worker write past it raises `SharedArrowFullError` and keeps nothing.
+
+- The serving process reads the published version in place too: `store.reader()` gives a `SharedArrowReader`
+  whose `read()` holds the current version for its block (a DuckDB cursor over the mapped tables, `prepare=` making
+  views once per version), lets a superseded version go when its last read ends, and is told after each publish.
+- `Parts` publishes a table one file per part; `publish(..., base=)` keeps every part and table it does not name
+  from the base version by hard link, counted once against `max_bytes`, so a change costs one part.
+- `threetears.core.collections.shared_snapshot.SharedSnapshot` publishes a scoped snapshot's copy a scope's part at
+  a time, writing only the scopes whose epoch moved since its last version; `ScopedSnapshot.behind` says the scopes
+  the L1 is behind on now.
+- `DuckDBBackend(compressed=True)` holds the L1's tables in a catalog attached with DuckDB's `COMPRESS` and
+  checkpoints after each write on a thread of its own, off the write's path (`request_checkpoint`,
+  `checkpoint`, `background_checkpoints`): for a copy only written here and read from the shared store.
+
+Measured on Linux with the reports pod's dev tables (9.0M rows, real column types, generated values; two workers):
+one process holding them in DuckDB is 2.17 GiB PSS; that process beside the store and the workers is 4.01 GiB; the
+serving process reading the store, its DuckDB copy compressed, and the workers is 2.30 GiB (real values compress
+less: about 0.3 GiB more). A one-state change publishes in 0.10-0.15 s; its checkpoint (0.01-0.21 s) runs off the
+change's path (`scripts/measure-shared-arrow.py`, `docs/shared-arrow.md`).
+
+### nats: a credential renewal hands a subscription over without losing a message
+
+**Fixed:** a renewal could lose messages routed to a moved subscription, found by the live renewal stress test.
+
+- The old half of a subscription was forgotten at the round trip that proved its `UNSUB`; a message the server
+  delivered to it just after was dropped. It now keeps receiving until its connection is retired, a full
+  `retire_after` after it left its group. `NatsClient.drain` and a durable push consumer's release keep the
+  subscription received for a grace after that round trip too, before nats-py forgets it.
+- nats-server (2.14 and 2.15) drops a message whose matched queue-group members have all left by its delivery, though
+  a successor joined meanwhile. The old half now stays in its group for `retire_after` before it leaves.
+- A renewal that failed after subscribing its successor closed the successor with what had been routed to it --
+  thousands of messages under load. A successor's subscription now receives from its `SUB`, and a renewal that will
+  not complete stops routing to it and drains it a full `retire_after` later (logged as a WARNING).
+
+The live stress test holds every one of 100 renewals to going through and nothing to be lost, its auth callout
+answering off the test's own loop; a variant forces renewals that fail after subscribing their successor.
+
+### nats: no listing replays a growing stream through a consumer
+
+**Fixed:** under load a named push consumer's replay stalls part way (`stalled after N of M`). On cobalt dev on
+2026-10-30 every one of six scoped-snapshot retirements failed so: the orphan sweep replayed all 2345 object metadata
+messages. `NatsKvBucket.list_keys`, `purge_removal_markers`, `NatsObjectStore.list_objects`, `list_names` and
+`purge_orphan_chunks` now read the subjects from `STREAM.INFO` (paged by offset past the server's cap of 100,000)
+and each subject's latest message by request: the KV handle's own read, a subject-carried `DIRECT.GET` for object
+metadata. A key whose latest message is a delete or purge marker is still not listed. Both verbs are a bucket
+grant's own; a listing needs no consumer grant.
+
+### observe: a tree removal that fails says so
+
+**Added:** `threetears.observe.remove_tree(path, log=, what=)` removes a directory tree and contains each part that
+will not go; a path already gone says nothing. `shutil.rmtree(..., ignore_errors=True)`, which hid a failed removal
+from everyone, is gone from the workspace, and the no-silent-swallow walker flags a call passing
+`ignore_errors=True` with no `onexc`/`onerror`.
+
+### observe, tools: a tool pod counts every call it finishes, with its duration, by tool and outcome
+
+**Fixed:** a tool pod's `/metrics` carried only `threetears_tools_inflight_requests`, a gauge read once per scrape.
+A call that starts and ends between two scrapes never moves it: on cobalt dev on 2026-10-30 the reports pods
+answered thousands of calls in six hours (cached report answers in milliseconds, ENR loads handed to a background
+operation) and the gauge read 0 at every scrape. The gauge itself is right: a call in progress reads 1.
+
+**Added:**
+- `threetears_tools_calls_total{tool, outcome}` and `threetears_tools_call_duration_seconds{tool, outcome}` on every
+  tool pod's `/metrics`, beside the gauge. `outcome` is `success`, `failure` or `error`, as the baseline
+  `tool.call` audit records it. `tool` is the tool's name when the pod serves it, and `""` for a call naming
+  anything else (a caller cannot grow the pod's series). The rate of the duration's `_sum` is the mean number of
+  calls in flight, which a scrape interval cannot hide. A call cancelled mid-dispatch (a shutdown or a rollout), or
+  ended by any raise the dispatch did not record, is an `error`, here and in the audit.
+- `threetears.observe.CallMetrics(prefix, label=..., registry=...)`: that counter and histogram for any RPC pod,
+  a no-op without `prometheus_client` like `InflightRequestsGauge`.
+- `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
+  `/metrics` route.
+
+
+### registry, scheduled-jobs: a starting registry replica takes calls once its loaded copies are routable, and a fire a moment fixes is retried once
+
+**Fixed:** on cobalt dev on 2026-10-30 at 12:55Z a scheduled ENR refresh was refused `TOOL_UNAVAILABLE: tool
+enr.reload@1.0 has no available endpoints` during a platform rollout. A new registry replica warm-loads the
+persisted catalog with every copy unavailable until its pod's next heartbeat, and it joined the call queue group at
+once, so it refused calls every other replica could route.
+
+- **registry:** a replica joins the call queue group only once its catalog's warm load has landed and every copy it
+  brought in is available again or gone from the catalog, each wait at most the heartbeat timeout (a pod that died
+  never announces again). Its health server starts first, and the new `catalog_revived` readiness check reads
+  not-ready while it waits, so a rollout keeps the replicas that can route. It logs what it waits on and how the
+  wait ended, naming the copies whose pods never came back. A shutdown during start-up stops it.
+- **scheduled-jobs:** a dispatcher that returns `JobFireResult(status="failed", retry_after_seconds=N)` has the same
+  fire run once more after `N` seconds, capped by the engine. The retry runs off the tick, which goes on to its
+  other due fires; the row stays `dispatching` until the retry settles it. The second result is recorded, whatever
+  it asks. A failure with no retry asked is recorded at once, as before. The hub's scheduled tool call asks for it
+  on `TOOL_UNAVAILABLE` (hub branch `fix/stream-listings`, riding the release that adopts 0.86).
+
+**Added:** `JobFireResult.retry_after_seconds`; `ToolCatalog.loaded_copies_settled(window)` and
+`ToolCatalog.loaded_copies_pending()`; `PersistedCopyBucket.wait_loaded(timeout=)`.
+
 ## v0.85.0 -- 2026-10-29
 
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache

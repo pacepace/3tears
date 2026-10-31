@@ -53,6 +53,38 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="_KeptVersions",
+        attr_name="_kept",
+        rationale=(
+            "the memory map a worker process holds of the version it read last, per store directory; a map is "
+            "an open handle on this process's own address space, which no backend can hold, and a restart "
+            "maps again on its next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_slots",
+        rationale=(
+            "the result slots this process reserved for its own worker processes and has not yet claimed or "
+            "discarded, each with the bytes it may take; a slot names files in this pod's own memory-backed "
+            "directory that a worker of this process is writing, so another pod has nothing to do with it, and a "
+            "restart takes the directory over and removes every result in it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_claimed_bytes",
+        rationale=(
+            "the bytes each result this process claimed still holds in its own memory-backed directory, until "
+            "the sweep removes its files; it counts this pod's own files against this process's byte cap, so "
+            "another pod has nothing to do with it, and a restart takes the directory over and removes every "
+            "result in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/search/src/threetears/search/standalone.py",
         class_name="_Breakers",
         attr_name="_circuits",

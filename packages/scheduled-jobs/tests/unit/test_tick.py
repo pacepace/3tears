@@ -21,6 +21,8 @@ Cases:
 
 from __future__ import annotations
 
+import asyncio
+
 import inspect
 import itertools
 
@@ -781,3 +783,130 @@ class TestCoalesceHoldsTheScheduleGrid:
         await tick_mod.scheduled_tick_job(store, fires, _routes(_record_success), nats_client=object())
         assert len(fires.created) == 1
         assert store.claims[0]["computed_next_fire"] == due + timedelta(hours=11)
+
+
+async def _settled(fires: Any, count: int, seconds: float = 5.0) -> None:
+    """wait until ``count`` fires are recorded, succeeded or failed: a retry settles its fire off the tick.
+
+    :param fires: the fake fire store
+    :ptype fires: Any
+    :param count: the fires to wait for
+    :ptype count: int
+    :param seconds: the longest to wait
+    :ptype seconds: float
+    :return: nothing
+    :rtype: None
+    """
+    deadline = asyncio.get_running_loop().time() + seconds
+    while len(fires.succeeded) + len(fires.failed) < count:
+        assert asyncio.get_running_loop().time() < deadline, "the retried fire was never settled"
+        await asyncio.sleep(0.01)
+
+
+class TestAFailureAMomentFixesIsRetriedOnce:
+    """A dispatcher that returns a failure with ``retry_after_seconds`` gets the same fire once more.
+
+    On cobalt dev on 2026-10-30 a scheduled ENR refresh fired during a platform rollout and was refused
+    ``TOOL_UNAVAILABLE`` by a registry replica whose warm-loaded copies were not yet routable; a second try a
+    moment later would have reached the tool. The fire waited for its next interval instead.
+    """
+
+    async def test_a_retried_fire_that_then_succeeds_is_recorded_once_as_succeeded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Flips if a failure that asked for a retry is recorded instead of retried, or retried as a new fire."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        seen: list[UUID] = []
+
+        async def _cb(_t: JobTrigger, fire_id: UUID) -> JobFireResult:
+            seen.append(fire_id)
+            if len(seen) == 1:
+                return JobFireResult(status="failed", error="TOOL_UNAVAILABLE", retry_after_seconds=0.0)
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        await _settled(fires, 1)
+        assert len(seen) == 2 and seen[0] == seen[1]
+        assert len(fires.created) == 1
+        assert len(fires.succeeded) == 1
+        assert fires.failed == []
+
+    async def test_a_fire_is_retried_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if a second failure asking for a retry runs the fire a third time, or is not recorded."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        calls = 0
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            nonlocal calls
+            calls += 1
+            return JobFireResult(status="failed", error=f"TOOL_UNAVAILABLE {calls}", retry_after_seconds=0.0)
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        await _settled(fires, 1)
+        assert calls == 2
+        assert [failure["error"] for failure in fires.failed] == ["TOOL_UNAVAILABLE 2"]
+
+    async def test_a_failure_with_no_retry_asked_is_recorded_at_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if every failure is retried: a refusal the next try would meet too is recorded on the first."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        calls = 0
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            nonlocal calls
+            calls += 1
+            return JobFireResult(status="failed", error="TOOL_NOT_FOUND")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert calls == 1 and len(fires.failed) == 1
+
+    async def test_the_pause_a_dispatcher_asks_for_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if the engine sleeps for whatever a dispatcher (or an upstream Retry-After it echoes) asks."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        paused: list[float] = []
+        sleep = asyncio.sleep
+
+        async def _recorded(seconds: float) -> None:
+            paused.append(seconds)
+            await sleep(0)
+
+        monkeypatch.setattr(asyncio, "sleep", _recorded)
+        store = _FakeScheduleStore([_FakeDueSchedule()])
+        fires = _FakeFireStore()
+        calls = 0
+
+        async def _cb(_t: JobTrigger, _f: UUID) -> JobFireResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return JobFireResult(status="failed", error="TOOL_UNAVAILABLE", retry_after_seconds=3600.0)
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        await _settled(fires, 1, seconds=2.0)
+        assert calls == 2 and len(fires.succeeded) == 1
+        assert max(paused) <= 60.0, "the retry slept for the hour it was asked"
+
+    async def test_the_tick_does_not_wait_out_a_retrys_pause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Flips if a fire's retry pause holds back the tick (and the cross-pod lock it holds): the tick returns,
+        its other due fires dispatched, before the retry runs."""
+        _patch_lock(monkeypatch, _CtxHealthy())
+        store = _FakeScheduleStore([_FakeDueSchedule(name="retried"), _FakeDueSchedule(name="other")])
+        fires = _FakeFireStore()
+        order: list[str] = []
+
+        async def _cb(trigger: JobTrigger, _f: UUID) -> JobFireResult:
+            order.append(str(trigger.name))
+            if trigger.name == "retried" and order.count("retried") == 1:
+                return JobFireResult(status="failed", error="TOOL_UNAVAILABLE", retry_after_seconds=0.3)
+            return JobFireResult(status="succeeded")
+
+        await tick_mod.scheduled_tick_job(store, fires, _routes(_cb), nats_client=object())
+        assert sorted(order) == ["other", "retried"], "the tick waited for the retry's pause"
+        await _settled(fires, 2)
+        assert order[-1] == "retried" and len(fires.succeeded) == 2

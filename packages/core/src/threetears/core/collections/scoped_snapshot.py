@@ -1812,6 +1812,19 @@ class ScopedSnapshot:
         with self._backend.read_snapshot() as cursor:
             yield cursor, MappingProxyType({scope: why for scope, (_, why) in behind.items()})
 
+    @property
+    def behind(self) -> Mapping[str, str]:
+        """the scopes this replica's L1 is behind on now, and why, as a read opened now reports them
+        (:meth:`read_versioned`): for a reader of a copy published from an earlier read (a shared-memory
+        version, :mod:`~threetears.core.collections.shared_snapshot`) to see that what it holds no longer
+        says what the L1 does. Safe on any thread.
+
+        :return: scope -> why it is behind
+        :rtype: Mapping[str, str]
+        """
+        behind = self._behind
+        return MappingProxyType({scope: why for scope, (_, why) in behind.items()})
+
     def applied_epoch(self, scope: str) -> int | None:
         """the epoch of ``scope`` this replica's L1 holds; None when it holds none.
 

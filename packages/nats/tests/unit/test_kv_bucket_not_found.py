@@ -637,11 +637,12 @@ class TestAKeyListingFollowsAMovedConnection:
         bucket = self._moved_handle(wire)
         infos_before = wire.infos
 
+        # each listing reads the bucket's subjects with one STREAM.INFO of its own; a bind is one more
         assert await bucket.list_keys() == []
-        assert wire.infos == infos_before + 1, "the listing bound the handle on the current connection"
+        assert wire.infos == infos_before + 2, "the listing bound the handle on the current connection"
 
         assert await bucket.list_keys() == []
-        assert wire.infos == infos_before + 1, "a handle already on the current connection is not bound again"
+        assert wire.infos == infos_before + 3, "a handle already on the current connection is not bound again"
 
     @pytest.mark.asyncio
     async def test_a_bucket_absent_on_the_successor_is_recreated_by_a_declaring_handle(self) -> None:

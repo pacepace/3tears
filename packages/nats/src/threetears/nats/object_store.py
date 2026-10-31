@@ -54,6 +54,7 @@ from nats.js.errors import APIError, NotFoundError
 from threetears.observe import get_logger
 
 from threetears.nats._named_read import NamedRead, read_through_named_consumer
+from threetears.nats._stream_listing import latest_messages, stream_subjects
 from threetears.nats._publish import run_bounded
 from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, is_write_claim_key
 from threetears.nats.errors import (
@@ -64,6 +65,7 @@ from threetears.nats.errors import (
     ObjectStoreNotFoundError,
     PublishTimeoutError,
 )
+from threetears.nats.errors import NatsClientError
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
@@ -95,11 +97,6 @@ DEFAULT_OBJECT_CHUNK_BYTES: Final[int] = 512 * 1024
 DEFAULT_OBJECT_OP_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 
-#: consumer names a read mints carry these prefixes, so an operator listing a stream's consumers can
-#: tell an object read (``og_``) and a listing (``ol_``) from anything else.
-_GET_CONSUMER_PREFIX: Final[str] = "og_"
-_LIST_CONSUMER_PREFIX: Final[str] = "ol_"
-
 #: JetStream's refusals of a publish whose expected last subject sequence did not match.
 _JS_ERR_WRONG_LAST_SEQUENCE: Final[frozenset[int]] = frozenset({10071, 10164})
 
@@ -116,6 +113,10 @@ _JS_ERR_STORE_FAILED: Final = 10077
 #: the store error a stream at its ``max_bytes`` reports, as the description of a store failure
 _MAX_BYTES_EXCEEDED: Final = "maximum bytes exceeded"
 
+#: consumer names an object read mints carry this prefix, so an operator listing a stream's consumers can tell
+#: an object read from anything else.
+_GET_CONSUMER_PREFIX: Final[str] = "og_"
+
 #: how a JetStream request the server never answered arrives: our own deadline, nats-py's request
 #: timeout, or no responder. A request this principal is not granted is dropped unanswered, so each
 #: of these may name a missing grant as much as an unreachable broker.
@@ -128,13 +129,13 @@ _UNANSWERED: Final[tuple[type[BaseException], ...]] = (
 #: an answered refusal or an unanswered request: every way a JetStream call can fail to do its work
 _FAILED: Final[tuple[type[BaseException], ...]] = (APIError, *_UNANSWERED)
 
+#: a JetStream call that failed, or a request the wrapper client sent that was not answered (a listing's later
+#: ``STREAM.INFO`` page is such a request)
+_FAILED_OR_UNANSWERED: Final[tuple[type[BaseException], ...]] = (*_FAILED, NatsClientError)
+
 _EXPECTED_LAST_SUBJECT_SEQUENCE: Final[str] = "Nats-Expected-Last-Subject-Sequence"
 
 _DIGEST_PREFIX: Final[str] = "SHA-256="
-
-#: the most subjects one ``STREAM.INFO`` answer carries (the server's ``JSMaxSubjectDetails``); an
-#: answer this full may have been cut short
-_STREAM_INFO_SUBJECTS_CAP: Final[int] = 100_000
 
 
 def object_store_stream_name(bucket: str) -> str:
@@ -584,7 +585,7 @@ class NatsObjectStore:
         object's metadata as a message of its own through a consumer. A name whose metadata is a
         deletion marker is listed (:meth:`delete` purges, leaving none; a foreign client may not),
         so a caller acting on a name meets its absence the way it meets any other race. Past the
-        server's cap on the subjects one answer carries, the listing reads the metadata instead.
+        server's cap on the subjects one answer carries, the next page is asked for.
 
         :param prefix: keep names starting with this; ``""`` lists every object
         :ptype prefix: str
@@ -594,8 +595,6 @@ class NatsObjectStore:
         """
         meta = f"$O.{self._full_name}.M."
         subjects = await self._subjects(f"{meta}>", what="object name listing")
-        if len(subjects) >= _STREAM_INFO_SUBJECTS_CAP:
-            return sorted(obj.name for obj in await self.list_objects(prefix=prefix))
         names: list[str] = []
         for subject in subjects:
             try:
@@ -607,36 +606,50 @@ class NatsObjectStore:
         return sorted(names)
 
     async def _subjects(self, subjects_filter: str, *, what: str) -> dict[str, int]:
-        """the stream's subjects matching ``subjects_filter``, each with its message count; one ``STREAM.INFO``.
+        """the stream's subjects matching ``subjects_filter``, each with its message count: ``STREAM.INFO``, a page
+        per the server's cap on one answer.
 
         :param subjects_filter: the subjects to count
         :ptype subjects_filter: str
-        :param what: what the read is, for the deadline and the error
+        :param what: what the read is, for the error
         :ptype what: str
         :return: subject -> messages held on it
         :rtype: dict[str, int]
         :raises ObjectStoreError: when the stream cannot be read
         """
-        js = self._client.jetstream_context()
         try:
-            info = await self._bounded(lambda: js.stream_info(self.stream, subjects_filter=subjects_filter), what=what)
-        except _FAILED as exc:
+            return await stream_subjects(
+                self._client,
+                stream=self.stream,
+                subjects_filter=subjects_filter,
+                timeout_seconds=self._op_timeout.total_seconds(),
+                failure=lambda message, _cause: ObjectStoreError(f"{message} ({self._full_name})"),
+            )
+        except ObjectStoreError:
+            raise
+        except _FAILED_OR_UNANSWERED as exc:
             raise ObjectStoreError(f"{what} on {self._full_name} failed: {exc}") from exc
-        return dict(info.state.subjects or {})
 
     async def _list_raw(self) -> list[_NatsObjectInfo]:
-        """every object's latest metadata, deleted ones included.
+        """every object's latest metadata, deleted ones included: the metadata subjects from ``STREAM.INFO``, each
+        read by a subject-carried ``DIRECT.GET`` -- never a replay through a consumer, which stalls part way under
+        load (:mod:`threetears.nats._stream_listing`).
 
         :return: the decoded metadata, in stream order
         :rtype: list[nats.js.api.ObjectInfo]
         :raises ObjectStoreError: when the listing fails or a record does not decode
         """
-        messages = await self._read_subject(
-            f"$O.{self._full_name}.M.>",
-            count=None,
-            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
-            prefix=_LIST_CONSUMER_PREFIX,
-        )
+        subjects = await self._subjects(f"$O.{self._full_name}.M.>", what="object metadata listing")
+        try:
+            latest = await latest_messages(
+                self._client, stream=self.stream, subjects=subjects, timeout_seconds=self._op_timeout.total_seconds()
+            )
+        except _FAILED as exc:
+            raise ObjectStoreError(
+                f"reading object metadata in {self._full_name} failed: {exc}. an ungranted read is never answered -- "
+                f"check this principal's grant on $JS.API.DIRECT.GET.{self.stream}.$O.{self._full_name}.M.>"
+            ) from exc
+        messages = [bytes(message.data or b"") for message in latest]
         records: list[_NatsObjectInfo] = []
         for payload in messages:
             try:
@@ -739,14 +752,7 @@ class NatsObjectStore:
         # named objects, later still, sees. a put that starts after the listing is not in it, so
         # nothing of it is purged. read the other way round, a put starting between the claim read
         # and the listing has its first chunks purged and then names an object no get can verify.
-        try:
-            info = await self._bounded(
-                lambda: js.stream_info(self.stream, subjects_filter=f"$O.{self._full_name}.C.>"),
-                what="object chunk listing",
-            )
-        except _FAILED as exc:
-            raise ObjectStoreError(f"sweeping unnamed chunks from {self._full_name} failed: {exc}") from exc
-        subjects = dict(info.state.subjects or {})
+        subjects = await self._subjects(f"$O.{self._full_name}.C.>", what="object chunk listing")
         claims = [key for key in await pointers.list_keys() if is_write_claim_key(key)]
         if claims:
             log.info(
@@ -759,7 +765,7 @@ class NatsObjectStore:
         # bucket's empty objects (no chunks) or objects whose delete stopped between its purges can
         # hide as many orphans from this count; they go at the first sweep the count lets through
         objects = await self._subjects(f"$O.{self._full_name}.M.>", what="object name listing")
-        if len(subjects) <= len(objects) < _STREAM_INFO_SUBJECTS_CAP:
+        if len(subjects) <= len(objects):
             return 0
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:
