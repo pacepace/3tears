@@ -25,6 +25,17 @@ and map only the changed ones: 2.7 ms for a version of 2,400 files that changed 
 which DuckDB scans a registered Arrow table through and otherwise imported at a process's first scan (25-70 ms inside
 a serving thread's read).
 
+### core: a scope whose pointer fell behind L3 moves with the next write, never left behind
+
+**Fixed:** `ScopedSnapshot.publish_staged` carried a partial stage's untouched tables only when the scope's pointer
+was at the epoch its writer saw; a scope whose pointer had fallen behind (a stage of an earlier write skipped) was
+skipped by every later write that changed only some of its tables, and left to a catch-up that waits for no write in
+progress, which back-to-back loads never leave (cobalt prod, 2026-10-31: 36-51 of 52 states skipped at every load,
+the copy frozen for hours). Such a stage now has the tables it left out, and those it appended to, read whole from L3
+and staged under its epoch, only while L3 holds the scope exactly there: its epoch the stage's and no write in
+progress touching it, before and after the read. A pointer still never moves to a lower epoch or claims rows it does
+not hold. No API changes.
+
 ### object-store and datasources: two event-loop holds at a load's first export read
 
 **Fixed:** `S3ObjectStore` reads the s3 and sts service models and endpoint data its first client is built from on a
