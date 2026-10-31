@@ -8,6 +8,31 @@ packages (bumped in lock-step).
 
 ## v0.87.0 -- 2026-10-31
 
+### agent.tools: a slow call never holds the calls behind it
+
+**Changed:** `ToolServer` takes up to `max_calls_in_flight` calls (default `CALLS_IN_FLIGHT`, 64) off its call subject
+at once, in the call group and the held group alike, each as its own task. The subscription was serial: a replica took
+a call only once the one before it was answered, so one slow call held every call behind it on that replica (cobalt
+prod, 2026-10-31: a reader's favorites read waited 9 s behind an `lsf_ready` call). `max_concurrent_calls` still bounds
+how many tools run at once; `max_calls_in_flight=1` restores the serial order. A tool's handler now runs beside other
+calls on the same replica, as it always did beside its siblings' calls on other replicas.
+
+### core: a publish of many scopes retires their older chunks in one pass
+
+**Fixed:** `ScopedSnapshot.publish_staged` retired each moved scope's older chunks by reading every listed name once
+per scope moved, the scope's token made again each time, and the sweep searched a pointer's chunk list again for
+every name: 50-60 ms on the event loop a publish of 51 states on cobalt prod, 0.5 s at 13k names. Each name is now
+read once, by its own scope, and each pointer's chunks are made a set once.
+
+### core: a versioned read never waits on a staged change
+
+**Added:** `StagedPartitions`, an L1 whose commit is staged apart from its publish (`stage_partitions(replacements)`
+yields the step that publishes them). A scoped snapshot over one stages each change outside its swap lock, one swap at
+a time under a writer lock, and holds the swap lock only to publish and move the epochs: a `read_versioned` opened
+while a change is staged reads the previous version at once. Over the reports' shared Arrow copy every versioned read,
+and every call behind one, waited the whole apply in the worker process, 8-18 s a change (cobalt prod, 2026-10-31). A
+backend without it commits under the lock as before.
+
 ### models: a tool call's provider fields come back on the next request (Gemini 3 thought signatures)
 
 **Fixed:** a tool-using agent on Gemini 3 behind an OpenAI-compatible provider failed on its second turn. Google
@@ -37,9 +62,11 @@ SDK and a separate follow-up.
 `ToolServer.answer_while_held()` starts answering them. The replica subscribes the call subject in a queue group of its
 own (`HELD_QUEUE_SUFFIX`), so NATS hands each call to one member of the call group and to one held replica; the held
 replica answers only the named tools and drops every other call, which its siblings answer. A call handed to both is
-run once: the replica that finds its proxy assertion's nonce consumed says nothing, counts the call on /metrics under
-the outcome `answered_by_sibling`, never `failure`, and publishes no audit row; the
-sibling that answers audits it. `serving_calls` (the `calls_open`
+run once: each replica claims the call for the queue group that handed it, and the one whose claim is its group's
+first but finds the proxy assertion's nonce consumed says nothing, counts the call on /metrics under the outcome
+`answered_by_sibling`, never `failure`, and publishes no audit row; the sibling that answers audits it. A replay (a
+second publish of one assertion) finds its group's claim taken and is refused and audited by every replica it reaches,
+as before. `serving_calls` (the `calls_open`
 readiness check) stays False meanwhile. A pod whose every replica was held rebuilding its copy for hours could not be
 reset, asked its status, or have a setting changed (reports, cobalt prod, 2026-10-31). With every replica held, a
 reader's call now waits for the caller's deadline where it found no responder at once.

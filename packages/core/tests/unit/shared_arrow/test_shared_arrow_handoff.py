@@ -183,6 +183,7 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
     ) -> None:
         signals = tmp_path / "signals"
         handed = store.hand({"t": pa.table({"a": [1, 2]})})
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (1, 1)
         future = executor.submit(jobs.hold_handed_on_signal, handed, str(signals))
         deadline = time.monotonic() + 30
         while not (signals / "mapped").exists():
@@ -190,10 +191,12 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
             time.sleep(0.01)
         store.release(handed)
         assert store.handoffs() == (handed.handoff_id,), "the worker's mapping holds it"
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 1)
         (signals / "go").touch()
         assert future.result() == 2
         store.sweep()
         assert store.handoffs() == ()
+        assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 0)
 
     def test_a_hand_off_released_before_its_worker_maps_it_is_gone_to_the_worker(
         self, store: SharedArrowStore, executor: ProcessPoolExecutor
@@ -210,6 +213,28 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         assert len(first.handoffs()) == 1
         again = SharedArrowStore(tmp_path / "shm", max_bytes=64 << 20)
         assert again.handoffs() == ()
+
+
+class TestASweepNeverRetiresAHandOffBeingRegistered:
+    def test_a_sweep_between_the_rename_and_the_registration_keeps_the_hand_off(
+        self, store: SharedArrowStore, executor: ProcessPoolExecutor, monkeypatch: Any
+    ) -> None:
+        rename = os.rename
+        swept: list[list[str]] = []
+
+        def rename_then_sweep(source: Any, target: Any) -> None:
+            rename(source, target)
+            # once, on the staging directory's rename into its final name (a sweep renames too)
+            if Path(source).name.startswith(".staging-") and Path(target).parent.name == "handoffs" and not swept:
+                # another thread's publish, release, claim or discard, landing in the window
+                swept.append(store.sweep())
+
+        monkeypatch.setattr("threetears.core.shared_arrow.os.rename", rename_then_sweep)
+        handed = store.hand({"t": pa.table({"a": [1, 2, 3]})})
+        assert swept, "the window was not staged"
+        assert store.handoffs() == (handed.handoff_id,)
+        assert executor.submit(jobs.digest_of_handed, handed, "t").result()["rows"] == 3
+        store.release(handed)
 
 
 class TestTheHandOffIsBounded:
@@ -266,3 +291,34 @@ class TestTheLoopRunsWhileALargeTableIsHanded:
         await ticker
         assert result.value["sha256"] == digest
         assert late < LOOP_MAY_BE_LATE, f"the loop ran {late * 1000:.1f} ms late while the table was handed"
+
+
+class TestHandOffsSideBySide:
+    def test_a_hand_off_is_never_swept_before_its_worker_maps_it_while_others_are_handed_and_released(
+        self, store: SharedArrowStore, executor: ProcessPoolExecutor
+    ) -> None:
+        """hand-offs made, mapped and released on many threads at once, as a pod's exports are while a load stages
+        51 states side by side on its 8 executor threads: every one is still there when its worker maps it.
+
+        A hand-off renamed into its name before it was held let a sweep on another thread (each hand and release
+        sweeps) retire it in between: its worker found it gone ("shared Arrow 'h-...' is gone"), on the first
+        concurrent export (reports, 2026-10-31).
+        """
+        table = pa.table({"v": list(range(2_000))})
+        gone: list[str] = []
+
+        def export(_: int) -> None:
+            with store.handing({"t": table}) as handed:
+                try:
+                    seen = executor.submit(jobs.digest_of_handed, handed, "t").result()
+                except LookupError as exc:
+                    gone.append(str(exc))
+                else:
+                    assert seen["rows"] == table.num_rows
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(8) as threads:
+            list(threads.map(export, range(306)))
+        assert gone == [], f"{len(gone)} of 306 hand-offs were swept before their worker mapped them: {gone[:3]}"
+        assert store.handoffs() == () and _hidden(store) == []

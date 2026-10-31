@@ -226,7 +226,8 @@ def epochs_version(epochs: Mapping[str, int]) -> str:
 
 
 class SharedArrowFullError(RuntimeError):
-    """a publish, a reservation or a worker's write would pass its bytes; nothing of it was kept."""
+    """a write or a reservation would pass the bytes it may take (the store's, or its own bound); nothing of it was
+    kept."""
 
 
 def _locked(path: Path, operation: int) -> int | None:
@@ -285,6 +286,28 @@ def _retire(path: Path, gone: list[Path]) -> None:
     renamed = _retiring(path)
     if renamed is not None:
         gone.append(renamed)
+
+
+def _retire_unless_held(entry: Path, gone: list[Path]) -> bool:
+    """retire a directory (into ``gone``) unless a reader holds its shared lock: a version a lease or a worker reads,
+    a hand-off a worker maps. A directory with no lock file is no reader's and goes.
+
+    :param entry: the directory
+    :ptype entry: Path
+    :param gone: what to remove
+    :ptype gone: list[Path]
+    :return: whether it was retired
+    :rtype: bool
+    """
+    descriptor = _locked(entry, fcntl.LOCK_EX)
+    if descriptor is None and (entry / _LOCK_FILE).is_file():
+        return False  # a reader holds it
+    try:
+        _retire(entry, gone)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return True
 
 
 def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> int:
@@ -1042,12 +1065,15 @@ class SharedArrowStore:
             current = None if self._current is None else self._current.name
             slots, claimed = len(self._slots), len(self._claimed)
             handoffs = len(self._handing) + len(self._handed)
+        held_handoffs = len(self.handoffs())
         return {
             "current": current,
             "versions": list(self.versions()),
             "slots_open": slots,
             "segments_claimed": claimed,
             "handoffs_open": handoffs,
+            # on disk: the open ones, and those released that a worker still maps
+            "handoffs_held": held_handoffs,
             "handoffs_made": self._handoffs_made,
             "held_bytes": self.held_bytes(),
             "max_bytes": self._max_bytes,
@@ -1437,14 +1463,8 @@ class SharedArrowStore:
             if name.startswith(_RETIRING_PREFIX):
                 gone.append(entry)
                 continue
-            descriptor = _locked(entry, fcntl.LOCK_EX)
-            if descriptor is None and (entry / _LOCK_FILE).is_file():
-                continue  # a reader holds it
-            try:
-                _retire(entry, gone)
-            finally:
-                if descriptor is not None:
-                    os.close(descriptor)
+            if not _retire_unless_held(entry, gone):
+                continue
             if not name.startswith(_STAGING_PREFIX):
                 retired.append(name)
         return retired
@@ -1493,16 +1513,10 @@ class SharedArrowStore:
                 # written by this process on a thread, never a worker: one this process is not writing is a leftover
                 if _slot_of(name) not in self._handing:
                     _retire(entry, gone)
-            elif name not in self._handed:
-                # a worker mapping it holds its shared lock; one that finished or died does not
-                descriptor = _locked(entry, fcntl.LOCK_EX)
-                if descriptor is None and (entry / _LOCK_FILE).is_file():
-                    continue
-                try:
-                    _retire(entry, gone)
-                finally:
-                    if descriptor is not None:
-                        os.close(descriptor)
+            elif name not in self._handed and name not in self._handing:
+                # written and renamed into place by a hand() not yet done registering it is in _handing; a worker
+                # mapping a released one holds its shared lock; one that finished or died does not
+                _retire_unless_held(entry, gone)
         # a hand-off's bytes count in a publish's room until its directory is out of its name (removed just after)
         for name in [each for each in self._handed_bytes if each not in self._handed]:
             if not (self._handoffs / name).exists():
@@ -1800,11 +1814,12 @@ class SharedArrowReader:
 
 
 def _slot_of(name: str) -> str:
-    """the slot a result directory belongs to: its name, or its staging name's slot.
+    """the owner a result's or a hand-off's directory belongs to (its slot, or its hand-off): its name, or its
+    staging name's owner.
 
     :param name: the directory's name
     :ptype name: str
-    :return: the slot
+    :return: the slot or hand-off
     :rtype: str
     """
     if name.startswith(_STAGING_PREFIX):
@@ -1922,7 +1937,7 @@ def _spawned() -> int:
     return os.getpid()
 
 
-class _Handoff:
+class _Run:
     """one run's lease, hand-off and slot, each released exactly once whichever way the run ends: the lease and the
     hand-off when the worker is done with them (its job returned or raised, or the worker died), the slot claimed by
     the caller or discarded once the worker is done with it (the job failed, the caller stopped waiting, the worker
@@ -2030,14 +2045,14 @@ def _abandon_submitted(submitting: asyncio.Future[Any]) -> None:
     """a submission whose caller stopped waiting: once it is done, its slot is discarded when its worker is done.
 
     :param submitting: the submission, done
-    :ptype submitting: asyncio.Future[tuple[_Handoff, Future[Any]]]
+    :ptype submitting: asyncio.Future[tuple[_Run, Future[Any]]]
     :return: nothing
     :rtype: None
     """
     if not submitting.cancelled() and submitting.exception() is None:
-        handoff, future = submitting.result()
+        run, future = submitting.result()
         # a discard sweeps the directory: on a thread, never the event loop this is called on
-        _off_loop(handoff.abandon, future, what="an abandoned shared Arrow result could not be discarded")
+        _off_loop(run.abandon, future, what="an abandoned shared Arrow result could not be discarded")
 
 
 def _close_claimed(claiming: asyncio.Future[Any]) -> None:
@@ -2157,7 +2172,7 @@ class SharedArrowPool:
             asyncio.to_thread(self._submit, read, result_bytes, job, args, tables, tables_bytes)
         )
         try:
-            handoff, future = await asyncio.shield(submitting)
+            run, future = await asyncio.shield(submitting)
         except asyncio.CancelledError:
             submitting.add_done_callback(_abandon_submitted)
             raise
@@ -2183,9 +2198,9 @@ class SharedArrowPool:
             if error is not None:
                 raise error
             segment = None
-            if handoff.slot is not None:
+            if run.slot is not None:
                 # the claim maps the result on a thread; a caller that stops waiting meanwhile has it closed there
-                claiming = asyncio.ensure_future(asyncio.to_thread(self._store.claim, handoff.slot))
+                claiming = asyncio.ensure_future(asyncio.to_thread(self._store.claim, run.slot))
                 try:
                     segment = await asyncio.shield(claiming)
                 except asyncio.CancelledError:
@@ -2196,7 +2211,7 @@ class SharedArrowPool:
         finally:
             if not claimed:
                 # a discard sweeps the directory, and runs at once on a job already done: on a thread, never the loop
-                _off_loop(handoff.abandon, future, what="a failed shared Arrow job's result could not be discarded")
+                _off_loop(run.abandon, future, what="a failed shared Arrow job's result could not be discarded")
 
     def _submit(
         self,
@@ -2206,7 +2221,7 @@ class SharedArrowPool:
         args: tuple[Any, ...],
         tables: Mapping[str, Any] | None = None,
         tables_bytes: int | None = None,
-    ) -> tuple[_Handoff, Future[tuple[Any, BaseException | None, int, int]]]:
+    ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]:
         """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
         fresh one; on a thread.
 
@@ -2222,17 +2237,17 @@ class SharedArrowPool:
         :ptype tables: Mapping[str, Any] | None
         :param tables_bytes: as :meth:`run`
         :ptype tables_bytes: int | None
-        :return: the run's hand-off and the job's future (the lease and the handed tables are released when it is
+        :return: the run (its lease, hand-off and slot) and the job's future (the lease and the handed tables are released when it is
             done)
-        :rtype: tuple[_Handoff, Future[tuple[Any, BaseException | None, int, int]]]
+        :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]
         """
         lease = None if read is False else self._store.lease(None if read is True else read)
-        handoff = _Handoff(self._store, lease)
+        run = _Run(self._store, lease)
         try:
             if tables is not None:
-                handoff.handed = self._store.hand(tables, max_bytes=tables_bytes)
+                run.handed = self._store.hand(tables, max_bytes=tables_bytes)
             if result_bytes is not None:
-                handoff.slot = self._store.reserve(result_bytes)
+                run.slot = self._store.reserve(result_bytes)
             with self._lock:
                 if self._pool is not None and self._stale:
                     self._pool.shutdown(wait=False)
@@ -2252,16 +2267,16 @@ class SharedArrowPool:
                     _run_job,
                     str(self._store.root),
                     None if lease is None else lease.version.name,
-                    handoff.slot,
+                    run.slot,
                     job,
                     args,
-                    handoff.handed,
+                    run.handed,
                 )
         except BaseException:
-            handoff.release_all()
+            run.release_all()
             raise
-        future.add_done_callback(handoff.worker_done)
-        return handoff, future
+        future.add_done_callback(run.worker_done)
+        return run, future
 
     async def close(self) -> None:
         """shut the workers down, waiting for them: what they map and hold goes back to the system.
