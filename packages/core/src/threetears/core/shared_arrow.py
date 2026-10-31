@@ -8,7 +8,7 @@ solved by writing Arrow IPC files into a memory-backed directory (``/dev/shm``, 
 ``medium: Memory``: RAM, never a disk -- a pod has no scratch disk and must never spill to one) and memory-mapping
 them: every process mapping a file shares its pages, and a mapped Arrow column IS the file's bytes.
 
-**Two directions, one owner.** The serving process owns the directory through one :class:`SharedArrowStore`:
+**Three hand-offs, one owner.** The serving process owns the directory through one :class:`SharedArrowStore`:
 
 - *Down, versions*: :meth:`SharedArrowStore.publish` writes a data version's tables once; workers map it read-only
   (:func:`read_version`) and run DuckDB over it without copying (:meth:`MappedTables.connect`). Each version has a
@@ -19,23 +19,36 @@ them: every process mapping a file shares its pages, and a mapped Arrow column I
   and none copied. The serving process owns every slot from reservation to release: it claims it, or discards it
   when the job failed, was abandoned or its worker died.
 
+- *Down, per job*: :meth:`SharedArrowStore.hand` writes one job's input tables (a change's rows, say) into a hand-off
+  of their own and gives back a :class:`HandedTables` -- the hand-off's name, its tables' names and its bytes, which
+  pickle in a few hundred bytes however many rows it holds -- and the worker maps them read-only
+  (:meth:`HandedTables.mapped`), no row copied. Handing tables through a ``ProcessPoolExecutor`` instead pickles them
+  whole in one call on its feeder thread, which never lets the interpreter lock go: the serving process's event loop
+  waits behind it (74-165 ms a change on cobalt prod, 2026-10-31). The write is Arrow IPC (pyarrow writes each batch
+  with the lock released) and runs on the caller's thread, never the loop. The hand-off is released when the worker
+  acknowledges -- its job's future is done, whether it returned, raised or its worker died
+  (:meth:`SharedArrowStore.release`) -- and its files go once the worker no longer maps them.
+
 **Nothing leaks, judged by state, never by time.** A reader of a version -- the serving process's lease
 (:meth:`SharedArrowStore.lease`) handed with a job, and the worker while it maps the files -- holds a shared
-``flock`` on the version's lock file, and a worker writing a slot holds an exclusive one on its staging lock. The
+``flock`` on the version's lock file, a worker mapping a hand-off holds one on the hand-off's, and a worker writing a
+slot holds an exclusive one on its staging lock. The
 operating system drops a lock when its holder closes it or dies. A sweep, after every publish, release, claim and
-discard, deletes every version that is not current and that no reader holds, every result whose slot nobody owns, and
-every staging directory whose writer is gone. A new store removes whatever the directory held that no live process
+discard, deletes every version that is not current and that no reader holds, every result whose slot nobody owns, every
+hand-off released that no worker maps, and every staging directory whose writer is gone. A new store removes whatever the directory held that no live process
 holds (a container restarted in the same pod keeps its ``emptyDir``). There is no timer and no TTL.
 
-**Bounded.** A store is given the bytes it may hold, every version and result together (``max_bytes``, set below the
-volume's own limit, since a pod whose ``emptyDir`` passes its ``sizeLimit`` is evicted). An open slot counts at the
-most it may take (its ``max_bytes``); a publish or a reservation that would pass the bound, after a sweep, is refused
+**Bounded.** A store is given the bytes it may hold, every version, result and hand-off together (``max_bytes``, set
+below the volume's own limit, since a pod whose ``emptyDir`` passes its ``sizeLimit`` is evicted). An open slot counts at the
+most it may take (its ``max_bytes``), and a hand-off being written at its own bound; a publish, a reservation or a
+hand-off that would pass the bound, after a sweep, is refused
 with :class:`SharedArrowFullError` and leaves nothing behind, and a worker's write that would pass its slot's bytes
 is refused in the worker.
 
 **Worker processes.** :class:`SharedArrowPool` runs jobs ``job(context, *args)`` in spawned, long-lived workers
 (spawned, never forked: a serving process runs threads, whose locks a fork copies mid-hold). Each job may read a
-version, leased for the job's whole run, and may write a result, claimed back as a :class:`MappedSegment`. A worker
+version, leased for the job's whole run, may be handed tables (``tables=``, mapped as ``context.tables``), and may
+write a result, claimed back as a :class:`MappedSegment`. A worker
 keeps the version it read last mapped between jobs and lets it go after any job that finds a newer one current. A
 worker whose private memory (its anonymous pages: the mapped files are shared and not its own) passes the pool's
 bound after a job has its pool replaced, so what it allocated goes back to the system.
@@ -79,6 +92,7 @@ except ImportError as exc:  # NOSILENT: the snapshot extra is optional; using sh
     _SNAPSHOT_EXTRA = exc
 
 __all__ = [
+    "HandedTables",
     "JobContext",
     "JobResult",
     "MappedSegment",
@@ -101,9 +115,16 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: the store's two halves: published versions, and workers' results
+#: the store's three parts: published versions, workers' results, and the tables handed to one job each
 _VERSIONS_DIR: Final = "versions"
 _SEGMENTS_DIR: Final = "segments"
+_HANDOFFS_DIR: Final = "handoffs"
+
+#: what a hand-off's bound adds to its tables' bytes when the caller names none: the file's schema and footer, and
+#: per record batch its message and each buffer's padding (Arrow IPC pads every buffer to 8 bytes)
+_HANDOFF_FILE_BYTES: Final = 64 << 10
+_HANDOFF_BATCH_BYTES: Final = 4 << 10
+_HANDOFF_COLUMN_BYTES: Final = 512
 
 #: the file in each version's directory its readers hold a shared ``flock`` on, and in each staging directory its
 #: writer holds an exclusive one on
@@ -680,6 +701,63 @@ class SegmentSlot:
 
 
 @dataclass(frozen=True)
+class HandedTables:
+    """one job's input tables, written by the serving process into a hand-off of their own
+    (:meth:`SharedArrowStore.hand`): what crosses to the worker in place of the tables -- a few names and numbers,
+    however many rows they hold.
+
+    :ivar root: the store's directory
+    :ivar handoff_id: the hand-off
+    :ivar tables: its tables' names
+    :ivar nbytes: the bytes its files hold
+    """
+
+    root: str
+    handoff_id: str
+    tables: tuple[str, ...]
+    nbytes: int
+
+    def mapped(self) -> MappedTables:
+        """map the tables read-only (in the worker), holding the hand-off's shared lock until closed: its files are
+        not removed while it is open, even once the serving process has released it. Close it before the job
+        returns; a context manager closes it on exit.
+
+        :return: the mapped tables
+        :rtype: MappedTables
+        :raises LookupError: when the hand-off is gone (released before the worker mapped it)
+        """
+        _require_snapshot_extra()
+        path = Path(self.root) / _HANDOFFS_DIR / _valid_name(self.handoff_id, "hand-off")
+        try:
+            return MappedTables(self.handoff_id, path, lock=True)
+        except FileNotFoundError as exc:
+            # its lock taken as a sweep renamed it away: gone all the same
+            raise LookupError(f"shared Arrow hand-off {self.handoff_id!r} is gone") from exc
+
+
+def _handoff_bound(tables: Mapping[str, Any]) -> int:
+    """the most a hand-off of ``tables`` may take: their bytes, and the file's own per table, batch and column.
+
+    :param tables: name -> a ``pyarrow.Table``
+    :ptype tables: Mapping[str, Any]
+    :return: bytes
+    :rtype: int
+    :raises ValueError: for a table that is not a ``pyarrow.Table`` (its bytes are not known before it is written)
+    """
+    total = 0
+    for name, table in tables.items():
+        if not isinstance(table, pa.Table):
+            raise ValueError(f"hand-off table {name!r} is not a pyarrow Table: name its max_bytes")
+        batches = max((column.num_chunks for column in table.columns), default=1) or 1
+        total += (
+            table.nbytes
+            + _HANDOFF_FILE_BYTES
+            + batches * (_HANDOFF_BATCH_BYTES + _HANDOFF_COLUMN_BYTES * max(1, table.num_columns))
+        )
+    return total
+
+
+@dataclass(frozen=True)
 class SharedVersion:
     """one version the store holds.
 
@@ -821,8 +899,10 @@ class SharedArrowStore:
         self._root = Path(root)
         self._versions = self._root / _VERSIONS_DIR
         self._segments = self._root / _SEGMENTS_DIR
+        self._handoffs = self._root / _HANDOFFS_DIR
         self._versions.mkdir(parents=True, exist_ok=True)
         self._segments.mkdir(parents=True, exist_ok=True)
+        self._handoffs.mkdir(parents=True, exist_ok=True)
         self._max_bytes = max_bytes
         #: held while the current version, the slots or the claims are read or moved, and while the directory is
         #: swept: briefly, never while a table is written
@@ -841,6 +921,12 @@ class SharedArrowStore:
         self._claimed: set[str] = set()
         #: each claimed result's bytes, counted once at its claim, until its files are gone (a publish's room)
         self._claimed_bytes: dict[str, int] = {}
+        #: hand-offs being written, with the bytes each may take; and hand-offs written and not yet released
+        self._handing: dict[str, int] = {}
+        self._handed: set[str] = set()
+        #: each written hand-off's bytes, counted once as its write ends, until its files are gone (a publish's room)
+        self._handed_bytes: dict[str, int] = {}
+        self._handoffs_made = 0
         self._published = 0
         self._retired = 0
         self._refused = 0
@@ -924,6 +1010,14 @@ class SharedArrowStore:
         """
         return tuple(sorted(entry.name for entry in self._segments.iterdir() if not entry.name.startswith(".")))
 
+    def handoffs(self) -> tuple[str, ...]:
+        """every hand-off the directory holds now (open, or released and still mapped by its worker), by name.
+
+        :return: the names, sorted
+        :rtype: tuple[str, ...]
+        """
+        return tuple(sorted(entry.name for entry in self._handoffs.iterdir() if not entry.name.startswith(".")))
+
     def held_bytes(self) -> int:
         """the bytes the directory's files hold now, staged ones included, a file shared by versions once.
 
@@ -933,7 +1027,7 @@ class SharedArrowStore:
         seen: set[tuple[int, int]] = set()
         return sum(
             _directory_bytes(entry, seen)
-            for half in (self._versions, self._segments)
+            for half in (self._versions, self._segments, self._handoffs)
             for entry in half.iterdir()
             if entry.is_dir()
         )
@@ -947,11 +1041,14 @@ class SharedArrowStore:
         with self._state:
             current = None if self._current is None else self._current.name
             slots, claimed = len(self._slots), len(self._claimed)
+            handoffs = len(self._handing) + len(self._handed)
         return {
             "current": current,
             "versions": list(self.versions()),
             "slots_open": slots,
             "segments_claimed": claimed,
+            "handoffs_open": handoffs,
+            "handoffs_made": self._handoffs_made,
             "held_bytes": self.held_bytes(),
             "max_bytes": self._max_bytes,
             "published": self._published,
@@ -1169,9 +1266,98 @@ class SharedArrowStore:
             self._slots.pop(slot.slot_id, None)
         self.sweep()
 
+    def hand(self, tables: Mapping[str, Any], *, max_bytes: int | None = None) -> HandedTables:
+        """write one job's input tables into a hand-off of their own, for a worker to map (:meth:`HandedTables.mapped`):
+        what crosses to it is the :class:`HandedTables` alone. Blocking: on a thread, never the event loop (pyarrow
+        writes each batch with the interpreter lock released, so the loop runs meanwhile).
+
+        The hand-off counts against the store's ``max_bytes`` at its own bound while it is written, then at what its
+        files hold until they are gone. Release it (:meth:`release`) once its worker is done with it, or use
+        :meth:`handing`.
+
+        :param tables: name -> a ``pyarrow.Table``, a ``pyarrow.RecordBatchReader`` or what opens either (then name
+            ``max_bytes``)
+        :ptype tables: Mapping[str, Any]
+        :param max_bytes: the most its files may take; None for its tables' bytes and the file's own
+        :ptype max_bytes: int | None
+        :return: the hand-off, to pass to the worker
+        :rtype: HandedTables
+        :raises SharedArrowFullError: when the store has no room for it, after a sweep, or its write passes its bound;
+            nothing of it is kept
+        :raises ValueError: for a table name that is not one plain path segment, or a table that is not a
+            ``pyarrow.Table`` with no ``max_bytes``
+        """
+        for name in tables:
+            _valid_name(name, "table")
+        bound = _handoff_bound(tables) if max_bytes is None else max_bytes
+        if bound <= 0:
+            raise ValueError("a hand-off's max_bytes must be positive")
+        self.sweep()
+        handoff_id = f"h-{uuid.uuid7().hex}"
+        with self._state:
+            room = self._committed_bytes() + bound <= self._max_bytes
+            if room:
+                self._handing[handoff_id] = bound
+            else:
+                self._refused += 1
+        if not room:
+            log.warning(
+                "shared Arrow hand-off refused: it would pass the store's bytes",
+                extra={"extra_data": {"handoff_bytes": bound, "max_bytes": self._max_bytes}},
+            )
+            raise SharedArrowFullError(f"no room for a {bound}-byte hand-off in {self._max_bytes} bytes")
+        staging = self._handoffs / f"{_STAGING_PREFIX}{handoff_id}-{uuid.uuid7().hex[-8:]}"
+        try:
+            staging.mkdir()
+            written = _write_tables(staging, tables, lambda: bound)
+            (staging / _LOCK_FILE).touch()
+            os.rename(staging, self._handoffs / handoff_id)
+        except BaseException:
+            remove_tree(staging, log=log, what="a failed hand-off's staging directory")
+            with self._state:
+                self._handing.pop(handoff_id, None)
+            raise
+        with self._state:
+            self._handing.pop(handoff_id, None)
+            self._handed.add(handoff_id)
+            self._handed_bytes[handoff_id] = written
+            self._handoffs_made += 1
+        return HandedTables(root=str(self._root), handoff_id=handoff_id, tables=tuple(tables), nbytes=written)
+
+    def release(self, handed: HandedTables) -> None:
+        """the worker is done with a hand-off (its job returned or raised, or its worker died): it goes now, or at
+        the first sweep after no worker maps it. Harmless twice.
+
+        :param handed: the hand-off
+        :ptype handed: HandedTables
+        :return: nothing
+        :rtype: None
+        """
+        with self._state:
+            self._handed.discard(handed.handoff_id)
+        self.sweep()
+
+    @contextlib.contextmanager
+    def handing(self, tables: Mapping[str, Any], *, max_bytes: int | None = None) -> Iterator[HandedTables]:
+        """:meth:`hand` for a block, released (:meth:`release`) as it ends whichever way: wait in it for the job the
+        hand-off is given to, so a worker that died releases it as surely as one that answered.
+
+        :param tables: as :meth:`hand`
+        :ptype tables: Mapping[str, Any]
+        :param max_bytes: as :meth:`hand`
+        :ptype max_bytes: int | None
+        :return: the hand-off
+        :rtype: Iterator[HandedTables]
+        """
+        handed = self.hand(tables, max_bytes=max_bytes)
+        try:
+            yield handed
+        finally:
+            self.release(handed)
+
     def sweep(self) -> list[str]:
-        """remove every version neither current nor held, every result no open slot or claim owns, and every staging
-        directory whose writer is gone.
+        """remove every version neither current nor held, every result no open slot or claim owns, every hand-off
+        released that no worker maps, and every staging directory whose writer is gone.
 
         :return: the versions retired
         :rtype: list[str]
@@ -1180,6 +1366,7 @@ class SharedArrowStore:
         with self._state:
             retired = self._sweep_versions(gone)
             self._sweep_segments(gone)
+            self._sweep_handoffs(gone)
             self._retired += len(retired)
         # renamed out of their names under the lock (nothing opens them again); their files go after it
         for path in gone:
@@ -1204,8 +1391,8 @@ class SharedArrowStore:
             self._claimed_bytes.pop(slot_id, None)
 
     def _committed_bytes(self) -> int:
-        """the bytes the directory may be holding: what its files hold, except an open slot's, which counts at its
-        ``max_bytes`` however much it has written. Called under ``_state``.
+        """the bytes the directory may be holding: what its files hold, except an open slot's and a hand-off's being
+        written, each counted at its bound however much it has written. Called under ``_state``.
 
         :return: bytes
         :rtype: int
@@ -1217,7 +1404,20 @@ class SharedArrowStore:
             for entry in self._segments.iterdir()
             if entry.is_dir() and _slot_of(entry.name) not in self._slots
         )
-        return held + sum(self._slots.values())
+        held += sum(
+            _directory_bytes(entry, seen)
+            for entry in self._handoffs.iterdir()
+            if entry.is_dir() and _slot_of(entry.name) not in self._handing
+        )
+        return held + self._reserved_bytes()
+
+    def _reserved_bytes(self) -> int:
+        """the bytes open slots and hand-offs being written are counted at. Called under ``_state``.
+
+        :return: bytes
+        :rtype: int
+        """
+        return sum(self._slots.values()) + sum(self._handing.values())
 
     def _sweep_versions(self, gone: list[Path]) -> list[str]:
         """retire every version neither current nor held, and every leftover staging directory: each renamed out of
@@ -1275,6 +1475,39 @@ class SharedArrowStore:
             elif name not in self._slots and name not in self._claimed:
                 _retire(entry, gone)
 
+    def _sweep_handoffs(self, gone: list[Path]) -> None:
+        """retire every hand-off released that no worker maps, and every staging directory no write of this process
+        owns, into ``gone`` (as :meth:`_sweep_versions`); forget the bytes of each that is gone. Called under
+        ``_state``.
+
+        :param gone: what to remove
+        :ptype gone: list[Path]
+        :return: nothing
+        :rtype: None
+        """
+        for entry in list(self._handoffs.iterdir()):
+            name = entry.name
+            if name.startswith(_RETIRING_PREFIX):
+                gone.append(entry)
+            elif name.startswith(_STAGING_PREFIX):
+                # written by this process on a thread, never a worker: one this process is not writing is a leftover
+                if _slot_of(name) not in self._handing:
+                    _retire(entry, gone)
+            elif name not in self._handed:
+                # a worker mapping it holds its shared lock; one that finished or died does not
+                descriptor = _locked(entry, fcntl.LOCK_EX)
+                if descriptor is None and (entry / _LOCK_FILE).is_file():
+                    continue
+                try:
+                    _retire(entry, gone)
+                finally:
+                    if descriptor is not None:
+                        os.close(descriptor)
+        # a hand-off's bytes count in a publish's room until its directory is out of its name (removed just after)
+        for name in [each for each in self._handed_bytes if each not in self._handed]:
+            if not (self._handoffs / name).exists():
+                del self._handed_bytes[name]
+
     def _write_version(self, name: str, tables: Mapping[str, Any], base: Path | None = None) -> None:
         """write a version under a staging name and rename it into place whole; on any failure keep nothing.
 
@@ -1292,18 +1525,22 @@ class SharedArrowStore:
         staging = self._versions / staging_name
         with self._state:
             self._staging = staging_name
-            # what the directory holds but for open slots, as this write starts (its staging directory not yet made)
-            files = self._committed_bytes() - sum(self._slots.values())
-            # the results claimed before this write are in ``files``; one claimed during it counts from its claim
+            # what the directory holds but for open slots and hand-offs being written, as this write starts (its
+            # staging directory not yet made)
+            files = self._committed_bytes() - self._reserved_bytes()
+            # the results claimed and hand-offs written before this write are in ``files``; one claimed or written
+            # during it counts from then
             claimed_before = set(self._claimed_bytes)
+            handed_before = set(self._handed_bytes)
 
         def room() -> int:
-            # asked before every batch: a slot reserved while this writes takes its room from this write, never
-            # from the bound (reserve counts what this write has staged so far); a slot claimed while this writes
-            # stops counting at its max_bytes, so its result's files count from then on instead
+            # asked before every batch: a slot or hand-off reserved while this writes takes its room from this write,
+            # never from the bound (each counts what this write has staged so far); a slot claimed or a hand-off
+            # written while this writes stops counting at its bound, so its files count from then on instead
             with self._state:
                 claimed = sum(size for slot, size in self._claimed_bytes.items() if slot not in claimed_before)
-                return self._max_bytes - files - claimed - sum(self._slots.values())
+                handed = sum(size for each, size in self._handed_bytes.items() if each not in handed_before)
+                return self._max_bytes - files - claimed - handed - self._reserved_bytes()
 
         try:
             staging.mkdir()
@@ -1581,10 +1818,12 @@ class JobContext:
 
     :ivar version: the version it reads, mapped; None for a job run with ``read=False``
     :ivar result: the slot it writes its result tables into; None for a job run with no ``result_bytes``
+    :ivar tables: the tables it was handed (``tables=``), mapped read-only for the job's run; None for none
     """
 
     version: MappedVersion | None
     result: SegmentSlot | None
+    tables: MappedTables | None = None
 
 
 @dataclass(frozen=True)
@@ -1636,9 +1875,15 @@ def _sendable(error: BaseException) -> BaseException:
 
 
 def _run_job(
-    root: str, version: str | None, slot: SegmentSlot | None, job: Callable[..., Any], args: tuple[Any, ...]
+    root: str,
+    version: str | None,
+    slot: SegmentSlot | None,
+    job: Callable[..., Any],
+    args: tuple[Any, ...],
+    handed: HandedTables | None = None,
 ) -> tuple[Any, BaseException | None, int, int]:
-    """a worker's job: ``job(context, *args)``, over the version leased for it and with the slot reserved for it.
+    """a worker's job: ``job(context, *args)``, over the version leased for it, the tables handed to it, and with the
+    slot reserved for it.
 
     :param root: the store's directory
     :ptype root: str
@@ -1650,17 +1895,18 @@ def _run_job(
     :ptype job: Callable[..., Any]
     :param args: its arguments after the context
     :ptype args: tuple[Any, ...]
+    :param handed: the tables the serving process handed it; None for none
+    :ptype handed: HandedTables | None
     :return: its value; what it raised (None for nothing); this worker's private bytes after; its process id
     :rtype: tuple[Any, BaseException | None, int, int]
     """
     value: Any = None
     error: BaseException | None = None
     try:
-        if version is None:
-            value = job(JobContext(version=None, result=slot), *args)
-        else:
-            with read_version(root, version) as mapped:
-                value = job(JobContext(version=mapped, result=slot), *args)
+        with contextlib.ExitStack() as held:
+            tables = None if handed is None else held.enter_context(handed.mapped())
+            mapped = None if version is None else held.enter_context(read_version(root, version))
+            value = job(JobContext(version=mapped, result=slot, tables=tables), *args)
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- sent back and raised in the serving process, which handles it as the job's own failure
         contain(exc, log=log, what="a shared Arrow job failed; raised in the serving process", level="warning")
         error = _sendable(exc)
@@ -1677,9 +1923,10 @@ def _spawned() -> int:
 
 
 class _Handoff:
-    """one run's lease and slot, each released exactly once whichever way the run ends: the lease when the worker is
-    done with the version, the slot claimed by the caller or discarded once the worker is done with it (the job
-    failed, the caller stopped waiting, the worker died).
+    """one run's lease, hand-off and slot, each released exactly once whichever way the run ends: the lease and the
+    hand-off when the worker is done with them (its job returned or raised, or the worker died), the slot claimed by
+    the caller or discarded once the worker is done with it (the job failed, the caller stopped waiting, the worker
+    died).
 
     :param store: the store
     :ptype store: SharedArrowStore
@@ -1691,15 +1938,23 @@ class _Handoff:
         self._store = store
         self._lease = lease
         self.slot: SegmentSlot | None = None
+        self.handed: HandedTables | None = None
 
     def worker_done(self, _: Future[Any]) -> None:
-        """the worker is done with the version: the lease goes.
+        """the worker is done with the version and the tables it was handed: the lease and the hand-off go. Run as
+        the job's future's callback, on the executor's thread, whichever way the job ended.
 
         :return: nothing
         :rtype: None
         """
         if self._lease is not None:
             self._lease.release()
+        handed = self.handed
+        if handed is not None:
+            try:
+                self._store.release(handed)
+            except Exception as exc:  # noqa: BLE001 -- a callback has no caller to raise to; contained, so it is counted
+                contain(exc, log=log, what="a shared Arrow hand-off could not be released")
 
     def abandon(self, future: Future[Any]) -> None:
         """nobody will claim the slot: discarded once the worker is done with it (now, when it already is).
@@ -1734,6 +1989,8 @@ class _Handoff:
         """
         if self._lease is not None:
             self._lease.release()
+        if self.handed is not None:
+            self._store.release(self.handed)
         if self.slot is not None:
             self._store.discard(self.slot)
 
@@ -1864,7 +2121,13 @@ class SharedArrowPool:
         return self._replaced
 
     async def run(
-        self, job: Callable[..., Any], *args: Any, read: bool | str = True, result_bytes: int | None = None
+        self,
+        job: Callable[..., Any],
+        *args: Any,
+        read: bool | str = True,
+        result_bytes: int | None = None,
+        tables: Mapping[str, Any] | None = None,
+        tables_bytes: int | None = None,
     ) -> JobResult:
         """run ``job(context, *args)`` in a worker.
 
@@ -1877,15 +2140,22 @@ class SharedArrowPool:
         :ptype read: bool | str
         :param result_bytes: the most its result tables may take, reserved for it; None for a job that writes none
         :ptype result_bytes: int | None
+        :param tables: tables to hand it (:meth:`SharedArrowStore.hand`), mapped read-only as ``context.tables``:
+            written on a thread, never pickled; None for none
+        :ptype tables: Mapping[str, Any] | None
+        :param tables_bytes: the most the handed tables' files may take; None for their bytes and the file's own
+        :ptype tables_bytes: int | None
         :return: its value, and its result tables mapped here (the caller closes them)
         :rtype: JobResult
         :raises LookupError: when nothing is published, or the version named is gone
-        :raises SharedArrowFullError: when the store has no room for ``result_bytes``
+        :raises SharedArrowFullError: when the store has no room for ``result_bytes`` or the handed tables
         :raises Exception: what the job raised; ``BrokenProcessPool`` when its worker died (the pool is replaced)
         """
         # leased, reserved and submitted on a thread: a fresh pool spawns its workers there, and a lease waits on a
         # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then
-        submitting = asyncio.ensure_future(asyncio.to_thread(self._submit, read, result_bytes, job, args))
+        submitting = asyncio.ensure_future(
+            asyncio.to_thread(self._submit, read, result_bytes, job, args, tables, tables_bytes)
+        )
         try:
             handoff, future = await asyncio.shield(submitting)
         except asyncio.CancelledError:
@@ -1929,9 +2199,16 @@ class SharedArrowPool:
                 _off_loop(handoff.abandon, future, what="a failed shared Arrow job's result could not be discarded")
 
     def _submit(
-        self, read: bool | str, result_bytes: int | None, job: Callable[..., Any], args: tuple[Any, ...]
+        self,
+        read: bool | str,
+        result_bytes: int | None,
+        job: Callable[..., Any],
+        args: tuple[Any, ...],
+        tables: Mapping[str, Any] | None = None,
+        tables_bytes: int | None = None,
     ) -> tuple[_Handoff, Future[tuple[Any, BaseException | None, int, int]]]:
-        """lease the version, reserve the slot and submit the job to the current pool, or a fresh one; on a thread.
+        """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
+        fresh one; on a thread.
 
         :param read: as :meth:`run`
         :ptype read: bool | str
@@ -1941,12 +2218,19 @@ class SharedArrowPool:
         :ptype job: Callable[..., Any]
         :param args: its arguments
         :ptype args: tuple[Any, ...]
-        :return: the run's hand-off and the job's future (the lease is released when it is done)
+        :param tables: as :meth:`run`
+        :ptype tables: Mapping[str, Any] | None
+        :param tables_bytes: as :meth:`run`
+        :ptype tables_bytes: int | None
+        :return: the run's hand-off and the job's future (the lease and the handed tables are released when it is
+            done)
         :rtype: tuple[_Handoff, Future[tuple[Any, BaseException | None, int, int]]]
         """
         lease = None if read is False else self._store.lease(None if read is True else read)
         handoff = _Handoff(self._store, lease)
         try:
+            if tables is not None:
+                handoff.handed = self._store.hand(tables, max_bytes=tables_bytes)
             if result_bytes is not None:
                 handoff.slot = self._store.reserve(result_bytes)
             with self._lock:
@@ -1971,6 +2255,7 @@ class SharedArrowPool:
                     handoff.slot,
                     job,
                     args,
+                    handoff.handed,
                 )
         except BaseException:
             handoff.release_all()

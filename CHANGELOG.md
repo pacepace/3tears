@@ -21,6 +21,17 @@ readiness check) stays False meanwhile. A pod whose every replica was held rebui
 reset, asked its status, or have a setting changed (reports, cobalt prod, 2026-10-31). With every replica held, a
 reader's call now waits for the caller's deadline where it found no responder at once.
 
+### core: tables handed to a worker process through shared memory, never pickled
+
+**Added:** `SharedArrowStore.hand(tables)` writes one job's input tables as Arrow IPC into a hand-off in the store and
+returns a `HandedTables` (its name, tables and bytes: a few hundred bytes pickled, whatever the rows); the worker maps
+them read-only with `HandedTables.mapped()`, no row copied. `SharedArrowStore.release` lets it go, `handing` does both
+around a block, and `SharedArrowPool.run(..., tables=...)` hands them for you as `context.tables`, released when the
+job's future is done, whether it answered, raised or its worker died. A hand-off counts against the store's
+`max_bytes` and goes once no worker maps it. A `ProcessPoolExecutor` pickled such tables whole on its feeder thread,
+which holds the interpreter lock: 74-165 ms event-loop stalls a change on cobalt prod (reports, 2026-10-31). Guide:
+`docs/shared-arrow.md`, "Hand a worker its input tables without a pickle".
+
 ### core: a scoped snapshot's rebuild stops reading when a write begins, and says each scope it rebuilt
 
 **Changed:** a rebuild from L3 asks, between pages and at most every five seconds, whether a write has begun since it

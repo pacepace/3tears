@@ -13,14 +13,14 @@ and that work reads, or produces, more data than you want copied per process.
 | Fact | Value |
 |---|---|
 | Install | `3tears[snapshot]` (pyarrow and duckdb) |
-| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts` |
+| Import | `from threetears.core.shared_arrow import SharedArrowStore, SharedArrowPool, JobContext, Parts, HandedTables` |
 | Where the files live | One directory on a memory-backed filesystem: `/dev/shm`, or a Kubernetes `emptyDir` with `medium: Memory`. Never a disk. |
 | Owner | One `SharedArrowStore` per directory, in the serving process. Workers never create or delete anything but their own result slot. |
 | File format | Arrow IPC file format, uncompressed, one file per table, or per part for a table given as `Parts`. A mapped column is the file's bytes. |
-| Bound | `max_bytes` on the store covers every version and result together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
+| Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
 | Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed or its job ends without a claim. A new store clears what no live process holds. |
-| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (each of the last five sweeps the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
+| Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (each of the last five sweeps the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` hard-links the files it does not rewrite: they exist once, and the store counts them once. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
 
@@ -238,6 +238,56 @@ async def caller(pool) -> None:
 - Close the segment when done. Tables taken from it stay valid while it is open; one kept after `close` keeps its
   pages mapped until it is dropped, but its files are already gone from the store's count.
 
+## Hand a worker its input tables without a pickle
+
+A `ProcessPoolExecutor` pickles a job's arguments whole, in one call on its feeder thread, which never lets the
+interpreter lock go: a 68 MiB Arrow table held the serving process's event loop 74-165 ms on cobalt prod. Hand the
+tables through the store instead: the serving process writes them as Arrow IPC (pyarrow releases the lock for each
+batch), and only their name crosses.
+
+```python
+import pyarrow as pa
+from threetears.core.shared_arrow import JobContext
+
+
+def apply_change(context: JobContext, state: str) -> int:
+    rows = context.tables.tables["rows"]     # mapped read-only, no row copied
+    return rows.num_rows
+
+
+async def caller(pool, rows: pa.Table) -> None:
+    result = await pool.run(apply_change, "VA", read=False, tables={"rows": rows})
+    print(result.value)
+```
+
+- The hand-off is written on the pool's thread, never the event loop, and counts against `max_bytes` (at its bound
+  while written, then at its files' bytes). A store without room raises `SharedArrowFullError` before the job runs.
+- Its bound is its tables' bytes plus the file's own; name `tables_bytes` (or `max_bytes` on `hand`) to set it, and
+  always for a `RecordBatchReader`, whose size is not known before it is written.
+- It is released when the job's future is done: the job returned, raised, or its worker died. Its files go at once,
+  or, when a worker still maps it, at the first sweep after the worker lets go (its `flock` dies with it).
+- `context.tables` is valid for the job's run only: copy what the job keeps past it.
+
+With your own executor, wait inside `handing` for the job, and map in the worker:
+
+```python
+from threetears.core.shared_arrow import HandedTables
+
+
+# serving process, on a thread
+with store.handing({"rows": rows}) as handed:   # released as the block ends, however the job ended
+    future = my_executor.submit(my_job, handed, "VA")
+    count = future.result()
+
+
+# worker process
+def my_job(handed: HandedTables, state: str) -> int:
+    with handed.mapped() as mapped:            # holds the hand-off until closed
+        return mapped.tables["rows"].num_rows
+```
+
+A hand-off released before its worker maps it raises `LookupError` in the worker.
+
 ## Use the store with your own process pool
 
 The pool is optional. Any channel that carries a pickled argument works:
@@ -269,7 +319,7 @@ and the mapping.
 ## Watch it
 
 `store.status()` returns plain JSON values for a status tool: the current version, the versions held, open slots,
-claimed results, `held_bytes`, `max_bytes`, and how many versions were published, retired and refused. The store logs
+claimed results, open hand-offs and how many were made, `held_bytes`, `max_bytes`, and how many versions were published, retired and refused. The store logs
 each publish, retirement and refusal.
 
 ## What it saves, measured
