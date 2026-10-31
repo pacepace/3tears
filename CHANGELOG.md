@@ -10,11 +10,11 @@ packages (bumped in lock-step).
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
 
-**Fixed:** `answer_json` writes each encoder call within a work budget (`ANSWER_JSON_BUDGET`, about a millisecond) and
-never more than `ANSWER_JSON_ITEMS` (256) list items. It wrote a short list whole and a mapping keyed by numbers whole:
+**Fixed:** `answer_json` writes each encoder call within a work budget (about a millisecond) and never more than 256
+list items. It wrote a short list whole and a mapping keyed by numbers whole:
 a short list of long series held the lock 0.5 s in one call, a numbered mapping 50 ms. A mapping or list too large for
 one call is now written a run at a time, and an item too large for a run is opened, however deep it sits. The text is
-byte-for-byte what it was. New public names: `ANSWER_JSON_BUDGET`, `ANSWER_JSON_ITEMS`, `answer_json_work`.
+byte-for-byte what it was. No API changes.
 
 ### core: a shared Arrow version's first read maps only what changed
 

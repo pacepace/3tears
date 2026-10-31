@@ -24,14 +24,7 @@ import pytest
 
 from threetears.core.collections.registry import CollectionRegistry
 
-from threetears.core.collections.versioned_answers import (
-    ANSWER_JSON_BUDGET,
-    ANSWER_JSON_ITEMS,
-    AnswerOutcome,
-    VersionedAnswers,
-    answer_json,
-    answer_json_work,
-)
+from threetears.core.collections.versioned_answers import AnswerOutcome, VersionedAnswers, answer_json
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -151,6 +144,24 @@ class TestAnswerJson:
 LOOP_MAY_BE_LATER = 0.015
 
 
+#: the most work one encoder call may do: a value, a mapping's key, or 64 characters of text each one unit
+CALL_BUDGET = 8192
+
+#: the most items of one list or mapping one encoder call may write
+CALL_ITEMS = 256
+
+
+def _work(value: Any) -> int:
+    """the units of work writing ``value`` takes, as :data:`CALL_BUDGET` counts them."""
+    if isinstance(value, str):
+        return 1 + len(value) // 64
+    if isinstance(value, dict):
+        return 1 + len(value) + sum(_work(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return 1 + sum(_work(item) for item in value)
+    return 1
+
+
 def _series(count: int, points: int) -> dict[str, Any]:
     """a short list of long series: each item is far past one call, though the list holds few."""
     return {"series": [{"name": f"s{n}", "points": [[k, k / 3] for k in range(points)]} for n in range(count)]}
@@ -202,7 +213,7 @@ def encoder_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
     original = json.dumps
 
     def recording(value: Any, *args: Any, **kwargs: Any) -> str:
-        calls.append((answer_json_work(value, 1 << 62), len(value) if isinstance(value, list | tuple | dict) else 0))
+        calls.append((_work(value), len(value) if isinstance(value, list | tuple | dict) else 0))
         return original(value, *args, **kwargs)
 
     monkeypatch.setattr(json, "dumps", recording)
@@ -226,8 +237,8 @@ class TestAnyShapeIsWrittenInShortCalls:
         text = answer_json(answer)
         work = [each for each, _ in encoder_calls]
         lengths = [each for _, each in encoder_calls]
-        assert max(work) <= ANSWER_JSON_BUDGET, f"an encoder call did {max(work)} units of work"
-        assert max(lengths) <= ANSWER_JSON_ITEMS, f"an encoder call wrote {max(lengths)} items at once"
+        assert max(work) <= CALL_BUDGET, f"an encoder call did {max(work)} units of work"
+        assert max(lengths) <= CALL_ITEMS, f"an encoder call wrote {max(lengths)} items at once"
         assert text == _plain_json(answer)
 
     @pytest.mark.parametrize("seed", range(40))

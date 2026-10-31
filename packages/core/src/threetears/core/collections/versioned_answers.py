@@ -115,10 +115,7 @@ __all__ = [
     "GivenAnswer",
     "VersionedAnswer",
     "VersionedAnswers",
-    "ANSWER_JSON_BUDGET",
-    "ANSWER_JSON_ITEMS",
     "answer_json",
-    "answer_json_work",
 ]
 
 log = get_logger(__name__)
@@ -329,17 +326,17 @@ class VersionedAnswer(BaseEntity):
 
 
 #: the most list items :func:`answer_json` writes in one encoder call
-ANSWER_JSON_ITEMS: Final = 256
+_JSON_PIECE: Final = 256
 
-#: the most work :func:`answer_json` gives one encoder call, in units of :func:`answer_json_work`: a value, a
+#: the most work :func:`answer_json` gives one encoder call, in units of :func:`_heft`: a value, a
 #: mapping's key, or 64 characters of text each one. The C encoder writes about ten thousand a millisecond (a row of
 #: twenty mixed values is about forty), so a call holds the interpreter lock for a millisecond or two
-ANSWER_JSON_BUDGET: Final = 8192
+_JSON_BUDGET: Final = 8192
 
 #: how many of a list's items :func:`answer_json` weighs whole to learn how deep its items run
 _JSON_SAMPLES: Final = 16
 
-#: the characters of text one unit of :func:`answer_json_work` stands for
+#: the characters of text one unit of :func:`_heft` stands for
 _JSON_TEXT_UNIT: Final = 64
 
 
@@ -398,10 +395,10 @@ def _dumps(value: Any) -> str:
     return text
 
 
-def answer_json_work(value: Any, cap: int) -> int:
-    """the work of writing ``value`` as JSON, in :data:`ANSWER_JSON_BUDGET`'s units, counted until it passes ``cap``.
+def _heft(value: Any, cap: int) -> int:
+    """the work of writing ``value`` as JSON, in :data:`_JSON_BUDGET`'s units, counted until it passes ``cap``.
 
-    A list or mapping longer than :data:`ANSWER_JSON_ITEMS` counts as past ``cap`` whatever it holds, so no one call
+    A list or mapping longer than :data:`_JSON_PIECE` counts as past ``cap`` whatever it holds, so no one call
     writes one.
 
     :param value: an answer, or a part of one
@@ -418,12 +415,12 @@ def answer_json_work(value: Any, cap: int) -> int:
         if isinstance(item, str):
             total += 1 + len(item) // _JSON_TEXT_UNIT
         elif isinstance(item, dict):
-            if len(item) > ANSWER_JSON_ITEMS or len(item) > cap - total:
+            if len(item) > _JSON_PIECE or len(item) > cap - total:
                 return cap + 1
             total += 1 + len(item)
             stack.extend(item.values())
         elif isinstance(item, (list, tuple)):
-            if len(item) > ANSWER_JSON_ITEMS or len(item) > cap - total:
+            if len(item) > _JSON_PIECE or len(item) > cap - total:
                 return cap + 1
             total += 1
             stack.extend(item)
@@ -457,7 +454,7 @@ _JSON_FLAT: Final = _JSON_SCALARS | {str}
 
 
 def _flat_work(held: list[Any]) -> int | None:
-    """a run's work (:func:`answer_json_work`'s units) when its items hold nothing deeper than plain values and
+    """a run's work (:func:`_heft`'s units) when its items hold nothing deeper than plain values and
     text, counted by C-level passes over it (``map``, ``chain``), never an item at a time; None for any other run.
 
     Text held inside an item counts as a unit, however long: how long a list's text runs is weighed from the
@@ -475,11 +472,11 @@ def _flat_work(held: list[Any]) -> int | None:
         work = len(held)
     elif kinds == {str}:
         work = len(held) + sum(map(len, held)) // _JSON_TEXT_UNIT
-    elif (kinds <= {list, tuple} or kinds == {dict}) and max(map(len, held)) <= ANSWER_JSON_ITEMS:
+    elif (kinds <= {list, tuple} or kinds == {dict}) and max(map(len, held)) <= _JSON_PIECE:
         mappings = kinds == {dict}
         inner = itertools.chain.from_iterable(map(dict.values, held) if mappings else held)
         if set(map(type, inner)) <= _JSON_FLAT:
-            # a mapping's key is a unit beside its value, as in answer_json_work
+            # a mapping's key is a unit beside its value, as in _heft
             work = len(held) + sum(map(len, held)) * (2 if mappings else 1)
     return work
 
@@ -531,7 +528,7 @@ class _Run:
         _write(item, self.out)
 
     def weighed(self, items: list[Any], values: list[Any]) -> None:
-        """write ``items`` weighing each whole (:func:`answer_json_work`): together until the next would pass the
+        """write ``items`` weighing each whole (:func:`_heft`): together until the next would pass the
         budget, and one past the budget alone, opened.
 
         :param items: items, or entries
@@ -544,11 +541,11 @@ class _Run:
         start = 0
         weight = 0
         for index, value in enumerate(values):
-            cost = answer_json_work(value, ANSWER_JSON_BUDGET)
-            if index > start and weight + cost > ANSWER_JSON_BUDGET:
+            cost = _heft(value, _JSON_BUDGET)
+            if index > start and weight + cost > _JSON_BUDGET:
                 self.dump(items[start:index])
                 start, weight = index, 0
-            if cost > ANSWER_JSON_BUDGET:
+            if cost > _JSON_BUDGET:
                 self.open(items[index])
                 start, weight = index + 1, 0
             else:
@@ -560,7 +557,7 @@ def _write_run(value: dict[Any, Any] | list[Any] | tuple[Any, ...], out: list[st
     """a mapping or a list too large for one encoder call, written into ``out`` a run of entries or items at a time.
 
     A few items, spread through it, are weighed whole, and a run is as many items as half the budget holds at the
-    heaviest of them, never more than :data:`ANSWER_JSON_ITEMS`. A run whose items hold only plain values and text is
+    heaviest of them, never more than :data:`_JSON_PIECE`. A run whose items hold only plain values and text is
     weighed by C-level passes (:func:`_flat_work`) and, within the budget, written in one encoder call: rows,
     as lists or as mappings, cost no Python an item. Any other run -- items holding lists or mappings, or heavier
     than the samples said -- is weighed an item at a time (:meth:`_Run.weighed`), and an item past the budget is
@@ -581,18 +578,16 @@ def _write_run(value: dict[Any, Any] | list[Any] | tuple[Any, ...], out: list[st
     )
     entries = iter(value.items()) if isinstance(value, dict) else None
     stride = max(1, count // _JSON_SAMPLES)
-    heaviest = max(
-        answer_json_work(values[index], ANSWER_JSON_BUDGET) for index in (*range(0, count, stride), count - 1)
-    )
+    heaviest = max(_heft(values[index], _JSON_BUDGET) for index in (*range(0, count, stride), count - 1))
     # half the budget at the heaviest sample: a run of items a little heavier than the samples still fits
-    size = max(1, min(ANSWER_JSON_ITEMS, ANSWER_JSON_BUDGET // (2 * max(1, heaviest))))
+    size = max(1, min(_JSON_PIECE, _JSON_BUDGET // (2 * max(1, heaviest))))
     run = _Run(out, mapping=mapping)
     out.append("{" if mapping else "[")
     for start in range(0, count, size):
         held = values[start : start + size]
         items = held if entries is None else list(itertools.islice(entries, size))
         work = _flat_work(held)
-        if work is not None and work <= ANSWER_JSON_BUDGET:
+        if work is not None and work <= _JSON_BUDGET:
             run.dump(items)
         else:
             run.weighed(items, held)
@@ -600,7 +595,7 @@ def _write_run(value: dict[Any, Any] | list[Any] | tuple[Any, ...], out: list[st
 
 
 def _write(value: Any, out: list[str]) -> None:
-    """``value``'s JSON appended to ``out``: in one encoder call when it is within :data:`ANSWER_JSON_BUDGET`, else a
+    """``value``'s JSON appended to ``out``: in one encoder call when it is within :data:`_JSON_BUDGET`, else a
     run of entries or items at a time (:func:`_write_run`).
 
     :param value: an answer, or a part of one
@@ -610,7 +605,7 @@ def _write(value: Any, out: list[str]) -> None:
     :return: nothing
     :rtype: None
     """
-    if isinstance(value, (dict, list, tuple)) and answer_json_work(value, ANSWER_JSON_BUDGET) > ANSWER_JSON_BUDGET:
+    if isinstance(value, (dict, list, tuple)) and _heft(value, _JSON_BUDGET) > _JSON_BUDGET:
         _write_run(value, out)
     else:
         out.append(_dumps(value))
@@ -621,8 +616,8 @@ def answer_json(answer: Any) -> str:
 
     The C JSON encoder holds the interpreter lock for its whole call, so an answer of megabytes written in
     one call holds every other thread for as long, the event loop among them, whichever thread writes it.
-    Each piece here is a call of at most :data:`ANSWER_JSON_BUDGET` (a millisecond or two) and never more than
-    :data:`ANSWER_JSON_ITEMS` list items, and the loop runs between them: a mapping or a list too large for one
+    Each piece here is a call of at most :data:`_JSON_BUDGET` (a millisecond or two) and never more than
+    :data:`_JSON_PIECE` list items, and the loop runs between them: a mapping or a list too large for one
     call is written a run of entries or items at a time (whatever its keys' types), and an item too large for a
     run is opened in turn, however deep it sits (a short list of long series, say). The bytes are ``json``'s
     own: each run is one ``json.dumps`` call with its brackets taken off.
