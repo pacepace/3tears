@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a directed boolean measure is compared between arms on its rate per case
+
+**Changed:** a boolean measure with a better end on a merit axis is in its comparison family now. It is tested on its
+rate per case, the share of a case's repeats held True, paired by case, as the pass rate is. Its delta is in points of
+a share. The rate tested is the rate each cell reports. A host declaring such a measure (Kairo's `top_up_never`, for
+one) sees a new comparison per arm and a wider correction across the family once its bundles are assembled again, so a
+stored adjusted p, interval or verdict may move. A boolean guardrail is held on its rate per case too. Undirected
+booleans, text and categorical measures stay out of every family. A host with no such measure sees no change.
+
 ### evals: a multi-aspect report shows every aspect; each aspect states how a trial passes; contrasts state their cases
 
 **Changed:** with more than one aspect, the arms table gives each aspect a column group (pass rate with passes over

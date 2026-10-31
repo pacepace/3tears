@@ -543,10 +543,9 @@ def _as_miss(result: ResultView) -> ResultView | None:
 def _accuracy_leaves(result: ResultView) -> Iterator[tuple[str, float | str, bool, str, str]]:
     """Yield the observation's classifier accuracy, 1.0 matched and 0.0 not, derived from its ``match``.
 
-    ``match`` is the boolean a classifier kind lands, and a boolean summarises as a rate with no
-    per-case mean, so it cannot carry the classifier's reading on the quality axis into a family of
-    comparisons. ``accuracy`` is that reading, derived here from the one carried verdict — so a host
-    lands one measure and every surface sees one comparison, rather than a host minting its own
+    ``match`` is the boolean a classifier kind lands, declared on no merit axis, so it carries the
+    classifier's reading on the quality axis into no family of comparisons. ``accuracy`` is that
+    reading, derived here from the one carried verdict — so a host lands one measure and every surface sees one comparison, rather than a host minting its own
     numeric copy beside ``match`` and every family testing the same verdict twice. A kind may not
     land ``accuracy`` itself (:func:`~threetears.evals.run.runner.refuse_engine_derived_host_measures`).
     Nothing is yielded for an observation that carries no ``match``, or one whose ``match`` is not a
@@ -1125,6 +1124,36 @@ def _mean_and_sorted(observed: Sequence[float]) -> tuple[float, list[float]]:
     return sum(numeric) / len(numeric), numeric
 
 
+def _boolean_rate(values: Sequence[float | str]) -> tuple[int, float]:
+    """A boolean measure's observations held True, and their share of every observation: its summary's ``n_true`` and
+    ``rate``.
+
+    The one arithmetic a boolean's rate takes (:func:`_measure_summary`, :func:`_pooled_rates`), so a case's rate a
+    contrast tests and the rate its cell reports agree to the last bit.
+    """
+    n_true = sum(1 for value in values if value is True)
+    return n_true, n_true / len(values)
+
+
+def _pooled_rates(pool: _MeasurePool) -> dict[str, float]:
+    """Every boolean measure's rate the pool's collection would carry, by measure name, without building the collection.
+
+    Exactly the ``rate`` of each boolean summary :func:`_collect_measures` builds over the same pool
+    (:func:`_boolean_rate`), in name order. A rate is a share of observations, never a mean with a distribution, so
+    it is kept apart from :func:`_pooled_means`: nothing reads a percentile or a spread off it.
+
+    :param pool: The pooled observations (:func:`_pool_measures`).
+    :ptype pool: _MeasurePool
+    :return: ``{name: rate}``.
+    :rtype: dict[str, float]
+    """
+    return {
+        name: _boolean_rate(values)[1]
+        for name, (descriptor, values, _cases) in sorted(pool.pooled.items())
+        if descriptor.data_type == "boolean"
+    }
+
+
 def _pooled_means(pool: _MeasurePool) -> dict[str, float]:
     """Every mean the pool's collection would carry, by measure name, without building the collection.
 
@@ -1323,10 +1352,10 @@ def _measure_summary(
     if descriptor.data_type == "text":
         shape = {"texts": [str(value) for value in values]}
     elif descriptor.data_type == "boolean":
-        n_true = sum(1 for value in values if value is True)
+        n_true, rate = _boolean_rate(values)
         interval = proportion_interval([value is True for value in values], cases)
         shape = {
-            "rate": n_true / len(values),
+            "rate": rate,
             "n_true": n_true,
             "ci_low": None if interval is None else interval[0],
             "ci_high": None if interval is None else interval[1],
