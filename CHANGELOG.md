@@ -6,6 +6,133 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.87.0 -- 2026-10-31
+
+### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
+
+**Fixed:** `answer_json` writes each encoder call within a work budget (about a millisecond) and never more than 256
+list items. It wrote a short list whole and a mapping keyed by numbers whole:
+a short list of long series held the lock 0.5 s in one call, a numbered mapping 50 ms. A mapping or list too large for
+one call is now written a run at a time, and an item too large for a run is opened, however deep it sits. The text is
+byte-for-byte what it was. No API changes.
+
+### core: a shared Arrow version's first read maps only what changed
+
+**Changed:** A version published with `base=` holds its base's unchanged files as hard links; the serving process's
+`SharedArrowReader` and a worker's kept version now take those files from the mapping they had (by device and inode)
+and map only the changed ones: 2.7 ms for a version of 2,400 files that changed one, 160 ms before. `MappedTables` and
+`MappedVersion` take `reuse=` (a mapping's new `by_inode`). `threetears.core.shared_arrow` imports `pyarrow.dataset`,
+which DuckDB scans a registered Arrow table through and otherwise imported at a process's first scan (25-70 ms inside
+a serving thread's read).
+
+### core: a scope whose pointer fell behind L3 moves with the next write, never left behind
+
+**Fixed:** `ScopedSnapshot.publish_staged` carried a partial stage's untouched tables only when the scope's pointer
+was at the epoch its writer saw; a scope whose pointer had fallen behind (a stage of an earlier write skipped) was
+skipped by every later write that changed only some of its tables, and left to a catch-up that waits for no write in
+progress, which back-to-back loads never leave (cobalt prod, 2026-10-31: 36-51 of 52 states skipped at every load,
+the copy frozen for hours). Such a stage now has the tables it left out, and those it appended to, read whole from L3
+and staged under its epoch, only while L3 holds the scope exactly there: its epoch the stage's and no write in
+progress touching it, before and after the read. A pointer still never moves to a lower epoch or claims rows it does
+not hold. No API changes.
+
+### object-store and datasources: two event-loop holds at a load's first export read
+
+**Fixed:** `S3ObjectStore` reads the s3 and sts service models and endpoint data its first client is built from on a
+worker thread before opening it; read on the loop, the open held it ~50 ms (cobalt prod, 2026-10-31). An export's
+parquet files are read natively over their bytes (`pq.ParquetFile(pa.BufferReader(...))`): `pq.read_table` over
+`io.BytesIO` imported the dataset machinery on its first read and called back into a Python file object for every
+read, so six reader threads held the loop 0.1 s. No API changes.
+
+### agent.tools: a slow call never holds the calls behind it
+
+**Changed:** `ToolServer` takes up to `max_calls_in_flight` calls (default `CALLS_IN_FLIGHT`, 64) off its call subject
+at once, in the call group and the held group alike, each as its own task. The subscription was serial: a replica took
+a call only once the one before it was answered, so one slow call held every call behind it on that replica (cobalt
+prod, 2026-10-31: a reader's favorites read waited 9 s behind an `lsf_ready` call). `max_concurrent_calls` still bounds
+how many tools run at once; `max_calls_in_flight=1` restores the serial order. A tool's handler now runs beside other
+calls on the same replica, as it always did beside its siblings' calls on other replicas.
+
+### core: a publish of many scopes retires their older chunks in one pass
+
+**Fixed:** `ScopedSnapshot.publish_staged` retired each moved scope's older chunks by reading every listed name once
+per scope moved, the scope's token made again each time, and the sweep searched a pointer's chunk list again for
+every name: 50-60 ms on the event loop a publish of 51 states on cobalt prod, 0.5 s at 13k names. Each name is now
+read once, by its own scope, and each pointer's chunks are made a set once.
+
+### core: a versioned read never waits on a staged change
+
+**Added:** `StagedPartitions`, an L1 whose commit is staged apart from its publish (`stage_partitions(replacements)`
+yields the step that publishes them). A scoped snapshot over one stages each change outside its swap lock, one swap at
+a time under a writer lock, and holds the swap lock only to publish and move the epochs: a `read_versioned` opened
+while a change is staged reads the previous version at once. Over the reports' shared Arrow copy every versioned read,
+and every call behind one, waited the whole apply in the worker process, 8-18 s a change (cobalt prod, 2026-10-31). A
+backend without it commits under the lock as before.
+
+### models: a tool call's provider fields come back on the next request (Gemini 3 thought signatures)
+
+**Fixed:** a tool-using agent on Gemini 3 behind an OpenAI-compatible provider failed on its second turn. Google
+answered HTTP 400 "Function call is missing a thought_signature", seen on the aibots cobalt-dev gateway on
+2026-10-30. Gemini attaches `extra_content.google.thought_signature` to a signed tool call and requires it back,
+unchanged, on that call in the next request. `langchain-openai` keeps only `id`, `type` and `function`, in both
+directions (1.6.7, and 1.7.3, the newest).
+
+**Added:** `threetears.models.providers.TOOL_CALL_PROVIDER_EXTRA_KEY` (`"tool_call_provider_extra"`). The
+OpenAI-compatible chat wrapper from `create_openai_chat` now:
+
+- keeps every non-standard top-level field of each tool call on the answer, as
+  `additional_kwargs[TOOL_CALL_PROVIDER_EXTRA_KEY] = {tool_call_id: {field: value}}`, verbatim, for non-streamed and
+  streamed answers alike. A streamed answer carries each call's fields exactly once once its chunks are summed,
+  where a repeat would otherwise be concatenated into an invalid signature. The key is absent when no call had any;
+- writes those fields back onto the matching assistant tool calls of the next request, by tool-call id. A request
+  with nothing to send back is byte-identical to before.
+
+Code that relays an answer across a process boundary (a gateway, a NATS chat model) has to carry the entry and put
+it back on the `AIMessage` it replays. The Anthropic and OpenRouter wrappers are unchanged. Anthropic signatures
+already ride `thinking` content blocks, which LangChain sends back. Gemini reached through OpenRouter is a separate
+SDK and a separate follow-up.
+
+### agent.tools: a held replica answers its control tools
+
+**Added:** `ToolServer.hold_calls(answering=...)` names the tools a held replica answers while its copy loads, and
+`ToolServer.answer_while_held()` starts answering them. The replica subscribes the call subject in a queue group of its
+own (`HELD_QUEUE_SUFFIX`), so NATS hands each call to one member of the call group and to one held replica; the held
+replica answers only the named tools and drops every other call, which its siblings answer. A call handed to both is
+run once: each replica claims the call for the queue group that handed it, and the one whose claim is its group's
+first but finds the proxy assertion's nonce consumed says nothing, counts the call on /metrics under the outcome
+`answered_by_sibling`, never `failure`, and publishes no audit row; the sibling that answers audits it. A replay (a
+second publish of one assertion) finds its group's claim taken and is refused and audited by every replica it reaches,
+as before. `serving_calls` (the `calls_open`
+readiness check) stays False meanwhile. A pod whose every replica was held rebuilding its copy for hours could not be
+reset, asked its status, or have a setting changed (reports, cobalt prod, 2026-10-31). With every replica held, a
+reader's call now waits for the caller's deadline where it found no responder at once.
+
+### core: tables handed to a worker process through shared memory, never pickled
+
+**Added:** `SharedArrowStore.hand(tables)` writes one job's input tables as Arrow IPC into a hand-off in the store and
+returns a `HandedTables` (its name, tables and bytes: a few hundred bytes pickled, whatever the rows); the worker maps
+them read-only with `HandedTables.mapped()`, no row copied. `SharedArrowStore.release` lets it go, `handing` does both
+around a block, and `SharedArrowPool.run(..., tables=...)` hands them for you as `context.tables`, released when the
+job's future is done, whether it answered, raised or its worker died. A hand-off counts against the store's
+`max_bytes` and goes once no worker maps it. A `ProcessPoolExecutor` pickled such tables whole on its feeder thread,
+which holds the interpreter lock: 74-165 ms event-loop stalls a change on cobalt prod (reports, 2026-10-31). Guide:
+`docs/shared-arrow.md`, "Hand a worker its input tables without a pickle".
+
+### core: a scoped snapshot's rebuild stops reading when a write begins, and says each scope it rebuilt
+
+**Changed:** a rebuild from L3 asks, between pages and at most every five seconds, whether a write has begun since it
+started, and stops reading at once when one has (a reset's clear, which empties the tables it reads), where it read on
+to the end of the scope -- minutes for a large one. It then waits for the write, as before. Each scope it publishes is
+logged with its rows, read seconds, publish seconds and how many of the total are done.
+
+### nats, core: no L3 request waits without a deadline
+
+**Fixed:** `NatsClient.request_raw`'s deadline covers the whole request. nats-py bounds only the wait for the reply,
+after its publish, and the publish could wait with no bound (a renewal's publish gate; a flush past the pending
+buffer's size, whose `flush_timeout` is unset). `NatsProxyL3Backend` bounds an offloaded encode the same way. Either
+is now a `RequestTimeoutError` like a lost reply: a read is sent again with the warning "L3 request got no answer;
+sending it again", a write raises.
+
 ## v0.86.0 -- 2026-10-29
 
 ### nats: a bucket's live keys by name, for a caller holding only the client

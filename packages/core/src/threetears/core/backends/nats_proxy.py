@@ -1358,13 +1358,9 @@ class NatsProxyL3Backend:
         nats_timeout = timeout_s if timeout_s is not None else (self.timeout_ms / 1000) + 2
         attempt = 1
         while True:
-            payload_bytes = (
-                await asyncio.to_thread(self.encode_request, subject, payload)
-                if offload_encode
-                else self.encode_request(subject, payload)
-            )
             again: str | None = None
             try:
+                payload_bytes = await self._encoded(subject, payload, offload=offload_encode, within=nats_timeout)
                 reply: bytes = await self._nc.request_raw(
                     subject=Subject.raw(subject),
                     payload=payload_bytes,
@@ -1384,6 +1380,35 @@ class NatsProxyL3Backend:
             )
             await asyncio.sleep(_UNANSWERED_BACKOFF_SECONDS * 2 ** (attempt - 1))
             attempt += 1
+
+    async def _encoded(self, subject: str, payload: dict[str, Any], *, offload: bool, within: float) -> bytes:
+        """one attempt's request bytes (:meth:`encode_request`), on a thread when ``offload``, within ``within`` seconds.
+
+        An offloaded encode waits for a thread of the default executor; one held by blocked threads never ran it,
+        and the request waited for ever with nothing in the log. Past the bound it is a lost request like any
+        other (:class:`RequestTimeoutError`), sent again when it may be, and said so.
+
+        :param subject: NATS subject the request goes to
+        :ptype subject: str
+        :param payload: request payload dict
+        :ptype payload: dict[str, Any]
+        :param offload: whether to encode on a thread
+        :ptype offload: bool
+        :param within: the bound, in seconds
+        :ptype within: float
+        :return: the request's bytes
+        :rtype: bytes
+        :raises RequestTimeoutError: when the offloaded encode did not finish within the bound
+        """
+        if not offload:
+            return self.encode_request(subject, payload)
+        try:
+            async with asyncio.timeout(within):
+                return await asyncio.to_thread(self.encode_request, subject, payload)
+        except TimeoutError as exc:
+            raise RequestTimeoutError(
+                f"request not sent: encoding it on a thread took past {within:.1f}s: subject={subject}"
+            ) from exc
 
     def current_pop_key(self) -> PopKey | None:
         """the key this backend's requests are proven with, read through its provider now.

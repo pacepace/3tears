@@ -2617,6 +2617,24 @@ async def test_timeout_raises_the_timeout_subclass() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_request_whose_publish_never_returns_times_out_within_its_deadline() -> None:
+    """nats-py bounds only the wait for the reply, after its publish: a publish that never returns (a flush past the
+    pending buffer's size with no flush timeout, a renewal's publish gate) held the request for ever, with nothing in
+    the log. The request's deadline covers the whole of it."""
+
+    class _StuckPublishClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            await asyncio.Event().wait()  # the publish half, which nats-py does not bound
+            raise AssertionError("unreachable")
+
+    client = NatsClient(raw=_StuckPublishClient(), namespace="3tears", client_name="t")  # type: ignore[arg-type]
+    started = time.monotonic()
+    with pytest.raises(RequestTimeoutError):
+        await client.request_raw(subject=Subjects.tools_call(), payload=b"x", timeout=timedelta(seconds=0.2))
+    assert time.monotonic() - started < 2.0, "the deadline did not bound the request"
+
+
+@pytest.mark.asyncio
 async def test_the_two_conditions_are_distinguishable_from_each_other() -> None:
     """The whole point: catching one must not catch the other."""
     from nats.errors import NoRespondersError as NatsNoResponders

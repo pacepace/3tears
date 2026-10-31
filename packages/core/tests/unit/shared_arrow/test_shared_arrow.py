@@ -777,6 +777,77 @@ class TestPartsAreSharedAcrossVersions:
             store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={part: _table(1, rows=1)})})
 
 
+@pytest.fixture
+def mapped_files(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """the name of each file this process memory-maps during the test."""
+    names: list[str] = []
+    original = pa.memory_map
+
+    def recording(path: str, *args: Any, **kwargs: Any) -> Any:
+        names.append(Path(path).name)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(pa, "memory_map", recording)
+    return names
+
+
+class TestANewVersionMapsOnlyWhatChanged:
+    """a version made from another holds the other's unchanged files as hard links: the serving process's reader, and
+    a worker's kept mapping, take those from the version they had mapped and map only the files that changed."""
+
+    def test_the_reader_maps_only_the_changed_parts_and_reads_the_new_version_whole(
+        self, store: SharedArrowStore, mapped_files: list[str]
+    ) -> None:
+        store.publish("v1", {TABLE: _parts({f"S{index}": index for index in range(20)}), "whole": _table(5, rows=10)})
+        reader = store.reader()
+        with reader.read() as read:
+            assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (sum(range(20)) * 1_000,)
+        assert len(mapped_files) == 22
+        changed = Parts(schema=_table(0, rows=0).schema, parts={"S3": _table(300, 1_000), "S4": None})
+        store.publish("v2", {TABLE: changed}, base="v1")
+        mapped_files.clear()
+        with reader.read() as read:
+            assert read.version == "v2"
+            assert sorted(mapped_files) == ["t@.arrow", "t@S3.arrow"], "only the changed files were mapped"
+            expected = (sum(range(20)) - 3 - 4 + 300) * 1_000
+            assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (expected,)
+            assert read.cursor.execute('SELECT sum(a) FROM "whole"').fetchone() == (50,)
+            # the parts in name order, as a fresh mapping gives them
+            fresh = MappedVersion(store.root, "v2")
+            try:
+                assert read.tables[TABLE].equals(fresh.tables[TABLE])
+            finally:
+                fresh.close()
+        # v1 retired, its directory gone: the files v2 took from it are v2's own, and read the same
+        assert store.versions() == ("v2",)
+        with reader.read() as read:
+            assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (expected,)
+        # two versions published with no read between: the second's first read still maps only what changed
+        schema = _table(0, rows=0).schema
+        store.publish("v3", {TABLE: Parts(schema=schema, parts={"S5": _table(500, 1_000)})}, base="v2")
+        store.publish("v4", {TABLE: Parts(schema=schema, parts={"S6": _table(600, 1_000)})}, base="v3")
+        mapped_files.clear()
+        with reader.read() as read:
+            assert read.version == "v4"
+            assert sorted(mapped_files) == ["t@.arrow", "t@S5.arrow", "t@S6.arrow"]
+            expected += (500 - 5 + 600 - 6) * 1_000
+            assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (expected,)
+        reader.close()
+
+    def test_a_workers_kept_version_lends_the_next_its_files(
+        self, store: SharedArrowStore, mapped_files: list[str]
+    ) -> None:
+        store.publish("v1", {TABLE: _parts({f"S{index}": index for index in range(10)})})
+        with store.lease("v1"), read_version(store.root, "v1") as mapped:
+            assert mapped.tables[TABLE].num_rows == 10_000
+        store.publish("v2", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={"S0": _table(7, 1_000)})}, base="v1")
+        mapped_files.clear()
+        with store.lease("v2"), read_version(store.root, "v2") as mapped:
+            column = mapped.tables[TABLE].column("a")
+            assert pa.compute.sum(column).as_py() == (sum(range(10)) + 7) * 1_000
+        assert sorted(mapped_files) == ["t@.arrow", "t@S0.arrow"], "only the changed files were mapped"
+
+
 class TestNothingLeaksWhenTheCallerStopsWaiting:
     async def test_a_cancel_while_the_job_is_submitted_discards_its_slot(
         self, store: SharedArrowStore, single: SharedArrowPool, monkeypatch: pytest.MonkeyPatch
