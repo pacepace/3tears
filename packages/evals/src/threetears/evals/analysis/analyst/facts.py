@@ -172,7 +172,19 @@ _FLOOR = (
 _BAR = ("status", "value", "bar", "interval", "why")
 
 #: A contrast's figures.
-_CONTRAST = ("delta", "interval", "verdict", "p_adjusted", "level", "materiality", "reason")
+_CONTRAST = (
+    "delta",
+    "interval",
+    "verdict",
+    "p_adjusted",
+    "level",
+    "materiality",
+    "reason",
+    "n_cases",
+    "control_n_cases",
+    "paired",
+    "pairing_r",
+)
 
 #: A contrast family's figures.
 _FAMILY = ("disclosure", "correction", "alpha", "family_size", "level")
@@ -1051,7 +1063,10 @@ class ContrastRow(_Fact):
     measure: str = Field(description="The measure or judged dimension, by key.")
     aspect: str | None = Field(description="The aspect it is read on, where it names one.")
     confounds: list[str] = Field(description="Its confounds, by caveat id (caveats_list says what each touches).")
-    figures: list[CitedFigure] = Field(description="Its delta, interval, verdict, adjusted p, level, materiality, why.")
+    figures: list[CitedFigure] = Field(
+        description="Its delta, interval, verdict, adjusted p, level, materiality, why, and where the input states them, "
+        "the cases its test read, whether it paired them and the arms' correlation across them."
+    )
 
 
 class FamilyRow(_Fact):

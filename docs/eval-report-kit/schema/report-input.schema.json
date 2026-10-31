@@ -412,6 +412,22 @@
     "reason": {
      "type": ["string", "null"],
      "description": "Why it is untested or not separated, in one sentence."
+    },
+    "n_cases": {
+     "type": ["integer", "null"],
+     "description": "The cases the test read on the arm's side, each one mean over its repeats: when paired, the cases both arms ran."
+    },
+    "control_n_cases": {
+     "type": ["integer", "null"],
+     "description": "The cases the test read on the control's side, where they differ from n_cases (an unpaired test)."
+    },
+    "paired": {
+     "type": ["boolean", "null"],
+     "description": "Whether the test paired the arms case by case; none where it was not tested."
+    },
+    "pairing_r": {
+     "type": ["number", "null"],
+     "description": "The arms' correlation across the paired cases: how much pairing narrowed the interval."
     }
    },
    "additionalProperties": false,

@@ -44,6 +44,11 @@ which the options table prints beside the cost.
 force, the rubric threshold, the judged dimensions that count and the checks that fail a trial, with the trials that
 passed with nothing to fail them), and says how it is graded (``graded_by`` and a one-sentence ``description``). The
 pass rule is left out of the document when unset, so an input built before it existed digests as it did.
+
+**What a contrast counted.** A contrast tests one mean per case, its repeats averaged first, and pairs the arms over
+the cases both ran where they share at least two. It states the cases it read (``n_cases``, and ``control_n_cases``
+where the control's side read a different number), whether it paired them (``paired``) and how closely the arms
+tracked each other across them (``pairing_r``), each left out of the document when unset.
 """
 
 from __future__ import annotations
@@ -484,6 +489,28 @@ class Contrast(_Part):
     materiality: str | None = Field(default=None, description="Whether the delta is material.")
     confounds: list[str] = Field(default_factory=list, description="Confounds on the contrast, by dimension.")
     reason: str | None = Field(default=None, description="Why it is untested or not separated, in one sentence.")
+    # The four below are left out of the document when unset, so an input built before they existed digests as it did.
+    n_cases: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The cases the test read on the arm's side, each one mean over its repeats: when paired, the "
+        "cases both arms ran.",
+    )
+    control_n_cases: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The cases the test read on the control's side, where they differ from n_cases (an unpaired test).",
+    )
+    paired: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Whether the test paired the arms case by case; none where it was not tested.",
+    )
+    pairing_r: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The arms' correlation across the paired cases: how much pairing narrowed the interval.",
+    )
 
 
 class ContrastFamily(_Part):

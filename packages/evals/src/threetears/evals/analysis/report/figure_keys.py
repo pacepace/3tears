@@ -78,6 +78,10 @@ the level a judged dimension must reach, ``.no_criterion`` the trials that passe
 ``.graded_by`` judged or checked, and ``.description`` the rule in a sentence. An input that states no rule refuses
 them as unstated.
 
+**What a contrast counted.** ``contrast.<arm>.<measure>.n_cases`` reads the cases the contrast's test read, one mean
+per case, ``.control_n_cases`` the control's where they differ, ``.paired`` the word ``paired`` or ``unpaired``, and
+``.pairing_r`` the arms' correlation across the paired cases. An input that states none refuses them as unstated.
+
 **A figure held on more than one aspect is named by its aspect.** Every figure that sits on an aspect has an
 ``aspects.<aspect>.`` form. Where the input holds a contrast's arm and measure, a stratum id or a contrast family on
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
@@ -706,6 +710,10 @@ _CONTRAST_STATISTICS = (
     "level",
     "materiality",
     "reason",
+    "n_cases",
+    "control_n_cases",
+    "paired",
+    "pairing_r",
 )
 
 
@@ -728,6 +736,17 @@ def _contrast_figure(report_input: ReportInput, contrast: Contrast, statistic: s
         return _number(path, contrast.p_adjusted, "the adjusted p", "plain")
     if statistic == "level":
         return _text(path, contrast.level, "the interval's level")
+    if statistic in ("n_cases", "control_n_cases"):
+        cases = getattr(contrast, statistic)
+        if cases is None:
+            raise _unstated(path, "names the cases the contrast's test read, which the input does not state")
+        return _count(path, cases)
+    if statistic == "paired":
+        # A word, as a reader writes it: "paired over 60 cases".
+        paired = None if contrast.paired is None else "paired" if contrast.paired else "unpaired"
+        return _text(path, paired, "whether the contrast's test paired the arms")
+    if statistic == "pairing_r":
+        return _number(path, contrast.pairing_r, "the arms' correlation across the paired cases", "plain")
     return _text(path, getattr(contrast, statistic), f"the contrast's {statistic}")
 
 

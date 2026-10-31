@@ -487,6 +487,13 @@ def test_contrasts_list_every_contrast_its_confounds_by_caveat_id_and_the_famili
         figures = _by_stat(row.figures)
         assert (figures.get("delta"), figures["verdict"]) == (contrast.delta, contrast.verdict)
         assert figures.get("interval") == _pair(contrast.interval)
+        assert (figures.get("n_cases"), figures.get("control_n_cases"), figures.get("pairing_r")) == (
+            contrast.n_cases,
+            contrast.control_n_cases,
+            contrast.pairing_r,
+        )
+        paired = None if contrast.paired is None else "paired" if contrast.paired else "unpaired"
+        assert figures.get("paired") == paired
         for named, dimension in zip(row.confounds, contrast.confounds, strict=True):
             assert named in {f"confound:{dimension}", f"apparatus:{dimension}"} & caveat_ids or named == dimension
     assert [family.aspect for family in listing.families] == [family.aspect for family in held.contrast_families]
@@ -527,6 +534,21 @@ def test_a_kairo_contrasts_confound_is_named_by_its_caveat() -> None:
     assert {name.partition(":")[2] for name in named} == {
         dimension for contrast in held.contrasts for dimension in contrast.confounds
     }, "each confound a contrast names, by its caveat"
+
+
+def test_a_kairo_contrast_says_how_many_cases_its_test_read_and_that_it_paired_them() -> None:
+    """Each Kairo contrast is a paired test over the cases both arms ran, its count and correlation cited by key."""
+    _snapshot, held = _held(KAIRO)
+    rows = contrasts_list(held, limit=200).contrasts
+    assert rows
+    for row in rows:
+        figures = {figure.key.rsplit(".", 1)[1]: figure for figure in row.figures}
+        assert figures["paired"].reads == "paired"
+        assert figures["n_cases"].value > 1 and figures["n_cases"].scale == "count"
+        assert "control_n_cases" not in figures, "a paired test reads the same cases on both sides"
+        # A correlation is stated where both arms' per-case values vary; a constant side has none.
+        assert "pairing_r" not in figures or -1 <= figures["pairing_r"].value <= 1
+    assert any("pairing_r" in {figure.key.rsplit(".", 1)[1] for figure in row.figures} for row in rows)
 
 
 def test_contrasts_list_keeps_only_the_arm_measure_and_aspect_named() -> None:

@@ -12,6 +12,8 @@ kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
 - a wider example pool shows up to ``per_slice`` failed trials per aspect, arm and stratum, every slice's first before
   any slice's second and a slice's other cases before a repeat, its first round the planner's examples; and a
   failure excerpt is centred on the passage the judge's reason quotes, else is the text's end, each cut end marked;
+- an analyst's contrast states the cases its test read, whether it paired them and the arms' correlation, copied off
+  its bundle comparison, and a planner's states none; an input frozen before they existed carries no key for them;
 - each aspect states its pass rule off the bundle: the criteria in force, the threshold, the judged dimensions that
   count and those that do not, the checks, and the trials with nothing to fail them; an input frozen before the rule
   existed digests as it did;
@@ -506,3 +508,77 @@ def test_a_snapshot_stored_before_the_pass_rule_digests_as_it_was_stored() -> No
     built = report_input(kairo_bundle())
     bare = built.model_copy(update={"aspects": [a.model_copy(update={"pass_rule": None}) for a in built.aspects]})
     assert all("pass_rule" not in aspect for aspect in bare.model_dump(mode="json", by_alias=True)["aspects"])
+
+
+# --- what a contrast counted ----------------------------------------------------------------------------------------
+
+
+def _counted(bundle: CampaignBundle) -> list[tuple[str, str, str, int, int | None, bool | None, float | None]]:
+    """Each comparison the bundle tested against the control, with the cases each side read, whether it paired them
+    and the arms' correlation, as the input should carry them."""
+    return sorted(
+        (
+            aspect.aspect,
+            bundle.label_of(comparison.contrast.variant_key),
+            comparison.name,
+            comparison.contrast.n_cases,
+            None if comparison.control.n_cases == comparison.contrast.n_cases else comparison.control.n_cases,
+            None if comparison.test is None else comparison.test == "paired",
+            None if comparison.pairing_correlation is None else comparison.pairing_correlation.r,
+        )
+        for aspect in bundle.aspects
+        for family in aspect.multiple_comparisons.families
+        for comparison in family.comparisons
+    )
+
+
+@pytest.mark.parametrize("name", [*SHAPES, "kairo"])
+def test_a_contrast_states_the_cases_its_test_read_and_whether_it_paired_them(
+    bundles: dict[str, CampaignBundle], name: str
+) -> None:
+    """Every contrast carries its bundle comparison's case count, pairing and pairing correlation, copied."""
+    bundle = kairo_bundle() if name == "kairo" else bundles[name]
+    built = report_input(bundle, counted=True)
+    carried = sorted(
+        (c.aspect or "", c.arm, c.measure, c.n_cases, c.control_n_cases, c.paired, c.pairing_r) for c in built.contrasts
+    )
+    assert carried == _counted(bundle)
+    assert any(c.paired for c in built.contrasts) or not built.contrasts
+    assert all(c.n_cases is None and c.paired is None for c in report_input(bundle).contrasts), "a planner's: none"
+
+
+def test_an_unpaired_contrast_states_each_sides_cases() -> None:
+    """A comparison tested unpaired names the control's cases beside the arm's, and no pairing correlation."""
+    bundle = kairo_bundle()
+    held = bundle.aspects[0]
+    family = held.multiple_comparisons.families[0]
+    first = family.comparisons[0]
+    unpaired = first.model_copy(
+        update={
+            "test": "unpaired",
+            "pairing_correlation": None,
+            "control": first.control.model_copy(update={"n_cases": first.contrast.n_cases + 7}),
+        }
+    )
+    families = [family.model_copy(update={"comparisons": [unpaired, *family.comparisons[1:]]})]
+    families += held.multiple_comparisons.families[1:]
+    tested = held.multiple_comparisons.model_copy(update={"families": families})
+    changed = bundle.model_copy(update={"aspects": [held.model_copy(update={"multiple_comparisons": tested})]})
+    (contrast,) = [
+        c
+        for c in report_input(changed, counted=True).contrasts
+        if (c.arm, c.measure) == (bundle.label_of(first.contrast.variant_key), first.name)
+    ]
+    assert (contrast.n_cases, contrast.control_n_cases) == (first.contrast.n_cases, first.contrast.n_cases + 7)
+    assert (contrast.paired, contrast.pairing_r) == (False, None)
+
+
+def test_an_input_frozen_before_the_contrast_counts_carries_no_key_for_them() -> None:
+    """A stored input's contrasts read back with none of the counts, so its document, and its digest, are as stored."""
+    document = json.loads((FIXTURES / "r4" / "input.json").read_text(encoding="utf-8"))
+    held = ReportInput.model_validate(document)
+    dumped = held.model_dump(mode="json", by_alias=True)
+    assert held.contrasts and all(
+        {"n_cases", "control_n_cases", "paired", "pairing_r"}.isdisjoint(contrast) for contrast in dumped["contrasts"]
+    )
+    assert report_input_digest(ReportInput.model_validate(dumped)) == report_input_digest(held)

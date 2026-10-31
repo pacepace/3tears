@@ -58,6 +58,8 @@ When you pick the one option out of many that clears a line, its estimate is opt
 
 Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals relative to the same contrast uncorrected. Compare like with like: a reading against the control may be unpaired and so wider than a corrected paired contrast. Check the two intervals before you say which is wider. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
 
+A contrast tests cases, not trials: each case's repeats are averaged first. `contrasts_list` gives each contrast's count and pairing (`contrast.<arm>.<measure>.n_cases`, `.paired`, `.pairing_r`). Cite them when you state the test's basis ("paired over 299 cases").
+
 Average effects over a crossed grid (what a retry buys, what more reasoning buys) are meaningful only when the factors don't interact. Check the grid before averaging. An interaction is a finding in itself, often the most important one.
 
 ## Unknown is not a fail

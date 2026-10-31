@@ -22,7 +22,9 @@ how many it was kept from; each example's case input and every judged dimension'
 where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
 one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
 capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
-counted, never as none.
+counted, never as none. Each contrast also states what its test counted, copied off its comparison: the cases each
+side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
+cases"; a planner's input carries none of them, so its view is unchanged.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
@@ -58,7 +60,13 @@ from typing import Any, Literal
 
 from threetears.evals.analysis.arms import writer_arms
 from threetears.evals.analysis.bundle.caps import capped_text
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS, AnalysisContextBundle, ArmPricing, TrialRow
+from threetears.evals.analysis.bundle.schema import (
+    SEPARATED_VERDICTS,
+    AnalysisContextBundle,
+    ArmPricing,
+    FamilyComparison,
+    TrialRow,
+)
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
@@ -254,7 +262,7 @@ class _Builder:
                 "measures": self.measures(),
                 "judged": judged,
                 "primary_judged": primary,
-                "contrasts": self.contrasts(),
+                "contrasts": self.contrasts(counted=counted),
                 "contrast_families": self.families(),
                 "strata": strata,
                 "examples": shown,
@@ -789,8 +797,9 @@ class _Builder:
 
     # ------------------------------------------------------------------ contrasts
 
-    def contrasts(self) -> list[Contrast]:
-        """Every corrected contrast against the control, aspect by aspect, each aspect's separated ones first."""
+    def contrasts(self, *, counted: bool) -> list[Contrast]:
+        """Every corrected contrast against the control, aspect by aspect, each aspect's separated ones first; an
+        analyst's (``counted``) with the cases each test read and whether it paired them."""
         contrasts: list[Contrast] = []
         for aspect in self.bundle.aspects:
             rows: list[tuple[tuple[int, float], Contrast]] = []
@@ -817,6 +826,7 @@ class _Builder:
                                 materiality=comparison.materiality,
                                 confounds=[confound.dimension for confound in comparison.mechanism_confounds],
                                 reason=comparison.untested_reason or comparison.not_separated_reason,
+                                **(_test_counts(comparison) if counted else {}),
                             ),
                         )
                     )
@@ -1031,6 +1041,18 @@ def _grade(facts: MetricDescriptor) -> Literal["pass_fail", "class_label"] | Non
     if facts.family == "goal_state" or facts.is_check:
         return "pass_fail"
     return None
+
+
+def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
+    """What a contrast's test counted: the cases each side read, one mean per case (the control's only where they
+    differ), whether it paired them, and the arms' correlation across the paired cases."""
+    control, arm = comparison.control.n_cases, comparison.contrast.n_cases
+    return {
+        "n_cases": arm,
+        "control_n_cases": control if control != arm else None,
+        "paired": None if comparison.test is None else comparison.test == "paired",
+        "pairing_r": comparison.pairing_correlation.r if comparison.pairing_correlation is not None else None,
+    }
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:
