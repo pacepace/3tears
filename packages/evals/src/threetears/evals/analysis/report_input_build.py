@@ -434,10 +434,11 @@ class _Builder:
             for name, descriptor in aspect.measure_catalog.items()
             if goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
         )
-        criteria: list[PassCriterion] = [
-            *(["goal_checks"] if any(goal_check_of(name) is not None for name in checks) else []),
-            *(["rubric"] if dimensions else []),
-        ]
+        criteria: list[PassCriterion] = []
+        if any(goal_check_of(name) is not None for name in checks):
+            criteria.append("goal_checks")
+        if dimensions:
+            criteria.append("rubric")
         return PassRule(
             criteria=criteria,
             threshold=threshold,
