@@ -32,16 +32,25 @@ from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compare-test"
 
-#: Eight cases; the last four carry a second label's word, which only ``careful`` reads past.
+#: Sixteen cases; the last eight carry a second label's word, which only ``careful`` reads past. A gain on half the
+#: cases is a pass rate's, read on its bounded interval, which at eight cases still reaches zero: sixteen show it.
 CASES = [
     {"text": "refund please", "label": "billing"},
     {"text": "charged twice", "label": "billing"},
+    {"text": "refund for last month", "label": "billing"},
+    {"text": "charged the wrong card", "label": "billing"},
     {"text": "app crashes", "label": "bug"},
     {"text": "button broken", "label": "bug"},
+    {"text": "upload crashes", "label": "bug"},
+    {"text": "search box broken", "label": "bug"},
     {"text": "charged, but the page crashes", "label": "billing"},
     {"text": "refund page crashes", "label": "billing"},
     {"text": "crash after refund", "label": "billing"},
     {"text": "charged then crashed", "label": "billing"},
+    {"text": "refund form broken", "label": "billing"},
+    {"text": "charged and the app crashed", "label": "billing"},
+    {"text": "checkout crashes, refund me", "label": "billing"},
+    {"text": "charged though the button is broken", "label": "billing"},
 ]
 
 

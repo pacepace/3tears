@@ -58,8 +58,9 @@ async def test_a_g2_report_s_first_two_screens_use_none_of_the_engine_s_nouns(g2
 
 
 async def test_a_comparison_s_first_two_screens_use_none_of_the_engine_s_nouns() -> None:
-    cases = [{"text": f"refund {n}", "label": "billing"} for n in range(5)] + [
-        {"text": f"refund crash {n}", "label": "billing"} for n in range(5)
+    # A gain on half the cases, read on a pass rate's bounded interval, separates at eight a side, not at five.
+    cases = [{"text": f"refund {n}", "label": "billing"} for n in range(8)] + [
+        {"text": f"refund crash {n}", "label": "billing"} for n in range(8)
     ]
     comparison = await Eval(cases, {"hasty": _hasty, "careful": _classify}, ["label"]).run(store=":memory:")
     text = _screens_one_and_two(comparison.report)
