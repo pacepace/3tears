@@ -105,6 +105,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
     )
 
     from threetears.nats.kv import NatsKvBucket
+    from threetears.nats.kv_listing import live_kv_keys
     from threetears.nats.object_store import NatsObjectStore, ObjectInfo
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
     from threetears.nats.raw_errors import (
@@ -323,6 +324,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "ResolvedPrincipal",
     ),
     "kv": ("NatsKvBucket",),
+    "kv_listing": ("live_kv_keys",),
     "object_store": ("NatsObjectStore", "ObjectInfo"),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
     "raw_errors": ("JS_ERR_STREAM_NOT_FOUND", "is_bucket_not_found", "is_key_not_found", "is_nats_error"),
@@ -404,6 +406,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "live_kv_keys",
     # client + lifecycle
     "DEFAULT_DRAIN_TIMEOUT",
     "DEFAULT_FLUSHER_QUEUE_SIZE",

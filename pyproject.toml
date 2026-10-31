@@ -582,6 +582,8 @@ module = [
     "threetears.datasources.partitioned_export",
     # and the CPU-quota helper, which sizes pyarrow's thread pools
     "threetears.core.utils.cpu_quota",
+    # and the shared-memory Arrow store, which writes and maps Arrow IPC files
+    "threetears.core.shared_arrow",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

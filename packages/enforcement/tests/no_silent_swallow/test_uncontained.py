@@ -27,6 +27,24 @@ def _scan(tmp_path: Path, source: str) -> list[tuple[str, int, str]]:
     return [(v.category, v.line, v.symbol) for v in find_uncontained((tmp_path / "src",), _CONTAIN)]
 
 
+class TestIgnoreErrors:
+    def test_ignore_errors_without_a_handler_is_flagged(self, tmp_path: Path) -> None:
+        source = "import shutil\ndef f(p):\n    shutil.rmtree(p, ignore_errors=True)\n"
+        assert _scan(tmp_path, source) == [("no_silent_swallow.ignore_errors", 3, "ignore_errors=True")]
+
+    def test_ignore_errors_passed_through_another_call_is_flagged(self, tmp_path: Path) -> None:
+        source = "import atexit, shutil\natexit.register(shutil.rmtree, '/x', ignore_errors=True)\n"
+        assert _scan(tmp_path, source) == [("no_silent_swallow.ignore_errors", 2, "ignore_errors=True")]
+
+    def test_an_onexc_handler_satisfies_it(self, tmp_path: Path) -> None:
+        source = "import shutil\ndef f(p):\n    shutil.rmtree(p, ignore_errors=True, onexc=said)\n"
+        assert _scan(tmp_path, source) == []
+
+    def test_ignore_errors_false_is_not_flagged(self, tmp_path: Path) -> None:
+        source = "import shutil\ndef f(p):\n    shutil.rmtree(p, ignore_errors=False)\n"
+        assert _scan(tmp_path, source) == []
+
+
 class TestBroad:
     def test_a_logged_broad_handler_is_flagged(self, tmp_path: Path) -> None:
         source = "def f():\n    try:\n        g()\n    except Exception as exc:\n        log.exception('g failed')\n"

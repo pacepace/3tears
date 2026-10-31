@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -879,12 +880,67 @@ class ToolCatalog:
         # registration whose entry still has that content writes nothing. a key is dropped from it
         # on any failed write or delete, and on a bucket bound afresh, so the next write is made.
         self._written: dict[str, str] = {}
+        # the copies the last warm load brought in unavailable, by (full name, pod id), and when it
+        # landed: a replica routes nothing to them until their pods announce again, so it holds its
+        # calls until they have (loaded_copies_settled); replaced whole by each load, never pruned
+        self._awaiting_revival: set[tuple[str, str]] = set()
+        self._loaded_at: float | None = None
         self._write_health = CopyWriteHealth(
             copy="tool catalog",
             consequence=(
                 "registrations are not being recorded, and the registry reports itself not ready until a write lands"
             ),
         )
+
+    def loaded_copies_settled(self, window: float) -> bool:
+        """whether every copy the warm load brought in is routable again, gone, or past waiting for.
+
+        A starting replica loads the persisted catalog with every copy unavailable, and each comes back
+        only with its pod's next heartbeat. A replica that answered calls before then refused a tool
+        every other replica could route (``TOOL_UNAVAILABLE ... has no available endpoints``, from a
+        scheduled job on cobalt dev on 2026-10-30, during a platform rollout). A copy settles when it is
+        available again or no longer in the catalog; all of them settle once ``window`` has passed since
+        the load, since a pod that died never announces again. ``True`` before any load: a catalog with
+        nothing loaded has nothing to wait for. Read-only: the readiness probe and the start-up wait both ask
+        it, so asking changes nothing.
+
+        :param window: seconds after the load past which nothing is waited for (one heartbeat round)
+        :ptype window: float
+        :return: whether the replica may answer calls
+        :rtype: bool
+        """
+        if self._loaded_at is None or time.monotonic() - self._loaded_at >= window:
+            return True
+        return not self.loaded_copies_pending()
+
+    def loaded_copies_pending(self) -> frozenset[tuple[str, str]]:
+        """the copies the last warm load brought in that are neither routable again nor gone, however long ago.
+
+        Read-only. Empty before any load.
+
+        :return: each such copy, as (tool full name, pod id)
+        :rtype: frozenset[tuple[str, str]]
+        """
+        return frozenset(
+            (full_name, pod_id)
+            for full_name, pod_id in self._awaiting_revival
+            if self._copy_status(full_name, pod_id) not in (None, "available")
+        )
+
+    def _copy_status(self, full_name: str, pod_id: str) -> str | None:
+        """the status of one copy, or ``None`` when the catalog no longer holds it.
+
+        :param full_name: the tool's full name
+        :ptype full_name: str
+        :param pod_id: the pod serving the copy
+        :ptype pod_id: str
+        :return: the copy's status
+        :rtype: str | None
+        """
+        entry = self._entries.get(full_name)
+        if entry is None:
+            return None
+        return next((endpoint.status for endpoint in entry.endpoints if endpoint.pod_id == pod_id), None)
 
     @property
     def persisting(self) -> bool:
@@ -932,6 +988,7 @@ class ToolCatalog:
         """
         self._kv = kv
         self._written.clear()
+        awaiting: set[tuple[str, str]] = set()
         keys = await kv.list_keys()
         for key in keys:
             raw = await kv.get(key=key)
@@ -943,7 +1000,10 @@ class ToolCatalog:
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
-            self._entries.setdefault(entry.full_name, entry)
+            if self._entries.setdefault(entry.full_name, entry) is entry:
+                awaiting.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
+        self._awaiting_revival = awaiting
+        self._loaded_at = time.monotonic()
         _logger.info(
             "loaded catalog from KV",
             extra={"extra_data": {"entry_count": len(self._entries), "keys_listed": len(keys)}},

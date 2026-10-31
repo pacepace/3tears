@@ -29,15 +29,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
+import threading
 import time
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import aclosing
 from datetime import timedelta
 from typing import Any
 
 import nats
+import nats.aio.client
 import pytest
 
 from threetears.core.testing.containers import check_docker_available
@@ -74,6 +78,8 @@ _QUERY_SUBJECT = "svc.query"
 _EVENTS = "events"
 _CALLS_SUBJECT = "pod.calls"
 _POD_OUT = "podout.seq"
+#: what the pod sends on _POD_OUT to prove the admin's subscription is registered, before its sequence
+_PROBE = b"probe"
 #: the TTL the pod schedules its renewal against, and the TTL the responder mints. Long enough that
 #: the credential never actually expires during the test; the renewal fires early because the
 #: schedule subtracts its margins and the longest request from it.
@@ -308,12 +314,12 @@ async def test_a_renewal_loses_nothing_in_flight(caplog: pytest.LogCaptureFixtur
                 gate.set()
                 await asyncio.wait_for(resolver.renewal_admitted.wait(), timeout=_WAIT)
 
-                # the renewal completes on its own; give the handover a moment to finish.
-                for _ in range(100):
-                    if pod.is_connected:
-                        break
+                # the renewal completes on its own: wait for the handover itself, not a fixed moment. Under
+                # load a successor's connect can time out after its admission, and the renewal loop then
+                # tries again (the parked authorization is released by now)
+                deadline = time.monotonic() + _WAIT
+                while (pod.raw is replaced or not pod.is_connected) and time.monotonic() < deadline:
                     await asyncio.sleep(0.05)
-                await asyncio.sleep(1.0)
 
                 # === after the renewal ==========================================================
                 answer_owed.set()
@@ -385,9 +391,115 @@ async def test_a_renewal_loses_nothing_in_flight(caplog: pytest.LogCaptureFixtur
 
 #: renewals the stress test drives back to back.
 _STRESS_RENEWALS = 100
+#: tries per renewal in the stress test before it counts as failed: a timed-out successor connect changes nothing
+_RENEWAL_ATTEMPTS = 5
+#: seconds with nothing arriving after which a message not yet received counts as lost
+_QUIET_SECONDS = 5.0
+#: the most the stress test waits for its streams to arrive, however much is still arriving
+_WAIT_CAP_SECONDS = 120.0
+
+
+@contextlib.contextmanager
+def _callout_off_the_loop(uri: str, account_seed: bytes) -> Iterator[None]:
+    """answer the auth-callout on a thread and event loop of its own, over a connection of its own.
+
+    The stress test's own loop and its admin connection are saturated by the streams it drives; a callout
+    answered there waits behind them, so a renewal's successor can time out connecting -- the harness
+    starving its own callout, not the renewal failing. Here the callout answers as a hub's would: apart.
+
+    :param uri: the server
+    :ptype uri: str
+    :param account_seed: the account seed that signs callout responses
+    :ptype account_seed: bytes
+    :return: nothing, while the callout answers
+    :rtype: Iterator[None]
+    """
+    ready, done = threading.Event(), threading.Event()
+    failure: list[BaseException] = []
+
+    async def _serve() -> None:
+        gate = asyncio.Event()
+        gate.set()  # nothing is parked: the renewals run as fast as the callout answers
+        responder = AuthCalloutResponder(
+            nc=None,
+            account_seed=account_seed,
+            resolver=_GatedResolver(gate),
+            policy=_PodGrant(),
+            account_name="$G",
+            user_jwt_ttl_seconds=_TTL_SECONDS,
+        )
+        callout = await nats.connect(uri, user="admin", password=_ADMIN_PW, name="callout")
+
+        async def _on_auth(msg: Any) -> None:
+            request = decode_auth_request(bytes(msg.data).decode())
+            await msg.respond((await responder.build_response(request)).encode())
+
+        await callout.subscribe("$SYS.REQ.USER.AUTH", cb=_on_auth)
+        await callout.flush()
+        ready.set()
+        while not done.is_set():
+            await asyncio.sleep(0.05)
+        await callout.drain()
+
+    def _run() -> None:
+        try:
+            asyncio.run(_serve())
+        except BaseException as exc:  # noqa: BLE001 - reported to the test below
+            failure.append(exc)
+            ready.set()
+
+    thread = threading.Thread(target=_run, name="auth-callout", daemon=True)
+    thread.start()
+    ready.wait(30)
+    if failure:
+        raise failure[0]
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join(30)
 
 
 async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing() -> None:
+    """every renewal hands the subscription over while messages are streaming onto it (:func:`_stress`)."""
+    await _stress()
+
+
+async def test_renewals_that_fail_after_subscribing_their_successor_lose_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a quarter of the renewals fail after subscribing their successor: the successor's first subscription is a
+    member of its group for a moment, then its second subscribe times out (as a saturated loop timed one out), and
+    the renewal is retried, as the renewal loop retries. Whatever the server routed to a successor given up still
+    arrives: the give-up path fires (its WARNING once per injected failure) and nothing is lost."""
+    opened = itertools.count()
+    injected: list[int] = []
+
+    async def _establish_failing_a_quarter(servers: list[str], options: dict[str, object], url: str) -> Any:
+        connection = nats.aio.client.Client()
+        await connection.connect(servers, **options)  # type: ignore[arg-type]
+        if next(opened) % 4 == 3:  # never the first connection; a quarter of the successors
+            subscribe = connection.subscribe
+            made = itertools.count()
+
+            async def _second_subscribe_times_out(*args: Any, **kwargs: Any) -> Any:
+                if next(made) == 1:
+                    await asyncio.sleep(0.05)  # the first subscription is a member meanwhile
+                    injected.append(1)
+                    raise TimeoutError("injected: the successor's second subscribe timed out")
+                return await subscribe(*args, **kwargs)
+
+            connection.subscribe = _second_subscribe_times_out  # type: ignore[method-assign]
+        return connection
+
+    caplog.set_level(logging.WARNING, logger="threetears.nats.client")
+    await _stress(establish=_establish_failing_a_quarter, second_subscription=True)
+    gave_up = [r for r in caplog.records if "gives up its successor's subscriptions" in r.getMessage()]
+    assert injected, "no renewal failed after subscribing: the give-up path was not exercised"
+    assert len(gave_up) == len(injected), f"{len(injected)} renewals failed after subscribing, {len(gave_up)} gave up"
+
+
+async def _stress(*, establish: Any = None, second_subscription: bool = False) -> None:
     """every renewal hands the subscription over while messages are streaming onto it.
 
     Each handover opens a moment when both connections are members of the subscription's group and
@@ -401,32 +513,16 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
         pytest.skip("Docker not available")
 
     account_seed = generate_account_seed()
-    gate = asyncio.Event()
-    gate.set()  # nothing is parked: the renewals run as fast as the callout answers
-    resolver = _GatedResolver(gate)
-    responder = AuthCalloutResponder(
-        nc=None,
-        account_seed=account_seed,
-        resolver=resolver,
-        policy=_PodGrant(),
-        account_name="$G",
-        user_jwt_ttl_seconds=_TTL_SECONDS,
-    )
     previous_ns = get_default_namespace()
 
-    with running_nats(_server_config(account_public_key(account_seed))) as uri:
+    with (
+        running_nats(_server_config(account_public_key(account_seed))) as uri,
+        _callout_off_the_loop(uri, account_seed),
+    ):
         admin = await nats.connect(uri, user="admin", password=_ADMIN_PW, max_reconnect_attempts=0)
         pod: NatsClient | None = None
         stream: asyncio.Task[None] | None = None
         try:
-
-            async def _on_auth(msg: Any) -> None:
-                request = decode_auth_request(bytes(msg.data).decode())
-                await msg.respond((await responder.build_response(request)).encode())
-
-            await admin.subscribe("$SYS.REQ.USER.AUTH", cb=_on_auth)
-            await admin.flush()
-
             pod = await NatsClient.connect(
                 nats_url=uri,
                 nats_subject_namespace=_NS,
@@ -434,6 +530,7 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
                 auth_token=lambda: _TOKEN,
                 inbox_prefix=_INBOX,
                 startup_timeout=timedelta(seconds=15),
+                establish_connection=establish,
             )
             received: Counter[bytes] = Counter()
 
@@ -441,6 +538,13 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
                 received[bytes(msg.data)] += 1
 
             await pod.subscribe(Subject.raw(f"{_EVENTS}.>"), cb=_on_event)
+            if second_subscription:
+
+                async def _on_nothing(msg: IncomingMessage) -> None:
+                    return None
+
+                # moved after the stream's own: its subscribe is the one a faulty successor times out
+                await pod.subscribe(Subject.raw(_CALLS_SUBJECT), cb=_on_nothing)
             await pod.flush()
 
             published: list[bytes] = []
@@ -460,11 +564,22 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
             sent_by_pod: list[int] = []
             seen_from_pod: list[int] = []
 
+            probed = asyncio.Event()
+
             async def _on_pod_out(msg: Any) -> None:
-                seen_from_pod.append(int(msg.data))
+                if msg.data == _PROBE:
+                    probed.set()
+                else:
+                    seen_from_pod.append(int(msg.data))
 
             await admin.subscribe(_POD_OUT, cb=_on_pod_out)
-            await admin.flush()
+            # proven registered by a message through it, not by nats-py's flush, whose PING can overtake
+            # the SUB still in its pending buffer: the pod's first message was once lost to exactly that
+            # (a test error, not a renewal's)
+            while not probed.is_set():
+                await pod.publish_raw(subject=Subject.raw(_POD_OUT), payload=_PROBE)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(probed.wait(), timeout=0.2)
 
             async def _pod_stream() -> None:
                 assert pod is not None
@@ -478,22 +593,44 @@ async def test_many_renewals_under_a_busy_subscription_lose_and_double_nothing()
             stream = asyncio.create_task(_stream())
             pod_stream = asyncio.create_task(_pod_stream())
             first = pod.raw
+            renewed = 0
+            retried = 0
             for _ in range(_STRESS_RENEWALS):
-                await pod.renew_connection(retire_after=timedelta(seconds=0.2))
+                # every renewal goes through: one whose successor connect timed out (the callout answers on
+                # this same, saturated event loop) changed nothing and is tried again, as the renewal loop does
+                for _attempt in range(_RENEWAL_ATTEMPTS):
+                    try:
+                        await pod.renew_connection(retire_after=timedelta(seconds=0.2))
+                    except TimeoutError:
+                        retried += 1
+                        continue
+                    renewed += 1
+                    break
                 await asyncio.sleep(0.05)
             stop.set()
             await stream
             await pod_stream
             await pod.flush()
             await admin.flush()
-            for _ in range(200):
+            # a message not lost arrives; one still arriving has not stopped: wait while either stream still
+            # moves, and stop only once nothing has arrived for a few seconds
+            # bounded overall too: a pod that keeps trickling or wedges fails here, with what is outstanding
+            waited = quiet_since = time.monotonic()
+            last = (-1, -1)
+            while time.monotonic() - quiet_since < _QUIET_SECONDS and time.monotonic() - waited < _WAIT_CAP_SECONDS:
                 if all(body in received for body in published) and len(seen_from_pod) >= len(sent_by_pod):
                     break
+                now = (sum(received.values()), len(seen_from_pod))
+                if now != last:
+                    quiet_since, last = time.monotonic(), now
                 await asyncio.sleep(0.05)
 
             assert pod.raw is not first
             assert first.is_closed, "the first connection was never retired"
             assert len(published) > 10 * _STRESS_RENEWALS, "the stream was too slow to exercise the handovers"
+            assert renewed == _STRESS_RENEWALS, (
+                f"{_STRESS_RENEWALS - renewed} renewals never went through in {_RENEWAL_ATTEMPTS} attempts ({retried} retries)"
+            )
             missing = [body for body in published if body not in received]
             assert not missing, f"{len(missing)} of {len(published)} messages lost across renewals: {missing[:5]}"
             doubled = sorted(body for body, count in received.items() if count > 1)

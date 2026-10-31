@@ -97,7 +97,15 @@ from threetears.nats import (
     set_default_namespace,
 )
 from threetears.nats.errors import NatsClientError, PublishError, RequestError, SubscribeError
-from threetears.observe import cancel_and_wait, clear_context, contain, get_logger, InflightRequestsGauge, traced
+from threetears.observe import (
+    CallMetrics,
+    cancel_and_wait,
+    clear_context,
+    contain,
+    get_logger,
+    InflightRequestsGauge,
+    traced,
+)
 from threetears.observe.resilience import retry_bounded
 
 __all__ = [
@@ -1386,6 +1394,10 @@ class ToolServer:
         # queue-group request/reply, not JetStream, so there is no stream backlog
         # for the nats scaler to read).
         self._inflight_gauge = InflightRequestsGauge("threetears_tools_inflight_requests")
+        # every finished call, counted with its duration by tool and outcome, on the gauge's registry so the
+        # one /metrics route serves both: a call that starts and ends between two scrapes never moves the
+        # gauge a scrape reads, and reports' cached answers and background-handed loads all do
+        self._call_metrics = CallMetrics("threetears_tools", registry=self._inflight_gauge.registry)
         # A SEPARATE, always-present count of dispatches that still owe a reply.
         # Deliberately not read off `_inflight_gauge`: that is prometheus-backed
         # and a silent no-op when the extra is absent, so control flow keyed to
@@ -3487,6 +3499,7 @@ class ToolServer:
             )
             await self._respond(msg, error_response)
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
+            self._count_call(tool_name="", tool_version="", outcome="failure", duration_ms=duration_ms)
             await self._publish_baseline_audit(
                 request=None,
                 tool_name="",
@@ -3767,8 +3780,16 @@ class ToolServer:
             contain(exc, log=log, what=str(exc), extra={"tool_key": tool_key}, level="error")
             outcome = "error"
             failure_reason = str(exc) if failure_reason is None else f"{failure_reason}; then {exc}"
+        except BaseException as exc:
+            # every other way out reached no recorded result -- cancelled mid-call (a shutdown or a rollout), or
+            # an answer that raised something else -- and is not a success, whatever the tool had reached
+            outcome = "error"
+            ended = "cancelled" if isinstance(exc, asyncio.CancelledError) else f"{type(exc).__name__}: {exc}"
+            failure_reason = f"the call ended before it was answered: {ended}"
+            raise
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
+            self._count_call(tool_name=tool_name, tool_version=tool_version, outcome=outcome, duration_ms=duration_ms)
             await self._publish_baseline_audit(
                 request=request,
                 tool_name=tool_name,
@@ -3934,6 +3955,27 @@ class ToolServer:
         if msg.reply_subject is None or self._nc is None:
             return
         await self._nc.publish_reply(reply_subject=msg.reply_subject, message=response)
+
+    def _count_call(self, *, tool_name: str, tool_version: str, outcome: str, duration_ms: float) -> None:
+        """count one finished dispatch on /metrics, by tool and outcome, with its duration.
+
+        The tool label is the name only when this pod serves that tool at that version, and ``""``
+        otherwise: a caller names any tool it likes, and a label taken from the request would let
+        callers grow the pod's series without bound.
+
+        :param tool_name: the tool the call named, or ``""`` when it named none this pod could read
+        :ptype tool_name: str
+        :param tool_version: the version the call named
+        :ptype tool_version: str
+        :param outcome: ``success`` / ``failure`` / ``error``
+        :ptype outcome: str
+        :param duration_ms: milliseconds from the call's arrival to its end
+        :ptype duration_ms: float
+        :return: nothing
+        :rtype: None
+        """
+        served = tool_name if f"{tool_name}@{tool_version}" in self._tools else ""
+        self._call_metrics.observe(name=served, outcome=outcome, seconds=duration_ms / 1000.0)
 
     async def _publish_baseline_audit(
         self,

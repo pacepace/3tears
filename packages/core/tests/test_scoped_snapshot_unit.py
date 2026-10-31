@@ -343,8 +343,10 @@ async def test_a_scope_whose_chunks_keep_failing_is_rebuilt_from_l3_and_applied(
 
     _point_at_a_missing_chunk(pointers)
 
-    await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
+    # the property says what the status says, with no read opened
+    await _until(lambda: "TX" in snapshot.status().behind and "TX" in snapshot.behind, what="TX shown behind")
     await _until(lambda: snapshot.status().behind == {}, what="TX rebuilt from L3 and applied")
+    assert snapshot.behind == {}
     await _until(lambda: snapshot.status().detail == "ready", what="the rebuild's step ended")
     await snapshot.stop()
 

@@ -119,6 +119,10 @@ class _FakeSubscription:
         """the bus is one connection that is never renewed; a pipe test never moves a subscription."""
         raise AssertionError("a pipe test has one connection; nothing renews it")
 
+    async def give_up_on(self, raw_subscription: object, connection: object) -> None:
+        """the bus is one connection that is never renewed; a pipe test never gives a successor up."""
+        raise AssertionError("a pipe test has one connection; nothing renews it")
+
 
 # parity-with: threetears.nats.pipe.PipeTransport
 class _FakePipeTransport:

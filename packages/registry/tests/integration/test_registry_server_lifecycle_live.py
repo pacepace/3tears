@@ -37,7 +37,10 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.nats import NatsClient
 from threetears.registry import server as server_module
 from threetears.registry.auth import AllowAllAuthorizer
+from threetears.registry.catalog import ToolEndpoint
 from threetears.registry.server import RegistryServer
+
+from ..unit.registry.copy_entries import uniform_entry
 
 pytestmark = pytest.mark.integration
 
@@ -85,6 +88,8 @@ async def _running_registry(
     monkeypatch: pytest.MonkeyPatch,
     *,
     version: str | None,
+    heartbeat_timeout: float | None = None,
+    catalog: dict[str, bytes] | None = None,
 ) -> AsyncIterator[tuple[RegistryServer, int]]:
     """a registry started through ``serve()``, yielded once its health listener answers.
 
@@ -98,6 +103,10 @@ async def _running_registry(
     :ptype monkeypatch: pytest.MonkeyPatch
     :param version: the release version the server is constructed with
     :ptype version: str | None
+    :param heartbeat_timeout: the server's heartbeat timeout; its default when None
+    :ptype heartbeat_timeout: float | None
+    :param catalog: catalog entries the bucket holds before the registry starts, by KV key
+    :ptype catalog: dict[str, bytes] | None
     :return: the serving registry and its health port
     :rtype: AsyncIterator[tuple[RegistryServer, int]]
     """
@@ -108,6 +117,13 @@ async def _running_registry(
         nats_url=nats_url, nats_subject_namespace=namespace, client_name="bucket-declarer"
     ) as declarer:
         await declarer.ensure_kv_bucket(name=COLLECTIONS_BUCKET_SUFFIX)
+        if catalog:
+            # as the registry declares its catalog bucket (catalog_persistence.catalog_bucket)
+            persisted = await declarer.ensure_kv_bucket(
+                name=f"tool_catalog_{namespace}", storage="file", history=1, direct=True, prefix_namespace=False
+            )
+            for key, value in catalog.items():
+                await persisted.put(key=key, value=value)
 
     port = _free_port()
     server = RegistryServer(
@@ -116,6 +132,8 @@ async def _running_registry(
         authorizer=AllowAllAuthorizer(),
         health_port=port,
         version=version,
+        heartbeat_timeout=heartbeat_timeout,
+        kv_bucket=f"tool_catalog_{namespace}",
     )
     serving = asyncio.create_task(server.serve())
     try:
@@ -227,3 +245,95 @@ class TestShutdownReleasesTheCollectionRegistry:
             assert released == []
 
         assert released == ["stop_invalidation_listener", "close_collections"]
+
+
+class TestAWarmLoadedReplicaHoldsItsCalls:
+    """a replica joins its call group only once the copies its catalog warm-loaded are routable again, or the
+    heartbeat timeout has passed: on cobalt dev on 2026-10-30 a new replica took a scheduled call during a rollout
+    and refused it TOOL_UNAVAILABLE while every other replica could route it."""
+
+    async def test_the_proxy_joins_and_readiness_turns_only_after_the_loaded_copies_settle(
+        self, nats_container: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """the health listener answers not-ready (catalog_revived) and the call proxy has not started while a copy
+        whose pod never comes back is waited for; both proceed once the window has passed.
+
+        :param nats_container: the bus
+        :ptype nats_container: str
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        window = 4.0
+        started: list[float] = []
+
+        class _RecordingProxy(server_module.CallProxy):  # type: ignore[misc,name-defined]
+            async def start(self, nc: Any) -> None:
+                joining = asyncio.get_running_loop().time()
+                await super().start(nc)
+                started.append(joining)
+
+        monkeypatch.setattr(server_module, "CallProxy", _RecordingProxy)
+        entry = uniform_entry(
+            tool_name="enr.reload",
+            tool_version="1.0",
+            description="reload",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[ToolEndpoint(pod_id="pod-gone", status="available")],
+        )
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        async with _running_registry(
+            nats_container,
+            monkeypatch,
+            version=None,
+            heartbeat_timeout=window,
+            catalog={"enr_reload_AT_1_0": json.dumps(entry.to_dict()).encode("utf-8")},
+        ) as (_server, port):
+            ready = await _probe(port, "/healthz/ready")
+            assert ready is not None
+            held = {component["name"]: component["healthy"] for component in ready[1]["components"]}
+            assert ready[0] == 503 and held.get("catalog_revived") is False, ready
+            assert started == [], "the call proxy joined while a warm-loaded copy was still unrouted"
+            for _ in range(400):
+                if started:
+                    break
+                await asyncio.sleep(0.05)
+            assert started, "the call proxy never joined"
+            assert started[0] - began >= window * 0.9, "the call proxy joined before the window passed"
+            ready = await _probe(port, "/healthz/ready")
+            assert ready is not None
+            settled = {component["name"]: component["healthy"] for component in ready[1]["components"]}
+            assert settled.get("catalog_revived") is True, ready
+
+    async def test_a_shutdown_while_the_replica_holds_its_calls_ends_it(
+        self, nats_container: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """a replica can hold its calls for a whole heartbeat timeout: a shutdown in that time stops the start-up
+        rather than letting it start the call proxy on the connection being closed (``serve`` then never ended).
+
+        :param nats_container: the bus
+        :ptype nats_container: str
+        :param monkeypatch: pytest monkeypatch fixture
+        :ptype monkeypatch: pytest.MonkeyPatch
+        :return: nothing
+        :rtype: None
+        """
+        entry = uniform_entry(
+            tool_name="enr.reload",
+            tool_version="1.0",
+            description="reload",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[ToolEndpoint(pod_id="pod-gone", status="available")],
+        )
+        async with _running_registry(
+            nats_container,
+            monkeypatch,
+            version=None,
+            heartbeat_timeout=600.0,
+            catalog={"enr_reload_AT_1_0": json.dumps(entry.to_dict()).encode("utf-8")},
+        ) as (_server, port):
+            ready = await _probe(port, "/healthz/ready")
+            assert ready is not None and ready[0] == 503
+        # leaving the block shut the server down and waited for serve() to end, within its bound
