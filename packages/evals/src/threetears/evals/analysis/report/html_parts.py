@@ -21,6 +21,7 @@ from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.schema.hashing import round_floats
 
 #: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
 #: tables, pills and the flag (``kit/kit.css``, the kit's documentation copy byte for byte).
@@ -402,7 +403,10 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     """A chart as the kit's ``.fig``: its title, the chart the kit draws, and a table of every value it draws.
 
     The chart is a ``div.chart`` whose ``data-chart`` is its JSON, escaped into the attribute: the kit's script draws
-    it at the chart's real width, every string in it as text. The table follows it. While the kit has drawn the chart
+    it at the chart's real width, every string in it as text. Every float in that JSON is served to twelve significant
+    figures (:func:`~threetears.evals.schema.hashing.round_floats`), as the page's JSON form is: a point's position is
+    a figure code computed, whose bits past that differ between Python builds, so one campaign serves one page on every
+    platform. The table follows it. While the kit has drawn the chart
     the table is visually hidden, read by a screen reader; where the chart is empty (no script ran, or the kit refused
     the data) or there is no chart to draw, the table is the figure, in its own scrolling frame.
 
@@ -426,7 +430,7 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
         kind, data = drawn
         chart = (
             f'<div class="chart" id="{escape(chart_id)}" data-kind="{escape(kind)}" '
-            f'data-chart="{escape(json.dumps(data, separators=(",", ":"), allow_nan=False))}"></div>'
+            f'data-chart="{escape(json.dumps(round_floats(data), separators=(",", ":"), allow_nan=False))}"></div>'
         )
     framed = block.chart in _CELL_GRID_KINDS
     values = (

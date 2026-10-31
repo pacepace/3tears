@@ -11,7 +11,8 @@ Pinned here:
 - **A bundle moved by a ULP fingerprints alike** (but for a figure on a twelfth-figure rounding boundary, which the
   toy's are not): every nonzero float of the toy corpus's bundle nudged one ULP up, or down,
   leaves the ``v2:`` fingerprint as it was, the aspect's and the campaign's; and the same holds for the readings the
-  page JSON serves.
+  page JSON serves, and for a chart's figures, which every form of the page (the kit's ``data-chart`` JSON in the
+  HTML, the static page's SVG, Markdown, JSON) serves alike.
 - **A build whose C maths differs fingerprints alike**: a fresh interpreter whose ``math`` and ``NormalDist`` answer
   one ULP off assembles the toy campaign to the same ``v2:`` fingerprint, serves the same page JSON and sends the
   writer the same message, while the unrounded digest moves, which is the defect.
@@ -34,7 +35,12 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle, assemble_context_bundle, campaign_report
+from threetears.evals.analysis import (
+    assemble_campaign_bundle,
+    assemble_context_bundle,
+    campaign_report,
+    serialize_report,
+)
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
 from threetears.evals.analysis.campaign_bundle import (
     CAMPAIGN_MESSAGE_HEADING,
@@ -45,7 +51,7 @@ from threetears.evals.analysis.campaign_bundle import (
     writer_view,
 )
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.report.model import CampaignReport
+from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock
 from threetears.evals.analysis.reporter_bank import case_limits
 from threetears.evals.analysis.reporter_kind import rebuild_bundle, reporter_case_of, reporter_case_payload
 from threetears.evals.run import rate_result
@@ -64,6 +70,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSIO
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
 from packages.evals.tests.ops_support import TOYHOST_SCOPE
+from packages.evals.tests.report_shapes_support import s1_change
 from packages.evals.tests.report_support import toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture, reporter_template
 from packages.evals.tests.test_package_matrix import REPO_ROOT
@@ -204,6 +211,34 @@ def test_readings_moved_one_ulp_serve_the_same_page_json(toward: float) -> None:
     assert nudged.readings.to_dict() != readings, "the readings did move"
 
     assert json.dumps(nudged.json_document()) == json.dumps(report.json_document())
+
+
+def _charts_nudged(blocks: list[ReportBlock], toward: float) -> list[ReportBlock]:
+    """``blocks`` with every float of every chart among them one ULP toward ``toward``, each chart validated again."""
+    return [
+        ChartBlock.model_validate(_nudged(block.model_dump(), toward)) if isinstance(block, ChartBlock) else block
+        for block in blocks
+    ]
+
+
+@pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])
+def test_charts_moved_one_ulp_serve_the_same_page_in_every_form(toward: float) -> None:
+    """A chart's figures are computed, so their last bits differ between builds: the kit's ``data-chart`` JSON serves
+    them to twelve figures, as the page's JSON form does, and every form of the page is the same bytes."""
+    shape = s1_change()
+    report = campaign_report(shape.host(), shape.campaign.id, shape.campaign.scope_id)
+    assert isinstance(report, CampaignReport)
+    charts = [block for block in report.blocks if isinstance(block, ChartBlock) and block.kit_chart() is not None]
+    assert [
+        value for chart in charts for value in _floats(list(chart.kit_chart() or ())) if round_figures(value) != value
+    ], "the page draws a chart whose figures run past twelve"
+    nudged = report.model_copy(update={"blocks": _charts_nudged(report.blocks, toward)})
+    assert [block.kit_chart() for block in nudged.blocks if isinstance(block, ChartBlock)] != [
+        chart.kit_chart() for chart in charts
+    ], "the charts did move"
+
+    for form, static in (("html", False), ("html", True), ("markdown", False), ("json", False)):
+        assert serialize_report(nudged, form, static=static) == serialize_report(report, form, static=static), form
 
 
 def test_the_page_json_serves_every_figure_to_twelve_figures_and_a_declared_one_unchanged() -> None:
