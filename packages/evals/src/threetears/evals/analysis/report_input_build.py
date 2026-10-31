@@ -22,9 +22,10 @@ how many it was kept from; each example's case input and every judged dimension'
 where an example's ``reason`` is the primary dimension's alone; and, for each two aspects, the cases both ran and those only
 one ran, by stored case id. A tally is left out where the bundle's trials cannot give it whole: an aspect the bundle
 capped before every failure was kept, a pair of aspects either of which left trials out. Left out reads as not
-counted, never as none. Each contrast also states what its test counted, copied off its comparison: the cases each
+counted, never as none. Each aspect also states how a trial on it passes (``Aspect.pass_rule``, with ``graded_by``
+and ``description`` read from it), and each contrast what its test counted, copied off its comparison: the cases each
 side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
-cases"; a planner's input carries none of them, so its view is unchanged.
+cases". A planner's input carries none of them, so its view is unchanged.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
@@ -253,7 +254,7 @@ class _Builder:
                 "schema": "report-input/1",
                 "meta": self.meta(provenance),
                 "arms": self.arms(),
-                "aspects": [self.aspect(aspect) for aspect in bundle.aspects],
+                "aspects": [self.aspect(aspect, counted=counted) for aspect in bundle.aspects],
                 "floors": self.floors(),
                 "bars": self.bars(),
                 "guardrails": self.guardrails(),
@@ -379,8 +380,9 @@ class _Builder:
 
     # ------------------------------------------------------------------ aspects and their readings
 
-    def aspect(self, aspect: AnalysisContextBundle) -> Aspect:
-        """One aspect: its question, margin, readings, pair readings and depth."""
+    def aspect(self, aspect: AnalysisContextBundle, *, counted: bool) -> Aspect:
+        """One aspect: its question, margin, readings, pair readings and depth; an analyst's (``counted``) with how a
+        trial on it passes."""
         declared = aspect.declared
         label = aspect.aspect
         depth = aspect_depth(aspect, self.arm)
@@ -398,6 +400,8 @@ class _Builder:
         ]
         # The depth pass^k is read at, compared across arms or not: the rule's label names it as every surface does.
         rule = self.pass_rule(aspect, k=next((subject.k for subject in depth.subjects), None))
+        # Only an analyst's input states the rule, so a planner's input and its recorded prompts are unchanged.
+        stated = rule if counted else None
         return Aspect(
             id=label,
             name=aspect.short_name or label,
@@ -417,9 +421,9 @@ class _Builder:
             pass_k=pass_k or None,
             pairs=[self.pair(pair) for pair in self.bundle.readings.pairs if pair.aspect == label],
             scoreboard=None if aspect is self.lead else self.scoreboard(aspect),
-            description=_pass_rule_sentence(rule),
-            graded_by="judged" if rule.dimensions else "checked" if rule.checks else None,
-            pass_rule=rule,
+            description=_pass_rule_sentence(stated) if stated is not None else None,
+            graded_by=_graded_by(stated) if stated is not None else None,
+            pass_rule=stated,
         )
 
     def pass_rule(self, aspect: AnalysisContextBundle, *, k: int | None) -> PassRule:
@@ -1054,6 +1058,11 @@ def _test_counts(comparison: FamilyComparison) -> dict[str, Any]:
         "paired": None if comparison.test is None else comparison.test == "paired",
         "pairing_r": comparison.pairing_correlation.r if comparison.pairing_correlation is not None else None,
     }
+
+
+def _graded_by(rule: PassRule) -> Literal["judged", "checked"] | None:
+    """Judged where a rubric dimension counts toward a pass, checked where checks alone do, else neither."""
+    return "judged" if rule.dimensions else "checked" if rule.checks else None
 
 
 def _pass_rule_sentence(rule: PassRule) -> str:

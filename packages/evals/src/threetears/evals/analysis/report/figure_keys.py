@@ -96,7 +96,8 @@ number a reader sees is code's.
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
 teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
 :func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
-group's forms).
+group's forms). The planner's section leaves out the statistics only an analyst's input states (a pass rule's, a
+contrast's counts), which a planner's input never holds.
 """
 
 from __future__ import annotations
@@ -342,10 +343,15 @@ class _Ids:
 
 @dataclass(frozen=True)
 class _Statistic:
-    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar."""
+    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar.
+
+    ``analyst_only`` names the options only an analyst's input holds: the planner's grammar does not list them, since
+    its input states none of them, so its prompt reads as it did before they existed.
+    """
 
     options: tuple[str, ...]
     name: str = "<statistic>"
+    analyst_only: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -623,6 +629,9 @@ def _n_candidates(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
 
 _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule", "pass_threshold", "no_criterion")
 
+#: The aspect fields only an analyst's input states: how a trial on it passes.
+_ANALYST_ASPECT_FIELDS = frozenset({"graded_by", "pass_rule", "pass_threshold", "no_criterion"})
+
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
     if field == "name":
@@ -715,6 +724,9 @@ _CONTRAST_STATISTICS = (
     "paired",
     "pairing_r",
 )
+
+#: The contrast statistics only an analyst's input states: what its test counted.
+_ANALYST_CONTRAST_STATISTICS = frozenset({"n_cases", "control_n_cases", "paired", "pairing_r"})
 
 
 def _contrasted(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
@@ -5258,12 +5270,15 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(_Word("control"), _Statistic(_ARM_FIELDS, "<field>"), what="the control arm", resolve=_control_field),
     _family_of(_Word("n_candidates"), what="how many candidates ran", resolve=_n_candidates),
     _family_of(
-        _Word("aspect"), _Statistic(_ASPECT_FIELDS, "<field>"), what="the one asked aspect", resolve=_asked_aspect_field
+        _Word("aspect"),
+        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
+        what="the one asked aspect",
+        resolve=_asked_aspect_field,
     ),
     _family_of(
         _Word("aspects"),
         _Ids("<aspect>", _aspects),
-        _Statistic(_ASPECT_FIELDS, "<field>"),
+        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
         what="any aspect, by id",
         resolve=_named_aspect_field,
     ),
@@ -5287,7 +5302,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _keyed("<arm>", lambda ri: dict.fromkeys(c.arm for c in ri.contrasts)),
         _Ids("<measure>", _contrasted),
-        _Statistic(_CONTRAST_STATISTICS),
+        _Statistic(_CONTRAST_STATISTICS, analyst_only=_ANALYST_CONTRAST_STATISTICS),
         what="a corrected contrast of an arm against the control on a measure or judged dimension",
         resolve=_contrast,
         compares=lambda ri, values: _means_of(ri, values[1]),
@@ -5453,7 +5468,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _Ids("<arm>", _aspect_contrast_arms),
         _Ids("<measure>", _aspect_contrasted),
-        _Statistic(_CONTRAST_STATISTICS),
+        _Statistic(_CONTRAST_STATISTICS, analyst_only=_ANALYST_CONTRAST_STATISTICS),
         what="a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more "
         "than one",
         resolve=_aspect_contrast,
@@ -7160,11 +7175,16 @@ _FILTER_EXAMPLES: dict[str, str] = {
 }
 
 
-def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]) -> str:
-    """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its
-    example rendered on the made-up input."""
+def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str], *, planner: bool = False) -> str:
+    """One family's line in the grammar: its form, what it reads, its statistics (a planner's without those only an
+    analyst's input states), what of it is derived, and its example rendered on the made-up input."""
     statistic = family.statistic()
-    listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
+    offered = (
+        [option for option in statistic.options if not (planner and option in statistic.analyst_only)]
+        if statistic
+        else []
+    )
+    listed = f" ({statistic.name}: {', '.join(offered)})" if statistic else ""
     tag = (
         (f" {family.derived_note}" if family.derived_note else " Derived: descriptive, no interval.")
         if family.derived
@@ -7246,7 +7266,7 @@ def figure_key_grammar() -> str:
     """
     example = _example_input()
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in _FAMILIES]
+    lines += [_family_line(family, example, _EXAMPLE_NAMES, planner=True) for family in _FAMILIES]
     lines += _grammar_filters(example, _EXAMPLE_NAMES)
     return "\n".join(lines)
 

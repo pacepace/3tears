@@ -14,7 +14,7 @@ kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
   failure excerpt is centred on the passage the judge's reason quotes, else is the text's end, each cut end marked;
 - an analyst's contrast states the cases its test read, whether it paired them and the arms' correlation, copied off
   its bundle comparison, and a planner's states none; an input frozen before they existed carries no key for them;
-- each aspect states its pass rule off the bundle: the criteria in force, the threshold, the judged dimensions that
+- an analyst's aspect states its pass rule off the bundle (a planner's states none): the criteria in force, the threshold, the judged dimensions that
   count and those that do not, the checks, and the trials with nothing to fail them; an input frozen before the rule
   existed digests as it did;
 - the planner's view stays within its budget, trims in the design's order and says what it cut, never cuts the arms,
@@ -451,7 +451,7 @@ def test_each_aspect_states_the_pass_rule_its_census_decided_trials_by() -> None
     rule names each, the label every surface prints, and the trials no criterion could fail, off the bundle."""
     bundle = kairo_bundle()
     held = bundle.aspects[0]
-    (aspect,) = report_input(bundle).aspects
+    (aspect,) = report_input(bundle, counted=True).aspects
     rule = aspect.pass_rule
     assert rule is not None
     assert rule.criteria == ["goal_checks", "rubric"]
@@ -478,7 +478,7 @@ def test_a_guardrail_dimension_is_named_apart_and_trials_with_nothing_to_fail_ar
     ]
     scoreboard = [row.model_copy(update={"no_criterion": index + 1}) for index, row in enumerate(held.scoreboard)]
     changed = held.model_copy(update={"judged_measures": judged, "scoreboard": scoreboard})
-    (aspect,) = report_input(bundle.model_copy(update={"aspects": [changed]})).aspects
+    (aspect,) = report_input(bundle.model_copy(update={"aspects": [changed]}), counted=True).aspects
     rule = aspect.pass_rule
     assert rule is not None
     assert (rule.dimensions, rule.boundary) == (["persona.holds_character"], ["persona.booth_stays_offstage"])
@@ -489,11 +489,13 @@ def test_a_guardrail_dimension_is_named_apart_and_trials_with_nothing_to_fail_ar
 @pytest.mark.parametrize("name", list(SHAPES))
 def test_an_aspect_graded_by_checks_alone_or_a_judge_says_which(bundles: dict[str, CampaignBundle], name: str) -> None:
     """graded_by follows the rule: judged where a rubric dimension counts, checked where goal checks alone do."""
-    for aspect in report_input(bundles[name]).aspects:
+    for aspect in report_input(bundles[name], counted=True).aspects:
         rule = aspect.pass_rule
         assert rule is not None
         assert aspect.graded_by == ("judged" if rule.dimensions else "checked" if rule.checks else None)
         assert ("rubric" in rule.criteria) == bool(rule.dimensions)
+    planner = report_input(bundles[name]).aspects
+    assert all((a.pass_rule, a.graded_by, a.description) == (None, None, None) for a in planner), "a planner's: none"
 
 
 def test_a_snapshot_stored_before_the_pass_rule_digests_as_it_was_stored() -> None:
@@ -505,7 +507,7 @@ def test_a_snapshot_stored_before_the_pass_rule_digests_as_it_was_stored() -> No
     (snapshot,) = [doc for doc in stored if doc.get("doc_type") == "eval_report_snapshot"]
     held = ReportInput.model_validate(snapshot["report_input"])
     assert report_input_digest(held) == snapshot["report_input_digest"]
-    built = report_input(kairo_bundle())
+    built = report_input(kairo_bundle(), counted=True)
     bare = built.model_copy(update={"aspects": [a.model_copy(update={"pass_rule": None}) for a in built.aspects]})
     assert all("pass_rule" not in aspect for aspect in bare.model_dump(mode="json", by_alias=True)["aspects"])
 
