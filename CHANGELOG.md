@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a catch-up from L3 says how it ended
+
+**Added:** `ScopedSnapshot.catch_up()` runs the catch-up `catch_up_from_l3()` runs and answers a `CatchUpOutcome`
+instead of raising: `result` (`CatchUpResult`: `CAUGHT_UP`, `CLAIM_HELD`, `WAITED`, `STALLED`, `FAILED`), `caught`
+(the scopes republished), `behind` (scope -> `ScopeLag(l3_epoch, pointer_epoch)`: every scope still behind L3, by
+L3's epoch against the pointer this copy has seen, not `SnapshotStatus.behind`'s chunks that could not be applied),
+`holder` and `held_since` from the claim's lease when another replica holds it, and `reason` (the write waited on, or
+the error). A caller no longer infers "another replica holds the claim" from an empty list. `catch_up_from_l3()`
+keeps its return and its raises. New public names: `CatchUpOutcome`, `CatchUpResult`, `ScopeLag` (a minor bump).
+
 ### core: a rebuild claim's holder that makes no progress lets the claim go
 
 **Fixed:** The rebuild claim's renewal runs on its own task, so it said nothing of the work: on cobalt prod

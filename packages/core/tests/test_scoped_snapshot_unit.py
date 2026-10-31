@@ -37,7 +37,9 @@ from threetears.core.collections.complete_copy import Unsettled  # noqa: E402
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema  # noqa: E402
 from threetears.core.collections import scoped_snapshot as scoped_snapshot_module  # noqa: E402
 from threetears.core.collections.scoped_snapshot import (
+    CatchUpResult,
     ScopedSnapshot,
+    ScopeLag,
     SnapshotPhase,
     SnapshotSource,
     SnapshotTable,
@@ -4075,3 +4077,105 @@ async def test_the_writer_s_hold_on_the_claim_is_let_go_past_the_stall_bound_whi
         assert after[1] > revision, "the claim was never renewed"
         await asyncio.sleep(1.0)
         assert pointers.entries.get("enr.rebuild") == after, "the claim was renewed past the bound"
+
+
+async def test_a_catch_up_says_it_caught_up_and_names_nothing_still_behind() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    assert (await snapshot.catch_up()).result is CatchUpResult.CAUGHT_UP, "nothing behind is caught up too"
+    l3.rows[1]["votes"] = 9
+    l3.epochs["DE"] = 2
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP
+    assert outcome.caught == ("DE",)
+    assert outcome.behind == {}
+    assert (outcome.holder, outcome.reason) == (None, None)
+    await snapshot.stop()
+
+
+async def test_a_catch_up_another_replica_holds_the_claim_for_says_who_and_what_is_behind() -> None:
+    """reports could only infer it (nothing republished, states still behind, no wait, no error), and read it wrong
+    just after another replica published: the outcome names the holder and the scopes behind L3 by epoch."""
+    snapshot, pointers, store, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    other, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.epochs["DE"] = 2
+
+    async with other.holding_rebuilds() as held:
+        assert held
+        claim = json.loads(pointers.entries["enr.rebuild"][0])
+        outcome = await snapshot.catch_up()
+
+    assert outcome.result is CatchUpResult.CLAIM_HELD
+    assert outcome.caught == ()
+    assert outcome.behind == {"DE": ScopeLag(l3_epoch=2, pointer_epoch=1)}
+    assert outcome.holder == claim["holder"]
+    assert outcome.held_since == datetime.fromisoformat(claim["acquired_at"])
+    await snapshot.stop()
+
+
+async def test_a_catch_up_that_waits_on_a_write_says_so_and_names_the_scopes_it_left() -> None:
+    snapshot, pointers, _, l3 = _snapshot()
+    await _started(snapshot, pointers)
+    l3.rows[1]["votes"] = 9
+    l3.epochs.update({"DE": 2, "TX": 2})
+    # the write in progress has touched TX: DE is caught up beside it, TX is left
+    l3.writing, l3.pending = True, {"TX"}
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.result is CatchUpResult.WAITED
+    assert outcome.caught == ("DE",)
+    assert outcome.behind == {"TX": ScopeLag(l3_epoch=2, pointer_epoch=1)}
+    assert outcome.reason is not None and "write in progress" in outcome.reason
+    await snapshot.stop()
+
+
+async def test_a_catch_up_that_stalls_says_so_and_names_what_it_left() -> None:
+    l3 = _wedged_l3()
+    snapshot, pointers, _, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=0.3))
+    await _started(snapshot, pointers)
+    l3.epochs["DE"] = 2
+    l3.wedge = "DE"
+
+    outcome = await asyncio.wait_for(snapshot.catch_up(), timeout=5)
+
+    assert outcome.result is CatchUpResult.STALLED
+    assert outcome.reason is not None and "no progress" in outcome.reason
+    assert outcome.behind == {"DE": ScopeLag(l3_epoch=2, pointer_epoch=1)}
+    assert "enr.rebuild" not in pointers.entries
+    l3.wedge = None
+    await snapshot.stop()
+
+
+class _FailingL3(_L3):
+    """an L3 whose reads of one scope fail once ``fail`` names it."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
+        self.fail: str | None = None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" not in sql and args and args[0] == self.fail:
+            raise ConnectionError("L3 refused the read")
+        return await super().fetch(sql, *args)
+
+
+async def test_a_catch_up_that_fails_says_so_with_its_error_and_lets_the_claim_go() -> None:
+    l3 = _FailingL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    snapshot, pointers, _, _ = _snapshot(l3=l3)
+    await _started(snapshot, pointers)
+    l3.epochs["DE"] = 2
+    l3.fail = "DE"
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.result is CatchUpResult.FAILED
+    assert outcome.reason is not None and "ConnectionError" in outcome.reason
+    assert outcome.behind == {"DE": ScopeLag(l3_epoch=2, pointer_epoch=1)}
+    assert "enr.rebuild" not in pointers.entries
+    with pytest.raises(ConnectionError):
+        await snapshot.catch_up_from_l3()
+    await snapshot.stop()
