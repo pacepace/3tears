@@ -22,10 +22,8 @@ duckdb = pytest.importorskip("duckdb")
 pa = pytest.importorskip("pyarrow")
 
 from threetears.core.cache.duckdb import (  # noqa: E402
-    CHECKPOINTER_THREAD,
     DuckDBBackend,
     PartitionReplacement,
-    checkpoint_when_asked,
 )
 
 ROWS = 400_000
@@ -77,12 +75,12 @@ def _until(condition: Callable[[], bool], what: str, seconds: float = 30.0) -> N
 
 
 def _checkpointers() -> set[threading.Thread]:
-    """the checkpointer threads alive now.
+    """the threads alive now: a backend's checkpointer is the thread it starts.
 
     :return: the threads
     :rtype: set[threading.Thread]
     """
-    return {thread for thread in threading.enumerate() if thread.name == CHECKPOINTER_THREAD}
+    return set(threading.enumerate())
 
 
 def _checkpointed(backend: DuckDBBackend) -> bool:
@@ -205,31 +203,42 @@ class TestTheCheckpointerEnds:
         thread.join(10)
         assert not thread.is_alive()
 
-    def test_a_stop_landing_between_the_wake_and_the_clear_is_seen(self) -> None:
+    def test_a_stop_landing_between_the_wake_and_the_clear_is_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the window a reset can land in: the thread woke, and the stop and its wake arrive before the thread clears
         the wake. The stop must still end the thread, never be cleared away with the wake."""
-
-        stopped: list[bool] = []
+        made: list[StopAtClear] = []
+        resets: list[threading.Thread] = []
 
         class StopAtClear(threading.Event):
+            """the checkpointer's wake (made by the first request): its first clear first lets a reset land (stop,
+            then its wake)."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.sets = 0
+                self.armed = True
+                made.append(self)
+
+            def set(self) -> None:
+                self.sets += 1
+                super().set()
+
             def clear(self) -> None:
-                # reset's stop and its wake, just before the thread's clear
-                stopped.append(True)
-                self.set()
+                if self.armed:
+                    self.armed = False
+                    before = self.sets
+                    resetting = threading.Thread(target=backend.reset, daemon=True)
+                    resets.append(resetting)
+                    resetting.start()
+                    _until(lambda: self.sets > before, "the reset's stop and wake landed")
                 super().clear()
 
-        class Backend:
-            checkpoints = 0
-
-            def checkpoint(self) -> None:
-                Backend.checkpoints += 1
-
-        backend = Backend()
-        wanted = StopAtClear()
-        wanted.set()
-        thread = threading.Thread(
-            target=checkpoint_when_asked, args=(lambda: backend, wanted, lambda: bool(stopped)), daemon=True
-        )
-        thread.start()
-        thread.join(5)
-        assert not thread.is_alive(), "the stop was cleared with the wake: the thread waits forever"
+        backend = DuckDBBackend(compressed=True)
+        backend.initialize(_metadata())
+        with monkeypatch.context() as patched:
+            patched.setattr(threading, "Event", StopAtClear)
+            backend.request_checkpoint()
+        assert made, "the first request made the checkpointer's wake"
+        _until(lambda: bool(resets), "the checkpointer woke")
+        resets[0].join(10)
+        assert not resets[0].is_alive(), "the stop was cleared with the wake: the thread waits forever"

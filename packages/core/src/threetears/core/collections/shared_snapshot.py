@@ -130,9 +130,36 @@ class SharedSnapshot:
         self._lock = threading.Lock()
         #: the version this published last, the epochs it holds, and each table's scopes in it
         self._last: tuple[str, Mapping[str, int], Mapping[str, frozenset[Any]]] | None = None
-        self.published = 0
-        self.scopes_written = 0
-        self.last_seconds = 0.0
+        self._published = 0
+        self._scopes_written = 0
+        self._last_seconds = 0.0
+
+    @property
+    def published(self) -> int:
+        """versions written: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._published
+
+    @property
+    def scopes_written(self) -> int:
+        """scopes written across them: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._scopes_written
+
+    @property
+    def last_seconds(self) -> float:
+        """seconds the last written version took: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the seconds
+        :rtype: float
+        """
+        return self._last_seconds
 
     def publish(self, read: VersionedRead) -> SharedVersion:
         """make the version ``read`` holds current: written when the store does not hold it, from the last version
@@ -191,9 +218,9 @@ class SharedSnapshot:
                 tables.update(self._extra(read))
             made = self._store.publish(name, tables, base=base)
             self._last = (name, epochs, present)
-            self.published += 1
-            self.scopes_written += len(written)
-            self.last_seconds = time.monotonic() - started
+            self._published += 1
+            self._scopes_written += len(written)
+            self._last_seconds = time.monotonic() - started
         log.info(
             "scoped snapshot published to shared memory",
             extra={
@@ -202,7 +229,7 @@ class SharedSnapshot:
                     "base": base,
                     "scopes_written": len(written),
                     "scopes_dropped": len(dropped),
-                    "seconds": round(self.last_seconds, 3),
+                    "seconds": round(self._last_seconds, 3),
                 }
             },
         )
@@ -218,7 +245,7 @@ class SharedSnapshot:
             last = None if self._last is None else self._last[0]
         return {
             "last_version": last,
-            "published": self.published,
-            "scopes_written": self.scopes_written,
-            "last_seconds": round(self.last_seconds, 3),
+            "published": self._published,
+            "scopes_written": self._scopes_written,
+            "last_seconds": round(self._last_seconds, 3),
         }

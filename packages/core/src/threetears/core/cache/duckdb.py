@@ -105,7 +105,7 @@ class PartitionReplacement:
 _ARROW_MISSING_SAID = False
 
 #: the name of a compressed backend's checkpointer thread
-CHECKPOINTER_THREAD: Final = "duckdb-l1-checkpointer"
+_CHECKPOINTER_THREAD: Final = "duckdb-l1-checkpointer"
 
 #: the in-memory catalog a compressed backend's tables live in (``DuckDBBackend(compressed=True)``)
 _COMPRESSED_CATALOG: Final = "l1"
@@ -378,9 +378,9 @@ class _Checkpointer:
         self._stopping = False
         held = weakref.ref(backend)
         self._thread = threading.Thread(
-            target=checkpoint_when_asked,
+            target=_checkpoint_when_asked,
             args=(held, self._wanted, lambda: self._stopping),
-            name=CHECKPOINTER_THREAD,
+            name=_CHECKPOINTER_THREAD,
             daemon=True,
         )
         weakref.finalize(backend, self._wake_to_end)
@@ -408,7 +408,7 @@ class _Checkpointer:
         self._wanted.set()
 
 
-def checkpoint_when_asked(
+def _checkpoint_when_asked(
     backend: Callable[[], DuckDBBackend | None], wanted: threading.Event, stopping: Callable[[], bool]
 ) -> None:
     """a compressed backend's checkpointer thread (:meth:`DuckDBBackend.request_checkpoint`): wait to be asked, then
@@ -491,9 +491,36 @@ class DuckDBBackend:
         #: the thread that checkpoints the compressed tables after writes, once one asks (:meth:`request_checkpoint`)
         self._checkpointer: _Checkpointer | None = None
         #: checkpoints run by the checkpointer thread, the seconds they took, and the ones that failed (each logged)
-        self.background_checkpoints = 0
-        self.background_checkpoint_seconds = 0.0
-        self.background_checkpoints_failed = 0
+        self._background_checkpoints = 0
+        self._background_checkpoint_seconds = 0.0
+        self._background_checkpoints_failed = 0
+
+    @property
+    def background_checkpoints(self) -> int:
+        """checkpoints run, on the checkpointer thread or by checkpoint: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints
+
+    @property
+    def background_checkpoint_seconds(self) -> float:
+        """seconds they took: a diagnostic, written only by this object under its write lock.
+
+        :return: the seconds
+        :rtype: float
+        """
+        return self._background_checkpoint_seconds
+
+    @property
+    def background_checkpoints_failed(self) -> int:
+        """checkpoints that failed: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints_failed
 
     @property
     def compressed(self) -> bool:
@@ -549,11 +576,11 @@ class DuckDBBackend:
             try:
                 self._run_checkpoint()
             except Exception as exc:  # noqa: BLE001 - only memory waits for the next one
-                self.background_checkpoints_failed += 1
+                self._background_checkpoints_failed += 1
                 contain(exc, log=log, what="the compressed L1 could not be checkpointed; the next write asks again")
                 return
-            self.background_checkpoints += 1
-            self.background_checkpoint_seconds += time.monotonic() - started
+            self._background_checkpoints += 1
+            self._background_checkpoint_seconds += time.monotonic() - started
 
     def _run_checkpoint(self) -> None:
         """checkpoint the tables; the caller holds the write lock. A subclass that must commit something first (DuckDB

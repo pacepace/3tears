@@ -838,12 +838,39 @@ class SharedArrowStore:
         self._slots: dict[str, int] = {}
         #: results claimed and not yet closed
         self._claimed: set[str] = set()
-        self.published = 0
-        self.retired = 0
-        self.refused = 0
+        self._published = 0
+        self._retired = 0
+        self._refused = 0
         with contextlib.suppress(FileNotFoundError):  # NOSILENT: nothing current is the start's state either way
             (self._versions / _CURRENT_FILE).unlink()
         self.sweep()
+
+    @property
+    def published(self) -> int:
+        """versions published: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._published
+
+    @property
+    def retired(self) -> int:
+        """versions retired: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._retired
+
+    @property
+    def refused(self) -> int:
+        """publishes and slots refused for room: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._refused
 
     @property
     def root(self) -> Path:
@@ -924,9 +951,9 @@ class SharedArrowStore:
             "segments_claimed": claimed,
             "held_bytes": self.held_bytes(),
             "max_bytes": self._max_bytes,
-            "published": self.published,
-            "retired": self.retired,
-            "refused": self.refused,
+            "published": self._published,
+            "retired": self._retired,
+            "refused": self._refused,
         }
 
     def publish(self, version: str, tables: Mapping[str, Any], *, base: str | None = None) -> SharedVersion:
@@ -975,7 +1002,7 @@ class SharedArrowStore:
                     published = _described(target)
                     atomic_write_sync(self._versions / _CURRENT_FILE, name, mode=0o644)
                     self._current = published
-                    self.published += 1
+                    self._published += 1
             finally:
                 with self._state:
                     self._pending = None
@@ -1088,7 +1115,7 @@ class SharedArrowStore:
         slot_id: str | None = None
         with self._state:
             if self._committed_bytes() + max_bytes > self._max_bytes:
-                self.refused += 1
+                self._refused += 1
             else:
                 slot_id = f"s-{uuid.uuid7().hex}"
                 self._slots[slot_id] = max_bytes
@@ -1149,7 +1176,7 @@ class SharedArrowStore:
         with self._state:
             retired = self._sweep_versions(gone)
             self._sweep_segments(gone)
-            self.retired += len(retired)
+            self._retired += len(retired)
         # renamed out of their names under the lock (nothing opens them again); their files go after it
         for path in gone:
             remove_tree(path, log=log, what="a retired shared Arrow directory (a later sweep retries it)")
@@ -1277,7 +1304,8 @@ class SharedArrowStore:
             (staging / _LOCK_FILE).touch()
             os.rename(staging, self._versions / name)
         except SharedArrowFullError:
-            self.refused += 1
+            with self._state:
+                self._refused += 1
             log.warning(
                 "shared Arrow version refused: it would pass the store's bytes",
                 extra={"extra_data": {"version": name, "max_bytes": self._max_bytes}},
@@ -1402,8 +1430,26 @@ class SharedArrowReader:
         self._lock = threading.Lock()
         self._held: _HeldVersion | None = None
         self._closed = False
-        self.reads = 0
-        self.mapped = 0
+        self._reads = 0
+        self._mapped = 0
+
+    @property
+    def reads(self) -> int:
+        """reads served: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._reads
+
+    @property
+    def mapped(self) -> int:
+        """versions mapped: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._mapped
 
     @contextlib.contextmanager
     def read(self) -> Iterator[SharedRead]:
@@ -1424,11 +1470,11 @@ class SharedArrowReader:
             held = self._held
             if held is None or held.name != current.name:
                 held = _HeldVersion(self._store.lease(), self._schema, self._config, self._prepare)
-                self.mapped += 1
+                self._mapped += 1
                 let_go = self._supersede()
                 self._held = held
             held.reads += 1
-            self.reads += 1
+            self._reads += 1
             try:
                 cursor = held.cursor()
             except BaseException:
@@ -1483,8 +1529,8 @@ class SharedArrowReader:
             return {
                 "version": None if held is None else held.name,
                 "open_reads": 0 if held is None else held.reads,
-                "reads": self.reads,
-                "mapped": self.mapped,
+                "reads": self._reads,
+                "mapped": self._mapped,
             }
 
     def _supersede(self) -> _HeldVersion | None:
@@ -1765,8 +1811,26 @@ class SharedArrowPool:
         self._stale = False
         #: held while a thread picks, makes or shuts a pool: never by the event loop
         self._lock = threading.Lock()
-        self.jobs = 0
-        self.replaced = 0
+        self._jobs = 0
+        self._replaced = 0
+
+    @property
+    def jobs(self) -> int:
+        """jobs finished: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._jobs
+
+    @property
+    def replaced(self) -> int:
+        """pools replaced: a diagnostic, also in :meth:`status`, written only by this object.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._replaced
 
     async def run(
         self, job: Callable[..., Any], *args: Any, read: bool | str = True, result_bytes: int | None = None
@@ -1808,7 +1872,7 @@ class SharedArrowPool:
                     )
                 self._stale = True
                 raise
-            self.jobs += 1
+            self._jobs += 1
             if private > self._private_bytes:
                 log.info(
                     "shared Arrow worker past its private memory; its pool is replaced",
@@ -1858,7 +1922,7 @@ class SharedArrowPool:
                 if self._pool is not None and self._stale:
                     self._pool.shutdown(wait=False)
                     self._pool = None
-                    self.replaced += 1
+                    self._replaced += 1
                 if self._pool is None:
                     self._pool = ProcessPoolExecutor(
                         max_workers=self._workers,
