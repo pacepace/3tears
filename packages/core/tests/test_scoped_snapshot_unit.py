@@ -47,6 +47,7 @@ from threetears.core.collections.scoped_snapshot import (
 from threetears.nats import ObjectNotFoundError, Subject, set_default_namespace  # noqa: E402
 from threetears.nats.kv_watch import KvKeyUpdate  # noqa: E402
 from threetears.nats.object_store import ObjectInfo  # noqa: E402
+from threetears.observe import cancel_and_wait  # noqa: E402
 
 _RESULTS = TableSchema(
     name="results",
@@ -3963,3 +3964,114 @@ async def test_a_scope_already_past_the_stage_is_not_moved_back() -> None:
     assert pointers.entries["enr.s.TX"][0] == before, "a pointer took L3's rows of a later epoch as the stage's"
     await writer.stop()
     await replica.stop()
+
+
+class _WedgedL3(_L3):
+    """an L3 whose reads of one scope stop answering once ``wedge`` names it: a request that waits with no deadline
+    (3tears 0.86.0's publish leg and offloaded encode), or any await on the way that never ends."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
+        #: the scope whose reads never answer; None while every read answers
+        self.wedge: str | None = None
+        #: how many reads have wedged
+        self.wedged = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" not in sql and args and args[0] == self.wedge:
+            self.wedged += 1
+            await asyncio.Event().wait()
+        return await super().fetch(sql, *args)
+
+
+def _wedged_l3() -> _WedgedL3:
+    return _WedgedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+
+
+async def test_a_catch_up_beside_a_write_whose_read_never_answers_lets_the_claim_go_and_ends() -> None:
+    """cobalt prod, 2026-10-31: a write committed during a catch-up's first attempt ("before scope 'AL'; reading
+    again"), the next attempt found the next write in progress and caught up beside it, and its first read never
+    answered. Nothing more was logged for 90 minutes and more, and the claim, renewed every 40 s by its own task, kept
+    every replica's catch-up out all night. A holder that makes no progress for the stall bound lets the claim go and
+    its catch-up ends; the pointer watch applying another replica's publishes meanwhile is not its progress."""
+    l3 = _wedged_l3()
+    snapshot, pointers, store, _ = _snapshot(l3=l3, rebuild_stall=timedelta(seconds=0.5))
+    await _started(snapshot, pointers)
+    writer, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await writer.start()
+    await writer.wait_ready(timeout=5)
+    l3.rows[1]["votes"] = 9
+    l3.epochs["DE"] = 2
+
+    def next_write_begins(scope: str) -> None:
+        # once the first attempt has read DE: the write it read under commits, the next begins and touches TX, and
+        # from then on L3 never answers a read of DE
+        if l3.wedge is None:
+            l3.writing, l3.pending, l3.wedge = True, {"TX"}, "DE"
+
+    l3.after_read = next_write_begins
+    catching = asyncio.create_task(snapshot.catch_up_from_l3())
+    await _until(lambda: l3.wedged > 0, what="the read beside the write to wedge")
+    assert "enr.rebuild" in pointers.entries, "the catch-up does not hold the claim while it reads"
+    assert "catching up beside a write" in snapshot.status().detail, snapshot.status()
+    applied: list[int] = []
+
+    async def publishing() -> None:
+        # another replica keeps publishing TX: this replica's watch applies each, which is not the holder's progress
+        for epoch in range(2, 1000):
+            await writer.publish("TX", epoch, {"results": [{"county": "c1", "state": "TX", "votes": epoch}]})
+            await asyncio.sleep(0.05)
+            applied.append(snapshot.applied_epoch("TX") or 0)
+
+    publisher = asyncio.create_task(publishing())
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the stuck holder to let its claim go")
+    await cancel_and_wait(publisher)
+    assert len(set(applied)) > 5, f"the watch applied too few of the other replica's publishes: {applied}"
+    with pytest.raises(TimeoutError, match="no progress"):
+        await asyncio.wait_for(catching, timeout=5)
+
+    # L3 answers again and the write has committed: a later catch-up takes the claim and brings DE current
+    l3.wedge, l3.writing, l3.pending, l3.after_read = None, False, None, lambda scope: None
+    assert await snapshot.catch_up_from_l3() == ["DE"]
+    assert _held_votes(snapshot, "DE") == [9]
+    assert "enr.rebuild" not in pointers.entries
+    await writer.stop()
+    await snapshot.stop()
+
+
+async def test_a_rebuild_whose_read_never_answers_lets_another_replica_take_the_claim() -> None:
+    """a stuck holder never keeps renewing: it lets the claim go within the stall bound, so another replica, waiting
+    on it, takes it and becomes ready."""
+    pointers, store = _Pointers(), _Store()
+    l3 = _wedged_l3()
+    l3.wedge = "DE"
+    stuck, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3, rebuild_stall=timedelta(seconds=0.5))
+    await stuck.start()
+    await _until(lambda: l3.wedged > 0, what="the first rebuild's read to wedge")
+    assert "enr.rebuild" in pointers.entries
+    other, _, _, _ = _snapshot(pointers=pointers, store=store, rebuild_stall=timedelta(seconds=0.5))
+    await other.start()
+    # the stuck replica keeps retrying at its recheck, and wedges again each time it wins the claim: the other wins
+    # it within a few of the stuck one's stall bounds
+    await other.wait_ready(timeout=10)
+    assert other.status().source is SnapshotSource.L3
+    await other.stop()
+    await stuck.stop()
+
+
+async def test_the_writer_s_hold_on_the_claim_is_let_go_past_the_stall_bound_while_its_block_runs_on() -> None:
+    """a writer holding the claim across its commit and publish (``holding_rebuilds``) that never gets through them
+    does not keep every replica's rebuild out: past the stall bound the claim is no longer renewed, and its block,
+    which is correct without the claim, runs on."""
+    snapshot, pointers, _, _ = _snapshot(rebuild_stall=timedelta(seconds=1), claim_ttl=timedelta(seconds=1))
+
+    async with snapshot.holding_rebuilds() as held:
+        assert held
+        revision = pointers.entries["enr.rebuild"][1]
+        await asyncio.sleep(1.5)
+        # renewed every third of a second until the bound, then left alone for its TTL to hand it on
+        after = pointers.entries.get("enr.rebuild")
+        assert after is not None, "the claim's entry went before its TTL"
+        assert after[1] > revision, "the claim was never renewed"
+        await asyncio.sleep(1.0)
+        assert pointers.entries.get("enr.rebuild") == after, "the claim was renewed past the bound"

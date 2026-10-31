@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a rebuild claim's holder that makes no progress lets the claim go
+
+**Fixed:** The rebuild claim's renewal runs on its own task, so it said nothing of the work: on cobalt prod
+(2026-10-31) a catch-up beside a write ("catching up beside a write: 52 scopes behind L3") stopped at its first scope's
+L3 read, logged nothing more, and renewed the claim every 40 s all night, so every other replica's catch-up logged
+"another replica holds the claim" while L3 ran 30 scopes ahead of the copy. A rebuild, a catch-up and a rebuild of
+scopes that could not be applied now run under a watchdog that counts only their own steps (a page read from L3, a
+chunk read or written, a commit, a pointer or the index moved); once none has come for `rebuild_stall` it logs the
+last step at error, lets the claim go, cancels the run and raises `TimeoutError`, so another replica or the next
+attempt takes the claim. `holding_rebuilds` renews a writer's hold for at most `rebuild_stall`, its block running on
+without it. A catch-up beside a write now counts and logs each scope it lands. New `ScopedSnapshot` keyword:
+`rebuild_stall` (default 10 minutes).
+
 ## v0.87.0 -- 2026-10-31
 
 ### core: an answer's JSON never holds the interpreter lock past one short call, whatever its shape
