@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent.tools: a held replica answers its control tools
+
+**Added:** `ToolServer.hold_calls(answering=...)` names the tools a held replica answers while its copy loads, and
+`ToolServer.answer_while_held()` starts answering them. The replica subscribes the call subject in a queue group of its
+own (`HELD_QUEUE_SUFFIX`), so NATS hands each call to one member of the call group and to one held replica; the held
+replica answers only the named tools and drops every other call, which its siblings answer. A call handed to both is
+run once: the replica that finds its proxy assertion's nonce consumed says nothing. `serving_calls` (the `calls_open`
+readiness check) stays False meanwhile. A pod whose every replica was held rebuilding its copy for hours could not be
+reset, asked its status, or have a setting changed (reports, cobalt prod, 2026-10-31). With every replica held, a
+reader's call now waits for the caller's deadline where it found no responder at once.
+
+### core: a scoped snapshot's rebuild stops reading when a write begins, and says each scope it rebuilt
+
+**Changed:** a rebuild from L3 asks, between pages and at most every five seconds, whether a write has begun since it
+started, and stops reading at once when one has (a reset's clear, which empties the tables it reads), where it read on
+to the end of the scope -- minutes for a large one. It then waits for the write, as before. Each scope it publishes is
+logged with its rows, read seconds, publish seconds and how many of the total are done.
+
+### nats, core: no L3 request waits without a deadline
+
+**Fixed:** `NatsClient.request_raw`'s deadline covers the whole request. nats-py bounds only the wait for the reply,
+after its publish, and the publish could wait with no bound (a renewal's publish gate; a flush past the pending
+buffer's size, whose `flush_timeout` is unset). `NatsProxyL3Backend` bounds an offloaded encode the same way. Either
+is now a `RequestTimeoutError` like a lost reply: a read is sent again with the warning "L3 request got no answer;
+sending it again", a write raises.
+
 ## v0.86.0 -- 2026-10-29
 
 ### nats: a bucket's live keys by name, for a caller holding only the client

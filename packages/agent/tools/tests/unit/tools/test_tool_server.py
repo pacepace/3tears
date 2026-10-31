@@ -815,6 +815,49 @@ class TestToolServerCallGroupMembership:
             assert server.serving_calls is True, "one refused subscribe does not keep the replica out for good"
             await self._stop(server, serve_task)
 
+    @staticmethod
+    def _held_subscribes(mock_nc: AsyncMock) -> list[Any]:
+        return [c for c in mock_nc.subscribe.call_args_list if str(c.kwargs.get("queue", "")).endswith(".held")]
+
+    async def test_a_held_server_answers_its_control_tools_in_a_group_of_their_own_once_asked(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            assert self._held_subscribes(mock_nc) == [], "nothing is answered before the owner says it can be"
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            held = self._held_subscribes(mock_nc)
+            assert len(held) == 1 and held[0].kwargs["queue"] == "testns.tools.internal.calls-pod.held"
+            assert held[0].kwargs["subject"].path == "testns.tools.internal.calls-pod"
+            assert server.answering_while_held is True
+            assert server.serving_calls is False, "the readiness check stays not ready: readers' calls are held"
+            server.open_calls()
+            await asyncio.sleep(0.05)
+            assert server.serving_calls is True and server.answering_while_held is False
+            # the held group drained once the call group took every call
+            assert mock_nc.drain.await_count == 1
+            await self._stop(server, serve_task)
+
+    async def test_a_held_server_asked_to_answer_after_its_calls_opened_does_not(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        server.open_calls()
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            assert self._held_subscribes(mock_nc) == [] and server.serving_calls is True
+            await self._stop(server, serve_task)
+
     async def test_hold_calls_after_serve_is_refused(self) -> None:
         server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
         server.register(StubTool())
@@ -2501,3 +2544,74 @@ class TestAssertionNoncesAreOwnerScoped:
             kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
         ]
         assert built[0]["bucket_name"] == "proxy_assertion_nonces"
+
+
+class _NamedStub(StubTool):
+    """a stub whose calls are counted."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name)
+        self.runs = 0
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.runs += 1
+        return await super().execute(**kwargs)
+
+
+class TestAHeldReplicaAnswersOnlyItsControlTools:
+    """a held replica (its copy loading) answers the tools named for it and no other; a call it and a member of the
+    call group were both handed is run and answered once."""
+
+    _POD = "held-pod"
+
+    def _replica(self, guard: FakeReplayGuard) -> tuple[ToolServer, RecordingNatsClient, _NamedStub, _NamedStub]:
+        server, rec = _recording_tool_server(
+            pod_id=self._POD, jwks_provider=_pod_jwks_provider, assertion_replay_guard=guard
+        )
+        control, reader = _NamedStub("test.reset"), _NamedStub("test.rows")
+        server.register(control)
+        server.register(reader)
+        server.hold_calls(answering=["test.reset"])
+        return server, rec, control, reader
+
+    def _msg(self, tool_name: str) -> IncomingMessage:
+        payload = _signed_call_payload(pod_id=self._POD, tool_name=tool_name, agent_id=uuid4(), customer_id=uuid4())
+        return IncomingMessage(
+            data=json.dumps(payload).encode("utf-8"),
+            reply_subject="_INBOX.test",
+            subject=f"testns.tools.internal.{self._POD}",
+        )
+
+    async def test_a_control_call_is_answered_and_a_readers_call_is_left_to_the_siblings(self) -> None:
+        server, rec, control, reader = self._replica(FakeReplayGuard())
+
+        await server.handle_held_call(self._msg("test.reset"))
+        await server.handle_held_call(self._msg("test.rows"))
+
+        assert control.runs == 1 and reader.runs == 0
+        assert len(rec.replies) == 1, "the reader's call got an answer from the held replica"
+        assert rec.replies[0][1].success is True
+
+    async def test_a_call_handed_to_a_held_replica_and_to_the_call_group_is_run_and_answered_once(self) -> None:
+        guard = FakeReplayGuard()  # one ledger: the pod's replicas share its nonce bucket
+        held, held_rec, held_control, _ = self._replica(guard)
+        serving, serving_rec, serving_control, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await asyncio.gather(held.handle_held_call(msg), serving.handle_call(msg))
+
+        assert held_control.runs + serving_control.runs == 1
+        replies = held_rec.replies + serving_rec.replies
+        assert len(replies) == 1 and replies[0][1].success is True, replies
+
+    async def test_a_replayed_call_to_a_tool_not_answered_while_held_is_still_refused(self) -> None:
+        guard = FakeReplayGuard()
+        server, rec, _, reader = self._replica(guard)
+        msg = self._msg("test.rows")
+
+        await server.handle_call(msg)
+        await server.handle_call(msg)
+
+        assert reader.runs == 1
+        assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
