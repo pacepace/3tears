@@ -24,14 +24,17 @@ kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
 
 from __future__ import annotations
 
+import gzip
 import json
+import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import jsonschema
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_plans.dataset import KAIRO_BUNDLE, kairo_bundle
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.report_shapes_support import SHAPES, Shape
 from threetears.evals.analysis.bundle.schema import LateCriterion as BundleLateCriterion
@@ -522,12 +525,14 @@ def test_a_snapshot_stored_before_the_pass_rule_digests_as_it_was_stored() -> No
 def _listed(grammar: str, family: str) -> set[str]:
     """The options a grammar lists for one family's last slot (``- `<family>`: ... (<slot>: a, b, c).``)."""
     (line,) = [line for line in grammar.splitlines() if line.startswith(f"- `{family}`")]
-    return set(line.rpartition(": ")[2].rstrip(").").split(", "))
+    options = re.search(r"\(<\w+>: ([^)]*)\)", line)
+    assert options is not None, line
+    return set(options.group(1).split(", "))
 
 
 def test_the_fields_only_an_analysts_input_states_are_declared_once_and_the_planners_grammar_lists_none() -> None:
     """The input contract's one list: a planner's input leaves each unset, and the planner's grammar teaches none of
-    them but ``description``, which its pinned prompt still lists."""
+    them."""
     from threetears.evals.analysis.report.figure_keys import figure_key_grammar
 
     bundle = kairo_bundle()
@@ -538,11 +543,72 @@ def test_the_fields_only_an_analysts_input_states_are_declared_once_and_the_plan
     assert all(getattr(aspect, field) is not None for aspect in analyst.aspects for field in ANALYST_ASPECT_FIELDS)
     assert any(contrast.n_cases is not None for contrast in analyst.contrasts)
     taught = figure_key_grammar(planner=True)
-    assert _listed(taught, "aspects.<aspect>.<field>") & ANALYST_ASPECT_FIELDS == {"description"}
+    assert not _listed(taught, "aspects.<aspect>.<field>") & ANALYST_ASPECT_FIELDS
     assert not _listed(taught, "contrast.<arm>.<measure>.<statistic>") & ANALYST_CONTRAST_FIELDS
     whole = figure_key_grammar()
     assert ANALYST_ASPECT_FIELDS <= _listed(whole, "aspects.<aspect>.<field>")
     assert ANALYST_CONTRAST_FIELDS <= _listed(whole, "contrast.<arm>.<measure>.<statistic>")
+
+
+def _kairo_with_a_stated_reason() -> CampaignBundle:
+    """The Kairo bundle with its first not-separated comparison saying why, as the bundle does for a gap no test can
+    separate: no fixture holds one, and a contrast's ``reason`` is filled from nothing else."""
+    with gzip.open(KAIRO_BUNDLE, "rt", encoding="utf-8") as stream:
+        held = json.load(stream)
+    comparisons = (
+        comparison
+        for aspect in held["aspects"]
+        for family in aspect["multiple_comparisons"]["families"]
+        for comparison in family["comparisons"]
+        if comparison["verdict"] == "not_separated"
+    )
+    next(comparisons)["not_separated_reason"] = "Too few cases to separate a gap this small; run more cases."
+    return CampaignBundle.from_dict(held)
+
+
+def test_every_aspect_and_contrast_field_the_planners_grammar_lists_is_one_a_planners_input_fills() -> None:
+    """A field the grammar teaches the planner is one it can cite: some planner input over the fixtures resolves it.
+
+    Every input is built from a bundle as the planner's is: the report shapes', the Kairo bundle's, and that bundle
+    with one comparison stating why it is not separated. The planner eval's hand-built inputs are left out, since
+    ``r4``'s states fields only an analyst's input holds and would hide the defect this guards. A field is filled when
+    its key resolves on some aspect or contrast of some input. Scoped to the aspect and contrast families, whose fields
+    are the input contract's own; a field the planner's input never states, as an analyst-only one, fails by name.
+    """
+    from threetears.evals.analysis.errors import UnresolvableReference
+    from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
+
+    taught = figure_key_grammar(planner=True)
+    inputs = [
+        *(report_input(_bundle(make())) for make in SHAPES.values()),
+        report_input(kairo_bundle()),
+        report_input(_kairo_with_a_stated_reason()),
+    ]
+
+    def filled(keys: Callable[[ReportInput], list[str]]) -> bool:
+        for held in inputs:
+            for key in keys(held):
+                try:
+                    resolve(key, held)
+                except UnresolvableReference:
+                    continue
+                return True
+        return False
+
+    never = [
+        f"aspects.<aspect>.{field}"
+        for field in sorted(_listed(taught, "aspects.<aspect>.<field>"))
+        if not filled(lambda held, field=field: [f"aspects.{aspect.id}.{field}" for aspect in held.aspects])
+    ] + [
+        f"contrast.<arm>.<measure>.{field}"
+        for field in sorted(_listed(taught, "contrast.<arm>.<measure>.<statistic>"))
+        if not filled(lambda held, field=field: [f"contrast.{c.arm}.{c.measure}.{field}" for c in held.contrasts])
+    ]
+    assert never == []
+    assert _listed(taught, "aspect.<field>") == _listed(taught, "aspects.<aspect>.<field>")
+    assert _listed(taught, "aspects.<aspect>.contrast.<arm>.<measure>.<statistic>") == _listed(
+        taught, "contrast.<arm>.<measure>.<statistic>"
+    )
 
 
 # --- what a contrast counted ----------------------------------------------------------------------------------------
