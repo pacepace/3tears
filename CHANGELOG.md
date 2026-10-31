@@ -17,6 +17,13 @@ prod, 2026-10-31: a reader's favorites read waited 9 s behind an `lsf_ready` cal
 how many tools run at once; `max_calls_in_flight=1` restores the serial order. A tool's handler now runs beside other
 calls on the same replica, as it always did beside its siblings' calls on other replicas.
 
+### core: a publish of many scopes retires their older chunks in one pass
+
+**Fixed:** `ScopedSnapshot.publish_staged` retired each moved scope's older chunks by reading every listed name once
+per scope moved, the scope's token made again each time, and the sweep searched a pointer's chunk list again for
+every name: 50-60 ms on the event loop a publish of 51 states on cobalt prod, 0.5 s at 13k names. Each name is now
+read once, by its own scope, and each pointer's chunks are made a set once.
+
 ### core: a versioned read never waits on a staged change
 
 **Added:** `StagedPartitions`, an L1 whose commit is staged apart from its publish (`stage_partitions(replacements)`

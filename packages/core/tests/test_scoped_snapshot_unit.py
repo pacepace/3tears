@@ -1986,6 +1986,42 @@ async def test_a_pointer_never_moves_onto_a_staged_chunk_that_is_gone() -> None:
     await snapshot.stop()
 
 
+async def test_a_publish_of_many_scopes_retires_their_older_chunks_in_one_pass_over_the_names() -> None:
+    """a load's publish moves every state at once and retires each one's older chunks: each name listed is read once,
+    by its own scope, not once per scope moved -- the per-scope pass held the event loop 50-60 ms a publish on
+    cobalt prod (51 states). Chunks of scopes not moved, and those the pointers serve, stay."""
+    snapshot, pointers, store, l3 = _retiring_snapshot()
+    await _started(snapshot, pointers)
+    scopes = [f"S{n:02d}" for n in range(51)]
+    staged = []
+    for scope in scopes:
+        staged.append(await snapshot.stage(scope, 7, {"results": [{"county": "c1", "state": scope, "votes": 7}]}))
+        l3.epochs[scope] = 7
+    digest = next(iter(staged[0].objects.values())).rsplit(".", 1)[1]
+    old = {f"enr/{scope}/{epoch}/results.{digest}" for scope in scopes for epoch in range(1, 7)}
+    old |= {
+        f"enr.p/{scope}/{epoch}/results.{digest}.{piece}"
+        for scope in scopes
+        for epoch in range(1, 7)
+        for piece in range(40)
+    }
+    kept = {f"enr/OTHER{n}/1/results.{digest}" for n in range(500)}
+    for name in old | kept:
+        store.objects[name] = b"x"
+
+    began = time.perf_counter()
+    moved, skipped = await snapshot.publish_staged(staged, carry_at=dict.fromkeys(scopes, 0), whole=True)
+    spent = time.perf_counter() - began
+
+    assert (sorted(moved), skipped) == (scopes, [])
+    assert not old & set(store.objects), "an older chunk of a moved scope was left"
+    assert kept <= set(store.objects), "a chunk of a scope not moved was retired"
+    assert _served(pointers) <= set(store.objects)
+    # the fakes answer at once, so this is the publish's own work on the loop: one pass over ~13k names
+    assert spent < 0.25, f"the publish's retire held the loop {spent:.3f} s"
+    await snapshot.stop()
+
+
 def _write_claims(pointers: _Pointers) -> list[str]:
     return [key for key in pointers.entries if key.startswith("enr.w.")]
 

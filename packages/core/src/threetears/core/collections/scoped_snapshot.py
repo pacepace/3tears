@@ -102,6 +102,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from collections.abc import Set as AbstractSet
 from contextlib import (
     AbstractContextManager,
     ExitStack,
@@ -1297,7 +1298,7 @@ class _Sweeper:
         return asked
 
     @staticmethod
-    def deletable(name: str, epoch: int | None, reference: _Pointer | None, claimed: frozenset[int]) -> bool:
+    def deletable(name: str, epoch: int | None, served: AbstractSet[str], claimed: frozenset[int]) -> bool:
         """whether one chunk may be deleted: the one rule every retirement goes by.
 
         Judged by state, never by age:
@@ -1312,15 +1313,15 @@ class _Sweeper:
         :ptype name: str
         :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
         :ptype epoch: int | None
-        :param reference: its scope's pointer, read from KV
-        :ptype reference: _Pointer | None
+        :param served: every chunk its scope's pointer, read from KV, names (:meth:`_Pointer.names`); empty when
+            the scope has none
+        :ptype served: AbstractSet[str]
         :param claimed: the epochs live write claims hold, read from KV
         :ptype claimed: frozenset[int]
         :return: whether it may be deleted
         :rtype: bool
         """
-        named = reference is not None and name in reference.names()
-        return not named and (epoch is None or epoch not in claimed)
+        return name not in served and (epoch is None or epoch not in claimed)
 
     async def pointer_now(self, key: str) -> _Pointer | None:
         """a scope's pointer as KV holds it now, by its key.
@@ -1373,11 +1374,14 @@ class _Sweeper:
                 what=f"scoped snapshot {self._name}: reading the pointers and write claims for {what} failed: {exc}",
             )
             return retired
+        # each pointer's chunks made a set once: asked per name, the list was built again and searched for every
+        # chunk listed, on the event loop
+        served = {token: frozenset(() if p is None else p.names()) for token, p in pointers.items()}
         stale = [
             name
             for token, scope_names in by_token.items()
             for name in scope_names
-            if self.deletable(name, self._layout.epoch_in_token(token, name), pointers[token], claimed)
+            if self.deletable(name, self._layout.epoch_in_token(token, name), served[token], claimed)
         ]
         retired = await self.retire_names(stale)
         if stale:
@@ -1435,11 +1439,16 @@ class _Sweeper:
             return 0
         prefixes = [prefix for scope in epochs for prefix in self._layout.scope_prefixes(scope)]
         names = await self._listed(prefixes, f"{len(epochs)} scopes")
+        # each name read once, by its own scope's token: asked of every scope in turn, every name was parsed once per
+        # scope, the scope's token made again each time -- 50-60 ms on the event loop a publish on cobalt prod
+        below = {scope_token(scope): epoch for scope, epoch in epochs.items()}
         older = [
             n
-            for scope, epoch in epochs.items()
             for n in names
-            if (e := self._layout.epoch_of(scope, n)) is not None and e < epoch
+            if (t := self._layout.token_of(n)) is not None
+            and t in below
+            and (e := self._layout.epoch_in_token(t, n)) is not None
+            and e < below[t]
         ]
         return await self._sweep(older, what=f"{len(epochs)} scopes below their epochs")
 
