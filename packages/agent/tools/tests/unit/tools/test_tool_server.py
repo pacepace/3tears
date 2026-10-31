@@ -17,6 +17,7 @@ from threetears.agent.tools.server import (
     CallRequest,
     CallResponse,
     HeartbeatMessage,
+    OUTCOME_ANSWERED_BY_SIBLING,
     RegistrationManifest,
     ToolManifestEntry,
     ToolServer,
@@ -2615,3 +2616,37 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
 
         assert reader.runs == 1
         assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+
+    async def test_the_replica_that_finds_the_nonce_used_counts_it_answered_by_a_sibling_not_failed(self) -> None:
+        """Flips if the silent replica of a call handed to a held replica and the call group counts or audits it as a
+        failure: the call ran once, on the sibling, and a failure there is noise on every held control call."""
+        guard = FakeReplayGuard()
+        held, held_rec, _, _ = self._replica(guard)
+        serving, serving_rec, _, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await held.handle_held_call(msg)
+        await serving.handle_call(msg)
+
+        def outcomes(server: ToolServer) -> dict[str, float]:
+            _content_type, body = server.render_metrics()
+            found: dict[str, float] = {}
+            for line in body.decode("utf-8").splitlines():
+                if line.startswith("threetears_tools_calls_total{"):
+                    sample, _, value = line.rpartition(" ")
+                    found[sample.split('outcome="')[1].split('"')[0]] = float(value)
+            return found
+
+        assert outcomes(held) == {"success": 1.0}
+        assert outcomes(serving) == {OUTCOME_ANSWERED_BY_SIBLING: 1.0}, "the sibling's silence is counted apart"
+
+        def audits(rec: RecordingNatsClient) -> list[str]:
+            return [
+                json.loads(payload)["outcome"]
+                for subject, payload in rec.published
+                if str(subject).endswith(".audit.tool.call")
+            ]
+
+        assert audits(held_rec) == ["success"]
+        assert audits(serving_rec) == [], "the call is audited once, by the replica that answered it"
