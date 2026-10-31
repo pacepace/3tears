@@ -102,13 +102,21 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext, suppress
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    aclosing,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+    suppress,
+)
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from itertools import islice
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
@@ -136,6 +144,7 @@ __all__ = [
     "SnapshotSource",
     "SnapshotStatus",
     "SnapshotTable",
+    "StagedPartitions",
     "StagedScope",
     "VersionedRead",
     "decode_chunk",
@@ -824,6 +833,30 @@ def _on_an_event_loop() -> bool:
     return True
 
 
+@runtime_checkable
+class StagedPartitions(Protocol):
+    """an L1 whose commit is staged apart from its publish: what :class:`_VersionedL1` stages outside its swap lock.
+
+    ``stage_partitions`` does all the work of a commit (a worker process applying the change, say) and makes
+    nothing visible to a reader; the callable it yields publishes the staged change in one short step, which
+    the swap runs under its lock with the epochs' move. Leaving the block releases whatever the staging holds,
+    whether it was published or not (a staging that raises, or a publish never called, leaves the L1 as it was).
+    A backend without it commits in ``replace_partitions`` under the swap lock, as before.
+    """
+
+    def stage_partitions(
+        self, replacements: Sequence[PartitionReplacement]
+    ) -> AbstractContextManager[Callable[[], object]]:
+        """stage ``replacements``, invisible to readers, and yield the step that publishes them.
+
+        :param replacements: the scopes' new contents
+        :ptype replacements: Sequence[PartitionReplacement]
+        :return: a context manager yielding the publish step
+        :rtype: AbstractContextManager[Callable[[], object]]
+        """
+        ...
+
+
 class _VersionedL1:
     """the L1, and the epoch of every scope whose rows it holds, moved together under one lock.
 
@@ -834,6 +867,13 @@ class _VersionedL1:
     read sees exactly the rows the epochs name. Nothing here is the snapshot's loop-owned state:
     the loop never reads or writes the epochs, so a swap may move them off the loop.
 
+    A backend whose commit is long and separable (:class:`StagedPartitions`: a change applied in a
+    worker process, then published in one step) is staged OUTSIDE the swap lock and only published
+    under it: a read opened while the change is staged reads the previous version at once, rather
+    than waiting the whole staging out (cobalt prod, 2026-10-31: every versioned read, and every
+    call behind one, waited 8-18 s a change). Swaps run one at a time under their own writer lock,
+    so a change is staged over the version the one before it published.
+
     :param backend: the L1
     :ptype backend: DuckDBBackend
     """
@@ -841,6 +881,8 @@ class _VersionedL1:
     def __init__(self, backend: DuckDBBackend) -> None:
         self._backend = backend
         self._lock = threading.Lock()
+        # one swap at a time, its staging included: held outside the swap lock, so readers never wait on it
+        self._writing = threading.Lock()
         self._held: Mapping[str, int] = _updated({})
 
     def swap(self, replacements: Sequence[PartitionReplacement], put: Mapping[str, int], drop: Sequence[str]) -> None:
@@ -857,9 +899,20 @@ class _VersionedL1:
         :return: nothing
         :rtype: None
         """
-        with self._lock:
-            self._backend.replace_partitions(replacements)
-            self._held = _updated(self._held, put, drop=drop)
+        backend = self._backend
+        with ExitStack() as stack:
+            stack.enter_context(self._writing)
+            # the long part (a worker process applying the change) outside the swap lock: readers read the previous
+            # version meanwhile; only the publish and the epochs' move are one step under it. A backend that does
+            # not stage commits whole under the lock, as before
+            commit: Callable[[], object] = (
+                stack.enter_context(backend.stage_partitions(replacements))
+                if isinstance(backend, StagedPartitions)
+                else lambda: backend.replace_partitions(replacements)
+            )
+            with self._lock:
+                commit()
+                self._held = _updated(self._held, put, drop=drop)
 
     @contextmanager
     def open(self, table: str) -> Iterator[tuple[Any, Mapping[str, int]]]:

@@ -225,6 +225,13 @@ LEAVE_CALLS_SECONDS: float = 10.0
 #: how long a replica that could not join its call queue group waits before it tries again
 JOIN_CALLS_RETRY_SECONDS: float = 1.0
 
+#: how many calls a replica takes off its call subject at once, by default (:class:`ToolServer`'s
+#: ``max_calls_in_flight``). The subscription was serial: each call was taken only once the one before it was
+#: answered, so one slow call held every call behind it on that replica -- on cobalt prod, 2026-10-31, a reader's
+#: favorites read that touched nothing slow waited 9 s behind an ``lsf_ready`` call. Bounds what a replica holds
+#: in hand at once; ``max_concurrent_calls`` still bounds how many tools run at once inside it
+CALLS_IN_FLIGHT: Final = 64
+
 #: the queue group a held replica answers its control tools in, after the call subject's path
 #: (:meth:`ToolServer.hold_calls`): a group of its own, so NATS hands every call to one member of the
 #: pod's call group AND one held replica, and only the tools named for it are answered there
@@ -1100,6 +1107,7 @@ class ToolServer:
         object_resolver: "ObjectResolver | None" = None,
         engagement_resolver: "EngagementScopeResolver | None" = None,
         max_concurrent_calls: int | None = None,
+        max_calls_in_flight: int = CALLS_IN_FLIGHT,
         max_call_seconds: float | None = None,
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
         registration_key: "Callable[[], RegistrationKey | None] | None" = None,
@@ -1237,6 +1245,10 @@ class ToolServer:
             backstop against a burst of memory- or cpu-heavy tools (e.g. several
             scanners) overrunning the pod's resources at once. Must be >= 1.
         :ptype max_concurrent_calls: int | None
+        :param max_calls_in_flight: how many calls this replica takes off its call subject at once
+            (:data:`CALLS_IN_FLIGHT`): each runs as its own task, so a slow call never holds the calls behind it.
+            ``1`` takes them one at a time, in arrival order, as the server once did. Must be >= 1.
+        :ptype max_calls_in_flight: int
         :param max_call_seconds: a HARD ceiling on the wall-clock a single
             ``tool.run`` may take, counted from when it acquires its slot. ``None``
             (default) applies no server ceiling -- each tool is bounded only by its
@@ -1273,7 +1285,7 @@ class ToolServer:
         :ptype assertion_replay_guard: ReplayGuard | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value, ``max_concurrent_calls`` /
-            ``max_call_seconds`` is set to a non-positive value,
+            ``max_call_seconds`` is set to a non-positive value, ``max_calls_in_flight`` is below 1,
             ``result_delivery_retry_seconds`` is negative, an injected
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
             pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
@@ -1284,6 +1296,9 @@ class ToolServer:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
         if max_concurrent_calls is not None and max_concurrent_calls < 1:
             raise ValueError(f"max_concurrent_calls must be >= 1 when set, got {max_concurrent_calls}")
+        if max_calls_in_flight < 1:
+            raise ValueError(f"max_calls_in_flight must be >= 1, got {max_calls_in_flight}")
+        self._max_calls_in_flight = max_calls_in_flight
         if max_call_seconds is not None and max_call_seconds <= 0:
             raise ValueError(f"max_call_seconds must be > 0 when set, got {max_call_seconds}")
         self._max_call_seconds = max_call_seconds
@@ -1898,8 +1913,9 @@ class ToolServer:
         # pods never share a group and a restarted replica rejoins its own.
         call_subject = Subjects.tools_internal(self._pod_id)
         # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
+        # concurrent: a slow call never holds the calls behind it (:data:`CALLS_IN_FLIGHT`)
         self._call_subscription = await self._nc.subscribe(
-            subject=call_subject, queue=call_subject.path, cb=self.handle_call
+            subject=call_subject, queue=call_subject.path, cb=self.handle_call, max_in_flight=self._max_calls_in_flight
         )
         log.info(
             "subscribed to call subject",
@@ -1945,7 +1961,7 @@ class ToolServer:
             try:
                 # sender-posture: signed-envelope -- the call subject's own envelope, verified as every call is
                 self._held_subscription = await self._nc.subscribe(
-                    subject=call_subject, queue=queue, cb=self.handle_held_call
+                    subject=call_subject, queue=queue, cb=self.handle_held_call, max_in_flight=self._max_calls_in_flight
                 )
             except SubscribeError as exc:
                 # NOSILENT: logged, and asked again: a held replica that could not subscribe answers no control

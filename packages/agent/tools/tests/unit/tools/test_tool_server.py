@@ -14,6 +14,7 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import (
+    CALLS_IN_FLIGHT,
     CallRequest,
     CallResponse,
     HeartbeatMessage,
@@ -34,7 +35,7 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 from threetears.media.contracts import ObjectHandle
-from threetears.nats import IncomingMessage
+from threetears.nats import IncomingMessage, NatsClient, Subjects
 
 from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
 from threetears.core.testing.replay_guard import FakeReplayGuard
@@ -842,6 +843,35 @@ class TestToolServerCallGroupMembership:
             # the held group drained once the call group took every call
             assert mock_nc.drain.await_count == 1
             await self._stop(server, serve_task)
+
+    async def test_both_call_subscriptions_take_calls_concurrently_and_the_bound_is_configurable(self) -> None:
+        """the call group and the held group each take up to ``max_calls_in_flight`` calls at once: a serial
+        subscription held every call behind a slow one (cobalt prod, 2026-10-31)."""
+        for configured, expected in ((None, CALLS_IN_FLIGHT), (5, 5)):
+            kwargs: dict[str, Any] = {} if configured is None else {"max_calls_in_flight": configured}
+            server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod", **kwargs)
+            server.register(StubTool())
+            server.hold_calls(answering=["test.stub"])
+            mock_nc = self._mock_nc()
+            with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+                serve_task = asyncio.create_task(server.serve())
+                await server.wait_ready(timeout=1.0)
+                server.answer_while_held()
+                await asyncio.sleep(0.05)
+                server.open_calls()
+                await asyncio.sleep(0.05)
+                calls = [
+                    c
+                    for c in mock_nc.subscribe.call_args_list
+                    if c.kwargs["subject"].path == "testns.tools.internal.calls-pod"
+                ]
+                assert len(calls) == 2, calls
+                assert [c.kwargs["max_in_flight"] for c in calls] == [expected, expected]
+                await self._stop(server, serve_task)
+
+    def test_max_calls_in_flight_below_one_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_calls_in_flight"):
+            ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod", max_calls_in_flight=0)
 
     async def test_a_held_server_asked_to_answer_after_its_calls_opened_does_not(self) -> None:
         server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
@@ -2649,3 +2679,126 @@ class TestAHeldReplicaAnswersOnlyItsControlTools:
 
         assert audits(held_rec) == ["success"]
         assert audits(serving_rec) == [], "the call is audited once, by the replica that answered it"
+
+
+# -- calls in flight together --
+
+
+class _GatedTool(StubTool):
+    """a tool whose calls wait on a gate until the test opens it, counting how many wait at once."""
+
+    def __init__(self, name: str, gate: asyncio.Event) -> None:
+        super().__init__(name=name, version="1.0")
+        self.gate = gate
+        self.waiting = 0
+        self.peak = 0
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.waiting += 1
+        self.peak = max(self.peak, self.waiting)
+        try:
+            await self.gate.wait()
+        finally:
+            self.waiting -= 1
+        return await super().execute(**kwargs)
+
+
+class _RawSubscription:
+    """the nats-py subscription the real client reads its messages from: a queue the test feeds."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    @property
+    def messages(self) -> Any:
+        async def _gen() -> Any:
+            while (msg := await self.queue.get()) is not None:
+                yield msg
+
+        return _gen()
+
+    async def unsubscribe(self) -> None:
+        await self.queue.put(None)
+
+
+class _RawMsg:
+    def __init__(self, data: bytes, reply: str) -> None:
+        self.data, self.reply, self.subject, self.headers = data, reply, "testns.tools.internal.test-pod", None
+
+
+class _RawTransport:
+    """answers every PING the subscribe's round trip writes with its PONG."""
+
+    def __init__(self, owner: _RawNats) -> None:
+        self._owner = owner
+
+    def writelines(self, payload: list[bytes]) -> None:
+        del payload
+
+    def write(self, payload: bytes) -> None:
+        del payload
+        self._owner.pongs.pop(0).set_result(True)
+
+
+class _RawNats:
+    """just enough of nats-py for :class:`NatsClient` to subscribe and deliver."""
+
+    is_closed = False
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.subscription = _RawSubscription()
+        self._pending: list[bytes] = []
+        self._pending_data_size = 0
+        self._pongs: list[asyncio.Future[bool]] = []
+        self._transport = _RawTransport(self)
+        self._flush_queue: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+
+    @property
+    def pongs(self) -> list[asyncio.Future[bool]]:
+        """the PONG futures still waiting, oldest first (nats-py's own field, which the round trip fills)."""
+        return self._pongs
+
+    async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
+        del sid, limit
+
+    async def subscribe(self, subject: str, queue: str = "") -> _RawSubscription:
+        return self.subscription
+
+
+@pytest.mark.asyncio
+async def test_a_slow_call_never_holds_the_calls_behind_it() -> None:
+    """through the real client's subscription, as the server binds it (max_in_flight): two slow calls run
+    together, and a reader's fast call is answered while both still run. Serial, as the server once
+    subscribed, the fast call waited until the slow ones answered."""
+    server, rec = _recording_tool_server(
+        pod_id="test-pod", jwks_provider=_pod_jwks_provider, assertion_replay_guard=FakeReplayGuard()
+    )
+    gate = asyncio.Event()
+    slow = _GatedTool("test.slow", gate)
+    server.register(slow)
+    server.register(StubTool(name="test.fast", version="1.0"))
+    raw = _RawNats()
+    client = NatsClient(raw=raw, namespace="testns", client_name="test")  # type: ignore[arg-type]
+    subscription = await client.subscribe(
+        subject=Subjects.tools_internal("test-pod"), cb=server.handle_call, max_in_flight=CALLS_IN_FLIGHT
+    )
+
+    def call(tool: str, reply: str) -> _RawMsg:
+        payload = _signed_call_payload(pod_id="test-pod", tool_name=tool, tool_version="1.0")
+        return _RawMsg(json.dumps(payload).encode(), reply)
+
+    await raw.subscription.queue.put(call("test.slow", "_INBOX.slow1"))
+    await raw.subscription.queue.put(call("test.slow", "_INBOX.slow2"))
+    await raw.subscription.queue.put(call("test.fast", "_INBOX.fast"))
+    began = time.monotonic()
+    while not any(subject == "_INBOX.fast" for subject, _ in rec.replies):
+        assert time.monotonic() - began < 2.0, "the fast call waited behind the slow ones"
+        await asyncio.sleep(0.01)
+    assert slow.peak == 2, "the two slow calls did not run together"
+    assert [subject for subject, _ in rec.replies] == ["_INBOX.fast"]
+    gate.set()
+    while len(rec.replies) < 3:
+        assert time.monotonic() - began < 4.0, "the slow calls never answered"
+        await asyncio.sleep(0.01)
+    await client.unsubscribe(subscription)
