@@ -2706,7 +2706,11 @@ def measure_value_misfit(descriptor: MetricDescriptor, value: bool | float | str
     reason). Nothing is coerced: a ``1.0`` is not a ``True``, whatever it was meant to say. A boolean measure takes a
     ``bool``, a numeric one a number that is not a ``bool``, a categorical or text one a string, and a
     ``confusion_cell`` a string :func:`confusion_of` splits. A descriptor declaring no data type is read as numeric,
-    as a summary reads one (a distribution over ``float(value)``), so text or a ``bool`` under it is a misfit.
+    so text or a ``bool`` under it is a misfit. That rule matters only where a result is written: the bundle never
+    reports an untyped measure, so never reads one through this check, but a run's summary states every measure the
+    host declares as a mean and range of its values read as numbers, where a ``bool`` would average in as 1 or 0 and
+    text would be counted and left out of the mean. The registry refuses an untyped measure with a better end or a
+    diagnostic one, so the rule guards the untyped measures a host may still declare: undirected, not diagnostic.
 
     :param descriptor: The measure's descriptor.
     :ptype descriptor: MetricDescriptor

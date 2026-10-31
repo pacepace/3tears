@@ -27,8 +27,8 @@ aspects state a pass rule has a new content address, so it is a new snapshot.
 before any judge is paid for, with a `ValueError` that names the measure and both types. A number is never coerced to
 a boolean. A mismatch already stored is still kept out of the statistics, and its entry in the bundle's unreported
 observations now says why, e.g. `top_up_never (declared boolean, recorded as a number; dropped, not pooled)`. A measure
-described with no data type is read as numeric, so text or a bool under one is refused too; a name nobody describes
-is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
+described with no data type is read as numeric, so text or a bool under one is refused too, since a run's summary
+states it as a mean and range of numbers; a name nobody describes is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
 A measure declared with a better end or as a diagnostic and no data type is now refused where it is registered
 (`MeasureRegistrationError`, naming it): no bundle would have carried it. Declare its data type.
 
