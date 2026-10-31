@@ -1667,7 +1667,7 @@ def test_the_assembly_every_completed_cell_passes_through_refuses_a_misfit_host_
 
 
 def test_a_host_measure_declaring_no_data_type_is_read_as_numeric_and_refuses_text_and_bools() -> None:
-    """The bundle summarises an untyped measure as a distribution of numbers, so only a number fits one."""
+    """A run's summary states an untyped measure as a mean and range of numbers, so only a number fits one."""
     from threetears.evals.kernel import MetricDescriptor
     from threetears.evals.kernel.host import MeasureRegistry
     from threetears.evals.run.runner import refuse_misfit_host_measures

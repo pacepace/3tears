@@ -135,14 +135,7 @@ def _said(figure: Figure | None, filters: tuple[str, ...] = ()) -> str | None:
 
 
 def _pass_rate(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    figure = held_figure(f"pass_rate.{arm}", report_input)
-    row = report_input.scoreboard.get(arm)
-    passes = (
-        PASSES_TEMPLATE.format(passed=row.passed, usable=row.usable)
-        if figure is not None and row is not None and row.passed is not None and row.usable
-        else None
-    )
-    return TableCell(value=_said(figure), flag=passes)
+    return pass_rate_cell(report_input, arm)
 
 
 def _reading_change(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
@@ -380,7 +373,7 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
     arms = [arm.id for arm in report_input.arms]
     described = any(_runs(report_input, arm) for arm in arms)
     aspects = _laid_out_aspects(report_input)
-    quality = {arm: _pass_rate(_PASS_RATE, arm, report_input, look) for arm in arms}
+    quality = {arm: pass_rate_cell(report_input, arm) for arm in arms}
     rated = not aspects and any(cell.value is not None for cell in quality.values())
     header, cells = _arm_costs(report_input, look)
     costed = not aspects and any(cell.value is not None for cell in cells.values())
@@ -578,7 +571,10 @@ def _aspect_header(aspect: Aspect, header: str) -> str:
 
 
 def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = None) -> TableCell:
-    """An arm's pass rate on one aspect, as its scoreboard counts it, its passes over its usable trials beside it.
+    """An arm's pass rate on one aspect, as its scoreboard counts it, its passes over its usable trials beside it; on
+    the lead aspect, an arm its scoreboard counts no passes for reads the ``pass_rate.<arm>`` figure, which falls back
+    to the input's ``pass_rate`` measure where no arm's scoreboard counts passes. Every table's pass-rate cell is this
+    one, so the options, arms and full-results tables state one rate for an arm.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -587,12 +583,12 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     :param aspect: The aspect, by id (:func:`~threetears.evals.analysis.report_margins.aspect_board`); None for the
         lead aspect's, the input's own scoreboard.
     :ptype aspect: str | None
-    :return: The cell; a dash where the scoreboard counts no passes or no usable trial.
+    :return: The cell; a dash where neither the scoreboard nor, on the lead aspect, the figure states a rate.
     :rtype: TableCell
     """
     row = aspect_board(report_input, aspect).get(arm)
     if row is None or row.passed is None or not row.usable:
-        return TableCell(value=None)
+        return TableCell(value=_said(held_figure(f"pass_rate.{arm}", report_input)) if aspect is None else None)
     drawn = quantity("share")
     return TableCell(
         value=figure_text(row.passed / row.usable * drawn.factor, drawn),

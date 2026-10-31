@@ -23,7 +23,7 @@ from threetears.evals.schema import EvalResult
 from threetears.evals.kernel import MetricDescriptor, classifier_label_measure, classifier_label_of, confusion_cell
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
-from threetears.evals.kernel.metrics import confusion_of, describe_measure
+from threetears.evals.kernel.metrics import confusion_of, describe_measure, measure_value_misfit
 from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
@@ -135,11 +135,19 @@ def test_a_stored_value_its_declared_type_does_not_fit_is_named_with_its_reason_
     assert collection.unreported_observations == [entry]
 
 
-@pytest.mark.parametrize("value", ["two", True])
-def test_text_or_a_bool_stored_under_a_measure_declaring_no_data_type_never_reaches_a_numeric_summary(
-    value: str | bool,
+@pytest.mark.parametrize(
+    ("value", "misfit"),
+    [
+        ("two", "declared no data type, read as numeric, recorded as text"),
+        (True, "declared no data type, read as numeric, recorded as true or false"),
+        (2.0, None),
+    ],
+)
+def test_an_untyped_measure_reaches_no_bundle_surface_and_its_type_rule_takes_only_a_number(
+    value: str | bool | float, misfit: str | None
 ) -> None:
-    """An untyped measure is read as numeric, so neither value is pooled, and the bundle assembles."""
+    """The bundle leaves an untyped measure quiet whatever its value, so the type rule held where a result is written
+    is what keeps text or a bool out of the run summary's numbers, and it reads the measure as numeric."""
     profile = HostProfile(
         host_id="untyped",
         host_sweepables=SHARED_CORE,
@@ -150,7 +158,10 @@ def test_text_or_a_bool_stored_under_a_measure_declaring_no_data_type_never_reac
     bundle = one_batch_bundle(results, profile=profile)
 
     ((cell,), (run,)) = (bundle.cell_measures, bundle.run_summaries)
-    assert "queue_jumps" not in {summary.name for summary in [*cell.measures.measures, *run.measures.measures]}
+    for collection in (cell.measures, run.measures):
+        assert "queue_jumps" not in {summary.name for summary in collection.measures}
+        assert not any(entry.startswith("queue_jumps") for entry in collection.unreported_observations)
+    assert measure_value_misfit(describe_measure("queue_jumps", profile.measures), value) == misfit
 
 
 def test_misfit_values_beside_fitting_ones_are_named_and_only_the_fitting_ones_pool() -> None:

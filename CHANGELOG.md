@@ -19,7 +19,9 @@ its pass^k label, the judged dimensions that count, the boundary ones left out, 
 A contrast carries `n_cases` (and `control_n_cases` where an unpaired test read a different number), `paired` and
 `pairing_r`. The analyst cites them as figure keys. Contrasts were already per case, so no figure changes. Every new
 field is left out when unset, so a stored input digests as before. A snapshot frozen again from a campaign whose
-aspects state a pass rule has a new content address, so it is a new snapshot.
+aspects state a pass rule has a new content address, so it is a new snapshot. The planner's grammar lists none of the
+fields only an analyst's input states, so its prompt version moves from 9c77dc447b89 to 925c6cf80a45, and a host
+calibrating the reporter kind sees the new plans in a group of their own.
 
 ### evals: a host measure whose value does not fit its declared type is refused before the result is written
 
@@ -27,8 +29,8 @@ aspects state a pass rule has a new content address, so it is a new snapshot.
 before any judge is paid for, with a `ValueError` that names the measure and both types. A number is never coerced to
 a boolean. A mismatch already stored is still kept out of the statistics, and its entry in the bundle's unreported
 observations now says why, e.g. `top_up_never (declared boolean, recorded as a number; dropped, not pooled)`. A measure
-described with no data type is read as numeric, so text or a bool under one is refused too; a name nobody describes
-is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
+described with no data type is read as numeric, so text or a bool under one is refused too, since a run's summary
+states it as a mean and range of numbers; a name nobody describes is not checked. `assemble_completed_cell` takes `measures=` and makes the same refusal itself.
 A measure declared with a better end or as a diagnostic and no data type is now refused where it is registered
 (`MeasureRegistrationError`, naming it): no bundle would have carried it. Declare its data type.
 

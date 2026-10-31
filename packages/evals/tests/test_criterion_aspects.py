@@ -30,7 +30,7 @@ from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import BarRead, Criterion, ReportInput
-from threetears.evals.analysis.report_margins import criterion_figures
+from threetears.evals.analysis.report_margins import aspect_board, aspect_of, criterion_figures
 from threetears.evals.kernel.report_plan import ChartQuery
 
 #: The shape campaigns built from their bundles, the ones whose criteria the builder declares.
@@ -173,3 +173,14 @@ def test_an_input_whose_criteria_name_no_aspect_dumps_as_it_did(name: str) -> No
     held = fixture_inputs()[name]
     document = held.model_dump(mode="json", by_alias=True)
     assert all("aspect" not in criterion for criterion in document["criteria"])
+
+
+def test_an_aspect_id_the_input_does_not_hold_is_refused_naming_it_and_the_ids_it_holds() -> None:
+    held = next(inputs for inputs in fixture_inputs().values() if len(inputs.aspects) > 1)
+    ids = ", ".join(repr(aspect.id) for aspect in held.aspects)
+
+    for read in (aspect_of, aspect_board):
+        with pytest.raises(KeyError) as refused:
+            read(held, "no-such-aspect")
+        assert refused.value.args == (f"the report input holds no aspect 'no-such-aspect'; its aspects are {ids}",)
+    assert aspect_of(held, held.aspects[1].id) is held.aspects[1]

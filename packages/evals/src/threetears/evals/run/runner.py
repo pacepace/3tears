@@ -2025,7 +2025,8 @@ def refuse_misfit_host_measures(host_measures: Mapping[str, bool | float | str],
     :func:`assemble_completed_cell`, which every completed cell passes through. A name no registry
     describes (neither a data type nor a family) declares nothing and passes; the analysis names a number under one as
     an undescribed measurement and leaves text alone, as an identifier. A described measure declaring no data type is
-    read as numeric, so text or a ``bool`` under one is refused.
+    read as numeric, so text or a ``bool`` under one is refused: no bundle reports such a measure, but the run's
+    summary states it as a mean and range of numbers, which a ``bool`` or text would misstate.
 
     :param host_measures: What the kind measured, by name.
     :ptype host_measures: Mapping[str, bool | float | str]

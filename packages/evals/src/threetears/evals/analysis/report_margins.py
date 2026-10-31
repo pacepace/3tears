@@ -66,6 +66,7 @@ __all__ = [
     "CriterionPlace",
     "Margin",
     "aspect_board",
+    "aspect_of",
     "criterion_aspect",
     "criterion_figures",
     "criterion_misses",
@@ -256,6 +257,24 @@ def lead_aspect(report_input: ReportInput) -> str | None:
     return asked[0] if asked else next((aspect.id for aspect in report_input.aspects), None)
 
 
+def aspect_of(report_input: ReportInput, aspect_id: str) -> Aspect:
+    """One of the input's aspects, by id.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param aspect_id: The aspect's id.
+    :ptype aspect_id: str
+    :return: The aspect.
+    :rtype: Aspect
+    :raises KeyError: The input holds no aspect of that id; the message names it and the ids the input holds.
+    """
+    for aspect in report_input.aspects:
+        if aspect.id == aspect_id:
+            return aspect
+    held = ", ".join(repr(aspect.id) for aspect in report_input.aspects) or "none"
+    raise KeyError(f"the report input holds no aspect {aspect_id!r}; its aspects are {held}")
+
+
 def aspect_board(report_input: ReportInput, aspect_id: str | None) -> Mapping[str, ScoreboardRow]:
     """How each arm's trials came out on one aspect: its own scoreboard, else, on the lead aspect, the input's.
 
@@ -265,10 +284,11 @@ def aspect_board(report_input: ReportInput, aspect_id: str | None) -> Mapping[st
     :ptype aspect_id: str | None
     :return: Each arm's row, by arm; empty on an aspect other than the lead that holds no scoreboard.
     :rtype: Mapping[str, ScoreboardRow]
+    :raises KeyError: The input holds no aspect of that id (:func:`aspect_of`).
     """
     if aspect_id is None:
         return report_input.scoreboard
-    board = next(aspect for aspect in report_input.aspects if aspect.id == aspect_id).scoreboard
+    board = aspect_of(report_input, aspect_id).scoreboard
     if board is not None:
         return board
     return report_input.scoreboard if aspect_id == lead_aspect(report_input) else {}

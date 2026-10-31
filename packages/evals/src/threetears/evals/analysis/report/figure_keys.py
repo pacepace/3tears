@@ -154,6 +154,7 @@ from threetears.evals.analysis.report_margins import (
     CriterionFigure,
     Margin,
     aspect_board,
+    aspect_of,
     criterion_aspect,
     criterion_figures,
     criterion_misses,
@@ -453,10 +454,6 @@ def _asked_or_refuse(report_input: ReportInput, path: str) -> Aspect:
     return aspect
 
 
-def _aspect_by_id(report_input: ReportInput, aspect_id: str) -> Aspect:
-    return next(aspect for aspect in report_input.aspects if aspect.id == aspect_id)
-
-
 def on_lead_aspect(report_input: ReportInput, contrast: Contrast) -> bool:
     """Whether a contrast is read on the lead aspect, the one an arm's overall figures (the by-arm maps) belong to: it
     names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones.
@@ -660,7 +657,7 @@ def _asked_aspect_field(report_input: ReportInput, values: tuple[str, ...], path
 
 def _named_aspect_field(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, field = values
-    return _aspect_field(_aspect_by_id(report_input, aspect_id), field, path)
+    return _aspect_field(aspect_of(report_input, aspect_id), field, path)
 
 
 _READING_STATISTICS = (
@@ -708,7 +705,7 @@ def _asked_reading(report_input: ReportInput, values: tuple[str, ...], path: str
 
 def _named_reading(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, arm_id, statistic = values
-    return _reading_figure(_reading(_aspect_by_id(report_input, aspect_id), arm_id), statistic, path)
+    return _reading_figure(_reading(aspect_of(report_input, aspect_id), arm_id), statistic, path)
 
 
 _CONTRAST_STATISTICS = (
@@ -1231,7 +1228,7 @@ def _aspect_depth(report_input: ReportInput, values: tuple[str, ...], path: str)
     """The cases (or mean repeats) one aspect ran as one figure: the control's where it ran the aspect, else the one
     every arm agrees on."""
     aspect_id, field = values
-    depth = _depth_of(_aspect_by_id(report_input, aspect_id), report_input)
+    depth = _depth_of(aspect_of(report_input, aspect_id), report_input)
     value = _agreed(cases if field == "cases" else repeats for cases, repeats in depth)
     if value is None:
         raise _unstated(
@@ -1246,13 +1243,13 @@ _DEPTH_FIELDS = ("cases", "trials", "repeats")
 
 
 def _depth_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return list(_aspect_by_id(report_input, prior[0]).depth or {})
+    return list(aspect_of(report_input, prior[0]).depth or {})
 
 
 def _arm_depth(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     """How deeply one arm ran one aspect: its distinct cases, its trials, the mean repeats a case got."""
     aspect_id, arm_id, field = values
-    depth = (_aspect_by_id(report_input, aspect_id).depth or {})[arm_id]
+    depth = (aspect_of(report_input, aspect_id).depth or {})[arm_id]
     if field == "repeats":
         return _number(path, _mean_repeats(depth), "the mean repeats a case got", "count")
     return _number(path, getattr(depth, field), f"the arm's {field} on the aspect", "count")
@@ -1725,7 +1722,7 @@ def _flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) 
 
 def _aspect_flip_margin(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, arm_id = values
-    return _flip_figure(_reading(_aspect_by_id(report_input, aspect_id), arm_id), path)
+    return _flip_figure(_reading(aspect_of(report_input, aspect_id), arm_id), path)
 
 
 def _flip_figure(reading: Reading, path: str) -> Figure:
@@ -3002,18 +2999,18 @@ _PAIR_STATISTICS = ("change", "interval", "low", "high", "confidence", "p_holm",
 
 
 def _pair_firsts(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return list(dict.fromkeys(pair.arms[0] for pair in _aspect_by_id(report_input, prior[0]).pairs))
+    return list(dict.fromkeys(pair.arms[0] for pair in aspect_of(report_input, prior[0]).pairs))
 
 
 def _pair_seconds(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
     aspect_id, first = prior
-    pairs = _aspect_by_id(report_input, aspect_id).pairs
+    pairs = aspect_of(report_input, aspect_id).pairs
     return list(dict.fromkeys(pair.arms[1] for pair in pairs if pair.arms[0] == first))
 
 
 def _pair(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, first, second, statistic = values
-    held = [pair for pair in _aspect_by_id(report_input, aspect_id).pairs if pair.arms == (first, second)]
+    held = [pair for pair in aspect_of(report_input, aspect_id).pairs if pair.arms == (first, second)]
     if len(held) > 1:
         raise _refuse(path, f"names the pair {first} and {second}, which aspect {aspect_id} holds {len(held)} times")
     pair = held[0]
@@ -3194,7 +3191,7 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
     :raises KeyError: The input holds no such id of that kind.
     """
     if kind == "aspect":
-        aspect = _aspect_by_id(report_input, identifier)
+        aspect = aspect_of(report_input, identifier)
         return aspect.name or humanize("dimension", aspect.id)
     if kind == "measure":
         label = report_input.measures[identifier].label
@@ -3359,7 +3356,7 @@ def _asked_reading_arms(report_input: ReportInput, _: tuple[str, ...]) -> list[s
 
 
 def _named_reading_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    return _reading_arms(_aspect_by_id(report_input, prior[0]))
+    return _reading_arms(aspect_of(report_input, prior[0]))
 
 
 # --- separation: an arm's spread, two arms' difference, the cases that would settle a reading ------------------------
@@ -4144,7 +4141,7 @@ def _reading_margin(aspect: Aspect, reading: Reading) -> float | None:
 
 
 def _margined_arms(report_input: ReportInput, prior: tuple[str, ...]) -> list[str]:
-    aspect = _aspect_by_id(report_input, prior[-1])
+    aspect = aspect_of(report_input, prior[-1])
     return [reading.arm for reading in aspect.readings if _reading_margin(aspect, reading) is not None]
 
 
@@ -4169,7 +4166,7 @@ def _reading_spread(aspect: Aspect, arm_id: str, path: str) -> Spread:
 
 def _settle_margin_figure(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect_id, arm_id, field = values
-    aspect = _aspect_by_id(report_input, aspect_id)
+    aspect = aspect_of(report_input, aspect_id)
     margin = _reading_margin(aspect, _reading(aspect, arm_id))
     if margin is None:
         raise _unstated(path, f"reads {arm_id}'s reading on {aspect_id} against its margin, and none is declared")
@@ -4362,7 +4359,7 @@ def _passed_reading(
     if control is None or control.id not in (arm_id, other):
         return None
     candidate = other if arm_id == control.id else arm_id
-    aspect = _aspect_by_id(report_input, aspect_id)
+    aspect = aspect_of(report_input, aspect_id)
     held = [
         reading
         for reading in aspect.readings

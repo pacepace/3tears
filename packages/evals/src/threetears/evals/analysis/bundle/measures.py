@@ -808,7 +808,9 @@ def _verdict(
     result stored before the runner refused a misfit host measure carries one), and without this check a string under
     a seeded-numeric name reaches ``float(value)`` and raises out of ``assemble_context_bundle``, destroying the whole
     analysis over one bad observation. Dropping the observation instead keeps the blast radius at one measure, and the
-    drop is named with its reason (``MeasureCollection.unreported_observations``), never coerced.
+    drop is named with its reason (``MeasureCollection.unreported_observations``), never coerced. The check runs on a
+    reportable measure only, so a measure declaring no data type is quiet here whatever its value; the runner refuses
+    text or a ``bool`` under one where the result is written.
     """
     if not _is_reportable(descriptor, measures):
         # An undescribed NUMBER from a telemetry source is the loss worth reporting: a

@@ -195,6 +195,9 @@ def _cost(report_input: ReportInput, arm: str) -> TableCell:
     figure = held_figure(f"cost_per_1k.{arm}", report_input)
     if figure is None or not isinstance(figure.value, float):
         return TableCell(value=None)
+    # The form is chosen over every arm's cost, a partly priced one's included, where the options table leaves that arm
+    # out of its choice: this table prints the partly priced cost, its share beside it, and the options table prints
+    # the share in its place, so each column's form fits the numbers it prints.
     return TableCell(
         value=cost_ruler(report_input).drawn(figure.value), unit=MONEY, flag=priced_in_part(report_input, arm)
     )
@@ -277,6 +280,7 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
     judged = [key for key, table in report_input.judged.items() if held(table, key, kind="judged")]
     measures = [key for key, table in report_input.measures.items() if held(table, key)]
     costs = {aspect.id: aspect_costs_per_thousand(report_input, aspect.id) for aspect in aspects}
+    # Over every cost this column prints, a partly priced arm's included (:func:`_cost`'s reason).
     ruler = money_ruler([cost for held_costs in costs.values() for cost in held_costs.values()], per=1000, start=1000)
     costed = not any(quantity(figure_unit(report_input, key)).unit == MONEY for key in measures) and any(
         arm in costs[aspect.id] for aspect, arm in places
