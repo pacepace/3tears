@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a large cached answer is stored and read without holding the event loop
+
+**Fixed:** `VersionedAnswers` decoded a row's base64 body on the event loop at every L1 or L2 read (9-15 ms at
+9.4 MB of gzip), wrote it with one `b64encode` call, and stored and read the row with `json.dumps` and `json.loads`
+over the whole body on the loop (16 ms and 10 ms). The body is now decoded a megabyte per call on a worker thread (a
+small one inline), and an answer computed here is handed back from the gzip bytes in hand, never decoded. The row's
+L2 bytes are written on the worker thread, a slice of base64 per call, and handed to L2 as written; a row is read by
+its layout, the body taken as it stands, and anything else still goes through `json.loads`. The stored bytes, and
+`GivenAnswer.body`, are exactly what they were. No API changes.
+
 ### core: an answer's JSON is never copied whole in one call
 
 **Fixed:** `answer_json` wrote its answer in budgeted pieces, then joined them with one `"".join` into one `str`, and

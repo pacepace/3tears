@@ -10,18 +10,23 @@ text (one call of 0.5 s and one of 50 ms on such answers before, 2026-10-31).
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import json
+import os
 import random
 import threading
 import time
-from collections.abc import Callable
+import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from sqlalchemy import MetaData
 
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 
 from threetears.core.collections.versioned_answers import AnswerOutcome, VersionedAnswers, answer_json
@@ -383,3 +388,117 @@ class TestTheLoopRunsWhileALargeAnswerIsWritten:
             f"the loop ran {late * 1000:.1f} ms late while the answer was written, "
             f"{floor * 1000:.1f} ms beside plain Python as long"
         )
+
+
+class TestARowIsStoredAndReadAsJsonWrites:
+    """the row's L2 bytes are ``json.dumps``' of the row, written on a worker thread and read by their layout."""
+
+    async def test_a_computed_row_is_stored_as_json_dumps_writes_it(self) -> None:
+        answer = _series(3, 5_000)
+        stored: list[bytes] = []
+        answers = _answers()
+        original = answers.serialize
+
+        def recording(data: dict[str, Any]) -> bytes:
+            written = original(data)
+            stored.append(written)
+            return written
+
+        answers.serialize = recording  # type: ignore[method-assign]
+
+        async def compute() -> bytearray:
+            return answer_json(answer)
+
+        given = await answers.answer_with_outcome("v1", "series", compute, order=1)
+        assert given.outcome is AnswerOutcome.COMPUTED
+        assert stored, "no row was stored"
+        row = json.loads(stored[-1])
+        assert stored[-1] == json.dumps({key: row[key] for key in ("version", "request", "body")}).encode("utf-8")
+        assert gzip.decompress(base64.b64decode(row["body"])) == json.dumps(answer).encode("utf-8")
+        assert given.body == base64.b64decode(row["body"])
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"version": "v1", "request": "ab" * 32, "body": base64.b64encode(os.urandom(3 << 20)).decode("ascii")},
+            {"version": "v1", "request": "ab", "body": ""},
+            {"version": "v1", "request": "ab", "body": 'a "quoted" \\ body'},
+            {"version": "v1", "request": "ab", "body": "é"},
+            {"version": "v1", "request": "ab", "body": "x", "extra": 1},
+            {"request": "ab", "version": "v1", "body": "x"},
+            {"version": 'a", "body": "b', "request": "ab", "body": "x"},
+        ],
+    )
+    def test_any_row_reads_back_as_json_loads_reads_it(self, row: dict[str, Any]) -> None:
+        stored = json.dumps(row).encode("utf-8")
+        assert _answers().deserialize(stored) == json.loads(stored)
+
+    def test_a_row_json_refuses_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            _answers().deserialize(b'{"version": "v1", "request": , "body": "x"}')
+
+
+def _large_answer_text() -> str:
+    """an answer whose gzip is megabytes (random hex compresses about half), as a large cached view's is."""
+    return json.dumps({"blob": random.Random(7).randbytes(8_000_000).hex()})
+
+
+async def _late_during(work: Callable[[], Awaitable[Any]]) -> tuple[float, float, Any]:
+    """how late a ticker on the loop runs at most while ``work()`` is awaited on the loop, how long it took, and
+    what it gave."""
+    late = 0.0
+    ticking = True
+
+    async def tick() -> None:
+        nonlocal late
+        while ticking:
+            start = time.perf_counter()
+            await asyncio.sleep(0.002)
+            late = max(late, time.perf_counter() - start - 0.002)
+
+    ticker = asyncio.create_task(tick())
+    await asyncio.sleep(0.05)
+    began = time.perf_counter()
+    given = await work()
+    took = time.perf_counter() - began
+    await asyncio.sleep(0.05)
+    ticking = False
+    await ticker
+    return late, took, given
+
+
+@pytest.mark.loop_timing
+class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
+    async def test_storing_and_reading_a_large_answer_holds_the_loop_no_longer_than_any_python_thread(self) -> None:
+        text = _large_answer_text()
+        bus = FakeNatsClient()
+
+        def replica(*, l1: bool = False) -> VersionedAnswers:
+            registry = CollectionRegistry()
+            backend: Any = None
+            if l1:
+                backend = SQLiteBackend(db_name=f"offloop-l1-{uuid.uuid4().hex}")
+                backend.initialize(MetaData())
+            registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+            return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="offloop_large_answers")
+
+        async def compute() -> str:
+            return text
+
+        writer, reader = replica(), replica(l1=True)
+        expected = text.encode("utf-8")
+        for name, answers, outcome in (
+            ("stored", writer, AnswerOutcome.COMPUTED),
+            ("read from L2", reader, AnswerOutcome.READ),
+            ("read from L1", reader, AnswerOutcome.READ),
+        ):
+            late, took, given = await _late_during(
+                lambda answers=answers: answers.answer_with_outcome("v1", "large", compute, order=1)
+            )
+            floor, _, _ = await _late_while(_busy, took)
+            assert given.outcome is outcome
+            assert len(given.body) > 4_000_000 and gzip.decompress(given.body) == expected
+            assert late < floor + LOOP_MAY_BE_LATER, (
+                f"the loop ran {late * 1000:.1f} ms late while a large answer was {name}, "
+                f"{floor * 1000:.1f} ms beside plain Python as long"
+            )

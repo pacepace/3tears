@@ -75,6 +75,7 @@ import base64
 import codecs
 import gzip
 import hashlib
+import io
 import itertools
 import json
 import math
@@ -313,6 +314,8 @@ class _Pending:
     compute: Callable[[], Awaitable[str | bytes | bytearray]]
     ran: bool = False
     after_peer: bool = False
+    #: the row :meth:`VersionedAnswers.compute` encoded on a worker thread, for ``serialize`` and the answer
+    encoded: _EncodedRow | None = None
 
 
 #: the compute of the :meth:`VersionedAnswers.answer` call this task is inside, for ``compute`` to find:
@@ -717,15 +720,90 @@ def _gzipped(text: str | bytes | bytearray) -> bytes:
     return gzip.compress(text if isinstance(text, bytes | bytearray) else text.encode("utf-8"), mtime=0)
 
 
-def _row_body(text: str | bytes | bytearray) -> str:
-    """an answer's text as its row keeps it: gzipped (:func:`_gzipped`), base64. Run on a worker thread.
+#: the most base64 text one call decodes: a multiple of 4, so each slice decodes on its own to its share of the bytes
+_BASE64_TEXT_SLICE: Final = 1 << 20
 
+#: the most bytes one call encodes as base64: a multiple of 3, so each slice's text is its share of the whole's
+_BASE64_DATA_SLICE: Final = 3 << 18
+
+
+def _unbase64(body: str | bytes) -> bytes:
+    """a row's ``body`` back to its gzip bytes, a slice per call, so no one call decodes a large answer whole.
+
+    ``base64.b64decode`` holds the interpreter lock for its whole call (9-15 ms at 12.5 MB); each slice here is
+    about a millisecond, and the bytes grow in place (``BytesIO.getvalue`` hands its buffer over, no copy).
+
+    :param body: the base64 text
+    :ptype body: str | bytes
+    :return: the gzip bytes, exactly ``base64.b64decode(body)``'s
+    :rtype: bytes
+    """
+    out = io.BytesIO()
+    for start in range(0, len(body), _BASE64_TEXT_SLICE):
+        out.write(base64.b64decode(body[start : start + _BASE64_TEXT_SLICE]))
+    return out.getvalue()
+
+
+async def _given_body(body: str | bytes) -> bytes:
+    """a row's ``body`` decoded (:func:`_unbase64`): a small one here, a large one on a worker thread, never the loop.
+
+    :param body: the base64 text
+    :ptype body: str | bytes
+    :return: the gzip bytes
+    :rtype: bytes
+    """
+    if len(body) <= _BASE64_TEXT_SLICE:
+        decoded = base64.b64decode(body)
+    else:
+        decoded = await asyncio.to_thread(_unbase64, body)
+    return decoded
+
+
+#: what precedes a row's body in its L2 JSON, after its version and request
+_BODY_OPENS: Final = b', "body": "'
+
+#: what follows it
+_BODY_CLOSES: Final = b'"}'
+
+
+@dataclass(frozen=True)
+class _EncodedRow:
+    """an answer encoded for its row, on a worker thread: the gzip bytes, the row's base64 ``body``, and the row's
+    L2 bytes, exactly ``VersionedAnswers.serialize``'s.
+    """
+
+    gzipped: bytes
+    body: str
+    stored: bytes
+
+
+def _encoded_row(version: str, digest: str, text: str | bytes | bytearray) -> _EncodedRow:
+    """an answer gzipped (:func:`_gzipped`) and written as its row and the row's L2 bytes. Run on a worker thread.
+
+    The base64 is written a slice per call into the L2 bytes, which grow in place, and the row's ``body`` is read
+    back out of them: no call encodes the whole answer, and ``serialize`` hands the bytes on rather than run
+    ``json.dumps`` over megabytes on the event loop (16 ms at 12.5 MB).
+
+    :param version: the answer's version
+    :ptype version: str
+    :param digest: the request's digest
+    :ptype digest: str
     :param text: the answer's text
     :ptype text: str | bytes | bytearray
-    :return: the row's ``body``
-    :rtype: str
+    :return: the encodings
+    :rtype: _EncodedRow
     """
-    return base64.b64encode(_gzipped(text)).decode("ascii")
+    gzipped = _gzipped(text)
+    head = json.dumps({"version": version, "request": digest})[:-1].encode("utf-8") + _BODY_OPENS
+    out = io.BytesIO()
+    out.write(head)
+    view = memoryview(gzipped)
+    for start in range(0, len(gzipped), _BASE64_DATA_SLICE):
+        out.write(base64.b64encode(view[start : start + _BASE64_DATA_SLICE]))
+    out.write(_BODY_CLOSES)
+    stored = out.getvalue()
+    body = str(memoryview(stored)[len(head) : -len(_BODY_CLOSES)], "ascii")
+    return _EncodedRow(gzipped, body, stored)
 
 
 def _answers_schema(table_name: str) -> TableSchema:
@@ -1042,7 +1120,8 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         held = self._select_from_l1(key)
         if held is not None:
             record_tier_read(self.table_name, ReadTier.L1)
-            return GivenAnswer(base64.b64decode(held["body"]), AnswerOutcome.READ)
+            # the row is read: an eviction from here on takes nothing this answer needs
+            return GivenAnswer(await _given_body(held["body"]), AnswerOutcome.READ)
         refused = await self._recorded(version, key[1], order, scope)
         if refused is not None:
             # retired, older than what was retired, or the index unreachable: answered, not stored
@@ -1061,7 +1140,13 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 outcome = AnswerOutcome.RETIRED
             else:
                 outcome = AnswerOutcome.PEER_FALLBACK if pending.after_peer else AnswerOutcome.COMPUTED
-        return GivenAnswer(base64.b64decode(row["body"]), outcome)
+        encoded = pending.encoded
+        if encoded is not None and row["body"] is encoded.body:
+            # computed here: the gzip bytes are in hand
+            body = encoded.gzipped
+        else:
+            body = await _given_body(row["body"])
+        return GivenAnswer(body, outcome)
 
     def _in_background(self, work: Coroutine[Any, Any, None]) -> None:
         """run ``work`` off the read path, keeping a reference until it ends.
@@ -1523,7 +1608,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         pending.after_peer = self.deriving_after_peer()
         version, digest = self.normalize_pk(entity_id)
         text = await pending.compute()
-        return {"version": version, "request": digest, "body": await asyncio.to_thread(_row_body, text)}
+        encoded = await asyncio.to_thread(_encoded_row, version, digest, text)
+        pending.encoded = encoded
+        return {"version": version, "request": digest, "body": encoded.body}
 
     async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
         """write the answer to L2 while the computing replica still holds the key's build lock.
@@ -1560,24 +1647,49 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         del entity_id
 
     def serialize(self, data: dict[str, Any]) -> bytes:
-        """a row as L2 holds it: JSON.
+        """a row as L2 holds it: JSON, ``{"version": ..., "request": ..., "body": ...}``.
+
+        The row :meth:`compute` just encoded on a worker thread is handed on as it was written there
+        (:func:`_encoded_row`): this runs on the event loop, where ``json.dumps`` of a large body held it 16 ms.
 
         :param data: the row
         :ptype data: dict[str, Any]
         :return: JSON bytes
         :rtype: bytes
         """
+        pending = _PENDING.get()
+        encoded = None if pending is None else pending.encoded
+        if encoded is not None and data["body"] is encoded.body:
+            return encoded.stored
         return json.dumps({key: data[key] for key in ("version", "request", "body")}).encode("utf-8")
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """a row back from L2.
+
+        Runs on the event loop. ``json.loads`` scans a large body character by character (9-10 ms at 12.5 MB),
+        so a row as :meth:`serialize` writes it -- its base64 body last, which holds no character JSON escapes
+        -- is read by its layout: the version and request through ``json``, the body taken as it stands. Anything
+        else goes through ``json.loads``.
 
         :param data: JSON bytes
         :ptype data: bytes
         :return: the row
         :rtype: dict[str, Any]
         """
-        row: dict[str, Any] = json.loads(data)
+        row: dict[str, Any] | None = None
+        opens = data.find(_BODY_OPENS)
+        start, end = opens + len(_BODY_OPENS), len(data) - len(_BODY_CLOSES)
+        plain = data.find(b'"', start, end) < 0 and data.find(b"\\", start, end) < 0
+        if 0 < opens and start <= end and data.endswith(_BODY_CLOSES) and plain:
+            try:
+                head: Any = json.loads(data[:opens] + b"}")
+                if isinstance(head, dict) and head.keys() == {"version", "request"}:
+                    row = {**head, "body": str(memoryview(data)[start:end], "ascii")}
+            except ValueError:
+                # not a row serialize wrote (UnicodeDecodeError is a ValueError): json reads it, or says why not
+                row = None
+        if row is None:
+            row = json.loads(data)
         return row
 
 
