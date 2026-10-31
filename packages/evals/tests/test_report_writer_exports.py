@@ -5,9 +5,9 @@ names the checker, not its verdicts). ``actions/report_writing.py``, the report 
 writer's launch registry entry and what only it builds, whose caller is a host's registry. The writer kind's modules
 (``writer_kind.py``, ``writer_contract.py``, ``writer_launch.py``) export what the kind's factory, the kind, its
 launcher and its case bank call; the rest awaits a host's profile. The case bank (``writer_bank.py``) exports what the
-launch reads; a host's mint, retirement and template creation are the callers of the rest. The promotion read
-(``writer_promotion.py``) awaits a host that reads a decision, and the rubric (``rubric.py``) exports only the read its
-callers make.
+launch reads and what the engine's writer actions call (the mint, the retirement and the template creation). The
+promotion read (``writer_promotion.py``) exports the read its action calls, and the rubric (``rubric.py``) exports only
+the read its callers make.
 ``CLAUDE.md`` holds that no public API exists only for a test, and the caller gate
 (``tests/enforcement/test_public_api_has_a_caller.py``) reads a module's surface from its ``__all__``, so it cannot
 see the names left out. This test keeps the promise checkable: :data:`_AWAITING_A_CALLER` lists every public name
@@ -45,27 +45,13 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     writer_contract: frozenset({"EffortWord", "WRITER_KIND_CONTRACT", "WRITER_KIND_MEASURES", "writer_kind_contract"}),
     writer_kind: frozenset({"PreparedWriter", "WRITER_CASE_KEY", "WRITER_CASE_VERSION", "log"}),
     writer_launch: frozenset({"log"}),
-    # A host's mint and retirement (Discodon, then metallm) are the bank's callers, outside this repo and not written
-    # yet.
+    # The engine's writer actions call the mint, the retirement and the template creation; the split's own reads and
+    # the bank's type wait for a caller.
     writer_bank: frozenset(
-        {
-            "HELD_OUT_FRACTION",
-            "MintedWriterCase",
-            "WriterCaseBank",
-            "WriterCaseMint",
-            "WriterSplit",
-            "WriterSplitSets",
-            "WriterTemplateCreate",
-            "log",
-            "writer_case_archive",
-            "writer_case_mint",
-            "writer_group_side",
-            "writer_split",
-            "writer_template_create",
-        }
+        {"HELD_OUT_FRACTION", "WriterCaseBank", "WriterSplitSets", "log", "writer_group_side", "writer_split"}
     ),
-    # A host reads a promotion decision when a person asks whether to promote, outside this repo and not written yet.
-    writer_promotion: frozenset({"PromotionDecision", "WriterPromotion", "writer_promotion"}),
+    # The engine's writer_promotion action reads the decision; nothing names its literal type.
+    writer_promotion: frozenset({"PromotionDecision"}),
     # The rubric's readers call shipped_rubric and never name its types.
     rubric: frozenset({"EditorRubric", "RubricItem"}),
 }

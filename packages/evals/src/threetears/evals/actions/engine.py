@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from functools import partial
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from datetime import datetime
 
 from pydantic import AwareDatetime, Field, ValidationError
+from pydantic.fields import FieldInfo
 
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
@@ -159,6 +160,17 @@ from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename
 from threetears.evals.ops.judge_cases import JudgeCaseListing, judge_cases_list
+from threetears.evals.ops.report_writer.writer_bank import (
+    MintedWriterCase,
+    WriterCaseMint,
+    WriterCaseState,
+    WriterSplit,
+    WriterTemplateCreate,
+    writer_case_archive,
+    writer_case_mint,
+    writer_template_create,
+)
+from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.ops.runs import PERSON_DESCRIPTION
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
@@ -193,13 +205,17 @@ Confirm = Annotated[str, Field(description="Must echo the id of what is destroye
 ArchiveReason = Annotated[
     str | None,
     Field(
-        description="Why the record is archived (an analysis shown false or superseded, a reporter case that can no "
-        "longer measure anything); cleared on restore."
+        description="Why the record is archived (an analysis shown false or superseded, a reporter or writer case "
+        "that can no longer measure anything); cleared on restore."
     ),
 ]
 ReporterCaseId = Annotated[
     str,
     Field(min_length=1, description="A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it."),
+]
+WriterCaseId = Annotated[
+    str,
+    Field(min_length=1, description="A writer case's id, the test_case_id writer_case_mint returned."),
 ]
 Name = Annotated[
     str,
@@ -698,6 +714,82 @@ class ReporterCaseArchiveParams(EvalBaseModel):
     reporter_case_id: ReporterCaseId
     archived: Archived = True
     archive_reason: ArchiveReason = None
+
+
+class WriterTemplateCreateParams(WriterTemplateCreate):
+    """``writer_template_create`` — the operation's own arguments, declared once on
+    :class:`~threetears.evals.ops.report_writer.writer_bank.WriterTemplateCreate`."""
+
+
+def _described(parameter: Any) -> str | None:
+    """The description an annotated parameter type declares."""
+    return next((meta.description for meta in get_args(parameter)[1:] if isinstance(meta, FieldInfo)), None)
+
+
+_MINT = WriterCaseMint.model_fields
+_SPLIT = WriterSplit.model_fields
+
+
+class WriterCaseMintParams(EvalBaseModel):
+    """``writer_case_mint`` — the mint's arguments, flat: a tool's parameters hold no nested model, so the split's
+    three fields are parameters of their own, each described as :class:`WriterSplit` describes it."""
+
+    template_id: TemplateId
+    # Nullable here, so each takes its shared parameter's description: one name, one meaning on a tool.
+    campaign_id: str | None = Field(default=None, min_length=1, description=_described(CampaignId))
+    analysis_id: str | None = Field(default=None, min_length=1, description=_described(AnalysisId))
+    snapshot_id: str | None = Field(default=None, min_length=1, description=_MINT["snapshot_id"].description)
+    withhold: list[str] = Field(default_factory=list, description=_MINT["withhold"].description)
+    group: str | None = Field(default=None, min_length=1, description=_MINT["group"].description)
+    dev_set: str = Field(default=_SPLIT["dev"].default, min_length=1, description=_SPLIT["dev"].description)
+    held_out_set: str = Field(
+        default=_SPLIT["held_out"].default, min_length=1, description=_SPLIT["held_out"].description
+    )
+    held_out_fraction: float = Field(
+        default=_SPLIT["held_out_fraction"].default, gt=0, lt=1, description=_SPLIT["held_out_fraction"].description
+    )
+
+    def mint(self) -> WriterCaseMint:
+        """The operation's arguments, refused as the operation refuses them (one source; two set names).
+
+        :return: The mint.
+        :rtype: WriterCaseMint
+        :raises ValidationFailedError: No source or several are named, or one name is given for both sets.
+        """
+        try:
+            return WriterCaseMint(
+                template_id=self.template_id,
+                campaign_id=self.campaign_id,
+                analysis_id=self.analysis_id,
+                snapshot_id=self.snapshot_id,
+                withhold=self.withhold,
+                group=self.group,
+                split=WriterSplit(
+                    dev=self.dev_set, held_out=self.held_out_set, held_out_fraction=self.held_out_fraction
+                ),
+            )
+        except ValidationError as invalid:
+            raise ValidationFailedError(
+                "; ".join(str(error["msg"]).removeprefix("Value error, ") for error in invalid.errors()),
+                remedy="name exactly one of campaign_id, analysis_id and snapshot_id, and two different set names",
+            ) from invalid
+
+
+class WriterCaseArchiveParams(EvalBaseModel):
+    """``writer_case_archive``."""
+
+    writer_case_id: WriterCaseId
+    archived: Archived = True
+    archive_reason: ArchiveReason = None
+
+
+class WriterPromotionParams(EvalBaseModel):
+    """``writer_promotion``."""
+
+    campaign_id: CampaignId
+    candidate: str = Field(
+        min_length=1, description="The candidate arm, by its label or its variant key; never the control."
+    )
 
 
 class ScopePivotParams(EvalBaseModel):
@@ -1347,6 +1439,33 @@ async def _reporter_case_archive(
     )
 
 
+async def _writer_template_create(host: OpsHost, caller: Caller, params: WriterTemplateCreateParams) -> TemplateLine:
+    create = WriterTemplateCreate.model_validate(params.model_dump())
+    return await run_blocking(host.eval_host.blocking_executor, writer_template_create, host, create, caller.scope_id)
+
+
+async def _writer_case_mint(host: OpsHost, caller: Caller, params: WriterCaseMintParams) -> MintedWriterCase:
+    return await writer_case_mint(host, params.mint(), caller.scope_id, created_by=caller.identity)
+
+
+async def _writer_case_archive(host: OpsHost, caller: Caller, params: WriterCaseArchiveParams) -> WriterCaseState:
+    stored = await writer_case_archive(
+        host, params.writer_case_id, caller.scope_id, archived=params.archived, reason=params.archive_reason
+    )
+    return WriterCaseState.of(stored)
+
+
+async def _writer_promotion(host: OpsHost, caller: Caller, params: WriterPromotionParams) -> WriterPromotion:
+    eval_host = host.eval_host
+    return await run_blocking(
+        eval_host.blocking_executor,
+        partial(writer_promotion, candidate=params.candidate),
+        eval_host,
+        params.campaign_id,
+        caller.scope_id,
+    )
+
+
 async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
     eval_host = host.eval_host
     return await run_blocking(
@@ -1712,6 +1831,7 @@ def engine_actions() -> tuple[Action, ...]:
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
     reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
+    writer_template_id, writer_case_id = "tmpl-writer", "0193a1b2-writer-case"
     return (
         Action(
             name="templates_list",
@@ -2454,6 +2574,72 @@ def engine_actions() -> tuple[Action, ...]:
             ),
         ),
         Action(
+            name="writer_template_create",
+            summary="Write a report writer template, its scoring rubric seeded from the editor rubric this build ships.",
+            workflow=ANALYSE,
+            permission="write",
+            params=WriterTemplateCreateParams,
+            result=TemplateLine,
+            handler=_writer_template_create,
+            render=render.render_model,
+            example={
+                "template_name": "report writer",
+                "intent": "Measure whether a change to the report writer writes better reports.",
+            },
+            detail=(
+                "A report writer campaign measures the analyst that writes a campaign's report: its skill, its "
+                "reasoning effort, its revisions or its model. The template is the writer kind, a name and an intent, "
+                "and its scoring rubric: the seven items of the editor rubric this build ships, copied in now, so "
+                "every campaign on the template is scored on what that rubric stated when it was written. Mint cases "
+                "into it with writer_case_mint, then run_launch it over the held-out set to decide a change. Refused "
+                "on a host that does not launch the report writer kind, and for a name the scope already holds. "
+                "Calls no model."
+            ),
+        ),
+        Action(
+            name="writer_case_mint",
+            summary="Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set.",
+            workflow=ANALYSE,
+            permission="write",
+            params=WriterCaseMintParams,
+            result=MintedWriterCase,
+            handler=_writer_case_mint,
+            render=render.render_model,
+            idempotent=True,
+            example={"template_id": writer_template_id, "campaign_id": campaign_id, "withhold": ["kairo-round2.md"]},
+            detail=(
+                "A writer case is one report snapshot, frozen from a campaign or a stored analysis now, or named by a "
+                "snapshot already frozen, with the exemplar notes its analyst is never given. Name exactly one source. "
+                "Each withheld note must be a note of the skill this build ships, checked before anything is frozen. "
+                "The case joins one side of the split: a group already placed keeps its side, and a new group's side "
+                "is read from the digest of its name against held_out_fraction, so related campaigns named in one "
+                "group never sit on both sides. The case is listed in its side's set as that set's next version. One "
+                "source is one case: minting it again returns the stored case, and a mint that differs (the evidence "
+                "moved, or other notes withheld) is refused; retire the old case with writer_case_archive and mint "
+                "again. Calls no model."
+            ),
+        ),
+        Action(
+            name="writer_promotion",
+            summary="Read whether a report writer campaign's candidate arm should replace its control.",
+            workflow=ANALYSE,
+            permission="read",
+            params=WriterPromotionParams,
+            result=WriterPromotion,
+            handler=_writer_promotion,
+            render=render.render_model,
+            example={"campaign_id": campaign_id, "candidate": "edited skill"},
+            detail=(
+                "Gates the candidate's corrected verdicts against the control's and answers promote, keep or "
+                "undecided. Keep when the candidate is shown worse on a reading, or a guardrail is not shown held. "
+                "Undecided when any reading is not decided, and undecided never promotes. Promote when every reading "
+                "is decided and at least one shows the candidate better. It also names the levers the candidate "
+                "changed, the held-out cases read, both arms' costs and the skill this build ships with its ledger "
+                "entry. Refused for arms scored by different judges or rubrics, and for a campaign run over anything "
+                "but held-out writer cases. Records nothing: a person records the call with campaign_record."
+            ),
+        ),
+        Action(
             name="judge_template_create",
             summary="Write a judge template: the judge kind and an intent, which judge cases are frozen into.",
             workflow=ANALYSE,
@@ -2864,6 +3050,27 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "For a case that can no longer measure anything. It stays readable for every run measured against "
                 "it. A restore is refused when it would give its campaign and memo a second live case."
+            ),
+        ),
+        Action(
+            name="writer_case_archive",
+            summary="Retire a writer case (or restore it): no launch runs it again, nothing destroyed.",
+            workflow=CURATE,
+            permission="write",
+            params=WriterCaseArchiveParams,
+            result=WriterCaseState,
+            handler=_writer_case_archive,
+            render=render.render_model,
+            idempotent=True,
+            example={
+                "writer_case_id": writer_case_id,
+                "archived": True,
+                "archive_reason": "its campaign was re-run",
+            },
+            detail=(
+                "For a case whose campaign's evidence moved: retire it, then writer_case_mint the campaign again, and "
+                "the new case joins its set's next version without the retired one. It stays readable for every run "
+                "measured against it. A restore is refused when its source already has another live case."
             ),
         ),
         Action(

@@ -222,6 +222,6 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
     )
 
 
-#: A host reads a decision when a person asks whether to promote (Discodon, then metallm), outside this repo and not
-#: written yet, so each name waits for its caller (``tests/test_report_writer_exports.py``).
-__all__: list[str] = []
+#: The engine's ``writer_promotion`` action reads a decision for a host when a person asks whether to promote; the
+#: decision's literal waits for a caller (``tests/test_report_writer_exports.py``).
+__all__ = ["WriterPromotion", "writer_promotion"]

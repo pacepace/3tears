@@ -34,7 +34,7 @@ def _catalogue() -> set[str]:
 #: Catalogue nouns spelled in two words. Split at the first underscore, ``case_set_mint`` would read as the
 #: noun ``case`` and the verb ``set_mint`` — and ``set_[a-z_]+`` is a write verb, so the launch fields
 #: ``case_set_name`` and ``case_set_version`` would read as remedies. They are fields; the noun is ``case_set``.
-_COMPOUND_NOUNS = ("reporter_cases", "reporter_case", "case_sets", "case_set")
+_COMPOUND_NOUNS = ("reporter_cases", "reporter_case", "writer_case", "case_sets", "case_set")
 
 
 def _action_shaped() -> re.Pattern[str]:

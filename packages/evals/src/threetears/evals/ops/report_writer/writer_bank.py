@@ -47,6 +47,7 @@ from threetears.evals.kernel.remedies import FIND_TEMPLATE, FIND_TEST_CASE
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.judge_cases import JudgeTemplateCreate
 from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND,
     refuse_undeliverable_writer_template,
@@ -170,6 +171,45 @@ class MintedWriterCase(EvalBaseModel):
     side: WriterSide = Field(description="The side of the split it sits on.")
     case_set: CaseSetRef = Field(description="The version of its side's set that lists it.")
     reused: bool = Field(description="True when the same case was minted before, and this is that case.")
+
+
+class WriterCaseState(EvalBaseModel):
+    """A stored writer case's retirement, as a retirement or a restore leaves it: the receipt every surface renders."""
+
+    test_case_id: str = Field(description="The case.")
+    template_id: str = Field(description="The writer template it is stored under.")
+    source_key: str = Field(description="What it froze: campaign:<id>, or report-input:<digest>.")
+    group: str | None = Field(description="Its split group; none for a case put in no split.")
+    side: WriterSide | None = Field(description="The side of its split it sits on; none for a case put in no split.")
+    archived: bool = Field(description="True when it is retired, so no launch runs it.")
+    archived_reason: str | None = Field(description="Why it was retired; none once restored.")
+
+    @classmethod
+    def of(cls, stored: EvalTestCase) -> WriterCaseState:
+        """The receipt of a stored writer case.
+
+        :param stored: The stored case, under a template.
+        :ptype stored: EvalTestCase
+        :return: Its receipt.
+        :rtype: WriterCaseState
+        :raises ValidationFailedError: It carries no writer case, or names no template.
+        """
+        case = writer_case_of(stored)
+        if case is None or stored.template_id is None:
+            raise ValidationFailedError(
+                f"test case {stored.id!r} carries no writer case under a template",
+                remedy="name a writer case of a writer template",
+            )
+        origin = case.origin
+        return cls(
+            test_case_id=stored.id,
+            template_id=stored.template_id,
+            source_key=case.source_key,
+            group=None if origin is None else origin.group,
+            side=None if origin is None else origin.side,
+            archived=stored.archived,
+            archived_reason=stored.archived_reason,
+        )
 
 
 @dataclass(frozen=True)
@@ -603,10 +643,9 @@ class WriterTemplateCreate(EvalBaseModel):
     Nothing else: its rubric is the scoring judge's, seeded from the shipped skill, and its cases are minted into it.
     """
 
-    template_name: str = Field(min_length=1, description="The writer template's name, unique in the scope.")
-    intent: str = Field(
-        min_length=1, description="What its campaigns measure, in a sentence a reader of their reports is told."
-    )
+    # Declared once, on the judge's create, so the two create actions' shared parameters mean one thing on a tool.
+    template_name: Annotated[str, JudgeTemplateCreate.model_fields["template_name"]]
+    intent: Annotated[str, JudgeTemplateCreate.model_fields["intent"]]
 
 
 def writer_template_create(host: OpsHost, create: WriterTemplateCreate, scope_id: str) -> TemplateLine:
@@ -661,7 +700,16 @@ def writer_template_create(host: OpsHost, create: WriterTemplateCreate, scope_id
     )
 
 
-#: The writer's launch reads a bank (``writer_case_bank``); a host's mint, retirement and template creation (Discodon,
-#: then metallm) are the callers of the rest, none in this repo yet, so each waits for one
-#: (``tests/test_report_writer_exports.py``).
-__all__ = ["writer_case_bank"]
+#: The writer's launch reads a bank (``writer_case_bank``), and the engine's writer actions mint, retire and restore
+#: cases and create templates; the split's own reads wait for a caller (``tests/test_report_writer_exports.py``).
+__all__ = [
+    "MintedWriterCase",
+    "WriterCaseMint",
+    "WriterCaseState",
+    "WriterSplit",
+    "WriterTemplateCreate",
+    "writer_case_archive",
+    "writer_case_bank",
+    "writer_case_mint",
+    "writer_template_create",
+]

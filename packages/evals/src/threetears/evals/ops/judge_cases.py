@@ -335,9 +335,10 @@ class JudgeTemplateCreate(EvalBaseModel):
     Nothing else: a judge template is the judge kind and an intent, its cases carrying everything a trial reads.
     """
 
-    template_name: str = Field(min_length=1, description="The judge template's name, unique in the scope.")
+    # Described for any template a create action writes, since the writer's create takes these two from here.
+    template_name: str = Field(min_length=1, description="The template's name, unique in the scope.")
     intent: str = Field(
-        min_length=1, description="What its judge campaign measures, in a sentence a reader of its report is told."
+        min_length=1, description="What its campaigns measure, in a sentence a reader of their reports is told."
     )
 
 
