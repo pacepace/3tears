@@ -47,6 +47,25 @@ serving process reading the store, its DuckDB copy compressed, and the workers i
 less: about 0.3 GiB more). A one-state change publishes in 0.10-0.15 s; its checkpoint (0.01-0.21 s) runs off the
 change's path (`scripts/measure-shared-arrow.py`, `docs/shared-arrow.md`).
 
+### observe, tools: a tool pod counts every call it finishes, with its duration, by tool and outcome
+
+**Fixed:** a tool pod's `/metrics` carried only `threetears_tools_inflight_requests`, a gauge read once per scrape.
+A call that starts and ends between two scrapes never moves it: on cobalt dev on 2026-10-30 the reports pods
+answered thousands of calls in six hours (cached report answers in milliseconds, ENR loads handed to a background
+operation) and the gauge read 0 at every scrape. The gauge itself is right: a call in progress reads 1.
+
+**Added:**
+- `threetears_tools_calls_total{tool, outcome}` and `threetears_tools_call_duration_seconds{tool, outcome}` on every
+  tool pod's `/metrics`, beside the gauge. `outcome` is `success`, `failure` or `error`, as the baseline
+  `tool.call` audit records it. `tool` is the tool's name when the pod serves it, and `""` for a call naming
+  anything else (a caller cannot grow the pod's series). The rate of the duration's `_sum` is the mean number of
+  calls in flight, which a scrape interval cannot hide.
+- `threetears.observe.CallMetrics(prefix, label=..., registry=...)`: that counter and histogram for any RPC pod,
+  a no-op without `prometheus_client` like `InflightRequestsGauge`.
+- `InflightRequestsGauge.registry`: the registry the gauge is served from, for other metrics to share its
+  `/metrics` route.
+
+
 ## v0.85.0 -- 2026-10-29
 
 ### core, acl: a platform pool stops re-sending the session settings it already holds, and a namespace name resolves from cache
