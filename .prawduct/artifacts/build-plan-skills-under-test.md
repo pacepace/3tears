@@ -1,0 +1,100 @@
+---
+artifact: build-plan
+version: 2
+scope: skills-under-test
+branch: evals/skills-under-test
+base: report-kit/analyst
+working-branches: []
+last_validated: 2026-10-31
+partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in isolated worktrees off 02 (03 owns the scoring judge, 04 the case bank and sets; disjoint files); 05 serial in the main session; 06 is a live spend, main session only, after the owner names a cap
+---
+
+## Goals
+
+**Response taken:** Ask, in one batch (2026-10-31). The owner answered four questions. Issue #1009 (P3, parked 2026-10-28) is now taken up by the owner as "the last barrier to self-improving evals".
+
+**Product.** Any change to how the eval system works becomes a measured decision, made by the engine's own corrected comparison, never a judgement call. Wave 1 (this plan) builds the gate. Wave 2 (its own plan, drawn when it starts) builds the search that feeds the gate.
+
+**Owner rulings (2026-10-31, direct):**
+- Scope: gate first, then search. The search must cover **arm settings** (model, reasoning effort, quantization and so on) as well as skill text: "self improving evals as a system", not "evolutionary skill writing". So the gate is generic over a kind's levers, and the report writer is its first subject, not its only one.
+- Judge: a **fixed scoring judge**. Its rubric text and model hold for the whole campaign, from a different model family than the writer. The in-loop editor stays part of the arm under test. Its scores carry the existing uncalibrated-judge disclosure.
+- Model: the A/B campaigns run the writer on **claude-haiku-5-5** (provider anthropic, ANTHROPIC_API_KEY from env, no temperature).
+- Promotion: **package files plus a recorded decision**. The skill files stay the source of truth. Promotion is a commit that changes them and cites the campaign decision, and a test checks that the shipped digest has a recorded decision. Hosts get an override seam only to run candidates.
+
+**Inferred (not owner words):**
+- Cases: Kairo plus the six misfits, and r1–r5 rebuilt as writer cases. That is about 12 cases, split into a dev set and a held-out set. With this few, corrected contrasts will read "not separated" unless the effect is large. Inferred: we accept that, and the decision says so rather than pooling repeats as cases.
+- Scoring judge model: gemini flash via OpenRouter (cheap, and not the writer's family). The owner can swap it; the point is that it is fixed per campaign.
+- Withholding: each writer case records its own exemplar note to withhold, so blind withholding is automatic per case instead of chosen by hand on the CLI.
+- Regression: "the shipped skill against the last promoted one" is the same A/B mechanism. Wiring `RegressionWatch` to a host's periodic run is the host's job.
+
+**Architecture.**
+- The writer becomes a candidate kind, `report_writer`, beside `analysis_reporter` (same shape: frozen cases, a judge on a rubric, a spend seat).
+- Its overlays are its levers: the skill texts (by content digest, carried as subject components so identity refuses an uncarried text), reasoning effort, and the writer limits. The model is the arm's candidate model.
+- The kind reports objective measures from the run itself: ending, bounces by kind, open must_fix and should_fix counts, editor rounds, turns and cost. The scoring judge adds the seven rubric items.
+- The promotion read wraps the existing family verdicts and `gate_verdicts`. It adds no new statistics.
+- Must stay possible (wave 2): a search proposes lever maps for ANY kind (host kinds included, e.g. a quantization lever a host declares), and scores them through this same campaign path. Nothing in wave 1 may assume the lever under test is text.
+
+**Constraints:** no new PR (all evals work merges into report-kit/analyst, #1006). Report text the package writes follows the report-style rulings. Live spend only in chunk 06, under a cap the owner names. Subagents run one test file at a time; package suites go on the testament pool.
+
+**Tradeoffs accepted:**
+- Small case set, so low power. Revisit when hosts contribute writer cases (Discodon snapshots).
+- The scoring judge is uncalibrated until humans label pages (an app's job, per the 2026-10-14 ruling). Its scores are disclosed as uncalibrated, never hidden.
+
+**Decisions made mid-build:** (append here)
+
+**Level:** Medium. The kind's shape is clear from `analysis_reporter`. Unknown: whether a full writer run (a multi-session tool loop) fits a single cell's invoke under the existing cell timeout and cost seats. Chunk 02's first step checks that against one replayed prototype5 case.
+
+## Chunks
+
+### 01 — Skill seam: a skill version is a value
+Type: code
+- `AnalystSkill` can be built from files and published (today only `load_skill` and `SkillText` are exported).
+- `report_write` and `write_report` take an optional skill; `None` keeps the shipped one.
+- A skill version's identity is its content digest. The generation record already stores it; a run under a supplied skill records it the same way.
+- Done when: a write with a supplied skill records that skill's digests; the default write is unchanged (replay tests green); an incomplete skill is refused before anything is frozen or spent.
+
+### 02 — The `report_writer` candidate kind
+Type: code
+- new `analysis/writer_kind.py` and new `analysis/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py`.
+- Overlays: `analyst_skill` and `editor_skill` (content-addressed), `reasoning_effort`, `limits`. The skill texts travel as subject components.
+- Case: a frozen writer case, meaning the report snapshot plus the exemplar note it withholds.
+- `invoke` runs `write_rounds` and returns the page as the output, with the objective measures.
+- Step 0: replay one prototype5 case through the kind and check that it fits the cell timeout and the spend seat.
+- Done when: a replayed campaign of two arms (shipped skill against a one-line-edited skill) over two recorded cases produces runs, both arms keyed apart by the skill lever, and the objective measures land on results.
+
+### 03 — Fixed scoring judge (delegated)
+Type: code
+- The editor rubric's seven items become rubric dims of a writer template's judge. That judge reads the final page and the snapshot facts the editor reads.
+- Its rubric text and model are fixed per campaign. A launch whose arms differ in the scoring rubric or judge model is refused.
+- Its scores disclose that the judge is uncalibrated, through the existing judge-profile path.
+- Done when: a replayed campaign carries all seven judged dims per result, and the refusal is tested.
+
+### 04 — Writer case bank, dev and held-out sets (delegated)
+Type: code
+- A builder freezes writer cases from Kairo, the six misfits and r1–r5, each recording its withheld note.
+- The cases are minted into two named `CaseSet`s, `writer-dev` and `writer-held-out`. The split is fixed and recorded, and a case never sits in both.
+- Done when: both sets resolve; a case in both is refused; withholding is per case with no CLI choice.
+
+### 05 — Promotion decision and the shipped-digest check
+Type: code
+- `skill_promotion(campaign)` reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
+- A promotion is recorded as a `CampaignCall`, and in a new package ledger, `analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
+- An enforcement test fails when the shipped analyst or editor digest has no ledger entry. Editing a skill file then needs a recorded decision, or an explicit owner-waived entry that says so.
+- Done when: the ledger test trips on an edited skill file and passes on a recorded one; `undecided` never promotes.
+
+### 06 — Live A/B on Haiku (main session, owner-capped)
+Type: code
+- Run one real A/B on claude-haiku-5-5: the shipped skill against one real candidate edit, on `writer-held-out`, scored by the fixed judge.
+- First quote it with `ArmQuote`, and get the owner's cap before sending a turn.
+- Record the decision in the ledger whatever it is, `keep` included.
+- Done when: the decision and its cost are recorded; the run's page is readable; the cumulative Critic is clean.
+Critic mode: cumulative
+
+## Verification strategy
+Chunks 01–05 are proven on recorded and replayed turns (prototype5 and the hand-scripted fixtures). Chunk 06 is the live proof. Gates: lint and typecheck locally; the evals suite on the testament pool; the integration suite before merging into report-kit/analyst.
+
+## Wave 2 (sketch, not this plan)
+- A search over a kind's lever space. A genome is a lever map: model, effort, a host's quantization lever, skill texts.
+- Operators: enum and numeric lever moves; text mutation by an LLM proposer seeded from the gap digest and editor-score gaps; crossover between strong arms.
+- Each generation is a campaign on `writer-dev` with cheap screening (fewer repeats, a cheap judge). Survivors go to the wave 1 gate on `writer-held-out`. A human promotes.
+- A budget per generation, and generic over kinds, so Discodon's own kinds can be searched too.
