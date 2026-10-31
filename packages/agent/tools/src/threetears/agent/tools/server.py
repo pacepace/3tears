@@ -12,7 +12,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, Iterable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Final, Iterable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from datetime import timedelta
@@ -1932,10 +1932,16 @@ class ToolServer:
         # subject already is both -- it carries the pod id, so two DIFFERENT tool
         # pods never share a group and a restarted replica rejoins its own.
         call_subject = Subjects.tools_internal(self._pod_id)
-        # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
         # concurrent: a slow call never holds the calls behind it (:data:`CALLS_IN_FLIGHT`)
+        assert self._nc is not None  # serve() connected first
         subscription = await self._subscribe_or_drop(
-            subject=call_subject, queue=call_subject.path, cb=self.handle_call, max_in_flight=self._max_calls_in_flight
+            # sender-posture: signed-envelope -- hub token plus a registry assertion bound to pod, body, expiry, jti
+            self._nc.subscribe(
+                subject=call_subject,
+                queue=call_subject.path,
+                cb=self.handle_call,
+                max_in_flight=self._max_calls_in_flight,
+            )
         )
         if self._call_state is _CallState.LEFT:
             # left while the subscribe was in flight: never routed here
@@ -1979,9 +1985,15 @@ class ToolServer:
         queue = f"{call_subject.path}{HELD_QUEUE_SUFFIX}"
         while self._call_state is _CallState.HELD and self._running:
             try:
-                # sender-posture: signed-envelope -- the call subject's own envelope, verified as every call is
+                assert self._nc is not None  # serve() connected first
                 subscription = await self._subscribe_or_drop(
-                    subject=call_subject, queue=queue, cb=self.handle_held_call, max_in_flight=self._max_calls_in_flight
+                    # sender-posture: signed-envelope -- the call subject's own envelope, verified as every call is
+                    self._nc.subscribe(
+                        subject=call_subject,
+                        queue=queue,
+                        cb=self.handle_held_call,
+                        max_in_flight=self._max_calls_in_flight,
+                    )
                 )
             except SubscribeError as exc:
                 # NOSILENT: logged, and asked again: a held replica that could not subscribe answers no control
@@ -2018,17 +2030,16 @@ class ToolServer:
         log.info("left the held queue group", extra={"extra_data": {"pod_id": self._pod_id, "drained": drained}})
         return bool(drained)
 
-    async def _subscribe_or_drop(self, **kwargs: Any) -> Any:
-        """subscribe the call subject; a subscription that completes after this task is cancelled is drained, never
-        left standing unowned (a replica that left would be routed calls it never answers).
+    async def _subscribe_or_drop(self, subscribe: Coroutine[Any, Any, Any]) -> Any:
+        """await a subscribe of the call subject; a subscription that completes after this task is cancelled is
+        drained, never left standing unowned (a replica that left would be routed calls it never answers).
 
-        :param kwargs: :meth:`NatsClient.subscribe`'s arguments
-        :ptype kwargs: Any
+        :param subscribe: the subscribe (:meth:`NatsClient.subscribe`), not yet awaited
+        :ptype subscribe: Coroutine[Any, Any, Any]
         :return: the subscription
         :rtype: Any
         """
-        assert self._nc is not None  # serve() connected first
-        subscribing = asyncio.ensure_future(self._nc.subscribe(**kwargs))
+        subscribing = asyncio.ensure_future(subscribe)
         try:
             return await asyncio.shield(subscribing)
         except asyncio.CancelledError:
