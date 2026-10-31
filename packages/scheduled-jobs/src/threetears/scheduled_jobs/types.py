@@ -181,6 +181,11 @@ class JobFireResult:
         :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`
         sets it; a callback that finishes its work before returning leaves
         it ``False``.
+    :ivar retry_after_seconds: on a ``'failed'`` result, ask the engine to run
+        the same fire once more after this many seconds, for a failure that a
+        moment fixes (a tool whose pods are being replaced). The second
+        result is final, whatever it asks. ``None`` (the default) records the
+        failure at once.
     """
 
     status: str = "succeeded"
@@ -188,3 +193,4 @@ class JobFireResult:
     latency_ms: int | None = None
     error: str | None = None
     handed_off: bool = False
+    retry_after_seconds: float | None = None

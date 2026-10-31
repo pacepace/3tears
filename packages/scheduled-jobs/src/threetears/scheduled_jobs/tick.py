@@ -79,6 +79,7 @@ callable gets a :class:`TypeError` naming the parameter; wrap it as
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -565,6 +566,23 @@ async def _dispatch_one(
 
     try:
         result = await dispatch_callback(trigger, fire_id)
+        if result.status == "failed" and result.retry_after_seconds is not None:
+            # a failure the dispatcher says a moment fixes: the same fire, once more, after the pause it
+            # asked for. Only once: the second answer is recorded whatever it asks.
+            log.warning(
+                "scheduled_tick: fire failed with a retry asked for; running it once more",
+                extra={
+                    "extra_data": {
+                        "job_id": str(schedule.job_id),
+                        "fire_id": str(fire_id),  # convert at border: fire-retry log extra_data field
+                        "kind": schedule.kind,
+                        "error": result.error,
+                        "retry_after_seconds": result.retry_after_seconds,
+                    }
+                },
+            )
+            await asyncio.sleep(max(0.0, result.retry_after_seconds))
+            result = await dispatch_callback(trigger, fire_id)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
         contain(
             exc,

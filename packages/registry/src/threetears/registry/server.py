@@ -888,18 +888,25 @@ class RegistryServer:
             pop_replay_guard=pop_replay_guard,
         )
         self._call_proxy = call_proxy
-        await retry_with_backoff(
-            lambda: call_proxy.start(nc),
-            "registry.call_proxy.start",
-        )
 
         # canonical health endpoints -- consumed by docker compose + k8s probes +
         # the consumer's devx preflight. port 8000 matches the inherited upstream
         # hub Dockerfile HEALTHCHECK so the same probe works whether the container
-        # runs as the hub, the registry, or any other consumer of that base.
+        # runs as the hub, the registry, or any other consumer of that base. Started before the
+        # proxy joins its calls, so the probes are answered (not ready) while it waits.
         health_server = self._build_health_server(inflight_gauge)
         await health_server.start()
         self._health_server = health_server
+        # a replica joins the call queue group only once the copies its catalog warm-loaded are routable
+        # again: until each pod's next heartbeat they are unavailable, and a call this replica took then
+        # was refused TOOL_UNAVAILABLE while every other replica could route it. The other replicas take
+        # the calls meanwhile, and a pod that died is waited for no longer than a live pod's heartbeat
+        # could take (the heartbeat timeout).
+        await self._catalog.wait_for_loaded_copies(self._heartbeat_timeout)
+        await retry_with_backoff(
+            lambda: call_proxy.start(nc),
+            "registry.call_proxy.start",
+        )
 
     def _build_health_server(self, inflight_gauge: InflightRequestsGauge) -> HealthServer:
         """build the registry's canonical health server, NOT yet started.
@@ -952,6 +959,13 @@ class RegistryServer:
                 # terminal close is already the `nats` check's to report -- the catalog's bucket
                 # writes through the client's current connection, so its writes fail on a closed
                 # connection only when the client's own connection is closed.
+                # NOT-READY while a warm-loaded copy waits for its pod's heartbeat (at most the heartbeat
+                # timeout), so a rollout keeps the replicas that can route until this one can too
+                HealthCheck(
+                    name="catalog_revived",
+                    probe=lambda: self._catalog.loaded_copies_settled(self._heartbeat_timeout),
+                    tier=HealthTier.READY,
+                ),
                 HealthCheck(
                     name="catalog_persisting",
                     probe=lambda: self._catalog.persisting,
