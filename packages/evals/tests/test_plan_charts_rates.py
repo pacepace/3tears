@@ -424,22 +424,28 @@ def test_a_dot_strip_marks_each_figure_against_its_criterions_line_hollow_where_
     declared = {table[key].level for table in (report_input.measures, report_input.judged) if key in table}
     level = spec.level or next(iter(declared)) or ""
     assert data.level == level, "the stored level, else the level its figures declare"
-    stored = _stored_line(report_input, spec)
-    # A rate's interval is drawn within 0 to 100, where a rate lies.
-    rate = quantity(figure_unit(report_input, key)).rate
+    # Every figure and line is drawn at its unit's factor (a share at a hundred times, as a percent); a rate's interval
+    # within 0 to 100, where a rate lies.
+    drawn_as = quantity(figure_unit(report_input, key))
+    rate, factor = drawn_as.rate, drawn_as.factor
+
+    def scaled(value: float | None) -> float | None:
+        return None if value is None else value * factor
+
+    stored = scaled(_stored_line(report_input, spec))
     computed_here = level.endswith(COMPUTED) and spec.query.source in ("measures", "judged")
     computed_rows = 0
     for title, rows, reference in drawn_strips:
         stats, line = strips[title]
         assert {row.id for row in rows} == set(stats)
-        expected_line = stored if spec.reference else line
+        expected_line = stored if spec.reference else scaled(line)
         assert (reference.value if reference is not None else None) == expected_line, (
             "the stored line, else its criterion's"
         )
         for row in rows:
             arm = row.id or ""
             stat = stats[arm]
-            assert row.value == stat.mean
+            assert row.value == scaled(stat.mean)
             own = (
                 stat.ci
                 if stat.ci is not None
@@ -454,6 +460,7 @@ def test_a_dot_strip_marks_each_figure_against_its_criterions_line_hollow_where_
             if expected is None:
                 assert row.lo is None and row.hi is None, f"{title or 'overall'}, {arm}: no interval to draw"
             else:
+                expected = (expected[0] * factor, expected[1] * factor)
                 low, high = (max(expected[0], 0.0), min(expected[1], 100.0)) if rate else expected
                 assert (row.lo, row.hi) == pytest.approx((low, high)), f"{title or 'overall'}, {arm}"
             assert bool(row.hollow) == (expected_line is not None and row.value < expected_line)
