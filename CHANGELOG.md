@@ -6,7 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.88.1 -- 2026-10-31
+## v0.89.0 -- 2026-10-31
+
+### core: a scope read from L3 pages in the order its index serves, and fetches its next page while one is typed
+
+**Fixed:** A catch-up on cobalt prod (2026-11-01) read IA from L3 at about 1.8 s a 999-row page: 434k rows, 435
+pages, 13 minutes, where the same pods loaded 7.8M rows from L2 in 29 s. Each page is `ORDER BY` the table's key
+within the scope, and a table keyed on a column YugabyteDB hashes (the reports' results tables lead with the race)
+has no index serving that order within a state: every page read and sorted the scope's every row (EXPLAIN on a local
+copy: 33,222 rows scanned and a top-N sort for each 1,000-row page of TX; 1,028 ms a page in the database, against
+122 ms for a state-led table). So a scope's read grew with the square of its rows. The hub's broker added 23 ms a
+page of its own, the pod's parse 7 ms.
+
+**Added:** `SnapshotTable.read_order`: the columns an L3 index led by the scope column orders a scope's rows by
+after it. Its pages are then read `ORDER BY` those columns and the rest of the key (`SnapshotTable.paged_by`, unique
+as the key is), which the index serves with about a page's rows: 1,028 to 123 ms a page in the database for that
+table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Empty by
+default: nothing changes for a table that does not set it. New public names, so a minor bump.
+
+**Changed:** a scope's read fetches each next page while this one is typed (a shared-memory copy types each page in
+a job of its worker: 50 to 75 ms a page locally, beside a fetch of 120 to 150 ms). Each page is still typed on its
+own: typed ten pages at once, a reports copy's retention kept 2,690 of an LSF table's 5,080 rows of a state, so the
+cut is part of what a copy holds. A write that begins mid-read still stops the scope's read at the next page, and the
+page fetched ahead is dropped with it. A read holds two pages of L3's rows beside the scope's typed rows.
 
 ### registry: a loaded or re-registered copy keeps the key its pod registered with
 
