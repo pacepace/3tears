@@ -20,6 +20,8 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - Judge: a **fixed scoring judge**. Its rubric text and model hold for the whole campaign, from a different model family than the writer. The in-loop editor stays part of the arm under test. Its scores carry the existing uncalibrated-judge disclosure.
 - Model: the A/B campaigns run the writer on **claude-haiku-5-5** (provider anthropic, ANTHROPIC_API_KEY from env, no temperature).
 - Infra first (2026-10-31): "we need to do the infra first, and not try to use our limited data for actual changes to the eval system." No skill or setting is changed on today's cases. More cases and diversity come from integrating evals into metallm, so cases arrive from hosts, not only from fixtures.
+- Split and judge (2026-11-01): the held-out fraction stays **0.3**; the default scoring judge is **Gemini flash via OpenRouter**.
+- Withholding (2026-11-01): the owner asked why notes are hidden at all. Answer given: a note reasoned on a case's own campaign is that case's answer key. The owner's own #1009 comment asks for blind withholding so a variant cannot win by memorising cases. Host cases (Discodon, metallm) withhold nothing, since no note was written from them. The mechanism stays, empty by default. Pending the owner's reply.
 - Promotion: **package files plus a recorded decision**. The skill files stay the source of truth. Promotion is a commit that changes them and cites the campaign decision, and a test checks that the shipped digest has a recorded decision. Hosts get an override seam only to run candidates.
 
 **Inferred (not owner words):**
@@ -43,7 +45,7 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 
 **Decisions made mid-build:**
 - 01: both roles' texts are built before the freeze, so a withheld note the skill lacks is refused with nothing frozen (this was also true of the shipped skill before).
-- 02 step 0: the recorded Opus runs took 682–985 s of turn time over 36–44 turns, past the engine's 600 s default cell deadline. The kind sets its own deadline (`writer_cell_timeout_s`, from the writer's worst case plus the judge phase).
+- 02 step 0: the recorded Opus runs took 682–985 s of turn time over 36–44 turns, past the engine's 600 s default cell deadline. The launcher sets the kind's own deadline (`writer_cell_timeout_s`, from the writer's worst case plus the judge phase), through `KindWiring.cell_timeout_s`.
 - 02: the kind lives in `ops/report_writer/`, since `analysis` may not import `ops`.
 - 02: an arm with no skill named records the shipped skill's digest, not None, so two builds with different shipped files never pool. This departs from the brief, which said None.
 - 02: effort is in, through a host model factory (`WriterModels`) called with the effort word. Levers: `skill`, `reasoning_effort`, `revisions`.
@@ -111,7 +113,7 @@ Type: code
 
 ### Chunk 05: Promotion decision and the shipped-digest check
 Type: code
-- `skill_promotion(campaign)` reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
+- `writer_promotion(...)` (as built; see decision 05) reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
 - A promotion is recorded as a `CampaignCall`, and in a new package ledger, `analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
 - Every shipped analyst and editor digest has a ledger entry, and the entry states its basis: `measured` (a campaign decision) or `unmeasured` (an edit shipped without one, with the reason). An enforcement test fails on a shipped digest with no entry. It does not block edits while the case set is too small to measure: an unmeasured entry is the honest record. Inferred: the owner may want a later switch that requires `measured` once host cases exist.
 - Done when: the ledger test trips on an edited skill file and passes on a recorded one; `undecided` never promotes.
