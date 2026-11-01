@@ -3,8 +3,8 @@
 The grouped fingerprint must answer, for every value at once, exactly what a fingerprint of that
 value's rows answers alone, or a caller comparing them would see every part as moved. The rail's
 bulk read (``read_partitions``) must hand back every part whole, from pages whose starts one
-statement answered, and refuse a part written while it was read. A client here answers the hub's
-asks through the asyncpg driver itself.
+statement answered, read a part written while it was read again, and refuse one written during
+every read. A client here answers the hub's asks through the asyncpg driver itself.
 """
 
 from __future__ import annotations
@@ -197,11 +197,36 @@ async def test_parts_asked_for_are_read_alone_and_an_empty_one_comes_back_empty(
 
 
 @pytest.mark.asyncio
-async def test_a_part_written_while_it_is_read_is_refused(warehouse: tuple[_Client, Any]) -> None:
+async def test_a_part_written_once_while_it_is_read_is_read_again_whole(warehouse: tuple[_Client, Any]) -> None:
     client, conn = warehouse
 
     async def write() -> None:
         await conn.execute(f"UPDATE {_RELATION} SET votes = votes + 1 WHERE state = 'DE' AND race = 'r1'")
+
+    client.after_first_page = write
+    read = {
+        part: rows
+        async for part, rows in read_partitions(
+            client,  # type: ignore[arg-type]
+            "w",
+            columns=_COLUMNS,
+            relation=_RELATION,
+            key=_KEY,
+            partition_by="state",
+            page_size=5,
+        )
+    }
+
+    assert read == {state: await _expected(conn, state) for state in ("DE", "TX", "VA")}
+
+
+@pytest.mark.asyncio
+async def test_a_part_written_during_every_read_is_refused(warehouse: tuple[_Client, Any]) -> None:
+    client, conn = warehouse
+
+    async def write() -> None:
+        await conn.execute(f"UPDATE {_RELATION} SET votes = votes + 1 WHERE state = 'DE' AND race = 'r1'")
+        client.after_first_page = write
 
     client.after_first_page = write
     with pytest.raises(IncompleteReadError, match="changed while it was read"):

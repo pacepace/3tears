@@ -290,3 +290,154 @@ class TestOneKeysetBuilder:
         assert first[1] == ["VA", "r1", "r1", 1, "r2", "r2", 1]
         assert "WHERE state = $1 AND ((race > $2) OR (race = $3 AND n >= $4)) ORDER BY" in second[0]
         assert second[1] == ["VA", "r2", "r2", 1]
+
+
+# parity-exempt: the read rail as a partitioned read uses it, over rows a test rewrites between pages
+class _SettlingRail:
+    """the three asks a partitioned read makes, answered from ``rows``; ``after_page`` runs after each page read."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.after_page: Any = None
+        self.page_starts_asked = 0
+        self.refuse_pages = False
+
+    def forwarded_identity_token(self) -> str:
+        return "fake-identity-token"
+
+    def part_rows(self, state: str) -> list[dict[str, Any]]:
+        return sorted((r for r in self.rows if r["state"] == state), key=lambda r: r["race"])
+
+    async def relation_fingerprint_groups(
+        self, datasource_name: str, *, relation: str, key: Any, group_by: str, where_in: Any = None, **_: Any
+    ) -> dict[str | None, RelationFingerprintResult]:
+        wanted = set(where_in[group_by]) if where_in else {r["state"] for r in self.rows}
+        found: dict[str | None, RelationFingerprintResult] = {}
+        for state in sorted(wanted):
+            kept = self.part_rows(state)
+            if kept:
+                payload = "\x1e".join("\x1f".join(str(row[c]) for c in key) for row in kept)
+                found[state] = RelationFingerprintResult(
+                    row_count=len(kept), digest=hashlib.sha256(payload.encode()).hexdigest()
+                )
+        return found
+
+    async def query(
+        self, datasource_name: str, sql: str, *, params: list[Any] | None = None, **_: Any
+    ) -> DatasourceQueryResult:
+        bound = list(params or [])
+        if "ROW_NUMBER()" in sql:
+            self.page_starts_asked += 1
+            size = int(sql.split("MOD(row__ - 1, ")[1].split(")")[0])
+            starts = [
+                {"part__": state, "race": row["race"]}
+                for state in bound
+                for index, row in enumerate(self.part_rows(state))
+                if index % size == 0
+            ]
+            return DatasourceQueryResult(rows=starts, row_count=len(starts), truncated=False, correlation_id=uuid7())
+        if self.refuse_pages:
+            raise DatasourceQueryError("QUERY_EXECUTION_ERROR", "the warehouse refused the statement")
+        # race >= its page's start, and < the next page's start when the SQL names one
+        lower, upper = bound[1], (bound[2] if len(bound) > 2 else None)
+        found = [r for r in self.part_rows(bound[0]) if lower <= r["race"] and (upper is None or r["race"] < upper)]
+        found = found[: int(sql.rsplit("LIMIT", 1)[1])]
+        if self.after_page is not None:
+            self.after_page()
+        return DatasourceQueryResult(rows=found, row_count=len(found), truncated=False, correlation_id=uuid7())
+
+
+async def _read_all_partitions(rail: _SettlingRail, read: list[tuple[str, list[dict[str, Any]]]]) -> None:
+    async for part in read_partitions(
+        rail,  # type: ignore[arg-type]
+        "w",
+        columns=["state", "race", "votes"],
+        relation="s.r",
+        key=["race"],
+        partition_by="state",
+        page_size=2,
+    ):
+        read.append(part)
+
+
+class TestAPartChangedWhileItWasRead:
+    """a batch whose part a source rewrote mid-read is read again, a bounded number of times, and only then."""
+
+    async def test_a_part_rewritten_once_mid_read_is_read_again_and_comes_back_whole(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rows = _rows()
+        rail = _SettlingRail(rows)
+
+        def one_upload() -> None:
+            # an upload lands while the first read is under way: a value moves and a row is added
+            rows[0]["votes"] += 1
+            rows.append({"state": _STATES[0], "race": f"{_STATES[0]}-r9", "votes": 90})
+            rail.after_page = None
+
+        rail.after_page = one_upload
+        read: list[tuple[str, list[dict[str, Any]]]] = []
+        with caplog.at_level("WARNING"):
+            await _read_all_partitions(rail, read)
+
+        assert dict(read) == {state: rail.part_rows(state) for state in _STATES}
+        assert len(dict(read)[_STATES[0]]) == 4
+        assert rail.page_starts_asked == 2
+        retries = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert [getattr(r, "extra_data", {}).get("attempt") for r in retries] == [1]
+        assert getattr(retries[0], "extra_data", {}).get("part") == _STATES[0]
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+    async def test_a_part_that_never_settles_fails_the_read_as_before_and_hands_back_none_of_its_batch(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        rows = _rows()
+        rail = _SettlingRail(rows)
+
+        def keeps_writing() -> None:
+            rows[0]["votes"] += 1
+
+        rail.after_page = keeps_writing
+        read: list[tuple[str, list[dict[str, Any]]]] = []
+        with caplog.at_level("WARNING"), pytest.raises(IncompleteReadError, match="changed while it was read"):
+            await _read_all_partitions(rail, read)
+
+        assert read == [], "a part of the batch that never settled was handed back"
+        assert rail.page_starts_asked == 3
+        assert [getattr(r, "extra_data", {}).get("attempt") for r in caplog.records if r.levelname == "WARNING"] == [
+            1,
+            2,
+        ]
+        errors = [r for r in caplog.records if r.levelname == "ERROR"]
+        assert len(errors) == 1
+        assert getattr(errors[0], "extra_data", {}).get("attempts") == 3
+
+    async def test_a_refused_statement_is_not_read_again(self, caplog: pytest.LogCaptureFixture) -> None:
+        rail = _SettlingRail(_rows())
+        rail.refuse_pages = True
+
+        with caplog.at_level("WARNING"), pytest.raises(DatasourceQueryError, match="refused"):
+            await _read_all_partitions(rail, [])
+
+        assert rail.page_starts_asked == 1
+        assert not [r for r in caplog.records if r.levelname in {"WARNING", "ERROR"}]
+
+    async def test_a_part_short_of_its_count_with_its_fingerprint_unmoved_is_not_read_again(self) -> None:
+        rail = _SettlingRail(_rows())
+        original = rail.query
+
+        async def drops_a_row(datasource_name: str, sql: str, **kwargs: Any) -> DatasourceQueryResult:
+            result = await original(datasource_name, sql, **kwargs)
+            if "ROW_NUMBER()" not in sql and result.rows and result.rows[0]["race"] == f"{_STATES[0]}-r0":
+                served = result.rows[1:]
+                return DatasourceQueryResult(
+                    rows=served, row_count=len(served), truncated=False, correlation_id=uuid7()
+                )
+            return result
+
+        rail.query = drops_a_row  # type: ignore[method-assign]
+
+        with pytest.raises(IncompleteReadError, match="counted 3 rows and the read returned 2"):
+            await _read_all_partitions(rail, [])
+
+        assert rail.page_starts_asked == 1

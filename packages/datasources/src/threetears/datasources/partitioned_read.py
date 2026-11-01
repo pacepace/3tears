@@ -192,6 +192,11 @@ _BATCH_ROWS: Final = 50_000
 #: the most page boundaries one statement may answer: under the hub's row cap
 _MAX_BOUNDARIES: Final = 990
 
+#: the most times a batch is read when one of its parts changed while it was read: the first read and two
+#: re-reads. A part's source rewrites it in one upload, so the re-read after an upload lands on a settled part;
+#: a part still moving on the third read is being written continuously, and the read fails as it always has
+_CHANGED_READ_ATTEMPTS: Final = 3
+
 
 def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int) -> tuple[str, list[Any]]:
     """the condition keeping keys at or above ``values`` (``below`` False) or strictly below them.
@@ -340,6 +345,12 @@ async def read_partitions(
     holding more rows than it should (rows written mid-read, or a key that is not unique) is refused
     at once. A part asked for that holds no rows comes back empty.
 
+    **A batch whose part changed while it was read is read again.** The fingerprints taken after the
+    read are the next read's "before", and the whole batch is read again from its page starts, up to
+    three reads in all (each re-read logged at warning). Nothing of the batch has been handed back
+    yet, so the caller only ever sees parts proven whole. A part still moving on the last read is
+    raised as before (logged at error). No other failure is read again.
+
     The batches bound what is held: a batch's rows wait for its check; the next batch is read while
     the caller works on this one.
 
@@ -365,8 +376,8 @@ async def read_partitions(
     :ptype batch_rows: int
     :return: each part's value and rows, in sorted order
     :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
-    :raises IncompleteReadError: when a part moved during its read, or its pages do not hold exactly
-        its rows, or a part's value is NULL
+    :raises IncompleteReadError: when a part moved during each of its batch's reads, or its pages do not
+        hold exactly its rows, or a part's value is NULL
     :raises DatasourceQueryError: when the hub refuses a statement (an older hub refuses the grouped
         fingerprint as ``MALFORMED_REQUEST``)
     """
@@ -380,7 +391,10 @@ async def read_partitions(
     for part in parts or ():
         counts.setdefault(part, 0)
 
-    async def batch(members: list[str]) -> list[tuple[str, list[dict[str, Any]]]]:
+    async def read_batch(
+        members: list[str],
+    ) -> tuple[list[tuple[str, list[dict[str, Any]]]], dict[str | None, RelationFingerprintResult], str | None]:
+        """one read of a batch: its parts' rows, their fingerprints after the read, and the first part that moved."""
         holding = [part for part in members if counts[part] > 0]
         starts = (
             await _boundaries(
@@ -444,16 +458,48 @@ async def read_partitions(
             start, end = spans.get(part, (0, 0))
             rows = [row for page in pages_read[start:end] for row in page]
             if after.get(part) != before.get(part):
-                raise IncompleteReadError(
-                    f"{datasource_name}: {relation} {partition_by}={part} changed while it was read; re-read once it is settled"
-                )
+                return read, after, part
             if len(rows) != counts[part]:
                 raise IncompleteReadError(
                     f"{datasource_name}: {relation} {partition_by}={part} counted {counts[part]} rows and the read "
                     f"returned {len(rows)}"
                 )
             read.append((part, rows))
-        return read
+        return read, after, None
+
+    async def batch(members: list[str]) -> list[tuple[str, list[dict[str, Any]]]]:
+        moved: str | None = None
+        for attempt in range(1, _CHANGED_READ_ATTEMPTS + 1):
+            read, after, moved = await read_batch(members)
+            if moved is None:
+                return read
+            if attempt < _CHANGED_READ_ATTEMPTS:
+                log.warning(
+                    "a part changed while it was read; reading its batch again",
+                    extra={
+                        "extra_data": {
+                            "relation": relation,
+                            "part": moved,
+                            "attempt": attempt,
+                            "attempts": _CHANGED_READ_ATTEMPTS,
+                        }
+                    },
+                )
+                # taken after the read that moved: what the next read must find unchanged, and count
+                for part in members:
+                    if part in after:
+                        before[part] = after[part]
+                        counts[part] = after[part].row_count
+                    else:
+                        before.pop(part, None)
+                        counts[part] = 0
+        log.error(
+            "a part changed during every read of its batch",
+            extra={"extra_data": {"relation": relation, "part": moved, "attempts": _CHANGED_READ_ATTEMPTS}},
+        )
+        raise IncompleteReadError(
+            f"{datasource_name}: {relation} {partition_by}={moved} changed while it was read; re-read once it is settled"
+        )
 
     batches = _batches(counts, batch_rows=batch_rows, page_size=page_size)
     # the next batch is read while the caller works on this one, once this one's reads are done: two
