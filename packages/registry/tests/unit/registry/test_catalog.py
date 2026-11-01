@@ -165,6 +165,26 @@ class TestToolEndpoint:
         restored = ToolEndpoint.from_dict(data)
         assert restored.status == "unavailable"
 
+    def test_a_copy_loaded_back_keeps_the_pods_key_and_its_delegation_mark(self) -> None:
+        """a registry that loads its catalog delegates to the pods it delegated to before."""
+        original = ToolEndpoint(pod_id="pod-001", verified_publisher=True, holder_jkt="jkt-1", proves_delegation=True)
+        restored = ToolEndpoint.from_dict(json.loads(json.dumps(original.to_dict())))
+        assert restored.holder_jkt == "jkt-1"
+        assert restored.proves_delegation is True
+
+    def test_a_copy_written_before_the_key_was_kept_loads_without_one(self) -> None:
+        """a row an older registry wrote reads as a copy whose key is unknown."""
+        data = {
+            "pod_id": "pod-001",
+            "status": "available",
+            "date_last_heartbeat": datetime.now(UTC).isoformat(),
+            "definitions": [],
+            "verified_publisher": True,
+        }
+        restored = ToolEndpoint.from_dict(data)
+        assert restored.holder_jkt is None
+        assert restored.proves_delegation is False
+
 
 # -- CatalogEntry tests --
 
@@ -246,6 +266,8 @@ class TestCatalogEntry:
             "status",
             "date_last_heartbeat",
             "verified_publisher",
+            "holder_jkt",
+            "proves_delegation",
             "definitions",
         }
 
@@ -396,6 +418,23 @@ class TestToolCatalogCRUD:
         assert merged is entry_a
         assert len(merged.endpoints) == 1
         assert merged.endpoints[0].status == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_a_held_copy_takes_the_key_its_pod_registers_with(self) -> None:
+        """a copy held without a key, as a loaded one is, learns it from the pod's next registration."""
+        catalog = ToolCatalog()
+        held = _make_entry(pod_id="pod-001")
+        incoming = _make_entry(pod_id="pod-001")
+        incoming.endpoints[0].holder_jkt = "jkt-2"
+        incoming.endpoints[0].proves_delegation = True
+        await catalog.register(held)
+        await catalog.register(incoming)
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        copy = entry.get_endpoint("pod-001")
+        assert copy is not None
+        assert copy.holder_jkt == "jkt-2"
+        assert copy.proves_delegation is True
 
     @pytest.mark.asyncio
     async def test_register_merges_endpoints_from_different_pods(self) -> None:

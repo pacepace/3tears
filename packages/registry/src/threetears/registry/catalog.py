@@ -491,6 +491,8 @@ class ToolEndpoint:
             "status": self.status,
             "date_last_heartbeat": json_datetime(self.date_last_heartbeat, field="date_last_heartbeat"),
             "verified_publisher": self.verified_publisher,
+            "holder_jkt": self.holder_jkt,
+            "proves_delegation": self.proves_delegation,
             "definitions": [announcement.to_dict() for announcement in self.definitions.values()],
         }
         return result
@@ -501,7 +503,9 @@ class ToolEndpoint:
 
         in_flight is always reset to zero on load since pending calls
         cannot survive a restart. each definition is re-keyed by its digest as computed NOW,
-        so a stored key can never name a definition other than the one beside it.
+        so a stored key can never name a definition other than the one beside it. the pod's key
+        and its delegation mark are read back, so a loaded registry delegates as the one that
+        wrote them did; a row written before they were kept reads as a copy whose key is unknown.
 
         :param data: dictionary representation of endpoint
         :ptype data: dict[str, Any]
@@ -516,6 +520,8 @@ class ToolEndpoint:
             date_last_heartbeat=datetime.fromisoformat(data["date_last_heartbeat"]),
             definitions={announcement.definition.digest: announcement for announcement in announcements},
             verified_publisher=data["verified_publisher"],
+            holder_jkt=data.get("holder_jkt"),
+            proves_delegation=data.get("proves_delegation", False),
         )
         return result
 
@@ -1165,6 +1171,9 @@ class ToolCatalog:
                 held.status = incoming.status
                 held.date_last_heartbeat = incoming.date_last_heartbeat
                 held.verified_publisher = incoming.verified_publisher
+                # the key a delegation for this pod binds is the one its latest registration signed with
+                held.holder_jkt = incoming.holder_jkt
+                held.proves_delegation = incoming.proves_delegation
                 held.merge_announcements(incoming.definitions)
                 held.prune_definitions(now, ttl)
             target = existing
