@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.88.1 -- 2026-10-31
+
+### registry: a loaded or re-registered copy keeps the key its pod registered with
+
+**Fixed:** A copy's `holder_jkt` (the key each delegated token minted for a call to its pod binds) and its
+`proves_delegation` mark were never written to the catalog bucket, and a re-registration of a copy already held
+took its status, heartbeat and publisher mark but not them. A registry that loaded its catalog, a restarted one or
+a second replica learning a copy from the bucket, so held every copy without a key and minted no delegation for it
+until the pod restarted under a new pod id; a pod that re-registered with a new key kept the old one. Found locally
+on 2026-10-31: reader reads through the hub's API ingress behaved differently before and after a registry restart.
+`ToolEndpoint.to_dict()` now writes both, `from_dict()` reads them (a row an older registry wrote reads as a copy
+whose key is unknown, as before), and a re-registration takes both from the registration. The persisted shape stays
+2: the fields are additive, so registry replicas on either side of the upgrade read each other's rows.
+
 ## v0.88.0 -- 2026-10-31
 
 ### core: a catch-up from L3 says how it ended

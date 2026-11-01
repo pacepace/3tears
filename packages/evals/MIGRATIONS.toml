@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.88.1"
+since = "v0.88.0"
+summary = """
+The registry keeps each tool pod's key across a restart: no 3tears-evals name has moved or been removed since 0.88.0,
+and no judge wording changed.
+"""
+
+[[release]]
 version = "0.88.0"
 since = "v0.87.0"
 summary = """
