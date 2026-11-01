@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: a bulk read whose part changed while it was read reads it again
+
+**Fixed:** `read_partitions` failed the whole read with `IncompleteReadError: ... changed while it was read` when a
+source rewrote a part between its fingerprint before the read and the one after. Found by a local replay of the
+2026-10-31 election night: two AP loads failed that way in one run, and their pages stayed stale until the next load.
+A batch whose part moved is now read again from its page starts, the fingerprints taken after the moved read being
+the next read's "before", up to three reads in all; each re-read is logged at warning with its attempt, and a part
+still moving on the third read fails the read exactly as before, logged at error. Nothing of the batch is handed back
+until it is proven whole. No other failure is read again. No API change.
+
 ## v0.88.1 -- 2026-10-31
 
 ### registry: a loaded or re-registered copy keeps the key its pod registered with
