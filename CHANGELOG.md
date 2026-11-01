@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report writer's skills and settings as objects under test (#1009, wave 1)
+
+**Added:** the report writer runs as a candidate kind, `report_writer`, whose levers are the analyst skill (by content
+digest), the reasoning effort and the editor's revisions. Each arm writes over frozen writer cases with no stored side
+effects. A fixed scoring judge scores every page on the editor's seven rubric items, held fixed for the whole
+campaign. Four engine actions on the `evals` tool let a host run it:
+- `writer_template_create` creates a writer template seeded with the scoring rubric.
+- `writer_case_mint` freezes a case from one of the host's campaigns, analyses or snapshots into a dev or held-out set.
+  The split goes by group, so a new case never moves an old one between sets.
+- `writer_case_archive` retires a case or restores it.
+- `writer_promotion` answers promote, keep or undecided for one candidate arm of a held-out campaign, from the
+  engine's corrected verdicts. It never records anything: a person promotes.
+
+A host enables the kind by registering `launchable_report_writer_kind` with `WRITER_KIND_CONTRACT` and
+`WRITER_KIND_MEASURES` on its profile, and a `ModelFamily` hook so a judge from the writer's own model family is
+refused. A writer cell's deadline is the writer's own, not the 600 s default. `write_report` takes an optional
+`skill`, the shipped skill when unset. Every shipped skill digest has an entry in
+`analysis/analyst/skill/PROMOTIONS.toml`, measured or unmeasured, and a test refuses a shipped digest with none.
+
+**Changed:** the in-loop editor reads its rubric from the editor text its session started with. Its pass bar is the
+shipped share of the top score (11 of 14) at that rubric's item count, rounded up, and a review states it
+(`Review.pass_total`). The shipped skill reviews exactly as before. A refusal for a host that launches no such kind
+names what the operator registers in its reason; its remedy carries no code names. The `evals` tool's served bytes
+move with the four new actions, so a host pinning that tool's schema sees it change.
+
 ### evals: a late criterion names what it applies to; a paired compare row states its cases
 
 **Changed:** on a page with more than one aspect, or more than one late criterion of a kind, a late criterion's caveat
