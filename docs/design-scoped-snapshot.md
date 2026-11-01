@@ -172,10 +172,18 @@ into the rebuild, and most of what they held the copy's retention dropped afterw
 
 - **Scope by scope, a page at a time.** A rebuild reads each scope from L3 a keyset page at a time
   (`complete_copy.l3_row_pages`). Each page goes through the backend's `export_rows` as it arrives,
-  so it is held as the L1 keeps it: typed in Arrow, and cut by a backend's retention. The scope is
-  then published like any whole publish (this L1, its chunks, its pointer) and let go. At most
-  `l3_concurrency` scopes (default 4) are held at once, read beside the one being published, and
-  published in scope order.
+  so it is held as the L1 keeps it: typed in Arrow, and cut by a backend's retention. The next page is
+  fetched while this one is typed. Pages are never typed several at once: a retention judges the rows
+  it is given, so a different cut keeps different rows. The scope is then published like any
+  whole publish (this L1, its chunks, its pointer) and let go. At most `l3_concurrency` scopes
+  (default 4) are held at once, read beside the one being published, and published in scope order.
+- **A page reads a page, not the scope (2026-11-01).** Each page is `ORDER BY` its paging columns
+  within the scope. On YugabyteDB a key led by a hashed column the scope does not pin has no index
+  serving that order, so each page read and sorted the scope's every row, and a scope's read grew with
+  the square of its rows (cobalt prod: IA, 434k rows, 1.8 s a page). A table whose L3 index led by the
+  scope column orders its rows by other columns names them (`SnapshotTable.read_order`); its pages
+  are read in that order, the rest of the key after it, and the scope is sorted back into key order
+  once read.
 - **The writer's stamp, per scope.** Each scope is published only if the writer's stamp, read after
   its rows, is still the one taken before the epochs were read. Once a write has committed, nothing
   more is published and the attempt reads again. A scope already published at the epoch L3 still

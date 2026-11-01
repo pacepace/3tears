@@ -396,12 +396,39 @@ class SnapshotTable:
         may then give :meth:`ScopedSnapshot.stage` and :meth:`ScopedSnapshot.publish` only the rows it
         ADDED to the scope (their ``added=``), kept as a piece after the scope's base, and a replica
         appends only the pieces after what it holds (``docs/design-scoped-snapshot.md``)
+    :ivar read_order: the columns an L3 index led by ``scope_column`` orders a scope's rows by, after it (its
+        range columns, in order); empty when ``key`` is that order already. A scope is read from L3 a keyset
+        page at a time, each page ``ORDER BY`` the paging key; when no index serves the key in order within a
+        scope (on YugabyteDB, a key led by a hashed column the scope does not pin), every page reads and sorts
+        the scope's every row, so a scope's read grows with the square of its rows. Its pages are then read in
+        this order, the key's other columns after it (unique, as the key is), which such an index serves with
+        about a page's rows; the scope's rows are put back in key order once read
     """
 
     name: str
     scope_column: str
     key: tuple[str, ...]
     append_only: bool = False
+    read_order: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """refuse a read order naming a column twice.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``read_order`` repeats a column
+        """
+        if len(set(self.read_order)) != len(self.read_order):
+            raise ValueError(f"{self.name}: read_order names a column twice: {self.read_order}")
+
+    @property
+    def paged_by(self) -> tuple[str, ...]:
+        """the columns a scope's L3 pages are ordered and paged by: ``read_order``, then the rest of the key.
+
+        :return: the columns; ``key`` when there is no read order
+        :rtype: tuple[str, ...]
+        """
+        return (*self.read_order, *(column for column in self.key if column not in self.read_order))
 
 
 @dataclass(frozen=True)
@@ -787,6 +814,52 @@ def _concatenated(parts: Sequence[Any]) -> Any:
     """
     _require_snapshot_extra()
     return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
+
+
+def _in_key_order(rows: Any, key: Sequence[str]) -> Any:
+    """a scope's rows, read in another order (:attr:`SnapshotTable.read_order`), in ``key`` order; blocking.
+
+    Arrow's sort, ascending, as the L1's ``ORDER BY`` the key orders an export: a key's columns are never null, and
+    its text compares by its bytes in both.
+
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :param key: the key
+    :ptype key: Sequence[str]
+    :return: the rows in key order
+    :rtype: pyarrow.Table
+    """
+    return rows.sort_by([(column, "ascending") for column in key])
+
+
+#: what :func:`_next_page` answers once the pages are done
+_NO_PAGE: Final = object()
+
+
+async def _next_page(pages: AsyncGenerator[Any, None]) -> Any:
+    """the next page of ``pages``, or :data:`_NO_PAGE` once there is none.
+
+    :param pages: the pages
+    :ptype pages: AsyncGenerator[Any, None]
+    :return: the page
+    :rtype: Any
+    """
+    return await anext(pages, _NO_PAGE)
+
+
+async def _given_up(task: asyncio.Future[Any]) -> None:
+    """stop a page fetched ahead and wait for it to end, so its generator can be closed; what it raised is dropped.
+
+    :param task: the fetch
+    :ptype task: asyncio.Future[Any]
+    :return: nothing
+    :rtype: None
+    """
+    task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        # NOSILENT: the page of a read that already stopped, for its own reason, which is what is raised
+        task.exception()
 
 
 async def _in_order[T, R](
@@ -4099,9 +4172,10 @@ class ScopedSnapshot:
 
         Read a page at a time, and each page typed by this L1 as it arrives (the backend's
         ``export_rows``, through which a backend that keeps less than L3 holds -- a retention -- lets go
-        of what it would not keep), so what is held is the scope's rows as the L1 keeps them and one
-        page of L3's, never the scope's raw rows. The pages are in key order, so their Arrow tables,
-        concatenated, are the scope's.
+        of what it would not keep), so what is held is the scope's rows as the L1 keeps them and two
+        pages of L3's (the one being typed, the next fetched beside it), never the scope's raw rows. The
+        pages are in key order, so their Arrow tables, concatenated, are the scope's; a table read in its
+        :attr:`SnapshotTable.read_order` is put in key order once read.
 
         :param scope: the scope
         :ptype scope: str
@@ -4128,12 +4202,16 @@ class ScopedSnapshot:
                     )
             if parts is None:
                 parts = await self._read_table(table, scope, None, moved)
+            arrow = _concatenated(parts) if parts else None
+            if arrow is not None and table.paged_by != table.key:
+                # read in the order its index serves: put back in key order, as every other path holds a scope
+                arrow = await asyncio.to_thread(_in_key_order, arrow, table.key)
             result.append(
                 PartitionReplacement(
                     table=table.name,
                     column=table.scope_column,
                     value=scope,
-                    arrow=_concatenated(parts) if parts else None,
+                    arrow=arrow,
                     primary_key=table.key,
                 )
             )
@@ -4150,7 +4228,13 @@ class ScopedSnapshot:
 
         With ``types`` the rail's pages are read straight into Arrow (``fetch_arrow``: no row is a Python object
         here) and typed by the L1 alike (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.storage_arrow`); without,
-        they are dict rows.
+        they are dict rows. The pages are ordered and paged by :attr:`SnapshotTable.paged_by`. Each next page is
+        fetched while this one is typed, so a page costs the slower of the two rather than both: the fetch is
+        a round trip through the hub to L3, the typing a thread here or, for a backend that types in a worker
+        process, a job there. Each page is typed on its own, never several at once: a backend's retention
+        judges the rows it is given, so what it keeps of a scope depends on how its rows are cut (a reports
+        copy kept 2,690 of an LSF table's 5,080 rows of a state typed ten pages at once). A page fetched ahead
+        of a write that began is dropped with the read.
 
         :param table: the table
         :ptype table: SnapshotTable
@@ -4160,7 +4244,7 @@ class ScopedSnapshot:
         :ptype types: Mapping[str, pyarrow.DataType] | None
         :param moved: asked between pages: whether a write has begun since the read started
         :ptype moved: Callable[[], Awaitable[bool]] | None
-        :return: the scope's rows as the L1 keeps them, a part a page
+        :return: the scope's rows as the L1 keeps them, a part a page, in :attr:`SnapshotTable.paged_by` order
         :rtype: list[pyarrow.Table]
         :raises ReplyNotArrowError: with ``types``, when a value is not its column's Arrow type
         :raises _WriteBegan: when ``moved`` says a write began
@@ -4169,20 +4253,26 @@ class ScopedSnapshot:
         where = {table.scope_column: scope}
         pages: AsyncGenerator[Any, None]
         if types is None:
-            pages = l3_row_pages(self._l3, table.name, columns, table.key, where=where)
+            pages = l3_row_pages(self._l3, table.name, columns, table.paged_by, where=where)
         else:
             select = f"SELECT {', '.join(quote_identifier(c) for c in columns)} FROM {quote_identifier(table.name)}"  # noqa: S608
             pages = keyset_arrow_pages(
-                self._l3, select, table.key, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
+                self._l3, select, table.paged_by, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
             )
         parts: list[Any] = []
         async with aclosing(pages):
-            async for page in pages:
-                if len(page):
-                    parts.append(await self._export(table, scope, page))
-                _headway(f"read a page of {table.name} in scope {scope!r} from L3")
-                if moved is not None and await moved():
-                    raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
+            ahead = asyncio.ensure_future(_next_page(pages))
+            try:
+                while (page := await ahead) is not _NO_PAGE:
+                    ahead = asyncio.ensure_future(_next_page(pages))
+                    if len(page):
+                        parts.append(await self._export(table, scope, page))
+                    _headway(f"read a page of {table.name} in scope {scope!r} from L3")
+                    if moved is not None and await moved():
+                        raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
+            finally:
+                # the page fetched ahead goes with a read that stops: the generator is closed only once it is done
+                await _given_up(ahead)
         return parts
 
     def _claim(self) -> _RebuildClaim:
