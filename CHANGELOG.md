@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.88.1 -- 2026-10-31
+
 ### registry: a loaded or re-registered copy keeps the key its pod registered with
 
 **Fixed:** A copy's `holder_jkt` (the key each delegated token minted for a call to its pod binds) and its
