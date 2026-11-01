@@ -52,10 +52,11 @@ from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.negotiation.settings import EFFORT_LADDER
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.rubric import shipped_rubric
-from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, WriterLimits
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, WriterEnding, WriterLimits
 from threetears.evals.ops.report_writer.tally import BounceKind, ReportBudget, Tally
 from threetears.evals.ops.report_writer.writer_contract import (
     BOUNCE_MEASURES,
+    BOUNCES_MEASURE,
     ENDING_MEASURE,
     FINISHED_MEASURE,
     MUST_FIX_OPEN_MEASURE,
@@ -610,6 +611,8 @@ async def test_every_bounce_kind_lands_as_a_count_and_r1s_unparsed_replies_are_c
     assert r1.host_measures[BOUNCE_MEASURES["unparsed"]] == 3.0
     assert {r1.host_measures[BOUNCE_MEASURES[kind]] for kind in get_args(BounceKind) if kind != "unparsed"} == {0.0}
     assert {kairo.host_measures[name] for name in BOUNCE_MEASURES.values()} == {0.0}
+    # The total is every kind's count added up.
+    assert (r1.host_measures[BOUNCES_MEASURE], kairo.host_measures[BOUNCES_MEASURE]) == (3.0, 0.0)
 
 
 def test_each_bounce_kind_the_analyst_records_has_a_declared_measure() -> None:
@@ -620,6 +623,27 @@ def test_each_bounce_kind_the_analyst_records_has_a_declared_measure() -> None:
     tally.record_bounce("analyst", 2, "shape")
     tally.record_bounce("analyst", 2, "max_tokens")
     assert tally.bounces() == {"unparsed": 0, "shape": 2, "validity": 0, "invariant": 0, "max_tokens": 1}
+
+
+def test_the_ending_measure_lists_every_ending_the_loop_has() -> None:
+    (ending,) = [descriptor for descriptor in WRITER_KIND_MEASURES if descriptor.name == ENDING_MEASURE]
+    assert ending.categories == get_args(WriterEnding)
+
+
+def test_the_writer_measures_a_decision_reads_are_its_finish_its_bounces_and_its_open_must_fix_findings() -> None:
+    """The three merit measures join the campaign's corrected family; the rest keep a direction or explain a move,
+    and none is a guardrail (which a count could never be shown to hold)."""
+    axes = {descriptor.name: descriptor.merit_axis for descriptor in WRITER_KIND_MEASURES if descriptor.merit_axis}
+    assert axes == {
+        FINISHED_MEASURE: "reliability",
+        BOUNCES_MEASURE: "reliability",
+        MUST_FIX_OPEN_MEASURE: "quality",
+    }
+    directed = {descriptor.name: descriptor.higher_is_better for descriptor in WRITER_KIND_MEASURES}
+    assert directed[FINISHED_MEASURE] is True
+    assert {directed[name] for name in (BOUNCES_MEASURE, MUST_FIX_OPEN_MEASURE, SHOULD_FIX_OPEN_MEASURE)} == {False}
+    assert {directed[name] for name in BOUNCE_MEASURES.values()} == {False}
+    assert not any(descriptor.guardrail for descriptor in WRITER_KIND_MEASURES)
 
 
 def test_an_arms_revisions_are_bounded_where_the_writing_loop_bounds_them() -> None:
@@ -694,6 +718,33 @@ async def test_a_cell_whose_subject_carries_no_skill_is_refused_by_the_kind() ->
     with pytest.raises(CandidatePreparationFailed, match="its subject carries no skill"):
         await kind.prepare(
             subject_snapshot=bare,
+            variant_config=VariantConfig(candidate_model=MODEL),
+            world_seed=None,
+            span_window=None,
+            cassettes=None,
+            world=None,
+        )
+    assert models.built == []
+
+
+async def test_a_cell_whose_skill_states_no_editor_rubric_is_refused_by_the_kind_before_any_model_is_built() -> None:
+    shipped = load_skill()
+    broken = AnalystSkill(
+        {**shipped.files, "editor.md": shipped.files["editor.md"].replace("## The rubric", "## Rubric")}
+    )
+    host, models = off_loop(_host), _Models()
+    kind = report_writer_kind(
+        host,
+        CALLER,
+        overlays=WriterOverlays(skill=broken.digest),
+        models=models,
+        budget=ReportBudget(usd=5.0),
+        skills={broken.digest: broken},
+    )
+
+    with pytest.raises(CandidatePreparationFailed, match="states no editor rubric its reviews can be read on"):
+        await kind.prepare(
+            subject_snapshot=_arm(broken).subject_snapshot,
             variant_config=VariantConfig(candidate_model=MODEL),
             world_seed=None,
             span_window=None,

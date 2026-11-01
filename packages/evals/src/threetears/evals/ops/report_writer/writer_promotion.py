@@ -155,7 +155,7 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
     :ptype candidate: str
     :return: The decision and what it read.
     :rtype: WriterPromotion
-    :raises NotFoundError: No campaign with that id in the scope.
+    :raises NotFoundError: No campaign with that id in the scope, or a run it names is not stored.
     :raises ValidationFailedError: The campaign has no control, the candidate is none of its arms or is the control,
         an arm's lever map was not recorded, its arms were not scored by one judge on one rubric, or it ran over
         anything but held-out writer cases; or the build's skill has no ledger entry.
@@ -163,7 +163,16 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
     campaign = host.storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
         raise NotFoundError("campaign", campaign_id, remedy=FIND_CAMPAIGN)
-    runs = [run for run_id in campaign.run_ids if (run := host.storage.load_eval_run(run_id, scope_id)) is not None]
+    loaded = {run_id: host.storage.load_eval_run(run_id, scope_id) for run_id in campaign.run_ids}
+    if missing := [run_id for run_id, run in loaded.items() if run is None]:
+        # A run the campaign names and the store cannot return would leave its arm's cases and judge unchecked, and
+        # the decision read on fewer runs than the campaign ran with nothing saying so.
+        raise NotFoundError(
+            f"campaign {campaign_id}'s run",
+            ", ".join(missing),
+            remedy="restore the run, or take it off the campaign (campaign_update), then read the campaign again",
+        )
+    runs = [run for run in loaded.values() if run is not None]
     refuse_unfixed_scoring_judge(runs)
     case_sets, cases = _refuse_unheld_out(host, runs, scope_id)
     bundle = assemble_campaign_bundle(host, campaign_id, scope_id)

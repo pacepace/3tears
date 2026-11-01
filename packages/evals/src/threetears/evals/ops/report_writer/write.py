@@ -54,6 +54,7 @@ from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.gaps import CheckedDrafts, write_gaps
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterEnding, WriterLimits, WritingOutcome, write_rounds
+from threetears.evals.ops.report_writer.rubric import editor_rubric
 from threetears.evals.ops.report_writer.session import ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
@@ -192,10 +193,11 @@ async def report_write(
     :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
-    :raises ValueError: Not exactly one of the sources named; ``withhold`` naming a note the skill has none of;
-        under a dollar budget, a model whose turns cannot be
-        bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the model refuses for
-        its route or settings, raised as the model words it. Each before anything is frozen or sent.
+    :raises ValueError: Not exactly one of the sources named; ``withhold`` naming a note the skill has none of; a
+        skill whose ``editor.md`` states no rubric its reviews can be read on; under a dollar budget, a model whose
+        turns cannot be bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the
+        model refuses for its route or settings, raised as the model words it. Each before anything is frozen or
+        sent.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
     :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).
@@ -211,6 +213,7 @@ async def report_write(
         )
     written_with = skill if skill is not None else load_skill()
     analyst_skill, editor_skill = written_with.analyst(withhold=withhold), written_with.editor()
+    editor_rubric(editor_skill.text)
     if budget.usd is not None and (unpriced := await model.turn_pricing_refusal()) is not None:
         raise ValueError(
             f"the report was not started, and nothing was frozen, sent or spent: its {budget.spelled} budget admits "

@@ -52,8 +52,9 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     ),
     # The engine's writer_promotion action reads the decision; nothing names its literal type.
     writer_promotion: frozenset({"PromotionDecision"}),
-    # The rubric's readers call shipped_rubric and never name its types.
-    rubric: frozenset({"EditorRubric", "RubricItem"}),
+    # The editor reads its session's rubric (editor_rubric, EditorRubric), the scoring rubric the shipped one; no reader
+    # names an item's type.
+    rubric: frozenset({"RubricItem"}),
 }
 
 

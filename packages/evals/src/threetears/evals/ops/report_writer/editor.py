@@ -17,11 +17,20 @@ one user message holds what :func:`review_report` builds from the document and t
 report input and the earlier findings, and no message, thinking block or tool result of the analyst's: its signature
 has no parameter that could carry one, so the editor judges the page as a reader would, not the reasoning behind it.
 
-**Code scores the review.** The editor's answer is its last fenced JSON block (prose may come before it): seven
-rubric items, each keyed by ``n`` and named as the rubric names it, scored 0, 1 or 2 with a reason; and findings,
+**Code scores the review.** The editor's answer is its last fenced JSON block (prose may come before it): every
+rubric item, each keyed by ``n`` and named as the rubric names it, scored 0, 1 or 2 with a reason; and findings,
 each ``{claim, severity, finding}``. :class:`Review` adds the scores up and says whether the review passes (no item
-scores 0 and the total is at least :data:`PASS_TOTAL`); a total or a verdict the editor writes is never read. An
+scores 0 and the total reaches the rubric's pass total); a total or a verdict the editor writes is never read. An
 answer that cannot be read is asked for once more, saying what was wrong; a second ends the round ``review_failed``.
+
+**The rubric is the session's own.** The items an answer is read against are the ones the ``editor.md`` the session
+started from states (:func:`~threetears.evals.ops.report_writer.rubric.editor_rubric` over its system text), so an
+arm under test whose ``editor.md`` renames, adds or reorders an item has its editor's reviews read on that rubric,
+never refused against the shipped one. **The pass total keeps the shipped bar's share of the top score**: the shipped
+seven items pass at 11 of 14, and a rubric of another size passes at the same share of its own top, rounded up
+(:func:`_pass_total`). It is not read from the arm's text: the pass decides whether a report is stored finished, which
+the promotion read counts, so an arm that adds an item is held to the bar the shipped rubric is, and rounding up never
+lowers it.
 
 **Carried or new, by structure, never by text.** From the second round each finding says which earlier finding it
 continues (``continues``: that finding's id, or ``"new"``), and the review lists the earlier findings it finds
@@ -40,9 +49,11 @@ every turn is admitted by the report's budget; a turn it refuses ends the round 
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from typing import Any, Final, Literal
 
 from threetears.evals.analysis.analyst.skill import SkillText
@@ -53,7 +64,7 @@ from threetears.evals.analysis.report_doc_facts import editor_facts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
-from threetears.evals.ops.report_writer.rubric import shipped_rubric
+from threetears.evals.ops.report_writer.rubric import EditorRubric, editor_rubric, shipped_rubric
 from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
@@ -62,7 +73,6 @@ from threetears.evals.schema.turns import ToolTurnClient
 __all__ = [
     "EditorLimits",
     "EditorOutcome",
-    "PASS_TOTAL",
     "Review",
     "RubricScore",
     "computed_facts",
@@ -72,15 +82,27 @@ __all__ = [
 
 log = get_logger(__name__)
 
-#: The rubric's item names, in the order the shipped ``editor.md`` numbers them, read from it: item ``n`` is
-#: ``_RUBRIC[n - 1]``.
-_RUBRIC: Final = tuple(item.name for item in shipped_rubric().items)
-
 #: The highest score an item takes.
 _TOP_SCORE: Final = 2
 
-#: The least total a review passes with, as ``editor.md`` states it, when no item scores 0.
-PASS_TOTAL: Final = 11
+#: The least total the shipped rubric's items pass with, as the shipped ``editor.md`` states it, when no item scores 0.
+_SHIPPED_PASS_TOTAL: Final = 11
+
+#: The shipped bar's share of the shipped rubric's top score (11 of 14), which every rubric's pass total keeps.
+_PASS_SHARE: Final = Fraction(_SHIPPED_PASS_TOTAL, len(shipped_rubric().items) * _TOP_SCORE)
+
+
+def _pass_total(items: int) -> int:
+    """The least total a review of a rubric of ``items`` items passes with: the shipped bar's share of its top score,
+    rounded up (the module docstring), so 11 for the shipped seven.
+
+    :param items: The rubric's item count.
+    :ptype items: int
+    :return: The pass total.
+    :rtype: int
+    """
+    return math.ceil(_PASS_SHARE * items * _TOP_SCORE)
+
 
 #: What a finding about the page as a whole names in place of a claim id.
 _REPORT: Final = "report"
@@ -127,7 +149,7 @@ class EditorLimits:
 class RubricScore:
     """One rubric item as the editor scored it.
 
-    :ivar n: The item's number, 1 to 7.
+    :ivar n: The item's number, from 1, in the rubric's order.
     :ivar name: Its name, as the rubric names it.
     :ivar score: 0, 1 or 2.
     :ivar reason: Why, in the editor's words.
@@ -149,19 +171,22 @@ class RubricScore:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Review:
-    """One review of a report document: the seven items as scored, and the findings; code adds the scores up.
+    """One review of a report document: the rubric's items as scored, and the findings; code adds the scores up.
 
     :ivar round: The round it reviewed.
     :ivar items: The rubric items, in rubric order.
     :ivar findings: What the editor found for the analyst to change, in its order, each with its id and the round it
         was first raised.
     :ivar resolved: The ids of the previous review's findings this one finds resolved; empty in round 1.
+    :ivar pass_total: The least total the review passes with, for its rubric's item count (:func:`_pass_total`); the
+        shipped rubric's by default.
     """
 
     round: int
     items: tuple[RubricScore, ...]
     findings: tuple[ReportFinding, ...]
     resolved: tuple[str, ...] = ()
+    pass_total: int = _SHIPPED_PASS_TOTAL
 
     @property
     def total(self) -> int:
@@ -170,8 +195,8 @@ class Review:
 
     @property
     def passes(self) -> bool:
-        """Whether the scores pass: no item scores 0 and the total is at least :data:`PASS_TOTAL`."""
-        return all(item.score > 0 for item in self.items) and self.total >= PASS_TOTAL
+        """Whether the scores pass: no item scores 0 and the total is at least :attr:`pass_total`."""
+        return all(item.score > 0 for item in self.items) and self.total >= self.pass_total
 
     @property
     def must_fix(self) -> bool:
@@ -281,7 +306,7 @@ async def review_report(
     :ptype client: ToolTurnClient
     :param mount: The ``evals_analyst`` tool on the editor's cut, bound to its host and caller.
     :ptype mount: ToolMount
-    :param skill: The editor's system text (``load_skill().editor()``).
+    :param skill: The editor's system text (``load_skill().editor()``), whose rubric its answers are read against.
     :ptype skill: SkillText
     :param tally: The report's tally.
     :ptype tally: Tally
@@ -293,7 +318,10 @@ async def review_report(
         ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in
         the tally.
     :rtype: EditorOutcome
+    :raises ValueError: ``skill`` states no rubric that reads; refused before anything is sent (and before the report's
+        first turn by the kind's preparation and ``write_report``).
     """
+    rubric = editor_rubric(skill.text)
     held = limits if limits is not None else EditorLimits()
     session = ToolSession(
         name=editor_session(round),
@@ -309,7 +337,7 @@ async def review_report(
     session.open_round(round, calls=held.calls)
     try:
         ended = await _reviewed(
-            session, doc, report_input, round=round, snapshot=snapshot, earlier=earlier, limits=held
+            session, doc, report_input, rubric, round=round, snapshot=snapshot, earlier=earlier, limits=held
         )
     except Exception as exc:
         # The client's failure (a provider's, after its retries; a reply refused after it was paid for), which the
@@ -323,6 +351,7 @@ async def _reviewed(
     session: ToolSession,
     doc: ReportDoc,
     report_input: ReportInput,
+    rubric: EditorRubric,
     *,
     round: int,
     snapshot: str,
@@ -338,7 +367,7 @@ async def _reviewed(
             return EditorOutcome(ending="over_budget", round=round, reason=stop.reason)
         if stop.kind == "failed":
             return EditorOutcome(ending="failed", round=round, reason=stop.reason)
-        read = _answer(stop, claims, round, earlier, limits)
+        read = _answer(stop, rubric, claims, round, earlier, limits)
         if isinstance(read, Review):
             return EditorOutcome(ending="reviewed", round=round, review=read)
         faults = read
@@ -421,7 +450,12 @@ def _ask_again(faults: Sequence[str]) -> str:
 
 
 def _answer(
-    stop: SessionStop, claims: frozenset[str], round: int, earlier: Sequence[ReportFinding], limits: EditorLimits
+    stop: SessionStop,
+    rubric: EditorRubric,
+    claims: frozenset[str],
+    round: int,
+    earlier: Sequence[ReportFinding],
+    limits: EditorLimits,
 ) -> Review | tuple[str, ...]:
     """The review a stop carries, or what kept it from being read."""
     if stop.kind == "cut":
@@ -432,16 +466,18 @@ def _answer(
     if stop.kind == "over_budget":
         return (f"this review's {limits.calls} tool calls are used up, and you called a tool again",)
     text = stop.reply.text if stop.reply is not None else ""
-    return _read_review(text, claims=claims, round=round, earlier=earlier)
+    return _read_review(text, rubric, claims=claims, round=round, earlier=earlier)
 
 
 def _read_review(
-    text: str, *, claims: frozenset[str], round: int, earlier: Sequence[ReportFinding] = ()
+    text: str, rubric: EditorRubric, *, claims: frozenset[str], round: int, earlier: Sequence[ReportFinding] = ()
 ) -> Review | tuple[str, ...]:
-    """The review an editor's answer holds: its last fenced JSON block, read against the rubric.
+    """The review an editor's answer holds: its last fenced JSON block, read against the session's rubric.
 
     :param text: The answer's text.
     :ptype text: str
+    :param rubric: The rubric of the editor text the session started from.
+    :ptype rubric: EditorRubric
     :param claims: The claim ids of the document reviewed, which a finding may name.
     :ptype claims: frozenset[str]
     :param round: The round reviewed.
@@ -461,44 +497,46 @@ def _read_review(
     if not isinstance(value, dict):
         return ("the last fenced block is JSON but not an object; answer {items, findings}",)
     faults: list[str] = []
-    items = _items(value.get("items"), faults)
+    names = tuple(item.name for item in rubric.items)
+    items = _items(value.get("items"), names, faults)
     findings = _findings(value.get("findings"), claims, faults, round=round, earlier=earlier)
     resolved = _resolved(value, findings, earlier, faults)
     if faults:
         return tuple(faults)
-    return Review(round=round, items=items, findings=findings, resolved=resolved)
+    return Review(round=round, items=items, findings=findings, resolved=resolved, pass_total=_pass_total(len(names)))
 
 
-def _items(value: object, faults: list[str]) -> tuple[RubricScore, ...]:
+def _items(value: object, names: tuple[str, ...], faults: list[str]) -> tuple[RubricScore, ...]:
+    """The scored items, read against the rubric's names: item ``n`` is ``names[n - 1]``."""
     if not isinstance(value, list):
-        faults.append(f"items is not a list; give all {len(_RUBRIC)} rubric items")
+        faults.append(f"items is not a list; give all {len(names)} rubric items")
         return ()
     scored: dict[int, RubricScore] = {}
     for index, item in enumerate(value):
-        read = _item(item, index, faults)
+        read = _item(item, index, names, faults)
         if read is None:
             continue
         if read.n in scored:
             faults.append(f"items[{index}]: item {read.n} is scored twice")
             continue
         scored[read.n] = read
-    missing = [str(n) for n in range(1, len(_RUBRIC) + 1) if n not in scored]
+    missing = [str(n) for n in range(1, len(names) + 1) if n not in scored]
     if missing:
         faults.append(f"items has no readable item {', '.join(missing)}: score every rubric item")
     return tuple(scored[n] for n in sorted(scored))
 
 
-def _item(item: object, index: int, faults: list[str]) -> RubricScore | None:
+def _item(item: object, index: int, names: tuple[str, ...], faults: list[str]) -> RubricScore | None:
     where = f"items[{index}]"
     if not isinstance(item, Mapping):
         faults.append(f"{where} is not an object {{n, name, score, reason}}")
         return None
     n, name, score, reason = item.get("n"), item.get("name"), item.get("score"), item.get("reason")
-    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= len(_RUBRIC):
-        faults.append(f"{where}.n is {n!r}, not a rubric item's number (1 to {len(_RUBRIC)})")
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= len(names):
+        faults.append(f"{where}.n is {n!r}, not a rubric item's number (1 to {len(names)})")
         return None
     fault_count = len(faults)
-    expected = _RUBRIC[n - 1]
+    expected = names[n - 1]
     if not isinstance(name, str) or name.strip().casefold() != expected.casefold():
         faults.append(f"{where}.name is {name!r}; item {n} is named {expected!r}")
     if isinstance(score, bool) or not isinstance(score, int) or not 0 <= score <= _TOP_SCORE:

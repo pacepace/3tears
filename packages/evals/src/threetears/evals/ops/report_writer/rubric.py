@@ -1,16 +1,18 @@
 """The report editor's rubric as the shipped skill states it: the one source of its items' names and definitions.
 
 ``editor.md``'s ``## The rubric`` section numbers seven items, each a bold name and its definition on one line, and
-says in one sentence what a 2, a 1 and a 0 mean. Two readers take the rubric from that text, read here and nowhere
+says in one sentence what a 2, a 1 and a 0 mean. Two readers take a rubric from such a text, read here and nowhere
 else, so neither carries a copy that could drift from it:
 
-- the editor's answer is checked against its item names (:mod:`~threetears.evals.ops.report_writer.editor`);
-- a report writer template's scoring judge scores the same items, each a rubric dimension
-  (:func:`~threetears.evals.ops.report_writer.writer_contract.writer_scoring_rubric`).
+- the editor's answer is checked against the items of the ``editor.md`` its session started from
+  (:func:`editor_rubric`, read by :mod:`~threetears.evals.ops.report_writer.editor`): an arm under test that runs an
+  ``editor.md`` of its own, renaming, adding or reordering an item, has its editor's reviews read against that text;
+- a report writer template's scoring judge scores the items of the shipped skill's text (:func:`shipped_rubric`), each
+  a rubric dimension (:func:`~threetears.evals.ops.report_writer.writer_contract.writer_scoring_rubric`).
 
-**Always the shipped skill's text.** An arm under test may run an ``editor.md`` of its own; its editor reads that text,
-and nothing here does. What the scoring judge asks is copied from the shipped text into the writer template when the
-template is created, so an arm's edit never moves it.
+**The scoring judge's rubric is always the shipped skill's.** What it asks is copied from the shipped text into the
+writer template when the template is created, so an arm's edit never moves it: the two rubrics are different ones,
+the editor's the arm's own and the judge's held fixed.
 """
 
 from __future__ import annotations
@@ -21,9 +23,10 @@ from functools import cache
 
 from threetears.evals.analysis.analyst.skill import load_skill
 
-#: The names with a caller outside this module: the editor's answer check and the writer template's scoring rubric
-#: read the rubric through :func:`shipped_rubric`; neither names its types.
-__all__ = ["shipped_rubric"]
+#: The names with a caller outside this module: the editor's answer check reads its session's rubric through
+#: :func:`editor_rubric`, and the writer template's scoring rubric reads the shipped one through :func:`shipped_rubric`;
+#: the editor names the rubric's type, which the scoring rubric does not.
+__all__ = ["EditorRubric", "editor_rubric", "shipped_rubric"]
 
 #: The rubric's section, from its heading to the next heading of its level.
 _SECTION = re.compile(r"^## The rubric\n(?P<body>.*?)(?=^## )", re.DOTALL | re.MULTILINE)
@@ -65,8 +68,20 @@ class EditorRubric:
     bottom: str
 
 
-def _read(text: str) -> EditorRubric:
-    """The rubric ``text`` states, refusing one whose section, items or scale sentence do not read."""
+@cache
+def editor_rubric(text: str) -> EditorRubric:
+    """The rubric an editor's system text states, refusing one whose section, items or scale sentence do not read.
+
+    Read once per text: every review of a launch's arm reads the same text.
+
+    :param text: The editor's system text (:meth:`AnalystSkill.editor
+        <threetears.evals.analysis.analyst.skill.AnalystSkill.editor>`), or ``editor.md`` itself.
+    :ptype text: str
+    :return: The rubric.
+    :rtype: EditorRubric
+    :raises ValueError: The text has no rubric section followed by another section, its items are not numbered from
+        1 with no gap, or it does not say what each score means in one sentence.
+    """
     section = _SECTION.search(text)
     if section is None:
         raise ValueError("editor.md has no '## The rubric' section followed by another section")
@@ -96,4 +111,4 @@ def shipped_rubric() -> EditorRubric:
     :rtype: EditorRubric
     :raises ValueError: The shipped ``editor.md`` states no rubric that reads, which a build must not ship.
     """
-    return _read(load_skill().editor().text)
+    return editor_rubric(load_skill().editor().text)

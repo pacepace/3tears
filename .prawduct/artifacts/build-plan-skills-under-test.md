@@ -55,7 +55,7 @@ partition: 01 then 02 serial (02 builds on 01's seam); 03 and 04 delegated in is
 - 04: the split goes by group. A host names a group for related campaigns, or the source key is the group. A group keeps its recorded side; a new group's side comes from the sha256 of `writer-split:<group>` against `held_out_fraction` (default 0.3). Seed: 5 held-out (Kairo, the four r2 cases), 7 dev. Inferred defaults (the fraction and the prefix), not owner words.
 - 04: `WriterCase.case_version = 1` with `origin` (host, minted_by, source, campaign or analysis, group, side, set, fraction, the skill digest the notes were checked against).
 - 02b: the engine knows models only by id, so the judge-family rule takes a host hook (`ModelFamily`: model id → family or None). It refuses the same family, and records "unchecked" on the run when either model can't be placed. A writer launch must name its judge model. The failure-owner routing is one helper (`kernel/failed_call.py`) for the writer, reporter and judge kinds. Each of the five bounce kinds is a measure, read through `Tally.bounces()`.
-- 05: `writer_promotion(host, campaign_id, scope_id, *, candidate)` reads `campaign_verdicts` through `gate_verdicts`: a failing gate → keep, any undecided → undecided, everything decided with an improvement → promote. It refuses a moved judge, a run with no case set, and any non-held-out case, and it never writes (a person records the call). The ledger is `analysis/analyst/skill/PROMOTIONS.toml`, read by `skill_ledger.py`; the shipped skill is seeded unmeasured. A measured entry also records `scope`, since a campaign id can't be looked up without it.
+- 05: `writer_promotion(host, campaign_id, scope_id, *, candidate)` reads `campaign_verdicts` through `gate_verdicts`: a failing gate → keep, any undecided → undecided, everything decided with an improvement → promote. It refuses a moved judge, a run with no case set, and any non-held-out case, and it never writes (a person records the call). The ledger is `packages/evals/src/threetears/evals/analysis/analyst/skill/PROMOTIONS.toml`, read by `skill_ledger.py`; the shipped skill is seeded unmeasured. A measured entry also records `scope`, since a campaign id can't be looked up without it.
 - 05b: four catalogue actions on the `evals` tool: `writer_template_create`, `writer_case_mint` (idempotent; the split is flattened into `dev_set`, `held_out_set` and `held_out_fraction`, because the catalogue refuses nested parameter models), `writer_case_archive` (returns a small `WriterCaseState`) and `writer_promotion` (read-only, also on the read tool). `template_name` and `intent` share one description with `judge_template_create`. docs/reference.md is regenerated, and docs/serving.md gains "Writer campaigns".
 - 03: the scoring rubric's one source is the shipped editor.md, read once (`ops/report_writer/rubric.py`, `shipped_rubric()`); editor.py's item names come from the same read. `writer_scoring_rubric()` makes seven 1–5 dims `report_writer.<item>` on the built-in judge prompt (editor 2/1/0 → 5/3/1). A host seeds the template from it at creation, and the stored template then holds the text, frozen per run in `template_digest`. Consequence: promoting a new editor.md moves the scoring rubric for templates created after it; campaigns already created keep theirs.
 - 03: the engine reports a judge change between arms but does not refuse one, so `refuse_unfixed_scoring_judge(runs)` refuses a campaign whose arms differ in template, rubric revision, judge model, configs or temperature.
@@ -73,7 +73,7 @@ Type: code
 
 ### Chunk 02: The `report_writer` candidate kind
 Type: code
-- `ops/report_writer/writer_kind.py` and `ops/report_writer/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py` (in `ops/`, because `analysis` may not import `ops`).
+- `packages/evals/src/threetears/evals/ops/report_writer/writer_kind.py` and `packages/evals/src/threetears/evals/ops/report_writer/writer_contract.py`, mirroring `reporter_kind.py` and `reporter_contract.py` (in the `ops` package, because `analysis` may not import `ops`).
 - Overlays: `skill` (the whole skill's content digest; an arm naming none records the shipped digest), `reasoning_effort` and `revisions`. The skill digest travels as a subject component.
 - Case: a frozen writer case, meaning the report snapshot plus the exemplar note it withholds.
 - `invoke` runs `write_rounds` and returns the page as the output, with the objective measures.
@@ -82,7 +82,7 @@ Type: code
 
 ### Chunk 02b: Writer launcher and the review fixes
 Type: code
-- A launcher for the writer kind, the counterpart of `ops/reporter.py`. It wires `KindWiring.cell_timeout_s` from `writer_cell_timeout_s`, so a real-speed cell is never cut off at the 600 s default.
+- A launcher for the writer kind, the counterpart of `packages/evals/src/threetears/evals/ops/reporter.py`. It wires `KindWiring.cell_timeout_s` from `writer_cell_timeout_s`, so a real-speed cell is never cut off at the 600 s default.
 - Every bounce kind the analyst records (unparsed, shape, validity, invariant, max_tokens) is a measure, read through a typed accessor on `Tally`, not bare strings.
 - The revisions cap has one public source.
 - One shared failure-owner mapping replaces the three copies (reporter, judge and writer kinds).
@@ -114,7 +114,7 @@ Type: code
 ### Chunk 05: Promotion decision and the shipped-digest check
 Type: code
 - `writer_promotion(...)` (as built; see decision 05) reads the held-out campaign's corrected family verdicts through `gate_verdicts`. It answers `promote`, `keep` or `undecided`, with the candidate's variant key, the per-measure verdicts, the cost and the case count.
-- A promotion is recorded as a `CampaignCall`, and in a new package ledger, `analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
+- A promotion is recorded as a `CampaignCall`, and in a new package ledger, `packages/evals/src/threetears/evals/analysis/analyst/skill/PROMOTIONS.toml` (skill digest, campaign id, decision, date). The current skill is the baseline entry.
 - Every shipped analyst and editor digest has a ledger entry, and the entry states its basis: `measured` (a campaign decision) or `unmeasured` (an edit shipped without one, with the reason). An enforcement test fails on a shipped digest with no entry. It does not block edits while the case set is too small to measure: an unmeasured entry is the honest record. Inferred: the owner may want a later switch that requires `measured` once host cases exist.
 - Done when: the ledger test trips on an edited skill file and passes on a recorded one; `undecided` never promotes.
 

@@ -47,7 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract, Ordinal
-from threetears.evals.kernel.metrics import MetricDescriptor
+from threetears.evals.kernel.metrics import MeritAxis, MetricDescriptor
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, WriterEnding
 from threetears.evals.ops.report_writer.rubric import shipped_rubric
 from threetears.evals.ops.report_writer.tally import BounceKind
@@ -126,6 +126,8 @@ WRITER_KIND_CONTRACT = writer_kind_contract()
 ENDING_MEASURE: Final = f"{WRITER_KIND}.ending"
 #: Whether a review cleared the report, so it is stored finished.
 FINISHED_MEASURE: Final = f"{WRITER_KIND}.finished"
+#: Every submission sent back, whatever check sent it: the bounce kinds' counts added up.
+BOUNCES_MEASURE: Final = f"{WRITER_KIND}.bounces"
 #: Submissions sent back, one measure per check that sent them (``report_writer.<kind>_bounces``), read off the
 #: tally's typed counts (:meth:`~threetears.evals.ops.report_writer.tally.Tally.bounces`): every kind the analyst
 #: bounces for is measured, and a kind added to :data:`BounceKind` is measured with it.
@@ -145,15 +147,9 @@ TURNS_MEASURE: Final = f"{WRITER_KIND}.turns"
 #: Turns sent that nothing priced, so the cell's cost is unknown rather than low.
 UNPRICED_TURNS_MEASURE: Final = f"{WRITER_KIND}.unpriced_turns"
 
-#: Every ending the writing loop has, in the loop's order.
-_ENDINGS: tuple[WriterEnding, ...] = (
-    "stored",
-    "stored_with_findings",
-    "over_budget",
-    "refused",
-    "review_failed",
-    "failed",
-)
+#: Every ending the writing loop has, in the loop's order, read off :data:`WriterEnding`: an ending the loop gains is
+#: a category of the ending measure with it.
+_ENDINGS: tuple[WriterEnding, ...] = get_args(WriterEnding)
 
 
 #: Each bounce kind's measure, in words: its reader name, and why the submissions it counts were sent back.
@@ -169,8 +165,11 @@ _BOUNCES: Final[Mapping[BounceKind, tuple[str, str]]] = {
 }
 
 
-def _count(name: str, reader_name: str, description: str, *, fewer_is_better: bool) -> MetricDescriptor:
-    """A count the run itself reports: lower is better, or a diagnostic with no better end."""
+def _count(
+    name: str, reader_name: str, description: str, *, fewer_is_better: bool, merit_axis: MeritAxis | None = None
+) -> MetricDescriptor:
+    """A count the run itself reports: lower is better, on ``merit_axis`` when it is one a decision reads; or a
+    diagnostic with no better end."""
     return MetricDescriptor(
         name=name,
         reader_name=reader_name,
@@ -180,6 +179,7 @@ def _count(name: str, reader_name: str, description: str, *, fewer_is_better: bo
         attribution_scope="end_to_end",
         higher_is_better=False if fewer_is_better else None,
         diagnostic=not fewer_is_better,
+        merit_axis=merit_axis,
         nonnegative=True,
         scale="ratio",
         description=description,
@@ -189,6 +189,17 @@ def _count(name: str, reader_name: str, description: str, *, fewer_is_better: bo
 #: The measures a report writer run lands on ``host_measures``, for a host to declare on its measure registry. Each is
 #: read off the run by code; the run's cost is its usage rows' (``cost_usd``, which the engine derives), never a measure
 #: of its own. A measure about the stored document (the open findings) is absent on a run that stored none, never 0.
+#:
+#: **Three of them are merit, so a campaign's corrected verdicts, and the promotion read, decide on them**: whether the
+#: report was finished (reliability, higher is better), every submission sent back (reliability, fewer is better), and
+#: the ``must_fix`` findings left open (quality, fewer is better). A candidate the judge scores higher that is shown to
+#: finish less, bounce more or leave more must-fix findings open is shown worse, and kept out. They are few on purpose:
+#: every merit measure joins one Holm family with the judged dimensions, so each costs the family power over a small
+#: held-out set, and one that does not separate leaves the decision undecided. So the rest keep their direction and
+#: serve no axis: each bounce kind, which explains a move in the total, and the ``should_fix`` findings open, which a
+#: page stored finished may keep and whose page the judge's scores read. None is a guardrail: a guardrail is read
+#: held only on a declared range, which a count has none of, so it would never be shown held and would keep out every
+#: candidate. The rounds and turns are diagnostics: what an arm spent getting there, which its cost reads.
 WRITER_KIND_MEASURES: tuple[MetricDescriptor, ...] = (
     MetricDescriptor(
         name=ENDING_MEASURE,
@@ -208,7 +219,15 @@ WRITER_KIND_MEASURES: tuple[MetricDescriptor, ...] = (
         transferability_class="mechanical",
         attribution_scope="end_to_end",
         higher_is_better=True,
+        merit_axis="reliability",
         description="Whether a review cleared the report, so it is stored finished rather than as a draft or not at all.",
+    ),
+    _count(
+        BOUNCES_MEASURE,
+        "Bounces",
+        "Submissions sent back to the analyst by any check, before the editor saw them.",
+        fewer_is_better=True,
+        merit_axis="reliability",
     ),
     *(
         _count(BOUNCE_MEASURES[kind], f"{reader} bounces", why, fewer_is_better=True)
@@ -219,6 +238,7 @@ WRITER_KIND_MEASURES: tuple[MetricDescriptor, ...] = (
         "Must-fix findings open",
         "The editor's must_fix findings still open on the stored report.",
         fewer_is_better=True,
+        merit_axis="quality",
     ),
     _count(
         SHOULD_FIX_OPEN_MEASURE,
@@ -361,6 +381,7 @@ def refuse_unfixed_scoring_judge(runs: Sequence[EvalRun]) -> None:
 
 __all__ = [
     "ANALYST_ROUNDS_MEASURE",
+    "BOUNCES_MEASURE",
     "BOUNCE_MEASURES",
     "EDITOR_ROUNDS_MEASURE",
     "ENDING_MEASURE",

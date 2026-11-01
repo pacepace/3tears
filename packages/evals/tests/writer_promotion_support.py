@@ -7,6 +7,8 @@ measures is given, so what the engine's corrected verdicts say, and the read's d
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 from packages.evals.tests.fixtures.toyhost.campaign import (
@@ -23,10 +25,12 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND_MEASURES
 from threetears.evals.ops.report_writer.writer_kind import (
     WriterCase,
     WriterCaseOrigin,
@@ -50,6 +54,9 @@ BETTER: dict[str, Any] = {"cost_usd": 0.01, "total_ms": 600.0, "field_accuracy":
 #: The candidate the read is asked about: the arm addressed from the wide batch, by its label.
 CANDIDATE = "1024tok"
 
+#: What a writer run lands on ``host_measures`` for each document, by the writer's measure names: the arm's own.
+WriterMeasures = Mapping[str, Mapping[str, float | bool]]
+
 
 def promotion_campaign(
     candidate: dict[str, Any],
@@ -58,6 +65,7 @@ def promotion_campaign(
     side: WriterSide = "held_out",
     case_sets: tuple[CaseSetRef | None, CaseSetRef | None] = (HELD_OUT, HELD_OUT),
     judges: tuple[str, str] = (SCORING_JUDGE, SCORING_JUDGE),
+    writer: tuple[WriterMeasures, WriterMeasures] | None = None,
 ) -> tuple[EvalHost, str]:
     """The toy host holding a campaign of a control and a candidate, its writer cases on ``side``; and its id.
 
@@ -71,14 +79,21 @@ def promotion_campaign(
     :ptype case_sets: tuple[CaseSetRef | None, CaseSetRef | None]
     :param judges: The scoring judge each run names, control first.
     :ptype judges: tuple[str, str]
+    :param writer: The writer's measures each arm lands on each document, control first; none when ``None``. The
+        profile declares the writer's measures either way.
+    :ptype writer: tuple[WriterMeasures, WriterMeasures] | None
     :return: The host and the campaign's id.
     :rtype: tuple[EvalHost, str]
     """
     profile = toyhost_profile()
+    profile = replace(
+        profile,
+        measures=MeasureRegistry((*TOYHOST_MEASURES, *WRITER_KIND_MEASURES), families=profile.measures.families),
+    )
     host = toyhost_host(profile=profile)
     run_ids = []
-    for level, values, case_set, judge in zip(
-        (TOYHOST_NARROW, TOYHOST_WIDE), (control, candidate), case_sets, judges, strict=True
+    for level, values, case_set, judge, landed in zip(
+        (TOYHOST_NARROW, TOYHOST_WIDE), (control, candidate), case_sets, judges, writer or ({}, {}), strict=True
     ):
         batch = toyhost_batch(
             chunk_tokens=level, retriever_top_k=3, extraction_schema="v1", ocr_engine_version="tess-5.3.1"
@@ -92,6 +107,9 @@ def promotion_campaign(
         )
         host.storage.save_eval_run(batch)
         for result in toyhost_measurements(batch, profile=profile, **values):
+            if result.test_case_id in landed:
+                host_measures = {**result.host_measures, **landed[result.test_case_id]}
+                result = result.model_copy(update={"host_measures": host_measures})
             host.storage.save_eval_result(result)
         run_ids.append(batch.id)
     for document in TOYHOST_DOCUMENTS:
@@ -112,7 +130,12 @@ def promotion_campaign(
                 id=document,
                 scope_id=TOYHOST_SCOPE,
                 template_id="writer-template",
-                host_payload=writer_case_payload(WriterCase(snapshot={}, origin=origin)),
+                host_payload=writer_case_payload(
+                    WriterCase(
+                        snapshot={"id": document, "campaign_id": None, "report_input_digest": document},
+                        origin=origin,
+                    )
+                ),
             )
         )
     campaign = toyhost_campaign_of_one_aspect(

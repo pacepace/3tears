@@ -41,13 +41,13 @@ from typing import Annotated, Final
 from pydantic import Field, ValidationError, model_validator
 
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_TEMPLATE, FIND_TEST_CASE
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.ops.judge_cases import JudgeTemplateCreate
+from threetears.evals.ops.judge_cases import JudgeTemplateCreate, kind_template_create
 from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND,
     refuse_undeliverable_writer_template,
@@ -255,7 +255,7 @@ def writer_case_bank(stored: Iterable[EvalTestCase]) -> WriterCaseBank:
     """Read a writer template's stored cases: the ones this build reads, and the ones it does not.
 
     :param stored: Every stored case of one template in one scope, in storage order. Cases carrying no writer case are
-        skipped.
+        skipped; one whose case, or whose frozen snapshot's identity, does not read is unreadable.
     :ptype stored: Iterable[EvalTestCase]
     :return: The bank.
     :rtype: WriterCaseBank
@@ -265,6 +265,10 @@ def writer_case_bank(stored: Iterable[EvalTestCase]) -> WriterCaseBank:
     for test_case in stored:
         try:
             case = writer_case_of(test_case)
+            if case is not None:
+                # A frozen snapshot whose identity does not read names no source, so it is unreadable here, once,
+                # rather than raising from every decision that keys the bank by source.
+                _ = case.source_key
         except ValidationError as unread:
             unreadable.append((test_case.id, f"{unread.error_count()} fault(s): {unread}"))
             continue
@@ -376,10 +380,10 @@ def _mint_blocking(
     reused = bool(live)
     if live:
         stored, case = live[0]
-        if case.snapshot.get("id") != snapshot.id or sorted(case.withhold) != sorted(mint.withhold):
+        if case.snapshot_id != snapshot.id or sorted(case.withhold) != sorted(mint.withhold):
             differs = (
-                f"over snapshot {snapshot.id} where it froze {case.snapshot.get('id')} (the evidence moved since)"
-                if case.snapshot.get("id") != snapshot.id
+                f"over snapshot {snapshot.id} where it froze {case.snapshot_id} (the evidence moved since)"
+                if case.snapshot_id != snapshot.id
                 else f"withholding {sorted(mint.withhold)} where it withholds {sorted(case.withhold)}"
             )
             raise ValidationFailedError(
@@ -669,34 +673,20 @@ def writer_template_create(host: OpsHost, create: WriterTemplateCreate, scope_id
     :raises ConflictError: A template of that name is already in the scope.
     :raises StorageError: The template could not be written.
     """
-    if WRITER_KIND not in host.launch.kinds:
-        raise ValidationFailedError(
-            f"host {host.eval_host.profile.host_id!r} launches no {WRITER_KIND!r} kind, so a writer template could "
-            f"never run here: its LaunchHost registers no {WRITER_KIND!r} kind (launchable_report_writer_kind)",
-            remedy="ask this host's operator to enable report writer campaigns, a setting of the host no action changes",
-        )
-    storage = host.eval_host.storage
-    if storage.load_template_by_name(create.template_name, scope_id) is not None:
-        raise ConflictError(
-            f"a template named '{create.template_name}' already exists",
-            remedy=f"name the writer template something else, or mint into the existing one ({FIND_TEMPLATE})",
-        )
-    template = EvalTemplate(
-        scope_id=scope_id,
+    return kind_template_create(
+        host,
+        scope_id,
         name=create.template_name,
         intent=create.intent,
-        candidate_kind=WRITER_KIND,
+        kind=WRITER_KIND,
+        what="report writer",
+        filled_by="mint",
+        enabled_by=(
+            "actions.report_writing.launchable_report_writer_kind, beside WRITER_KIND_CONTRACT and WRITER_KIND_MEASURES "
+            "on its profile"
+        ),
         rubric=writer_scoring_rubric(),
-    )
-    refuse_undeliverable_writer_template(template)
-    storage.save_template(template)
-    return TemplateLine(
-        id=template.id,
-        name=template.name,
-        revision=template.revision,
-        candidate_kind=template.candidate_kind,
-        intent=template.intent,
-        archived=template.archived,
+        refuse=refuse_undeliverable_writer_template,
     )
 
 

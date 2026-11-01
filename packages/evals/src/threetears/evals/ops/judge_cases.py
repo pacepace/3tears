@@ -14,6 +14,7 @@ all a judge template is.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
@@ -27,7 +28,7 @@ from threetears.evals.ops.runs import PERSON_DESCRIPTION, LaunchArguments, Templ
 from threetears.evals.run.authoring import get_template
 from threetears.evals.run.judge_kind import JudgeCaseFreezeReport, author_judge_case, freeze_judge_cases
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import EvalTemplate, JudgedArtifact, RubricScale
+from threetears.evals.schema.models import EvalTemplate, JudgedArtifact, RubricDim, RubricScale
 
 
 class JudgeCasesFreeze(EvalBaseModel):
@@ -363,30 +364,84 @@ def judge_template_create(host: OpsHost, create: JudgeTemplateCreate, scope_id: 
     :raises ConflictError: A template of that name is already in the scope.
     :raises StorageError: The template could not be written.
     """
-    if JUDGE_KIND not in host.launch.kinds:
+    return kind_template_create(
+        host,
+        scope_id,
+        name=create.template_name,
+        intent=create.intent,
+        kind=JUDGE_KIND,
+        what="judge",
+        filled_by="freeze",
+        enabled_by="run.launchable_judge_kind, beside JUDGE_KIND_CONTRACT on its profile",
+        meanwhile="judge_second and judge_drift_check measure a run's judge against a second one",
+    )
+
+
+def kind_template_create(
+    host: OpsHost,
+    scope_id: str,
+    *,
+    name: str,
+    intent: str,
+    kind: str,
+    what: str,
+    filled_by: str,
+    enabled_by: str,
+    meanwhile: str | None = None,
+    rubric: Sequence[RubricDim] = (),
+    refuse: Callable[[EvalTemplate], None] | None = None,
+) -> TemplateLine:
+    """Write a template of a kind the package owns whole — the kind, a name, an intent and any rubric it seeds — on a
+    host that launches the kind; the one write both the judge's and the report writer's template creation make.
+
+    :param host: The launching host, whose registry must launch ``kind`` and whose store receives the template.
+    :ptype host: OpsHost
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param name: The template's name, unique in the scope.
+    :ptype name: str
+    :param intent: What its campaigns measure.
+    :ptype intent: str
+    :param kind: The ``candidate_kind`` it declares.
+    :ptype kind: str
+    :param what: The kind as a reader names a template of it (``judge``, ``writer``).
+    :ptype what: str
+    :param filled_by: How its cases reach it (``freeze``, ``mint``), which the remedy for a taken name says.
+    :ptype filled_by: str
+    :param enabled_by: What the host's operator registers and declares to launch the kind: the refusal's remedy.
+    :ptype enabled_by: str
+    :param meanwhile: What a caller can do until the operator does, when anything.
+    :ptype meanwhile: str | None
+    :param rubric: The rubric the template is seeded with.
+    :ptype rubric: Sequence[RubricDim]
+    :param refuse: A check of the template before it is written, raising what it refuses.
+    :ptype refuse: Callable[[EvalTemplate], None] | None
+    :return: The template as written.
+    :rtype: TemplateLine
+    :raises ValidationFailedError: The host launches no ``kind``, or ``refuse`` refused the template.
+    :raises ConflictError: A template of that name is already in the scope.
+    :raises StorageError: The template could not be written.
+    """
+    if kind not in host.launch.kinds:
         # The remedy is the host operator's, not the caller's: no action registers a kind. What the operator does is
-        # said in the reason, where it names the host's own setup rather than a call the caller could make.
+        # named in the remedy, as the host's own setup rather than a call the caller could make.
         raise ValidationFailedError(
-            f"host {host.eval_host.profile.host_id!r} launches no {JUDGE_KIND!r} kind, so a judge template could never "
-            f"run here: its LaunchHost registers no {JUDGE_KIND!r} kind (run.launchable_judge_kind) and its profile "
-            "declares no JUDGE_KIND_CONTRACT",
+            f"host {host.eval_host.profile.host_id!r} launches no {kind!r} kind, so a {what} template could never run "
+            f"here: its LaunchHost registers no {kind!r} kind",
             remedy=(
-                "ask this host's operator to enable judge campaigns — a setting of the host, which no action changes; "
-                "until then, judge_second and judge_drift_check measure a run's judge against a second one"
+                f"ask this host's operator to enable {what} campaigns — a setting of the host, which no action "
+                f"changes: they register {enabled_by}" + (f"; until then, {meanwhile}" if meanwhile else "")
             ),
         )
     storage = host.eval_host.storage
-    if storage.load_template_by_name(create.template_name, scope_id) is not None:
+    if storage.load_template_by_name(name, scope_id) is not None:
         raise ConflictError(
-            f"a template named '{create.template_name}' already exists",
-            remedy=f"name the judge template something else, or freeze into the existing one ({FIND_TEMPLATE})",
+            f"a template named '{name}' already exists",
+            remedy=f"name the {what} template something else, or {filled_by} into the existing one ({FIND_TEMPLATE})",
         )
-    template = EvalTemplate(
-        scope_id=scope_id,
-        name=create.template_name,
-        intent=create.intent,
-        candidate_kind=JUDGE_KIND,
-    )
+    template = EvalTemplate(scope_id=scope_id, name=name, intent=intent, candidate_kind=kind, rubric=list(rubric))
+    if refuse is not None:
+        refuse(template)
     storage.save_template(template)
     return TemplateLine(
         id=template.id,
@@ -409,4 +464,5 @@ __all__ = [
     "judge_cases_freeze",
     "judge_cases_list",
     "judge_template_create",
+    "kind_template_create",
 ]

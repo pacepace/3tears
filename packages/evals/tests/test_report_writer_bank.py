@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
+from pydantic import ValidationError
 
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
@@ -40,7 +41,11 @@ from threetears.evals.ops.report_writer.writer_contract import (
     EffortWord,
     WriterOverlays,
 )
-from threetears.evals.ops.report_writer.writer_kind import writer_case_of, writer_subject_components
+from threetears.evals.ops.report_writer.writer_kind import (
+    writer_case_of,
+    writer_case_payload,
+    writer_subject_components,
+)
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import CaseSetRef, EvalTestCase
@@ -121,6 +126,28 @@ async def test_a_mint_differing_from_its_sources_case_is_refused_and_stores_noth
         await _mint(host, snapshot_id=kairo.snapshot_id, withhold=[])
 
     assert len(_stored(host)) == len(SEED)
+
+
+async def test_a_case_whose_frozen_snapshot_names_no_campaign_field_is_unreadable_not_one_bare_source() -> None:
+    """A snapshot field the case's identity reads, renamed: the case does not read, and the bank refuses to decide a
+    mint over it, rather than keying it ``report-input:None`` beside every other such case."""
+    host = off_loop(writer_host).host
+    kairo = (await seed_writer_cases(host))["kairo round 2"]
+    (stored,) = [case for case in _stored(host) if case.id == kairo.test_case_id]
+    case = writer_case_of(stored)
+    assert case is not None and case.snapshot_id == kairo.snapshot_id
+    renamed = case.model_copy(
+        update={"snapshot": {("campaign" if key == "campaign_id" else key): v for key, v in case.snapshot.items()}}
+    )
+    with pytest.raises(ValidationError, match="campaign_id"):
+        _ = renamed.source_key
+    off_loop(
+        host.eval_host.storage.save_test_case,
+        stored.model_copy(update={"host_payload": writer_case_payload(renamed)}),
+    )
+
+    with pytest.raises(ValidationFailedError, match="this build cannot read"):
+        await _mint(host, snapshot_id=kairo.snapshot_id)
 
 
 async def test_a_retired_case_lets_its_source_be_minted_again_and_leaves_its_set() -> None:

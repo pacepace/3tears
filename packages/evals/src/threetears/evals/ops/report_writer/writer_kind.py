@@ -62,11 +62,13 @@ from threetears.evals.ops.analyst import report_snapshot_restore, snapshot_input
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.editor import computed_facts
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits, WritingOutcome, write_rounds
+from threetears.evals.ops.report_writer.rubric import editor_rubric
 from threetears.evals.ops.report_writer.session import ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.writer_contract import (
     ANALYST_ROUNDS_MEASURE,
     BOUNCE_MEASURES,
+    BOUNCES_MEASURE,
     EDITOR_ROUNDS_MEASURE,
     ENDING_MEASURE,
     FINISHED_MEASURE,
@@ -134,6 +136,23 @@ class WriterCaseOrigin(BaseModel):
     )
 
 
+class _FrozenIdentity(BaseModel):
+    """What a frozen snapshot is identified by, read through its own fields' names and types: its id, the campaign it
+    froze and its report input's digest. The rest of the snapshot is left as frozen, so an old case still reads."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    id: str = Field(min_length=1)
+    campaign_id: str | None
+    report_input_digest: str = Field(min_length=1)
+
+
+#: Every field the identity reads is one :class:`EvalReportSnapshot` declares: a field renamed there fails here, at
+#: import, rather than reading every frozen case as one source.
+if _unknown := sorted(set(_FrozenIdentity.model_fields) - set(EvalReportSnapshot.model_fields)):
+    raise RuntimeError(f"a writer case reads {', '.join(_unknown)} off its snapshot, which EvalReportSnapshot lacks")
+
+
 class WriterCase(BaseModel):
     """What one writer case pins: the report snapshot it is written over, whole, and the notes its analyst is not given.
 
@@ -180,16 +199,28 @@ class WriterCase(BaseModel):
         return cls(snapshot=snapshot.model_dump(mode="json"), withhold=tuple(withhold), origin=origin)
 
     @property
+    def snapshot_id(self) -> str:
+        """The id of the snapshot the case froze.
+
+        :return: The id.
+        :rtype: str
+        :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads.
+        """
+        return _FrozenIdentity.model_validate(self.snapshot).id
+
+    @property
     def source_key(self) -> str:
         """What makes two mints one case: the campaign the snapshot froze, or its report input for a bare one.
 
         :return: ``campaign:<id>``, or ``report-input:<digest>`` for a snapshot with no campaign behind it.
         :rtype: str
+        :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads, so
+            no source can be named for it.
         """
-        campaign_id = self.snapshot.get("campaign_id")
-        if isinstance(campaign_id, str) and campaign_id:
-            return f"campaign:{campaign_id}"
-        return f"report-input:{self.snapshot.get('report_input_digest')}"
+        identity = _FrozenIdentity.model_validate(self.snapshot)
+        if identity.campaign_id:
+            return f"campaign:{identity.campaign_id}"
+        return f"report-input:{identity.report_input_digest}"
 
 
 def writer_case_payload(case: WriterCase) -> dict[str, Any]:  # Any: the case's JSON
@@ -385,8 +416,9 @@ class ReportWriterKind:
         :return: The cell's model, skill and windows.
         :rtype: PreparedWriter
         :raises CandidatePreparationFailed: The arm's revisions are not ones the loop runs; the arm's skill is not one
-            the launch was given; the subject does not carry it; the factory's model is not the cell's; or, under a
-            dollar budget, the model's turns cannot be priced. Each before anything is sent.
+            the launch was given, or its ``editor.md`` states no rubric its reviews can be read on; the subject does
+            not carry it; the factory's model is not the cell's; or, under a dollar budget, the model's turns cannot
+            be priced. Each before anything is sent.
         """
         try:
             limits = WriterLimits(revisions=self._overlays.revisions)
@@ -399,6 +431,12 @@ class ReportWriterKind:
                 f"the arm runs skill {digest}, which this launch was not given; the skills it may run are "
                 f"{', '.join(sorted(self._skills))}"
             )
+        try:
+            editor_rubric(skill.editor().text)
+        except ValueError as unread:
+            raise _refused(
+                f"the arm's skill {digest} states no editor rubric its reviews can be read on: {unread}"
+            ) from unread
         carried = subject_snapshot.components.get(SKILL_LEVER) if subject_snapshot is not None else None
         expected = writer_subject_components(skill)[SKILL_LEVER]
         if carried is None or carried.content_hash != expected.content_hash:
@@ -596,10 +634,12 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
 def _measures(outcome: WritingOutcome, tally: Tally) -> dict[str, bool | float | str]:
     """The run's measures, read off the loop's outcome and the tally; the open findings only where a document was
     stored, since a run that stored none has no findings open on anything."""
+    bounces = tally.bounces()
     measures: dict[str, bool | float | str] = {
         ENDING_MEASURE: outcome.ending,
         FINISHED_MEASURE: outcome.ending == "stored",
-        **{BOUNCE_MEASURES[kind]: float(count) for kind, count in tally.bounces().items()},
+        BOUNCES_MEASURE: float(sum(bounces.values())),
+        **{BOUNCE_MEASURES[kind]: float(count) for kind, count in bounces.items()},
         ANALYST_ROUNDS_MEASURE: float(outcome.analyst_rounds),
         EDITOR_ROUNDS_MEASURE: float(outcome.editor_rounds),
         TURNS_MEASURE: float(tally.sent),

@@ -67,7 +67,6 @@ from threetears.evals.ops.report_writer.analyst import (
     SubmissionFault,
 )
 from threetears.evals.ops.report_writer.editor import (
-    PASS_TOTAL,
     EditorLimits,
     EditorOutcome,
     Review,
@@ -378,7 +377,7 @@ def _outcome(
 def _revision_request(review: Review) -> str:
     """What the analyst is sent to revise by: the review as the editor wrote it, its total and pass as code read it."""
     if not review.passes:
-        verdict = f"does not pass: a report passes with no item at 0 and a total of at least {PASS_TOTAL}"
+        verdict = f"does not pass: a report passes with no item at 0 and a total of at least {review.pass_total}"
     elif review.blocking:
         verdict = "passes on its scores, and holds findings that block it"
     else:
