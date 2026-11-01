@@ -408,7 +408,8 @@ def kind_template_create(
     :ptype what: str
     :param filled_by: How its cases reach it (``freeze``, ``mint``), which the remedy for a taken name says.
     :ptype filled_by: str
-    :param enabled_by: What the host's operator registers and declares to launch the kind: the refusal's remedy.
+    :param enabled_by: What the host's operator registers and declares to launch the kind, named in the refusal's
+        reason; the remedy stays the operator's ask, with no code names.
     :ptype enabled_by: str
     :param meanwhile: What a caller can do until the operator does, when anything.
     :ptype meanwhile: str | None
@@ -424,13 +425,13 @@ def kind_template_create(
     """
     if kind not in host.launch.kinds:
         # The remedy is the host operator's, not the caller's: no action registers a kind. What the operator does is
-        # named in the remedy, as the host's own setup rather than a call the caller could make.
+        # said in the reason, where it names the host's own setup rather than a call the caller could make.
         raise ValidationFailedError(
             f"host {host.eval_host.profile.host_id!r} launches no {kind!r} kind, so a {what} template could never run "
-            f"here: its LaunchHost registers no {kind!r} kind",
+            f"here: its LaunchHost registers no {kind!r} kind, which the operator enables by registering {enabled_by}",
             remedy=(
-                f"ask this host's operator to enable {what} campaigns — a setting of the host, which no action "
-                f"changes: they register {enabled_by}" + (f"; until then, {meanwhile}" if meanwhile else "")
+                f"ask this host's operator to enable {what} campaigns — a setting of the host, which no action changes"
+                + (f"; until then, {meanwhile}" if meanwhile else "")
             ),
         )
     storage = host.eval_host.storage
