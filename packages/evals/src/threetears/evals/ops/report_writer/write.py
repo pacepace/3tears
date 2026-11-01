@@ -41,7 +41,7 @@ from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report_doc_checks import DocVerdict
@@ -54,12 +54,14 @@ from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.gaps import CheckedDrafts, write_gaps
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterEnding, WriterLimits, WritingOutcome, write_rounds
+from threetears.evals.ops.report_writer.rubric import editor_rubric
 from threetears.evals.ops.report_writer.session import ToolMount
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 
-#: The names the report writer's entry point (``actions/report_writing.py``) calls and returns.
-__all__ = ["ReportNotStored", "ReportWritten", "report_write"]
+#: The names the report writer's entry point (``actions/report_writing.py``) calls, takes and returns. ``AnalystSkill``
+#: is the analysis package's, named here because the entry point, which reaches analysis only through ``ops``, takes it.
+__all__ = ["AnalystSkill", "ReportNotStored", "ReportWritten", "report_write"]
 
 log = get_logger(__name__)
 
@@ -154,6 +156,7 @@ async def report_write(
     withhold: Collection[str] = (),
     limits: WriterLimits | None = None,
     tally: Tally | None = None,
+    skill: AnalystSkill | None = None,
 ) -> ReportWritten:
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
@@ -184,11 +187,17 @@ async def report_write(
     :param tally: The tally every turn is counted in, when the caller keeps it (a job that must say what a run it
         stopped had spent); a fresh one when ``None``.
     :ptype tally: Tally | None
+    :param skill: The skill both sessions start from, when the write runs a version of it under test; the shipped
+        skill (:func:`~threetears.evals.analysis.analyst.skill.load_skill`) when ``None``. Its digests are recorded on
+        the generation either way.
+    :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
     :rtype: ReportWritten
-    :raises ValueError: Not exactly one of the sources named; under a dollar budget, a model whose turns cannot be
-        bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the model refuses for
-        its route or settings, raised as the model words it. Each before anything is frozen or sent.
+    :raises ValueError: Not exactly one of the sources named; ``withhold`` naming a note the skill has none of; a
+        skill whose ``editor.md`` states no rubric its reviews can be read on; under a dollar budget, a model whose
+        turns cannot be bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the
+        model refuses for its route or settings, raised as the model words it. Each before anything is frozen or
+        sent.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
     :raises EvalServiceError: The freeze or the snapshot's read refused (no such campaign, analysis or snapshot).
@@ -202,6 +211,9 @@ async def report_write(
         raise ValueError(
             f"a report is written from one source: name a snapshot_id, a campaign_id or an analysis_id, not {named or 'none'}"
         )
+    written_with = skill if skill is not None else load_skill()
+    analyst_skill, editor_skill = written_with.analyst(withhold=withhold), written_with.editor()
+    editor_rubric(editor_skill.text)
     if budget.usd is not None and (unpriced := await model.turn_pricing_refusal()) is not None:
         raise ValueError(
             f"the report was not started, and nothing was frozen, sent or spent: its {budget.spelled} budget admits "
@@ -218,8 +230,6 @@ async def report_write(
     snapshot = await run_blocking(
         eval_host.blocking_executor, eval_host.storage.load_report_snapshot, snapshot_id, scope_id
     )
-    skill = load_skill()
-    analyst_skill, editor_skill = skill.analyst(withhold=withhold), skill.editor()
     tally = tally if tally is not None else Tally()
     drafts = CheckedDrafts(_checker(report_input))
     outcome = await write_rounds(
@@ -238,7 +248,7 @@ async def report_write(
     written: dict[str, Any] = {  # Any: the record's parts, as JSON
         "model": model.model_name,
         "tally": tally.to_json(),
-        "skill": {"analyst": analyst_skill.digest, "editor": editor_skill.digest, "package": skill.digest},
+        "skill": {"analyst": analyst_skill.digest, "editor": editor_skill.digest, "package": written_with.digest},
         "reviews": [review.to_json() for review in outcome.reviews],
         "sessions": outcome.sessions,
     }

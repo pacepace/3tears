@@ -67,7 +67,6 @@ from threetears.evals.ops.report_writer.analyst import (
     SubmissionFault,
 )
 from threetears.evals.ops.report_writer.editor import (
-    PASS_TOTAL,
     EditorLimits,
     EditorOutcome,
     Review,
@@ -80,7 +79,7 @@ from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
 
-__all__ = ["TurnModel", "WriterEnding", "WriterLimits", "WritingOutcome", "write_rounds"]
+__all__ = ["MOST_REVISIONS", "TurnModel", "WriterEnding", "WriterLimits", "WritingOutcome", "write_rounds"]
 
 log = get_logger(__name__)
 
@@ -91,7 +90,7 @@ WriterEnding = Literal["stored", "stored_with_findings", "over_budget", "refused
 _CHANCE_ENDINGS: Final[frozenset[WriterEnding]] = frozenset({"over_budget", "refused", "review_failed"})
 
 #: The most revisions a report is given (ANALYST §4): so at most three reviews.
-_MOST_REVISIONS: Final = 2
+MOST_REVISIONS: Final = 2
 
 
 class TurnModel(Protocol):
@@ -141,7 +140,7 @@ class WriterLimits:
 
     analyst: AnalystLimits = field(default_factory=AnalystLimits)
     editor: EditorLimits = field(default_factory=EditorLimits)
-    revisions: int = _MOST_REVISIONS
+    revisions: int = MOST_REVISIONS
 
     def __post_init__(self) -> None:
         """Refuse a revision count outside 0 to 2.
@@ -150,8 +149,8 @@ class WriterLimits:
         """
         if isinstance(self.revisions, bool) or not isinstance(self.revisions, int):
             raise ValueError(f"revisions is a whole number, not {self.revisions!r}")
-        if not 0 <= self.revisions <= _MOST_REVISIONS:
-            raise ValueError(f"a report is given 0 to {_MOST_REVISIONS} revisions, not {self.revisions}")
+        if not 0 <= self.revisions <= MOST_REVISIONS:
+            raise ValueError(f"a report is given 0 to {MOST_REVISIONS} revisions, not {self.revisions}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -378,7 +377,7 @@ def _outcome(
 def _revision_request(review: Review) -> str:
     """What the analyst is sent to revise by: the review as the editor wrote it, its total and pass as code read it."""
     if not review.passes:
-        verdict = f"does not pass: a report passes with no item at 0 and a total of at least {PASS_TOTAL}"
+        verdict = f"does not pass: a report passes with no item at 0 and a total of at least {review.pass_total}"
     elif review.blocking:
         verdict = "passes on its scores, and holds findings that block it"
     else:

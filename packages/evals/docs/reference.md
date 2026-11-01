@@ -1609,6 +1609,9 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `bars_propose` | `read` | `campaign_id` | Propose bars from a single-cell baseline campaign's measured incumbent; registers nothing. |
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
+| `writer_template_create` | `write` | `template_name`, `intent` | Write a report writer template, its scoring rubric seeded from the editor rubric this build ships. |
+| `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `group?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
+| `writer_promotion` | `read` | `campaign_id`, `candidate` | Read whether a report writer campaign's candidate arm should replace its control. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
@@ -1636,6 +1639,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `result_rate_person` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason`, `person`, `rating_source`, `rated_at?` | Record a person's rating of one judged dimension, relayed by a caller the host attests for them. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
 | `reporter_case_archive` | `write` | `reporter_case_id`, `archived?`, `archive_reason?` | Retire a reporter case (or restore it): no launch runs it again, nothing destroyed. |
+| `writer_case_archive` | `write` | `writer_case_id`, `archived?`, `archive_reason?` | Retire a writer case (or restore it): no launch runs it again, nothing destroyed. |
 | `run_delete` | `destructive` | `run_id`, `confirm` | Destroy a run, its results and its campaign memberships. Unrecoverable; archive instead. |
 | `analysis_delete` | `destructive` | `analysis_id`, `confirm` | Destroy a stored analysis; the insights it minted remain. Unrecoverable; archive instead. |
 | `insight_delete` | `destructive` | `insight_id`, `confirm` | Destroy one insight, so no later analysis reads it as prior context. Unrecoverable. |
@@ -1646,10 +1650,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | Parameter | Type | Description |
 |---|---|---|
 | `analysis_id` (on `analysis_archive`, `analysis_delete`) | `string` | A stored analysis's id, as analyses_list names it. |
-| `analysis_id` (on `campaign_record`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
+| `analysis_id` (on `campaign_record`, `writer_case_mint`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
-| `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter case that can no longer measure anything); cleared on restore. |
+| `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a reporter or writer case that can no longer measure anything); cleared on restore. |
 | `archived` | `boolean` | The state to set: true retires the record, false restores it. |
 | `arm` | `string` | The decided arm, by the label the campaign's page shows it under or by its variant key. |
 | `arm_schedule` | `'interleaved'` \| `'sequential'` \| `'concurrent'` or `null` | How the arms share time and provider capacity. interleaved (the default): every arm at once, their cases taken in turn case by case under one width shared by the launch, which costs nothing and absorbs a provider's bad minute across every arm. sequential: one arm after another. concurrent: every arm side by side at its own width, the fastest, loading the providers with every arm at once, so one arm can take a provider's rationing. Latency under test runs the arms sequential and takes no other. Recorded on every run. |
@@ -1668,8 +1672,10 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
-| `campaign_id` | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `reporter_case_freeze`, `writer_promotion`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `writer_case_mint`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
+| `candidate` | `string` | The candidate arm, by its label or its variant key; never the control. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_material` | `string` | What the output is judged against: its source, or its facts. |
 | `case_name` | `string` | A case's name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
@@ -1689,6 +1695,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `criterion_template_id` | `string` | The subject template whose rubric dimension the case is judged on, as templates_list names it. |
 | `description` (on `campaign_create`) | `string` | A longer description of the campaign. |
 | `description` (on `campaign_update`) | `string` or `null` | A longer description of the campaign. |
+| `dev_set` | `string` | The set the cases a change is tuned on join. |
 | `dim_filter` | `string` or `null` | List only the configs asking for this dimension. |
 | `expected` | `integer` or `'pass'` \| `'fail'` | The verdict the output must get: 'pass' or 'fail' (or 1 / 0) on a pass/fail dimension, a score from 1 to 5 on an ordinal one. Refused, naming both, when the dimension's scale cannot hold it. |
 | `exploratory` | `boolean` | True says no aspect of the campaign declares a design: someone learning to run evals, or testing an intuition with no settled question. Its report and analysis say once that its readings confirm nothing, and each aspect's design is inferred from its runs; it names no question, arm, floor or margin. Required when no aspect declares a design, and refused beside one. An assertion checked and never stored: a campaign is exploratory exactly while no aspect declares a design. |
@@ -1701,10 +1708,13 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `floors_overridden` | array of `string` | The key of each broken floor of the decided arm the call overrides, as the page names it. |
 | `format` | `'markdown'` \| `'json'` \| `'html'` | The report's form: markdown (the memo), json (the schema's form), html (one page; its one script is the kit's, which draws its charts). |
 | `from_labels` | `boolean` | Freeze from the scope's person labels instead of from runs: one case per output and criterion, from the content each label carries, reading no run or result, so it works after the runs are gone. A label that carries no content is skipped by name. |
+| `group` | `string` or `null` | The split group: related campaigns (one and its re-runs) named alike sit on one side. Omitted, the case is its own group. |
+| `held_out_fraction` | `number` | The share of new groups placed on the held-out side. A group already placed keeps its side. |
+| `held_out_set` | `string` | The set the cases a change is decided on join. |
 | `include_archived` | `boolean` | List archived records too; they are left out by default. |
 | `include_sessions` | `boolean` | With json, add the full transcripts of the report document the page draws, as report_doc.sessions: every session that wrote it, by name. Refused with markdown or html, which never hold a transcript. |
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
-| `intent` | `string` | What its judge campaign measures, in a sentence a reader of its report is told. |
+| `intent` | `string` | What its campaigns measure, in a sentence a reader of their reports is told. |
 | `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
 | `job_id` | `string` | A job's id, exactly as the action that started it returned it. |
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
@@ -1769,6 +1779,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
+| `snapshot_id` | `string` or `null` | A snapshot already frozen in the scope, as report_snapshot_freeze named it. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
 | `subject` | `string` or `null` | Who or what produced the output, as the judge should know it; omitted for none. |
@@ -1777,13 +1788,15 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `supersedes` | array of `string` | The live case(s) of this campaign and memo the freeze replaces, by id — needed to revise a case's labels or re-freeze moved evidence; every live case of the pair when it holds several. |
 | `template_filter` | `string` or `null` | Only calls made for this template, by id. |
 | `template_id` | `string` | A template's id, as templates_list names it. |
-| `template_name` | `string` | The judge template's name, unique in the scope. |
+| `template_name` | `string` | The template's name, unique in the scope. |
 | `test_case_id` | `string` | A test case's id, as judge_cases_list or results_list names it. |
 | `test_case_ids` | array of `string` | The cases, in order, each a stored case of the template; a list the latest version already holds is refused. |
 | `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
 | `trials` | `'table'` \| `'all'` | How much of each failed or lost trial the report lays out: table (the default) is the census line and one row per such trial naming its stored result, read with result_get; all adds each one's full record (what it asked, what the judge saw and said, and why). JSON carries no records either way. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
+| `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the skill this build ships; empty withholds none. |
+| `writer_case_id` | `string` | A writer case's id, the test_case_id writer_case_mint returned. |
 
 <a id="cli"></a>
 ## The command line

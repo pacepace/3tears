@@ -18,6 +18,7 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_doc_support import converted_doc
 from threetears.evals.actions.report_writing import ReportWritten, write_report
+from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget
@@ -244,6 +245,7 @@ async def written(
     withhold: Sequence[str] = (),
     limits: WriterLimits | None = None,
     host: OpsHost | None = None,
+    skill: AnalystSkill | None = None,
 ) -> ReportWritten:
     """``write_report`` over a host seeded with every fixture snapshot (Kairo's by default)."""
     return await write_report(
@@ -254,6 +256,7 @@ async def written(
         snapshot_id=snapshot if snapshot is not None else kairo_id(),
         withhold=withhold,
         limits=limits,
+        skill=skill,
     )
 
 

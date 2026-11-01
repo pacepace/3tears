@@ -432,7 +432,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The editor's moved again when an aspect's keys gained its pass rule (`graded_by`, `pass_rule`, `pass_threshold`,
 #: `no_criterion`) and a contrast's what its test counted (`n_cases`, `control_n_cases`, `paired`, `pairing_r`), in the
 #: figure-key grammar it serves.
-_EVALS_BYTES = "1e68c866224e976f52cd14198beff388fb1fed04b7a74248d34b72ae59cd9fa0"
+#: The evals tool moved again when the report writer's actions joined it (writer_template_create, writer_case_mint,
+#: writer_case_archive, writer_promotion).
+_EVALS_BYTES = "fa3148225544ced19dd7c2cde4db8d686f09cfb1fe2bb79a700e33a818e1221e"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"

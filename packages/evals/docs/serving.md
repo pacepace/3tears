@@ -720,6 +720,29 @@ The template then launches through `run_launch`, by the reporter kind the host r
 (`reporter_calibration`) reads memo cases and plan cases, and cases of different planner prompts, in separate
 `groups`, and never pools their agreement.
 
+## Writer campaigns: evaluating the report writer
+
+A writer campaign (the `report_writer` kind) measures the analyst that writes a campaign's report: its skill, its
+reasoning effort, its revisions or its model. A host enables it by registering `launchable_report_writer_kind` on its
+launch registry and declaring `WRITER_KIND_CONTRACT` in its profile's kinds and `WRITER_KIND_MEASURES` on its measure
+registry. It builds its case bank from its own campaigns through four actions, and launches the arms between them:
+
+- `writer_template_create` (write) writes a template of the writer kind. Its scoring rubric is the editor rubric this
+  build ships, copied in when the template is written. Refused on a host that does not launch the writer kind.
+- `writer_case_mint` (write) freezes one campaign, stored analysis or snapshot into a writer case, with the exemplar
+  notes its analyst is never given, and lists it in its side's set (`writer-dev` or `writer-held-out` unless named).
+  A group keeps one side. Minting the same source again returns the stored case.
+- `writer_case_archive` (write) retires a case or restores it. Retire a case whose campaign's evidence moved, then mint
+  the campaign again.
+- Then `run_launch` the writer template once per arm, over the held-out set: `case_set_name` naming it
+  (`writer-held-out` unless the mint named another) and `case_set_version` naming one of its versions (the latest
+  mint's), so every arm runs the same held-out cases. Name the same
+  `judge_model` for every arm, of another model family than the writer's. A launch with no judge is refused, and one
+  with no case set runs the template's live cases on both sides of the split, which the promotion read refuses to
+  decide on: that campaign is paid for and never decided.
+- `writer_promotion` (read) reads a held-out campaign's corrected verdicts for one candidate arm and answers
+  promote, keep or undecided. It records nothing; a person records the call with `campaign_record`.
+
 ## Judge campaigns: evaluating a judge itself
 
 A judge campaign (the `judge` kind) makes a judge configuration the subject: its model, its prompt per criterion and

@@ -51,6 +51,7 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.capped_completion import call_ceiling, ceiling_is_estimate, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
+from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.run_pages import iter_keyed_results
 from threetears.evals.kernel.judge_cases import (
     JUDGE_CASE_KEY,
@@ -1054,24 +1055,18 @@ class JudgeKind:
         payload = trial.model_dump(mode="json")
         if outcome_kind == "no_reply":
             error = outcome.error or "the judge's call failed"
-            if outcome.owner == "account":
-                return CandidateOutput(
-                    infra_errors=[f"apparatus: judge: the call was refused for the calling account: {error}"],
-                    account_refused=True,
-                    telemetry=telemetry,
-                    kind_payload=payload,
-                )
-            if outcome.owner == "provider":
-                # The provider declined to serve the call at that moment, as it would any request: the trial measured
-                # the provider, not the judge under test, so it is excluded and the run goes on.
-                log.warning("Judge kind's call was declined by the provider for case %s: %s", test_case.id, error)
-                return CandidateOutput(
-                    infra_errors=[f"apparatus: judge: the provider declined the call: {error}"],
-                    telemetry=telemetry,
-                    kind_payload=payload,
-                )
-            log.warning("Judge kind's call failed for case %s: %s", test_case.id, error)
-            return CandidateOutput(candidate_errors=[f"judge: {error}"], telemetry=telemetry, kind_payload=payload)
+            # An account's refusal or a provider's decline measured them, not the judge under test, so the trial is
+            # excluded; a failure no describer placed is the judge's.
+            return failed_call_output(
+                outcome.owner or "candidate",
+                error,
+                refused="judge: the call was refused for the calling account",
+                declined="judge: the provider declined the call",
+                failed="judge",
+                log=lambda what, level: log.log(level, "%s, case %s: %s", what, test_case.id, error),
+                telemetry=telemetry,
+                kind_payload=payload,
+            )
         measures: dict[str, bool | float | str] = {JUDGE_PARSE_VALID_MEASURE: outcome_kind != "invalid"}
         if score is not None and case.labels:
             measures[JUDGE_LABEL_AGREEMENT_MEASURE] = sum(

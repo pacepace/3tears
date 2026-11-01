@@ -1,0 +1,33 @@
+# The skill ledger: one entry for every analyst skill this package has shipped, and the basis it shipped on.
+#
+# This file is package data beside the skill and is not part of it: the skill is its Markdown files alone, so no
+# entry written here moves the skill's digest. `analysis/analyst/skill_ledger.py` reads it, and a test fails on a
+# build whose shipped skill has no entry here.
+#
+# An edit to any file of the skill is a new skill with a new digest, and it ships with a new entry, appended below
+# the last one. The test that fails names the digests to copy. Each entry is one [[shipped]] table:
+#
+#   skill    the skill's digest (AnalystSkill.digest): every file's path and text
+#   analyst  the analyst's system text's digest, with no note withheld (SkillText.digest)
+#   editor   the editor's system text's digest (SkillText.digest)
+#   date     the day the entry was recorded
+#   basis    "measured", decided by a campaign, or "unmeasured", shipped without one
+#
+# A measured entry names the decision it shipped on, as the promotion read answered it:
+#
+#   campaign      the campaign's id
+#   scope         the scope the campaign lives in
+#   candidate     the promoted arm's variant key
+#   decision      "promote"
+#   writer_model  the model the candidate arm wrote with
+#   case_set      the held-out case set it was decided on, as { name = "...", version = N }
+#
+# An unmeasured entry says why it shipped without a measurement, in `reason`.
+
+[[shipped]]
+skill = "4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8"
+analyst = "063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b"
+editor = "07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+date = 2026-10-31
+basis = "unmeasured"
+reason = "baseline: shipped before the gate existed"

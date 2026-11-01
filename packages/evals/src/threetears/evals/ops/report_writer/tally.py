@@ -33,15 +33,20 @@ import math
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from threetears.evals.kernel.numbers import group_thousands, spell_dollars
 from threetears.evals.schema.turns import TurnCeiling, TurnReply
 
-__all__ = ["ReportBudget", "Tally", "TurnCost", "WriterRole"]
+__all__ = ["BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
 
 #: Who a session writes as: the analyst, who drafts and revises, or the report editor, who reviews.
 WriterRole = Literal["analyst", "editor"]
+
+#: Which check sent a submission back: ``unparsed`` (no single fenced JSON object), ``shape`` (the document's model),
+#: ``validity`` (what the snapshot holds), ``invariant`` (the invariants), or ``max_tokens`` (the reply was cut). The
+#: analyst's faults are typed by it, the tally counts by it, and the writer kind measures each.
+BounceKind = Literal["unparsed", "shape", "validity", "invariant", "max_tokens"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -197,7 +202,7 @@ class Tally:
         """Start an empty tally."""
         self._turns: list[TurnCost] = []
         self._calls: Counter[tuple[WriterRole, int]] = Counter()
-        self._bounces: dict[tuple[WriterRole, int], list[str]] = {}
+        self._bounces: dict[tuple[WriterRole, int], list[BounceKind]] = {}
         self._transcripts: dict[str, str] = {}
         self._sent = 0
 
@@ -237,17 +242,26 @@ class Tally:
         """
         self._calls[(role, round)] += calls
 
-    def record_bounce(self, role: WriterRole, round: int, kind: str) -> None:
+    def record_bounce(self, role: WriterRole, round: int, kind: BounceKind) -> None:
         """Count one bounce of a role's round: a submission sent back with what was wrong with it.
 
         :param role: The role.
         :ptype role: WriterRole
         :param round: The round.
         :ptype round: int
-        :param kind: What was wrong (``unparsed``, ``shape``, ``validity``, ``invariant``, ``max_tokens``).
-        :ptype kind: str
+        :param kind: Which check sent it back.
+        :ptype kind: BounceKind
         """
         self._bounces.setdefault((role, round), []).append(kind)
+
+    def bounces(self) -> dict[BounceKind, int]:
+        """Every bounce of every round, counted by kind: each kind present, a kind no round bounced as ``0``.
+
+        :return: The counts, in :data:`BounceKind`'s order.
+        :rtype: dict[BounceKind, int]
+        """
+        counted = Counter(kind for kinds in self._bounces.values() for kind in kinds)
+        return {kind: counted[kind] for kind in get_args(BounceKind)}
 
     def record_transcript(self, session: str, digest: str) -> None:
         """Keep the digest of a session's messages as they now stand, replacing the one kept before.

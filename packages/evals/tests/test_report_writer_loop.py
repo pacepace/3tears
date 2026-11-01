@@ -53,7 +53,7 @@ from packages.evals.tests.report_writer_support import (
 )
 from threetears.evals.actions import Caller, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.actions.report_writing import ReportNotStored, write_report
-from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_doc_store import doc_verdicts, generation_record, made_line, store_report_doc
@@ -70,6 +70,7 @@ from threetears.evals.kernel.report_doc import (
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.editor import EditorLimits, Review, RubricScore, review_report
 from threetears.evals.ops.report_writer.loop import WriterLimits
+from threetears.evals.ops.report_writer.rubric import editor_rubric
 from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.turns import TurnText
@@ -769,6 +770,61 @@ async def test_a_total_and_a_pass_the_editor_writes_are_never_read() -> None:
     assert (read.total, read.passes) == (12, False)
     assert result.ending == "stored_with_findings"
     assert result.generation["reviews"][0]["total"] == 12
+
+
+def _edited_skill() -> AnalystSkill:
+    """The shipped skill with an ``editor.md`` an arm under test might run: item 3 renamed, and an eighth item added."""
+    shipped = load_skill()
+    text = shipped.files["editor.md"]
+    assert "3. **Honest emphasis.**" in text and "\n\nA report passes when" in text
+    text = text.replace("3. **Honest emphasis.**", "3. **Fair emphasis.**").replace(
+        "\n\nA report passes when",
+        "\n8. **Plain words.** Every sentence reads without the campaign's own jargon.\n\nA report passes when",
+    )
+    return AnalystSkill({**shipped.files, "editor.md": text})
+
+
+@pytest.mark.parametrize(
+    ("scores", "ending"),
+    [
+        pytest.param((2, 2, 2, 2, 1, 1, 1, 2), "stored", id="13 of 16 passes"),
+        pytest.param((2, 2, 1, 2, 1, 1, 1, 2), "stored_with_findings", id="12 of 16 does not"),
+    ],
+)
+async def test_an_arm_whose_editor_renames_and_adds_an_item_is_reviewed_on_its_own_rubric(
+    scores: tuple[int, ...], ending: str
+) -> None:
+    """Its editor scores the eight items its editor.md states, by their names there, and the review is read on them,
+    never refused against the shipped seven. It passes at the shipped bar's share of its top, rounded up: 13 of 16."""
+    skill = _edited_skill()
+    names = [item.name for item in editor_rubric(skill.editor().text).items]
+    assert names[2] == "Fair emphasis" and len(names) == 8
+    items = [
+        {"n": n, "name": name, "score": score, "reason": f"item {n} reads so"}
+        for n, (name, score) in enumerate(zip(names, scores, strict=True), start=1)
+    ]
+    answer_ = TurnText(f"My review.\n```json\n{json.dumps({'items': items, 'findings': []})}\n```")
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(answer_)))
+
+    result = await written(model, skill=skill, limits=WriterLimits(revisions=0))
+
+    (read,) = result.outcome.reviews
+    assert [item.name for item in read.items] == names
+    assert (read.total, read.pass_total) == (sum(scores), 13)
+    assert result.ending == ending
+
+
+async def test_a_skill_whose_editor_states_no_rubric_is_refused_before_a_turn_is_sent() -> None:
+    shipped = load_skill()
+    broken = AnalystSkill(
+        {**shipped.files, "editor.md": shipped.files["editor.md"].replace("## The rubric", "## Rubric")}
+    )
+    model = FakeTurnModel(analyst=analyst(), editor_1=editor(reply(review())))
+
+    with pytest.raises(ValueError, match="no '## The rubric' section"):
+        await written(model, skill=broken)
+
+    assert model.sessions["analyst"].requests == []
 
 
 # --- the store gate -------------------------------------------------------------------------------------------------

@@ -38,7 +38,6 @@ and moving it is the remaining half of that split.
 from __future__ import annotations
 
 import json
-import logging
 import re
 import types
 from collections.abc import Callable, Mapping, Sequence
@@ -98,6 +97,7 @@ from threetears.evals.schema.models import (
     RubricScale,
 )
 from threetears.evals.schema.completion import CompletionGenerator, CompletionResult, RequestCeiling
+from threetears.evals.kernel.failed_call import failed_call_output
 from threetears.evals.kernel.provider import describe_failure, log_provider_failure
 from threetears.evals.kernel.text_block import one_line, under
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
@@ -1155,41 +1155,16 @@ class ReporterKind:
                         if recorder.results
                         else "generator call"
                     )
-                    if failure.owner == "account":
-                        # Every model behind the key gets the same answer, so this cell measured the
-                        # account, not the candidate: excluded, and ``account_refused`` stops the RUN.
-                        log_provider_failure(
-                            log, failure, exc, "Reporter candidate's %s was refused for the calling account", call
-                        )
-                        return CandidateOutput(
-                            infra_errors=[
-                                f"apparatus: reporter: the {call} was refused for the calling account: {failure.description}"
-                            ],
-                            account_refused=True,
-                            telemetry=telemetry,
-                        )
-                    if failure.owner == "provider":
-                        # The provider declined to serve the call at that moment, as it would any request: the
-                        # cell measured the provider, not the candidate, so it is excluded and the run goes on.
-                        log_provider_failure(
-                            log,
-                            failure,
-                            exc,
-                            "Reporter candidate's %s was declined by the provider",
-                            call,
-                            level=logging.WARNING,
-                        )
-                        return CandidateOutput(
-                            infra_errors=[
-                                f"apparatus: reporter: the {call} was declined by the provider: {failure.description}"
-                            ],
-                            telemetry=telemetry,
-                        )
-                    log_provider_failure(
-                        log, failure, exc, "Reporter candidate's %s failed", call, level=logging.WARNING
-                    )
-                    return CandidateOutput(
-                        candidate_errors=[f"reporter: the {call} failed: {failure.description}"],
+                    raised = exc
+                    # An account's refusal measured the account and stops the run; a provider's decline measured the
+                    # provider, at that moment; either way the cell is excluded, and only the rest is the candidate's.
+                    return failed_call_output(
+                        failure.owner,
+                        failure.description,
+                        refused=f"reporter: the {call} was refused for the calling account",
+                        declined=f"reporter: the {call} was declined by the provider",
+                        failed=f"reporter: the {call} failed",
+                        log=lambda what, level: log_provider_failure(log, failure, raised, "%s", what, level=level),
                         telemetry=telemetry,
                     )
                 # Everything else is the harness's: a defect below the kind. Failing the candidate for either would score it for the rig.
