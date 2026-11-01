@@ -73,7 +73,18 @@ publishing after the commit with the rows in hand would hold them all in memory.
 - **Anything else goes to L3.** With no kept stage reaching `carry_at` and no earlier write still
   publishing, the tables the stage left out are read from L3 at its epoch, while L3 holds the scope
   exactly there; else `catch_up_from_l3` republishes it, the slow path but the correct one. A writer
-  that finds an earlier write unfinished stages nothing and leaves every state to the catch-up.
+  that finds an earlier write unfinished stages every state but those the unfinished write touched
+  (its `EpochSnapshot.pending`), which go to the catch-up: their L3 rows hold the dead write's rows,
+  which no chunk does.
+- **The pending set is read before the write begins.** `EpochSnapshot.pending` is a set of scopes
+  without the version that touched each, which a writer reads before it begins (the reports writer at
+  its `prepare`). A writer whose lease lapsed but is still writing may `touch` a scope after that
+  read and before the new writer's `begin` (its fence holds until `begin` takes the version), so
+  such a scope is staged as if untouched, and a table its stage left out keeps a chunk without the
+  dead write's rows. After `begin` no earlier write can touch
+  anything (its fence then refuses it, and `begin` is refused while one of its data transactions is
+  open), so the set to trust is the one read under `begin`'s lock, or re-read once it commits;
+  `ScopeEpochs` does not answer that set today.
 - **Hold the claim across commit and publish.** Otherwise a replica waiting on the write rebuilds
   every scope from L3 in the moment between them.
 
