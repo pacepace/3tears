@@ -8,6 +8,30 @@ packages (bumped in lock-step).
 
 ## v0.88.1 -- 2026-10-31
 
+### core: a staged write whose pointer is behind is kept and carried on from L2, never thrown away
+
+**Fixed:** `ScopedSnapshot.publish_staged` moved a stage only from a pointer at exactly the writer's `carry_at`, and
+any other stage was skipped: its freshly built chunks deleted, the scope left for the catch-up, which re-read it
+whole from L3 through 1,000-row pages (~1.8 s a page on cobalt prod; IA's 434,000 rows about 13 minutes). On cobalt
+prod (2026-10-31, 17:47 to 21:34 UTC, 3tears 0.86) 59 publishes left 2,034 scopes so, about 34 a write: every one a
+scope whose pointer was behind the epoch its writer saw, after one write left unfinished at 17:41 staged nothing
+(53 first skips, then 1,981 of the same scopes again, write after write); none was a lost claim, a missing chunk or
+a racer ahead. 0.87 read such a stage's left-out tables from L3 inside the write's publish instead (46 reads in the
+hour after its deploy). Now a committed write's stage whose pointer is behind is KEPT in the pointer bucket
+(`{name}.r.{token}.{epoch}`: its chunks, its base `carry_at`, which tables are pieces, its columns), and the sweep
+spares its chunks while it is ahead of its scope's pointer. A publish that finds its pointer behind carries it to
+`carry_at` through the kept stages first, in epoch order (each moves exactly the pointer at its base, so pieces
+chain in commit order and every pointer stays L3's rows at its epoch); every publish carries its scopes on through
+the stages kept after it once it has moved them, and the catch-up does the same before it reads a scope from L3. A
+stage kept for an earlier write still publishing (its claim live) waits for it, in neither list `publish_staged`
+answers; with none, its left-out tables are read from L3 as in 0.87. A compare-and-set lost to a racing writer is
+judged again against the pointer it left, not skipped; a pointer at the stage's epoch or past it is owed nothing
+(no longer counted as skipped). Two writers overlapping on 50 scopes (an AP write whose publish lags, 1 to 10 LSF
+writes committed behind it, each published while the next writes): before, every LSF stage (50 to 500 scopes) was
+left for the catch-up and 350 pages (250,000 rows) read from L3; now none is, and nothing is read from L3. A replica
+of an older version ignores the kept stages' keys and may sweep their chunks; a pointer is never moved onto a
+missing chunk, so such a stage is read from L3 as before. No public name changes.
+
 ### registry: a loaded or re-registered copy keeps the key its pod registered with
 
 **Fixed:** A copy's `holder_jkt` (the key each delegated token minted for a call to its pod binds) and its

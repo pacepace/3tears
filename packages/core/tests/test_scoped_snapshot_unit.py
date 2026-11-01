@@ -593,26 +593,74 @@ async def _staged_carry(snapshot: ScopedSnapshot) -> Any:
     return await snapshot.stage("TX", 2, {})
 
 
-async def test_a_carry_whose_pointer_moved_after_it_was_judged_is_left_for_the_catch_up() -> None:
+def _racing(pointers: _Pointers, race: Callable[[str], None]) -> list[int]:
+    """make TX's first pointer compare-and-set race another writer, ``race`` moving it just before; the revisions every
+    compare-and-set of TX was tried against are answered."""
+    real_update = pointers.update
+    tried: list[int] = []
+
+    async def racing_update(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
+        if key == "enr.s.TX":
+            if not tried:
+                race(key)
+            tried.append(revision)
+        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+
+    pointers.update = racing_update  # type: ignore[method-assign]
+    return tried
+
+
+async def test_a_carry_whose_pointer_moved_after_it_was_judged_is_judged_again_against_the_one_it_moved_to() -> None:
+    """a compare-and-set lost to a racing writer never publishes what was judged against the entry it lost to: the
+    stage is judged again against the pointer the racer left, rather than left for a catch-up that reads the scope
+    whole from L3."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    staged = await _staged_carry(snapshot)
+    raced_to: list[int] = []
+
+    def race(key: str) -> None:
+        # a catch-up republishes TX at the same epoch, under a chunk of its own, between the judgement and the move
+        held = json.loads(pointers.entries[key][0])
+        fresh = "enr/TX/1/results.raced"
+        store.objects[fresh] = store.objects[held["tables"]["results"]["object"]]
+        held["tables"]["results"]["object"] = fresh
+        raced_to.append(pointers.put_now(key, json.dumps(held).encode()))
+
+    tried = _racing(pointers, race)
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == (["TX"], [])
+    assert tried[-1] == raced_to[0], "the stage moved from an entry other than the one the racer left"
+    entry = json.loads(pointers.entries["enr.s.TX"][0])
+    assert entry["epoch"] == 2
+    assert entry["tables"]["results"]["object"] == "enr/TX/1/results.raced", (
+        "the carry was judged against the entry the racer replaced"
+    )
+    await snapshot.stop()
+
+
+async def test_a_carry_whose_pointer_a_racer_moved_past_it_moves_nothing() -> None:
     snapshot, pointers, _, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     staged = await _staged_carry(snapshot)
-    real_update = pointers.update
-    raced = [False]
+    raced: list[bytes] = []
 
-    async def racing_update(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
-        if key == "enr.s.TX" and not raced[0]:
-            # another writer moves TX between the carry's judgement and its compare-and-set
-            raced[0] = True
-            pointers.put_now(key, pointers.entries[key][0])
-        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+    def race(key: str) -> None:
+        held = json.loads(pointers.entries[key][0])
+        held["epoch"] = 3
+        raced.append(json.dumps(held).encode())
+        pointers.put_now(key, raced[0])
 
-    pointers.update = racing_update  # type: ignore[method-assign]
+    _racing(pointers, race)
 
     moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
 
-    assert (moved, skipped) == ([], ["TX"]), "a carry judged against a moved pointer was published"
+    assert (moved, skipped) == ([], []), "a stage behind its scope's pointer was owed anything"
+    assert pointers.entries["enr.s.TX"][0] == raced[0], "a pointer moved back"
     await snapshot.stop()
 
 
@@ -3966,6 +4014,202 @@ async def test_a_scope_already_past_the_stage_is_not_moved_back() -> None:
     assert pointers.entries["enr.s.TX"][0] == before, "a pointer took L3's rows of a later epoch as the stage's"
     await writer.stop()
     await replica.stop()
+
+
+# ----------------------------------------------------------------------
+# two writers overlapping on the same scopes, each changing its own tables (cobalt prod, 2026-10-31): an AP write's
+# publish lags while LSF writes commit behind it every 15-20 s, each published while the next is writing. Every
+# stage reaches the pointer from L2, in epoch order, with nothing read from L3 and nothing left for the catch-up
+# ----------------------------------------------------------------------
+
+_BOTH = ("DE", "TX")
+_TWO_TABLES = (*_APPEND, SnapshotTable(name="totals", scope_column="state", key=("state",)))
+
+
+class _ReadCountingL3(_TwoTableL3):
+    """the two-table L3, counting the reads of a scope's rows (the catch-up's listing of scopes is not one)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scope_reads = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" not in sql:
+            self.scope_reads += 1
+        return await super().fetch(sql, *args)
+
+
+class _BlindToKept:
+    """a pointer bucket that lists no kept stage: a replica of a code version that keeps none."""
+
+    def __init__(self, bucket: _Pointers) -> None:
+        self._bucket = bucket
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._bucket, name)
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        keys = await self._bucket.list_keys(prefix=prefix)
+        return [key for key in keys if not key.startswith("enr.r.")]
+
+
+async def _overlapping_writers(
+    *, blind_ap: bool = False
+) -> tuple[ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3]:
+    """the AP side's writer, the LSF side's and a reader over the append-only results and the whole-chunk totals, all
+    ready at epoch 1; the AP side's sees no kept stage when ``blind_ap``."""
+    pointers, store, l3 = _Pointers(), _Store(), _ReadCountingL3()
+    ap_pointers = _BlindToKept(pointers) if blind_ap else pointers
+    built = [
+        _snapshot(tables=_TWO_TABLES, pointers=bucket, store=store, backend=_two_table_backend(), l3=l3)[0]
+        for bucket in (ap_pointers, pointers, pointers)
+    ]
+    ap, lsf, reader = built
+    await _started(ap, pointers)
+    for snapshot in (lsf, reader):
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=5)
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def _ap_write(ap: ScopedSnapshot, l3: _TwoTableL3, epoch: int, total: int) -> list[Any]:
+    """the AP side's write at ``epoch``: every scope's totals, committed in L3; its publish is the caller's."""
+    stages = [await ap.stage(s, epoch, {"totals": [{"state": s, "total": total}]}) for s in _BOTH]
+    for row in l3.totals:
+        row["total"] = total
+    l3.epochs = dict.fromkeys(_BOTH, epoch)
+    return stages
+
+
+async def _lsf_write(lsf: ScopedSnapshot, l3: _TwoTableL3, epoch: int) -> tuple[list[Any], dict[str, int]]:
+    """an LSF backfill write at ``epoch``: one county added to every scope, committed in L3; its stages and the
+    epochs it saw before it began."""
+    carry = dict(l3.epochs)
+    added = {s: _county(f"{s.lower()}{epoch}", epoch, state=s) for s in _BOTH}
+    stages = [await lsf.stage(s, epoch, {}, added={"results": [added[s]]}) for s in _BOTH]
+    l3.rows.extend(added.values())
+    l3.epochs = dict.fromkeys(_BOTH, epoch)
+    return stages, carry
+
+
+def _holds(snapshot: ScopedSnapshot, l3: _TwoTableL3) -> bool:
+    """whether a replica's L1 holds exactly what L3 does, every table of every scope."""
+    with snapshot.read() as cursor:
+        counties = cursor.execute("SELECT county, state, votes FROM results ORDER BY county").fetchall()
+        totals = cursor.execute("SELECT state, total FROM totals ORDER BY state").fetchall()
+    expected_counties = sorted((r["county"], r["state"], r["votes"]) for r in l3.rows)
+    expected_totals = sorted((t["state"], t["total"]) for t in l3.totals)
+    return counties == expected_counties and totals == expected_totals
+
+
+async def test_two_writers_overlapping_on_the_same_scopes_publish_every_stage_from_l2_in_epoch_order() -> None:
+    """cobalt prod, 2026-10-31: 2,034 staged scopes in 59 writes were left for the catch-up from L3, each then read
+    whole through 1,000-row pages, ~1.8 s a page. Here the AP side's write commits at 2 and its publish lags; the
+    LSF side commits at 3, 4 and 5, each published while the next is writing. Each LSF stage finds its pointer
+    behind the epoch it carries from: it is kept, and the AP publish carries the pointer on through every one."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    lsf_writes = [await _lsf_write(lsf, l3, epoch) for epoch in (3, 4, 5)]
+    read_before = l3.scope_reads
+    left: list[str] = []
+
+    for index, (stages, carry) in enumerate(lsf_writes):
+        # the next LSF write is writing every scope while this one publishes; the last publishes in a quiet moment
+        writing = index < len(lsf_writes) - 1
+        l3.writing, l3.pending = writing, set(_BOTH) if writing else None
+        left += (await lsf.publish_staged(stages, carry_at=carry))[1]
+    l3.writing, l3.pending = False, None
+    moved, skipped = await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1))
+    left += skipped
+
+    assert left == [], f"staged scopes were left for the catch-up: {left}"
+    assert moved == list(_BOTH)
+    assert l3.scope_reads == read_before, "a stage was completed from L3 while L2 held every write's chunks"
+    for scope in _BOTH:
+        entry = json.loads(pointers.entries[f"enr.s.{scope}"][0])
+        assert entry["epoch"] == 5
+        assert [piece["epoch"] for piece in entry["tables"]["results"]["pieces"]] == [3, 4, 5], "pieces out of order"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its publish"
+    await _until(lambda: all(reader.applied_epoch(s) == 5 for s in _BOTH), what="the reader applied epoch 5")
+    assert _holds(reader, l3), "the reader's L1 is not L3"
+    assert await reader.catch_up_from_l3() == [], "a scope was behind L3 after every write published"
+    assert l3.scope_reads == read_before
+    # L2 itself holds L3: a replica that starts now loads exactly L3 from NATS
+    cold = _snapshot(tables=_TWO_TABLES, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)[0]
+    await cold.start()
+    await cold.wait_ready(timeout=5)
+    assert cold.status().source is SnapshotSource.L2
+    assert _holds(cold, l3), "a replica loaded from NATS does not hold L3"
+    assert l3.scope_reads == read_before
+    for snapshot in (ap, lsf, reader, cold):
+        await snapshot.stop()
+
+
+async def test_a_scope_whose_kept_stages_reach_l3s_epoch_is_caught_up_from_l2() -> None:
+    """the publish that brought the pointer to a kept stage's base did not carry it on (a replica of a code version
+    that keeps no stage): the catch-up carries it on from L2 and reads nothing from L3."""
+    ap, lsf, reader, pointers, _, l3 = await _overlapping_writers(blind_ap=True)
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], []), "the LSF stage did not wait for the AP write"
+    assert await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1)) == (list(_BOTH), [])
+    assert all(json.loads(pointers.entries[f"enr.s.{s}"][0])["epoch"] == 2 for s in _BOTH)
+    read_before = l3.scope_reads
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    assert l3.scope_reads == read_before, "a scope its kept stages bring to L3's epoch was read from L3"
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_kept_stage_whose_base_never_comes_is_caught_up_from_l3_and_dropped() -> None:
+    """the AP write committed and its writer died before its publish: nothing will bring the pointer to the LSF
+    stage's base, so the catch-up reads the scope from L3 as before, and the kept stage goes."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], [])
+    # the AP writer dies: its claims go, and its stages with them
+    await ap.discard_staged(ap_stages)
+    # the kept stage's chunks are spared by the sweep while it is kept
+    await reader.discard_epoch(3)
+    assert all(name in store.objects for stage in stages for name in stage.objects.values())
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its epoch"
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_stage_behind_its_pointer_with_no_write_publishing_before_it_is_completed_from_l3() -> None:
+    """a pointer behind the epoch a stage carries from, and no write before it still publishing (a write that
+    staged nothing: an earlier one unfinished): the stage is not left waiting, and its left-out tables come from
+    L3 at its epoch, as before."""
+    ap, lsf, reader, pointers, _, l3 = await _overlapping_writers()
+    # a write at 2 changed the totals and staged nothing
+    for row in l3.totals:
+        row["total"] = 10
+    l3.epochs = dict.fromkeys(_BOTH, 2)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    read_before = l3.scope_reads
+
+    assert await lsf.publish_staged(stages, carry_at=carry) == (list(_BOTH), [])
+
+    assert l3.scope_reads > read_before
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
 
 
 class _WedgedL3(_L3):

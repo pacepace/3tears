@@ -62,15 +62,73 @@ publishing after the commit with the rows in hand would hold them all in memory.
   write's version, which the commit makes the scope's epoch. After the commit, `publish_staged()`
   moves every staged pointer. Nothing reads a chunk until its pointer moves, so a write that never
   commits shows nothing.
-- **Carry only from the epoch the writer saw.** A table a write did not change in a scope keeps the
-  scope's chunk, but only when the pointer is at the epoch the writer read before it began. Any
-  other pointer may hold a dead write's rows that L3 has and no chunk does. The move is a
-  compare-and-set against exactly the entry the carry was judged on.
-- **Anything else goes to the catch-up.** A skipped scope's L3 epoch is now ahead of its pointer, so
-  `catch_up_from_l3` republishes it from L3, the slow path but the correct one. A writer that finds
-  an earlier write unfinished stages nothing and leaves every state to the catch-up.
+- **A stage moves the pointer at the epoch the writer saw.** A stage is the change from the scope's
+  rows at `carry_at` (the epoch the writer read before it began, which its commit replaced) to its
+  rows at the write's epoch. A table it did not change keeps the chunk of the pointer at `carry_at`;
+  any other pointer may hold a dead write's rows that L3 has and no chunk does. The move is a
+  compare-and-set against exactly the entry it was judged on; one lost to a racing writer is judged
+  again against the entry the racer left, never skipped for it.
+- **A pointer behind is carried to it through the stages kept** (below), and a pointer at the stage's
+  epoch or past it is owed nothing.
+- **Anything else goes to L3.** With no kept stage reaching `carry_at` and no earlier write still
+  publishing, the tables the stage left out are read from L3 at its epoch, while L3 holds the scope
+  exactly there; else `catch_up_from_l3` republishes it, the slow path but the correct one. A writer
+  that finds an earlier write unfinished stages nothing and leaves every state to the catch-up.
 - **Hold the claim across commit and publish.** Otherwise a replica waiting on the write rebuilds
   every scope from L3 in the moment between them.
+
+### Overlapping writers: a stage is kept, never thrown away while it can still be published
+
+**Decided 2026-11-01, for the reports pod's AP and LSF loads.** On cobalt prod on 2026-10-31, 59
+staged publishes left 2,034 scopes (about 34 a write: every scope each touched) for the catch-up,
+which re-read each whole from L3 through 1,000-row pages at about 1.8 s a page (IA's 434,000 rows,
+about 13 minutes), though the writer had its rows seconds before. Every one of them was a scope whose
+pointer was behind the epoch its writer saw: a write left unfinished at 17:41 UTC (a deploy) staged
+nothing, every later partial write of the same scopes found the pointer behind and threw its stage
+away, and no catch-up brought them back while the writes ran back to back. 0.87 read such a stage's left-out tables from L3 instead (46 times
+in the hour after its deploy, once per scope, inside the write's publish). A stage that cannot move
+its pointer yet is now kept for the publish that can:
+
+- **Kept, not deleted.** A committed write's stage whose pointer is behind `carry_at` is written to
+  the pointer bucket as `{name}.r.{token}.{epoch}`: its chunks, its rows, which tables are pieces,
+  its columns, and `carry_at` as its base. The sweep spares the chunks a kept stage names, as it
+  spares the chunks a pointer serves. Only a committed write keeps a stage (it is kept by
+  `publish_staged`, after the commit), so nothing kept is a write that never commits.
+- **Carried on in epoch order.** A kept stage moves a pointer at its base, and only that. A publish
+  that finds its pointer behind carries it to its own base through the kept stages first: each step
+  takes the kept stage of the lowest epoch whose base is the pointer's epoch (two stages on one base
+  cannot both be right, and only the lower can be). Every publish, staged or whole, carries its
+  scopes on through the stages kept after it once it has moved them, and the catch-up does the same
+  before it reads a scope from L3, reading nothing for a scope its kept stages bring to L3's epoch.
+  So pieces chain in the order their writes committed, every pointer's chain stays L3's rows at its
+  epoch, and a pointer never moves back.
+- **Kept before the pointer is read again.** A writer keeps its stage and only then reads the pointer
+  once more; a publish lists the kept stages only after its own move. So either the writer sees the
+  move and carries itself, or the publish lists the stage and carries it: neither can miss the other.
+- **Waits only on a write still publishing.** A kept stage whose chain back from `carry_at` (through
+  the kept stages, each base the epoch of the write before) reaches an epoch with no stage kept, a
+  write whose claim is still live, waits for it: in neither list `publish_staged` answers. Else its
+  tables are read from L3 as before. A kept stage nothing brings to its base stays kept until a
+  pointer reaches its epoch (the catch-up's L3 read), then goes: it never moves a pointer it does not
+  follow.
+- **Two code versions.** A replica that predates kept stages ignores their keys (its watch wakes on
+  pointers and the index only), carries nothing on, and its sweep may delete a kept stage's chunks.
+  A pointer is never moved onto a missing chunk, so a stage that lost one is read from L3, as before.
+
+Measured with that pattern in memory (an AP write whose publish lags, N LSF writes committed behind it,
+each published while the next is writing; 50 scopes of 3,000 whole rows and 2,000 appended rows; an L3
+that pages 1,000 rows a statement; macOS arm64, 2026-11-01):
+
+| | Scopes left for the catch-up | L3 pages (rows) read | Pointers at L3's epoch | A replica's L1 at L3 |
+|---|---|---|---|---|
+| 0.88.1, N = 1 / 3 / 10, 18 ms a page | 50 / 150 / 500 | 350 (250,300 to 250,750) | 4.1 / 3.7 / 7.5 s | 4.1 / 3.7 / 7.5 s |
+| now, N = 1 / 3 / 10, 18 ms a page | 0 | 0 | 0.1 / 0.1 / 1.4 s | 2.2 / 1.8 / 3.7 s |
+| 0.88.1, N = 3, 180 ms a page | 150 | 350 (250,400) | 9.4 s | 9.4 s |
+| now, N = 3, 180 ms a page | 0 | 0 | 0.5 s | 3.9 s |
+
+The old cost grows with L3's page time (about 66 s at prod's 1.8 s a page, read 7 scopes at once) and with
+a scope's rows; the new one does not depend on L3 at all. What remains of a replica's time is its own
+DuckDB swap of 50 scopes, which the old path paid too, spread across its slower publish.
 
 ## Append-only tables: a base and its pieces
 
@@ -97,8 +155,9 @@ and a row once held never changes or goes away) is published by what each write 
   moves nothing and changes nothing here (this L1 takes a publish only once its pointer has moved,
   so `applied_epoch` and the last change name only epochs the pointer took). `publish` returns
   `False`, and the scope is shown behind in `status()` and rebuilt from L3 at the next pass, which
-  holds the change. A skipped stage leaves the scope with its pointer behind L3's epoch, which
-  `catch_up_from_l3` republishes. A new scope's first piece is its base.
+  holds the change. A stage whose pointer is behind is kept and carried on by the publish that brings
+  the pointer to its base (above); one nothing can carry leaves the scope with its pointer behind L3's
+  epoch, which `catch_up_from_l3` republishes. A new scope's first piece is its base.
 - **Other tables of the snapshot.** A publish of whole rows only moves the pointer exactly as a
   snapshot with no append-only table does: the compare-and-set retried against racing writers.
   A publish that carries added rows moves the scope's one pointer from exactly the entry at
@@ -224,6 +283,7 @@ listed), never a replica's view, which lags another replica's publish:
 | The chunk | Kept or deleted |
 |---|---|
 | Named by its scope's pointer, as a base or a piece | Kept: it is being served |
+| Named by a kept stage of its scope | Kept: a publish will carry it onto the pointer |
 | At an epoch a live write claims | Kept: it is being written, or waits for its pointer to move |
 | Anything else | Deleted: it serves nothing and nothing will point at it |
 
