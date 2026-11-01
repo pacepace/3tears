@@ -4423,3 +4423,226 @@ async def test_a_catch_up_that_fails_says_so_with_its_error_and_lets_the_claim_g
     with pytest.raises(ConnectionError):
         await snapshot.catch_up_from_l3()
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# a scope's L3 read: in the order an index serves, and a page fetched ahead
+# ----------------------------------------------------------------------
+
+_VOTES_BY = TableSchema(
+    name="votes_by",
+    primary_key=("race", "county"),
+    columns=[
+        Column("race", STRING_TYPE),
+        Column("county", STRING_TYPE),
+        Column("state", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+def _votes_by_rows(races: int, counties: int) -> list[dict[str, Any]]:
+    """TX's ``races`` x ``counties`` rows, and one of DE's, written in neither order a read asks for."""
+    rows = [
+        {"race": f"r{race:02d}", "county": f"c{county:04d}", "state": "TX", "votes": race * county}
+        for county in reversed(range(counties))
+        for race in range(races)
+    ]
+    return [*rows, {"race": "r00", "county": "d0000", "state": "DE", "votes": 7}]
+
+
+class _IndexedL3(_L3):
+    """L3 as YugabyteDB answers a keyset page of a table keyed on a hashed column the scope does not pin.
+
+    The table's one index the scope leads is ``(state HASH, index...)``: a page ordered by the index's columns first
+    reads from the cursor's place in it to the end of the group holding the page's last row (an incremental sort);
+    any other order reads, and sorts, the scope's every row. ``scanned`` counts the rows each read.
+    """
+
+    def __init__(self, rows: list[dict[str, Any]], index: tuple[str, ...]) -> None:
+        super().__init__(rows)
+        self.index = index
+        self.scanned = 0
+        self.pages = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        order = [part.strip().strip('"') for part in sql.split("ORDER BY", 1)[1].split("LIMIT")[0].split(",")]
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        state, cursor = args[0], tuple(args[1:]) or None
+
+        def place(row: dict[str, Any]) -> tuple[Any, ...]:
+            return tuple(row[column] for column in order)
+
+        scope = sorted((r for r in self.rows if r["state"] == state), key=place)
+        page = [r for r in scope if cursor is None or place(r) > cursor][:limit]
+        self.pages += 1
+        if tuple(order[: len(self.index)]) != self.index:
+            self.scanned += len(scope)
+        else:
+            width = len(self.index)
+            start = cursor[:width] if cursor is not None else None
+            end = place(page[-1])[:width] if page else None
+            self.scanned += sum(
+                1
+                for r in scope
+                if (start is None or place(r)[:width] >= start) and (end is None or place(r)[:width] <= end)
+            )
+        return [dict(r) for r in page]
+
+
+class _OrderedBackend(DuckDBBackend):
+    """a DuckDB L1 recording the key order of every scope it is given whole."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.given: list[list[tuple[Any, ...]]] = []
+
+    def replace_partitions(self, replacements: Any) -> int:
+        for r in replacements:
+            if r.arrow is not None:
+                self.given.append(
+                    [(row["race"], row["county"]) for row in r.arrow.select(["race", "county"]).to_pylist()]
+                )
+        return super().replace_partitions(replacements)
+
+
+def _votes_by_backend(backend: DuckDBBackend | None = None) -> DuckDBBackend:
+    metadata = MetaData()
+    _VOTES_BY.to_sqlalchemy_table(metadata)
+    made = backend or DuckDBBackend()
+    made.initialize(metadata)
+    return made
+
+
+async def test_a_scope_read_in_its_index_order_reads_a_page_of_rows_a_statement_not_the_scope() -> None:
+    """a catch-up on cobalt prod (2026-11-01) read IA's 434k rows at 1.8 s a 999-row page: a table keyed on a race,
+    hashed, paged by its key within a state, which no index orders, so each page read and sorted the state's every row
+    (an EXPLAIN on a local copy: 33k rows scanned for each page of TX). Read in the order the state's index serves,
+    a page reads about its own rows, and the copy holds the same rows, in key order."""
+    rows = _votes_by_rows(races=30, counties=200)
+    tx = sum(1 for r in rows if r["state"] == "TX")
+    held: dict[tuple[str, ...], Any] = {}
+    scanned: dict[tuple[str, ...], int] = {}
+    for read_order in ((), ("county",)):
+        l3 = _IndexedL3(rows, index=("county",))
+        backend = _votes_by_backend(_OrderedBackend())
+        assert isinstance(backend, _OrderedBackend)
+        tables = (SnapshotTable(name="votes_by", scope_column="state", key=("race", "county"), read_order=read_order),)
+        snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=10)
+        await snapshot.stop()
+        held[read_order] = backend.execute_query("SELECT * FROM votes_by ORDER BY state, race, county")
+        scanned[read_order] = l3.scanned
+        assert all(given == sorted(given) for given in backend.given), "a scope was published out of key order"
+    pages = -(-tx // _PAGE)
+    assert len(held[("county",)]) == len(rows)
+    assert held[("county",)] == held[()]
+    assert scanned[()] >= pages * tx, f"the key's order read {scanned[()]} rows"
+    assert scanned[("county",)] <= tx + pages * 30 + 1, f"the index's order read {scanned[('county',)]} rows of {tx}"
+
+
+def test_a_read_order_naming_a_column_twice_is_refused_and_pages_by_the_rest_of_the_key_after_it() -> None:
+    table = SnapshotTable(name="votes_by", scope_column="state", key=("race", "county", "id"), read_order=("county",))
+
+    assert table.paged_by == ("county", "race", "id")
+    assert SnapshotTable(name="t", scope_column="s", key=("a", "b")).paged_by == ("a", "b")
+    with pytest.raises(ValueError, match="twice"):
+        SnapshotTable(name="t", scope_column="s", key=("a",), read_order=("b", "b"))
+
+
+class _SlowL3(_L3):
+    """L3 answering each of a scope's keyset pages after ``wait`` seconds, recording when each fetch begins and ends."""
+
+    def __init__(self, rows: list[dict[str, Any]], events: list[str], wait: float) -> None:
+        super().__init__(rows)
+        self.events = events
+        self.wait = wait
+        self.fetches = 0
+        self.on_fetch: Callable[[int], None] = lambda number: None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        self.fetches += 1
+        number = self.fetches
+        self.on_fetch(number)
+        self.events.append(f"fetch {number} begins")
+        await asyncio.sleep(self.wait)
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        after = args[1] if len(args) > 1 else ""
+        scope = sorted((r for r in self.rows if r["state"] == args[0]), key=lambda r: r["county"])
+        page = [dict(r) for r in scope if r["county"] > after][:limit]
+        self.events.append(f"fetch {number} ends")
+        return page
+
+
+class _SlowExportBackend(DuckDBBackend):
+    """a DuckDB L1 whose page exports take ``wait`` seconds each, recording when each ends."""
+
+    def __init__(self, events: list[str], wait: float) -> None:
+        super().__init__()
+        self.events = events
+        self.wait = wait
+        self.exports = 0
+
+    def export_rows(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(self.wait)
+        exported = super().export_rows(*args, **kwargs)
+        self.exports += 1
+        self.events.append(f"export {self.exports} ends")
+        return exported
+
+
+async def test_a_scope_read_fetches_its_next_page_while_this_one_is_typed() -> None:
+    """a page cost its fetch and then its typing, in series (on cobalt prod the typing is a job in the shared copy's
+    worker): each next page is now fetched beside the typing of this one, so a page costs the slower of the two.
+    Each page is still typed on its own: a retention judges the rows it is given."""
+    events: list[str] = []
+    rows = [{"county": f"c{i:05d}", "state": "TX", "votes": i} for i in range(4 * _PAGE)]
+    l3 = _SlowL3(rows, events, wait=0.05)
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _SlowExportBackend(events, wait=0.05)
+    backend.initialize(metadata)
+    snapshot, *_ = _snapshot(l3=l3, backend=backend)
+    l3.epochs = {"TX": 1}
+
+    began = time.monotonic()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+    spent = time.monotonic() - began
+    await snapshot.stop()
+
+    assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": len(rows)}]
+    assert backend.exports == 4, f"4 pages were typed in {backend.exports} exports"
+    for page in range(1, backend.exports):
+        assert events.index(f"fetch {page + 1} begins") < events.index(f"export {page} ends"), events
+    # five fetches and four exports of 50 ms: 450 ms one after another, about 250 ms beside each other
+    assert spent < 0.4, f"the read took {spent:.2f} s"
+
+
+async def test_a_write_beginning_while_a_page_is_fetched_ahead_still_stops_the_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the page fetched ahead changes nothing of a write's stop: the read stops at the next look between pages, the
+    page fetched ahead is dropped, and nothing more is read while the write runs."""
+    events: list[str] = []
+    rows = [{"county": f"c{i:05d}", "state": "TX", "votes": i} for i in range(5 * _PAGE)]
+    l3 = _SlowL3(rows, events, wait=0.02)
+    l3.on_fetch = lambda number: setattr(l3, "writing", True) if number == 2 else None
+    snapshot, _, _, _ = _snapshot(l3=l3, write_check=timedelta(0))
+    l3.epochs = {"TX": 1}
+
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+    await asyncio.sleep(0.2)
+
+    assert not snapshot.is_ready
+    assert any("the rebuild stops reading" in r.getMessage() for r in caplog.records)
+    assert l3.fetches <= 3, f"the read went on after the write began: {events}"
+    await snapshot.stop()

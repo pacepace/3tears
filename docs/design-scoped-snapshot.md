@@ -121,9 +121,9 @@ that pages 1,000 rows a statement; macOS arm64, 2026-11-01):
 
 | | Scopes left for the catch-up | L3 pages (rows) read | Pointers at L3's epoch | A replica's L1 at L3 |
 |---|---|---|---|---|
-| 0.88.1, N = 1 / 3 / 10, 18 ms a page | 50 / 150 / 500 | 350 (250,300 to 250,750) | 4.1 / 3.7 / 7.5 s | 4.1 / 3.7 / 7.5 s |
+| 0.88, N = 1 / 3 / 10, 18 ms a page | 50 / 150 / 500 | 350 (250,300 to 250,750) | 4.1 / 3.7 / 7.5 s | 4.1 / 3.7 / 7.5 s |
 | now, N = 1 / 3 / 10, 18 ms a page | 0 | 0 | 0.1 / 0.1 / 1.4 s | 2.2 / 1.8 / 3.7 s |
-| 0.88.1, N = 3, 180 ms a page | 150 | 350 (250,400) | 9.4 s | 9.4 s |
+| 0.88, N = 3, 180 ms a page | 150 | 350 (250,400) | 9.4 s | 9.4 s |
 | now, N = 3, 180 ms a page | 0 | 0 | 0.5 s | 3.9 s |
 
 The old cost grows with L3's page time (about 66 s at prod's 1.8 s a page, read 7 scopes at once) and with
@@ -231,10 +231,18 @@ into the rebuild, and most of what they held the copy's retention dropped afterw
 
 - **Scope by scope, a page at a time.** A rebuild reads each scope from L3 a keyset page at a time
   (`complete_copy.l3_row_pages`). Each page goes through the backend's `export_rows` as it arrives,
-  so it is held as the L1 keeps it: typed in Arrow, and cut by a backend's retention. The scope is
-  then published like any whole publish (this L1, its chunks, its pointer) and let go. At most
-  `l3_concurrency` scopes (default 4) are held at once, read beside the one being published, and
-  published in scope order.
+  so it is held as the L1 keeps it: typed in Arrow, and cut by a backend's retention. The next page is
+  fetched while this one is typed. Pages are never typed several at once: a retention judges the rows
+  it is given, so a different cut keeps different rows. The scope is then published like any
+  whole publish (this L1, its chunks, its pointer) and let go. At most `l3_concurrency` scopes
+  (default 4) are held at once, read beside the one being published, and published in scope order.
+- **A page reads a page, not the scope (2026-11-01).** Each page is `ORDER BY` its paging columns
+  within the scope. On YugabyteDB a key led by a hashed column the scope does not pin has no index
+  serving that order, so each page read and sorted the scope's every row, and a scope's read grew with
+  the square of its rows (cobalt prod: IA, 434k rows, 1.8 s a page). A table whose L3 index led by the
+  scope column orders its rows by other columns names them (`SnapshotTable.read_order`); its pages
+  are read in that order, the rest of the key after it, and the scope is sorted back into key order
+  once read.
 - **The writer's stamp, per scope.** Each scope is published only if the writer's stamp, read after
   its rows, is still the one taken before the epochs were read. Once a write has committed, nothing
   more is published and the attempt reads again. A scope already published at the epoch L3 still

@@ -58,11 +58,12 @@
 # callers.
 
 [[release]]
-version = "0.88.1"
+version = "0.89.0"
 since = "v0.88.0"
 summary = """
-The registry keeps each tool pod's key across a restart: no 3tears-evals name has moved or been removed since 0.88.0,
-and no judge wording changed.
+A scope read from L3 pages in its index's order, a staged write whose pointer is behind is carried on from L2, a bulk
+read whose part changed while it was read reads it again, and the registry keeps each tool pod's key across a
+restart: no 3tears-evals name has moved or been removed since 0.88.0, and no judge wording changed.
 """
 
 [[release]]
