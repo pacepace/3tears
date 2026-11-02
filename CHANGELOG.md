@@ -6,6 +6,195 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.89.0 -- 2026-10-31
+
+### core: a sweep never takes an open slot's staging directory
+
+**Fixed:** `SegmentSlot`'s write makes its staging directory, then its lock file, then locks it, and the serving
+process's sweep runs on other threads meanwhile (reserve, claim, discard, release, close). A sweep between those
+steps retired the directory (no lock file yet), or locked and renamed it away (no lock taken yet) and the write went
+on unlocked; the worker's export then failed with `FileNotFoundError` and its states fell back to the slow L3
+republish (the local replay of 2026-11-01: 3 times in 40 minutes, 8 states each). A sweep now leaves every staging
+directory of a slot still open, as it does an open hand-off's; a discarded or claimed slot's leftover staging still
+goes. A write whose staging directory cannot be locked raises `RuntimeError` instead of writing unlocked.
+
+### nats: a declaration never lowers a live stream's or bucket's replicas
+
+**Fixed:** a NATS audit of cobalt prod (2026-11-02) found 56 of its 58 streams on one server. `ensure_jetstream_stream`
+took no replica count and, on a stream already live, sent its declaration as an update: an update sends every
+field, and an unsent count is the server's one, so every declarer's start moved its stream back onto one server,
+whatever an operator had raised it to. `ensure_object_store` sent its own count (default 1) the same way, and an
+owner's `ensure_kv_bucket(replicas=N)` reconciled a bucket live on more servers down to N. Now every update of a
+live stream sends the larger of its live count and the one declared, a declaration that asks for none keeps the live
+count, an owner's recreate of a file bucket on memory creates it on no fewer servers than it was live on, and the
+stream declaration remembered for a restoration after a NATS restart carries the count sent. Every KV open (the
+locks, counters, leases, collections, epochs and IAM stores) updates a live bucket only from its live config, so none
+lowers it. A new stream declared without a count is still created on one server (the local stack's single-node
+NATS). Lowering a stream's replicas is now an operator's step, never a side effect of a start.
+
+**Added:** `replicas` on `NatsClient.ensure_jetstream_stream` and `NatsClient.kv_bucket` (passed through to the
+bucket it creates); both refuse a count below one with `ValueError`. `ensure_object_store`'s `replicas` now
+defaults to `None` (create on one, keep a live bucket's) where it was 1. New keyword arguments, so a minor bump.
+
+### core: a write whose writer is gone is abandoned, and a fresh replica is ready beside a write in progress
+
+**Fixed:** a load that failed part way through its write (a YugabyteDB statement timeout, SQLSTATE 57014, in the
+replay of the night of 2026-11-01) left that write open, and only the next `begin` ended it. Until then every reader
+was told the write was in progress. A replica with no copy of its own (a pod restarted while NATS held only the
+scopes published since it lost the snapshot) waited on that write, served nothing, and the dead write outlived a
+pod restart. Stale data is acceptable; missing data is not. Two changes:
+
+- `ScopeEpochs(writer=WriterLease(lease, key))` takes the lease every writer holds while it writes. When
+  `settled()` finds a write in progress and that lease free (the writer let it go or it lapsed), it abandons the
+  write. The abandon is a commit of what the write left: the scopes it touched, and the data's version, move to its
+  number, and `writing` clears. The row lock is taken without waiting, so a write with a data transaction still open
+  is not abandoned. A live writer renews its lease and is never abandoned, however slow it is. A writer that comes
+  back is refused by the existing fence. Nothing new is timed. Without `writer` nothing changes.
+- A `ScopedSnapshot` whose full rebuild meets a write in progress that records what it touched no longer waits for
+  it. Each scope the write has not touched is read whole at its committed epoch. A scope it has touched is served
+  from the copy NATS holds of it, and that pointer is never replaced by a read of a write in progress, so no replica
+  shows less than before. A touched scope that NATS holds no copy of is read from L3 as it stands. The copy then
+  becomes ready, and once the write commits the next rebuild reads only the scopes whose epochs moved. A write that
+  records nothing still makes the rebuild wait, as before.
+
+**Added:** `threetears.core.collections.scope_epochs.WriterLease`, and the keyword `writer` on `ScopeEpochs`.
+
+### registry: a call no endpoint took answers `TOOL_NOT_READY`, not `TOOL_UNAVAILABLE`
+
+**Fixed:** when every endpoint the caller may use failed to take a call (no responders, the connection closed, the
+durable result waiter could not open, or no acknowledgement inside the accept window) the registry answered
+`TOOL_UNAVAILABLE`, the code for a tool with nothing to route to, which the hub serves as 404. On cobalt prod
+(2026-10-31) both replicas of a tool pod shared one endpoint, neither acknowledged a scheduled `lsf_ready` call
+within the 10 s accept window, and the caller was told the tool did not exist. The call never started in any of
+these cases, so a retry is safe: the registry now answers `TOOL_NOT_READY` (the hub's 503, retry shortly), with the
+transport detail in the message. Failover to a sibling endpoint is unchanged, and a tool that is not in the catalog
+or has no routable endpoint still answers `TOOL_UNAVAILABLE`. A caller that retried `TOOL_UNAVAILABLE` at once for a
+pod being replaced now meets `TOOL_NOT_READY` there, the code a tool also answers while it loads.
+
+### core: a shared Arrow result kept past its close stays in the store's count until it is freed
+
+**Fixed:** a claimed result's tables (`MappedSegment.tables`) are its files' pages, zero-copy, and stay valid after
+`close`; but `close` removed the files at once, so a table kept past it held its pages in memory outside the
+store's count and outside `max_bytes`. On cobalt prod (2026-11-01) the reports pod held up to 2.9 GiB of shared
+memory so, results of exports kept alive while a refresh held the cycle collector off, beside a store already near
+its bound: the container passed its 16 GiB limit. A result's files are now mapped through a Python `mmap` whose
+buffers keep it alive, each holding the result's shared lock (`MappedTables(pin=True)`, which `MappedSegment`
+uses): the store keeps a closed result whose tables (or a slice of one, or anything sharing its buffers) are still
+alive, counted against `max_bytes` (a publish, slot or hand-off that would pass it is refused), and the first sweep
+after the last buffer is freed removes it. A result with nothing kept goes at `close`, as before. No row is copied.
+Chosen over copying a result out before its close, which would double every export's bytes for a moment and move
+them into the serving process's private memory, where no bound covers them either. A caller that holds many results
+at once (exports of every state staged side by side) now meets `SharedArrowFullError` where it passed the bound
+unseen: size `max_bytes` for them. New keyword `pin` on `MappedTables`.
+
+**Added:** `threetears.core.shared_arrow.private_bytes()`: a process's private memory (Linux `RssAnon`, never the
+shared files it maps), what `SharedArrowPool` already judged its workers by, public for a consumer judging a worker
+of its own (the reports pod's apply worker was retired 227 times on cobalt prod by its resident memory, which counts
+the store's mapped pages). New public name.
+
+**Added:** `SegmentSlot.writing()`: a worker writes its result in steps, each step's tables written as it is given,
+the slot's `max_bytes` bounding every step together, renamed into the slot whole as the block ends (nothing kept if
+it raises; no result if no step wrote a table). The reports pod's apply worker writes a change of every state so, a
+slice of states at a time, where it held every state's rows to write them at once. New public method.
+
+### datasources: `read_all` reads a relation again when it changed while it was read
+
+**Fixed:** `read_all` raised `IncompleteReadError` ("changed while it was being read", or "counted N rows and the
+read returned M") the first time a source rewrote the relation between its count before the read and its proof
+after, where `read_partitions` reads a moved batch again (0.89, above). The reports pod reads LSF's `ok` runs whole
+through it while the warehouse rewrites the table, and a run so failed held the LSF pull back until the next one
+(cobalt prod, 2026-11-01). A read whose closing proof fails is now read again, counted and fingerprinted afresh, up
+to `CHANGED_READ_ATTEMPTS` (3) reads in all, each re-read logged at warning; a relation still moving on the third
+read raises the same error as before, logged at error. What is returned is still one whole state of the relation.
+The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again, nor is a read
+short of its count whose relation's fingerprint did not move (rows the key cannot page past, such as a NULL in it,
+which every read loses alike): it is raised after one read, as `read_partitions` does for such a part. A short read
+now takes the second fingerprint to tell the two apart. A one-time change during a read is no longer an error; the
+tests that changed the relation once now change it on every read.
+
+**Added:** `CHANGED_READ_ATTEMPTS` in `threetears.datasources.query_client`, the bound `read_partitions` already
+used, now shared. New public name.
+
+### core: a load from files runs over several connections at once
+
+**Added:** `SchemaBackedCollection.load_files(..., connections=N)` and `protocol.side_by_side_requests`. The broker
+copies one `l3.load_files` request's files one after another on one connection (about 16,000 rows a second on the
+local stack: 12.5 s for a 200,000-row LSF update), so a load of many files ran at one connection's rate. With
+`connections` above one the requests are cut into runs of whole files of about the load's rows over `connections`
+(no file cut, no run empty, none crossing a request's wait) and up to `connections` are sent at once. Insert-only as
+before; a request that fails cancels and awaits the others, the drop and the generation advance happen once, and the
+failure is raised as itself. The default, 1, is the load as before. New public names, so a minor bump.
+
+### core: a scope read from L3 pages in the order its index serves, and fetches its next page while one is typed
+
+**Fixed:** A catch-up on cobalt prod (2026-11-01) read IA from L3 at about 1.8 s a 999-row page: 434k rows, 435
+pages, 13 minutes, where the same pods loaded 7.8M rows from L2 in 29 s. Each page is `ORDER BY` the table's key
+within the scope, and a table keyed on a column YugabyteDB hashes (the reports' results tables lead with the race)
+has no index serving that order within a state: every page read and sorted the scope's every row (EXPLAIN on a local
+copy: 33,222 rows scanned and a top-N sort for each 1,000-row page of TX; 1,028 ms a page in the database, against
+122 ms for a state-led table). So a scope's read grew with the square of its rows. The hub's broker added 23 ms a
+page of its own, the pod's parse 7 ms.
+
+**Added:** `SnapshotTable.read_order`: the columns an L3 index led by the scope column orders a scope's rows by
+after it. Its pages are then read `ORDER BY` those columns and the rest of the key (`SnapshotTable.paged_by`, unique
+as the key is), which the index serves with about a page's rows: 1,028 to 123 ms a page in the database for that
+table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Every column
+it names must be one of the key's, refused with `ValueError` otherwise: a keyset page steps past its last row by
+comparing every paged column, and a NULL would drop every row after it with no count to see it; a key column is
+never NULL. Empty by default: nothing changes for a table that does not set it. New public names, so a minor bump.
+
+**Changed:** a scope's read fetches each next page while this one is typed (a shared-memory copy types each page in
+a job of its worker: 50 to 75 ms a page locally, beside a fetch of 120 to 150 ms). Each page is still typed on its
+own: typed ten pages at once, a reports copy's retention kept 2,690 of an LSF table's 5,080 rows of a state, so the
+cut is part of what a copy holds. A write that begins mid-read still stops the scope's read at the next page, and the
+page fetched ahead is dropped with it. A read holds two pages of L3's rows beside the scope's typed rows.
+
+### datasources: a bulk read whose part changed while it was read reads it again
+
+**Fixed:** `read_partitions` failed the whole read with `IncompleteReadError: ... changed while it was read` when a
+source rewrote a part between its fingerprint before the read and the one after. Found by a local replay of the
+2026-10-31 election night: two AP loads failed that way in one run, and their pages stayed stale until the next load.
+A batch whose part moved is now read again from its page starts, the fingerprints taken after the moved read being
+the next read's "before", up to three reads in all; each re-read is logged at warning with its attempt, and a part
+still moving on the third read fails the read exactly as before, logged at error. Nothing of the batch is handed back
+until it is proven whole. No other failure is read again. No API change.
+
+### core: a staged write whose pointer is behind is kept and carried on from L2, never thrown away
+
+**Fixed:** `ScopedSnapshot.publish_staged` moved a stage only from a pointer at exactly the writer's `carry_at`, and
+any other stage was skipped: its freshly built chunks deleted, the scope left for the catch-up, which re-read it
+whole from L3 through 1,000-row pages (~1.8 s a page on cobalt prod; IA's 434,000 rows about 13 minutes). On cobalt
+prod (2026-10-31, 17:47 to 21:34 UTC, 3tears 0.86) 59 publishes left 2,034 scopes so, about 34 a write: every one a
+scope whose pointer was behind the epoch its writer saw, after one write left unfinished at 17:41 staged nothing
+(53 first skips, then 1,981 of the same scopes again, write after write); none was a lost claim, a missing chunk or
+a racer ahead. 0.87 read such a stage's left-out tables from L3 inside the write's publish instead (46 reads in the
+hour after its deploy). Now a committed write's stage whose pointer is behind is KEPT in the pointer bucket
+(`{name}.r.{token}.{epoch}`: its chunks, its base `carry_at`, which tables are pieces, its columns), and the sweep
+spares its chunks while it is ahead of its scope's pointer. A publish that finds its pointer behind carries it to
+`carry_at` through the kept stages first, in epoch order (each moves exactly the pointer at its base, so pieces
+chain in commit order and every pointer stays L3's rows at its epoch); every publish carries its scopes on through
+the stages kept after it once it has moved them, and the catch-up does the same before it reads a scope from L3. A
+stage kept for an earlier write still publishing (its claim live) waits for it, in neither list `publish_staged`
+answers; with none, its left-out tables are read from L3 as in 0.87. A compare-and-set lost to a racing writer is
+judged again against the pointer it left, not skipped; a pointer at the stage's epoch or past it is owed nothing
+(no longer counted as skipped). Two writers overlapping on 50 scopes (an AP write whose publish lags, 1 to 10 LSF
+writes committed behind it, each published while the next writes): before, every LSF stage (50 to 500 scopes) was
+left for the catch-up and 350 pages (250,000 rows) read from L3; now none is, and nothing is read from L3. A replica
+of an older version ignores the kept stages' keys and may sweep their chunks; a pointer is never moved onto a
+missing chunk, so such a stage is read from L3 as before. No public name changes.
+
+### registry: a loaded or re-registered copy keeps the key its pod registered with
+
+**Fixed:** A copy's `holder_jkt` (the key each delegated token minted for a call to its pod binds) and its
+`proves_delegation` mark were never written to the catalog bucket, and a re-registration of a copy already held
+took its status, heartbeat and publisher mark but not them. A registry that loaded its catalog, a restarted one or
+a second replica learning a copy from the bucket, so held every copy without a key and minted no delegation for it
+until the pod restarted under a new pod id; a pod that re-registered with a new key kept the old one. Found locally
+on 2026-10-31: reader reads through the hub's API ingress behaved differently before and after a registry restart.
+`ToolEndpoint.to_dict()` now writes both, `from_dict()` reads them (a row an older registry wrote reads as a copy
+whose key is unknown, as before), and a re-registration takes both from the registration. The persisted shape stays
+2: the fields are additive, so registry replicas on either side of the upgrade read each other's rows.
+
 ## v0.88.0 -- 2026-10-31
 
 ### core: a catch-up from L3 says how it ended

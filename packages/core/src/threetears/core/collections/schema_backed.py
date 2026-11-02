@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -60,6 +60,7 @@ from threetears.core.backends.protocol import (
     OrderedDurableStore,
     TruncatingStore,
     load_requests,
+    side_by_side_requests,
 )
 from threetears.core.backends.schema_sql import (
     PGVECTOR_TYPES,
@@ -2278,6 +2279,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         constants: Mapping[str, Any] | None = None,
         rows_per_transaction: int | None = None,
         timeout_ms: int | None = None,
+        connections: int = 1,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -2305,6 +2307,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         (or after the one that failed). Only a single file too long for the wait on its own is
         refused, before anything is sent.
 
+        **Over several connections** (``connections`` above one): the broker copies a request's files one after
+        another on one connection (about 16,000 rows a second on the local stack), so the requests are cut further,
+        into runs of whole files of about the load's rows over ``connections``
+        (:func:`~threetears.core.backends.protocol.side_by_side_requests`), and up to ``connections`` of them are
+        sent at once, each its own connection and transactions. The rows are the same, insert-only as before; a
+        request that fails stops the others (cancelled, then awaited, so none is left running), and the drop and the
+        advance happen once, before the failure reaches the caller.
+
         :param files: the files, in order
         :ptype files: Sequence[LoadFile]
         :param columns: the table's columns each file supplies
@@ -2317,11 +2327,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param timeout_ms: the most time one transaction may take, in milliseconds;
             :attr:`LOAD_TIMEOUT_MS` when None
         :ptype timeout_ms: int | None
+        :param connections: the most requests sent at once; one sends them one after another
+        :ptype connections: int
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
             it defers its L3 writes (a buffered row would land among the loaded ones), a bound is
-            under one, or one file alone needs a longer wait than the cap
+            under one, ``connections`` is under one, or one file alone needs a longer wait than the cap
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
         """
@@ -2341,9 +2353,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
         # refused here, before anything is sent: only a single file too long for one reply
         requests = load_requests(files, rows_per_transaction=per_transaction, timeout_ms=bound)
+        if connections > 1:
+            requests = side_by_side_requests(requests, connections)
+        elif connections < 1:
+            raise ValueError(f"a load runs over at least one connection, not {connections} connections")
         written = 0
-        try:
-            for request in requests:
+        slots = asyncio.Semaphore(connections)
+
+        async def one(request: Sequence[LoadFile]) -> int:
+            async with slots:
                 result = await store.load_files(
                     self.table_name,
                     request,
@@ -2352,7 +2370,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                     rows_per_transaction=per_transaction,
                     timeout_ms=bound,
                 )
-                written += result.row_count
+            return result.row_count
+
+        try:
+            if connections == 1:
+                for request in requests:
+                    written += await one(request)
+            else:
+                written = sum(await _all_or_first_failure([one(request) for request in requests]))
         except (Exception, asyncio.CancelledError) as exc:
             # the load commits as it goes: the requests and transactions before a failure stay
             # committed, and a reply lost or timed out may follow a load the broker finished
@@ -2677,6 +2702,23 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         return _coerce_row_fn(self.schema, row)
+
+
+async def _all_or_first_failure(calls: Sequence[Coroutine[Any, Any, int]]) -> list[int]:
+    """every call's answer, run side by side; the first failure stops the rest (cancelled, then awaited) and is
+    raised as itself, not inside a group.
+
+    :param calls: the calls, not started
+    :ptype calls: Sequence[Coroutine[Any, Any, int]]
+    :return: each call's answer, in order
+    :rtype: list[int]
+    """
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(call) for call in calls]
+    except* BaseException as failed:
+        raise failed.exceptions[0] from None
+    return [task.result() for task in tasks]
 
 
 def _text_vector_width(text: str) -> int | None:

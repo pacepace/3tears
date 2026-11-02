@@ -217,8 +217,10 @@ RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
 #: whole shape owns that too.
 #:
 #: ``max_bytes`` and ``num_replicas`` because the owner sizes and places the bucket: JetStream
-#: updates both on a live stream, moving a memory bucket from one server to three (or back) with its
-#: entries kept, so a declaration that asks for more replicas gets them without a delete.
+#: updates both on a live stream, moving a memory bucket from one server to three with its entries
+#: kept, so a declaration that asks for more replicas gets them without a delete. Replicas are only
+#: ever raised: a live bucket on more servers than a declaration asks for stays on them
+#: (:func:`kv_stream_differences` reports no drift there).
 _OWNED_IN_PLACE_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age", "max_msgs_per_subject", "max_bytes", "num_replicas")
 
 #: The fields a declaration that owns its bucket reconciles by DELETING the backing stream and
@@ -520,6 +522,8 @@ def kv_stream_differences(*, requested: StreamConfig, actual: StreamConfig) -> d
 
     a field the caller left unset (``None``) is not a request and is skipped:
     the server fills it and disagreeing with a value nobody asked for is noise.
+    a live replica count at or above the one requested is not a difference either:
+    a bucket's replicas are only ever raised.
 
     :param requested: config this process asked for
     :ptype requested: StreamConfig
@@ -535,6 +539,9 @@ def kv_stream_differences(*, requested: StreamConfig, actual: StreamConfig) -> d
         if want is None:
             continue
         have = getattr(actual, field, None)
+        if field == "num_replicas" and _normalised(field, have) >= _normalised(field, want):
+            # never fewer servers than the bucket is live on: a count at or above the one asked is no drift
+            continue
         if _normalised(field, want) != _normalised(field, have):
             differences[field] = (want, have)
     return differences
@@ -984,6 +991,9 @@ async def reconcile_kv_stream(
                 f"ensure_kv_bucket(owns_bucket=True, drop_file_storage=True) once; otherwise migrate "
                 f"its entries first."
             )
+        # created again on no fewer servers than it was live on: replicas are only ever raised
+        if _normalised("num_replicas", live.num_replicas) > _normalised("num_replicas", config.num_replicas):
+            config = dataclasses.replace(config, num_replicas=live.num_replicas)
         live, recreated = await _recreate_owned_kv_stream(
             js=js, full_name=full_name, config=config, differences=differences
         )

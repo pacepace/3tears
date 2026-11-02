@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import gc
 import logging
 import os
 import sys
@@ -1031,3 +1032,162 @@ class TestAWorkersResultBecomesAPart:
         with pytest.raises(ValueError, match="columns"):
             store.publish("v1", {TABLE: Parts(schema=_table(0, rows=0).schema, parts={"VA": segment.files["other"]})})
         segment.close()
+
+
+class TestAResultKeptPastItsCloseStaysCounted:
+    """a claimed result's tables are its files' pages, zero-copy: a table (or a slice of one) kept past the segment's
+    close keeps those pages in memory, so the store keeps counting its files until the last buffer is freed (cobalt
+    prod, 2026-11-01: up to 2.9 GiB of shared memory held by results closed and unlinked, outside ``max_bytes``)."""
+
+    def test_a_table_kept_past_close_is_counted_until_it_is_freed(self, where: Path) -> None:
+        bounded = SharedArrowStore(where / "bounded", max_bytes=12 << 20)
+        slot = bounded.reserve(8 << 20)
+        slot.write({TABLE: pa.table({"a": pa.array(range(640 * 1024), pa.int64())})})  # 5 MiB
+        segment = bounded.claim(slot)
+        assert segment is not None
+        kept = segment.tables[TABLE].slice(10, 100)
+        segment.close()
+        assert bounded.held_bytes() >= 5 << 20, "a result's pages still mapped are counted"
+        assert bounded.segments() != ()
+        with pytest.raises(SharedArrowFullError):
+            bounded.reserve(8 << 20)
+        assert kept.column("a")[0].as_py() == 10
+        del kept
+        gc.collect()
+        bounded.sweep()
+        assert bounded.segments() == ()
+        assert bounded.held_bytes() == 0
+        bounded.discard(bounded.reserve(8 << 20))
+
+    def test_a_result_closed_with_nothing_kept_goes_at_once(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        slot.write({TABLE: _table(1, rows=1000)})
+        segment = store.claim(slot)
+        assert segment is not None
+        assert segment.tables[TABLE].num_rows == 1000
+        segment.close()
+        assert store.segments() == ()
+        assert store.held_bytes() == 0
+
+    def test_a_kept_result_counts_against_a_publish(self, where: Path) -> None:
+        bounded = SharedArrowStore(where / "bounded", max_bytes=8 << 20)
+        slot = bounded.reserve(6 << 20)
+        slot.write({TABLE: pa.table({"a": pa.array(range(640 * 1024), pa.int64())})})  # 5 MiB
+        segment = bounded.claim(slot)
+        assert segment is not None
+        kept = segment.tables[TABLE]
+        segment.close()
+        with pytest.raises(SharedArrowFullError):
+            bounded.publish("v1", {TABLE: pa.table({"a": pa.array(range(512 * 1024), pa.int64())})})  # 4 MiB
+        del kept
+        gc.collect()
+        bounded.publish("v1", {TABLE: pa.table({"a": pa.array(range(512 * 1024), pa.int64())})})
+        assert bounded.segments() == ()
+
+
+class TestAResultWrittenInSteps:
+    """a worker may write its result in steps (``SegmentSlot.writing``), so it holds one step's rows at a time, not the
+    whole result's: the reports pod's apply worker writes a change of every state a slice of states at a time."""
+
+    def test_the_steps_are_one_result_claimed_whole(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        with slot.writing() as write:
+            write({"a": _table(1, rows=10)})
+            assert store.segments() == (), "nothing is the slot's until the writing ends"
+            write({"b": _table(2, rows=20)})
+        segment = store.claim(slot)
+        assert segment is not None
+        assert {name: table.num_rows for name, table in segment.tables.items()} == {"a": 10, "b": 20}
+        segment.close()
+
+    def test_the_slots_bound_holds_across_its_steps(self, store: SharedArrowStore) -> None:
+        one = _table(1, rows=50_000)
+        slot = store.reserve(int(one.nbytes * 1.5))
+        with pytest.raises(SharedArrowFullError):
+            with slot.writing() as write:
+                write({"a": one})
+                write({"b": one})
+        assert store.claim(slot) is None
+        assert _hidden(store) == []
+
+    def test_a_name_is_written_once_across_steps(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        with pytest.raises(ValueError, match="once"):
+            with slot.writing() as write:
+                write({"a": _table(1, rows=10)})
+                write({"a": _table(2, rows=10)})
+        assert store.claim(slot) is None
+
+    def test_steps_that_write_nothing_leave_no_result(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        with slot.writing() as write:
+            write({})
+        assert store.claim(slot) is None
+
+
+class TestASweepNeverTakesAnOpenSlotsStaging:
+    """a slot's staging directory is made, given its lock file and locked in three steps, and the serving process
+    sweeps on other threads meanwhile (reserve, claim, discard, release, close). A sweep in between retired the
+    directory, or locked and renamed it away, and the worker's export failed with FileNotFoundError (the local replay
+    of 2026-11-01: 3 times in 40 minutes, 8 states each falling back to the slow L3 republish). An open slot's staging
+    is never swept, as an open hand-off's is not."""
+
+    def test_a_sweep_between_the_staging_directory_and_its_lock_file_leaves_the_write_whole(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slot = store.reserve(1 << 20)
+        touch = Path.touch
+
+        def touch_after_a_sweep(path: Path, *args: Any, **kwargs: Any) -> None:
+            if path.name == ".lock" and path.parent.name.startswith(".staging-"):
+                store.sweep()
+            touch(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "touch", touch_after_a_sweep)
+
+        slot.write({TABLE: _table(1, rows=10)})
+
+        segment = store.claim(slot)
+        assert segment is not None, "the swept write left no result"
+        assert segment.tables[TABLE].num_rows == 10
+        segment.close()
+
+    def test_a_sweep_between_the_lock_file_and_its_lock_leaves_the_staging_directory(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slot = store.reserve(1 << 20)
+        opened = os.open
+        swept: list[bool] = []
+
+        def open_after_a_sweep(path: Any, *args: Any, **kwargs: Any) -> int:
+            # the writer opens its lock file to lock it: the sweep runs after the file is made, before the lock
+            lock = Path(path)
+            if not swept and lock.name == ".lock" and lock.parent.name.startswith(".staging-"):
+                swept.append(True)
+                store.sweep()
+                assert lock.parent.is_dir(), "the sweep took an open slot's staging directory"
+            return opened(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", open_after_a_sweep)
+
+        slot.write({TABLE: _table(1, rows=10)})
+
+        assert swept, "no sweep ran between the lock file and the lock"
+        segment = store.claim(slot)
+        assert segment is not None
+        assert segment.tables[TABLE].num_rows == 10
+        segment.close()
+
+    def test_a_discarded_slots_staging_directory_is_still_removed(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        segments = store.root / "segments"
+        # a writer that died with its lock file made, and one that died before it
+        (segments / f".staging-{slot.slot_id}-deadbeef").mkdir()
+        (segments / f".staging-{slot.slot_id}-deadbeef" / ".lock").touch()
+        (segments / f".staging-{slot.slot_id}-0badf00d").mkdir()
+        store.sweep()
+        assert len(_hidden(store)) == 2, "an open slot's staging was swept"
+
+        store.discard(slot)
+
+        assert _hidden(store) == []
