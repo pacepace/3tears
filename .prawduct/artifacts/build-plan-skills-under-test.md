@@ -125,6 +125,9 @@ Type: code
 - Nothing is promoted and nothing is changed on its result. The ledger is untouched.
 - Done when: every arm has results with the objective and judged measures; the promotion read answers (expected: `undecided`); the cumulative Critic is clean.
 Critic mode: cumulative
+- **Done 2026-11-02** (owner cap $5). `fixtures/report_plans/writer_smoke.py` (with a `--dry` mode, held by `test_writer_smoke_dry.py`); record in `fixtures/report_docs/writer_smoke/20261102-haiku.json`. 2 arms × 3 cases (r1, r3, r4) on claude-haiku-5-5, judged by google/gemini-3.8-flash: all 6 cells completed with the writer's measures and all seven judged dims; promotion read `undecided` (12 of 12 readings not separated, n=3). Spend: Haiku $1.30 (control $0.63, variant $0.67) plus judge cents.
+- 06 decisions: the cases are minted on the held-out side of the smoke's own in-memory bank (`held_out_fraction` 0.99 puts r1/r3/r4 there), since the promotion read refuses anything but held-out cases, which the plan's "dev cases" would have hit. r5 is left out while its input was re-recorded. The engine's quote answered unpriced (the toy rate card lists no Haiku), so the cap was held by the reports' budget (6 × $0.75). The smoke host uses the package's `describe_failure`.
+- 06 observations (for wave 2, not fixed here): the uncalibrated flash judge scored 6 of 7 dims at 5 on almost every page (ceiling), so only `evidence_fits_claims` (2–4) discriminated; 5 of 6 Haiku reports ended `stored_with_findings` with a must-fix open after the three rounds; one variant cell had 4 unparsed bounces.
 
 ## Verification strategy
 Chunks 01–05 are proven on recorded and replayed turns (prototype5 and the hand-scripted fixtures). Chunk 06 is the live proof. Gates: lint and typecheck locally; the evals suite on the testament pool; the integration suite before merging into report-kit/analyst.
