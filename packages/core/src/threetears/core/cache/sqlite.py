@@ -497,6 +497,40 @@ class SQLiteBackend:
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
 
+    def delete_many_by_id(
+        self,
+        table: str,
+        entity_ids: Sequence[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete many rows by primary key in one write transaction.
+
+        One ``BEGIN IMMEDIATE`` and one ``COMMIT`` for every row, where ``delete_by_id``
+        a row at a time takes the write lock and commits once a row: a commit settling
+        hundreds of keys on the event loop paid for each (prod 2026-11-02, 92 ms median
+        stalls). A failure rolls every row back and propagates unchanged.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: pk values (single-PK) or tuples of pk values in declared
+            column order (composite-PK); nothing named runs nothing
+        :ptype entity_ids: Sequence[Any]
+        :param primary_key: pk column name (single-PK) or tuple of pk column names
+            in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        if not entity_ids:
+            return
+        pk_cols = self._pk_columns(primary_key)
+        values = [
+            self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols)) for entity_id in entity_ids
+        ]
+        where_clause = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
+        self._in_write_transaction(lambda conn: conn.executemany(sql, values))
+
     def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
         """run one write in an immediate transaction on this thread's connection.
 

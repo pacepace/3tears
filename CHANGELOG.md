@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a settling commit evicts its keys from L1 in one write
+
+**Fixed:** a commit's settle evicted each key it wrote from the SQLite L1 in a transaction of its own (`BEGIN
+IMMEDIATE`, `DELETE`, `COMMIT`), synchronously on the event loop. On cobalt prod (2026-11-02) about 14% of the reports
+pods' event-loop stall time (18 stalls, 92 ms median, 136 ms max) was that eviction, after an ENR commit.
+`invalidate_cache_many` now evicts every key in one write transaction: one write lock and one commit for N rows. A
+collection's `drop_cached_table`, the scan cache's `drop_for_table`, and the absent-marker sweeps evict the same way.
+Each key still reaches the in-process fence before the delete and each L1 change listener still hears its key after
+it; the eviction stays synchronous and finishes before the settle returns. A failed delete raises the same exception
+as before and rolls the whole delete back (where one at a time left the keys before the failure evicted); every key is
+already fenced, so no read in flight caches over it.
+
+**Added:** `delete_many_by_id(table, entity_ids, primary_key)` on the `L1Backend` protocol, `SQLiteBackend` (one
+`executemany` in one write transaction) and `DuckDBBackend` (through `delete_by_id` a row at a time, so a subclass
+that keeps something in step with each delete stays in step). A new public method, so a minor bump.
+
 ## v0.89.0 -- 2026-10-31
 
 ### core: a sweep never takes an open slot's staging directory

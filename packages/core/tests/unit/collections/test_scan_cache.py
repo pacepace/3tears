@@ -305,3 +305,22 @@ class TestAReadOvertakenByAnEvictionIsNotStored:
 
         assert registry.scan_cache.put(key, _ROWS, token=token) is False
         assert registry.scan_cache.get(key) is None
+
+
+class TestDropIsOneL1Write:
+    def test_every_dependent_entry_leaves_in_one_transaction(self) -> None:
+        l1 = SQLiteBackend(db_name=f"scan-{uuid4().hex}")
+        cache = ScanCache(l1, trusted=lambda _tables: True)
+        keys = [ScanCacheKey("concepts", f"user-{i}") for i in range(20)]
+        for key in keys:
+            cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
+        kept = ScanCacheKey("conversations", "user-1")
+        cache.put(kept, _ROWS, token=cache.begin_read(("conversations",)))
+        statements: list[str] = []
+        l1.get_connection().set_trace_callback(statements.append)
+
+        assert cache.drop_for_table("concepts") == len(keys)
+
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert [cache.get(key) for key in keys] == [None] * len(keys)
+        assert cache.get(kept) == _ROWS

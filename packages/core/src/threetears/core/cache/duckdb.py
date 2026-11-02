@@ -1420,6 +1420,31 @@ class DuckDBBackend:
             self._db.execute(sql, list(pk_vals))
         self.request_checkpoint()
 
+    def delete_many_by_id(
+        self,
+        table: str,
+        entity_ids: Sequence[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete many rows by primary key, through ``delete_by_id`` a row at a time.
+
+        Through it and not around it: a subclass that keeps something in step with each
+        delete (the reports pod's retention copy renews what it takes in the delete's
+        own transaction) stays in step for these too. The batched write is the SQLite
+        L1's (:class:`SQLiteBackend`), where the per-row cost was measured.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: pk values or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        for entity_id in entity_ids:
+            self.delete_by_id(table, entity_id, primary_key)
+
     def execute_arrow(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
         """run a query and answer its rows as one Arrow table, never one Python object a row.
 
