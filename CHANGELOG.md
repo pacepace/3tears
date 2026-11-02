@@ -8,6 +8,22 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### nats: a declaration never lowers a live stream's or bucket's replicas
+
+**Fixed:** a NATS audit of cobalt prod (2026-11-02) found 56 of its 58 streams on one server. `ensure_jetstream_stream`
+took no replica count and, on a stream already live, sent its declaration as an update: an update sends every
+field, and an unsent count is the server's one, so every declarer's start moved its stream back onto one server,
+whatever an operator had raised it to. `ensure_object_store` sent its own count (default 1) the same way, and an
+owner's `ensure_kv_bucket(replicas=N)` reconciled a bucket live on more servers down to N. Now every update of a
+live stream sends the larger of its live count and the one declared, a declaration that asks for none keeps the live
+count, and the declaration remembered for a restoration after a NATS restart carries the count sent. A new stream
+declared without a count is still created on one server (the local stack's single-node NATS). Lowering a stream's
+replicas is now an operator's step, never a side effect of a start.
+
+**Added:** `replicas` on `NatsClient.ensure_jetstream_stream` and `NatsClient.kv_bucket` (passed through to the
+bucket it creates); both refuse a count below one with `ValueError`. `ensure_object_store`'s `replicas` now
+defaults to `None` (create on one, keep a live bucket's) where it was 1. New keyword arguments, so a minor bump.
+
 ### registry: a call no endpoint took answers `TOOL_NOT_READY`, not `TOOL_UNAVAILABLE`
 
 **Fixed:** when every endpoint the caller may use failed to take a call (no responders, the connection closed, the
