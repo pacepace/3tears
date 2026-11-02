@@ -8,6 +8,29 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### core: a write whose writer is gone is abandoned, and a fresh replica is ready beside a write in progress
+
+**Fixed:** a load that failed part way through its write (a YugabyteDB statement timeout, SQLSTATE 57014, in the
+replay of the night of 2026-11-01) left that write open, and only the next `begin` ended it. Until then every reader
+was told the write was in progress. A replica with no copy of its own (a pod restarted while NATS held only the
+scopes published since it lost the snapshot) waited on that write, served nothing, and the dead write outlived a
+pod restart. Stale data is acceptable; missing data is not. Two changes:
+
+- `ScopeEpochs(writer=WriterLease(lease, key))` takes the lease every writer holds while it writes. When
+  `settled()` finds a write in progress and that lease free (the writer let it go or it lapsed), it abandons the
+  write. The abandon is a commit of what the write left: the scopes it touched, and the data's version, move to its
+  number, and `writing` clears. The row lock is taken without waiting, so a write with a data transaction still open
+  is not abandoned. A live writer renews its lease and is never abandoned, however slow it is. A writer that comes
+  back is refused by the existing fence. Nothing new is timed. Without `writer` nothing changes.
+- A `ScopedSnapshot` whose full rebuild meets a write in progress that records what it touched no longer waits for
+  it. Each scope the write has not touched is read whole at its committed epoch. A scope it has touched is served
+  from the copy NATS holds of it, and that pointer is never replaced by a read of a write in progress, so no replica
+  shows less than before. A touched scope that NATS holds no copy of is read from L3 as it stands. The copy then
+  becomes ready, and once the write commits the next rebuild reads only the scopes whose epochs moved. A write that
+  records nothing still makes the rebuild wait, as before.
+
+**Added:** `threetears.core.collections.scope_epochs.WriterLease`, and the keyword `writer` on `ScopeEpochs`.
+
 ### registry: a call no endpoint took answers `TOOL_NOT_READY`, not `TOOL_UNAVAILABLE`
 
 **Fixed:** when every endpoint the caller may use failed to take a call (no responders, the connection closed, the
