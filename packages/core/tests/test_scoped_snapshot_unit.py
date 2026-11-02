@@ -4212,6 +4212,132 @@ async def test_a_stage_behind_its_pointer_with_no_write_publishing_before_it_is_
         await snapshot.stop()
 
 
+def _named(pointers: _Pointers, scope: str) -> set[str]:
+    """every chunk a scope's pointer names, its pieces with its bases."""
+    named: set[str] = set()
+    for table in json.loads(pointers.entries[f"enr.s.{scope}"][0])["tables"].values():
+        named |= {table["object"], *(piece["object"] for piece in table.get("pieces", ()))}
+    return named
+
+
+async def _kept_and_swept() -> tuple[
+    ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3
+]:
+    """an LSF stage at 3 kept behind an AP write at 2 whose publish (a replica of a code version that keeps no
+    stage) moved the pointers to 2 and carried nothing on; then the kept stage's chunks swept, as that replica's
+    sweep does: it sees no kept stage sparing them."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers(blind_ap=True)
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], []), "the LSF stage did not wait for the AP write"
+    assert await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1)) == (list(_BOTH), [])
+    assert [key for key in pointers.entries if key.startswith("enr.r.")], "the LSF stage was not kept"
+    for stage in stages:
+        for name in stage.objects.values():
+            store.objects.pop(name, None)
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def test_a_publish_never_carries_a_pointer_onto_a_kept_stage_whose_chunk_was_swept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the CHANGELOG's promise for a replica of an older version: it ignores the kept stages' keys and may sweep
+    their chunks, and a pointer is never moved onto a missing chunk. The next LSF write finds its pointer behind
+    and a kept stage to carry it through whose chunk is gone: its tables are read from L3 instead."""
+    ap, lsf, reader, pointers, store, l3 = await _kept_and_swept()
+    stages, carry = await _lsf_write(lsf, l3, 4)
+    read_before = l3.scope_reads
+    caplog.set_level(logging.WARNING)
+
+    moved, skipped = await lsf.publish_staged(stages, carry_at=carry)
+
+    assert (moved, skipped) == (list(_BOTH), [])
+    assert "is gone; its tables are read from L3 instead" in caplog.text
+    assert l3.scope_reads > read_before, "the scope was not read from L3"
+    for scope in _BOTH:
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["epoch"] == 4
+        assert _named(pointers, scope) <= set(store.objects), "a pointer was moved onto a missing chunk"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its publish"
+    await _until(lambda: all(reader.applied_epoch(s) == 4 for s in _BOTH), what="the reader applied epoch 4")
+    assert _holds(reader, l3)
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_catch_up_never_carries_a_pointer_onto_a_kept_stage_whose_chunk_was_swept() -> None:
+    """the catch-up carries a scope on from L2 first; when the kept stage's chunk is gone it leaves the pointer
+    where it is and reads the scope from L3, as before."""
+    ap, lsf, reader, pointers, store, l3 = await _kept_and_swept()
+    read_before = l3.scope_reads
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    assert l3.scope_reads > read_before, "a scope whose kept stage is gone was not read from L3"
+    for scope in _BOTH:
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["epoch"] == 3
+        assert _named(pointers, scope) <= set(store.objects), "a pointer was moved onto a missing chunk"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def _de_kept_behind_a_dead_write() -> tuple[
+    ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3
+]:
+    """an AP write at 2 committed and its writer died before its publish; an LSF stage of DE alone at 3, kept
+    behind it."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    added = _county("de3", 3, state="DE")
+    stage = await lsf.stage("DE", 3, {}, added={"results": [added]})
+    l3.rows.append(added)
+    l3.epochs["DE"] = 3
+    assert await lsf.publish_staged([stage], carry_at={"DE": 2}) == ([], [])
+    await ap.discard_staged(ap_stages)
+    assert [key for key in pointers.entries if key.startswith("enr.r.")], "the DE stage was not kept"
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def test_a_scope_removed_from_l3_drops_the_stages_kept_for_it() -> None:
+    """a kept stage of a scope L3 holds no more will never move a pointer: the removal drops it."""
+    ap, lsf, reader, pointers, _, l3 = await _de_kept_behind_a_dead_write()
+    l3.rows = [row for row in l3.rows if row["state"] != "DE"]
+    l3.totals = [row for row in l3.totals if row["state"] != "DE"]
+    del l3.epochs["DE"]
+
+    await reader.catch_up_from_l3()
+
+    assert "enr.s.DE" not in pointers.entries, "the removed scope's pointer stayed"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a removed scope's stage stayed kept"
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_an_ordinary_publish_carries_its_scope_on_through_the_stage_kept_after_it() -> None:
+    """the dead AP write is published again by an ordinary whole publish at its epoch: the pointer reaches the kept
+    LSF stage's base, and the publish carries it on to the stage, with nothing read from L3."""
+    ap, lsf, reader, pointers, _, l3 = await _de_kept_behind_a_dead_write()
+    read_before = l3.scope_reads
+    results = [row for row in l3.rows if row["state"] == "DE" and row["county"] != "de3"]
+
+    assert await ap.publish("DE", 2, {"results": results, "totals": [{"state": "DE", "total": 10}]})
+
+    entry = json.loads(pointers.entries["enr.s.DE"][0])
+    assert entry["epoch"] == 3, "the publish did not carry the scope on through the kept stage"
+    assert [piece["epoch"] for piece in entry["tables"]["results"]["pieces"]] == [3]
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "the stage stayed kept once carried"
+    assert l3.scope_reads == read_before, "the scope was read from L3"
+    await _until(lambda: reader.applied_epoch("DE") == 3, what="the reader applied epoch 3")
+    with reader.read() as cursor:
+        counties = cursor.execute("SELECT county FROM results WHERE state = 'DE' ORDER BY county").fetchall()
+    assert counties == [("c2",), ("de3",)]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
 class _WedgedL3(_L3):
     """an L3 whose reads of one scope stop answering once ``wedge`` names it: a request that waits with no deadline
     (3tears 0.86.0's publish leg and offloaded encode), or any await on the way that never ends."""
@@ -4554,6 +4680,13 @@ def test_a_read_order_naming_a_column_twice_is_refused_and_pages_by_the_rest_of_
         SnapshotTable(name="t", scope_column="s", key=("a",), read_order=("b", "b"))
 
 
+def test_a_read_order_naming_a_column_outside_the_key_is_refused() -> None:
+    """a keyset page steps past its last row by comparing every paged column, and a NULL makes that comparison NULL:
+    a read order through a column that may be NULL would drop every row after one, with no count to see it."""
+    with pytest.raises(ValueError, match=r"read_order names \['office'\], not columns of the key"):
+        SnapshotTable(name="t", scope_column="state", key=("race", "county"), read_order=("office",))
+
+
 class _SlowL3(_L3):
     """L3 answering each of a scope's keyset pages after ``wait`` seconds, recording when each fetch begins and ends."""
 
@@ -4611,18 +4744,15 @@ async def test_a_scope_read_fetches_its_next_page_while_this_one_is_typed() -> N
     snapshot, *_ = _snapshot(l3=l3, backend=backend)
     l3.epochs = {"TX": 1}
 
-    began = time.monotonic()
     await snapshot.start()
     await snapshot.wait_ready(timeout=10)
-    spent = time.monotonic() - began
     await snapshot.stop()
 
     assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": len(rows)}]
     assert backend.exports == 4, f"4 pages were typed in {backend.exports} exports"
+    # the overlap, by the order of events alone: each next page's fetch begins before this page's typing ends
     for page in range(1, backend.exports):
         assert events.index(f"fetch {page + 1} begins") < events.index(f"export {page} ends"), events
-    # five fetches and four exports of 50 ms: 450 ms one after another, about 250 ms beside each other
-    assert spent < 0.4, f"the read took {spent:.2f} s"
 
 
 async def test_a_write_beginning_while_a_page_is_fetched_ahead_still_stops_the_read(

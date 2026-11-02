@@ -1577,6 +1577,11 @@ class IncompleteReadError(RuntimeError):
     """
 
 
+class _UnreachableRowsError(IncompleteReadError):
+    """a read came back short of its count on a relation whose fingerprint did not move: rows the ordering key
+    cannot page past (a NULL in it), which every read loses alike, so :func:`read_all` never reads it again."""
+
+
 async def read_all(
     client: DatasourceQueryClient,
     datasource_name: str,
@@ -1622,7 +1627,9 @@ async def read_all(
     no whole relation to return, and this function promises the whole relation.
     A source that rewrites a table in one upload (the LSF ``ok`` runs a reports
     pod reads, 2026-11-01) settles before the re-read. Only the closing proof's
-    failures are read again; every guard the pages raise from is final.
+    failures are read again; every guard the pages raise from is final, and so is
+    a read short of its count on a relation whose fingerprint did not move (rows
+    the key cannot page past, such as a NULL in it, which every read loses alike).
 
     Everything below is still here because the readings say only THAT rows are
     missing or changed. These say WHICH mechanism lost them, which is what an
@@ -1731,6 +1738,9 @@ async def read_all(
         )
         try:
             return await _proven(client, datasource_name, relation, key, rows, before, filters)
+        except _UnreachableRowsError:
+            # NOSILENT: raised to the caller; nothing moved, so a read again would lose the same rows
+            raise
         except IncompleteReadError as exc:
             # the closing proof failed: the relation was counted or fingerprinted otherwise than it was read
             if attempt == CHANGED_READ_ATTEMPTS:
@@ -2051,16 +2061,21 @@ async def _proven(
     """
     if len(rows) != before.row_count:
         short = before.row_count - len(rows)
-        cause = (
-            f"{short} row(s) were never returned. the usual cause is a value the ordering key cannot "
-            f"page past: a NULL in {tuple(key)} is skipped by every keyset predicate, because "
-            f"`column > $1` is NULL rather than true for such a row, and so is every row ordered after "
-            f"it. read with a key whose columns are NOT NULL."
-            if short > 0
-            else f"{-short} row(s) MORE than the count arrived, so {relation} was written during the read."
-        )
+        counted = f"{datasource_name}: {relation} counted {before.row_count} rows and the read returned {len(rows)}."
+        if short < 0:
+            raise IncompleteReadError(
+                f"{counted} {-short} row(s) MORE than the count arrived, so {relation} was written during the read."
+            )
+        if await _fingerprint(client, datasource_name, relation, key, filters) == before:
+            raise _UnreachableRowsError(
+                f"{counted} {short} row(s) were never returned. the usual cause is a value the ordering key cannot "
+                f"page past: a NULL in {tuple(key)} is skipped by every keyset predicate, because "
+                f"`column > $1` is NULL rather than true for such a row, and so is every row ordered after "
+                f"it. read with a key whose columns are NOT NULL."
+            )
         raise IncompleteReadError(
-            f"{datasource_name}: {relation} counted {before.row_count} rows and the read returned {len(rows)}. {cause}"
+            f"{counted} {short} row(s) fewer than the count arrived and its fingerprint moved, so {relation} was "
+            f"written during the read."
         )
 
     after = await _fingerprint(client, datasource_name, relation, key, filters)

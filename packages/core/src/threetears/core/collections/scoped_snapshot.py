@@ -405,7 +405,9 @@ class SnapshotTable:
         scope (on YugabyteDB, a key led by a hashed column the scope does not pin), every page reads and sorts
         the scope's every row, so a scope's read grows with the square of its rows. Its pages are then read in
         this order, the key's other columns after it (unique, as the key is), which such an index serves with
-        about a page's rows; the scope's rows are put back in key order once read
+        about a page's rows; the scope's rows are put back in key order once read. Every column is one of
+        ``key``'s: a keyset page steps past its last row by comparing every paged column, and a NULL makes that
+        comparison NULL, so the rows after one would be dropped with no count to see it; a key column is never NULL
     """
 
     name: str
@@ -415,14 +417,20 @@ class SnapshotTable:
     read_order: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """refuse a read order naming a column twice.
+        """refuse a read order naming a column twice, or a column outside the key.
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``read_order`` repeats a column
+        :raises ValueError: when ``read_order`` repeats a column or names one ``key`` does not
         """
         if len(set(self.read_order)) != len(self.read_order):
             raise ValueError(f"{self.name}: read_order names a column twice: {self.read_order}")
+        outside = [column for column in self.read_order if column not in self.key]
+        if outside:
+            raise ValueError(
+                f"{self.name}: read_order names {outside}, not columns of the key {self.key}: a NULL in a paged "
+                f"column drops every row after it from a keyset read, and only a key column is never NULL"
+            )
 
     @property
     def paged_by(self) -> tuple[str, ...]:
@@ -4534,7 +4542,7 @@ class ScopedSnapshot:
         if revision is None:
             moved = await self._pointers_bucket.create(key=key, value=pointer.encode()) is not None
         else:
-            assert isinstance(revision, int)  # noqa: S101 -- _completed answers an int, None or _ANY_ENTRY
+            assert isinstance(revision, int)  # noqa: S101 -- every caller passes None or a revision KV answered, an int
             moved = await self._pointers_bucket.update(key=key, value=pointer.encode(), revision=revision) is not None
         if moved:
             self._note_seen(pointer)

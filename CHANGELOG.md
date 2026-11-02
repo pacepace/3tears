@@ -55,8 +55,11 @@ through it while the warehouse rewrites the table, and a run so failed held the 
 (cobalt prod, 2026-11-01). A read whose closing proof fails is now read again, counted and fingerprinted afresh, up
 to `CHANGED_READ_ATTEMPTS` (3) reads in all, each re-read logged at warning; a relation still moving on the third
 read raises the same error as before, logged at error. What is returned is still one whole state of the relation.
-The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again. A one-time change
-during a read is no longer an error; the tests that changed the relation once now change it on every read.
+The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again, nor is a read
+short of its count whose relation's fingerprint did not move (rows the key cannot page past, such as a NULL in it,
+which every read loses alike): it is raised after one read, as `read_partitions` does for such a part. A short read
+now takes the second fingerprint to tell the two apart. A one-time change during a read is no longer an error; the
+tests that changed the relation once now change it on every read.
 
 **Added:** `CHANGED_READ_ATTEMPTS` in `threetears.datasources.query_client`, the bound `read_partitions` already
 used, now shared. New public name.
@@ -84,8 +87,10 @@ page of its own, the pod's parse 7 ms.
 **Added:** `SnapshotTable.read_order`: the columns an L3 index led by the scope column orders a scope's rows by
 after it. Its pages are then read `ORDER BY` those columns and the rest of the key (`SnapshotTable.paged_by`, unique
 as the key is), which the index serves with about a page's rows: 1,028 to 123 ms a page in the database for that
-table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Empty by
-default: nothing changes for a table that does not set it. New public names, so a minor bump.
+table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Every column
+it names must be one of the key's, refused with `ValueError` otherwise: a keyset page steps past its last row by
+comparing every paged column, and a NULL would drop every row after it with no count to see it; a key column is
+never NULL. Empty by default: nothing changes for a table that does not set it. New public names, so a minor bump.
 
 **Changed:** a scope's read fetches each next page while this one is typed (a shared-memory copy types each page in
 a job of its worker: 50 to 75 ms a page locally, beside a fetch of 120 to 150 ms). Each page is still typed on its

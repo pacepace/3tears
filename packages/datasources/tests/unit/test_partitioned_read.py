@@ -180,7 +180,9 @@ async def test_a_failing_part_fails_the_read_and_stops_the_parts_not_yet_finishe
 
 
 async def test_an_incomplete_part_is_raised_as_itself() -> None:
-    rows = _rows()
+    # the part loses a row at every reading, and a read short of its count takes a second reading to see whether it
+    # moved: twelve rows keep it moving through all three reads
+    rows = [{"state": _STATES[0], "race": f"{_STATES[0]}-x{n:02d}", "votes": n} for n in range(12)] + _rows()
     warehouse = _Warehouse(rows)
     original = warehouse.relation_fingerprint
     calls = 0

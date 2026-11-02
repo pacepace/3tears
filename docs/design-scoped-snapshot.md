@@ -251,9 +251,9 @@ into the rebuild, and most of what they held the copy's retention dropped afterw
   within the scope. On YugabyteDB a key led by a hashed column the scope does not pin has no index
   serving that order, so each page read and sorted the scope's every row, and a scope's read grew with
   the square of its rows (cobalt prod: IA, 434k rows, 1.8 s a page). A table whose L3 index led by the
-  scope column orders its rows by other columns names them (`SnapshotTable.read_order`); its pages
-  are read in that order, the rest of the key after it, and the scope is sorted back into key order
-  once read.
+  scope column orders its rows by other columns names them (`SnapshotTable.read_order`, columns of
+  the key only: a NULL in a paged column would drop every row after it); its pages are read in that
+  order, the rest of the key after it, and the scope is sorted back into key order once read.
 - **The writer's stamp, per scope.** Each scope is published only if the writer's stamp, read after
   its rows, is still the one taken before the epochs were read. Once a write has committed, nothing
   more is published and the attempt reads again. A scope already published at the epoch L3 still
