@@ -1002,6 +1002,149 @@ async def test_a_declaration_asking_no_replicas_leaves_a_live_buckets_placement_
     await client.shutdown()
 
 
+# ----------------------------------------------------------------------
+# replicas are only ever raised (cobalt prod, 2026-11-02: 56 of 58 streams found on one server). an update sends every
+# field and an unsent replica count is the server's one, so a declarer that restarted without asking for replicas
+# moved a stream an operator had raised to three back onto one
+# ----------------------------------------------------------------------
+
+
+def _live_results_stream(replicas: int) -> StreamConfig:
+    """the results stream as it is live on the server, on ``replicas`` servers."""
+    return StreamConfig(
+        name=_RESULTS,
+        subjects=[f"{_NS}.tools.result.>", f"{_NS}.tools.reply.>"],
+        storage=StorageType.MEMORY,
+        max_age=900.0,
+        max_msgs_per_subject=1,
+        num_replicas=replicas,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stream_raised_to_three_stays_on_three_when_its_declarer_starts_without_replicas() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    server.streams[_RESULTS] = _live_results_stream(3)
+
+    await _declare_results_stream(client)
+
+    assert server.streams[_RESULTS].num_replicas == 3, "the declaration moved the stream onto fewer servers"
+    # and the declaration remembered for a restoration carries the live count
+    server.restart()
+    await reconnected()
+    await _until(lambda: _RESULTS in server.streams)
+    assert server.streams[_RESULTS].num_replicas == 3
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_declared_on_fewer_replicas_than_it_is_live_on_keeps_its_live_count() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_RESULTS] = _live_results_stream(3)
+
+    await client.ensure_jetstream_stream(
+        name="tools-results",
+        subjects=[f"{_NS}.tools.result.>", f"{_NS}.tools.reply.>"],
+        max_age_seconds=600.0,
+        max_msgs_per_subject=1,
+        replicas=1,
+    )
+
+    assert server.streams[_RESULTS].num_replicas == 3
+    assert server.streams[_RESULTS].max_age == 600.0, "the rest of the declaration was not applied"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_declared_with_replicas_is_created_on_them_and_raises_a_live_one() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+
+    await client.ensure_jetstream_stream(name="audit", subjects=[f"{_NS}.audit.>"], replicas=3)
+    server.streams[_RESULTS] = _live_results_stream(1)
+    await client.ensure_jetstream_stream(
+        name="tools-results",
+        subjects=[f"{_NS}.tools.result.>", f"{_NS}.tools.reply.>"],
+        max_age_seconds=900.0,
+        max_msgs_per_subject=1,
+        replicas=3,
+    )
+
+    assert server.streams[f"{_NS}-audit"].num_replicas == 3
+    assert server.streams[_RESULTS].num_replicas == 3
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_new_stream_declared_without_replicas_is_created_on_one_server() -> None:
+    """a local single-node NATS: a declaration asking for none creates the stream on one, as before."""
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+
+    await _declare_results_stream(client)
+
+    assert (server.streams[_RESULTS].num_replicas or 1) == 1
+    assert server.updated == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_needs_at_least_one_replica() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    with pytest.raises(ValueError, match="at least one replica"):
+        await client.ensure_jetstream_stream(name="audit", subjects=[f"{_NS}.audit.>"], replicas=0)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_an_owner_declaring_fewer_replicas_than_its_bucket_is_live_on_leaves_it_on_them() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[_POINTERS] = dataclasses.replace(
+        build_kv_stream_config(
+            bucket=f"{_NS}-pointers", ttl_seconds=0, history=1, storage_type=StorageType.MEMORY, direct=True
+        ),
+        num_replicas=3,
+    )
+
+    await client.ensure_kv_bucket(name="pointers", ttl=None, history=1, direct=True, owns_bucket=True, replicas=1)
+
+    assert server.updated == []
+    assert server.streams[_POINTERS].num_replicas == 3
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_kv_bucket_opened_with_replicas_is_created_on_them() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+
+    await client.kv_bucket(name="pointers", ttl=None, history=1, direct=True, replicas=3)
+
+    assert server.streams[_POINTERS].num_replicas == 3
+    with pytest.raises(ValueError, match="at least one replica"):
+        await client.kv_bucket(name="other", replicas=0)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicas", [None, 1])
+async def test_an_object_store_on_three_servers_stays_on_them_when_declared_for_fewer(replicas: int | None) -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    await client.ensure_object_store(name="objects", max_bytes=128 * 1024 * 1024, replicas=3)
+    stream = f"OBJ_{_NS}-objects"
+
+    await client.ensure_object_store(name="objects", max_bytes=256 * 1024 * 1024, replicas=replicas)
+
+    assert server.streams[stream].num_replicas == 3
+    assert server.streams[stream].max_bytes == 256 * 1024 * 1024
+    await client.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_a_kv_bucket_needs_at_least_one_replica() -> None:
     server = _ScriptedServer()

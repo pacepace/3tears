@@ -593,26 +593,74 @@ async def _staged_carry(snapshot: ScopedSnapshot) -> Any:
     return await snapshot.stage("TX", 2, {})
 
 
-async def test_a_carry_whose_pointer_moved_after_it_was_judged_is_left_for_the_catch_up() -> None:
+def _racing(pointers: _Pointers, race: Callable[[str], None]) -> list[int]:
+    """make TX's first pointer compare-and-set race another writer, ``race`` moving it just before; the revisions every
+    compare-and-set of TX was tried against are answered."""
+    real_update = pointers.update
+    tried: list[int] = []
+
+    async def racing_update(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
+        if key == "enr.s.TX":
+            if not tried:
+                race(key)
+            tried.append(revision)
+        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+
+    pointers.update = racing_update  # type: ignore[method-assign]
+    return tried
+
+
+async def test_a_carry_whose_pointer_moved_after_it_was_judged_is_judged_again_against_the_one_it_moved_to() -> None:
+    """a compare-and-set lost to a racing writer never publishes what was judged against the entry it lost to: the
+    stage is judged again against the pointer the racer left, rather than left for a catch-up that reads the scope
+    whole from L3."""
+    snapshot, pointers, store, _ = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    staged = await _staged_carry(snapshot)
+    raced_to: list[int] = []
+
+    def race(key: str) -> None:
+        # a catch-up republishes TX at the same epoch, under a chunk of its own, between the judgement and the move
+        held = json.loads(pointers.entries[key][0])
+        fresh = "enr/TX/1/results.raced"
+        store.objects[fresh] = store.objects[held["tables"]["results"]["object"]]
+        held["tables"]["results"]["object"] = fresh
+        raced_to.append(pointers.put_now(key, json.dumps(held).encode()))
+
+    tried = _racing(pointers, race)
+
+    moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
+
+    assert (moved, skipped) == (["TX"], [])
+    assert tried[-1] == raced_to[0], "the stage moved from an entry other than the one the racer left"
+    entry = json.loads(pointers.entries["enr.s.TX"][0])
+    assert entry["epoch"] == 2
+    assert entry["tables"]["results"]["object"] == "enr/TX/1/results.raced", (
+        "the carry was judged against the entry the racer replaced"
+    )
+    await snapshot.stop()
+
+
+async def test_a_carry_whose_pointer_a_racer_moved_past_it_moves_nothing() -> None:
     snapshot, pointers, _, _ = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     staged = await _staged_carry(snapshot)
-    real_update = pointers.update
-    raced = [False]
+    raced: list[bytes] = []
 
-    async def racing_update(*, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
-        if key == "enr.s.TX" and not raced[0]:
-            # another writer moves TX between the carry's judgement and its compare-and-set
-            raced[0] = True
-            pointers.put_now(key, pointers.entries[key][0])
-        return await real_update(key=key, value=value, revision=revision, ttl=ttl)
+    def race(key: str) -> None:
+        held = json.loads(pointers.entries[key][0])
+        held["epoch"] = 3
+        raced.append(json.dumps(held).encode())
+        pointers.put_now(key, raced[0])
 
-    pointers.update = racing_update  # type: ignore[method-assign]
+    _racing(pointers, race)
 
     moved, skipped = await snapshot.publish_staged([staged], carry_at={"TX": 1})
 
-    assert (moved, skipped) == ([], ["TX"]), "a carry judged against a moved pointer was published"
+    assert (moved, skipped) == ([], []), "a stage behind its scope's pointer was owed anything"
+    assert pointers.entries["enr.s.TX"][0] == raced[0], "a pointer moved back"
     await snapshot.stop()
 
 
@@ -3968,6 +4016,328 @@ async def test_a_scope_already_past_the_stage_is_not_moved_back() -> None:
     await replica.stop()
 
 
+# ----------------------------------------------------------------------
+# two writers overlapping on the same scopes, each changing its own tables (cobalt prod, 2026-10-31): an AP write's
+# publish lags while LSF writes commit behind it every 15-20 s, each published while the next is writing. Every
+# stage reaches the pointer from L2, in epoch order, with nothing read from L3 and nothing left for the catch-up
+# ----------------------------------------------------------------------
+
+_BOTH = ("DE", "TX")
+_TWO_TABLES = (*_APPEND, SnapshotTable(name="totals", scope_column="state", key=("state",)))
+
+
+class _ReadCountingL3(_TwoTableL3):
+    """the two-table L3, counting the reads of a scope's rows (the catch-up's listing of scopes is not one)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scope_reads = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" not in sql:
+            self.scope_reads += 1
+        return await super().fetch(sql, *args)
+
+
+class _BlindToKept:
+    """a pointer bucket that lists no kept stage: a replica of a code version that keeps none."""
+
+    def __init__(self, bucket: _Pointers) -> None:
+        self._bucket = bucket
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._bucket, name)
+
+    async def list_keys(self, *, prefix: str = "") -> list[str]:
+        keys = await self._bucket.list_keys(prefix=prefix)
+        return [key for key in keys if not key.startswith("enr.r.")]
+
+
+async def _overlapping_writers(
+    *, blind_ap: bool = False
+) -> tuple[ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3]:
+    """the AP side's writer, the LSF side's and a reader over the append-only results and the whole-chunk totals, all
+    ready at epoch 1; the AP side's sees no kept stage when ``blind_ap``."""
+    pointers, store, l3 = _Pointers(), _Store(), _ReadCountingL3()
+    ap_pointers = _BlindToKept(pointers) if blind_ap else pointers
+    built = [
+        _snapshot(tables=_TWO_TABLES, pointers=bucket, store=store, backend=_two_table_backend(), l3=l3)[0]
+        for bucket in (ap_pointers, pointers, pointers)
+    ]
+    ap, lsf, reader = built
+    await _started(ap, pointers)
+    for snapshot in (lsf, reader):
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=5)
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def _ap_write(ap: ScopedSnapshot, l3: _TwoTableL3, epoch: int, total: int) -> list[Any]:
+    """the AP side's write at ``epoch``: every scope's totals, committed in L3; its publish is the caller's."""
+    stages = [await ap.stage(s, epoch, {"totals": [{"state": s, "total": total}]}) for s in _BOTH]
+    for row in l3.totals:
+        row["total"] = total
+    l3.epochs = dict.fromkeys(_BOTH, epoch)
+    return stages
+
+
+async def _lsf_write(lsf: ScopedSnapshot, l3: _TwoTableL3, epoch: int) -> tuple[list[Any], dict[str, int]]:
+    """an LSF backfill write at ``epoch``: one county added to every scope, committed in L3; its stages and the
+    epochs it saw before it began."""
+    carry = dict(l3.epochs)
+    added = {s: _county(f"{s.lower()}{epoch}", epoch, state=s) for s in _BOTH}
+    stages = [await lsf.stage(s, epoch, {}, added={"results": [added[s]]}) for s in _BOTH]
+    l3.rows.extend(added.values())
+    l3.epochs = dict.fromkeys(_BOTH, epoch)
+    return stages, carry
+
+
+def _holds(snapshot: ScopedSnapshot, l3: _TwoTableL3) -> bool:
+    """whether a replica's L1 holds exactly what L3 does, every table of every scope."""
+    with snapshot.read() as cursor:
+        counties = cursor.execute("SELECT county, state, votes FROM results ORDER BY county").fetchall()
+        totals = cursor.execute("SELECT state, total FROM totals ORDER BY state").fetchall()
+    expected_counties = sorted((r["county"], r["state"], r["votes"]) for r in l3.rows)
+    expected_totals = sorted((t["state"], t["total"]) for t in l3.totals)
+    return counties == expected_counties and totals == expected_totals
+
+
+async def test_two_writers_overlapping_on_the_same_scopes_publish_every_stage_from_l2_in_epoch_order() -> None:
+    """cobalt prod, 2026-10-31: 2,034 staged scopes in 59 writes were left for the catch-up from L3, each then read
+    whole through 1,000-row pages, ~1.8 s a page. Here the AP side's write commits at 2 and its publish lags; the
+    LSF side commits at 3, 4 and 5, each published while the next is writing. Each LSF stage finds its pointer
+    behind the epoch it carries from: it is kept, and the AP publish carries the pointer on through every one."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    lsf_writes = [await _lsf_write(lsf, l3, epoch) for epoch in (3, 4, 5)]
+    read_before = l3.scope_reads
+    left: list[str] = []
+
+    for index, (stages, carry) in enumerate(lsf_writes):
+        # the next LSF write is writing every scope while this one publishes; the last publishes in a quiet moment
+        writing = index < len(lsf_writes) - 1
+        l3.writing, l3.pending = writing, set(_BOTH) if writing else None
+        left += (await lsf.publish_staged(stages, carry_at=carry))[1]
+    l3.writing, l3.pending = False, None
+    moved, skipped = await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1))
+    left += skipped
+
+    assert left == [], f"staged scopes were left for the catch-up: {left}"
+    assert moved == list(_BOTH)
+    assert l3.scope_reads == read_before, "a stage was completed from L3 while L2 held every write's chunks"
+    for scope in _BOTH:
+        entry = json.loads(pointers.entries[f"enr.s.{scope}"][0])
+        assert entry["epoch"] == 5
+        assert [piece["epoch"] for piece in entry["tables"]["results"]["pieces"]] == [3, 4, 5], "pieces out of order"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its publish"
+    await _until(lambda: all(reader.applied_epoch(s) == 5 for s in _BOTH), what="the reader applied epoch 5")
+    assert _holds(reader, l3), "the reader's L1 is not L3"
+    assert await reader.catch_up_from_l3() == [], "a scope was behind L3 after every write published"
+    assert l3.scope_reads == read_before
+    # L2 itself holds L3: a replica that starts now loads exactly L3 from NATS
+    cold = _snapshot(tables=_TWO_TABLES, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)[0]
+    await cold.start()
+    await cold.wait_ready(timeout=5)
+    assert cold.status().source is SnapshotSource.L2
+    assert _holds(cold, l3), "a replica loaded from NATS does not hold L3"
+    assert l3.scope_reads == read_before
+    for snapshot in (ap, lsf, reader, cold):
+        await snapshot.stop()
+
+
+async def test_a_scope_whose_kept_stages_reach_l3s_epoch_is_caught_up_from_l2() -> None:
+    """the publish that brought the pointer to a kept stage's base did not carry it on (a replica of a code version
+    that keeps no stage): the catch-up carries it on from L2 and reads nothing from L3."""
+    ap, lsf, reader, pointers, _, l3 = await _overlapping_writers(blind_ap=True)
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], []), "the LSF stage did not wait for the AP write"
+    assert await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1)) == (list(_BOTH), [])
+    assert all(json.loads(pointers.entries[f"enr.s.{s}"][0])["epoch"] == 2 for s in _BOTH)
+    read_before = l3.scope_reads
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    assert l3.scope_reads == read_before, "a scope its kept stages bring to L3's epoch was read from L3"
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_kept_stage_whose_base_never_comes_is_caught_up_from_l3_and_dropped() -> None:
+    """the AP write committed and its writer died before its publish: nothing will bring the pointer to the LSF
+    stage's base, so the catch-up reads the scope from L3 as before, and the kept stage goes."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], [])
+    # the AP writer dies: its claims go, and its stages with them
+    await ap.discard_staged(ap_stages)
+    # the kept stage's chunks are spared by the sweep while it is kept
+    await reader.discard_epoch(3)
+    assert all(name in store.objects for stage in stages for name in stage.objects.values())
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its epoch"
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_stage_behind_its_pointer_with_no_write_publishing_before_it_is_completed_from_l3() -> None:
+    """a pointer behind the epoch a stage carries from, and no write before it still publishing (a write that
+    staged nothing: an earlier one unfinished): the stage is not left waiting, and its left-out tables come from
+    L3 at its epoch, as before."""
+    ap, lsf, reader, pointers, _, l3 = await _overlapping_writers()
+    # a write at 2 changed the totals and staged nothing
+    for row in l3.totals:
+        row["total"] = 10
+    l3.epochs = dict.fromkeys(_BOTH, 2)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    read_before = l3.scope_reads
+
+    assert await lsf.publish_staged(stages, carry_at=carry) == (list(_BOTH), [])
+
+    assert l3.scope_reads > read_before
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+def _named(pointers: _Pointers, scope: str) -> set[str]:
+    """every chunk a scope's pointer names, its pieces with its bases."""
+    named: set[str] = set()
+    for table in json.loads(pointers.entries[f"enr.s.{scope}"][0])["tables"].values():
+        named |= {table["object"], *(piece["object"] for piece in table.get("pieces", ()))}
+    return named
+
+
+async def _kept_and_swept() -> tuple[
+    ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3
+]:
+    """an LSF stage at 3 kept behind an AP write at 2 whose publish (a replica of a code version that keeps no
+    stage) moved the pointers to 2 and carried nothing on; then the kept stage's chunks swept, as that replica's
+    sweep does: it sees no kept stage sparing them."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers(blind_ap=True)
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    stages, carry = await _lsf_write(lsf, l3, 3)
+    assert await lsf.publish_staged(stages, carry_at=carry) == ([], []), "the LSF stage did not wait for the AP write"
+    assert await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, 1)) == (list(_BOTH), [])
+    assert [key for key in pointers.entries if key.startswith("enr.r.")], "the LSF stage was not kept"
+    for stage in stages:
+        for name in stage.objects.values():
+            store.objects.pop(name, None)
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def test_a_publish_never_carries_a_pointer_onto_a_kept_stage_whose_chunk_was_swept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the CHANGELOG's promise for a replica of an older version: it ignores the kept stages' keys and may sweep
+    their chunks, and a pointer is never moved onto a missing chunk. The next LSF write finds its pointer behind
+    and a kept stage to carry it through whose chunk is gone: its tables are read from L3 instead."""
+    ap, lsf, reader, pointers, store, l3 = await _kept_and_swept()
+    stages, carry = await _lsf_write(lsf, l3, 4)
+    read_before = l3.scope_reads
+    caplog.set_level(logging.WARNING)
+
+    moved, skipped = await lsf.publish_staged(stages, carry_at=carry)
+
+    assert (moved, skipped) == (list(_BOTH), [])
+    assert "is gone; its tables are read from L3 instead" in caplog.text
+    assert l3.scope_reads > read_before, "the scope was not read from L3"
+    for scope in _BOTH:
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["epoch"] == 4
+        assert _named(pointers, scope) <= set(store.objects), "a pointer was moved onto a missing chunk"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a kept stage outlived its publish"
+    await _until(lambda: all(reader.applied_epoch(s) == 4 for s in _BOTH), what="the reader applied epoch 4")
+    assert _holds(reader, l3)
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_a_catch_up_never_carries_a_pointer_onto_a_kept_stage_whose_chunk_was_swept() -> None:
+    """the catch-up carries a scope on from L2 first; when the kept stage's chunk is gone it leaves the pointer
+    where it is and reads the scope from L3, as before."""
+    ap, lsf, reader, pointers, store, l3 = await _kept_and_swept()
+    read_before = l3.scope_reads
+
+    caught = await reader.catch_up_from_l3()
+
+    assert sorted(caught) == list(_BOTH)
+    assert l3.scope_reads > read_before, "a scope whose kept stage is gone was not read from L3"
+    for scope in _BOTH:
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["epoch"] == 3
+        assert _named(pointers, scope) <= set(store.objects), "a pointer was moved onto a missing chunk"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")]
+    await _until(lambda: all(reader.applied_epoch(s) == 3 for s in _BOTH), what="the reader applied epoch 3")
+    assert _holds(reader, l3)
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def _de_kept_behind_a_dead_write() -> tuple[
+    ScopedSnapshot, ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, _ReadCountingL3
+]:
+    """an AP write at 2 committed and its writer died before its publish; an LSF stage of DE alone at 3, kept
+    behind it."""
+    ap, lsf, reader, pointers, store, l3 = await _overlapping_writers()
+    ap_stages = await _ap_write(ap, l3, 2, total=10)
+    added = _county("de3", 3, state="DE")
+    stage = await lsf.stage("DE", 3, {}, added={"results": [added]})
+    l3.rows.append(added)
+    l3.epochs["DE"] = 3
+    assert await lsf.publish_staged([stage], carry_at={"DE": 2}) == ([], [])
+    await ap.discard_staged(ap_stages)
+    assert [key for key in pointers.entries if key.startswith("enr.r.")], "the DE stage was not kept"
+    return ap, lsf, reader, pointers, store, l3
+
+
+async def test_a_scope_removed_from_l3_drops_the_stages_kept_for_it() -> None:
+    """a kept stage of a scope L3 holds no more will never move a pointer: the removal drops it."""
+    ap, lsf, reader, pointers, _, l3 = await _de_kept_behind_a_dead_write()
+    l3.rows = [row for row in l3.rows if row["state"] != "DE"]
+    l3.totals = [row for row in l3.totals if row["state"] != "DE"]
+    del l3.epochs["DE"]
+
+    await reader.catch_up_from_l3()
+
+    assert "enr.s.DE" not in pointers.entries, "the removed scope's pointer stayed"
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a removed scope's stage stayed kept"
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
+async def test_an_ordinary_publish_carries_its_scope_on_through_the_stage_kept_after_it() -> None:
+    """the dead AP write is published again by an ordinary whole publish at its epoch: the pointer reaches the kept
+    LSF stage's base, and the publish carries it on to the stage, with nothing read from L3."""
+    ap, lsf, reader, pointers, _, l3 = await _de_kept_behind_a_dead_write()
+    read_before = l3.scope_reads
+    results = [row for row in l3.rows if row["state"] == "DE" and row["county"] != "de3"]
+
+    assert await ap.publish("DE", 2, {"results": results, "totals": [{"state": "DE", "total": 10}]})
+
+    entry = json.loads(pointers.entries["enr.s.DE"][0])
+    assert entry["epoch"] == 3, "the publish did not carry the scope on through the kept stage"
+    assert [piece["epoch"] for piece in entry["tables"]["results"]["pieces"]] == [3]
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "the stage stayed kept once carried"
+    assert l3.scope_reads == read_before, "the scope was read from L3"
+    await _until(lambda: reader.applied_epoch("DE") == 3, what="the reader applied epoch 3")
+    with reader.read() as cursor:
+        counties = cursor.execute("SELECT county FROM results WHERE state = 'DE' ORDER BY county").fetchall()
+    assert counties == [("c2",), ("de3",)]
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()
+
+
 class _WedgedL3(_L3):
     """an L3 whose reads of one scope stop answering once ``wedge`` names it: a request that waits with no deadline
     (3tears 0.86.0's publish leg and offloaded encode), or any await on the way that never ends."""
@@ -4179,3 +4549,335 @@ async def test_a_catch_up_that_fails_says_so_with_its_error_and_lets_the_claim_g
     with pytest.raises(ConnectionError):
         await snapshot.catch_up_from_l3()
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# a scope's L3 read: in the order an index serves, and a page fetched ahead
+# ----------------------------------------------------------------------
+
+_VOTES_BY = TableSchema(
+    name="votes_by",
+    primary_key=("race", "county"),
+    columns=[
+        Column("race", STRING_TYPE),
+        Column("county", STRING_TYPE),
+        Column("state", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+def _votes_by_rows(races: int, counties: int) -> list[dict[str, Any]]:
+    """TX's ``races`` x ``counties`` rows, and one of DE's, written in neither order a read asks for."""
+    rows = [
+        {"race": f"r{race:02d}", "county": f"c{county:04d}", "state": "TX", "votes": race * county}
+        for county in reversed(range(counties))
+        for race in range(races)
+    ]
+    return [*rows, {"race": "r00", "county": "d0000", "state": "DE", "votes": 7}]
+
+
+class _IndexedL3(_L3):
+    """L3 as YugabyteDB answers a keyset page of a table keyed on a hashed column the scope does not pin.
+
+    The table's one index the scope leads is ``(state HASH, index...)``: a page ordered by the index's columns first
+    reads from the cursor's place in it to the end of the group holding the page's last row (an incremental sort);
+    any other order reads, and sorts, the scope's every row. ``scanned`` counts the rows each read.
+    """
+
+    def __init__(self, rows: list[dict[str, Any]], index: tuple[str, ...]) -> None:
+        super().__init__(rows)
+        self.index = index
+        self.scanned = 0
+        self.pages = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        order = [part.strip().strip('"') for part in sql.split("ORDER BY", 1)[1].split("LIMIT")[0].split(",")]
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        state, cursor = args[0], tuple(args[1:]) or None
+
+        def place(row: dict[str, Any]) -> tuple[Any, ...]:
+            return tuple(row[column] for column in order)
+
+        scope = sorted((r for r in self.rows if r["state"] == state), key=place)
+        page = [r for r in scope if cursor is None or place(r) > cursor][:limit]
+        self.pages += 1
+        if tuple(order[: len(self.index)]) != self.index:
+            self.scanned += len(scope)
+        else:
+            width = len(self.index)
+            start = cursor[:width] if cursor is not None else None
+            end = place(page[-1])[:width] if page else None
+            self.scanned += sum(
+                1
+                for r in scope
+                if (start is None or place(r)[:width] >= start) and (end is None or place(r)[:width] <= end)
+            )
+        return [dict(r) for r in page]
+
+
+class _OrderedBackend(DuckDBBackend):
+    """a DuckDB L1 recording the key order of every scope it is given whole."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.given: list[list[tuple[Any, ...]]] = []
+
+    def replace_partitions(self, replacements: Any) -> int:
+        for r in replacements:
+            if r.arrow is not None:
+                self.given.append(
+                    [(row["race"], row["county"]) for row in r.arrow.select(["race", "county"]).to_pylist()]
+                )
+        return super().replace_partitions(replacements)
+
+
+def _votes_by_backend(backend: DuckDBBackend | None = None) -> DuckDBBackend:
+    metadata = MetaData()
+    _VOTES_BY.to_sqlalchemy_table(metadata)
+    made = backend or DuckDBBackend()
+    made.initialize(metadata)
+    return made
+
+
+async def test_a_scope_read_in_its_index_order_reads_a_page_of_rows_a_statement_not_the_scope() -> None:
+    """a catch-up on cobalt prod (2026-11-01) read IA's 434k rows at 1.8 s a 999-row page: a table keyed on a race,
+    hashed, paged by its key within a state, which no index orders, so each page read and sorted the state's every row
+    (an EXPLAIN on a local copy: 33k rows scanned for each page of TX). Read in the order the state's index serves,
+    a page reads about its own rows, and the copy holds the same rows, in key order."""
+    rows = _votes_by_rows(races=30, counties=200)
+    tx = sum(1 for r in rows if r["state"] == "TX")
+    held: dict[tuple[str, ...], Any] = {}
+    scanned: dict[tuple[str, ...], int] = {}
+    for read_order in ((), ("county",)):
+        l3 = _IndexedL3(rows, index=("county",))
+        backend = _votes_by_backend(_OrderedBackend())
+        assert isinstance(backend, _OrderedBackend)
+        tables = (SnapshotTable(name="votes_by", scope_column="state", key=("race", "county"), read_order=read_order),)
+        snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=10)
+        await snapshot.stop()
+        held[read_order] = backend.execute_query("SELECT * FROM votes_by ORDER BY state, race, county")
+        scanned[read_order] = l3.scanned
+        assert all(given == sorted(given) for given in backend.given), "a scope was published out of key order"
+    pages = -(-tx // _PAGE)
+    assert len(held[("county",)]) == len(rows)
+    assert held[("county",)] == held[()]
+    assert scanned[()] >= pages * tx, f"the key's order read {scanned[()]} rows"
+    assert scanned[("county",)] <= tx + pages * 30 + 1, f"the index's order read {scanned[('county',)]} rows of {tx}"
+
+
+def test_a_read_order_naming_a_column_twice_is_refused_and_pages_by_the_rest_of_the_key_after_it() -> None:
+    table = SnapshotTable(name="votes_by", scope_column="state", key=("race", "county", "id"), read_order=("county",))
+
+    assert table.paged_by == ("county", "race", "id")
+    assert SnapshotTable(name="t", scope_column="s", key=("a", "b")).paged_by == ("a", "b")
+    with pytest.raises(ValueError, match="twice"):
+        SnapshotTable(name="t", scope_column="s", key=("a",), read_order=("b", "b"))
+
+
+def test_a_read_order_naming_a_column_outside_the_key_is_refused() -> None:
+    """a keyset page steps past its last row by comparing every paged column, and a NULL makes that comparison NULL:
+    a read order through a column that may be NULL would drop every row after one, with no count to see it."""
+    with pytest.raises(ValueError, match=r"read_order names \['office'\], not columns of the key"):
+        SnapshotTable(name="t", scope_column="state", key=("race", "county"), read_order=("office",))
+
+
+class _SlowL3(_L3):
+    """L3 answering each of a scope's keyset pages after ``wait`` seconds, recording when each fetch begins and ends."""
+
+    def __init__(self, rows: list[dict[str, Any]], events: list[str], wait: float) -> None:
+        super().__init__(rows)
+        self.events = events
+        self.wait = wait
+        self.fetches = 0
+        self.on_fetch: Callable[[int], None] = lambda number: None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        self.fetches += 1
+        number = self.fetches
+        self.on_fetch(number)
+        self.events.append(f"fetch {number} begins")
+        await asyncio.sleep(self.wait)
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        after = args[1] if len(args) > 1 else ""
+        scope = sorted((r for r in self.rows if r["state"] == args[0]), key=lambda r: r["county"])
+        page = [dict(r) for r in scope if r["county"] > after][:limit]
+        self.events.append(f"fetch {number} ends")
+        return page
+
+
+class _SlowExportBackend(DuckDBBackend):
+    """a DuckDB L1 whose page exports take ``wait`` seconds each, recording when each ends."""
+
+    def __init__(self, events: list[str], wait: float) -> None:
+        super().__init__()
+        self.events = events
+        self.wait = wait
+        self.exports = 0
+
+    def export_rows(self, *args: Any, **kwargs: Any) -> Any:
+        time.sleep(self.wait)
+        exported = super().export_rows(*args, **kwargs)
+        self.exports += 1
+        self.events.append(f"export {self.exports} ends")
+        return exported
+
+
+async def test_a_scope_read_fetches_its_next_page_while_this_one_is_typed() -> None:
+    """a page cost its fetch and then its typing, in series (on cobalt prod the typing is a job in the shared copy's
+    worker): each next page is now fetched beside the typing of this one, so a page costs the slower of the two.
+    Each page is still typed on its own: a retention judges the rows it is given."""
+    events: list[str] = []
+    rows = [{"county": f"c{i:05d}", "state": "TX", "votes": i} for i in range(4 * _PAGE)]
+    l3 = _SlowL3(rows, events, wait=0.05)
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    backend = _SlowExportBackend(events, wait=0.05)
+    backend.initialize(metadata)
+    snapshot, *_ = _snapshot(l3=l3, backend=backend)
+    l3.epochs = {"TX": 1}
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+    await snapshot.stop()
+
+    assert backend.execute_query("SELECT count(*) AS n FROM results") == [{"n": len(rows)}]
+    assert backend.exports == 4, f"4 pages were typed in {backend.exports} exports"
+    # the overlap, by the order of events alone: each next page's fetch begins before this page's typing ends
+    for page in range(1, backend.exports):
+        assert events.index(f"fetch {page + 1} begins") < events.index(f"export {page} ends"), events
+
+
+async def test_a_write_beginning_while_a_page_is_fetched_ahead_still_stops_the_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the page fetched ahead changes nothing of a write's stop: the read stops at the next look between pages, the
+    page fetched ahead is dropped, and nothing more is read while the write runs."""
+    events: list[str] = []
+    rows = [{"county": f"c{i:05d}", "state": "TX", "votes": i} for i in range(5 * _PAGE)]
+    l3 = _SlowL3(rows, events, wait=0.02)
+    l3.on_fetch = lambda number: setattr(l3, "writing", True) if number == 2 else None
+    snapshot, _, _, _ = _snapshot(l3=l3, write_check=timedelta(0))
+    l3.epochs = {"TX": 1}
+
+    with caplog.at_level(logging.INFO, logger=scoped_snapshot_module.__name__):
+        await snapshot.start()
+        await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+    await asyncio.sleep(0.2)
+
+    assert not snapshot.is_ready
+    assert any("the rebuild stops reading" in r.getMessage() for r in caplog.records)
+    assert l3.fetches <= 3, f"the read went on after the write began: {events}"
+    await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# a fresh replica beside a write that never ends (replay of 2026-11-01, 2026-11-02): a pod restarted while write 1348
+# was open, NATS holding only the scopes published since it lost the snapshot, waited on that write and served
+# nothing. Stale is fine; missing is not. It rebuilds beside the write instead
+# ----------------------------------------------------------------------
+
+
+async def test_a_fresh_replica_beside_a_write_in_progress_is_ready_and_serves_every_scope() -> None:
+    """no snapshot in NATS, a write open that has touched TX: DE is served at its committed epoch, TX as L3 holds it,
+    and once the write commits TX moves on to its new epoch."""
+    snapshot, pointers, _, l3 = _snapshot()
+    l3.rows[1]["votes"] = 2
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[0]["votes"] = 99  # the open write's rows so far
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    assert _held_votes(snapshot, "DE") == [2], "a scope the write never touched was not served"
+    assert _held_votes(snapshot, "TX") == [99], "a scope the write touched was missing"
+    l3.epochs["TX"] = 2
+    l3.writing, l3.pending = False, None  # it commits
+    await _until(
+        lambda: "enr.s.TX" in pointers.entries and json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2,
+        what="TX published at the write's epoch once it committed",
+    )
+    await _until(lambda: _indexed(pointers) == {"DE", "TX"}, what="the index whole")
+    assert snapshot.status().phase is SnapshotPhase.READY, snapshot.status()
+    await snapshot.stop()
+
+
+async def test_a_fresh_replica_beside_a_write_serves_a_touched_scopes_committed_copy_never_less() -> None:
+    """NATS still holds TX's committed copy (votes 1) while the write in progress has rewritten TX's rows in part: the
+    fresh replica serves the committed copy, and the pointer in NATS is left as it was, so no replica shows less."""
+    writer, pointers, store, l3 = _snapshot()
+    await _started(writer, pointers)
+    await writer.stop()
+    # NATS lost the snapshot and holds only TX, published since
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    committed = pointers.entries["enr.s.TX"][0]
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[0]["votes"] = 99
+
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+
+    assert _held_votes(replica, "TX") == [1], "a touched scope's committed copy in NATS was not what was served"
+    assert _held_votes(replica, "DE") == [2]
+    assert pointers.entries["enr.s.TX"][0] == committed, "a read of a write in progress replaced the committed copy"
+    await replica.stop()
+
+
+async def test_a_fresh_replica_beside_a_clear_in_progress_still_serves_the_committed_copy_it_has() -> None:
+    """the write in progress has emptied TX in L3 (a clear): the replica serves NATS's committed TX, not nothing."""
+    writer, pointers, store, l3 = _snapshot()
+    await _started(writer, pointers)
+    await writer.stop()
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[:] = [row for row in l3.rows if row["state"] != "TX"]
+
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+
+    assert _held_votes(replica, "TX") == [1], "a scope a clear in progress emptied in L3 was served as less"
+    assert _held_votes(replica, "DE") == [2]
+    await replica.stop()
+
+
+async def test_a_fresh_replica_beside_a_write_that_records_nothing_still_waits() -> None:
+    """a writer that does not say what it touched gives nothing to read beside it: the replica waits, as before."""
+    snapshot, _, _, l3 = _snapshot()
+    l3.writing, l3.pending = True, None
+
+    await snapshot.start()
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+
+    assert not snapshot.is_ready
+    await snapshot.stop()
+
+
+async def test_a_restarted_replica_beside_a_dead_write_never_waits_and_serves_every_scope() -> None:
+    """replay of 2026-11-01 (attempt 2): a restarted pod found NATS holding only the scopes published since it lost the
+    snapshot and write 1349 open for 2125 s, and sat WAITING for 10 minutes serving nothing. It is ready at once: the
+    scope NATS holds from its committed copy, the rest from L3 at their committed epochs."""
+    first, pointers, store, l3 = _snapshot()
+    await _started(first, pointers)
+    await first.stop()
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    restarted, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}  # the dead write touched TX and never committed
+    l3.rows[0]["votes"] = 99
+
+    await restarted.start()
+    await restarted.wait_ready(timeout=5)
+
+    assert SnapshotPhase.WAITING not in restarted.status().history, restarted.status()
+    assert (_held_votes(restarted, "TX"), _held_votes(restarted, "DE")) == ([1], [2])
+    await asyncio.sleep(0.2)  # several rechecks while the write stays open
+    assert restarted.status().phase is SnapshotPhase.READY, restarted.status()
+    await restarted.stop()

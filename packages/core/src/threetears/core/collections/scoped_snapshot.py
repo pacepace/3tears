@@ -291,8 +291,11 @@ _MARK_SEPARATOR: Final = "+"
 #: the options :func:`open_tool_pod_snapshot` wires itself, refused when a caller gives them
 _POD_WIRED_OPTIONS: Final = frozenset({"store", "pointers", "ensure_buckets", "retire"})
 
-#: what ``_completed`` answers for a stage that may move by the usual compare-and-set
+#: a ``move_from`` of :meth:`ScopedSnapshot._write_scope`: the pointer moves by the usual compare-and-set
 _ANY_ENTRY: Final = object()
+
+#: how long the marker a dropped kept stage leaves stays: a fresh key per stage, so its marker must not stay for ever
+_KEPT_MARKER_TTL: Final = timedelta(seconds=5)
 
 
 class SnapshotPhase(StrEnum):
@@ -396,12 +399,47 @@ class SnapshotTable:
         may then give :meth:`ScopedSnapshot.stage` and :meth:`ScopedSnapshot.publish` only the rows it
         ADDED to the scope (their ``added=``), kept as a piece after the scope's base, and a replica
         appends only the pieces after what it holds (``docs/design-scoped-snapshot.md``)
+    :ivar read_order: the columns an L3 index led by ``scope_column`` orders a scope's rows by, after it (its
+        range columns, in order); empty when ``key`` is that order already. A scope is read from L3 a keyset
+        page at a time, each page ``ORDER BY`` the paging key; when no index serves the key in order within a
+        scope (on YugabyteDB, a key led by a hashed column the scope does not pin), every page reads and sorts
+        the scope's every row, so a scope's read grows with the square of its rows. Its pages are then read in
+        this order, the key's other columns after it (unique, as the key is), which such an index serves with
+        about a page's rows; the scope's rows are put back in key order once read. Every column is one of
+        ``key``'s: a keyset page steps past its last row by comparing every paged column, and a NULL makes that
+        comparison NULL, so the rows after one would be dropped with no count to see it; a key column is never NULL
     """
 
     name: str
     scope_column: str
     key: tuple[str, ...]
     append_only: bool = False
+    read_order: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """refuse a read order naming a column twice, or a column outside the key.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``read_order`` repeats a column or names one ``key`` does not
+        """
+        if len(set(self.read_order)) != len(self.read_order):
+            raise ValueError(f"{self.name}: read_order names a column twice: {self.read_order}")
+        outside = [column for column in self.read_order if column not in self.key]
+        if outside:
+            raise ValueError(
+                f"{self.name}: read_order names {outside}, not columns of the key {self.key}: a NULL in a paged "
+                f"column drops every row after it from a keyset read, and only a key column is never NULL"
+            )
+
+    @property
+    def paged_by(self) -> tuple[str, ...]:
+        """the columns a scope's L3 pages are ordered and paged by: ``read_order``, then the rest of the key.
+
+        :return: the columns; ``key`` when there is no read order
+        :rtype: tuple[str, ...]
+        """
+        return (*self.read_order, *(column for column in self.key if column not in self.read_order))
 
 
 @dataclass(frozen=True)
@@ -695,6 +733,113 @@ class _Pointer:
         )
 
 
+@dataclass(frozen=True)
+class _StageRecord:
+    """a committed write's stage of one scope, kept in the pointer bucket until a pointer reaches its epoch.
+
+    What a stage is to a scope: the change from the scope's rows at ``base`` (the epoch the write's commit
+    replaced) to its rows at ``epoch``. A table it names whole is the scope's table at ``epoch``; a piece is the
+    rows the write added after the chain at ``base``; a table it leaves out is the one at ``base``. So it moves
+    exactly a pointer at ``base`` to ``epoch``, whoever holds that pointer, and nothing else. Kept at
+    ``{name}.r.{token}.{epoch}`` while its own publish cannot move the scope (the pointer is not at ``base``
+    yet), so a publish that brings the pointer to ``base`` carries it on instead of leaving it to L3.
+
+    :ivar scope: the scope
+    :ivar epoch: the write's epoch
+    :ivar base: the epoch whose rows it changes
+    :ivar objects: table -> its chunk, or for a piece table the piece
+    :ivar rows: table -> the rows its chunk holds
+    :ivar sizes: table -> its chunk's bytes
+    :ivar pieces: the tables whose chunk is a piece
+    :ivar schema: table -> the column digest its chunks were written under
+    """
+
+    scope: str
+    epoch: int
+    base: int
+    objects: Mapping[str, str]
+    rows: Mapping[str, int]
+    sizes: Mapping[str, int]
+    pieces: frozenset[str]
+    schema: Mapping[str, str]
+
+    @classmethod
+    def of(cls, staged: StagedScope, base: int, schema: Mapping[str, str]) -> _StageRecord:
+        """the record of a stage whose write replaced the scope's epoch ``base``.
+
+        :param staged: the stage
+        :ptype staged: StagedScope
+        :param base: the scope's epoch before the write
+        :ptype base: int
+        :param schema: the columns its chunks were written under
+        :ptype schema: Mapping[str, str]
+        :return: the record
+        :rtype: _StageRecord
+        """
+        return cls(
+            scope=staged.scope,
+            epoch=staged.epoch,
+            base=base,
+            objects=dict(staged.objects),
+            rows=dict(staged.rows),
+            sizes=dict(staged.sizes),
+            pieces=frozenset(staged.pieces),
+            schema=dict(schema),
+        )
+
+    def names(self) -> list[str]:
+        """every chunk it names.
+
+        :return: the names
+        :rtype: list[str]
+        """
+        return list(self.objects.values())
+
+    def encode(self) -> bytes:
+        """the record as its KV entry's value.
+
+        :return: its JSON
+        :rtype: bytes
+        """
+        return json.dumps(
+            {
+                "scope": self.scope,
+                "epoch": self.epoch,
+                "base": self.base,
+                "tables": {
+                    t: {"object": name, "rows": self.rows[t], "bytes": self.sizes.get(t, 0), "piece": t in self.pieces}
+                    for t, name in self.objects.items()
+                },
+                "schema": dict(self.schema),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+
+    @classmethod
+    def decode(cls, raw: bytes) -> _StageRecord:
+        """a record from its KV entry's value.
+
+        :param raw: the value
+        :ptype raw: bytes
+        :return: the record
+        :rtype: _StageRecord
+        :raises KeyError: when a field is missing
+        :raises ValueError: when it is not JSON
+        """
+        body = json.loads(raw)
+        tables = body["tables"]
+        return cls(
+            scope=str(body["scope"]),
+            epoch=int(body["epoch"]),
+            base=int(body["base"]),
+            objects={t: str(v["object"]) for t, v in tables.items()},
+            rows={t: int(v["rows"]) for t, v in tables.items()},
+            sizes={t: int(v.get("bytes", 0)) for t, v in tables.items()},
+            pieces=frozenset(t for t, v in tables.items() if v.get("piece")),
+            schema={t: str(d) for t, d in body["schema"].items()},
+        )
+
+
 def scope_token(scope: str) -> str:
     """a scope as one KV key token and one object-name segment, reversibly.
 
@@ -787,6 +932,52 @@ def _concatenated(parts: Sequence[Any]) -> Any:
     """
     _require_snapshot_extra()
     return parts[0] if len(parts) == 1 else pa.concat_tables(parts)
+
+
+def _in_key_order(rows: Any, key: Sequence[str]) -> Any:
+    """a scope's rows, read in another order (:attr:`SnapshotTable.read_order`), in ``key`` order; blocking.
+
+    Arrow's sort, ascending, as the L1's ``ORDER BY`` the key orders an export: a key's columns are never null, and
+    its text compares by its bytes in both.
+
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
+    :param key: the key
+    :ptype key: Sequence[str]
+    :return: the rows in key order
+    :rtype: pyarrow.Table
+    """
+    return rows.sort_by([(column, "ascending") for column in key])
+
+
+#: what :func:`_next_page` answers once the pages are done
+_NO_PAGE: Final = object()
+
+
+async def _next_page(pages: AsyncGenerator[Any, None]) -> Any:
+    """the next page of ``pages``, or :data:`_NO_PAGE` once there is none.
+
+    :param pages: the pages
+    :ptype pages: AsyncGenerator[Any, None]
+    :return: the page
+    :rtype: Any
+    """
+    return await anext(pages, _NO_PAGE)
+
+
+async def _given_up(task: asyncio.Future[Any]) -> None:
+    """stop a page fetched ahead and wait for it to end, so its generator can be closed; what it raised is dropped.
+
+    :param task: the fetch
+    :ptype task: asyncio.Future[Any]
+    :return: nothing
+    :rtype: None
+    """
+    task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        # NOSILENT: the page of a read that already stopped, for its own reason, which is what is raised
+        task.exception()
 
 
 async def _in_order[T, R](
@@ -1183,7 +1374,8 @@ class _Layout:
     grammar lives, so a writer and the sweep that judges what it wrote can never disagree.
 
     Keys: ``{name}.index``, ``{name}.rebuild`` (the claim), ``{name}.s.{token}`` (a scope's
-    pointer) and ``{name}.w.{epoch}.{writer}`` (one write's claim on an epoch). Objects: a whole
+    pointer), ``{name}.w.{epoch}.{writer}`` (one write's claim on an epoch) and ``{name}.r.{token}.{epoch}``
+    (a committed write's stage of a scope kept until a pointer reaches its epoch). Objects: a whole
     chunk or base, ``{name}/{token}/{epoch}/{table}.{column digest}``; a piece of an append-only
     table, ``{name}.p/{token}/{epoch}/{table}.{column digest}``. ``token`` is :func:`scope_token` of
     the scope. Pieces sit under their own prefix because a replica that predates them sweeps every
@@ -1235,6 +1427,21 @@ class _Layout:
     def is_pointer_key(self, key: str) -> bool:
         """whether a key is a scope's pointer."""
         return key.startswith(f"{self.name}.s.")
+
+    @property
+    def records_prefix(self) -> str:
+        """the prefix of every kept stage's key (:class:`_StageRecord`)."""
+        return f"{self.name}.r."
+
+    def record_key(self, scope: str, epoch: int) -> str:
+        """the key of a scope's stage kept at ``epoch``."""
+        return f"{self.records_prefix}{scope_token(scope)}.{epoch}"
+
+    def token_of_record(self, key: str) -> str | None:
+        """the scope token a kept stage's key names; ``None`` for any other key."""
+        rest = key[len(self.records_prefix) :] if key.startswith(self.records_prefix) else ""
+        token, _, epoch = rest.rpartition(".")
+        return token if token and epoch.isdigit() else None
 
     @property
     def objects_prefix(self) -> str:
@@ -1437,7 +1644,9 @@ class _Sweeper:
 
         Judged by state, never by age:
 
-        1. a chunk its scope's pointer names, as a base or a piece, is being served: kept;
+        1. a chunk its scope's pointer names, as a base or a piece, is being served: kept; so is one a kept
+           stage of its scope ahead of the pointer names (:class:`_StageRecord`), which a later publish carries
+           onto the pointer;
         2. a chunk at an epoch a live write claims is being written, or waits for its pointer to move
            (a writer's stage, a publish or rebuild between its chunk and its pointer): kept;
         3. any other chunk serves nothing and nothing will point at it: deleted. That is a superseded
@@ -1447,8 +1656,8 @@ class _Sweeper:
         :ptype name: str
         :param epoch: its epoch, from its name; ``None`` when the name is not a chunk's
         :ptype epoch: int | None
-        :param served: every chunk its scope's pointer, read from KV, names (:meth:`_Pointer.names`); empty when
-            the scope has none
+        :param served: every chunk its scope's pointer, read from KV, names (:meth:`_Pointer.names`), and every
+            chunk its kept stages name; empty when the scope has neither
         :ptype served: AbstractSet[str]
         :param claimed: the epochs live write claims hold, read from KV
         :ptype claimed: frozenset[int]
@@ -1476,6 +1685,24 @@ class _Sweeper:
         epochs = (self._layout.epoch_of_write_claim(key) for key in keys)
         return frozenset(epoch for epoch in epochs if epoch is not None)
 
+    async def recorded_now(self, tokens: AbstractSet[str]) -> dict[str, list[_StageRecord]]:
+        """the kept stages of each scope in ``tokens``, as KV holds them now.
+
+        :param tokens: the scopes' tokens
+        :ptype tokens: AbstractSet[str]
+        :return: token -> its kept stages
+        :rtype: dict[str, list[_StageRecord]]
+        """
+        kept: dict[str, list[_StageRecord]] = {}
+        for key in await self._pointers_bucket.list_keys(prefix=self._layout.records_prefix):
+            token = self._layout.token_of_record(key)
+            if token is None or token not in tokens:
+                continue
+            raw = await self._pointers_bucket.get(key=key)
+            if raw is not None:
+                kept.setdefault(token, []).append(_StageRecord.decode(raw))
+        return kept
+
     async def _sweep(self, names: Sequence[str], *, what: str) -> int:
         """retire every chunk of ``names`` the rule allows, judged against KV read after the listing.
 
@@ -1501,6 +1728,7 @@ class _Sweeper:
                 if token is not None:
                     by_token.setdefault(token, []).append(name)
             pointers = {token: await self.pointer_now(self._layout.pointer_key_of_token(token)) for token in by_token}
+            recorded = await self.recorded_now(by_token.keys())
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping, as in retire_names; nothing is deleted on a judgement that could not be made
             contain(
                 exc,
@@ -1510,7 +1738,22 @@ class _Sweeper:
             return retired
         # each pointer's chunks made a set once: asked per name, the list was built again and searched for every
         # chunk listed, on the event loop
-        served = {token: frozenset(() if p is None else p.names()) for token, p in pointers.items()}
+        # a kept stage spares its chunks only while it is ahead of its scope's pointer: one a pointer reached will
+        # never move it, whichever path moved it there
+        served = {
+            token: frozenset(
+                [
+                    *(() if p is None else p.names()),
+                    *(
+                        name
+                        for record in recorded.get(token, ())
+                        if p is None or record.epoch > p.epoch
+                        for name in record.names()
+                    ),
+                ]
+            )
+            for token, p in pointers.items()
+        }
         stale = [
             name
             for token, scope_names in by_token.items()
@@ -1803,6 +2046,9 @@ class ScopedSnapshot:
         # writing with short gaps between its writes kept from ever finishing. Emptied when NATS lost the
         # snapshot, whose chunks and pointers went with it. Only the event loop reads or writes it.
         self._rebuilt: dict[str, int] = {}
+        # the epochs L3 recorded when this replica was last brought up to date beside a write in progress
+        # (_rebuild_beside_write): until a commit moves them there is nothing more to read
+        self._beside: dict[str, int] | None = None
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
         self._progress = _Progress()
@@ -3032,7 +3278,9 @@ class ScopedSnapshot:
         if pointer is not None:
             self._record_change(scope, pointer, started)
             await self._update_index(add={scope})
-            await self._sweeper.retire_older(scope, epoch)
+            # a stage kept after this epoch (a staged write that found the pointer behind it) is carried on
+            carried = (await self._carry_kept([scope])).get(scope, epoch) if landed else epoch
+            await self._sweeper.retire_older(scope, carried)
             if self._append:
                 await self._compact(scope)
         return landed
@@ -3565,21 +3813,27 @@ class ScopedSnapshot:
     ) -> tuple[list[str], list[str]]:
         """move the pointers of staged scopes, once the write that staged them has committed in L3.
 
-        A table a stage left out keeps the scope's current chunk, but only when the scope's pointer
-        is at ``carry_at[scope]`` -- the epoch the writer saw before its write, so the carried chunk
-        holds what L3 held then. A scope with no pointer and ``carry_at`` 0 is new: its missing
-        tables are empty, when the snapshot is known whole (``whole``, or a whole index that does not
-        name it). A scope whose pointer is elsewhere below the stage's epoch (behind the writer's, a
-        stage of an earlier write skipped) has the tables it left out, and those it appended to, read
-        whole from L3, only while L3 holds it exactly at the stage's epoch (:meth:`_filled_from_l3`).
-        Any other scope is skipped and left to :meth:`catch_up_from_l3`, which republishes it from L3
-        because its L3 epoch is now ahead of its pointer. Every replica applies the moved scopes from
-        its pointer watch, this one included.
+        A stage is the change from its scope's rows at ``carry_at[scope]`` -- the epoch the writer saw before its
+        write, which its commit replaced -- to its rows at its epoch: a table it left out keeps the scope's chunk
+        at that epoch, a piece follows the chain there. So it moves a pointer at ``carry_at``. A pointer behind
+        it is carried there first through the stages kept for the scope (each a committed write's stage that
+        could not move the pointer yet, :class:`_StageRecord`), in epoch order. A stage that still finds its
+        pointer behind is kept itself, so the publish that brings the pointer to ``carry_at`` carries it on: it
+        waits (in neither list) while the write at ``carry_at`` holds its claim, still publishing; otherwise
+        the tables it left out, and those it appended to, are read whole from L3 at its epoch, while L3 holds
+        the scope exactly there (:meth:`_filled_from_l3`). A compare-and-set lost to a racing writer is judged
+        again against the pointer it left. A scope with no pointer and ``carry_at`` 0 is new: its missing
+        tables are empty, when the snapshot is known whole (``whole``, or a whole index that does not name it).
+        Any other scope is skipped and left to :meth:`catch_up_from_l3`, which carries it on from its kept stages
+        where they reach L3's epoch and republishes it from L3 otherwise. After its moves, each scope moved is
+        carried on through any stage kept after it. Every replica applies the moved scopes from its pointer
+        watch, this one included.
 
         A stage whose write claim is lost, checked before the scope is completed and again the moment
         before its pointer moves, is skipped and left to the catch-up. Every way out, a raise part way
         through included, indexes the scopes whose pointers already moved, lets every claim go and
-        retires what the moved scopes no longer serve, so no moved scope is left out of the index.
+        retires what the moved scopes no longer serve, so no moved scope is left out of the index. A
+        kept stage's chunks are spared by the sweep until a pointer reaches its epoch.
 
         :param staged: the scopes :meth:`stage` wrote
         :ptype staged: Sequence[StagedScope]
@@ -3589,12 +3843,14 @@ class ScopedSnapshot:
         :ptype whole: bool
         :return: the scopes whose pointers moved, and the scopes skipped (left to the catch-up). A
             scope a racing writer already moved past the staged epoch is in neither, and is logged:
-            nothing is owed for it
+            nothing is owed for it; so is a scope kept for the earlier write still publishing
         :rtype: tuple[list[str], list[str]]
         """
         moved: list[str] = []
         skipped: list[str] = []
         superseded: list[str] = []
+        waiting: list[str] = []
+        carried: dict[str, int] = {}
         finished = False
         try:
             try:
@@ -3604,7 +3860,7 @@ class ScopedSnapshot:
                 # indexed below on every way out; every scope runs to its end even when another raises, and
                 # the first failure is raised after
                 gate = asyncio.Semaphore(max(1, self._l2_concurrency))
-                outcomes = {"moved": moved, "skipped": skipped, "superseded": superseded}
+                outcomes = {"moved": moved, "skipped": skipped, "superseded": superseded, "waiting": waiting}
 
                 async def publish_one(scope: StagedScope) -> None:
                     async with gate:
@@ -3613,9 +3869,12 @@ class ScopedSnapshot:
 
                 results = await asyncio.gather(*(publish_one(scope) for scope in staged), return_exceptions=True)
                 _raise_first(results, log=log, what=f"scoped snapshot {self._name}: a staged scope's publish failed")
+                # after every move here: a later write that kept its stage before reading the pointer again either
+                # saw the move or is listed now
+                carried = await self._carry_kept([*moved, *superseded])
                 # in the order the scopes were staged, as one after another they were
                 order = {scope.scope: index for index, scope in enumerate(staged)}
-                for listed in (moved, skipped, superseded):
+                for listed in (moved, skipped, superseded, waiting):
                     listed.sort(key=order.__getitem__)
                 finished = True
                 if superseded:
@@ -3625,28 +3884,35 @@ class ScopedSnapshot:
                         len(superseded),
                         extra={"extra_data": {"scopes": superseded}},
                     )
+                if waiting:
+                    log.info(
+                        "scoped snapshot %s: %d staged scopes kept for the earlier write still publishing, "
+                        "which carries them on",
+                        self._name,
+                        len(waiting),
+                        extra={"extra_data": {"scopes": waiting}},
+                    )
             finally:
                 # every way out, raised or returned: a scope whose pointer moved is indexed, so the
                 # replicas serve it (an index is whole only from a write of everything that finished
                 # with nothing skipped)
                 if moved:
-                    await self._update_index(add=moved, whole=whole and finished and not skipped)
+                    await self._update_index(add=moved, whole=whole and finished and not skipped and not waiting)
         finally:
-            # the stages are named by their pointers now, or will never be by this call: the claims are
-            # let go on every way out, and a skipped or superseded stage serves nothing and goes by the
-            # rule (which judges the pointers as KV holds them, so a stage whose move landed unseen is
-            # spared); the scopes that moved retire their older epochs
+            # the stages are named by their pointers now, or kept, or will never be by this call: the claims are
+            # let go on every way out, and a stage neither named nor kept serves nothing and goes by the rule
+            # (which judges the pointers and the kept stages as KV holds them, so a stage whose move landed unseen
+            # is spared); the scopes that moved retire their older epochs
             for scope in staged:
                 if scope.claim is not None:
                     await scope.claim.release()
             unserved = [name for scope in staged if scope.scope not in moved for name in scope.objects.values()]
             await self._sweeper.retire_names_if_unserved(unserved, what="stages left unpublished")
-            await self._sweeper.retire_older_many(
-                {scope.scope: scope.epoch for scope in staged if scope.scope in moved}
-            )
+            reached = {scope.scope: scope.epoch for scope in staged if scope.scope in moved}
+            await self._sweeper.retire_older_many(reached | carried)
             self._changed.set()
         if self._append:
-            await _bounded_each(moved, self._compact, at_once=_SWEEPS_AT_ONCE)
+            await _bounded_each(sorted({*moved, *carried}), self._compact, at_once=_SWEEPS_AT_ONCE)
         if skipped:
             log.warning(
                 "scoped snapshot %s: %d staged scopes left for the catch-up from L3",
@@ -3665,16 +3931,16 @@ class ScopedSnapshot:
         :ptype carry_at: int
         :param whole: whether the staged scopes are every scope L3 holds
         :ptype whole: bool
-        :return: ``"moved"``, ``"skipped"`` (left to the catch-up) or ``"superseded"`` (a racing writer is ahead)
+        :return: ``"moved"``, ``"skipped"`` (left to the catch-up), ``"superseded"`` (a racing writer is ahead) or
+            ``"waiting"`` (kept for the earlier write still publishing, which carries it on)
         :rtype: str
         """
         if self._claim_lost(scope):
             return "skipped"
-        completed = await self._completed(scope, carry_at, whole=whole)
-        if completed is None:
-            return "skipped"
-        pointer, observed = completed
-        if not await self._exist(pointer.names()):
+        if all(t.name in scope.objects and t.name not in scope.pieces for t in self._tables):
+            return await self._publish_whole_stage(scope)
+        own = _StageRecord.of(scope, carry_at, self._schema)
+        if not await self._exist(own.names()):
             # never a pointer onto a missing chunk: the scope is left to the catch-up, which
             # republishes it from L3 (it stages it again)
             log.error(
@@ -3685,17 +3951,86 @@ class ScopedSnapshot:
                 scope.epoch,
             )
             return "skipped"
-        # the claim may have lapsed during the round trips above: checked again, the moment
-        # before the move, and a lost one skipped like any other
+        kept = False
+        filled: _Pointer | None = None
+        for _ in range(_CAS_ATTEMPTS):
+            entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(scope.scope))
+            current = None if entry is None else _Pointer.decode(entry[0])
+            if current is not None and current.epoch >= scope.epoch:
+                # never onto a pointer at the stage's epoch or past it: it holds the scope's rows there or later
+                return "superseded"
+            behind = current is not None and current.epoch < carry_at
+            # the stages kept for the scope are read only for a pointer behind: the usual publish reads none
+            kept_stages = await self._kept_of(scope.scope) if behind else []
+            pointer = await self._completed(scope, own, current, kept_stages, whole=whole)
+            if pointer is not None and not await self._exist(pointer.names()):
+                # a chunk it would carry is gone (swept by a replica of a code version that keeps no stage): never
+                # onto it, and no wait for a publish that would carry the same chunk
+                log.warning(
+                    "scoped snapshot %s: a chunk scope %r's pointer would carry to epoch %d is gone; its tables are "
+                    "read from L3 instead",
+                    self._name,
+                    scope.scope,
+                    scope.epoch,
+                )
+                pointer, behind = None, False
+            if pointer is None and behind and not kept:
+                # kept BEFORE the pointer is read again: a publish that brings it to carry_at after that read
+                # lists this stage and carries it on; one before it, this stage sees
+                kept = await self._keep(own)
+                if kept:
+                    continue
+            if pointer is None and behind and kept and current is not None:
+                awaited = self._awaited(carry_at, kept_stages, current.epoch)
+                if awaited is not None and await self._publishing(awaited):
+                    return "waiting"
+            if pointer is None:
+                # nothing can be carried (the pointer is behind and no kept stage reaches carry_at, holds other
+                # columns, or there is none): the tables the stage left out are read from L3 at its epoch, else the
+                # scope is left to the catch-up. Left there alone, the scope stayed behind for as long as writes
+                # ran back to back, every later partial write skipped the same way (cobalt prod, 2026-10-31)
+                # read once: the scope's every table at the stage's epoch, whatever pointer it moves from
+                filled = filled or await self._filled(scope)
+                pointer = filled
+            if pointer is None:
+                return "skipped"
+            # the claim may have lapsed during the round trips above: checked again, the moment
+            # before the move, and a lost one skipped like any other
+            if self._claim_lost(scope):
+                return "skipped"
+            if await self._move_exactly(pointer, None if entry is None else entry[1]):
+                return "moved"
+            # a racing writer moved the pointer after it was read: judged again against the one it left
+        return "skipped"
+
+    async def _publish_whole_stage(self, scope: StagedScope) -> str:
+        """move the pointer of a stage that named every table whole, by the retried compare-and-set.
+
+        :param scope: the stage
+        :ptype scope: StagedScope
+        :return: ``"moved"``, ``"skipped"`` or ``"superseded"``
+        :rtype: str
+        """
+        pointer = _Pointer(
+            scope=scope.scope,
+            epoch=scope.epoch,
+            objects=dict(scope.objects),
+            rows=dict(scope.rows),
+            schema=self._schema,
+        )
+        if not await self._exist(pointer.names()):
+            log.error(
+                "scoped snapshot %s: a chunk staged for scope %r at epoch %d is gone; its pointer is "
+                "not moved, and the catch-up republishes it from L3",
+                self._name,
+                scope.scope,
+                scope.epoch,
+            )
+            return "skipped"
         if self._claim_lost(scope):
             return "skipped"
-        if observed is _ANY_ENTRY:
-            held = await self._move_pointer(pointer)
-            return "moved" if held == pointer else "superseded"
-        if await self._move_exactly(pointer, observed):
-            return "moved"
-        # what it carried, or filled empty, was judged against an entry that has moved since
-        return "skipped"
+        held = await self._move_pointer(pointer)
+        return "moved" if held == pointer else "superseded"
 
     async def _compact(self, scope: str) -> bool:
         """fold a scope's pieces into a new base where they are past the threshold; never raises.
@@ -3780,99 +4115,344 @@ class ScopedSnapshot:
         return True
 
     async def _completed(
-        self, staged: StagedScope, carry_at: int, *, whole: bool
-    ) -> tuple[_Pointer, int | None | object] | None:
-        """the pointer a staged scope moves to, every table named, and the pointer entry it was judged
-        against; ``None`` when it cannot be completed.
+        self,
+        staged: StagedScope,
+        own: _StageRecord,
+        current: _Pointer | None,
+        kept: Sequence[_StageRecord],
+        *,
+        whole: bool,
+    ) -> _Pointer | None:
+        """the pointer a staged scope moves to from ``current``, every table named, when its pointer can carry it;
+        ``None`` when it cannot.
 
-        A stage that named every table with whole chunks moves by the usual compare-and-set
-        (``_ANY_ENTRY``). One that carried a chunk, filled a table empty, or appended a piece is right
-        only against the entry it read, so it moves only from that entry's revision (``None``: only if
-        there is still no pointer). A piece is appended to the chain the pointer holds at ``carry_at``,
-        the epoch the writer saw, the rows it added being the rows past that chain; a scope new to the
-        snapshot takes its first piece as its base.
+        A stage is the change from the scope's rows at its base (``carry_at``, the epoch its write's commit
+        replaced) to its rows at its epoch (:class:`_StageRecord`), so it moves a pointer at that base. A pointer
+        behind the base is first carried to it through the stages kept for the scope (:meth:`_chained`): each moves
+        the pointer at its own base, in epoch order, so the chain holds every write's change in order and a piece
+        always follows the rows it was computed after. A scope new to the snapshot (no pointer, base 0) takes its
+        missing tables empty when the snapshot is known whole, and its first piece as its base.
 
-        :return: the pointer and the revision it must move from
-        :rtype: tuple[_Pointer, int | None | object] | None
+        :param staged: the stage
+        :ptype staged: StagedScope
+        :param own: the stage as a record, its base the epoch its write saw
+        :ptype own: _StageRecord
+        :param current: the scope's pointer now, if it has one
+        :ptype current: _Pointer | None
+        :param kept: the stages kept for the scope, read for a pointer behind ``carry_at``
+        :ptype kept: Sequence[_StageRecord]
+        :param whole: whether the staged scopes are every scope L3 holds
+        :ptype whole: bool
+        :return: the pointer, or ``None``
+        :rtype: _Pointer | None
         """
-        appended = [t for t in self._tables if t.name in staged.pieces]
-        missing = [t for t in self._tables if t.name not in staged.objects]
-        # filled as tables are completed: the pointer holds these very dicts
+        if current is None:
+            index_whole = self._index is not None and not self._index_partial
+            new = own.base == 0 and (whole or (index_whole and staged.scope not in (self._index or ())))
+            return await self._new_scope(staged) if new else None
+        if current.epoch > own.base:
+            return None
+        base: _Pointer | None = current
+        if current.epoch < own.base:
+            base = self._chained(current, kept, upto=own.base)
+        return None if base is None or base.epoch != own.base else self._onto(base, own)
+
+    async def _new_scope(self, staged: StagedScope) -> _Pointer:
+        """the first pointer of a scope new to the snapshot: the tables its stage left out empty, its pieces its bases.
+
+        :param staged: the stage
+        :ptype staged: StagedScope
+        :return: the pointer
+        :rtype: _Pointer
+        """
         objects = {t: name for t, name in staged.objects.items() if t not in staged.pieces}
         counts = {t: rows for t, rows in staged.rows.items() if t not in staged.pieces}
-        pieces: dict[str, tuple[_Piece, ...]] = {}
         compacted: dict[str, float] = {}
-        pointer = _Pointer(
+        for table in self._tables:
+            if table.name not in staged.objects:
+                arrow = await self._export(table, staged.scope, [])
+                objects[table.name], _ = await self._put_chunk(staged.scope, staged.epoch, table, arrow)
+                counts[table.name] = 0
+            elif table.name in staged.pieces:
+                # a new scope's added rows are all its rows: its first piece is its base
+                objects[table.name] = staged.objects[table.name]
+                counts[table.name] = staged.rows[table.name]
+                compacted[table.name] = time.time()
+        return _Pointer(
             scope=staged.scope,
             epoch=staged.epoch,
+            objects=objects,
+            rows=counts,
+            schema=self._schema,
+            compacted_at=compacted,
+        )
+
+    def _onto(self, base: _Pointer, record: _StageRecord) -> _Pointer | None:
+        """the pointer a stage moves ``base`` to: its whole tables, its pieces after ``base``'s chains, the rest of
+        ``base`` carried with their chains; ``None`` unless ``base`` is at the stage's base, under these columns.
+
+        :param base: the pointer it moves
+        :ptype base: _Pointer
+        :param record: the stage
+        :ptype record: _StageRecord
+        :return: the pointer at the stage's epoch, or ``None``
+        :rtype: _Pointer | None
+        """
+        if (
+            base.scope != record.scope
+            or base.epoch != record.base
+            # a piece follows the chain it was written after: at a later epoch, never the same one
+            or record.epoch < base.epoch
+            or (record.epoch == base.epoch and bool(record.pieces))
+            or base.schema != self._schema
+            or record.schema != self._schema
+            or any(
+                t.name not in base.objects
+                for t in self._tables
+                if t.name not in record.objects or t.name in record.pieces
+            )
+        ):
+            return None
+        objects: dict[str, str] = {}
+        counts: dict[str, int] = {}
+        pieces: dict[str, tuple[_Piece, ...]] = {}
+        compacted: dict[str, float] = {}
+        for table in self._tables:
+            name = table.name
+            if name in record.objects and name not in record.pieces:
+                objects[name], counts[name] = record.objects[name], record.rows[name]
+                continue
+            # a table is carried with its chain: its base, and its pieces after it
+            _, prior = base.chain(name)
+            objects[name], counts[name] = base.objects[name], base.rows[name]
+            if name in record.pieces:
+                added = _Piece(
+                    name=record.objects[name],
+                    rows=record.rows[name],
+                    epoch=record.epoch,
+                    size=record.sizes.get(name, 0),
+                )
+                pieces[name] = (*prior, added)
+            elif prior:
+                pieces[name] = prior
+            if name in base.compacted_at:
+                compacted[name] = base.compacted_at[name]
+        return _Pointer(
+            scope=record.scope,
+            epoch=record.epoch,
             objects=objects,
             rows=counts,
             schema=self._schema,
             pieces=pieces,
             compacted_at=compacted,
         )
-        result: tuple[_Pointer, int | None | object] | None = (pointer, _ANY_ENTRY)
-        if missing or appended:
-            entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(staged.scope))
-            current = None if entry is None else _Pointer.decode(entry[0])
-            result = (pointer, None if entry is None else entry[1])
-            index_whole = self._index is not None and not self._index_partial
-            if (
-                current is not None
-                and current.epoch == carry_at
-                # a piece follows the chain it was written after: at a later epoch, never the same one
-                and (staged.epoch > carry_at or not appended)
-                and current.schema == self._schema
-                and all(t.name in current.objects for t in (*missing, *appended))
-            ):
-                carried: list[str] = []
-                for table in (*missing, *appended):
-                    # a table is carried with its chain: its base, and its pieces after it
-                    base, prior = current.chain(table.name)
-                    objects[table.name] = current.objects[table.name]
-                    counts[table.name] = current.rows[table.name]
-                    if table in appended:
-                        added = _Piece(
-                            name=staged.objects[table.name],
-                            rows=staged.rows[table.name],
-                            epoch=staged.epoch,
-                            size=staged.sizes.get(table.name, 0),
-                        )
-                        pieces[table.name] = (*prior, added)
-                    elif prior:
-                        pieces[table.name] = prior
-                    if table.name in current.compacted_at:
-                        compacted[table.name] = current.compacted_at[table.name]
-                    carried += [objects[table.name], *(piece.name for piece in prior)]
-                # the carried chunks must still be there: a sweep judged by the same rule spares them
-                if not await self._exist(carried):
-                    result = None
-            elif (
-                current is None
-                and carry_at == 0
-                and (whole or (index_whole and staged.scope not in (self._index or ())))
-            ):
-                for table in missing:
-                    arrow = await self._export(table, staged.scope, [])
-                    objects[table.name], _ = await self._put_chunk(staged.scope, staged.epoch, table, arrow)
-                    counts[table.name] = 0
-                for table in appended:
-                    # a new scope's added rows are all its rows: its first piece is its base
-                    objects[table.name] = staged.objects[table.name]
-                    counts[table.name] = staged.rows[table.name]
-                    compacted[table.name] = time.time()
-            elif current is None or current.epoch < staged.epoch:
-                # nothing can be carried (the pointer is not at the epoch the writer saw -- behind it, a stage of an
-                # earlier write skipped -- or holds other columns, or there is none): left to the catch-up, the scope
-                # stayed behind for as long as writes ran back to back, every later partial write skipped the same
-                # way (cobalt prod, 2026-10-31). Never onto a pointer at the stage's epoch or past it
-                filled = await self._filled_from_l3(staged, [*missing, *appended], objects, counts, compacted)
-                if filled:
-                    pieces.clear()
-                result = result if filled else None
-            else:
-                result = None
-        return result
+
+    def _chained(self, current: _Pointer, kept: Sequence[_StageRecord], *, upto: int | None = None) -> _Pointer:
+        """``current`` carried on through the kept stages that follow it, in epoch order, to ``upto`` at most.
+
+        Each step takes the stage of the lowest epoch whose base is the pointer's epoch: two stages on one base
+        cannot both be right (the lower one's commit came between the other's base and its epoch), and only the
+        lower one can be. The chain stops at the first epoch no kept stage follows.
+
+        :param current: the pointer
+        :ptype current: _Pointer
+        :param kept: the scope's kept stages
+        :ptype kept: Sequence[_StageRecord]
+        :param upto: the last epoch to carry it to; any when ``None``
+        :ptype upto: int | None
+        :return: the pointer reached: ``current`` when no stage follows it
+        :rtype: _Pointer
+        """
+        reached = current
+        while True:
+            following = [
+                r
+                for r in kept
+                if r.base == reached.epoch and r.epoch > reached.epoch and (upto is None or r.epoch <= upto)
+            ]
+            step = None if not following else self._onto(reached, min(following, key=lambda r: r.epoch))
+            if step is None:
+                return reached
+            reached = step
+
+    async def _kept_of(self, scope: str) -> list[_StageRecord]:
+        """the stages kept for one scope, as KV holds them now.
+
+        :param scope: the scope
+        :ptype scope: str
+        :return: its kept stages
+        :rtype: list[_StageRecord]
+        """
+        return (await self._kept({scope})).get(scope, [])
+
+    async def _kept(self, scopes: AbstractSet[str]) -> dict[str, list[_StageRecord]]:
+        """the stages kept for each of ``scopes``, as KV holds them now: one listing for all of them.
+
+        :param scopes: the scopes
+        :ptype scopes: AbstractSet[str]
+        :return: scope -> its kept stages
+        :rtype: dict[str, list[_StageRecord]]
+        """
+        by_token = {scope_token(scope): scope for scope in scopes}
+        kept: dict[str, list[_StageRecord]] = {}
+        if not by_token:
+            return kept
+        for key in await self._pointers_bucket.list_keys(prefix=self._layout.records_prefix):
+            scope = by_token.get(self._layout.token_of_record(key) or "")
+            if scope is None:
+                continue
+            raw = await self._pointers_bucket.get(key=key)
+            if raw is not None:
+                kept.setdefault(scope, []).append(_StageRecord.decode(raw))
+        return kept
+
+    async def _keep(self, record: _StageRecord) -> bool:
+        """keep a stage in KV so a publish that brings its scope's pointer to its base carries it on.
+
+        :param record: the stage
+        :ptype record: _StageRecord
+        :return: whether it is kept (a stage kept already counts)
+        :rtype: bool
+        """
+        key = self._layout.record_key(record.scope, record.epoch)
+        try:
+            # None when it is kept already: a stage is kept once, under its own epoch
+            await self._pointers_bucket.create(key=key, value=record.encode())
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- keeping a stage saves an L3 read; a KV write that fails leaves the stage to be filled from L3 or caught up, and is logged
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: keeping scope {record.scope!r}'s stage failed")
+            return False
+        return True
+
+    async def _drop_kept(self, records: Iterable[_StageRecord]) -> None:
+        """drop kept stages a pointer has reached: they will never move it again. Never raises.
+
+        :param records: the stages
+        :ptype records: Iterable[_StageRecord]
+        :return: nothing
+        :rtype: None
+        """
+        for record in records:
+            try:
+                await self._pointers_bucket.delete(
+                    key=self._layout.record_key(record.scope, record.epoch), marker_ttl=_KEPT_MARKER_TTL
+                )
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping: a kept stage left behind is dropped by the next publish of its scope, and spares only its own chunks meanwhile
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: dropping a kept stage failed: {exc}")
+
+    async def _carry_kept(self, scopes: Iterable[str]) -> dict[str, int]:
+        """carry each scope's pointer on through the stages kept after it, and drop the kept stages it reached.
+
+        Run after this replica moved the scopes' pointers: a writer that found its scope's pointer behind its
+        base kept its stage before it read the pointer again, so either it saw this move and carried itself, or
+        its stage is listed here. Each move is a compare-and-set from the entry the chain was built on, tried
+        again from the pointer a racing writer left.
+
+        :param scopes: the scopes
+        :ptype scopes: Iterable[str]
+        :return: scope -> the epoch its pointer was carried to, for each scope carried on
+        :rtype: dict[str, int]
+        """
+        carried: dict[str, int] = {}
+        try:
+            await self._carry_kept_into(set(scopes), carried)
+        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the pointers this follows already moved; a kept stage not carried on now is carried by the next publish of its scope or the catch-up, so a failure here must not fail the publish that moved them
+            contain(exc, log=log, what=f"scoped snapshot {self._name}: carrying kept stages on failed: {exc}")
+        return carried
+
+    async def _carry_kept_into(self, scopes: AbstractSet[str], carried: dict[str, int]) -> None:
+        """:meth:`_carry_kept`'s body, recording each scope carried on into ``carried`` as it goes.
+
+        :param scopes: the scopes
+        :ptype scopes: AbstractSet[str]
+        :param carried: scope -> the epoch its pointer was carried to
+        :ptype carried: dict[str, int]
+        :return: nothing
+        :rtype: None
+        """
+        for scope, records in (await self._kept(scopes)).items():
+            remaining = list(records)
+            attempts = 0
+            while remaining and attempts < _CAS_ATTEMPTS:
+                attempts += 1
+                entry = await self._pointers_bucket.get_entry(key=self._layout.pointer_key(scope))
+                if entry is None:
+                    break
+                current = _Pointer.decode(entry[0])
+                reached = [r for r in remaining if r.epoch <= current.epoch]
+                if reached:
+                    await self._drop_kept(reached)
+                    remaining = [r for r in remaining if r.epoch > current.epoch]
+                target = self._chained(current, remaining)
+                if target is current or not await self._exist(target.names()):
+                    break
+                if await self._move_exactly(target, entry[1]):
+                    carried[scope] = target.epoch
+                    log.info(
+                        "scoped snapshot %s: scope %r carried on from epoch %d to %d by the stages kept for it",
+                        self._name,
+                        scope,
+                        current.epoch,
+                        target.epoch,
+                        extra={"extra_data": {"scope": scope, "from": current.epoch, "to": target.epoch}},
+                    )
+
+    @staticmethod
+    def _awaited(carry_at: int, kept: Sequence[_StageRecord], pointer_epoch: int) -> int | None:
+        """the epoch of the earliest write a stage's chain back from ``carry_at`` reaches with no stage kept for it.
+
+        ``carry_at`` is the epoch of the last write that changed the scope before this one, and each kept stage's
+        base the one before it. Walked back through the kept stages, the first epoch with none kept is a write that
+        changed the scope whose stage is not kept: while it still publishes, its publish brings the pointer there
+        and carries every kept stage after it on.
+
+        :param carry_at: the stage's base
+        :ptype carry_at: int
+        :param kept: the scope's kept stages
+        :ptype kept: Sequence[_StageRecord]
+        :param pointer_epoch: the epoch the scope's pointer is at
+        :ptype pointer_epoch: int
+        :return: that write's epoch; ``None`` when the walk reaches the pointer (nothing to wait for)
+        :rtype: int | None
+        """
+        by_epoch = {record.epoch: record for record in kept}
+        at = carry_at
+        while at in by_epoch and by_epoch[at].base < at:
+            at = by_epoch[at].base
+        return at if at > pointer_epoch else None
+
+    async def _publishing(self, epoch: int) -> bool:
+        """whether a write at ``epoch`` holds a live claim: it is still publishing what it wrote.
+
+        :param epoch: the epoch
+        :ptype epoch: int
+        :return: True when a live write claim names it
+        :rtype: bool
+        """
+        return epoch in await self._sweeper.claimed_now()
+
+    async def _filled(self, staged: StagedScope) -> _Pointer | None:
+        """the pointer of a stage whose pointer cannot carry it, the tables it left out and those it appended to read
+        whole from L3 at its epoch (:meth:`_filled_from_l3`); ``None`` when L3 does not hold the scope there.
+
+        :param staged: the stage
+        :ptype staged: StagedScope
+        :return: the pointer, or ``None``
+        :rtype: _Pointer | None
+        """
+        tables = [t for t in self._tables if t.name not in staged.objects or t.name in staged.pieces]
+        objects = {t: name for t, name in staged.objects.items() if t not in staged.pieces}
+        counts = {t: rows for t, rows in staged.rows.items() if t not in staged.pieces}
+        compacted: dict[str, float] = {}
+        if not await self._filled_from_l3(staged, tables, objects, counts, compacted):
+            return None
+        return _Pointer(
+            scope=staged.scope,
+            epoch=staged.epoch,
+            objects=objects,
+            rows=counts,
+            schema=self._schema,
+            compacted_at=compacted,
+        )
 
     async def _filled_from_l3(
         self,
@@ -3965,7 +4545,7 @@ class ScopedSnapshot:
         if revision is None:
             moved = await self._pointers_bucket.create(key=key, value=pointer.encode()) is not None
         else:
-            assert isinstance(revision, int)  # noqa: S101 -- _completed answers an int, None or _ANY_ENTRY
+            assert isinstance(revision, int)  # noqa: S101 -- every caller passes None or a revision KV answered, an int
             moved = await self._pointers_bucket.update(key=key, value=pointer.encode(), revision=revision) is not None
         if moved:
             self._note_seen(pointer)
@@ -4099,9 +4679,10 @@ class ScopedSnapshot:
 
         Read a page at a time, and each page typed by this L1 as it arrives (the backend's
         ``export_rows``, through which a backend that keeps less than L3 holds -- a retention -- lets go
-        of what it would not keep), so what is held is the scope's rows as the L1 keeps them and one
-        page of L3's, never the scope's raw rows. The pages are in key order, so their Arrow tables,
-        concatenated, are the scope's.
+        of what it would not keep), so what is held is the scope's rows as the L1 keeps them and two
+        pages of L3's (the one being typed, the next fetched beside it), never the scope's raw rows. The
+        pages are in key order, so their Arrow tables, concatenated, are the scope's; a table read in its
+        :attr:`SnapshotTable.read_order` is put in key order once read.
 
         :param scope: the scope
         :ptype scope: str
@@ -4128,12 +4709,16 @@ class ScopedSnapshot:
                     )
             if parts is None:
                 parts = await self._read_table(table, scope, None, moved)
+            arrow = _concatenated(parts) if parts else None
+            if arrow is not None and table.paged_by != table.key:
+                # read in the order its index serves: put back in key order, as every other path holds a scope
+                arrow = await asyncio.to_thread(_in_key_order, arrow, table.key)
             result.append(
                 PartitionReplacement(
                     table=table.name,
                     column=table.scope_column,
                     value=scope,
-                    arrow=_concatenated(parts) if parts else None,
+                    arrow=arrow,
                     primary_key=table.key,
                 )
             )
@@ -4150,7 +4735,13 @@ class ScopedSnapshot:
 
         With ``types`` the rail's pages are read straight into Arrow (``fetch_arrow``: no row is a Python object
         here) and typed by the L1 alike (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.storage_arrow`); without,
-        they are dict rows.
+        they are dict rows. The pages are ordered and paged by :attr:`SnapshotTable.paged_by`. Each next page is
+        fetched while this one is typed, so a page costs the slower of the two rather than both: the fetch is
+        a round trip through the hub to L3, the typing a thread here or, for a backend that types in a worker
+        process, a job there. Each page is typed on its own, never several at once: a backend's retention
+        judges the rows it is given, so what it keeps of a scope depends on how its rows are cut (a reports
+        copy kept 2,690 of an LSF table's 5,080 rows of a state typed ten pages at once). A page fetched ahead
+        of a write that began is dropped with the read.
 
         :param table: the table
         :ptype table: SnapshotTable
@@ -4160,7 +4751,7 @@ class ScopedSnapshot:
         :ptype types: Mapping[str, pyarrow.DataType] | None
         :param moved: asked between pages: whether a write has begun since the read started
         :ptype moved: Callable[[], Awaitable[bool]] | None
-        :return: the scope's rows as the L1 keeps them, a part a page
+        :return: the scope's rows as the L1 keeps them, a part a page, in :attr:`SnapshotTable.paged_by` order
         :rtype: list[pyarrow.Table]
         :raises ReplyNotArrowError: with ``types``, when a value is not its column's Arrow type
         :raises _WriteBegan: when ``moved`` says a write began
@@ -4169,20 +4760,26 @@ class ScopedSnapshot:
         where = {table.scope_column: scope}
         pages: AsyncGenerator[Any, None]
         if types is None:
-            pages = l3_row_pages(self._l3, table.name, columns, table.key, where=where)
+            pages = l3_row_pages(self._l3, table.name, columns, table.paged_by, where=where)
         else:
             select = f"SELECT {', '.join(quote_identifier(c) for c in columns)} FROM {quote_identifier(table.name)}"  # noqa: S608
             pages = keyset_arrow_pages(
-                self._l3, select, table.key, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
+                self._l3, select, table.paged_by, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
             )
         parts: list[Any] = []
         async with aclosing(pages):
-            async for page in pages:
-                if len(page):
-                    parts.append(await self._export(table, scope, page))
-                _headway(f"read a page of {table.name} in scope {scope!r} from L3")
-                if moved is not None and await moved():
-                    raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
+            ahead = asyncio.ensure_future(_next_page(pages))
+            try:
+                while (page := await ahead) is not _NO_PAGE:
+                    ahead = asyncio.ensure_future(_next_page(pages))
+                    if len(page):
+                        parts.append(await self._export(table, scope, page))
+                    _headway(f"read a page of {table.name} in scope {scope!r} from L3")
+                    if moved is not None and await moved():
+                        raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
+            finally:
+                # the page fetched ahead goes with a read that stops: the generator is closed only once it is done
+                await _given_up(ahead)
         return parts
 
     def _claim(self) -> _RebuildClaim:
@@ -4346,6 +4943,14 @@ class ScopedSnapshot:
         while result is None and attempts < _REBUILD_ATTEMPTS:
             attempts += 1
             before = await self._settled() if self._settled is not None else None
+            if isinstance(before, Unsettled) and only is None and before.epochs is not None:
+                # every scope, beside a write that records what it touched: stale is fine, missing is not. None: the
+                # write committed meanwhile, and the next attempt rebuilds as any rebuild does
+                if self._ready.is_set() and self._beside == dict(before.epochs):
+                    # ready beside this same write already: nothing has committed since, so nothing to read again
+                    break
+                result = await self._rebuild_beside_write(before, reason=reason, flow=flow, done=done)
+                continue
             if isinstance(before, Unsettled):
                 if only is not None and before.epochs is not None:
                     # a write that records what it touched: the scopes it has not touched are read while it runs
@@ -4357,6 +4962,112 @@ class ScopedSnapshot:
         if result is None and attempts >= _REBUILD_ATTEMPTS:
             self._wait(flow, f"{reason}; writes kept committing while it read; trying again")
         return result
+
+    async def _rebuild_beside_write(
+        self, before: Unsettled, *, reason: str, flow: str, done: dict[str, int]
+    ) -> list[str] | None:
+        """rebuild every scope while a write is in progress, so a copy that has none is ready: stale, never missing.
+
+        A replica with no copy that waited on a write in progress served nothing for as long as it ran, and a write
+        whose writer died kept it so until the next write (replay of 2026-11-01: a pod restarted beside write 1348,
+        open for 6365 s, and waited on it, then on 1349, which a statement timeout ended). Each scope is taken at the
+        epoch L3 last committed for it:
+
+        - a scope the write has not touched is read from L3 and published, as :meth:`_publish_untouched` does: whole
+          at its epoch when it is still untouched there after its read;
+        - a scope the write has touched is served from the copy NATS holds of it (a pointer this replica can load),
+          committed and whole, however old, and that pointer is left as it is: a read of rows the write has written
+          in part never replaces a committed copy, so no replica shows less than before;
+        - a touched scope NATS holds no copy of is read from L3 as it stands (stale, or written in part), published
+          at its committed epoch: there was nothing to serve of it, and less than nothing cannot be shown.
+
+        The index gains the scopes published, never whole: once the write commits the next rebuild reads every scope
+        whose epoch moved (and only those), and writes it whole. The copy is ready once every scope L3 holds is in
+        it; a scope a commit moved meanwhile is left for that rebuild.
+
+        :param before: the writer's record before any scope was read, naming every scope's epoch and the touched ones
+        :ptype before: Unsettled
+        :param reason: why, for the status
+        :ptype reason: str
+        :param flow: the control flow it runs in, whose wait it records
+        :ptype flow: str
+        :param done: scope -> the epoch a rebuild published it at; this adds to it
+        :ptype done: dict[str, int]
+        :return: the scopes published or served from NATS; ``None`` when the write committed meanwhile
+        :rtype: list[str] | None
+        """
+        epochs = before.epochs or {}
+        l3_scopes = await self._l3_scopes()
+        # a touched scope L3 no longer holds (a clear in progress emptied it) is still served from its copy in NATS
+        scopes = sorted(l3_scopes | {scope for scope in before.pending if scope in self._seen})
+        held = {
+            scope
+            for scope in scopes
+            if scope in before.pending and scope in self._seen and self._loadable(self._seen[scope])
+        }
+        kept = {scope: self._seen[scope] for scope in held if self._ahead(self._seen[scope], self._applied.get(scope))}
+        todo = [
+            scope
+            for scope in scopes
+            if scope not in held and scope in l3_scopes and not self._rebuilt_at(scope, int(epochs.get(scope, 0)), done)
+        ]
+        published: list[str] = []
+        left: list[str] = []
+        committed = False
+        retire: dict[str, int] = {}
+        with self._doing(SnapshotPhase.REBUILDING_FROM_L3, f"rebuilding beside a write: {reason}", total=len(scopes)):
+            self._progress = replace(self._progress, scopes_done=len(scopes) - len(todo))
+            failed = await self._apply_pointers(kept) if kept else {}
+            left.extend(sorted(failed))
+            for scope in todo:
+                epoch = int(epochs.get(scope, 0))
+                rows = await self._read_scope(scope)
+                after = await self._settled() if self._settled is not None else None
+                if not isinstance(after, Unsettled) or after.epochs is None:
+                    # the write committed: what it moved is read at its new epoch by the next attempt
+                    committed = True
+                    break
+                if int(after.epochs.get(scope, 0)) != epoch:
+                    left.append(scope)
+                    continue
+                async with self._local:
+                    moved, _ = await self._publish_locked(scope, epoch, rows)
+                if moved is not None:
+                    retire[scope] = epoch
+                done[scope] = epoch
+                published.append(scope)
+                self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+                log.info(
+                    "scoped snapshot %s: rebuilt scope %r from L3 beside a write (%d of %d)%s",
+                    self._name,
+                    scope,
+                    self._progress.scopes_done,
+                    self._progress.scopes_total,
+                    "; the write has touched it, so it is served as L3 holds it until the write commits"
+                    if scope in before.pending or scope in after.pending
+                    else "",
+                    extra={"extra_data": {"scope": scope, "epoch": epoch}},
+                )
+        if published:
+            await self._update_index(add=published)
+        await self._sweeper.retire_older_many(retire)
+        if committed:
+            return None
+        if left:
+            self._wait(flow, f"{reason}; scopes {left} moved while read beside a write in progress ({before.reason})")
+        else:
+            await self._apply_published()
+            self._beside = dict(epochs)
+            if not self._ready.is_set():
+                log.warning(
+                    "scoped snapshot %s: ready beside write in progress (%s); the scopes it touched (%d) are served "
+                    "from their last committed copy, or as L3 holds them, until it commits",
+                    self._name,
+                    before.reason,
+                    len(before.pending),
+                )
+                self._become_ready(SnapshotSource.L3)
+        return [*published, *(scope for scope in held if scope not in failed)]
 
     async def _publish_untouched(
         self, only: set[str], before: Unsettled, *, reason: str, done: dict[str, int]
@@ -4727,9 +5438,20 @@ class ScopedSnapshot:
         :rtype: None
         """
         if behind:
-            record.caught = (
-                await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up") or []
+            # first from L2: a scope whose kept stages carry its pointer to the epoch L3 records reads nothing from L3
+            carried = await self._carry_kept(behind)
+            if carried:
+                await self._sweeper.retire_older_many(carried)
+            from_l2 = sorted(s for s, epoch in carried.items() if epoch >= int(record.epochs.get(s, 0)))
+            behind = behind - set(from_l2)
+            rebuilt = (
+                (await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up") or [])
+                if behind
+                else []
             )
+            record.caught = from_l2 + rebuilt
+            # a stage kept for a scope rebuilt at its epoch or past it will never move it: dropped
+            await self._carry_kept(rebuilt)
         if gone:
             await self._remove_scopes(gone)
 
@@ -4801,6 +5523,8 @@ class ScopedSnapshot:
             self._seen.pop(scope, None)
             self._rebuilt.pop(scope, None)
         await self._drop_locally(sorted(gone))
+        # a removed scope's kept stages will never move a pointer: dropped, and their chunks go by the rule below
+        await self._drop_kept([record for records in (await self._kept(set(gone))).values() for record in records])
         for scope, pointer in gone.items():
             # every chunk up to the deleted pointer's epoch, by the one rule: with the pointer gone
             # nothing names them, and a writer recreating the scope writes at a later epoch under its
