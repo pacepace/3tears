@@ -8,6 +8,16 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### core: a load from files runs over several connections at once
+
+**Added:** `SchemaBackedCollection.load_files(..., connections=N)` and `protocol.side_by_side_requests`. The broker
+copies one `l3.load_files` request's files one after another on one connection (about 16,000 rows a second on the
+local stack: 12.5 s for a 200,000-row LSF update), so a load of many files ran at one connection's rate. With
+`connections` above one the requests are cut into runs of whole files of about the load's rows over `connections`
+(no file cut, no run empty, none crossing a request's wait) and up to `connections` are sent at once. Insert-only as
+before; a request that fails cancels and awaits the others, the drop and the generation advance happen once, and the
+failure is raised as itself. The default, 1, is the load as before. New public names, so a minor bump.
+
 ### core: a scope read from L3 pages in the order its index serves, and fetches its next page while one is typed
 
 **Fixed:** A catch-up on cobalt prod (2026-11-01) read IA from L3 at about 1.8 s a 999-row page: 434k rows, 435

@@ -467,6 +467,79 @@ async def test_one_file_too_long_for_one_reply_is_refused_before_anything_is_sen
     assert source.counts["lsf_results"] == 1
 
 
+class _InFlightStore(_TableStore):
+    """a store that answers each load call after a yield, counting how many are in flight at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_flight = 0
+        self.most_in_flight = 0
+
+    async def load_files(self, table: str, files: Sequence[LoadFile], **kwargs: Any) -> LoadResult:
+        self.in_flight += 1
+        self.most_in_flight = max(self.most_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return await super().load_files(table, files, **kwargs)
+        finally:
+            self.in_flight -= 1
+
+
+async def test_a_load_over_several_connections_sends_its_requests_side_by_side(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    # one request's wait holds every file, but the broker copies a request's files one after another on one
+    # connection: asked for three connections, the load is cut into three requests of whole files, sent at once
+    store = _InFlightStore()
+    pod = _Pod(bus, store, source=source)
+    files = _files(*([10_000] * 12))
+    assert await pod.results.load_files(files, columns=["id"], connections=3) == 120_000
+    assert store.most_in_flight == 3
+    assert [len(load["files"]) for load in store.loads] == [4, 4, 4]
+    assert sorted((file.url for load in store.loads for file in load["files"])) == [file.url for file in files]
+    assert source.counts["lsf_results"] == 1  # one advance for the whole load
+
+
+async def test_a_load_over_several_connections_never_cuts_a_file_nor_makes_an_empty_request(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    store = _InFlightStore()
+    pod = _Pod(bus, store, source=source)
+    files = _files(50_000, 10, 10)
+    assert await pod.results.load_files(files, columns=["id"], connections=8) == 50_020
+    # a large file is a run of its own, and the small ones share one: no file cut, no run empty
+    assert [load["files"] for load in store.loads] == [[files[0]], [files[1], files[2]]]
+
+
+async def test_a_failure_in_one_of_the_side_by_side_requests_drops_and_advances_once_then_raises_it(
+    bus: FakeNatsClient, source: _CountingSource
+) -> None:
+    store = _InFlightStore()
+    pod = _Pod(bus, store, source=source)
+    await _save(pod, "a", 1)
+    store.failing_call = 1
+    with pytest.raises(DataLayerUnavailableError, match="load 1 failed"):
+        await pod.results.load_files(_files(*([10_000] * 4)), columns=["id"], connections=4)
+    assert store.in_flight == 0, "a request was left running once the load raised"
+    assert not pod.results.exists_in_cache_sync("a")
+    assert source.counts["lsf_results"] == 2  # the save's advance, then the failed load's
+
+
+async def test_one_connection_is_the_load_as_before(bus: FakeNatsClient, source: _CountingSource) -> None:
+    store = _InFlightStore()
+    pod = _Pod(bus, store, source=source)
+    files = _files(*([10_000] * 4))
+    await pod.results.load_files(files, columns=["id"])
+    assert [load["files"] for load in store.loads] == [files] and store.most_in_flight == 1
+
+
+async def test_a_load_over_no_connection_is_refused(bus: FakeNatsClient, store: _TableStore) -> None:
+    pod = _Pod(bus, store)
+    with pytest.raises(ValueError, match="connections"):
+        await pod.results.load_files(_FILES, columns=["id"], connections=0)
+    assert store.loads == []
+
+
 def test_the_default_transaction_bound_is_a_minute() -> None:
     assert _Results.LOAD_TIMEOUT_MS == 60_000
     assert _Results.LOAD_ROWS_PER_TRANSACTION == 50_000
