@@ -502,6 +502,39 @@ class TestMultiPodFailover:
         assert all(ep.in_flight == 0 for ep in settled.endpoints)
 
     @pytest.mark.asyncio
+    async def test_every_endpoint_unreachable_answers_not_ready(self) -> None:
+        """when no endpoint takes the call, the caller is told to retry, not that the tool is gone.
+
+        The tool exists and has endpoints; none of them took this call, so it never ran and a retry
+        is safe. TOOL_UNAVAILABLE here reads as "no such tool" (the hub answers it with 404), which
+        is how a scheduled caller on cobalt prod was told a tool did not exist during a pod restart
+        (2026-10-31). TOOL_NOT_READY is the retryable answer (503).
+        """
+        catalog = ToolCatalog()
+        entry = _make_catalog_entry(
+            endpoints=[
+                _make_endpoint(pod_id="pod-A", in_flight=0),
+                _make_endpoint(pod_id="pod-B", in_flight=0),
+            ],
+        )
+        await catalog.register(entry)
+
+        proxy = _make_proxy(catalog, namespace="test", timeout=5.0)
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(side_effect=RequestError("no responders available for request"))
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        assert nc.request_raw.await_count == 2
+        published = nc.publish_reply.call_args.kwargs["message"]
+        assert published.success is False
+        assert published.error_code == "TOOL_NOT_READY"
+
+    @pytest.mark.asyncio
     async def test_timeout_does_not_fail_over(self) -> None:
         """a TOOL_TIMEOUT is not retried against another pod (double-execution risk).
 

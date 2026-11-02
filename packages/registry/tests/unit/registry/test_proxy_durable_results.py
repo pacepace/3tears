@@ -300,23 +300,25 @@ class TestWhenTheWaiterCannotOpen:
 
         assert nats.order == ["open-waiter"]  # the call was never forwarded
         assert nats.replies[0].success is False
-        assert nats.replies[0].error_code == "TOOL_UNAVAILABLE"
+        # the call never ran, so the caller is told to retry rather than that the tool is gone
+        assert nats.replies[0].error_code == "TOOL_NOT_READY"
 
 
 class TestWhenTheOtherEndDoesNotPlayAlong:
     @pytest.mark.asyncio
     async def test_an_unacknowledged_call_reads_as_a_dead_endpoint(self) -> None:
-        """TOOL_UNAVAILABLE, so the failover loop can try a sibling endpoint.
+        """a dead endpoint, so the failover loop can try a sibling; with none left, retry shortly.
 
         unlike the synchronous path -- where a timeout might mean "the pod is running your tool", so
         retrying risks a double execution -- the pod had only to acknowledge before starting work.
-        silence there means it is not there.
+        silence there means it is not there, and the call did not run: TOOL_NOT_READY, never the
+        TOOL_UNAVAILABLE the hub serves as "no such tool".
         """
         catalog = await _registered_catalog(_LONG)
         nats = _Nats(accept=RequestError("no responders available"))
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, make_authed_request())
 
-        assert nats.replies[0].error_code == "TOOL_UNAVAILABLE"
+        assert nats.replies[0].error_code == "TOOL_NOT_READY"
 
     @pytest.mark.asyncio
     async def test_an_unacknowledged_call_fails_over_to_a_sibling_pod(self) -> None:
@@ -327,6 +329,22 @@ class TestWhenTheOtherEndDoesNotPlayAlong:
 
         attempted = {call["subject"].path for call in nats.request_raw_calls}
         assert len(attempted) == 2, f"failover did not try a second endpoint: {attempted}"
+
+    @pytest.mark.asyncio
+    async def test_a_call_no_endpoint_accepts_answers_not_ready(self) -> None:
+        """both replicas silent past the accept window: retry shortly, not "no such tool".
+
+        cobalt prod, 2026-10-31: two replicas of one tool pod shared one endpoint, neither
+        acknowledged within the accept window, and the caller was answered TOOL_UNAVAILABLE, which
+        the hub serves as 404. The call never started, so it is safe to retry: TOOL_NOT_READY.
+        """
+        catalog = await _registered_catalog(_LONG, pods=("pod-1", "pod-2"))
+        nats = _Nats(accept=TimeoutError("accept window elapsed"))
+        await _dispatch(make_proxy(catalog, namespace=_NS), nats, make_authed_request())
+
+        assert len(nats.request_raw_calls) == 2
+        assert nats.replies[0].success is False
+        assert nats.replies[0].error_code == "TOOL_NOT_READY"
 
     @pytest.mark.asyncio
     async def test_a_pod_that_refuses_the_subject_is_not_retried_elsewhere(self) -> None:
@@ -559,7 +577,7 @@ class TestDeliveringToTheAgent:
         await _dispatch(make_proxy(catalog, namespace=_NS), nats, self._long_request(result_subject=subject))
 
         assert len(nats.published) == 1
-        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_UNAVAILABLE"
+        assert json.loads(nats.published[0][1])["error_code"] == "TOOL_NOT_READY"
 
     @pytest.mark.asyncio
     async def test_a_spend_denial_travels_the_delivery_route_too(self) -> None:

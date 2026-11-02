@@ -8,6 +8,18 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### registry: a call no endpoint took answers `TOOL_NOT_READY`, not `TOOL_UNAVAILABLE`
+
+**Fixed:** when every endpoint the caller may use failed to take a call (no responders, the connection closed, the
+durable result waiter could not open, or no acknowledgement inside the accept window) the registry answered
+`TOOL_UNAVAILABLE`, the code for a tool with nothing to route to, which the hub serves as 404. On cobalt prod
+(2026-10-31) both replicas of a tool pod shared one endpoint, neither acknowledged a scheduled `lsf_ready` call
+within the 10 s accept window, and the caller was told the tool did not exist. The call never started in any of
+these cases, so a retry is safe: the registry now answers `TOOL_NOT_READY` (the hub's 503, retry shortly), with the
+transport detail in the message. Failover to a sibling endpoint is unchanged, and a tool that is not in the catalog
+or has no routable endpoint still answers `TOOL_UNAVAILABLE`. A caller that retried on `TOOL_UNAVAILABLE` for a pod
+being replaced should retry on `TOOL_NOT_READY` too.
+
 ### core: a shared Arrow result kept past its close stays in the store's count until it is freed
 
 **Fixed:** a claimed result's tables (`MappedSegment.tables`) are its files' pages, zero-copy, and stay valid after

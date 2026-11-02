@@ -300,7 +300,8 @@ class TestFailoverStaysWithTheOwner:
         answer = await _call(proxy, nc, _AGENT_A)
 
         assert answer.success is False
-        assert answer.error_code == "TOOL_UNAVAILABLE"
+        # the owner's replica did not take the call, which never ran: retry shortly
+        assert answer.error_code == "TOOL_NOT_READY"
         assert _forwarded(nc) == [a_dead]
 
 
