@@ -16,9 +16,11 @@ field, and an unsent count is the server's one, so every declarer's start moved 
 whatever an operator had raised it to. `ensure_object_store` sent its own count (default 1) the same way, and an
 owner's `ensure_kv_bucket(replicas=N)` reconciled a bucket live on more servers down to N. Now every update of a
 live stream sends the larger of its live count and the one declared, a declaration that asks for none keeps the live
-count, and the declaration remembered for a restoration after a NATS restart carries the count sent. A new stream
-declared without a count is still created on one server (the local stack's single-node NATS). Lowering a stream's
-replicas is now an operator's step, never a side effect of a start.
+count, an owner's recreate of a file bucket on memory creates it on no fewer servers than it was live on, and the
+stream declaration remembered for a restoration after a NATS restart carries the count sent. Every KV open (the
+locks, counters, leases, collections, epochs and IAM stores) updates a live bucket only from its live config, so none
+lowers it. A new stream declared without a count is still created on one server (the local stack's single-node
+NATS). Lowering a stream's replicas is now an operator's step, never a side effect of a start.
 
 **Added:** `replicas` on `NatsClient.ensure_jetstream_stream` and `NatsClient.kv_bucket` (passed through to the
 bucket it creates); both refuse a count below one with `ValueError`. `ensure_object_store`'s `replicas` now

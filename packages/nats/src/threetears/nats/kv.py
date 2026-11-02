@@ -991,6 +991,9 @@ async def reconcile_kv_stream(
                 f"ensure_kv_bucket(owns_bucket=True, drop_file_storage=True) once; otherwise migrate "
                 f"its entries first."
             )
+        # created again on no fewer servers than it was live on: replicas are only ever raised
+        if _normalised("num_replicas", live.num_replicas) > _normalised("num_replicas", config.num_replicas):
+            config = dataclasses.replace(config, num_replicas=live.num_replicas)
         live, recreated = await _recreate_owned_kv_stream(
             js=js, full_name=full_name, config=config, differences=differences
         )
