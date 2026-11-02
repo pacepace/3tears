@@ -56,6 +56,16 @@ each statement is bounded by the session's statement timeout. On a direct Postgr
 ``idle_in_transaction_session_timeout`` for itself, so the server ends a stalled one. The broker
 refuses ``SET``, so leave it unset there.
 
+**A write whose writer is gone is abandoned.** Given the lease every writer holds while it writes
+(:class:`WriterLease`), :meth:`ScopeEpochs.settled` abandons a write in progress whose lease is free:
+its writer let go (its run ended, a failure included) or died and the lease lapsed. A live writer,
+however slow, renews its lease and is never abandoned; nor is a write with a data transaction still
+open, which holds the version row (the abandon takes it without waiting, as ``begin`` does). The abandon
+is a commit of what the write left: every scope it touched, and the data's version, move to its number
+(so the rows it committed are named by an epoch of their own, never by the one before), and ``writing``
+clears. A writer that comes back is refused by the fence, as one a later write superseded. Without a
+lease nothing is abandoned, and readers keep what they hold until the next write commits.
+
 **Scopes a write touched are recorded as it writes.** :meth:`ScopeEpochs.touch`, in the transaction
 of each data write, marks the scopes that write changed as pending. ``commit`` moves every pending
 scope, the ones an abandoned write left included: rows a write committed before it died are then
@@ -71,7 +81,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import asyncpg
-from threetears.observe import get_logger
+from threetears.observe import contain, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.collections.caller_transaction import CallerTransaction
@@ -85,6 +95,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
     collection_for_schema,
 )
+from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
@@ -94,6 +105,7 @@ __all__ = [
     "EpochRecordBusyError",
     "EpochSnapshot",
     "ScopeEpochs",
+    "WriterLease",
     "scope_epochs_collection",
     "scope_epochs_schema",
 ]
@@ -168,6 +180,21 @@ def scope_epochs_collection(name: str = SCOPE_EPOCHS_TABLE) -> type[SchemaBacked
 
 
 @dataclass(frozen=True)
+class WriterLease:
+    """the lease every writer of the epochs holds from before its ``begin`` until its write ends.
+
+    Its being free is what tells a write in progress whose writer is gone from a slow one: the holder
+    renews it while it writes, and lets it go (or stops renewing, and it lapses) once it does not.
+
+    :ivar lease: the lease factory the writers hold it through
+    :ivar key: the lease's name
+    """
+
+    lease: KVLease
+    key: str
+
+
+@dataclass(frozen=True)
 class EpochSnapshot:
     """every scope's epoch, and the data's version, as read at one moment.
 
@@ -211,6 +238,9 @@ class ScopeEpochs:
         sized to the write's lease; None sets nothing (through the L3 broker, whose own idle sweep
         bounds it and which refuses ``SET``)
     :ptype idle_timeout: timedelta | None
+    :param writer: the lease every writer holds while it writes; a write in progress whose lease is
+        free is abandoned (the module's "A write whose writer is gone is abandoned"). None abandons nothing
+    :ptype writer: WriterLease | None
     :raises ValueError: when ``idle_timeout`` is not positive
     """
 
@@ -220,11 +250,13 @@ class ScopeEpochs:
         *,
         page_size: int = DEFAULT_PAGE_SIZE,
         idle_timeout: timedelta | None = None,
+        writer: WriterLease | None = None,
     ) -> None:
         if idle_timeout is not None and idle_timeout <= timedelta(0):
             raise ValueError(f"idle_timeout must be positive; got {idle_timeout}")
         self._collection = collection
         self._page_size = page_size
+        self._writer = writer
         self._table = quote_identifier(collection.table_name)
         self._idle_ms = None if idle_timeout is None else max(1, int(idle_timeout.total_seconds() * 1000))
 
@@ -287,10 +319,15 @@ class ScopeEpochs:
         The :class:`Unsettled` names every scope's epoch and the scopes the write has touched, so a reader may
         read a scope the write has not touched while it runs (a touch commits with the write's first rows there).
 
+        A write in progress whose writer is gone (its :class:`WriterLease` free) is abandoned first, and the
+        snapshot read again.
+
         :return: the snapshot when no write is in progress
         :rtype: EpochSnapshot | Unsettled
         """
         snapshot = await self.snapshot()
+        if snapshot.writing is not None and await self._writer_gone() and await self._abandon(snapshot.writing):
+            snapshot = await self.snapshot()
         settled: EpochSnapshot | Unsettled = snapshot
         if snapshot.writing is not None:
             since = snapshot.writing_since
@@ -305,7 +342,13 @@ class ScopeEpochs:
             log.log(
                 logging.WARNING if stalled else logging.INFO,
                 "a write is in progress; readers keep what they hold"
-                + ("; it has run so long it has most likely died, and the next write supersedes it" if stalled else ""),
+                + (
+                    "; it has run so long it has most likely died, and the next write supersedes it"
+                    if stalled and self._writer is None
+                    else "; it has run long, and its writer still holds its lease"
+                    if stalled
+                    else ""
+                ),
                 extra={
                     "extra_data": {
                         "table": self._collection.table_name,
@@ -315,6 +358,55 @@ class ScopeEpochs:
                 },
             )
         return settled
+
+    async def _writer_gone(self) -> bool:
+        """whether the writers' lease is free, so no writer writes now; False without a lease, or when it cannot be read.
+
+        :return: True only when the lease was read and is free
+        :rtype: bool
+        """
+        if self._writer is None:
+            return False
+        try:
+            return await self._writer.lease.held(self._writer.key) is None
+        except Exception as exc:  # a lease that cannot be read proves nothing about its writer: the write stands
+            contain(exc, log=log, what="the writers' lease could not be read; the write in progress stands")
+            return False
+
+    async def _abandon(self, version: int) -> bool:
+        """abandon write ``version``, whose writer is gone: commit what it left, in a transaction of its own.
+
+        The version row is locked without waiting: a data transaction still open (of this write, or a ``begin``
+        racing) holds it, and then the writer is not provably gone and nothing is done. Under the lock the write must
+        still be the one in progress; a later ``begin`` superseded it otherwise.
+
+        :param version: the write in progress
+        :ptype version: int
+        :return: True when it was abandoned
+        :rtype: bool
+        """
+        abandoned = False
+        try:
+            async with self._collection.required_l3_pool.acquire() as conn, CallerTransaction(conn):
+                row = await conn.fetchrow(
+                    f"SELECT writing FROM {self._table} WHERE scope = $1 FOR UPDATE NOWAIT",  # noqa: S608 - the owner's table name
+                    WHOLE,
+                )
+                if row is not None and row["writing"] is not None and int(row["writing"]) == version:
+                    log.warning(
+                        "a write in progress is abandoned: its writer's lease is free, so no writer writes it; the "
+                        "scopes it touched move to its version, and its writer, should it come back, is refused",
+                        extra={"extra_data": {"table": self._collection.table_name, "version": version}},
+                    )
+                    await self.commit(version, (), conn=conn)
+                    abandoned = True
+        except asyncpg.exceptions.LockNotAvailableError:
+            # NOSILENT: logged at info; a data transaction still open holds the row, so its writer may yet write
+            log.info(
+                "a write whose writer's lease is free still has a transaction open; it is not abandoned",
+                extra={"extra_data": {"table": self._collection.table_name, "version": version}},
+            )
+        return abandoned
 
     async def begin(self, *, conn: Any) -> int:
         """take the next version for a write, and record the write as in progress.

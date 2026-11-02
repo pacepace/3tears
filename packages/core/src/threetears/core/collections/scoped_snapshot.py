@@ -2046,6 +2046,9 @@ class ScopedSnapshot:
         # writing with short gaps between its writes kept from ever finishing. Emptied when NATS lost the
         # snapshot, whose chunks and pointers went with it. Only the event loop reads or writes it.
         self._rebuilt: dict[str, int] = {}
+        # the epochs L3 recorded when this replica was last brought up to date beside a write in progress
+        # (_rebuild_beside_write): until a commit moves them there is nothing more to read
+        self._beside: dict[str, int] | None = None
         self._changed = asyncio.Event()
         self._ready = asyncio.Event()
         self._progress = _Progress()
@@ -4940,6 +4943,14 @@ class ScopedSnapshot:
         while result is None and attempts < _REBUILD_ATTEMPTS:
             attempts += 1
             before = await self._settled() if self._settled is not None else None
+            if isinstance(before, Unsettled) and only is None and before.epochs is not None:
+                # every scope, beside a write that records what it touched: stale is fine, missing is not. None: the
+                # write committed meanwhile, and the next attempt rebuilds as any rebuild does
+                if self._ready.is_set() and self._beside == dict(before.epochs):
+                    # ready beside this same write already: nothing has committed since, so nothing to read again
+                    break
+                result = await self._rebuild_beside_write(before, reason=reason, flow=flow, done=done)
+                continue
             if isinstance(before, Unsettled):
                 if only is not None and before.epochs is not None:
                     # a write that records what it touched: the scopes it has not touched are read while it runs
@@ -4951,6 +4962,112 @@ class ScopedSnapshot:
         if result is None and attempts >= _REBUILD_ATTEMPTS:
             self._wait(flow, f"{reason}; writes kept committing while it read; trying again")
         return result
+
+    async def _rebuild_beside_write(
+        self, before: Unsettled, *, reason: str, flow: str, done: dict[str, int]
+    ) -> list[str] | None:
+        """rebuild every scope while a write is in progress, so a copy that has none is ready: stale, never missing.
+
+        A replica with no copy that waited on a write in progress served nothing for as long as it ran, and a write
+        whose writer died kept it so until the next write (replay of 2026-11-01: a pod restarted beside write 1348,
+        open for 6365 s, and waited on it, then on 1349, which a statement timeout ended). Each scope is taken at the
+        epoch L3 last committed for it:
+
+        - a scope the write has not touched is read from L3 and published, as :meth:`_publish_untouched` does: whole
+          at its epoch when it is still untouched there after its read;
+        - a scope the write has touched is served from the copy NATS holds of it (a pointer this replica can load),
+          committed and whole, however old, and that pointer is left as it is: a read of rows the write has written
+          in part never replaces a committed copy, so no replica shows less than before;
+        - a touched scope NATS holds no copy of is read from L3 as it stands (stale, or written in part), published
+          at its committed epoch: there was nothing to serve of it, and less than nothing cannot be shown.
+
+        The index gains the scopes published, never whole: once the write commits the next rebuild reads every scope
+        whose epoch moved (and only those), and writes it whole. The copy is ready once every scope L3 holds is in
+        it; a scope a commit moved meanwhile is left for that rebuild.
+
+        :param before: the writer's record before any scope was read, naming every scope's epoch and the touched ones
+        :ptype before: Unsettled
+        :param reason: why, for the status
+        :ptype reason: str
+        :param flow: the control flow it runs in, whose wait it records
+        :ptype flow: str
+        :param done: scope -> the epoch a rebuild published it at; this adds to it
+        :ptype done: dict[str, int]
+        :return: the scopes published or served from NATS; ``None`` when the write committed meanwhile
+        :rtype: list[str] | None
+        """
+        epochs = before.epochs or {}
+        l3_scopes = await self._l3_scopes()
+        # a touched scope L3 no longer holds (a clear in progress emptied it) is still served from its copy in NATS
+        scopes = sorted(l3_scopes | {scope for scope in before.pending if scope in self._seen})
+        held = {
+            scope
+            for scope in scopes
+            if scope in before.pending and scope in self._seen and self._loadable(self._seen[scope])
+        }
+        kept = {scope: self._seen[scope] for scope in held if self._ahead(self._seen[scope], self._applied.get(scope))}
+        todo = [
+            scope
+            for scope in scopes
+            if scope not in held and scope in l3_scopes and not self._rebuilt_at(scope, int(epochs.get(scope, 0)), done)
+        ]
+        published: list[str] = []
+        left: list[str] = []
+        committed = False
+        retire: dict[str, int] = {}
+        with self._doing(SnapshotPhase.REBUILDING_FROM_L3, f"rebuilding beside a write: {reason}", total=len(scopes)):
+            self._progress = replace(self._progress, scopes_done=len(scopes) - len(todo))
+            failed = await self._apply_pointers(kept) if kept else {}
+            left.extend(sorted(failed))
+            for scope in todo:
+                epoch = int(epochs.get(scope, 0))
+                rows = await self._read_scope(scope)
+                after = await self._settled() if self._settled is not None else None
+                if not isinstance(after, Unsettled) or after.epochs is None:
+                    # the write committed: what it moved is read at its new epoch by the next attempt
+                    committed = True
+                    break
+                if int(after.epochs.get(scope, 0)) != epoch:
+                    left.append(scope)
+                    continue
+                async with self._local:
+                    moved, _ = await self._publish_locked(scope, epoch, rows)
+                if moved is not None:
+                    retire[scope] = epoch
+                done[scope] = epoch
+                published.append(scope)
+                self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+                log.info(
+                    "scoped snapshot %s: rebuilt scope %r from L3 beside a write (%d of %d)%s",
+                    self._name,
+                    scope,
+                    self._progress.scopes_done,
+                    self._progress.scopes_total,
+                    "; the write has touched it, so it is served as L3 holds it until the write commits"
+                    if scope in before.pending or scope in after.pending
+                    else "",
+                    extra={"extra_data": {"scope": scope, "epoch": epoch}},
+                )
+        if published:
+            await self._update_index(add=published)
+        await self._sweeper.retire_older_many(retire)
+        if committed:
+            return None
+        if left:
+            self._wait(flow, f"{reason}; scopes {left} moved while read beside a write in progress ({before.reason})")
+        else:
+            await self._apply_published()
+            self._beside = dict(epochs)
+            if not self._ready.is_set():
+                log.warning(
+                    "scoped snapshot %s: ready beside write in progress (%s); the scopes it touched (%d) are served "
+                    "from their last committed copy, or as L3 holds them, until it commits",
+                    self._name,
+                    before.reason,
+                    len(before.pending),
+                )
+                self._become_ready(SnapshotSource.L3)
+        return [*published, *(scope for scope in held if scope not in failed)]
 
     async def _publish_untouched(
         self, only: set[str], before: Unsettled, *, reason: str, done: dict[str, int]

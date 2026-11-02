@@ -4776,3 +4776,86 @@ async def test_a_write_beginning_while_a_page_is_fetched_ahead_still_stops_the_r
     assert any("the rebuild stops reading" in r.getMessage() for r in caplog.records)
     assert l3.fetches <= 3, f"the read went on after the write began: {events}"
     await snapshot.stop()
+
+
+# ----------------------------------------------------------------------
+# a fresh replica beside a write that never ends (replay of 2026-11-01, 2026-11-02): a pod restarted while write 1348
+# was open, NATS holding only the scopes published since it lost the snapshot, waited on that write and served
+# nothing. Stale is fine; missing is not. It rebuilds beside the write instead
+# ----------------------------------------------------------------------
+
+
+async def test_a_fresh_replica_beside_a_write_in_progress_is_ready_and_serves_every_scope() -> None:
+    """no snapshot in NATS, a write open that has touched TX: DE is served at its committed epoch, TX as L3 holds it,
+    and once the write commits TX moves on to its new epoch."""
+    snapshot, pointers, _, l3 = _snapshot()
+    l3.rows[1]["votes"] = 2
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[0]["votes"] = 99  # the open write's rows so far
+
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+
+    assert _held_votes(snapshot, "DE") == [2], "a scope the write never touched was not served"
+    assert _held_votes(snapshot, "TX") == [99], "a scope the write touched was missing"
+    l3.epochs["TX"] = 2
+    l3.writing, l3.pending = False, None  # it commits
+    await _until(
+        lambda: "enr.s.TX" in pointers.entries and json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2,
+        what="TX published at the write's epoch once it committed",
+    )
+    await _until(lambda: _indexed(pointers) == {"DE", "TX"}, what="the index whole")
+    assert snapshot.status().phase is SnapshotPhase.READY, snapshot.status()
+    await snapshot.stop()
+
+
+async def test_a_fresh_replica_beside_a_write_serves_a_touched_scopes_committed_copy_never_less() -> None:
+    """NATS still holds TX's committed copy (votes 1) while the write in progress has rewritten TX's rows in part: the
+    fresh replica serves the committed copy, and the pointer in NATS is left as it was, so no replica shows less."""
+    writer, pointers, store, l3 = _snapshot()
+    await _started(writer, pointers)
+    await writer.stop()
+    # NATS lost the snapshot and holds only TX, published since
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    committed = pointers.entries["enr.s.TX"][0]
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[0]["votes"] = 99
+
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+
+    assert _held_votes(replica, "TX") == [1], "a touched scope's committed copy in NATS was not what was served"
+    assert _held_votes(replica, "DE") == [2]
+    assert pointers.entries["enr.s.TX"][0] == committed, "a read of a write in progress replaced the committed copy"
+    await replica.stop()
+
+
+async def test_a_fresh_replica_beside_a_clear_in_progress_still_serves_the_committed_copy_it_has() -> None:
+    """the write in progress has emptied TX in L3 (a clear): the replica serves NATS's committed TX, not nothing."""
+    writer, pointers, store, l3 = _snapshot()
+    await _started(writer, pointers)
+    await writer.stop()
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}
+    l3.rows[:] = [row for row in l3.rows if row["state"] != "TX"]
+
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+
+    assert _held_votes(replica, "TX") == [1], "a scope a clear in progress emptied in L3 was served as less"
+    assert _held_votes(replica, "DE") == [2]
+    await replica.stop()
+
+
+async def test_a_fresh_replica_beside_a_write_that_records_nothing_still_waits() -> None:
+    """a writer that does not say what it touched gives nothing to read beside it: the replica waits, as before."""
+    snapshot, _, _, l3 = _snapshot()
+    l3.writing, l3.pending = True, None
+
+    await snapshot.start()
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+
+    assert not snapshot.is_ready
+    await snapshot.stop()
