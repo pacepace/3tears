@@ -150,10 +150,11 @@ class TestTheKairoPlanResolves:
 
     def test_watch_opens_with_the_weakest_margin(self):
         watch = _rendered(_slot("watch"))
-        # Re-pinned from 10.8 and 4.2: the worst case is read on the multiplicity-corrected interval (12.6), not the
-        # plain 95% one (10.8), and the plan page names the interval beside it.
+        # Re-pinned from 10.8 and 4.2: the worst case is read on the multiplicity-corrected interval, not the plain 95%
+        # one (10.8), and the plan page names the interval beside it. Re-pinned again from 12.6 and 2.4: the bounded
+        # rate interval (shape 65) moved that corrected bound to 12.85.
         assert watch.startswith(
-            "The weakest margin: qwen3.8-flash (A)'s worst drop, 12.6 points, sits 2.4 points inside the margin on "
+            "The weakest margin: qwen3.8-flash (A)'s worst drop, 12.8 points, sits 2.2 points inside the margin on "
             "character adherence (v2)"
         )
 
@@ -189,8 +190,9 @@ class TestTheKairoPlanResolves:
             pytest.skip(f"headless Chromium cannot launch: {reason}")
         text, errors = rendered(R5_PAGE, "() => document.body.innerText")
         assert not errors
-        # "4.2 points inside" re-pinned to 2.4: the reference page's weakest margin is read on the corrected interval.
-        for figure in ("27–28%", "by 3.4 to 10.8 points", "2.4 points inside", "85.3%", "91.5%", "$1.89", "55%", "76%"):
+        # "4.2 points inside" re-pinned to 2.4: the reference page's weakest margin is read on the corrected interval;
+        # then to 2.2, when the bounded rate interval (shape 65) moved that bound from -12.59 to -12.85.
+        for figure in ("27–28%", "by 3.4 to 10.8 points", "2.2 points inside", "85.3%", "91.5%", "$1.89", "55%", "76%"):
             assert figure in text, figure
         assert "about 50%" in text
         assert _figure("cost.uplift_range", "pct") in text
