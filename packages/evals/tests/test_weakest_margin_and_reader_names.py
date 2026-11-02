@@ -132,7 +132,7 @@ def test_a_reading_interval_end_that_is_not_finite_gives_no_margin() -> None:
 
 def test_a_reading_read_on_its_corrected_interval_is_weaker_than_the_floor_that_copies_its_plain_one() -> None:
     # Re-pinned from a tie: the floor and the reading used to share the plain interval's worst end (-10.79), so the
-    # reading won the tie. The reading's worst case is now the corrected interval's (-12.59), so it is the weaker of
+    # reading won the tie. The reading's worst case is now the corrected interval's (-12.85), so it is the weaker of
     # the two outright, and the floor still reads the plain one at the nominal level, as a floor does.
     found = weakest_margin(_input("r5"))
     assert found is not None and found.kind == "margin" and found.corrected
