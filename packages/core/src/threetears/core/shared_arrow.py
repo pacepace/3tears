@@ -63,6 +63,7 @@ import contextlib
 import fcntl
 import functools
 import hashlib
+import mmap
 import multiprocessing
 import os
 import pickle
@@ -113,6 +114,7 @@ __all__ = [
     "SharedVersion",
     "epochs_version",
     "plain_name",
+    "private_bytes",
     "query_batches",
     "read_version",
 ]
@@ -527,10 +529,60 @@ def _shared_files(path: Path, mapped: Mapping[tuple[int, int], Any]) -> dict[tup
     return {inode: table for inode, table in mapped.items() if inode in held}
 
 
+class _Pin:
+    """a shared lock on a directory, let go when the last mapped file holding it is freed: what keeps a store
+    counting a directory's files while any buffer taken from them lives (:class:`MappedTables`, ``pin=True``).
+
+    Each mapped file's finalizer holds this object, so it is freed (and the lock let go) when the mapping holding it
+    is closed and the last buffer over each of its files is freed, whatever thread frees it. It takes no lock of its
+    own: a finalizer may run inside any code, a store's own locked sections included.
+
+    :param descriptor: the open lock file holding the shared lock
+    :ptype descriptor: int
+    """
+
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, descriptor: int) -> None:
+        weakref.finalize(self, os.close, descriptor)
+
+
+def _held(_pin: _Pin) -> None:
+    """a mapped file's finalizer: it held ``_pin`` while the file was mapped, and lets it go now.
+
+    :param _pin: the pin
+    :ptype _pin: _Pin
+    :return: nothing
+    :rtype: None
+    """
+
+
+def _map_pinned(path: str, pin: _Pin | None) -> Any:
+    """one Arrow IPC file mapped read-only through a Python ``mmap``, whose buffers keep the map alive: the map, and
+    with it ``pin``, is freed only once no buffer over the file lives (a table, a slice, a cast that shares them).
+
+    :param path: the file
+    :ptype path: str
+    :param pin: the directory's lock, held while the file is mapped; None for none
+    :ptype pin: _Pin | None
+    :return: the file's table
+    :rtype: pa.Table
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        region = mmap.mmap(descriptor, 0, access=mmap.ACCESS_READ, trackfd=False)
+    finally:
+        os.close(descriptor)
+    if pin is not None:
+        weakref.finalize(region, _held, pin)
+    return ipc.open_file(pa.BufferReader(pa.py_buffer(region))).read_all()
+
+
 class MappedTables:
     """Arrow tables memory-mapped read-only from a directory: every process mapping it shares its pages, and no row
-    is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, never its
-    lock or its files' place in the store.
+    is copied into this one. Close it when done; a table kept past :meth:`close` keeps its pages mapped, and, mapped
+    with ``pin=True``, its directory's shared lock too, so a store keeps counting the files until the last buffer
+    over them is freed. Without ``pin`` it keeps neither the lock nor its files' place in the store.
 
     A version made from another (``base=``) holds most of its files as hard links to the other's: given the other's
     mapped files (``reuse``, its :attr:`by_inode`), a file that is the same file (device and inode) is taken from it as
@@ -547,12 +599,22 @@ class MappedTables:
     :param reuse: another mapping's files by (device, inode) (:attr:`by_inode`), taken as they are where they are
         the same files
     :ptype reuse: Mapping[tuple[int, int], pa.Table] | None
+    :param pin: hold the directory's shared lock (when it has a lock file) until :meth:`close` AND the last buffer
+        over its files is freed, not only until :meth:`close`; its files are mapped through a Python ``mmap``
+        (:func:`_map_pinned`), zero-copy as ever
+    :ptype pin: bool
     :ivar name: the directory's name
     :ivar tables: table name -> the mapped table
     """
 
     def __init__(
-        self, name: str, path: Path, *, lock: bool, reuse: Mapping[tuple[int, int], Any] | None = None
+        self,
+        name: str,
+        path: Path,
+        *,
+        lock: bool,
+        reuse: Mapping[tuple[int, int], Any] | None = None,
+        pin: bool = False,
     ) -> None:
         self.name = name
         self._descriptor: int | None = None
@@ -561,6 +623,11 @@ class MappedTables:
             if self._descriptor is None:
                 raise LookupError(f"shared Arrow {name!r} is gone")
         self._maps: list[Any] = []
+        #: the pinned directory's lock, freed once this is closed and the last buffer over its files is
+        pinned: _Pin | None = None
+        if pin:
+            descriptor = _locked(path, fcntl.LOCK_SH)
+            pinned = None if descriptor is None else _Pin(descriptor)
         #: each file's table, by the file's device and inode, for a later version's mapping to take (``reuse``)
         self._by_inode: dict[tuple[int, int], Any] = {}
         held = reuse or {}
@@ -576,7 +643,9 @@ class MappedTables:
                 if table is not None:
                     inode = (device, entry.inode())
                     piece = held.get(inode)
-                    if piece is None:
+                    if piece is None and pin:
+                        piece = _map_pinned(entry.path, pinned)
+                    elif piece is None:
                         mapped = pa.memory_map(entry.path, "r")
                         self._maps.append(mapped)
                         piece = ipc.open_file(mapped).read_all()
@@ -770,6 +839,54 @@ class SegmentSlot:
         :raises SharedArrowFullError: when they would pass the slot's ``max_bytes``; nothing is kept
         :raises FileExistsError: when the slot was written already
         """
+        with self._staged() as (staging, target):
+            written = _write_tables(staging, tables, lambda: self.max_bytes)
+            os.rename(staging, target)
+        return written
+
+    @contextlib.contextmanager
+    def writing(self) -> Iterator[Callable[[Mapping[str, Any]], int]]:
+        """write the result's tables in steps (in the worker): each step's tables written as it is given, so the
+        worker holds one step's rows at a time, never the whole result's. Staged as :meth:`write` stages, the slot's
+        ``max_bytes`` bounding every step together, and renamed into the slot whole as the block ends; a block that
+        raises keeps nothing, and one whose steps wrote no table leaves the slot unwritten (its claim is None).
+
+        :return: a context manager yielding the step: ``write(tables)`` (as :meth:`write` takes them), returning the
+            bytes the step wrote
+        :rtype: Iterator[Callable[[Mapping[str, Any]], int]]
+        :raises SharedArrowFullError: when the steps together would pass the slot's ``max_bytes``; nothing is kept
+        :raises ValueError: when a step names a table an earlier step wrote
+        :raises FileExistsError: when the slot was written already
+        """
+        written = 0
+        names: set[str] = set()
+        with self._staged() as (staging, target):
+
+            def step(tables: Mapping[str, Any]) -> int:
+                nonlocal written
+                again = sorted(names & set(tables))
+                if again:
+                    raise ValueError(f"a slot's tables are written once each, and {again} were written already")
+                names.update(tables)
+                made = _write_tables(staging, tables, lambda: self.max_bytes - written)
+                written += made
+                return made
+
+            yield step
+            if names:
+                os.rename(staging, target)
+            else:
+                remove_tree(staging, log=log, what="an empty result's staging directory")
+
+    @contextlib.contextmanager
+    def _staged(self) -> Iterator[tuple[Path, Path]]:
+        """a staging directory for the slot's result, held under an exclusive lock while it is written: the caller
+        writes into it and renames it to the target; one the caller leaves (it raised) is removed.
+
+        :return: a context manager yielding the staging directory and the slot's directory
+        :rtype: Iterator[tuple[Path, Path]]
+        :raises FileExistsError: when the slot was written already
+        """
         _require_snapshot_extra()
         segments = Path(self.root) / _SEGMENTS_DIR
         target = segments / self.slot_id
@@ -780,15 +897,13 @@ class SegmentSlot:
         (staging / _LOCK_FILE).touch()
         descriptor = _locked(staging, fcntl.LOCK_EX)
         try:
-            written = _write_tables(staging, tables, lambda: self.max_bytes)
-            os.rename(staging, target)
+            yield staging, target
         except BaseException:
             remove_tree(staging, log=log, what="a failed result's staging directory")
             raise
         finally:
             if descriptor is not None:
                 os.close(descriptor)
-        return written
 
 
 @dataclass(frozen=True)
@@ -917,7 +1032,9 @@ class SharedLease:
 
 class MappedSegment(MappedTables):
     """a worker's result, claimed by the serving process and mapped here: its files are the store's until
-    :meth:`close`, which removes them (their pages go once nothing maps them).
+    :meth:`close` and until the last buffer taken from them is freed (``pin``): a table kept past the close (a slice
+    of it, a cast sharing its buffers) keeps the files, and the store counts them, so ``max_bytes`` bounds what the
+    store's files hold in memory however long a caller keeps a result. The first sweep after both removes them.
 
     :ivar nbytes: the bytes its files hold
     :ivar files: table name -> its Arrow IPC file, for a publish that links it as a part (:class:`Parts`) while
@@ -925,7 +1042,7 @@ class MappedSegment(MappedTables):
     """
 
     def __init__(self, slot_id: str, path: Path, on_close: Callable[[str], object]) -> None:
-        super().__init__(slot_id, path, lock=False)
+        super().__init__(slot_id, path, lock=False, pin=True)
         self._on_close: Callable[[str], object] | None = on_close
         self.nbytes = _directory_bytes(path)
         self.files: Mapping[str, Path] = MappingProxyType(
@@ -933,7 +1050,8 @@ class MappedSegment(MappedTables):
         )
 
     def close(self) -> None:
-        """unmap the result and remove its files. Harmless twice.
+        """let the result go: its files are removed at once when no table taken from it is held, else by the first
+        sweep after the last is freed. Harmless twice.
 
         :return: nothing
         :rtype: None
@@ -1465,6 +1583,12 @@ class SharedArrowStore:
         # renamed out of their names under the lock (nothing opens them again); their files go after it
         for path in gone:
             remove_tree(path, log=log, what="a retired shared Arrow directory (a later sweep retries it)")
+        with self._state:
+            # a closed result's bytes count in a publish's room until its files are gone (a sweep after the last
+            # table taken from it is freed, for one kept past its close)
+            for slot_id in [each for each in self._claimed_bytes if each not in self._claimed]:
+                if not (self._segments / slot_id).exists():
+                    del self._claimed_bytes[slot_id]
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
@@ -1479,10 +1603,8 @@ class SharedArrowStore:
         """
         with self._state:
             self._claimed.discard(slot_id)
+        # its bytes are forgotten by the sweep that removes its files: a publish's room grows only once they are gone
         self.sweep()
-        # counted until the sweep removed its files: a publish's room grows only once they are gone
-        with self._state:
-            self._claimed_bytes.pop(slot_id, None)
 
     def _committed_bytes(self) -> int:
         """the bytes the directory may be holding: what its files hold, except an open slot's and a hand-off's being
@@ -1561,7 +1683,8 @@ class SharedArrowStore:
                 elif not (entry / _LOCK_FILE).exists():
                     _retire(entry, gone)
             elif name not in self._slots and name not in self._claimed:
-                _retire(entry, gone)
+                # a result closed while a table taken from it is still held keeps its shared lock (``pin``)
+                _retire_unless_held(entry, gone)
 
     def _sweep_handoffs(self, gone: list[Path]) -> None:
         """retire every hand-off released that no worker maps, and every staging directory no write of this process
@@ -1935,9 +2058,11 @@ class JobResult:
     segment: MappedSegment | None
 
 
-def _private_bytes() -> int:
+def private_bytes() -> int:
     """this process's private memory: its anonymous resident pages (Linux ``RssAnon``), never the shared files it
-    maps; its peak resident memory where there is no ``/proc`` (a laptop, which counts mapped pages too).
+    maps; its peak resident memory where there is no ``/proc`` (a laptop, which counts mapped pages too). What a
+    worker over a store is judged by (:class:`SharedArrowPool`'s ``private_bytes``): its resident memory counts every
+    shared page it maps, the store's files among them, which are not its own and which replacing it frees nothing of.
 
     :return: bytes
     :rtype: int
@@ -2006,7 +2131,7 @@ def _run_job(
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- sent back and raised in the serving process, which handles it as the job's own failure
         contain(exc, log=log, what="a shared Arrow job failed; raised in the serving process", level="warning")
         error = _sendable(exc)
-    return value, error, _private_bytes(), os.getpid()
+    return value, error, private_bytes(), os.getpid()
 
 
 def _spawned() -> int:

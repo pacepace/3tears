@@ -19,7 +19,7 @@ and that work reads, or produces, more data than you want copied per process.
 | File format | Arrow IPC file format, uncompressed, one file per table, or per part for a table given as `Parts`. A mapped column is the file's bytes. |
 | Bound | `max_bytes` on the store covers every version, result and hand-off together. Set it below the volume's `sizeLimit`: a pod whose `emptyDir` passes its `sizeLimit` is evicted. |
 | What is charged to the pod | The files' pages, once (tmpfs pages count against the pod's memory limit), plus each process's private memory. |
-| Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed or its job ends without a claim. A new store clears what no live process holds. |
+| Cleanup | By state, never by time: a version goes when it is not current and nobody holds it; a result goes when it is closed and no table taken from it lives, or its job ends without a claim. A new store clears what no live process holds. |
 | Blocking calls | `publish`, `publish_query`, `claim`, `sweep`, `reserve`, `discard`, `hand`, `release`, `handing`, a lease's `release`, a segment's `close`, a reader's `read` and `SharedSnapshot.publish` write, scan, map or remove files (most also sweep the directory): call them from a thread (`asyncio.to_thread`), never on the event loop. `SharedArrowPool.run` does this for you, and lets go of what a caller that stops waiting was handed. |
 | Shared files | A version published from a `base` hard-links the files it does not rewrite: they exist once, and the store counts them once. |
 | Platform | Linux and macOS (`flock`, `mmap`). PSS measurements need Linux. |
@@ -237,8 +237,16 @@ async def caller(pool) -> None:
 - A slot reserved while a version is being published takes its room from that publish, never from the bound: the
   publish is refused (`SharedArrowFullError`) rather than pass `max_bytes`. A refused slot is logged.
 - A job given a slot may write nothing: `result.segment` is then `None`.
-- Close the segment when done. Tables taken from it stay valid while it is open; one kept after `close` keeps its
-  pages mapped until it is dropped, but its files are already gone from the store's count.
+- A worker may write its result in steps (`with slot.writing() as write: write({...}); write({...})`), so it holds one
+  step's rows at a time; the slot's `max_bytes` bounds the steps together, and the result is the slot's only as the
+  block ends. A step naming a table an earlier one wrote is refused.
+- Close the segment when done. Tables taken from it are its files' pages (zero-copy), valid after `close` too: one
+  kept after `close` (or a slice of it, or anything sharing its buffers) keeps its files in the store, counted
+  against `max_bytes`, until the last buffer is freed; the first sweep after that removes them. So `max_bytes` bounds
+  what results hold in memory however long a caller keeps them, and a result held too long refuses the next publish
+  (`SharedArrowFullError`) rather than pass the bound.
+- `private_bytes()` (same module) is the private memory a worker is judged by: anonymous resident pages, never the
+  shared files it maps. Judge any worker of your own over the store by it, not by resident memory.
 
 ## Hand a worker its input tables without a pickle
 

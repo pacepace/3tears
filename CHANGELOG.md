@@ -8,6 +8,47 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### core: a shared Arrow result kept past its close stays in the store's count until it is freed
+
+**Fixed:** a claimed result's tables (`MappedSegment.tables`) are its files' pages, zero-copy, and stay valid after
+`close`; but `close` removed the files at once, so a table kept past it held its pages in memory outside the
+store's count and outside `max_bytes`. On cobalt prod (2026-11-01) the reports pod held up to 2.9 GiB of shared
+memory so, results of exports kept alive while a refresh held the cycle collector off, beside a store already near
+its bound: the container passed its 16 GiB limit. A result's files are now mapped through a Python `mmap` whose
+buffers keep it alive, each holding the result's shared lock (`MappedTables(pin=True)`, which `MappedSegment`
+uses): the store keeps a closed result whose tables (or a slice of one, or anything sharing its buffers) are still
+alive, counted against `max_bytes` (a publish, slot or hand-off that would pass it is refused), and the first sweep
+after the last buffer is freed removes it. A result with nothing kept goes at `close`, as before. No row is copied.
+Chosen over copying a result out before its close, which would double every export's bytes for a moment and move
+them into the serving process's private memory, where no bound covers them either. A caller that holds many results
+at once (exports of every state staged side by side) now meets `SharedArrowFullError` where it passed the bound
+unseen: size `max_bytes` for them. New keyword `pin` on `MappedTables`.
+
+**Added:** `threetears.core.shared_arrow.private_bytes()`: a process's private memory (Linux `RssAnon`, never the
+shared files it maps), what `SharedArrowPool` already judged its workers by, public for a consumer judging a worker
+of its own (the reports pod's apply worker was retired 227 times on cobalt prod by its resident memory, which counts
+the store's mapped pages). New public name.
+
+**Added:** `SegmentSlot.writing()`: a worker writes its result in steps, each step's tables written as it is given,
+the slot's `max_bytes` bounding every step together, renamed into the slot whole as the block ends (nothing kept if
+it raises; no result if no step wrote a table). The reports pod's apply worker writes a change of every state so, a
+slice of states at a time, where it held every state's rows to write them at once. New public method.
+
+### datasources: `read_all` reads a relation again when it changed while it was read
+
+**Fixed:** `read_all` raised `IncompleteReadError` ("changed while it was being read", or "counted N rows and the
+read returned M") the first time a source rewrote the relation between its count before the read and its proof
+after, where `read_partitions` reads a moved batch again (0.89, above). The reports pod reads LSF's `ok` runs whole
+through it while the warehouse rewrites the table, and a run so failed held the LSF pull back until the next one
+(cobalt prod, 2026-11-01). A read whose closing proof fails is now read again, counted and fingerprinted afresh, up
+to `CHANGED_READ_ATTEMPTS` (3) reads in all, each re-read logged at warning; a relation still moving on the third
+read raises the same error as before, logged at error. What is returned is still one whole state of the relation.
+The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again. A one-time change
+during a read is no longer an error; the tests that changed the relation once now change it on every read.
+
+**Added:** `CHANGED_READ_ATTEMPTS` in `threetears.datasources.query_client`, the bound `read_partitions` already
+used, now shared. New public name.
+
 ### core: a scope read from L3 pages in the order its index serves, and fetches its next page while one is typed
 
 **Fixed:** A catch-up on cobalt prod (2026-11-01) read IA from L3 at about 1.8 s a 999-row page: 434k rows, 435
