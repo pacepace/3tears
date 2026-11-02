@@ -8,6 +8,16 @@ packages (bumped in lock-step).
 
 ## v0.89.0 -- 2026-10-31
 
+### core: a sweep never takes an open slot's staging directory
+
+**Fixed:** `SegmentSlot`'s write makes its staging directory, then its lock file, then locks it, and the serving
+process's sweep runs on other threads meanwhile (reserve, claim, discard, release, close). A sweep between those
+steps retired the directory (no lock file yet), or locked and renamed it away (no lock taken yet) and the write went
+on unlocked; the worker's export then failed with `FileNotFoundError` and its states fell back to the slow L3
+republish (the local replay of 2026-11-01: 3 times in 40 minutes, 8 states each). A sweep now leaves every staging
+directory of a slot still open, as it does an open hand-off's; a discarded or claimed slot's leftover staging still
+goes. A write whose staging directory cannot be locked raises `RuntimeError` instead of writing unlocked.
+
 ### nats: a declaration never lowers a live stream's or bucket's replicas
 
 **Fixed:** a NATS audit of cobalt prod (2026-11-02) found 56 of its 58 streams on one server. `ensure_jetstream_stream`

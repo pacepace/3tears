@@ -886,6 +886,7 @@ class SegmentSlot:
         :return: a context manager yielding the staging directory and the slot's directory
         :rtype: Iterator[tuple[Path, Path]]
         :raises FileExistsError: when the slot was written already
+        :raises RuntimeError: when its staging directory could not be locked
         """
         _require_snapshot_extra()
         segments = Path(self.root) / _SEGMENTS_DIR
@@ -896,14 +897,16 @@ class SegmentSlot:
         staging.mkdir()
         (staging / _LOCK_FILE).touch()
         descriptor = _locked(staging, fcntl.LOCK_EX)
+        if descriptor is None:
+            # never written unlocked: a sweep would take it from under the write
+            raise RuntimeError(f"slot {self.slot_id}'s staging directory {staging.name} could not be locked")
         try:
             yield staging, target
         except BaseException:
             remove_tree(staging, log=log, what="a failed result's staging directory")
             raise
         finally:
-            if descriptor is not None:
-                os.close(descriptor)
+            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -1673,6 +1676,11 @@ class SharedArrowStore:
             if name.startswith(_RETIRING_PREFIX):
                 gone.append(entry)
             elif name.startswith(_STAGING_PREFIX):
+                if _slot_of(name) in self._slots:
+                    # an open slot's: its writer makes it, then its lock file, then locks it, and a sweep between
+                    # those steps took it from under the write (the local replay of 2026-11-01). It goes with the
+                    # slot's claim or discard, as an open hand-off's staging goes with the hand-off
+                    continue
                 # a writer still writing holds its lock; one that died, or whose write failed, does not
                 descriptor = _locked(entry, fcntl.LOCK_EX)
                 if descriptor is not None:

@@ -1123,3 +1123,71 @@ class TestAResultWrittenInSteps:
         with slot.writing() as write:
             write({})
         assert store.claim(slot) is None
+
+
+class TestASweepNeverTakesAnOpenSlotsStaging:
+    """a slot's staging directory is made, given its lock file and locked in three steps, and the serving process
+    sweeps on other threads meanwhile (reserve, claim, discard, release, close). A sweep in between retired the
+    directory, or locked and renamed it away, and the worker's export failed with FileNotFoundError (the local replay
+    of 2026-11-01: 3 times in 40 minutes, 8 states each falling back to the slow L3 republish). An open slot's staging
+    is never swept, as an open hand-off's is not."""
+
+    def test_a_sweep_between_the_staging_directory_and_its_lock_file_leaves_the_write_whole(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slot = store.reserve(1 << 20)
+        touch = Path.touch
+
+        def touch_after_a_sweep(path: Path, *args: Any, **kwargs: Any) -> None:
+            if path.name == ".lock" and path.parent.name.startswith(".staging-"):
+                store.sweep()
+            touch(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "touch", touch_after_a_sweep)
+
+        slot.write({TABLE: _table(1, rows=10)})
+
+        segment = store.claim(slot)
+        assert segment is not None, "the swept write left no result"
+        assert segment.tables[TABLE].num_rows == 10
+        segment.close()
+
+    def test_a_sweep_between_the_lock_file_and_its_lock_leaves_the_staging_directory(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slot = store.reserve(1 << 20)
+        opened = os.open
+        swept: list[bool] = []
+
+        def open_after_a_sweep(path: Any, *args: Any, **kwargs: Any) -> int:
+            # the writer opens its lock file to lock it: the sweep runs after the file is made, before the lock
+            lock = Path(path)
+            if not swept and lock.name == ".lock" and lock.parent.name.startswith(".staging-"):
+                swept.append(True)
+                store.sweep()
+                assert lock.parent.is_dir(), "the sweep took an open slot's staging directory"
+            return opened(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", open_after_a_sweep)
+
+        slot.write({TABLE: _table(1, rows=10)})
+
+        assert swept, "no sweep ran between the lock file and the lock"
+        segment = store.claim(slot)
+        assert segment is not None
+        assert segment.tables[TABLE].num_rows == 10
+        segment.close()
+
+    def test_a_discarded_slots_staging_directory_is_still_removed(self, store: SharedArrowStore) -> None:
+        slot = store.reserve(1 << 20)
+        segments = store.root / "segments"
+        # a writer that died with its lock file made, and one that died before it
+        (segments / f".staging-{slot.slot_id}-deadbeef").mkdir()
+        (segments / f".staging-{slot.slot_id}-deadbeef" / ".lock").touch()
+        (segments / f".staging-{slot.slot_id}-0badf00d").mkdir()
+        store.sweep()
+        assert len(_hidden(store)) == 2, "an open slot's staging was swept"
+
+        store.discard(slot)
+
+        assert _hidden(store) == []
