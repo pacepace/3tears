@@ -17,8 +17,8 @@ durable result waiter could not open, or no acknowledgement inside the accept wi
 within the 10 s accept window, and the caller was told the tool did not exist. The call never started in any of
 these cases, so a retry is safe: the registry now answers `TOOL_NOT_READY` (the hub's 503, retry shortly), with the
 transport detail in the message. Failover to a sibling endpoint is unchanged, and a tool that is not in the catalog
-or has no routable endpoint still answers `TOOL_UNAVAILABLE`. A caller that retried on `TOOL_UNAVAILABLE` for a pod
-being replaced should retry on `TOOL_NOT_READY` too.
+or has no routable endpoint still answers `TOOL_UNAVAILABLE`. A caller that retried `TOOL_UNAVAILABLE` at once for a
+pod being replaced now meets `TOOL_NOT_READY` there, the code a tool also answers while it loads.
 
 ### core: a shared Arrow result kept past its close stays in the store's count until it is freed
 
