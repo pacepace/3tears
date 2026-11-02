@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.90.0 -- 2026-11-02
+
 ### core: a settling commit evicts its keys from L1 in one write
 
 **Fixed:** a commit's settle evicted each key it wrote from the SQLite L1 in a transaction of its own (`BEGIN
