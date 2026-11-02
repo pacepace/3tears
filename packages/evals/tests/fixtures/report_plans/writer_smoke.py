@@ -12,11 +12,18 @@ written::
 
 ``--dry`` drives the same path on scripted models that write nothing, so every refusal before a model is called shows
 up for free. The live run reads ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (the judge) from the
-environment, quotes each arm through the engine's own quote first, and stops before anything is sent when the
-quote's ceiling or the reports' budgets could pass ``--cap-usd``.
+environment.
 
-The three cases are minted onto the held-out side of this process's own in-memory bank (``held_out_fraction`` 0.99, which puts r1, r3 and r4 there),
-because the promotion read reads held-out cases only. Nothing outside this process holds that bank.
+**How ``--cap-usd`` holds.** The host's ceilings are on, and each arm is launched naming ``max_cost_usd``, an equal
+share of the cap, which the engine enforces on the run's whole spend, its judge's included. The engine's quote is
+read first and printed: where it prices an arm above that share, the smoke stops before anything is sent. The toy
+host's rate card prices no Claude model, so for the writer the quote answers unpriced, and the engine admits an
+unpriced arm only because the launch names its ``max_cost_usd``. Inside that, each report is also capped by its own
+budget (:data:`BUDGET`), and the smoke refuses a cap the reports' budgets could pass.
+
+The three cases are minted onto the held-out side of this process's own in-memory bank (``held_out_fraction`` 0.99,
+which puts r1, r3 and r4 there), because the promotion read reads held-out cases only. Nothing outside this process
+holds that bank.
 """
 
 from __future__ import annotations
@@ -112,7 +119,7 @@ def _keys() -> dict[str, str]:
 
 def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> OpsHost:
     """The toy host with the writer registered and, live, its judge and writer on real models."""
-    fixture = writer_host(settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}))
+    fixture = writer_host(settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": True}))
     fixture.host.eval_host.storage.save_template(SCORED)
     # The package's own describer for its own Model, so a failed turn says what the provider said.
     launch = replace(
@@ -193,8 +200,9 @@ async def _seed(host: OpsHost) -> CaseSetRef:
     return ref
 
 
-def _launched(case_set: CaseSetRef, skill: AnalystSkill) -> dict[str, Any]:
+def _launched(case_set: CaseSetRef, skill: AnalystSkill, *, max_cost_usd: float) -> dict[str, Any]:
     return {
+        "max_cost_usd": max_cost_usd,
         "template_id": SCORED.id,
         "scope_id": CALLER.scope_id,
         "subject_id": "the report writer",
@@ -236,15 +244,27 @@ async def smoke(*, dry: bool, cap_usd: float, out: Path | None) -> dict[str, Any
     host = await asyncio.to_thread(lambda: _host(dry=dry, out=out, skills={variant.digest: variant}))
     case_set = await _seed(host)
     arms = {"shipped": shipped, "inert variant": variant}
-    quotes = {label: await quote_launch(host.launch, **_launched(case_set, skill)) for label, skill in arms.items()}
-    reports = len(arms) * len(CASES)
-    if not dry and reports * BUDGET.usd > cap_usd:
+    share = cap_usd / len(arms)
+    quotes = {
+        label: await quote_launch(host.launch, **_launched(case_set, skill, max_cost_usd=share))
+        for label, skill in arms.items()
+    }
+    over = [
+        f"{label} quoted ${verdict.price.predicted_usd:.2f}"
+        for label, quote in quotes.items()
+        for verdict in quote.arms
+        if verdict.price.predicted_usd is not None and verdict.price.predicted_usd > share
+    ]
+    reports = len(CASES)
+    if over or reports * BUDGET.usd > share:
         raise SystemExit(
-            f"writer_smoke.py: {reports} reports at ${BUDGET.usd} each could pass the ${cap_usd} cap; nothing sent"
+            f"writer_smoke.py: an arm could pass its ${share:.2f} share of the ${cap_usd} cap "
+            f"({'; '.join(over) or f'{reports} reports at ${BUDGET.usd} each'}); nothing sent"
         )
     runs: dict[str, EvalRun] = {}
     for label, skill in arms.items():
-        runs[label] = await _run(host, _launched(case_set, skill), deadline_s=60.0 if dry else 3 * 3600.0)
+        launched = _launched(case_set, skill, max_cost_usd=share)
+        runs[label] = await _run(host, launched, deadline_s=60.0 if dry else 3 * 3600.0)
     line = await asyncio.to_thread(
         campaign_create,
         host.eval_host,

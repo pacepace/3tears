@@ -142,7 +142,7 @@ def test_a_reading_read_on_its_corrected_interval_is_weaker_than_the_floor_that_
 
 def test_the_weakest_keys_render_in_their_lines_units() -> None:
     said = "{weakest.arm}: {weakest.value} against {weakest.criterion} at {weakest.threshold}, gap {weakest.margin}"
-    # Re-pinned from -10.8 and a gap of 4.2: the worst case is the corrected interval's (-12.59), 2.4 from the margin.
+    # The worst case is the corrected interval's lower bound (-12.85), 2.15 inside the -15 margin.
     assert render(said, _input("r5"), {}) == (
         "qwen3.8-flash (A): -12.8 against the margin on character adherence (v2) at -15, gap 2.2"
     )

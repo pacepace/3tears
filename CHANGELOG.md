@@ -28,7 +28,8 @@ refused. A writer cell's deadline is the writer's own, not the 600 s default. `w
 **Changed:** the in-loop editor reads its rubric from the editor text its session started with. Its pass bar is the
 shipped share of the top score (11 of 14) at that rubric's item count, rounded up, and a review states it
 (`Review.pass_total`). The shipped skill reviews exactly as before. A refusal for a host that launches no such kind
-names what the operator registers in its reason; its remedy carries no code names. The `evals` tool's served bytes
+names what the operator registers in its reason; its remedy names none of the host's setup (no registry, contract or
+`launchable_*` name), only, where one helps meanwhile, the actions a caller can take. The `evals` tool's served bytes
 move with the four new actions, so a host pinning that tool's schema sees it change.
 
 ### evals: a late criterion names what it applies to; a paired compare row states its cases
