@@ -409,7 +409,8 @@ def kind_template_create(
     :param filled_by: How its cases reach it (``freeze``, ``mint``), which the remedy for a taken name says.
     :ptype filled_by: str
     :param enabled_by: What the host's operator registers and declares to launch the kind, named in the refusal's
-        reason; the remedy stays the operator's ask, with no code names.
+        reason; the remedy stays the operator's ask, with none of the host's setup names (no registry, contract or
+        ``launchable_*`` name), though a ``meanwhile`` clause may name the actions a caller can take.
     :ptype enabled_by: str
     :param meanwhile: What a caller can do until the operator does, when anything.
     :ptype meanwhile: str | None

@@ -48,8 +48,8 @@ def test_a_host_launching_no_writer_kind_is_refused_naming_what_its_operator_ena
     assert WRITER_KIND not in host.launch.kinds
     with pytest.raises(ValidationFailedError, match="launches no 'report_writer' kind") as refused:
         writer_template_create(host, _CREATE, CALLER.scope_id)
-    reason, remedy = str(refused.value), refused.value.remedy
-    assert all(
-        name in reason for name in ("launchable_report_writer_kind", "WRITER_KIND_CONTRACT", "WRITER_KIND_MEASURES")
-    )
-    assert "operator" in remedy and "launchable" not in remedy, remedy
+    reason, remedy = refused.value.message, refused.value.remedy
+    names = ("launchable_report_writer_kind", "WRITER_KIND_CONTRACT", "WRITER_KIND_MEASURES")
+    assert all(name in reason for name in names), reason
+    assert remedy is not None and "operator" in remedy, remedy
+    assert not any(name in remedy for name in names) and "launchable" not in remedy, remedy
