@@ -27,6 +27,7 @@ sentinel row, these tests fail.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 from uuid import uuid7
@@ -941,6 +942,71 @@ class TestARowTheKeyCannotReachIsNotLost:
         assert len(rows) == len(dataset)
 
 
+class TestARelationRewrittenWhileReadIsReadAgain:
+    """a relation its source rewrites while it is read is read again, the second reading of the read that moved
+    being no part of the next: up to three reads, as ``read_partitions`` reads a batch whose part moved (LSF's ``ok``
+    runs, read whole by the reports pod while the warehouse rewrote the table, 2026-11-01). Whatever is returned is
+    still one whole state of the relation; a relation still moving on the third read raises as it always has."""
+
+    @pytest.mark.asyncio
+    async def test_a_relation_swapped_once_mid_read_is_read_again_and_returned_whole(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
+        settled = [r for r in dataset if r["jurisdiction"] != "s02"] + [_row("s99", "2026-01")]
+
+        def _swap_once(fake: _PagingWarehouse) -> None:
+            if fake.fingerprints == 1:
+                fake.replace_rows(settled)
+
+        warehouse.on_fingerprint = _swap_once
+        caplog.set_level(logging.WARNING)
+
+        rows = await _read(warehouse, page_size=2)
+
+        assert sorted(r["jurisdiction"] for r in rows) == sorted(r["jurisdiction"] for r in settled)
+        assert warehouse.fingerprints == 4, "the read that moved, then one read of the settled relation"
+        assert "changed while it was read; reading it again" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_relation_that_grew_between_its_count_and_its_pages_is_read_again(self) -> None:
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
+
+        def _grow_once(fake: _PagingWarehouse) -> None:
+            if fake.fingerprints == 1:
+                fake.replace_rows(fake.current_rows() + [_row("s07", "2026-01")])
+
+        warehouse.on_fingerprint = _grow_once
+
+        rows = await _read(warehouse, page_size=2)
+
+        assert len(rows) == 7
+        assert warehouse.fingerprints == 3, "the count disagreed, so the read that moved took no second reading"
+
+    @pytest.mark.asyncio
+    async def test_a_relation_moving_on_every_read_gives_up_after_three_with_the_same_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
+
+        def _grow_every_time(fake: _PagingWarehouse) -> None:
+            # after every reading: each read counts the relation, and a row lands before its pages
+            fake.replace_rows(fake.current_rows() + [_row(f"t{fake.fingerprints:02d}", "2026-01")])
+
+        warehouse.on_fingerprint = _grow_every_time
+        caplog.set_level(logging.WARNING)
+
+        with pytest.raises(IncompleteReadError, match="MORE than the count arrived"):
+            await _read(warehouse, page_size=2)
+
+        assert warehouse.fingerprints == 3, "three reads, each taking its first reading"
+        assert len(warehouse.pages) >= 3 * 3
+        assert "changed during every read" in caplog.text
+
+
 class TestARelationThatChangedUnderTheReadIsRefused:
     """the case a row COUNT cannot see, and the reason the check is a fingerprint.
 
@@ -960,15 +1026,18 @@ class TestARelationThatChangedUnderTheReadIsRefused:
         dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
         warehouse = _PagingWarehouse(dataset)
 
-        def _swap_one_row_after_the_first_reading(fake: _PagingWarehouse) -> None:
+        def _swap_one_row_after_each_first_reading(fake: _PagingWarehouse) -> None:
             # exactly one out, exactly one in: the count is untouched, which is
-            # precisely what made this invisible before.
-            if fake.fingerprints == 1:
+            # precisely what made this invisible before. After the first reading of
+            # every read, so each read again meets a relation moving under it too.
+            if fake.fingerprints % 2 == 1:
+                kept = [r for r in fake.current_rows() if r["jurisdiction"] != "s02"]
+                swapped_in = _row(f"s9{fake.fingerprints}", "2026-01")
                 fake.replace_rows(
-                    [r for r in fake.current_rows() if r["jurisdiction"] != "s02"] + [_row("s99", "2026-01")]
+                    kept + [swapped_in] if len(kept) < len(fake.current_rows()) else kept[1:] + [swapped_in]
                 )
 
-        warehouse.on_fingerprint = _swap_one_row_after_the_first_reading
+        warehouse.on_fingerprint = _swap_one_row_after_each_first_reading
 
         with pytest.raises(IncompleteReadError, match="changed while it was being read"):
             await _read(warehouse, page_size=2)

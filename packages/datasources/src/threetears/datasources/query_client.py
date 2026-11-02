@@ -111,6 +111,7 @@ __all__ = [
     "DatasourceQueryRequest",
     "DatasourceQueryResponse",
     "DatasourceQueryResult",
+    "CHANGED_READ_ATTEMPTS",
     "IncompleteReadError",
     "RelationFingerprintRequest",
     "RelationFingerprintResult",
@@ -1560,6 +1561,12 @@ BUSY_BACKOFF_SECONDS: Final = 0.5
 
 _DEFAULT_PAGE_SIZE: Final[int] = 500
 
+#: the most times a bulk read is made when its relation changed while it was read (:func:`read_all`; a batch of
+#: parts in ``partitioned_read.read_partitions``): the first read and two re-reads. A source rewrites a relation in
+#: one upload, so the re-read after an upload lands on a settled relation; one still moving on the third read is being
+#: written continuously, and the read fails as it always has
+CHANGED_READ_ATTEMPTS: Final = 3
+
 
 class IncompleteReadError(RuntimeError):
     """a paged read could not be shown to have returned every row.
@@ -1608,9 +1615,14 @@ async def read_all(
 
     The readings and the pages are not one transaction, and no portable way to
     ask for that exists across the admitted engines. So a relation written during
-    the read is REPORTED rather than serialised around: on a changing relation
-    there is no whole relation to return, and this function promises the whole
-    relation.
+    the read is never returned: it is READ AGAIN, counted and fingerprinted afresh,
+    up to :data:`CHANGED_READ_ATTEMPTS` reads in all (each re-read logged at
+    warning), and a relation still moving on the last read is REPORTED rather than
+    serialised around (logged at error, raised): on a changing relation there is
+    no whole relation to return, and this function promises the whole relation.
+    A source that rewrites a table in one upload (the LSF ``ok`` runs a reports
+    pod reads, 2026-11-01) settles before the re-read. Only the closing proof's
+    failures are read again; every guard the pages raise from is final.
 
     Everything below is still here because the readings say only THAT rows are
     missing or changed. These say WHICH mechanism lost them, which is what an
@@ -1705,18 +1717,40 @@ async def read_all(
     filters = _Filters.of(where, where_in)
     if filters.reads_nothing:
         return []
-    before = await _fingerprint(client, datasource_name, relation, key, filters)
-    rows = await _pages(
-        client,
-        datasource_name,
-        columns=columns,
-        relation=relation,
-        key=key,
-        filters=filters,
-        page_size=page_size,
-        max_pages=max_pages,
-    )
-    return await _proven(client, datasource_name, relation, key, rows, before, filters)
+    for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
+        before = await _fingerprint(client, datasource_name, relation, key, filters)
+        rows = await _pages(
+            client,
+            datasource_name,
+            columns=columns,
+            relation=relation,
+            key=key,
+            filters=filters,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
+        try:
+            return await _proven(client, datasource_name, relation, key, rows, before, filters)
+        except IncompleteReadError as exc:
+            # the closing proof failed: the relation was counted or fingerprinted otherwise than it was read
+            if attempt == CHANGED_READ_ATTEMPTS:
+                log.error(
+                    "a relation changed during every read of it",
+                    extra={"extra_data": {"relation": relation, "attempts": CHANGED_READ_ATTEMPTS, "error": str(exc)}},
+                )
+                raise
+            log.warning(
+                "a relation changed while it was read; reading it again",
+                extra={
+                    "extra_data": {
+                        "relation": relation,
+                        "attempt": attempt,
+                        "attempts": CHANGED_READ_ATTEMPTS,
+                        "error": str(exc),
+                    }
+                },
+            )
+    raise AssertionError("unreachable: the last attempt returns or raises")  # pragma: no cover
 
 
 async def read_counted(

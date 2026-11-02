@@ -34,6 +34,7 @@ from typing import Any, Final, TypeVar
 from threetears.observe import get_logger
 
 from threetears.datasources.query_client import (
+    CHANGED_READ_ATTEMPTS,
     RESULT_TOO_LARGE,
     DatasourceQueryClient,
     DatasourceQueryError,
@@ -192,10 +193,9 @@ _BATCH_ROWS: Final = 50_000
 #: the most page boundaries one statement may answer: under the hub's row cap
 _MAX_BOUNDARIES: Final = 990
 
-#: the most times a batch is read when one of its parts changed while it was read: the first read and two
-#: re-reads. A part's source rewrites it in one upload, so the re-read after an upload lands on a settled part;
-#: a part still moving on the third read is being written continuously, and the read fails as it always has
-_CHANGED_READ_ATTEMPTS: Final = 3
+#: the most times a batch is read when one of its parts changed while it was read: ``read_all``'s own bound
+#: (:data:`~threetears.datasources.query_client.CHANGED_READ_ATTEMPTS`)
+_CHANGED_READ_ATTEMPTS: Final = CHANGED_READ_ATTEMPTS
 
 
 def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int) -> tuple[str, list[Any]]:

@@ -267,13 +267,15 @@ class TestReadAllTakesSetAndTypedFilters:
     async def test_a_group_that_changed_under_the_read_is_refused(self) -> None:
         rows = [r for r in _rows() if r["contest"] is not None]
         warehouse = _SqlWarehouse(rows)
-        added = {**rows[0], "state_code": "TX", "run_id": 101, "geo_id": "99", "geo_level": "cd"}
+        written = 0
 
-        def write_once(w: _SqlWarehouse) -> None:
-            w.after_fingerprint = None
-            w.insert([added])
+        def write_each_time(w: _SqlWarehouse) -> None:
+            # after every reading, so the read meets a relation still moving on every read of it
+            nonlocal written
+            written += 1
+            w.insert([{**rows[0], "state_code": "TX", "run_id": 101, "geo_id": f"9{written}", "geo_level": "cd"}])
 
-        warehouse.after_fingerprint = write_once
+        warehouse.after_fingerprint = write_each_time
 
         with pytest.raises(IncompleteReadError):
             await read_all(

@@ -189,8 +189,8 @@ async def test_an_incomplete_part_is_raised_as_itself() -> None:
         nonlocal calls
         calls += 1
         result = await original(*args, **kwargs)
-        if calls == 1:
-            rows.pop(0)  # the part changed after its first reading
+        if rows and rows[0]["state"] == _STATES[0]:
+            rows.pop(0)  # the part changes after every reading: still moving on every read of it
         return result
 
     warehouse.relation_fingerprint = drops_a_row_between_readings  # type: ignore[method-assign]
