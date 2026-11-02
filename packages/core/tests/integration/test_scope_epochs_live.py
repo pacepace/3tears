@@ -595,3 +595,25 @@ async def test_without_a_writer_lease_a_write_in_progress_is_never_abandoned(hel
     refused = await held.epochs.settled()
 
     assert isinstance(refused, Unsettled) and f"write {version}" in refused.reason
+
+
+async def test_a_restarted_pod_abandons_at_its_first_settle_the_write_its_dead_predecessor_left_open(
+    held: _Held,
+) -> None:
+    """replay of 2026-11-01 (attempt 2): the pod running write 1349 died; its restart found the write still open after
+    2125 s and waited on it. The dead pod's lease lapsed with it, so the restarted pod's first settle abandons it."""
+    before = await _write(held, {"state:MD"})
+    lease = _Lease(held=True)
+    dying = _with_writer(held, lease)
+    dead = await _in_transaction(held.pool, lambda conn: dying.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: dying.touch(dead, {"state:VA"}, conn=conn))
+    assert isinstance(await dying.settled(), Unsettled), "the live writer's write was abandoned"
+    lease.holding = False  # the pod dies; its lease lapses with it
+
+    restarted = _with_writer(held, _Lease(held=False))
+    settled = await restarted.settled()
+
+    assert isinstance(settled, EpochSnapshot), (
+        f"the restarted pod still waits on its dead predecessor's write: {settled}"
+    )
+    assert (settled.version, settled.epoch("state:VA"), settled.epoch("state:MD")) == (dead, dead, before)

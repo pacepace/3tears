@@ -4859,3 +4859,25 @@ async def test_a_fresh_replica_beside_a_write_that_records_nothing_still_waits()
 
     assert not snapshot.is_ready
     await snapshot.stop()
+
+
+async def test_a_restarted_replica_beside_a_dead_write_never_waits_and_serves_every_scope() -> None:
+    """replay of 2026-11-01 (attempt 2): a restarted pod found NATS holding only the scopes published since it lost the
+    snapshot and write 1349 open for 2125 s, and sat WAITING for 10 minutes serving nothing. It is ready at once: the
+    scope NATS holds from its committed copy, the rest from L3 at their committed epochs."""
+    first, pointers, store, l3 = _snapshot()
+    await _started(first, pointers)
+    await first.stop()
+    pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+    restarted, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    l3.writing, l3.pending = True, {"TX"}  # the dead write touched TX and never committed
+    l3.rows[0]["votes"] = 99
+
+    await restarted.start()
+    await restarted.wait_ready(timeout=5)
+
+    assert SnapshotPhase.WAITING not in restarted.status().history, restarted.status()
+    assert (_held_votes(restarted, "TX"), _held_votes(restarted, "DE")) == ([1], [2])
+    await asyncio.sleep(0.2)  # several rechecks while the write stays open
+    assert restarted.status().phase is SnapshotPhase.READY, restarted.status()
+    await restarted.stop()
