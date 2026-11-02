@@ -691,8 +691,8 @@
    "verdict": "regressed",
    "delta": -0.07581,
    "interval": [
-    -0.1259,
-    -0.02573
+    -0.1285,
+    -0.01804
    ],
    "p_adjusted": 0.0001211,
    "materiality": "material",
@@ -706,8 +706,8 @@
    "verdict": "regressed",
    "delta": -0.05964,
    "interval": [
-    -0.1009,
-    -0.0184
+    -0.1162,
+    -0.0224
    ],
    "p_adjusted": 0.0002682,
    "materiality": "material",
@@ -721,8 +721,8 @@
    "verdict": "regressed",
    "delta": -0.04738,
    "interval": [
-    -0.08199,
-    -0.01277
+    -0.0867,
+    -0.005744
    ],
    "p_adjusted": 0.0006398,
    "materiality": "material",
@@ -753,8 +753,8 @@
    "verdict": "not_separated",
    "delta": -0.01003,
    "interval": [
-    -0.0219,
-    0.001837
+    -0.0363,
+    0.01596
    ],
    "p_adjusted": 0.1108,
    "materiality": "material",

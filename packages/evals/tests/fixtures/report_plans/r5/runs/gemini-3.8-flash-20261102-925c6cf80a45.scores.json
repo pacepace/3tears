@@ -1,0 +1,105 @@
+{
+  "schema": "plan-scores/1",
+  "run_id": "gemini-3.8-flash-20261102-925c6cf80a45",
+  "input": "r5",
+  "input_digest": "10b16b0b374d4b0fb56bcffb98759d100268e576c70c5a8c6f73cb33b48eea16",
+  "plan_digest": "fd85c0608e0d78bc911500cc5a01355d8d59b0350d891786e910a8392270da7c",
+  "planner": {
+    "model": "google/gemini-3.8-flash",
+    "provider": "openrouter",
+    "settings": {
+      "max_tokens": 16000,
+      "reasoning_max_tokens": null,
+      "reasoning_effort": "low",
+      "strict_output": false,
+      "unsent_reasoning_max_tokens": null
+    },
+    "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+    "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+  },
+  "scorer": "claude-opus-5-5",
+  "rubric": {
+    "version": "v2",
+    "digest": "79f69048ae05ae5e23dd9a1f5563ffa634a84ba5c02e36a6f93e5c35dfe62504"
+  },
+  "items": [
+    {
+      "id": "R2",
+      "verdict": "pass",
+      "reason": "The headline is a decision with an instruction and a reason, it matches the options table's recommended row (September), and the forest's point estimates fall below zero for both candidates, so the first chart does not contradict it.",
+      "quote": "Keep September (P). Both candidates increase cost and degrade character adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R3",
+      "verdict": "pass",
+      "reason": "The lede has two sentences: the strongest supporting fact (adherence and cost against the alternatives), then what a switch would require.",
+      "quote": "A switch would require a candidate that reduces spend without regressing persona adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R4",
+      "verdict": "pass",
+      "reason": "There is no flag; the report-wide disclosures sit once in the confidence clauses, the scoped confounds and short runs once in Watch, and the method-reach caveats once in Method.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R5",
+      "verdict": "fail",
+      "reason": "The first section claims both candidates degrade pass rates, but its forest shows 1017's interval (-5.8 to +1.1) crossing zero, so the chart does not show a degradation for 1017.",
+      "quote": "Both candidates hold within the declared margin but degrade pass rates",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R6",
+      "verdict": "pass",
+      "reason": "Everything above Full results uses reader names for measures, arms and strata; the raw keys (execution_mode, measure_latency) appear only in Method.",
+      "quote": "",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R7",
+      "verdict": "pass",
+      "reason": "Watch opens with the weakest margin under the call (qwen3.8-flash, a 2.2-point gap) and then gives the scoped reasoning-ratio confound and the degraded runs.",
+      "quote": "The weakest margin is qwen3.8-flash (A) with -12.8 points against -15 points on the margin on character adherence (v2) (2.2 points gap).",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R8",
+      "verdict": "fail",
+      "reason": "One measure, the 85.3% pass rate, gets several names above the fold: 'adherence' in the lede, 'pass rate' in the decision, and 'character adherence' in the headline.",
+      "quote": "It maintains 85.3% pass rate at $1.89.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R9",
+      "verdict": "pass",
+      "reason": "The headline, lede, decision block and options table together say what to do (keep September), why (the candidates cost more and lose adherence) and the main risk (qwen3.8-flash's narrow margin) without needing a section.",
+      "quote": "Retain September (P) in production.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R10",
+      "verdict": "fail",
+      "reason": "Next proposes cost tuning of the control, and no result of that test could overturn the call to keep September over the candidates.",
+      "quote": "Test lighter prompt variants or lower reasoning budgets on September (P) to reduce cost without sacrificing persona adherence.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R11",
+      "verdict": "fail",
+      "reason": "The late-aspect clause names a vague condition ('other dimensions were disregarded') that does not say when setting the aspect late would change the call.",
+      "quote": "The primary aspect character adherence (v2) was set on 25 Oct 2026; material only if other dimensions were disregarded.",
+      "labeled_by": "model"
+    },
+    {
+      "id": "R12",
+      "verdict": "fail",
+      "reason": "The lede puts both alternatives 'over $2.41', but $2.41 is 1017's own cost, not a bound both arms exceed.",
+      "quote": "costing $1.89 compared to over $2.41 for both alternatives",
+      "labeled_by": "model"
+    }
+  ],
+  "scored_at": "2026-11-02T14:51:02.968594+00:00"
+}

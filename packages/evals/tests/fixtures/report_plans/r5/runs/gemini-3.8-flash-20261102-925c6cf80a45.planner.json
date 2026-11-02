@@ -1,0 +1,13 @@
+{
+  "model": "google/gemini-3.8-flash",
+  "provider": "openrouter",
+  "settings": {
+    "max_tokens": 16000,
+    "reasoning_max_tokens": null,
+    "reasoning_effort": "low",
+    "strict_output": false,
+    "unsent_reasoning_max_tokens": null
+  },
+  "prompt_digest": "284a7648539d6c27804f2856a3b9df814a1601267cb7bfeb15ba24a31fbfe87e",
+  "contract_digest": "021ca0feb7133523b6436ec470c7cf8ecf4d95b0771d6bc755fa61a56ab8b96e"
+}
