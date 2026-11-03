@@ -909,13 +909,14 @@ editor is one instrument for both arms. Both arms run one writer over the held-o
 
 ```bash
 uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry
-uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 10 --out <dir>
+uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
 ```
 
 `--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run needs an
-owner's approval. Its pass criterion is code's: the read answers `keep`, the primary reads `regressed`, separated, its
-interval below 0, the order check stands, and bounces do not separate (a variant that moves bounces broke the format,
-so the run is void). Anything else fails, and nobody re-rolls.
+owner's approval, and refuses a case directory with fewer than 10 held-out cases. Its pass criterion is code's: both
+arms ran every case, the read answers `keep`, the primary reads `regressed`, separated, its interval below 0, the order
+check stands, and bounces do not separate (a variant that moves bounces broke the format, so the run is void).
+Anything else fails, and nobody re-rolls.
 
 ## What to read next
 

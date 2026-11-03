@@ -7,8 +7,9 @@ provider fails. The criterion's two answers are each checked on a read of the ri
 
 Mutations that turn this file red: the hollow variant changing ``editor.md`` or a third file, or leaving a hollowed
 file longer than one line; the pass asking one order; the read made without the pass; the criterion passing on
-``undecided``, on a primary not separated, on a void primary or on separated bounces; ``--cases`` ignored; the doc's
-commands drifting from the script's.
+``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
+short; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
+directory; the doc's commands drifting from the script's.
 """
 
 from __future__ import annotations
@@ -150,7 +151,9 @@ def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_
         and read.void is None
     )
     assert found.criterion.passed is expected
-    assert [requirement.holds for requirement in found.criterion.requirements][0] is (read.decision == "keep")
+    holds = {requirement.asks: requirement.holds for requirement in found.criterion.requirements}
+    assert holds["both arms ran every case"] is True
+    assert holds["the read answers keep"] is (read.decision == "keep")
 
 
 def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
@@ -191,33 +194,41 @@ def _shaped(read: WriterPromotion, *, decision: str, outcome: str, reason: str, 
 def test_the_criterion_passes_only_on_keep_with_a_separated_regressed_primary(
     dry: tuple[Acceptance, list[object]],
 ) -> None:
-    read = dry[0].read
-    passed = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1))
+    read, runs = dry[0].read, dry[0].result.arms
+    passed = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), runs)
     assert passed.passed
     assert passed.verdict().startswith("PASS: ")
     # A keep reached through a gated reading, beside a primary that did not separate, fails.
-    gated = pass_criterion(_shaped(read, decision="keep", outcome="not_separated", reason="no_margin", high=0.2))
+    gated = pass_criterion(_shaped(read, decision="keep", outcome="not_separated", reason="no_margin", high=0.2), runs)
     assert not gated.passed
     assert "the primary reading reads regressed" in gated.verdict()
     # A regression on too few cases keeps the control, and is no acceptance.
-    few = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="too_few_cases", high=-0.1))
+    few = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="too_few_cases", high=-0.1), runs)
     assert not few.passed
     undecided = _shaped(read, decision="undecided", outcome="not_separated", reason="no_margin", high=0.2)
-    settled = pass_criterion(undecided.model_copy(update={"cases_to_settle": 23}))
+    settled = pass_criterion(undecided.model_copy(update={"cases_to_settle": 23}), runs)
     assert not settled.passed
     assert "About 23 held-out cases like these would settle the primary" in settled.verdict()
     void = _shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1)
-    assert not pass_criterion(void.model_copy(update={"void": "order consistency below 0.7"})).passed
+    assert not pass_criterion(void.model_copy(update={"void": "order consistency below 0.7"}), runs).passed
+    # An arm stopped before its last case reads no acceptance, whatever the read says.
+    stopped = {**runs, HOLLOW: runs[HOLLOW].model_copy(update={"status": "budget_stopped", "n_results": 3})}
+    cut = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), stopped)
+    assert not cut.passed
+    assert "both arms ran every case" in cut.verdict()
 
 
-def test_bounces_that_separate_void_the_acceptance(dry: tuple[Acceptance, list[object]]) -> None:
+@pytest.mark.parametrize("outcome", ["regressed", "improved"])
+def test_bounces_that_separate_either_way_void_the_acceptance(
+    dry: tuple[Acceptance, list[object]], outcome: str
+) -> None:
     read = _shaped(dry[0].read, decision="keep", outcome="regressed", reason="separated", high=-0.1)
     verdicts = [
-        verdict.model_copy(update={"outcome": "regressed"}) if verdict.name == BOUNCES_MEASURE else verdict
+        verdict.model_copy(update={"outcome": outcome}) if verdict.name == BOUNCES_MEASURE else verdict
         for verdict in read.verdicts
     ]
     assert any(verdict.name == BOUNCES_MEASURE for verdict in verdicts)
-    found = pass_criterion(read.model_copy(update={"verdicts": verdicts}))
+    found = pass_criterion(read.model_copy(update={"verdicts": verdicts}), dry[0].result.arms)
     assert not found.passed
     assert "bounces do not separate" in found.verdict()
 
@@ -249,6 +260,26 @@ def test_a_live_run_names_its_cap_and_its_directory() -> None:
         writer_acceptance.main([])
     with pytest.raises(SystemExit):
         writer_acceptance.main(["--cap-usd", "10"])
+
+
+def test_a_live_run_is_refused_before_its_directory_is_made_on_too_few_cases_or_a_missing_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in KEYS:
+        monkeypatch.delenv(name, raising=False)
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="a live run names --cases"):
+        writer_acceptance.main(["--cap-usd", "12", "--out", str(out)])
+    cases = writer_acceptance.default_cases(tmp_path / "cases")
+    with pytest.raises(
+        SystemExit, match=r"puts 7 case\(s\) on the held-out side at 0.99, and a live run reads at least 10"
+    ):
+        writer_acceptance.main(["--cap-usd", "12", "--out", str(out), "--cases", str(cases)])
+    # With enough cases, a missing key is refused before the output directory is made, so the retry is not blocked.
+    monkeypatch.setattr(writer_acceptance, "MIN_LIVE_CASES", 7)
+    with pytest.raises(SystemExit, match="a live run needs ANTHROPIC_API_KEY, OPENROUTER_API_KEY"):
+        writer_acceptance.main(["--cap-usd", "12", "--out", str(out), "--cases", str(cases)])
+    assert not out.exists()
 
 
 def test_the_docs_commands_are_the_scripts_own() -> None:

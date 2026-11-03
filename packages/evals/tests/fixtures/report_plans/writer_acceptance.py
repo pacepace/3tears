@@ -19,13 +19,19 @@ same instrument for both arms and the code measures stay comparable. Then:
 Commands::
 
     uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 10 --out <dir>
+    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
 of its prompt. Nothing is sent and the verdict carries no signal. The live run is the owner's to approve. It reads
 ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (a ``vendor/model`` judge) from the environment, and
-records every writer turn and judge call under ``--out``.
+records every writer turn and judge call under ``--out``. It refuses, before anything is sent, a case directory with
+fewer than 10 cases on the held-out side (design §4), so the default seven run dry only.
+
+**The cap.** ``--pass-usd`` ($2) goes to the pairwise pass; the arms share the rest equally, and each arm's share
+holds its reports and their absolute judging. At ``--cap-usd 12`` over eleven cases each arm gets $5: its reports'
+budgets come to 11 × $0.35 = $3.85, leaving $1.15 for 77 absolute judge calls (about $0.77 on flash). The expected
+spend is about $6 in all; the cap bounds the worst case.
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
 seven fixture snapshots prototype 5 wrote over (Kairo round 2 and six misfits, in four split groups), written as
@@ -51,9 +57,12 @@ from pathlib import Path
 from typing import Any, Final, get_args
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.fixtures.report_plans.writer_smoke import JUDGE as SMOKE_JUDGE
+from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER as SMOKE_WRITER
 from packages.evals.tests.report_writer_support import reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import lay_recording
+from threetears.evals.analysis import EvalSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
@@ -63,20 +72,21 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops import JobStatus, await_job
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, EffortWord, WriterArm, WriterModels
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
 from threetears.evals.schema.turns import TurnReply, TurnText
 
-#: The writer both arms run on: the owner's smoke ruling, Haiku 5.5 on Anthropic's own API.
-WRITER: Final = "claude-haiku-5-5"
+#: The writer both arms run on: the smoke's, the owner-ruled build-and-test ceiling, on Anthropic's own API.
+WRITER: Final = SMOKE_WRITER
 
 #: The provider the writer is built on.
 WRITER_PROVIDER: Final = "anthropic"
 
-#: The fixed scoring judge: another family than the writer, through OpenRouter.
-JUDGE: Final = "google/gemini-3.8-flash"
+#: The fixed scoring judge: the smoke's, of another family than the writer, through OpenRouter.
+JUDGE: Final = SMOKE_JUDGE
 
 #: The writer's thinking effort, the same for both arms.
 EFFORT: Final = "low"
@@ -92,6 +102,9 @@ REQUEST_S: Final = 90.0
 
 #: The share of groups placed on the held-out side: every group of the default cases.
 HELD_OUT_FRACTION: Final = 0.99
+
+#: The fewest held-out cases a live run reads (reset P2 §4).
+MIN_LIVE_CASES: Final = 10
 
 #: What the pairwise pass may spend: its calls are admitted against this before the first is sent.
 PASS_USD: Final = 2.0
@@ -348,14 +361,24 @@ def _interval(verdict: Verdict | None) -> str:
     return f"{low:.3f} to {high:.3f} at {verdict.interval_level}"
 
 
-def pass_criterion(read: WriterPromotion) -> Criterion:
+#: A verdict's reason, as the criterion's table reads it.
+_REASON_WORDS: Final = {
+    "separated": "separated",
+    "no_margin": "not separated",
+    "too_few_cases": "too few cases",
+    "untestable": "untestable",
+}
+
+
+def pass_criterion(read: WriterPromotion, runs: Mapping[str, EvalSummary]) -> Criterion:
     """Decide the pass criterion on a promotion read (reset P2 §4).
 
-    The read must answer ``keep``; its primary reading must read ``regressed``, separated, with its interval below 0;
-    the judge's order check must not void it; and bounces must not separate, since a variant that changes bounces
-    broke the format rather than the writing.
+    Both arms' runs must have completed with a result for every case; the read must answer ``keep``; its primary
+    reading must read ``regressed``, separated, with its interval below 0; the judge's order check must not void it;
+    and bounces must not separate, since a variant that changes bounces broke the format rather than the writing.
 
     :param read: The promotion read of the hollow arm, made with the pass as its ``pairwise_job``.
+    :param runs: Each arm's run summary, by arm.
     :return: The criterion, each requirement decided.
     """
     primary = read.primary
@@ -367,7 +390,13 @@ def pass_criterion(read: WriterPromotion) -> Criterion:
         if reliability is None or consistency is None
         else f"{consistency:.2f} ({reliability.order_consistent} of {reliability.both_orders} cases)"
     )
+    ran = "; ".join(f"{arm} {run.status}, {run.n_results} of {run.n_cases}" for arm, run in runs.items())
     requirements = (
+        Requirement(
+            "both arms ran every case",
+            ran,
+            all(run.status == "completed" and run.n_results == run.n_cases * run.k_runs for run in runs.values()),
+        ),
         Requirement("the read answers keep", read.decision, read.decision == "keep"),
         Requirement(
             "the primary reading reads regressed",
@@ -376,7 +405,9 @@ def pass_criterion(read: WriterPromotion) -> Criterion:
         ),
         Requirement(
             "it separated, its interval below 0",
-            "not read" if primary is None else f"{primary.reason.replace('_', ' ')}, {_interval(primary)}",
+            "not read"
+            if primary is None
+            else f"{_REASON_WORDS.get(primary.reason, primary.reason.replace('_', ' '))}, {_interval(primary)}",
             primary is not None
             and primary.reason == "separated"
             and primary.interval is not None
@@ -452,6 +483,9 @@ class Acceptance:
             yield f"| {arm} | ${arms_share:.2f} | {spent} |"
         pass_cost = "unpriced" if self.report.cost_usd is None else f"${self.report.cost_usd:.2f}"
         yield f"| pairwise pass ({self.report.calls_made} calls) | ${self.pass_usd:.2f} | {pass_cost} |"
+        if self.dry:
+            yield ""
+            yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
         yield ""
         yield self.read.readout
         yield ""
@@ -494,12 +528,40 @@ def judge_provider(model: str) -> str:
     return "openrouter" if "/" in model else "anthropic"
 
 
-def _live_judge(judge: str, out: Path) -> WriterJudge:
-    """The live scoring judge, its calls recorded under ``out``; refused by name when its key is missing."""
-    provider = judge_provider(judge)
-    wanted = {_KEYS[provider], _KEYS[WRITER_PROVIDER]}
+def refuse_missing_keys(judge: str) -> None:
+    """Refuse a live run, by variable, when the writer's key or the judge's is not in the environment."""
+    wanted = {_KEYS[judge_provider(judge)], _KEYS[WRITER_PROVIDER]}
     if missing := sorted(name for name in wanted if not os.environ.get(name)):
         raise SystemExit(f"writer_acceptance.py: a live run needs {', '.join(missing)}; --dry needs none")
+
+
+def held_out_cases(cases_dir: Path, held_out_fraction: float) -> int:
+    """How many of a directory's cases a fresh store puts on the held-out side, each by its split group's point."""
+    return sum(
+        1
+        for case in read_writer_cases(cases_dir)
+        if writer_group_side(case.group or case.name, held_out_fraction) == "held_out"
+    )
+
+
+def refuse_too_few_cases(cases_dir: Path | None, held_out_fraction: float) -> None:
+    """Refuse a live run over fewer than :data:`MIN_LIVE_CASES` held-out cases, before anything is sent."""
+    if cases_dir is None:
+        raise SystemExit(
+            f"writer_acceptance.py: a live run names --cases, at least {MIN_LIVE_CASES} held-out cases; "
+            "the default seven run dry only"
+        )
+    if (held := held_out_cases(cases_dir, held_out_fraction)) < MIN_LIVE_CASES:
+        raise SystemExit(
+            f"writer_acceptance.py: {cases_dir} puts {held} case(s) on the held-out side at {held_out_fraction}, "
+            f"and a live run reads at least {MIN_LIVE_CASES}"
+        )
+
+
+def _live_judge(judge: str, out: Path) -> WriterJudge:
+    """The live scoring judge, its calls recorded under ``out``; refused by name when its key is missing."""
+    refuse_missing_keys(judge)
+    provider = judge_provider(judge)
     from threetears.evals.providers import Model
 
     return Model(judge, provider=provider, api_key=os.environ[_KEYS[provider]], recording=out / "judge.jsonl")
@@ -632,7 +694,7 @@ async def acceptance(
         pass_job=status,
         report=WriterPairwiseReport.model_validate(status.result),
         read=read,
-        criterion=pass_criterion(read),
+        criterion=pass_criterion(read, result.arms),
         cap_usd=cap_usd,
         pass_usd=pass_usd,
         editor_model=editor_model,
@@ -665,6 +727,8 @@ def main(argv: Sequence[str]) -> int:
     if not options.dry:
         if options.out is None or options.cap_usd is None:
             parser.error("a live run names --cap-usd and --out")
+        refuse_too_few_cases(options.cases, options.held_out_fraction)
+        refuse_missing_keys(options.judge)
         # Made before anything is sent, so a directory already there refuses the run rather than its result.
         options.out.mkdir(parents=True, exist_ok=False)
     found = asyncio.run(
