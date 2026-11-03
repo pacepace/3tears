@@ -60,10 +60,11 @@ from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.schema.models import EvalRun, JudgedArtifact
 from threetears.evals.schema.subject import SubjectSnapshot
 
-#: What ``analysis_generate``'s action hands its job (actions/engine.py), and the launch registry entry the writer
-#: harness's host registers (harness/writer_host.py). ``write_report`` and ``report_writer_kind`` stay out until a
-#: caller outside this module imports them; ``tests/test_report_writer_exports.py`` lists each as awaiting one.
-__all__ = ["campaign_report_writer", "launchable_report_writer_kind"]
+#: What ``analysis_generate``'s action hands its job (actions/engine.py), the launch registry entry the writer
+#: harness's host registers (harness/writer_host.py), and the entry point the harness's ``analyse`` writes a report
+#: through (harness/analyse.py). ``report_writer_kind`` stays out until a caller outside this module imports it;
+#: ``tests/test_report_writer_exports.py`` lists it as awaiting one.
+__all__ = ["campaign_report_writer", "launchable_report_writer_kind", "write_report"]
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,15 +11,19 @@ analyst and its editor that write a campaign's page. An eval file imports its na
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
   :class:`MintedWriterCase`, on a :data:`WriterSide`.
 
-Four modules build it, each for one part of a writer eval:
+Five modules build it, each for one part of a writer eval:
 
 - :mod:`~threetears.evals.harness.writer_eval`: the eval, its arms and its result;
+- :mod:`~threetears.evals.harness.analyse`: the writer over a quick eval's result, which ``python -m threetears.evals.harness FILE --write-report MODEL`` runs after the file's evals;
 - :mod:`~threetears.evals.harness.writer_host`: a host that launches report writer arms over a store, beside the
   quick host's runs in it;
 - :mod:`~threetears.evals.harness.writer_turns`: an arm's writer models, replayed from one recording per case, or
   recorded once;
 - :mod:`~threetears.evals.harness.writer_cases`: a writer case frozen into a portable file, read back and minted
   into any scope.
+- :mod:`~threetears.evals.harness.analyse`: the report writer's report on one campaign of the quick path, replayed
+  from its recording with no key, written beside the eval's own report; ``python -m threetears.evals.harness FILE
+  --write-report MODEL`` (:mod:`~threetears.evals.harness.__main__`) runs an eval file, then analyses each result.
 
 This package sits above ``quick``: it composes the quick path with the surfaces above the engine (``ops``,
 ``actions``) and the replay format (``testing``), and nothing in the package imports it. It may import ``schema``,
