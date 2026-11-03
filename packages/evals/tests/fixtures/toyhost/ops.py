@@ -24,12 +24,12 @@ from typing import Final
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host import CompletionClients, HostProfile, MeasureRegistry
 from threetears.evals.ops import (
+    WRITER_KIND_CONTRACT,
     WRITER_KIND_MEASURES,
     AnalysisGeneration,
     OpsHost,
     ReportBudget,
     WriterLimits,
-    writer_kind_contract,
 )
 from threetears.evals.run import Ceilings, LaunchSettings
 from threetears.evals.schema import DEFAULT_JOB_LEASE_S
@@ -60,6 +60,12 @@ def toyhost_model_family(model_id: str) -> str | None:
     return vendor if slash and vendor else None
 
 
+def _writer_seats() -> frozenset[str]:
+    """The seats the writer's contract fills: the judge and the spend ceiling."""
+    assert WRITER_KIND_CONTRACT.seats is not None, "the writer's contract seats its judge"
+    return WRITER_KIND_CONTRACT.seats
+
+
 def toyhost_writer_profile() -> HostProfile:
     """The toy host's profile with the report writer's kind contract on its kinds and its measures on its registry.
 
@@ -69,7 +75,7 @@ def toyhost_writer_profile() -> HostProfile:
     base = toyhost_profile()
     return replace(
         base,
-        kinds=(*base.kinds, writer_kind_contract(host_seats=("reviewer_pool",))),
+        kinds=(*base.kinds, replace(WRITER_KIND_CONTRACT, seats=_writer_seats() | {"reviewer_pool"})),
         measures=MeasureRegistry((*TOYHOST_MEASURES, *WRITER_KIND_MEASURES), families=base.measures.families),
     )
 

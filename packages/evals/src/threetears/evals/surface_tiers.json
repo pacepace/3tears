@@ -1728,7 +1728,6 @@
 "threetears.evals.ops.UnreadableRunLine": "provisional",
 "threetears.evals.ops.UnreadableRunsListing": "provisional",
 "threetears.evals.ops.WRITER_KIND_CONTRACT": "provisional",
-"threetears.evals.ops.writer_kind_contract": "provisional",
 "threetears.evals.ops.WRITER_KIND_MEASURES": "provisional",
 "threetears.evals.ops.WriterLimits": "stable",
 "threetears.evals.actions.Action": "stable",
