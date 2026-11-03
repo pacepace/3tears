@@ -69,9 +69,11 @@ measures obedience.
 Write criteria from failures seen in real transcripts, test each behaviour in both directions, and prefer
 pass/fail where a behaviour allows it: a binary criterion is easier for people to label and to agree on.
 The engine asks one criterion per call, takes the judge's reasoning before its score, and treats "can't
-tell" as an answer that excludes the trial from that criterion. Pairwise judging is not adopted for now
-([open problems](open-problems.md#pairwise-judging-declined-for-now)). Several judges per criterion is not
-adopted either: the error reduction claimed for it rests on a single study, and it would multiply judge
+tell" as an answer that excludes the trial from that criterion. Pairwise judging is adopted for the report writer
+alone, whose loop drives every page toward the rubric
+([open problems](open-problems.md#pairwise-judging-adopted-for-the-report-writer-only-2026-11-03)); every other judged
+score is single-trial. Several judges per criterion is not
+adopted: the error reduction claimed for it rests on a single study, and it would multiply judge
 spend and change how a trial's identity is computed.
 
 **What the subject must never do is held, never traded.**
@@ -551,7 +553,7 @@ accepted but absent ([open problems](open-problems.md)).
 | [Panickssery, Bowman & Feng](https://arxiv.org/abs/2404.13076) (2024) | LLM evaluators recognise and favour their own generations. | Adopted (disclosure) | When the default judge is one of the candidate models, a configured alternate judge substitutes. Without one, every surface that lists judges says so. |
 | [Husain, "Using LLM-as-a-Judge for Evaluation"](https://hamel.dev/blog/posts/llm-judge/) (2024) | Use binary pass/fail with a written critique. Validate the judge on a train/dev/test split of expert labels, and report true-positive and true-negative rates. | Adapted | `pass_fail` ships beside the 1–5 scale and every dimension states its scale; prefer it for new criteria. Agreement with people is Cohen's κ, not TPR/TNR, and labels are not split. |
 | [Husain & Shankar, evals FAQ](https://hamel.dev/blog/posts/evals-faq/) | Do error analysis first: open coding, then axial coding into a failure taxonomy, then about 100 traces to saturation. Generic metrics create false confidence. | Not built | No error-analysis workflow ships. The rubric proposer drafts criteria, and reviewing them against observed failures is left to the author. |
-| [Yan, "Evaluating the Effectiveness of LLM-Evaluators"](https://eugeneyan.com/writing/llm-evaluators/) (2024) | Use binary outputs where possible and pairwise comparison for subjective qualities. Measure agreement with κ, τ or ρ. | Adapted | κ is adopted. Pairwise judging is declined for now ([open problem](open-problems.md#pairwise-judging-declined-for-now)). |
+| [Yan, "Evaluating the Effectiveness of LLM-Evaluators"](https://eugeneyan.com/writing/llm-evaluators/) (2024) | Use binary outputs where possible and pairwise comparison for subjective qualities. Measure agreement with κ, τ or ρ. | Adapted | κ is adopted. Pairwise judging is adopted for the report writer only ([open problem](open-problems.md#pairwise-judging-adopted-for-the-report-writer-only-2026-11-03)). |
 | [Shankar et al., "Who Validates the Validators?"](https://arxiv.org/abs/2404.12272) (2024) | Criteria drift: grading outputs changes the criteria you grade them by. | Adapted | Judge configs are versioned and pinned to each run, and a changed prompt counts as a different judge. Re-scoring stored evidence measures self-agreement, and re-scoring it under a changed judge measures the drift (`judge_drift_check`, [step 9](judges-and-calibration.md#step-9-a-second-judge-for-agreement-between-judges-and-for-drift)). It runs when asked, not on every config change. |
 | [Dev et al., Judge Reliability Harness](https://arxiv.org/abs/2603.05399) (2026) | No judge is uniformly reliable across benchmarks. | Adopted | Reliability is measured per dimension, scale, served model, judge config, temperature and the request settings the judge was sent with, and never pooled. The claim, sometimes attributed to this paper, that ordinal scoring is more fragile than binary is not in its abstract. |
 | [Norman et al., "Reliability without Validity"](https://arxiv.org/abs/2606.19544) (2026); [Cohen, weighted κ](https://doi.org/10.1037/h0026256) (1968) | Exact-match agreement overstates reliability, so use a chance-corrected statistic. High test–retest reliability can coexist with severe bias. | Adopted | Both judge measurements use κ, quadratic-weighted on 1–5. The self-agreement tier is named as precision, never accuracy ([evidence tiers](reading-reports.md#how-far-a-judged-score-can-be-leaned-on-evidence-tiers)). |
