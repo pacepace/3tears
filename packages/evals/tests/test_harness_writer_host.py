@@ -9,6 +9,8 @@ host mints its own.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +37,7 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_template_create,
 )
 from threetears.evals.ops.report_writer.writer_contract import (
+    WriterModelFactory,
     ENDING_MEASURE,
     WRITER_KIND,
     WRITER_KIND_MEASURES,
@@ -43,14 +46,15 @@ from threetears.evals.ops.report_writer.writer_contract import (
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.providers import Model
 from threetears.evals.quick.judged import BorrowedJudgeClient
-from threetears.evals.quick.writer_host import writer_ops_host
+from threetears.evals.harness.writer_host import writer_ops_host
+from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import CaseSetRef, EvalRun
 from threetears.evals.schema.turns import ToolTurnClient, TurnText
 from threetears.evals.storage import SqliteDocumentStore
 
-#: The writer every arm names, on the factory's route (anthropic).
-WRITER = "claude-haiku-5-5"
+#: The writer every arm names, on the factory's route (anthropic): a placeholder, since nothing is sent to it.
+WRITER = "report-writer-candidate"
 
 #: The scoring judge: OpenRouter's, of the google family.
 JUDGE = "google/gemini-3.8-flash"
@@ -60,6 +64,9 @@ CASES = ("r1", "r2", "r3", "r4", "r2 without its gates")
 
 #: A report capped in dollars and in turns, so a cell's deadline is bounded.
 BUDGET = ReportBudget(usd=0.75, turns=40)
+
+#: How many turns an analyst that never writes a document is given before its report ends with nothing stored.
+SILENT_TURNS = 4
 
 
 # parity-with: threetears.evals.ops.report_writer.loop.TurnModel
@@ -96,8 +103,9 @@ def _host(
     request_s: float = 120.0,
     skills: dict[str, AnalystSkill] | None = None,
     built: list[FakeSilentWriter] | None = None,
+    models: WriterModelFactory | None = None,
 ) -> OpsHost:
-    def models(model: str, skill: AnalystSkill) -> Callable[[EffortWord | None], FakeSilentWriter]:
+    def scripted(model: str, skill: AnalystSkill) -> Callable[[EffortWord | None], FakeSilentWriter]:
         def at(_effort: EffortWord | None) -> FakeSilentWriter:
             writer = FakeSilentWriter(model_name=model, skill=skill.digest)
             if built is not None:
@@ -109,7 +117,7 @@ def _host(
     return writer_ops_host(
         SqliteDocumentStore(tmp_path / "evals.sqlite"),
         judge=judge or _judge(),
-        models=models,
+        models=models or scripted,
         budget=budget,
         request_s=lambda _max_tokens: request_s,
         max_cost_usd=5.0,
@@ -294,11 +302,11 @@ async def test_the_judge_s_family_is_read_from_its_route(
 
 
 async def test_a_judge_routed_to_the_writer_s_own_vendor_is_refused_before_anything_runs(tmp_path: Path) -> None:
-    model = _judge("anthropic/claude-opus-5.5")
+    model = _judge("anthropic/report-judge")
     host = _host(tmp_path, judge=model)
     template_id, case_set = await _mint(host, ("r1",))
 
-    with pytest.raises(ValidationFailedError, match=r"of the writer 'claude-haiku-5-5''s family \(anthropic\)"):
+    with pytest.raises(ValidationFailedError, match=rf"of the writer '{re.escape(WRITER)}''s family \(anthropic\)"):
         await quote_launch(host.launch, **_arm(template_id, case_set, load_skill(), judge=model.model_name))
 
 
@@ -313,3 +321,36 @@ async def test_an_arm_whose_cells_could_outlast_its_job_is_refused_naming_what_t
     # The same cases under a turn cap fit.
     capped = _host(tmp_path, request_s=120.0)
     await quote_launch(capped.launch, **_arm(template_id, case_set, load_skill()))
+
+
+def _silent_recording(path: Path, *, turns: int) -> None:
+    """A turn recording of an analyst session whose every reply holds no document, as a recording run writes one."""
+    path.parent.mkdir(parents=True)
+    silent = reply(TurnText("I have no report yet."), model=WRITER).to_json()
+    lines = [
+        {"recorder_version": 1, "recorded_at": "2026-11-03T00:00:00+00:00", "session": "analyst", "index": index}
+        | entry
+        for index in range(turns)
+        for entry in ({"kind": "ceiling", "ceiling": 0.05}, {"kind": "reply", "reply": silent})
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+
+
+async def test_an_arm_launches_through_its_recorded_models_and_replays_each_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    shipped = load_skill()
+    snapshot = fixture_snapshots(CALLER.scope_id)["r1"].id
+    turns = writer_turns(tmp_path / "turns", arm="shipped", skill=shipped, cases={snapshot: "r1"})
+    _silent_recording(turns.path(WRITER, None, snapshot), turns=SILENT_TURNS)
+    host = _host(tmp_path, models=turns)
+    template_id, case_set = await _mint(host, ("r1",))
+
+    run = await _launched(host, _arm(template_id, case_set, shipped))
+
+    (result,) = await asyncio.to_thread(host.eval_host.storage.query_eval_results_by_run, run.id, CALLER.scope_id)
+    # The recorded analyst never submits, so the report ends refused, as recorded, never failed.
+    assert result.termination == "completed" and result.host_measures[ENDING_MEASURE] == "refused"
+    # The launcher handed the factory the arm's skill, and the cell replayed its case's recording to the end.
+    assert turns.unconsumed() == []

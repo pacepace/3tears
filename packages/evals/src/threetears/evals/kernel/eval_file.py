@@ -3,7 +3,8 @@
 An eval file names its cases, its recordings and its labels by paths relative to itself, as a TOML file does, so it
 runs the same from any working directory. :func:`loading_eval_file` holds the loading file's directory for as long as
 the file executes, and :func:`beside_eval_file` reads a path against it: ``Eval``'s cases, ``Model``'s and
-``World``'s ``recording=``, ``Judge``'s ``labels=`` and a ``Log``'s file each go through it when they are built.
+``World``'s ``recording=``, ``Judge``'s ``labels=``, a ``Log``'s file, and a writer eval's skill directory
+(``AnalystSkill.at``), case files and turn recordings each go through it when they are built.
 Outside a load, a relative path is the working directory's, as anywhere else in Python, and an absolute path is
 always taken as given.
 
