@@ -36,8 +36,7 @@ from threetears.evals.testing import RecordedCompletions
 #: The rung's directory.
 RUNG: Final = EXAMPLES / "5-writer"
 
-#: The writer both arms name, and the effort they write at.
-WRITER: Final = "claude-sonnet-5-5"
+#: The effort both arms write at; their model is read off the eval the file builds, never spelled here.
 EFFORT: Final = "medium"
 
 #: The scoring judge's model.
@@ -102,7 +101,7 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     for needed in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "python -m threetears.evals examples/5-writer/writer.py"):
         assert needed in readme
     writer = (RUNG / "writer.py").read_text(encoding="utf-8")
-    assert 'effort="medium"' in writer and "max_cost_usd=15.0" in writer and WRITER in writer
+    assert 'effort="medium"' in writer and "max_cost_usd=15.0" in writer
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(
@@ -189,16 +188,18 @@ def _silent_recordings(writer_eval: WriterEval, cases: dict[str, str]) -> None:
             writer_eval.recordings, arm=arm, skill=writer.analyst_skill, cases=cases, revisions=writer.revisions
         )
         for snapshot in cases:
-            path = routed.path(WRITER, EFFORT, snapshot)
+            assert writer.effort == EFFORT
+            path = routed.path(writer.model_id, EFFORT, snapshot)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("".join(json.dumps(line) + "\n" for line in _silent_lines()), encoding="utf-8")
+            lines = _silent_lines(writer.model_id)
+            path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
 
-def _silent_lines() -> list[dict[str, Any]]:
+def _silent_lines(model: str) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for index in range(SILENT_TURNS):
         stamp = {"recorder_version": 1, "recorded_at": "2026-11-03T00:00:00+00:00", "session": "analyst"}
         lines.append({**stamp, "index": index, "kind": "ceiling", "ceiling": 0.05})
-        said = reply(TurnText("I have no report yet."), model=WRITER).to_json()
+        said = reply(TurnText("I have no report yet."), model=model).to_json()
         lines.append({**stamp, "index": index, "kind": "reply", "reply": said})
     return lines
