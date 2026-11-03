@@ -366,8 +366,9 @@ class TestResultsComeBackMapped:
         running.cancel()
         (signals / "go").touch()
         await _until(lambda: store.status()["slots_open"] == 0, "the abandoned slot discarded")
-        assert store.segments() == ()
-        assert _hidden(store) == []
+        # the discard closes the slot, then sweeps: its staging is renamed retiring and removed after the lock
+        await _until(lambda: store.segments() == () and _hidden(store) == [], "the abandoned slot's staging removed")
+        assert store.status()["slots_open"] == 0
 
     def test_a_slot_is_written_once_and_claimed_once(self, store: SharedArrowStore) -> None:
         slot = store.reserve(1 << 20)

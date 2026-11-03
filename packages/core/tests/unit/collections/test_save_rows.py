@@ -770,3 +770,51 @@ async def test_a_copy_over_the_rail_goes_on_the_caller_s_transaction() -> None:
     assert copies[0]["tx_id"] == _TX_ID
     assert copies[0]["table"] == "results"
     assert [row[1] for row in copies[0]["rows"]] == ["00000", "00001", "00002"]
+
+
+# -- the bulk writes evict their keys from L1 in one write ---------------------------------------------
+
+
+def _cached_results(rows: int) -> tuple[Any, SQLiteBackend]:
+    """a results collection over a real SQLite L1 that holds ``rows`` of its rows."""
+    metadata = MetaData()
+    SCHEMA.to_sqlalchemy_table(metadata)
+    l1 = SQLiteBackend(db_name=f"bulk_evict_{uuid4().hex[:8]}")
+    l1.initialize(metadata)
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1)
+    collection = collection_for_schema(SCHEMA, entity_class=_ResultRow)(registry, DefaultCoreConfig(), None)
+    collection.l3_pool = _Pool()
+    now = datetime.now(UTC)
+    for row in _rows(rows):
+        assert collection.write_to_cache_sync({**row, "date_created": now, "date_updated": now})
+
+    async def settle(keys: Any) -> None:
+        pass
+
+    # the settle evicts again as the transaction ends; these tests pin the write's own eviction
+    collection.invalidate_cache_many = settle
+    return collection, l1
+
+
+async def test_save_rows_evicts_every_key_from_l1_in_one_write(l1_statements: Any) -> None:
+    collection, l1 = _cached_results(40)
+    conn = _Conn()
+    statements = l1_statements(l1)
+    async with CallerTransaction(conn):
+        await collection.save_rows(_rows(40), conn=conn)
+    assert statements.count("BEGIN IMMEDIATE") == 1
+    assert statements.count("COMMIT") == 1
+    assert [collection.exists_in_cache_sync(("sn_NC1", row["geo_id"])) for row in _rows(40)] == [False] * 40
+
+
+async def test_delete_rows_evicts_every_key_from_l1_in_one_write(l1_statements: Any) -> None:
+    collection, l1 = _cached_results(40)
+    conn = _Conn()
+    keys = [("sn_NC1", row["geo_id"]) for row in _rows(40)]
+    statements = l1_statements(l1)
+    async with CallerTransaction(conn):
+        assert await collection.delete_rows(keys, conn=conn) == 40
+    assert statements.count("BEGIN IMMEDIATE") == 1
+    assert statements.count("COMMIT") == 1
+    assert [collection.exists_in_cache_sync(key) for key in keys] == [False] * 40

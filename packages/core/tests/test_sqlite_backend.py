@@ -725,3 +725,63 @@ class TestNumericReadsBackAsDecimal:
             assert not b.has_table("wide")
         finally:
             b.reset()
+
+
+class TestDeleteManyById:
+    """many rows leave in one write transaction: one lock and one commit for N rows, not N of each."""
+
+    def test_n_ids_take_one_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
+        ids = [str(uuid.uuid4()) for _ in range(40)]
+        for entity_id in ids:
+            backend.upsert("test_entities", {"id": entity_id, "name": "row"})
+        statements = l1_statements(backend)
+
+        backend.delete_many_by_id("test_entities", ids)
+
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert statements.count("COMMIT") == 1
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 0}]
+
+    def test_nothing_named_takes_no_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
+        statements = l1_statements(backend)
+        backend.delete_many_by_id("test_entities", [])
+        assert statements == []
+
+    def test_composite_keys_each_leave(self) -> None:
+        metadata = MetaData()
+        Table(
+            "pairs",
+            metadata,
+            Column("a", String(32), primary_key=True),
+            Column("b", Integer, primary_key=True),
+            Column("name", String(32)),
+        )
+        b = SQLiteBackend(db_name=f"test_pairs_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            for a, n in (("x", 1), ("x", 2), ("y", 1)):
+                b.upsert("pairs", {"a": a, "b": n, "name": "p"}, primary_key=("a", "b"))
+            b.delete_many_by_id("pairs", [("x", 1), ("y", 1)], primary_key=("a", "b"))
+            assert b.execute_query("SELECT a, b FROM pairs") == [{"a": "x", "b": 2}]
+        finally:
+            b.reset()
+
+    def test_a_failure_rolls_every_row_back_and_raises_unchanged(self, backend: SQLiteBackend) -> None:
+        ids = [str(uuid.uuid4()) for _ in range(5)]
+        for entity_id in ids:
+            backend.upsert("test_entities", {"id": entity_id, "name": "row"})
+        conn = backend.get_connection()
+        conn.execute(
+            "CREATE TRIGGER refuse BEFORE DELETE ON test_entities "
+            f"WHEN OLD.id = '{ids[2]}' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="refused"):
+            backend.delete_many_by_id("test_entities", ids)
+
+        # the write lock is released and nothing left: the next write runs
+        assert not conn.in_transaction
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 5}]
+        conn.execute("DROP TRIGGER refuse")
+        backend.delete_many_by_id("test_entities", ids)
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 0}]

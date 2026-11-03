@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.90.0 -- 2026-11-02
+
+### core: a settling commit evicts its keys from L1 in one write
+
+**Fixed:** a commit's settle evicted each key it wrote from the SQLite L1 in a transaction of its own (`BEGIN
+IMMEDIATE`, `DELETE`, `COMMIT`), synchronously on the event loop. On cobalt prod (2026-11-02) about 14% of the reports
+pods' event-loop stall time (18 stalls, 92 ms median, 136 ms max) was that eviction, after an ENR commit.
+`invalidate_cache_many` now evicts every key in one write transaction: one write lock and one commit for N rows. A
+collection's `drop_cached_table`, `save_rows` and `delete_rows`, the scan cache's `drop_for_table`, and the
+absent-marker sweeps evict the same way; a single key's eviction goes through the same path. Each key still reaches
+the in-process fence before the delete and each L1 change listener still hears its key after it; the eviction stays
+synchronous and finishes before the settle returns. A failed delete raises the same exception as before, every key
+already fenced, so no read in flight caches over it. On the SQLite L1 it rolls the whole delete back (where one at a
+time left the keys before the failure evicted); the DuckDB L1 deletes a row at a time, so the keys before the failure
+stay evicted. Either way every listener hears every key of the batch, failed or not, so a complete copy over the L1
+is voided rather than left serving with rows missing.
+
+**Added:** `delete_many_by_id(table, entity_ids, primary_key)` on the `L1Backend` protocol, `SQLiteBackend` (one
+`executemany` in one write transaction) and `DuckDBBackend` (through `delete_by_id` a row at a time, so a subclass
+that keeps something in step with each delete stays in step). A new public method, so a minor bump. The protocol now
+requires it: an `L1Backend` implemented outside these two classes must add `delete_many_by_id`, or every settling
+commit, `drop_cached_table` and scan-cache drop over it raises `AttributeError`.
+
 ## v0.89.0 -- 2026-10-31
 
 ### core: a sweep never takes an open slot's staging directory
