@@ -14,16 +14,24 @@ import json
 import re
 import socket
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
 import httpx
 import pytest
 
-from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
-from packages.evals.tests.report_writer_support import call, reply, review, submitted
+from packages.evals.tests.analyst_support import fixture_snapshots
+from packages.evals.tests.report_writer_support import reply
 from packages.evals.tests.writer_case_support import SEED
+from packages.evals.tests.writer_eval_support import (
+    JUDGE,
+    JUDGED_SCORE,
+    FakeScoringJudge,
+    kairo_case,
+    kairo_report,
+    lay_recording,
+)
 from threetears.evals import Eval
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel import EvalStorage
@@ -37,17 +45,13 @@ from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRIT
 from threetears.evals.providers import Model
 from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
-from threetears.evals.harness.writer_turns import KEY_VARIABLE, writer_turns
+from threetears.evals.harness.writer_turns import KEY_VARIABLES, writer_turns
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, EvalTemplate
-from threetears.evals.schema.completion import StopReason
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.storage import SqliteDocumentStore
 
 #: The writer every arm names.
 WRITER: Final = "report-writer-candidate"
-
-#: The scoring judge: OpenRouter's, of the google family.
-JUDGE: Final = "google/gemini-3.8-flash"
 
 #: The cases, by fixture name: their stratum. At a 0.35 share r1 and r2 are held-out groups and r3 a dev one.
 CASES: Final = {"r1": "reference", "r2": "reference", "r2 without its gates": "misfit", "r3": "reference"}
@@ -73,6 +77,9 @@ TICKETS: Final = [
 SILENT_TURNS: Final = 4
 
 SCOPE: Final = "writer"
+
+#: The variable a recording run reads the default writer provider's key from.
+KEY_VARIABLE: Final = KEY_VARIABLES["anthropic"]
 
 
 def _variant() -> AnalystSkill:
@@ -292,7 +299,7 @@ async def test_a_case_withholding_a_note_an_arm_lacks_is_refused_before_anything
 
 
 def test_two_arms_alike_and_one_arm_are_refused() -> None:
-    with pytest.raises(ValueError, match="one model, skill and effort"):
+    with pytest.raises(ValueError, match=re.escape("alike in every lever (model, skill, effort, revisions, editor's")):
         WriterEval(
             "cases",
             arms={"a": Writer(WRITER), "b": Writer(WRITER)},
@@ -460,76 +467,16 @@ def _declared(**overrides: Any) -> WriterEval:
     return WriterEval("cases", **{**arguments, **overrides})
 
 
-@dataclass(frozen=True)
-class _Scored:
-    """One scripted judge reply, in the attribute names the engine reads."""
-
-    content: str
-    input_tokens: int | None = 200
-    output_tokens: int | None = 30
-    cost_usd: float | None = 0.0
-    price_source: str | None = "scripted rate"
-    model: str = JUDGE
-    served_model: str | None = JUDGE
-    reasoning_tokens: int | None = None
-    stop_reason: StopReason = "end_turn"
-    temperature: float | None = None
-
-
-# parity-with: threetears.evals.harness.writer_host.WriterJudge
-class FakeScoringJudge:
-    """A scoring judge that sends nothing: it scores the dimension its system prompt names 4, and keeps every call."""
-
-    model_name = JUDGE
-    provider = "openrouter"
-    base_url = None
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Scored:
-        match = re.search(r'single key "([^"]+)"', system)
-        assert match is not None, "the judge's system prompt names no dimension"
-        self.calls.append(match[1])
-        return _Scored(json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: 4}}))
-
-
-def _stored_report_lines() -> list[dict[str, Any]]:
-    """Kairo's report as a recording keeps it: the analyst reads the dominance and submits the document; the editor
-    reads it too and clears it."""
-    sessions = {
-        "analyst": [reply(call(1, "options_dominance", "{snapshot}"), model=WRITER), reply(submitted(), model=WRITER)],
-        "editor-1": [reply(call(9, "options_dominance", "{snapshot}"), model=WRITER), reply(review(), model=WRITER)],
-    }
-    lines: list[dict[str, Any]] = []
-    for session, replies in sessions.items():
-        for index, said in enumerate(replies):
-            stamp = {"recorder_version": 1, "recorded_at": "2026-11-03T00:00:00+00:00", "session": session}
-            lines.append({**stamp, "index": index, "kind": "ceiling", "ceiling": 0.05})
-            lines.append({**stamp, "index": index, "kind": "reply", "reply": said.to_json()})
-    return lines
-
-
 async def test_a_replay_whose_pages_reach_the_judge_makes_no_network_call(
     tmp_path: Path, offline: list[object]
 ) -> None:
     arms = _arms()
-    group, withhold = SEED[KAIRO]
-    kairo = WriterCaseFile(
-        name="kairo",
-        group=group,
-        stratum="reference",
-        withhold=list(withhold),
-        snapshot=fixture_snapshots("frozen-elsewhere")[KAIRO],
-    )
-    kairo.write(tmp_path / "cases" / "kairo.json.gz")
+    kairo = kairo_case(tmp_path / "cases")
     for arm, writer in arms.items():
         routed = writer_turns(
             tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
         )
-        path = routed.path(WRITER, None, kairo.snapshot.id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(json.dumps(line) + "\n" for line in _stored_report_lines()), encoding="utf-8")
+        lay_recording(routed.path(WRITER, None, kairo.snapshot.id), kairo_report(WRITER, WRITER))
     judge = FakeScoringJudge()
 
     result = await _eval(tmp_path, arms, judge=judge).run()
@@ -541,5 +488,77 @@ async def test_a_replay_whose_pages_reach_the_judge_makes_no_network_call(
         assert summary.status == "completed" and summary.n_cases == 1
         assert summary.errors == []
         assert {dimension.name for dimension in summary.judged} == set(dims)
-    assert any(line.endswith("(judged) | 4.00 | 4.00 |") for line in result.render().splitlines())
+    judged = f"(judged) | {JUDGED_SCORE:.2f} | {JUDGED_SCORE:.2f} |"
+    assert any(line.endswith(judged) for line in result.render().splitlines())
     assert offline == []
+
+
+async def test_two_arms_differing_only_in_revisions_each_replay_their_own_recordings(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = {"shipped": Writer(WRITER, skill=load_skill()), "fewer": Writer(WRITER, skill=load_skill(), revisions=0)}
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+
+    result = await _eval(tmp_path, arms).run()
+
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.n_cases == len(HELD_OUT_FIXTURES)
+    campaign = await asyncio.to_thread(
+        EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite")).load_campaign, result.campaign_id, SCOPE
+    )
+    assert campaign is not None
+    (aspect,) = campaign.aspects
+    assert aspect.design is not None and [axis.axis_id for axis in aspect.design.axes] == ["report_writer.revisions"]
+    # Each arm replayed its own directory, by the revisions segment its recordings are keyed by, to the end.
+    text = result.render()
+    skill12 = load_skill().digest[:12]
+    for arm, writer in arms.items():
+        assert (
+            f"{arm}: writer turns replayed from {tmp_path / 'turns'}/{arm}-{skill12}-{WRITER}-default-r{writer.revisions}"
+            in text
+        )
+    assert "unasked" not in text
+    assert offline == []
+
+
+def _renamed_note() -> AnalystSkill:
+    """The shipped skill with r1's note renamed, file and index row: a frozen copy holding a note the shipped lacks."""
+    files = dict(load_skill().files)
+    files["exemplars/r1-renamed.md"] = files.pop("exemplars/r1-model-selection.md")
+    files["exemplars/INDEX.md"] = files["exemplars/INDEX.md"].replace("`r1-model-selection.md`", "`r1-renamed.md`")
+    return AnalystSkill(files=files)
+
+
+async def test_cases_are_minted_against_the_control_arm_s_skill_not_the_shipped_one(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    control = _renamed_note()
+    variant = AnalystSkill(files={**control.files, "SKILL.md": f"{control.files['SKILL.md']}\n"})
+    arms = {"frozen": Writer(WRITER, skill=control), "variant": Writer(WRITER, skill=variant)}
+    snapshots = fixture_snapshots("frozen-elsewhere")
+    for name in ("r1", "r2"):
+        group, withhold = SEED[name]
+        notes = ["r1-renamed.md"] if name == "r1" else list(withhold)
+        case = WriterCaseFile(name=name, group=group, stratum="reference", withhold=notes, snapshot=snapshots[name])
+        case.write(tmp_path / "cases" / f"{name}.json.gz")
+    with pytest.raises(ValueError, match="no exemplar is named r1-renamed.md"):
+        load_skill().analyst(withhold=["r1-renamed.md"])  # the control: the shipped skill lacks the note
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=("r1", "r2"))
+
+    result = await _eval(tmp_path, arms).run()
+
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.n_cases == 2
+    origins = await asyncio.to_thread(_origins, tmp_path)
+    assert origins == {"r1": control.digest, "r2": control.digest}
+    assert offline == []
+
+
+def _origins(tmp_path: Path) -> dict[str, str]:
+    """Each stored case's group: the skill its withheld notes were checked against."""
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    template = storage.load_template_by_name("report writer", SCOPE)
+    assert template is not None
+    bank = writer_case_bank(storage.query_test_cases(SCOPE, template_id=template.id))
+    return {case.origin.group: case.origin.skill for _, case in bank.cases if case.origin is not None}

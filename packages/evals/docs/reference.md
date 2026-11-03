@@ -1616,7 +1616,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `writer_template_create` | `write` | `template_name`, `intent` | Write a report writer template, its scoring rubric seeded from the editor rubric this build ships. |
-| `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `group?`, `stratum?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
+| `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `skill?`, `group?`, `stratum?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
 | `writer_promotion` | `read` | `campaign_id`, `candidate` | Read whether a report writer campaign's candidate arm should replace its control. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
@@ -1785,6 +1785,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
+| `skill` | `string` or `null` | The skill whose notes the withheld ones are checked against, by its content digest: the one the case's arms run, which the host gives the mint. Omitted, the skill this build ships. |
 | `snapshot_id` | `string` or `null` | A snapshot already frozen in the scope, as report_snapshot_freeze named it. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
@@ -1802,7 +1803,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `trials` | `'table'` \| `'all'` | How much of each failed or lost trial the report lays out: table (the default) is the census line and one row per such trial naming its stored result, read with result_get; all adds each one's full record (what it asked, what the judge saw and said, and why). JSON carries no records either way. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
-| `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the skill this build ships; empty withholds none. |
+| `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the mint's skill (skill); empty withholds none. |
 | `writer_case_id` | `string` | A writer case's id, the test_case_id writer_case_mint returned. |
 
 <a id="cli"></a>

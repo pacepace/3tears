@@ -166,8 +166,8 @@ def admit_writer_launch(
     :return: What the arm resolved to.
     :rtype: WriterAdmitted
     :raises ValidationFailedError: The template asks for what a writer cannot honour or has no rubric; the arm's skill
-        was not given; the arm names no model or no judge; the judge is of the writer's family; or a case is
-        missing, unreadable, carries no writer case or is retired.
+        was not given; the arm names no model or no judge; the judge is of the writer's family, or of the editor's
+        the arm names; or a case is missing, unreadable, carries no writer case or is retired.
     """
     refuse_undeliverable_writer_template(request.template)
     overlays = request.overlays_as(WriterOverlays) if request.overlays is not None else WriterOverlays()
@@ -179,6 +179,10 @@ def admit_writer_launch(
             remedy="name the scoring judge (judge_model), and name the same one for every arm of the campaign",
         )
     judge_family = _judge_family(candidate_model, request.judge_model, model_family)
+    if overlays.editor_model is not None:
+        # The editor shapes the page the judge scores, so it is held to another family than the judge's too.
+        editor = _judge_family(overlays.editor_model, request.judge_model, model_family)
+        judge_family += f"; editor {editor.removeprefix('writer ')}"
     return WriterAdmitted(
         overlays=overlays,
         skill=skill,

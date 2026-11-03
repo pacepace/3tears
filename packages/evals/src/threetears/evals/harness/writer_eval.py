@@ -1,7 +1,8 @@
 """``WriterEval``: the report writer measured as the thing under test, over portable cases, from recordings.
 
 A writer eval is the fifth rung of the ladder: the eval under test is the report writer itself (the analyst and its
-editor), and each arm is a :class:`Writer`, a model with a skill and an effort. ``await WriterEval(...).run()``:
+editor), and each arm is a :class:`Writer`: a model with a skill, an effort, its revisions and, if it names one, its
+editor's own model. ``await WriterEval(...).run()``:
 
 1. **reads the case files** in ``cases_dir`` (:func:`~threetears.evals.harness.writer_cases.read_writer_cases`), and
    refuses a case that withholds a note some arm's skill does not hold (below);
@@ -9,12 +10,13 @@ editor), and each arm is a :class:`Writer`, a model with a skill and an effort. 
    (:func:`~threetears.evals.harness.writer_host.writer_ops_host`), every arm's model routed to its recordings
    (:func:`~threetears.evals.harness.writer_turns.writer_turns`);
 3. **creates the writer template** in the eval's scope, or reuses the one there, and **restores and mints every case**
-   into it with its stratum, each landing on its split group's side at ``held_out_fraction``;
+   into it with its stratum, each landing on its split group's side at ``held_out_fraction``, its withheld notes
+   checked against the control arm's skill;
 4. **launches every arm on one side's cases** (``side``, the held-out side by default), each naming its equal share of
    ``max_cost_usd``. A replayed writer prices nothing, and the engine admits an unpriced arm only because its launch
    names that share, so the share is the ceiling every arm runs under;
 5. **files the campaign**: the control is the first arm, one design axis per lever the arms differ on (the skill, the
-   effort, the model), and the declared ``margin``;
+   effort, the revisions, the editor's model, the model), and the declared ``margin``;
 6. **reads the promotion** of each candidate against the control
    (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), on the held-out side only: the dev
    side is where a change is tuned, so the read refuses it by design, and a dev run says so instead of reading it;
@@ -36,14 +38,17 @@ request_s  turns = 40   no turn cap
 =========  ===========  ===========
 
 **A recorded arm runs each case once.** Each case's sessions replay from one file per arm
-(``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>/<case>-<snapshot12>.jsonl``), with no key; a missing file is recorded when
-``ANTHROPIC_API_KEY`` is set and refused before anything runs when it is not. After the arms have run, each session a
-replay left recorded lines of is printed with the result: the code now stops sooner than it did when it was recorded.
+(``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>[-e<editor>]/<case>-<snapshot12>.jsonl``, and the
+editor's beside it for an arm whose editor runs on a model of its own), with no key; a missing file is recorded when
+the writer provider's key (``ANTHROPIC_API_KEY`` by default) is set and refused before anything runs when it is not.
+After the arms have run, each session a replay left recorded lines of is printed with the result: the code now stops
+sooner than it did when it was recorded.
 
 **Withheld notes are checked against every arm's skill.** A case withholds the exemplar note reasoned on its own
 campaign, and each cell takes that note out of its own arm's skill (a frozen copy of the control's included), so a case
 withholding a note some arm's skill lacks could never run on that arm. It is refused here, before anything is minted.
-The mint checks the notes against the skill this build ships; a frozen skill's notes are checked here, above it.
+The mint checks the notes against the control arm's skill, so a frozen copy is checked against itself, never against
+the skill this build ships, which may since have dropped or renamed a note.
 
 **A case's example results stay where it was frozen.** A snapshot frozen from a campaign names the stored result
 behind each example it shows. The writer's tools read the snapshot alone, and none of them fetches a stored result,
@@ -88,6 +93,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     SKILL_LEVER,
     WRITER_KIND,
     EffortWord,
+    WriterArm,
     WriterModelFactory,
     WriterModels,
 )
@@ -99,7 +105,7 @@ from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.analyse import TURN_CAP
 from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
-from threetears.evals.harness.writer_turns import KEY_VARIABLE, WriterTurns, writer_turns
+from threetears.evals.harness.writer_turns import WriterProvider, WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
 
@@ -108,6 +114,12 @@ _EFFORT_LEVER = f"{WRITER_KIND}.reasoning_effort"
 
 #: The revisions lever's id, as the writer's overlays name it.
 _REVISIONS_LEVER = f"{WRITER_KIND}.revisions"
+
+#: The editor's model lever's id, as the writer's overlays name it.
+_EDITOR_LEVER = f"{WRITER_KIND}.editor_model"
+
+#: What tells one arm from another: every lever the launcher hands the model factory, and the effort.
+_Condition = tuple[str, str, int, str | None, str | None]
 
 #: The efforts a writer may name.
 _EFFORTS: frozenset[str] = frozenset(get_args(EffortWord))
@@ -129,16 +141,21 @@ class Writer:
     :ivar effort: The reasoning effort every turn is sent at (``low``, ``medium``, ``high`` ...); ``None`` for the
         model's own.
     :ivar revisions: The revisions the analyst is given after a review that does not clear its report.
+    :ivar editor_model: The model the editor's reviews run on, by the id its provider takes; ``None`` runs them on
+        ``model_id``, which stays the arm's model either way.
     """
 
     model_id: str
     skill: AnalystSkill | None = None
     effort: str | None = None
     revisions: int = MOST_REVISIONS
+    editor_model: str | None = None
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
             raise ValueError("a Writer names its model by id, and this one is blank")
+        if self.editor_model is not None and not self.editor_model.strip():
+            raise ValueError("a Writer names its editor's model by id, and this one is blank")
         if self.effort is not None and self.effort not in _EFFORTS:
             raise ValueError(f"effort {self.effort!r} is none of {', '.join(get_args(EffortWord))}")
         if not 0 <= self.revisions <= MOST_REVISIONS:
@@ -302,7 +319,7 @@ class WriterEval:
         turns: int = TURN_CAP,
         request_s: float = 120.0,
         margin: float = 5.0,
-        writer_provider: str = "anthropic",
+        writer_provider: WriterProvider = "anthropic",
         store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
     ) -> None:
@@ -311,7 +328,8 @@ class WriterEval:
         :param cases_dir: The directory of writer case files (``*.json.gz``); relative, it is read beside the eval file
             being loaded.
         :ptype cases_dir: str | os.PathLike[str]
-        :param arms: The arms, by name; the first is the control. At least two, no two on one model, skill and effort.
+        :param arms: The arms, by name; the first is the control. At least two, no two alike in every lever (model,
+            skill, effort, revisions, editor's model).
         :ptype arms: Mapping[str, Writer]
         :param judge: The scoring judge, of another family than the writers, with its recording.
         :ptype judge: WriterJudge
@@ -336,27 +354,25 @@ class WriterEval:
         :param margin: How far, in points of a 0-100 rate, a candidate may fall below the control before it is shown
             worse.
         :ptype margin: float
-        :param writer_provider: The provider every writer is built on, which tells a writer's family.
-        :ptype writer_provider: str
+        :param writer_provider: The provider every writer (and editor) is built on to record, whose key a recording run
+            reads, and which tells a writer's family to the judge's check.
+        :ptype writer_provider: WriterProvider
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
         :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
         :ptype scope: str | None
-        :raises ValueError: Fewer than two arms, two arms on one model, skill and effort, a name too long for a campaign, or a share, budget,
-            turn cap or ceiling that is not above 0.
+        :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, or a
+            share, budget, turn cap or ceiling that is not above 0.
         """
         if len(arms) < 2:
             raise ValueError("a writer eval compares arms: name a control and at least one candidate")
-        conditions: dict[tuple[str, str, str | None], str] = {}
+        conditions: dict[_Condition, str] = {}
         for arm, writer in arms.items():
-            key = (writer.model_id, writer.analyst_skill.digest, writer.effort)
-            if (twin := conditions.get(key)) is not None:
-                # The launcher hands the model factory the model, the skill and the effort, never the revisions, so
-                # two arms alike in those three could not be told apart when a cell's recording is found.
+            if (twin := conditions.get(key := _condition(writer))) is not None:
                 raise ValueError(
-                    f"arms {twin!r} and {arm!r} run one model, skill and effort, which tells no cell's recording apart; "
-                    "vary one of the three, or compare their revisions in two evals"
+                    f"arms {twin!r} and {arm!r} are alike in every lever (model, skill, effort, revisions, editor's "
+                    "model), so they compare nothing; vary one"
                 )
             conditions[key] = arm
         if not 0 < held_out_fraction < 1:
@@ -426,8 +442,14 @@ class WriterEval:
     ) -> WriterResult:
         eval_host = host.eval_host
         template_id = await run_blocking(eval_host.blocking_executor, self._template, host)
+        control = next(iter(self.arms.values())).analyst_skill
         minted = [
-            (case, await case.mint(host, template_id, self.scope_id, created_by=CREATED_BY, split=self.split))
+            (
+                case,
+                await case.mint(
+                    host, template_id, self.scope_id, created_by=CREATED_BY, split=self.split, skill=control
+                ),
+            )
             for case in cases
         ]
         on_side = [(case, receipt) for case, receipt in minted if receipt.side == self.side]
@@ -436,7 +458,13 @@ class WriterEval:
         for arm in self.arms:
             writer = self.arms[arm]
             turns[arm] = writer_turns(
-                self.recordings, arm=arm, skill=writer.analyst_skill, cases=named, revisions=writer.revisions
+                self.recordings,
+                arm=arm,
+                skill=writer.analyst_skill,
+                cases=named,
+                revisions=writer.revisions,
+                editor_model=writer.editor_model,
+                provider=self.writer_provider,
             )
         held_elsewhere = await run_blocking(
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
@@ -502,18 +530,20 @@ class WriterEval:
     def _recording_disclosures(self, turns: Mapping[str, WriterTurns], named: Mapping[str, str]) -> list[str]:
         """Where each arm's writer comes from: replayed, or recorded now; refused when a file is missing and no key is."""
         said: list[str] = []
-        recording = bool(os.environ.get(KEY_VARIABLE))
         for arm, routed in turns.items():
             writer = self.arms[arm]
-            paths = [routed.path(writer.model_id, _effort(writer), snapshot) for snapshot in named]
-            missing = [path for path in paths if not path.is_file()]
+            recording = bool(os.environ.get(routed.key_variable))
+            by_case = {snapshot: routed.paths(writer.model_id, _effort(writer), snapshot) for snapshot in named}
+            missing = [snapshot for snapshot, paths in by_case.items() if not all(path.is_file() for path in paths)]
             if missing and not recording:
+                first = next(path for path in by_case[missing[0]] if not path.is_file())
                 raise ValueError(
-                    f"arm {arm!r} has no turn recording for {len(missing)} of {len(paths)} case(s) ({missing[0]} first), "
-                    f"and {KEY_VARIABLE} is not set to record them; restore the files, or set it to record them once"
+                    f"arm {arm!r} has no turn recording for {len(missing)} of {len(by_case)} case(s) ({first} first), "
+                    f"and {routed.key_variable} is not set to record them; restore the files, or set it to record "
+                    "them once"
                 )
             folder = routed.directory(writer.model_id, _effort(writer))
-            done = len(paths) - len(missing)
+            done = len(by_case) - len(missing)
             said.append(
                 f"{arm}: writer turns replayed from {folder}"
                 if not missing
@@ -538,6 +568,7 @@ class WriterEval:
                 "skill": writer.analyst_skill.digest,
                 "reasoning_effort": writer.effort,
                 "revisions": writer.revisions,
+                "editor_model": writer.editor_model,
             },
         }
 
@@ -556,7 +587,7 @@ class WriterEval:
         control, *candidates = self.arms
         levels = {arm: _levels(writer) for arm, writer in self.arms.items()}
         axes = []
-        for lever in (SKILL_LEVER, _EFFORT_LEVER, _REVISIONS_LEVER, CANDIDATE_MODEL_LEVER):
+        for lever in (SKILL_LEVER, _EFFORT_LEVER, _REVISIONS_LEVER, _EDITOR_LEVER, CANDIDATE_MODEL_LEVER):
             values = dict.fromkeys(levels[arm][lever] for arm in self.arms)
             if len(values) > 1:
                 shown = {value: next(arm for arm in self.arms if levels[arm][lever] == value) for value in values}
@@ -623,6 +654,7 @@ def _levels(writer: Writer) -> dict[str, str]:
         SKILL_LEVER: writer.analyst_skill.digest,
         _EFFORT_LEVER: writer.effort or "default",
         _REVISIONS_LEVER: str(writer.revisions),
+        _EDITOR_LEVER: writer.editor_model or "default",
         CANDIDATE_MODEL_LEVER: writer.model_id,
     }
 
@@ -632,28 +664,35 @@ def _effort(writer: Writer) -> EffortWord | None:
     return next((word for word in get_args(EffortWord) if word == writer.effort), None)
 
 
-def _routed(arms: Mapping[str, Writer], turns: Mapping[str, WriterTurns]) -> WriterModelFactory:
-    """The host's model factory: each cell's writer, routed to its arm's recordings by model, skill and effort.
+def _condition(writer: Writer) -> _Condition:
+    """What tells a writer's arm apart: its model, skill digest, revisions, editor's model and effort."""
+    return (writer.model_id, writer.analyst_skill.digest, writer.revisions, writer.editor_model, writer.effort)
 
-    The launcher hands the factory the candidate model and the arm's skill, and the cell's effort after; those three
-    are what tell the arms apart (no two arms share all three), so they find the arm whose recordings the cell replays,
-    whose own factory refuses any other skill. ``turns`` is filled once the cases are minted, before any arm launches.
+
+def _routed(arms: Mapping[str, Writer], turns: Mapping[str, WriterTurns]) -> WriterModelFactory:
+    """The host's model factory: each cell's writer, routed to its arm's recordings by every lever and the effort.
+
+    The launcher hands the factory every lever of the arm (its model, skill, revisions and editor's model), and the
+    cell's effort after; together they tell the arms apart (no two arms share them all), so they find the arm whose
+    recordings the cell replays, whose own factory refuses any other lever. ``turns`` is filled once the cases are
+    minted, before any arm launches.
     """
 
-    def factory(model: str, skill: AnalystSkill) -> WriterModels:
-        by_effort = {
-            writer.effort: arm
-            for arm, writer in arms.items()
-            if writer.model_id == model and writer.analyst_skill.digest == skill.digest
-        }
+    def factory(launched: WriterArm) -> WriterModels:
+        levers = (launched.model, launched.skill.digest, launched.revisions, launched.editor_model)
+        by_effort = {writer.effort: arm for arm, writer in arms.items() if _condition(writer)[:4] == levers}
+        named = (
+            f"{launched.model!r} with skill {launched.skill.digest[:12]}, {launched.revisions} revision(s) and editor "
+            f"{launched.editor_model or 'the candidate model'}"
+        )
         if not by_effort:
-            raise ValueError(f"no arm writes on {model!r} with skill {skill.digest[:12]}")
+            raise ValueError(f"no arm writes on {named}")
 
         def at(effort: EffortWord | None) -> TurnModel:
             arm = by_effort.get(effort)
             if arm is None:
-                raise ValueError(f"no arm writes on {model!r} with skill {skill.digest[:12]} at effort {effort!r}")
-            return turns[arm](model, skill)(effort)
+                raise ValueError(f"no arm writes on {named} at effort {effort!r}")
+            return turns[arm](launched)(effort)
 
         return at
 

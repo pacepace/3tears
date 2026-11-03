@@ -30,17 +30,23 @@ included; a new group's side is read off the digest of its name against the held
 always placed on the same side, whichever host mints it and in whatever order. A case's side, its set and the rule
 that placed it are recorded on the case (:class:`~threetears.evals.ops.report_writer.writer_kind.WriterCaseOrigin`),
 and the sets list it; a case never moves between them.
+
+**The withheld notes are checked against the skill the cases are run on.** A mint names that skill by its digest
+(``WriterCaseMint.skill``), which the host resolves from the skills it hands the mint; naming none checks them against
+the skill this build ships. A bank whose arms run a frozen copy of a skill is minted against that copy, so a note the
+shipped skill later drops or renames never refuses a case every arm can run.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Annotated, Final
 
 from pydantic import Field, ValidationError, model_validator
 
-from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_TEMPLATE, FIND_TEST_CASE
@@ -137,7 +143,13 @@ class WriterCaseMint(EvalBaseModel):
     withhold: list[str] = Field(
         default_factory=list,
         description="The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this "
-        "campaign, for a blind run. Each must be a note of the skill this build ships; empty withholds none.",
+        "campaign, for a blind run. Each must be a note of the mint's skill (skill); empty withholds none.",
+    )
+    skill: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description="The skill whose notes the withheld ones are checked against, by its content digest: the one the "
+        "case's arms run, which the host gives the mint. Omitted, the skill this build ships.",
     )
     group: str | None = Field(
         default=None,
@@ -311,17 +323,28 @@ def _writer_template(host: OpsHost, template_id: str, scope_id: str) -> EvalTemp
     return template
 
 
-def _refuse_unknown_notes(withhold: list[str]) -> str:
-    """Refuse a note the shipped skill lacks, before anything is frozen; the shipped skill's digest otherwise."""
+def _refuse_unknown_notes(mint: WriterCaseMint, skills: Mapping[str, AnalystSkill]) -> str:
+    """Refuse a note the mint's skill lacks, or a skill the mint was not given, before anything is frozen; the
+    skill's digest otherwise."""
     shipped = load_skill()
+    given = {shipped.digest: shipped, **skills}
+    digest = shipped.digest if mint.skill is None else mint.skill
+    skill = given.get(digest)
+    if skill is None:
+        raise ValidationFailedError(
+            f"the case's notes are checked against skill {digest}, which this mint was not given; the skills it was "
+            f"given are {', '.join(sorted(given))}",
+            remedy="name the skill the case's arms run, and give the mint that skill, or name none for the shipped one",
+        )
+    named = "the skill this build ships" if digest == shipped.digest else f"skill {digest[:12]}"
     try:
-        shipped.analyst(withhold=withhold)
+        skill.analyst(withhold=mint.withhold)
     except ValueError as unknown:
         raise ValidationFailedError(
-            f"the case would withhold a note the skill this build ships lacks: {unknown}",
-            remedy="withhold only notes the shipped skill holds, by file name, or none",
+            f"the case would withhold a note {named} lacks: {unknown}",
+            remedy=f"withhold only notes {named} holds, by file name, or none",
         ) from unknown
-    return shipped.digest
+    return skill.digest
 
 
 async def _snapshot(host: OpsHost, mint: WriterCaseMint, scope_id: str, created_by: str) -> EvalReportSnapshot:
@@ -475,11 +498,19 @@ def _mint_blocking(
     )
 
 
-async def writer_case_mint(host: OpsHost, mint: WriterCaseMint, scope_id: str, *, created_by: str) -> MintedWriterCase:
+async def writer_case_mint(
+    host: OpsHost,
+    mint: WriterCaseMint,
+    scope_id: str,
+    *,
+    created_by: str,
+    skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
+) -> MintedWriterCase:
     """Mint a writer case from a campaign, a stored analysis or a frozen snapshot, and list it in its side's set.
 
     In order, each refusal before anything after it: the template must be of the writer kind; each withheld note must
-    be a note of the skill this build ships, checked before anything is frozen; the snapshot is frozen
+    be a note of the mint's skill (the shipped one unless it names one of ``skills``), checked before anything is
+    frozen; the snapshot is frozen
     (:func:`~threetears.evals.ops.analyst.report_snapshot_freeze`) or read, and must read as every analyst tool
     reads it; the bank must read whole. Then the source's live case is returned when this mint repeats it, or the mint
     is refused when it differs (a stratum named anew relabels it in place); else the case is stored, placed on its
@@ -494,16 +525,19 @@ async def writer_case_mint(host: OpsHost, mint: WriterCaseMint, scope_id: str, *
     :ptype scope_id: str
     :param created_by: Who mints it, as the host names the caller.
     :ptype created_by: str
+    :param skills: The skills a mint may name to check its notes against, by digest; the shipped skill is always one.
+    :ptype skills: Mapping[str, AnalystSkill]
     :return: The receipt: the case, its side and the set version listing it.
     :rtype: MintedWriterCase
     :raises NotFoundError: The template, campaign, analysis or snapshot is not in the scope.
-    :raises ValidationFailedError: The template is not of the writer kind; a withheld note is not the shipped skill's;
-        the snapshot does not read; a stored case of the template does not read; the source's live case differs from
-        this mint, or it has several; the other side's set lists the case; or a set refused the version.
+    :raises ValidationFailedError: The template is not of the writer kind; the mint names a skill it was not given, or
+        a withheld note is not that skill's; the snapshot does not read; a stored case of the template does not read;
+        the source's live case differs from this mint, or it has several; the other side's set lists the case; or a
+        set refused the version.
     :raises ConflictError: Another mint stored the set's next version first.
     """
     template = await run_blocking(host.eval_host.blocking_executor, _writer_template, host, mint.template_id, scope_id)
-    skill = _refuse_unknown_notes(mint.withhold)
+    skill = _refuse_unknown_notes(mint, skills)
     snapshot = await _snapshot(host, mint, scope_id, created_by)
     return await run_blocking(
         host.eval_host.blocking_executor,

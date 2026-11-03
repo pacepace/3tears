@@ -37,6 +37,7 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_template_create,
 )
 from threetears.evals.ops.report_writer.writer_contract import (
+    WriterArm,
     WriterModelFactory,
     ENDING_MEASURE,
     WRITER_KIND,
@@ -105,9 +106,9 @@ def _host(
     built: list[FakeSilentWriter] | None = None,
     models: WriterModelFactory | None = None,
 ) -> OpsHost:
-    def scripted(model: str, skill: AnalystSkill) -> Callable[[EffortWord | None], FakeSilentWriter]:
+    def scripted(arm: WriterArm) -> Callable[[EffortWord | None], FakeSilentWriter]:
         def at(_effort: EffortWord | None) -> FakeSilentWriter:
-            writer = FakeSilentWriter(model_name=model, skill=skill.digest)
+            writer = FakeSilentWriter(model_name=arm.session_model, skill=arm.skill.digest)
             if built is not None:
                 built.append(writer)
             return writer

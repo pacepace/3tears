@@ -740,6 +740,7 @@ class WriterCaseMintParams(EvalBaseModel):
     analysis_id: str | None = Field(default=None, min_length=1, description=_described(AnalysisId))
     snapshot_id: str | None = Field(default=None, min_length=1, description=_MINT["snapshot_id"].description)
     withhold: list[str] = Field(default_factory=list, description=_MINT["withhold"].description)
+    skill: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", description=_MINT["skill"].description)
     group: str | None = Field(default=None, min_length=1, description=_MINT["group"].description)
     stratum: str | None = Field(default=None, min_length=1, description=_MINT["stratum"].description)
     dev_set: str = Field(default=_SPLIT["dev"].default, min_length=1, description=_SPLIT["dev"].description)
@@ -764,6 +765,7 @@ class WriterCaseMintParams(EvalBaseModel):
                 analysis_id=self.analysis_id,
                 snapshot_id=self.snapshot_id,
                 withhold=self.withhold,
+                skill=self.skill,
                 group=self.group,
                 stratum=self.stratum,
                 split=WriterSplit(

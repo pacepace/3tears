@@ -43,6 +43,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_contract import WriterArm
 from threetears.evals.quick.files import report_dir
 from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
@@ -157,7 +158,7 @@ async def analyse(
         written = await write_report(
             ops,
             Caller(scope_id=result.scope_id, identity=CREATED_BY),
-            model=turns(model, load_skill())(None),
+            model=turns(WriterArm(model=model, skill=load_skill()))(None),
             budget=budget,
             snapshot_id=frozen.snapshot_id,
         )

@@ -1,12 +1,15 @@
 """The report writer's kind contract: its levers, the seats its runs fill, and the measures each run lands.
 
 The report writer evaluated as a candidate (:mod:`~threetears.evals.ops.report_writer.writer_kind`): each case is one
-frozen report snapshot, and each arm a skill version, a reasoning effort and a revision count on the arm's candidate
-model. What the host adds to launch one is only what the host alone knows: the model each arm runs on, built with its
+frozen report snapshot, and each arm a skill version, a reasoning effort, a revision count and the editor's model on
+the arm's candidate model. What the host adds to launch one is only what the host alone knows: the model each arm runs on, built with its
 key, and which skill versions a launch may run. Everything else is the same for every host, so it is declared here:
 
 - :class:`WriterOverlays`, the arm's levers (``report_writer.skill``, ``report_writer.reasoning_effort``,
-  ``report_writer.revisions``), so two arms that differ in any of them are keyed apart;
+  ``report_writer.revisions``, ``report_writer.editor_model``), so two arms that differ in any of them are keyed
+  apart;
+- :class:`WriterArm`, what the launcher hands the host's model factory (:data:`WriterModelFactory`) for each model an
+  arm runs on;
 - :data:`WRITER_KIND_CONTRACT`, the kind's :class:`~threetears.evals.kernel.host.KindContract`, and
   :func:`writer_kind_contract` for a host that seats apparatus of its own;
 - :data:`WRITER_KIND_MEASURES`, the measures a writer run lands on ``host_measures``, for a host to declare on its
@@ -27,6 +30,11 @@ reasoning effort is a lever here, honoured by the host's model factory (:data:`W
 arm's model at the effort the lever names; a lever a host declares of its own (a quantization, a served route) rides
 on its own sweepables beside these, so nothing here assumes the lever under test is text.
 
+**The editor may run on a model of its own.** ``editor_model`` names it: the factory is asked for the analyst's model
+and then for the editor's, each with every lever of the arm (:class:`WriterArm`), and the editor's review sessions run
+on the second. The run's candidate model, the page's author, stays the analyst's; the editor's turns are on the
+run's usage under the editor's model.
+
 **The scoring judge is fixed; the editor is the arm's.** The editor reviews each report inside the loop, from the
 arm's own ``editor.md``, so it is part of what an arm runs. The page an arm stores is then scored by the template's
 judge on the editor rubric's seven items, as the shipped skill states them when the template is created
@@ -40,6 +48,7 @@ uncalibrated through the engine's judge evidence tiers, as any judge's do.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,9 +77,45 @@ EffortWord = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 #: model's own default for ``None``. Called once per cell, so each cell's sessions start from a model of their own.
 WriterModels = Callable[[EffortWord | None], TurnModel]
 
-#: The host's model factory for one arm: its writer, by the candidate model id the launch names and the skill the arm
-#: runs (two arms on one model differ by their skill, and a recording of one must never replay as the other's).
-WriterModelFactory = Callable[[str, AnalystSkill], WriterModels]
+#: Which of a writer arm's sessions a model is built for: the analyst's, or the editor's reviews.
+WriterRole = Literal["analyst", "editor"]
+
+
+@dataclass(frozen=True, slots=True)
+class WriterArm:
+    """One writer arm, as the launcher hands it to the host's model factory: every lever its models are built for.
+
+    The factory is asked once for the analyst's model and, for an arm whose editor runs on a model of its own, once
+    more for the editor's (``role``). Each ask carries every lever of the arm, so a factory that routes recordings keys
+    each one to the whole condition: two arms differing in any lever never replay each other's.
+
+    :ivar model: The arm's candidate model, by the id its launch names: the analyst's, and the editor's when
+        ``editor_model`` is ``None``.
+    :ivar skill: The skill the arm runs.
+    :ivar revisions: The revisions the analyst is given after a review that does not clear its report.
+    :ivar editor_model: The model the editor's review sessions run on, or ``None`` for the candidate model.
+    :ivar role: The sessions the model asked for runs: ``analyst``, or ``editor`` (only for an ``editor_model``).
+    """
+
+    model: str
+    skill: AnalystSkill
+    revisions: int = MOST_REVISIONS
+    editor_model: str | None = None
+    role: WriterRole = "analyst"
+
+    def __post_init__(self) -> None:
+        if self.role == "editor" and self.editor_model is None:
+            raise ValueError("the editor's model is asked for only of an arm whose editor runs on a model of its own")
+
+    @property
+    def session_model(self) -> str:
+        """The model id the asked-for role's sessions run on: the editor's for ``editor``, else the candidate's."""
+        return self.editor_model if self.role == "editor" and self.editor_model is not None else self.model
+
+
+#: The host's model factory for one arm: its writer, by every lever the arm runs (:class:`WriterArm`), so two arms on
+#: one model that differ by their skill, revisions or editor never replay one another's recording.
+WriterModelFactory = Callable[[WriterArm], WriterModels]
 
 
 def _shipped_skill() -> str:
@@ -79,7 +124,8 @@ def _shipped_skill() -> str:
 
 
 class WriterOverlays(BaseModel):
-    """What one arm of a report writer campaign turns besides its model: the skill, the effort and the revisions.
+    """What one arm of a report writer campaign turns besides its model: the skill, the effort, the revisions and the
+    editor's model.
 
     Each field is a lever (``report_writer.<field>``) that keys the arm's variant. ``skill`` is a content digest, so
     two skill texts that differ by one line are two levels however they were named.
@@ -103,6 +149,12 @@ class WriterOverlays(BaseModel):
         ge=0,
         le=MOST_REVISIONS,
         description="the revisions the analyst is given after a review that does not clear its report",
+    )
+    editor_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description="the model the editor's review sessions run on, by the id the host's model factory takes; none "
+        "runs them on the arm's candidate model, which stays the run's model either way",
     )
 
 
@@ -399,9 +451,11 @@ __all__ = [
     "WRITER_KIND",
     "WRITER_KIND_CONTRACT",
     "WRITER_KIND_MEASURES",
+    "WriterArm",
     "WriterModelFactory",
     "WriterModels",
     "WriterOverlays",
+    "WriterRole",
     "refuse_undeliverable_writer_template",
     "refuse_unfixed_scoring_judge",
     "writer_scoring_rubric",
