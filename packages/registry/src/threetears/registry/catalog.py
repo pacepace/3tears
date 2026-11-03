@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -490,6 +491,8 @@ class ToolEndpoint:
             "status": self.status,
             "date_last_heartbeat": json_datetime(self.date_last_heartbeat, field="date_last_heartbeat"),
             "verified_publisher": self.verified_publisher,
+            "holder_jkt": self.holder_jkt,
+            "proves_delegation": self.proves_delegation,
             "definitions": [announcement.to_dict() for announcement in self.definitions.values()],
         }
         return result
@@ -500,7 +503,9 @@ class ToolEndpoint:
 
         in_flight is always reset to zero on load since pending calls
         cannot survive a restart. each definition is re-keyed by its digest as computed NOW,
-        so a stored key can never name a definition other than the one beside it.
+        so a stored key can never name a definition other than the one beside it. the pod's key
+        and its delegation mark are read back, so a loaded registry delegates as the one that
+        wrote them did; a row written before they were kept reads as a copy whose key is unknown.
 
         :param data: dictionary representation of endpoint
         :ptype data: dict[str, Any]
@@ -515,6 +520,8 @@ class ToolEndpoint:
             date_last_heartbeat=datetime.fromisoformat(data["date_last_heartbeat"]),
             definitions={announcement.definition.digest: announcement for announcement in announcements},
             verified_publisher=data["verified_publisher"],
+            holder_jkt=data.get("holder_jkt"),
+            proves_delegation=data.get("proves_delegation", False),
         )
         return result
 
@@ -879,12 +886,67 @@ class ToolCatalog:
         # registration whose entry still has that content writes nothing. a key is dropped from it
         # on any failed write or delete, and on a bucket bound afresh, so the next write is made.
         self._written: dict[str, str] = {}
+        # the copies the last warm load brought in unavailable, by (full name, pod id), and when it
+        # landed: a replica routes nothing to them until their pods announce again, so it holds its
+        # calls until they have (loaded_copies_settled); replaced whole by each load, never pruned
+        self._awaiting_revival: set[tuple[str, str]] = set()
+        self._loaded_at: float | None = None
         self._write_health = CopyWriteHealth(
             copy="tool catalog",
             consequence=(
                 "registrations are not being recorded, and the registry reports itself not ready until a write lands"
             ),
         )
+
+    def loaded_copies_settled(self, window: float) -> bool:
+        """whether every copy the warm load brought in is routable again, gone, or past waiting for.
+
+        A starting replica loads the persisted catalog with every copy unavailable, and each comes back
+        only with its pod's next heartbeat. A replica that answered calls before then refused a tool
+        every other replica could route (``TOOL_UNAVAILABLE ... has no available endpoints``, from a
+        scheduled job on cobalt dev on 2026-10-30, during a platform rollout). A copy settles when it is
+        available again or no longer in the catalog; all of them settle once ``window`` has passed since
+        the load, since a pod that died never announces again. ``True`` before any load: a catalog with
+        nothing loaded has nothing to wait for. Read-only: the readiness probe and the start-up wait both ask
+        it, so asking changes nothing.
+
+        :param window: seconds after the load past which nothing is waited for (one heartbeat round)
+        :ptype window: float
+        :return: whether the replica may answer calls
+        :rtype: bool
+        """
+        if self._loaded_at is None or time.monotonic() - self._loaded_at >= window:
+            return True
+        return not self.loaded_copies_pending()
+
+    def loaded_copies_pending(self) -> frozenset[tuple[str, str]]:
+        """the copies the last warm load brought in that are neither routable again nor gone, however long ago.
+
+        Read-only. Empty before any load.
+
+        :return: each such copy, as (tool full name, pod id)
+        :rtype: frozenset[tuple[str, str]]
+        """
+        return frozenset(
+            (full_name, pod_id)
+            for full_name, pod_id in self._awaiting_revival
+            if self._copy_status(full_name, pod_id) not in (None, "available")
+        )
+
+    def _copy_status(self, full_name: str, pod_id: str) -> str | None:
+        """the status of one copy, or ``None`` when the catalog no longer holds it.
+
+        :param full_name: the tool's full name
+        :ptype full_name: str
+        :param pod_id: the pod serving the copy
+        :ptype pod_id: str
+        :return: the copy's status
+        :rtype: str | None
+        """
+        entry = self._entries.get(full_name)
+        if entry is None:
+            return None
+        return next((endpoint.status for endpoint in entry.endpoints if endpoint.pod_id == pod_id), None)
 
     @property
     def persisting(self) -> bool:
@@ -932,6 +994,7 @@ class ToolCatalog:
         """
         self._kv = kv
         self._written.clear()
+        awaiting: set[tuple[str, str]] = set()
         keys = await kv.list_keys()
         for key in keys:
             raw = await kv.get(key=key)
@@ -943,7 +1006,10 @@ class ToolCatalog:
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
-            self._entries.setdefault(entry.full_name, entry)
+            if self._entries.setdefault(entry.full_name, entry) is entry:
+                awaiting.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
+        self._awaiting_revival = awaiting
+        self._loaded_at = time.monotonic()
         _logger.info(
             "loaded catalog from KV",
             extra={"extra_data": {"entry_count": len(self._entries), "keys_listed": len(keys)}},
@@ -1105,6 +1171,9 @@ class ToolCatalog:
                 held.status = incoming.status
                 held.date_last_heartbeat = incoming.date_last_heartbeat
                 held.verified_publisher = incoming.verified_publisher
+                # the key a delegation for this pod binds is the one its latest registration signed with
+                held.holder_jkt = incoming.holder_jkt
+                held.proves_delegation = incoming.proves_delegation
                 held.merge_announcements(incoming.definitions)
                 held.prune_definitions(now, ttl)
             target = existing

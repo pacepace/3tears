@@ -14,6 +14,7 @@ is exactly what goes stale.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import timedelta
 from typing import Any
@@ -672,6 +673,22 @@ class TestAnOwnerRecreatesWhatJetStreamCannotChangeInPlace:
         assert len(warnings) == 1, warnings
         assert "probe" in warnings[0] and "storage" in warnings[0] and "dropped" in warnings[0], warnings
         assert "file" in warnings[0].lower() and "memory" in warnings[0].lower(), warnings
+
+    @pytest.mark.asyncio
+    async def test_a_file_bucket_on_three_servers_is_recreated_on_memory_on_three(self) -> None:
+        """the recreate creates the bucket from the declaration: a declaration asking no replicas puts it on no
+        fewer servers than it was live on."""
+        js = _OwnedRecreateJetStream(live=dataclasses.replace(_nonce_bucket_on_file(), num_replicas=3))
+        await open_kv_stream(
+            js=js,
+            full_name="probe",
+            config=_memory_declaration(),
+            create_if_missing=True,
+            owns_bucket=True,
+            drop_file_storage=True,
+        )
+        assert js.added[0].storage == StorageType.MEMORY
+        assert js.added[0].num_replicas == 3
 
     @pytest.mark.asyncio
     async def test_without_ownership_a_file_bucket_is_reported_and_left(self, caplog: pytest.LogCaptureFixture) -> None:

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Final, Literal, overload
 
 from pydantic import SecretStr
+from threetears.observe import get_logger, remove_tree
 
 __all__ = [
     "Author",
@@ -40,6 +41,8 @@ __all__ = [
     "GitError",
     "deploy_key_ssh_command",
 ]
+
+log = get_logger(__name__)
 
 #: the record and field separators a log is read with, so a subject holding any text parses.
 _FIELD: Final[str] = "\x1f"
@@ -358,7 +361,7 @@ class Git:
             elif staged.run("rev-parse", "--abbrev-ref", "HEAD").strip() != branch:
                 staged.run("checkout", "-q", branch)
         except GitError:
-            shutil.rmtree(staging, ignore_errors=True)
+            remove_tree(staging, log=log, what="a failed clone's staging directory")
             raise
         os.replace(staging, self.work_tree)
 

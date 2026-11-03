@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 import pytest
 from prometheus_client import REGISTRY
 
-from threetears.observe import contain, contained, get_logger
+from threetears.observe import contain, contained, get_logger, remove_tree
 
 _log = get_logger(__name__)
 _MODULE = __name__
@@ -126,3 +127,34 @@ class TestContained:
     def test_a_keyboard_interrupt_is_not_absorbed(self) -> None:
         with pytest.raises(KeyboardInterrupt), contained("an interactive step", log=_log):
             raise KeyboardInterrupt
+
+
+class TestRemoveTree:
+    def test_a_tree_is_removed(self, tmp_path: Path) -> None:
+        tree = tmp_path / "tree"
+        (tree / "inner").mkdir(parents=True)
+        (tree / "inner" / "file").write_text("x")
+        remove_tree(tree, log=_log, what="a test tree")
+        assert not tree.exists()
+
+    def test_a_tree_already_gone_says_nothing(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.WARNING)
+        remove_tree(tmp_path / "never-made", log=_log, what="a test tree")
+        assert caplog.records == []
+
+    def test_a_part_that_will_not_go_is_logged_and_the_rest_still_goes(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        tree = tmp_path / "tree"
+        locked = tree / "locked"
+        locked.mkdir(parents=True)
+        (locked / "stuck").write_text("x")
+        (tree / "free").write_text("y")
+        locked.chmod(0o500)  # nothing in it can be unlinked
+        caplog.set_level(logging.WARNING)
+        try:
+            remove_tree(tree, log=_log, what="a test tree")
+            assert "a test tree could not be removed" in caplog.text
+            assert (locked / "stuck").exists() and not (tree / "free").exists()
+        finally:
+            locked.chmod(0o700)

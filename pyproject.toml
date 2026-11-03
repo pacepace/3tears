@@ -31,7 +31,17 @@ exclude-newer = "14 days"
 # so a fresh CI/Docker install source-builds it and fails (no libxml2/libxslt
 # dev headers on the runner). This is the resolver-level fix so the drift can
 # never recur on a re-lock; keep it mirrored in every consumer repo's pyproject.
-constraint-dependencies = ["lxml>=6.1.0,<7"]
+#
+# pytest 9.1 keys a conftest's fixtures to the Directory node collected for its
+# directory, and re-collecting a parent directory (a file argument directly in it)
+# builds fresh child nodes the fixtures are not keyed to. A run whose arguments go
+# sub/test_a.py, test_b.py, sub/test_c.py -- what testament's batches and any id
+# list look like -- then fails test_c with "fixture ... not found" and drops sub's
+# autouse fixtures (#999; pytest-dev/pytest#14635, fixed in 9.2.0).
+# tests/enforcement/test_conftest_fixtures_survive_recollection.py holds it. Unlike
+# lxml, this is a test-runner bug, not an install failure: a consumer repo needs the
+# same constraint only if it runs its tests through testament or another id list.
+constraint-dependencies = ["lxml>=6.1.0,<7", "pytest!=9.1.*"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -406,6 +416,10 @@ markers = [
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
     "enforcement: a structural rule over the source tree rather than a behaviour",
+    # A wall-clock bound on the event loop is a bound on the machine as much as the code: beside three busy xdist
+    # workers on a four-core runner the kernel preempts the thread holding the interpreter lock and the loop waits
+    # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
+    "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
     "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
@@ -582,6 +596,8 @@ module = [
     "threetears.datasources.partitioned_export",
     # and the CPU-quota helper, which sizes pyarrow's thread pools
     "threetears.core.utils.cpu_quota",
+    # and the shared-memory Arrow store, which writes and maps Arrow IPC files
+    "threetears.core.shared_arrow",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

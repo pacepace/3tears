@@ -17,6 +17,12 @@ incoming ``tool_calls``. The wrapper is a thin binding of the shared
 (identical hooks across the OpenAI / OpenRouter / Anthropic wrappers).
 Application code never sees the wire form.
 
+Provider fields on a tool call: an OpenAI-compatible endpoint may attach fields the protocol does
+not define to a tool call and require them back on that call next turn (Gemini 3's
+``extra_content.google.thought_signature``). LangChain drops them both ways; the wrapper keeps them
+on the answer under :data:`~threetears.models.providers.TOOL_CALL_PROVIDER_EXTRA_KEY` and writes them
+back into the next request (:mod:`threetears.models.providers._tool_call_provider_extra`).
+
 Structured output is the same class of wire quirk:
 :func:`openai_structured_output_kwargs` builds the OpenAI-native
 directive so no consumer has to know the provider's spelling of "return
@@ -26,8 +32,11 @@ json matching this schema". Dispatch across providers lives in
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
+from langchain_core.messages import BaseMessage, convert_to_messages
+from langchain_core.prompt_values import PromptValue
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import PrivateAttr
 
@@ -35,6 +44,15 @@ from threetears.models.capabilities import ModelCapabilities, register_capabilit
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
 from threetears.models.providers._structured_output_schema import ensure_valid_json_schema
+from threetears.models.providers._tool_call_provider_extra import (
+    capture_result_extras,
+    reinsert_payload_extras,
+    stash_stream_extras,
+)
+
+if TYPE_CHECKING:
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
 
 
 __all__ = [
@@ -127,6 +145,93 @@ class _NameTranslatingChatOpenAI(NameTranslatingChatMixin, ChatOpenAI):
     """
 
     _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    def _create_chat_result(
+        self,
+        response: Any,
+        generation_info: dict[str, Any] | None = None,
+    ) -> ChatResult:
+        """LangChain's result for a non-streamed answer, with each tool call's provider fields kept.
+
+        :param response: the answer, as the SDK returned it: a dict or the SDK's pydantic model (the
+            parent refuses anything else before this reads it)
+        :ptype response: Any
+        :param generation_info: passthrough to the parent
+        :ptype generation_info: dict[str, Any] | None
+        :return: the result, its messages carrying the fields LangChain would have dropped
+        :rtype: ChatResult
+        """
+        result: ChatResult = super()._create_chat_result(response, generation_info)
+        # ``parsed`` may hold an arbitrary structured-output model; the parent leaves it out of its dump too.
+        response_dict = (
+            response
+            if isinstance(response, dict)
+            else response.model_dump(exclude={"choices": {"__all__": {"message": {"parsed"}}}}, warnings=False)
+        )
+        capture_result_extras(result, response_dict)
+        return result
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict[str, Any],
+        default_chunk_class: type,
+        base_generation_info: dict[str, Any] | None,
+    ) -> ChatGenerationChunk | None:
+        """LangChain's conversion of one streamed chunk, with its fragments' provider fields stashed.
+
+        The stream's resolver in the shared mixin turns the stash into the public key by call id.
+
+        :param chunk: the raw streamed chunk, as a dict
+        :ptype chunk: dict[str, Any]
+        :param default_chunk_class: passthrough to the parent
+        :ptype default_chunk_class: type
+        :param base_generation_info: passthrough to the parent
+        :ptype base_generation_info: dict[str, Any] | None
+        :return: the converted chunk, or ``None`` when the parent skips it
+        :rtype: ChatGenerationChunk | None
+        """
+        converted: ChatGenerationChunk | None = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        stash_stream_extras(converted, chunk)
+        return converted
+
+    def _get_request_payload(
+        self,
+        input_: LanguageModelInput,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """LangChain's request body, with each replayed tool call's provider fields written back.
+
+        :param input_: the request's input
+        :ptype input_: LanguageModelInput
+        :param stop: passthrough to the parent
+        :ptype stop: list[str] | None
+        :param kwargs: passthrough to the parent
+        :ptype kwargs: Any
+        :return: the request body
+        :rtype: dict[str, Any]
+        """
+        payload: dict[str, Any] = super()._get_request_payload(input_, stop=stop, **kwargs)
+        reinsert_payload_extras(payload, _input_messages(input_))
+        return payload
+
+
+def _input_messages(input_: Any) -> list[BaseMessage]:
+    """the messages a request's input stands for; a bare string carries no tool calls.
+
+    :param input_: what was passed to the model
+    :ptype input_: Any
+    :return: the messages
+    :rtype: list[BaseMessage]
+    """
+    if isinstance(input_, PromptValue):
+        return input_.to_messages()
+    if isinstance(input_, Sequence) and not isinstance(input_, str):
+        return convert_to_messages(input_)
+    return []
 
 
 def create_openai_chat(

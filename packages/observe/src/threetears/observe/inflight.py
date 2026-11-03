@@ -150,6 +150,19 @@ class InflightRequestsGauge:
         return self._metric_name
 
     @property
+    def registry(self) -> "CollectorRegistry | None":
+        """return the collector registry the gauge is served from (``None`` in the no-op state).
+
+        other metrics a pod serves on the same ``/metrics`` route register here, such as
+        :class:`~threetears.observe.call_metrics.CallMetrics`.
+
+        :return: the registry
+        :rtype: CollectorRegistry | None
+        """
+        registry: "CollectorRegistry | None" = self._registry
+        return registry
+
+    @property
     def available(self) -> bool:
         """return whether the gauge registered against a live prometheus backend.
 

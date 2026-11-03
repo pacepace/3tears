@@ -41,6 +41,34 @@ __all__ = ["S3ObjectStore"]
 
 log = get_logger(__name__)
 
+#: the service models an S3 client of this store is built from, and the STS one its credentials refresh through
+_WARMED_SERVICES = ("s3", "sts")
+
+
+def _warm_loader(session: Any) -> None:
+    """read the service models and endpoint data a client is built from into ``session``'s loader cache, on a worker
+    thread, so opening a client on the loop finds them read. A session without a loader (a test's fake) is left alone.
+
+    :param session: the aiobotocore session
+    :ptype session: Any
+    :return: nothing
+    :rtype: None
+    """
+    get_component = getattr(session, "get_component", None)
+    if get_component is None:
+        return
+    loader = get_component("data_loader")
+    for service in _WARMED_SERVICES:
+        # cached by the arguments exactly as given: asked every way a client asks (no version, None, the latest)
+        version = loader.determine_latest_version(service, "service-2")
+        for type_name in ("service-2", "endpoint-rule-set-1"):
+            loader.load_service_model(service, type_name)
+            for api_version in (None, version):
+                loader.load_service_model(service, type_name, api_version=api_version)
+    for data in ("endpoints", "partitions", "sdk-default-configuration", "_retry"):
+        loader.load_data(data)
+
+
 #: S3 multipart parts must be >= 5 MiB (except the final part). The default
 #: part size doubles as the upload buffer ceiling -- one part-size buffer is
 #: the most memory a single ``put`` holds, regardless of total object size.
@@ -130,6 +158,8 @@ class S3ObjectStore:
         self._kept_loop: asyncio.AbstractEventLoop | None = None
         self._kept_exit: AsyncExitStack | None = None
         self._kept_lock: asyncio.Lock | None = None
+        # whether this store's session has read the service models a client is built from (:func:`_warm_loader`)
+        self._loader_warm = False
 
     def _config(self) -> BotoConfig:
         """the client configuration every client of this store is opened with.
@@ -166,6 +196,12 @@ class S3ObjectStore:
         assert self._kept_lock is not None  # noqa: S101 -- set with the loop above
         async with self._kept_lock:
             if self._kept is None:
+                if not self._loader_warm:
+                    # the session's service models read off the loop first: read on it, opening the client held the
+                    # loop ~50 ms (json of the s3 model and its endpoint rules), at a load's first export read on
+                    # cobalt prod (2026-10-31); read here, the open takes ~2 ms
+                    await asyncio.to_thread(_warm_loader, self._session)
+                    self._loader_warm = True
                 exit_stack = AsyncExitStack()
                 self._kept = await exit_stack.enter_async_context(self._opened_client())
                 self._kept_exit = exit_stack

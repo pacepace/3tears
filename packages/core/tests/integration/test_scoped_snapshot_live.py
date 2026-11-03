@@ -935,7 +935,12 @@ async def test_a_staged_scope_shows_nowhere_until_its_pointer_moves_and_then_eve
         await replica.stop()
 
 
-async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catch_up(platform: _Platform) -> None:
+async def test_a_staged_scope_whose_pointer_fell_behind_moves_with_l3s_rows_for_what_it_left_out(
+    platform: _Platform,
+) -> None:
+    """A stage of some tables never carries the others from a pointer at an epoch its writer did not see; with L3
+    holding the scope at the stage's epoch it reads them from L3 and moves, so nothing waits on a catch-up that
+    back-to-back writes never let run (cobalt prod, 2026-10-31)."""
     writer, _ = await platform.replica()
     await writer.start()
     await writer.wait_ready(timeout=_WAIT)
@@ -947,11 +952,19 @@ async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catc
 
     moved, skipped = await writer.publish_staged([staged], carry_at={"CA": 3})
 
-    assert (moved, skipped) == ([], ["CA"]), "a chunk was carried from an epoch the writer did not see"
-    assert await writer.catch_up_from_l3() == ["CA"]
-    with writer.read() as cursor:
-        assert cursor.execute("SELECT DISTINCT total FROM counties WHERE state = 'CA'").fetchall() == [(5,)]
+    assert (moved, skipped) == (["CA"], []), "the scope whose pointer fell behind was left for the catch-up"
+    await _until(
+        lambda: _distinct(writer, "SELECT DISTINCT total FROM counties WHERE state = 'CA'") == [(5,)],
+        what="CA's counties as L3 holds them at the stage's epoch, never the pointer's chunk from epoch 1",
+    )
+    assert await writer.catch_up_from_l3() == [], "nothing is left behind L3"
     await writer.stop()
+
+
+def _distinct(replica: Any, sql: str) -> list[tuple[Any, ...]]:
+    """what a replica's copy answers for ``sql``."""
+    with replica.read() as cursor:
+        return cursor.execute(sql).fetchall()
 
 
 async def test_a_whole_write_into_an_empty_snapshot_is_loaded_from_l2_with_no_rebuild(platform: _Platform) -> None:
