@@ -8,7 +8,8 @@ analyst and its editor that write a campaign's page. An eval file imports its na
   for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`; ``python -m threetears.evals FILE``
   runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
-  :func:`read_writer_cases` reads a directory of them.
+  :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
+  :class:`MintedWriterCase`, on a :data:`WriterSide`.
 
 Four modules build it, each for one part of a writer eval:
 
@@ -32,18 +33,23 @@ the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText
-from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
-from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterResult, WriterSide
+from threetears.evals.harness.writer_cases import WriterCaseFile, WriterCaseFormat, read_writer_cases
+from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterResult
 from threetears.evals.harness.writer_host import WriterJudge
+from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
+from threetears.evals.ops.report_writer.writer_kind import WriterSide
 
 __all__ = [
     "AnalystSkill",
+    "MintedWriterCase",
     "SkillText",
     "Writer",
     "WriterCaseFile",
+    "WriterCaseFormat",
     "WriterEval",
     "WriterJudge",
     "WriterResult",
     "WriterSide",
+    "WriterSplit",
     "read_writer_cases",
 ]

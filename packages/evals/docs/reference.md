@@ -29,6 +29,7 @@ Import only from these roots: a module under a root is internal and may move. Th
 - [`threetears.evals.storage`](#api-storage)
 - [`threetears.evals.testing`](#api-testing)
 - [`threetears.evals.quick`](#api-quick)
+- [`threetears.evals.harness`](#api-harness)
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
@@ -831,6 +832,11 @@ The host bridge: an eval's host, the command line, and a measure declared on the
   <br>`= 2`
 - **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
   <br>`= 1`
+
+<a id="api-harness"></a>
+### `threetears.evals.harness`
+
+The writer harness: the report writer measured as the thing under test, over the quick path's own store.
 
 <a id="api-ops"></a>
 ### `threetears.evals.ops`

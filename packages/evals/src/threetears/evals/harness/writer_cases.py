@@ -228,4 +228,4 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
 
 
 #: The writer eval reads a case directory and mints each case; the freeze and the format's names wait for a caller.
-__all__ = ["WriterCaseFile", "read_writer_cases"]
+__all__ = ["WriterCaseFile", "WriterCaseFormat", "read_writer_cases"]

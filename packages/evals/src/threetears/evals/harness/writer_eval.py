@@ -57,7 +57,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any, get_args
 
 from threetears.evals.analysis import (
     CampaignReport,
@@ -76,6 +76,7 @@ from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_kind import WriterSide
 from threetears.evals.ops.report_writer.writer_bank import (
     MintedWriterCase,
     WriterSplit,
@@ -91,16 +92,14 @@ from threetears.evals.ops.report_writer.writer_contract import (
 )
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
-from threetears.evals.quick.contract import StoreSpec, open_store
+from threetears.evals.quick.contract import open_store
+from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import KEY_VARIABLE, WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
-
-#: Which side of the split a writer eval launches on.
-WriterSide = Literal["held_out", "dev"]
 
 #: The effort lever's id, as the writer's overlays name it.
 _EFFORT_LEVER = f"{WRITER_KIND}.reasoning_effort"
@@ -302,7 +301,7 @@ class WriterEval:
         request_s: float = 120.0,
         margin: float = 5.0,
         writer_provider: str = "anthropic",
-        store: StoreSpec = None,
+        store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
     ) -> None:
         """Declare the eval; nothing is read or run until :meth:`run`.
@@ -337,7 +336,7 @@ class WriterEval:
         :ptype writer_provider: str
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
-        :ptype store: StoreSpec
+        :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
         :ptype scope: str | None
         :raises ValueError: Fewer than two arms, two arms on one model, skill and effort, a name too long for a campaign, or a share, budget,
@@ -694,4 +693,4 @@ def _results_held_elsewhere(
     ]
 
 
-__all__ = ["Writer", "WriterEval", "WriterResult", "WriterSide"]
+__all__ = ["Writer", "WriterEval", "WriterResult"]
