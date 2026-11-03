@@ -14,13 +14,12 @@ analyst and its editor that write a campaign's page. An eval file imports its na
 Five modules build it, each for one part of a writer eval:
 
 - :mod:`~threetears.evals.harness.writer_eval`: the eval, its arms and its result;
-- :mod:`~threetears.evals.harness.analyse`: the writer over a quick eval's result, which ``python -m threetears.evals.harness FILE --write-report MODEL`` runs after the file's evals;
 - :mod:`~threetears.evals.harness.writer_host`: a host that launches report writer arms over a store, beside the
   quick host's runs in it;
 - :mod:`~threetears.evals.harness.writer_turns`: an arm's writer models, replayed from one recording per case, or
   recorded once;
 - :mod:`~threetears.evals.harness.writer_cases`: a writer case frozen into a portable file, read back and minted
-  into any scope.
+  into any scope;
 - :mod:`~threetears.evals.harness.analyse`: the report writer's report on one campaign of the quick path, replayed
   from its recording with no key, written beside the eval's own report; ``python -m threetears.evals.harness FILE
   --write-report MODEL`` (:mod:`~threetears.evals.harness.__main__`) runs an eval file, then analyses each result.
@@ -31,7 +30,9 @@ This package sits above ``quick``: it composes the quick path with the surfaces 
 ``providers`` only as ``quick`` does, inside the function that builds a ``Model``, so importing it loads no client.
 
 **This module is the package's public root.** An eval file imports from here and from no module below it, and only
-the names in ``__all__``.
+the names in ``__all__``. :func:`~threetears.evals.harness.analyse.analyse` is not one of them: it returns the
+writer's whole result (``ReportWritten``), whose report document model no public root exports, so it is the harness
+door's alone until it returns a value of the harness's own.
 """
 
 from __future__ import annotations

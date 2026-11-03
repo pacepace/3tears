@@ -178,5 +178,6 @@ def _write_page(path: Path, page: DocPage | None) -> None:
     path.write_text(doc_page_html(page), encoding="utf-8")
 
 
-#: The names the harness's command line calls; the constants above are read through them.
-__all__ = ["DEFAULT_BUDGET_USD", "Filed", "analyse", "analysis_page", "recording_path"]
+#: The names the harness's command line calls, the constants above read through them; and the turn cap, which the
+#: writer eval's reports run under too.
+__all__ = ["DEFAULT_BUDGET_USD", "TURN_CAP", "Filed", "analyse", "analysis_page", "recording_path"]

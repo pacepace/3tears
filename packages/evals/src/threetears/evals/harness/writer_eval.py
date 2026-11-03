@@ -24,7 +24,8 @@ editor), and each arm is a :class:`Writer`, a model with a skill and an effort. 
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
 if its cells ran one after another and clamps it at its ceiling, and the host refuses an arm whose cells, two at a
 time, could outlast it. Without a turn cap a report's turns are bounded only by its dollars, so its deadline runs
-past any job, which is why ``turns`` defaults to 40. The most cases one arm may run:
+past any job, which is why ``turns`` defaults to 40 (``TURN_CAP``, the harness door's cap too). The most cases one
+arm may run:
 
 =========  ===========  ===========
 request_s  turns = 40   no turn cap
@@ -42,7 +43,7 @@ replay left recorded lines of is printed with the result: the code now stops soo
 **Withheld notes are checked against every arm's skill.** A case withholds the exemplar note reasoned on its own
 campaign, and each cell takes that note out of its own arm's skill (a frozen copy of the control's included), so a case
 withholding a note some arm's skill lacks could never run on that arm. It is refused here, before anything is minted.
-The mint itself checks the notes against the skill this build ships, for the bank, which outlives this eval.
+The mint checks the notes against the skill this build ships; a frozen skill's notes are checked here, above it.
 
 **A case's example results stay where it was frozen.** A snapshot frozen from a campaign names the stored result
 behind each example it shows. The writer's tools read the snapshot alone, and none of them fetches a stored result,
@@ -95,6 +96,7 @@ from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.quick.contract import open_store
 from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
+from threetears.evals.harness.analyse import TURN_CAP
 from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import KEY_VARIABLE, WriterTurns, writer_turns
@@ -219,7 +221,7 @@ class WriterResult:
         if self.decisions:
             lines += [f"promotion of {arm}: {self.promotion_why[arm]}" for arm in self.decisions]
         else:
-            lines.append("promotion: not read on the dev side, where a change is tuned; launch side='held_out'")
+            lines.append("promotion: read on the held-out side only")
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         text = "\n".join(lines)
@@ -297,7 +299,7 @@ class WriterEval:
         held_out_fraction: float = 0.35,
         side: WriterSide = "held_out",
         name: str = "writer",
-        turns: int = 40,
+        turns: int = TURN_CAP,
         request_s: float = 120.0,
         margin: float = 5.0,
         writer_provider: str = "anthropic",
@@ -318,6 +320,8 @@ class WriterEval:
         :param budget_usd: Each report's dollar cap.
         :ptype budget_usd: float
         :param max_cost_usd: The most the whole eval may spend, judge included; each arm runs under an equal share.
+            The run is refused when an arm's reports, each at ``budget_usd``, could pass its share: the judge's
+            calls ride in the same share, so leave them room.
         :ptype max_cost_usd: float
         :param held_out_fraction: The share of split groups placed on the held-out side when first minted.
         :ptype held_out_fraction: float
@@ -687,10 +691,7 @@ def _results_held_elsewhere(
     ]
     if not naming:
         return []
-    return [
-        f"{len(naming)} case(s) name example results stored only where they were frozen; the writer reads each example "
-        "from its snapshot, and a page that names such a result names one this store does not hold"
-    ]
+    return [f"{len(naming)} case(s) name example results stored only where they were frozen"]
 
 
 __all__ = ["Writer", "WriterEval", "WriterResult"]

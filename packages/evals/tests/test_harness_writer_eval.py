@@ -1,36 +1,45 @@
 """``WriterEval``: the report writer measured over portable case files, replayed from turn recordings, offline.
 
 Every case is a package fixture snapshot written as a writer case file; every arm's writer is a turn recording laid
-where the arm's router reads it, whose analyst replies hold no document, so each cell ends with nothing stored and
-nothing reaches the judge. The judge is a :class:`~threetears.evals.providers.Model` whose transport fails any request,
-and every socket connect fails too: a replay-only run makes no network call.
+where the arm's router reads it. Most recordings' analyst replies hold no document, so each cell ends with nothing
+stored and nothing reaches the judge, a :class:`~threetears.evals.providers.Model` whose transport fails any request.
+One recording stores Kairo's report, whose page a scripted judge scores. Every socket connect fails too: a replay-only
+run makes no network call, whether or not its pages reach the judge.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import socket
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Final
 
 import httpx
 import pytest
 
-from packages.evals.tests.analyst_support import fixture_snapshots
-from packages.evals.tests.report_writer_support import reply
+from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
+from packages.evals.tests.report_writer_support import call, reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals import Eval
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.analysis import gate_verdicts
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.harness.analyse import Filed
 from threetears.evals.ops import OpsHost
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES
+from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
 from threetears.evals.providers import Model
+from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
 from threetears.evals.harness.writer_turns import KEY_VARIABLE, writer_turns
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, EvalTemplate
+from threetears.evals.schema.completion import StopReason
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.storage import SqliteDocumentStore
 
@@ -45,6 +54,12 @@ CASES: Final = {"r1": "reference", "r2": "reference", "r2 without its gates": "m
 
 #: The cases on the held-out side: three fixtures, and a quick eval's campaign frozen in its own store, in r1's group.
 HELD_OUT: Final = ("r1", "r2", "r2 without its gates", "triage")
+
+#: The held-out side's fixtures alone, where no quick eval's campaign is frozen beside them.
+HELD_OUT_FIXTURES: Final = tuple(name for name in HELD_OUT if name in CASES)
+
+#: The cases on the dev side: r3's group.
+DEV: Final = ("r3",)
 
 #: The quick eval's tickets: each runner misses some, so the frozen page shows examples of stored results.
 TICKETS: Final = [
@@ -132,10 +147,18 @@ def _silent_lines(turns: int) -> list[dict[str, Any]]:
     return lines
 
 
-def _recordings(directory: Path, cases: Path, arms: dict[str, Writer], *, extra: str | None = None) -> None:
-    """Lay a silent recording for every held-out case of every arm; ``extra`` gets one line no replay asks."""
-    held_out = {case.snapshot.id: case.name for case in read_writer_cases(cases) if case.name in HELD_OUT}
-    assert sorted(held_out.values()) == sorted(HELD_OUT)
+def _recordings(
+    directory: Path,
+    cases: Path,
+    arms: dict[str, Writer],
+    *,
+    extra: str | None = None,
+    names: tuple[str, ...] = HELD_OUT,
+) -> None:
+    """Lay a silent recording for every case of ``names`` (the held-out side's) of every arm; ``extra`` gets one line
+    no replay asks."""
+    held_out = {case.snapshot.id: case.name for case in read_writer_cases(cases) if case.name in names}
+    assert sorted(held_out.values()) == sorted(names)
     for arm, writer in arms.items():
         routed = writer_turns(
             directory, arm=arm, skill=writer.analyst_skill, cases=held_out, revisions=writer.revisions
@@ -197,7 +220,14 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
     await _quick_case_file(tmp_path / "cases")
     _recordings(tmp_path / "turns", tmp_path / "cases", arms, extra="variant")
 
-    result = await _eval(tmp_path, arms).run()
+    writer_eval = _eval(tmp_path, arms)
+    # The file door's protocols, held by the type checker and at run time: the eval is a runnable, its result a
+    # result the door prints, writes and exits on, and a filed campaign the harness door's writer reads.
+    door: Runnable = writer_eval
+    assert runnable(door)
+    result = await writer_eval.run()
+    ran: RunResult = result
+    assert isinstance(ran, Filed)
 
     assert isinstance(result, WriterResult)
     await asyncio.to_thread(_holds_the_cases_template_and_campaign, tmp_path, result)
@@ -227,6 +257,8 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
     assert "shipped: writer turns replayed from" in text
     # A case naming an example result this store does not hold is said, not left silent.
     assert "1 case(s) name example results stored only where they were frozen" in text
+    # The whole result, as the file door prints it with --verbose: the quiet summary, then each arm's and the page.
+    assert result.render(full=True).startswith(f"{text}\n\n")
 
 
 async def test_a_missing_recording_with_no_key_is_refused_before_anything_runs(
@@ -278,3 +310,236 @@ def test_two_arms_alike_and_one_arm_are_refused() -> None:
             budget_usd=1.0,
             max_cost_usd=4.0,
         )
+
+
+async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before_any_arm_launches(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+    budget_usd, max_cost_usd = 1.25, 6.0
+    share = max_cost_usd / len(arms)
+    assert len(HELD_OUT_FIXTURES) * budget_usd > share, "the control: the reports' budgets pass the share"
+
+    expected = (
+        f"{len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} share of "
+        f"max_cost_usd ${max_cost_usd:.2f}; raise max_cost_usd or lower budget_usd"
+    )
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, arms, budget_usd=budget_usd, max_cost_usd=max_cost_usd).run()
+    assert str(refused.value) == expected
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
+    assert offline == []
+
+
+async def test_a_held_out_set_listing_a_case_no_file_holds_is_refused(tmp_path: Path, offline: list[object]) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    # A first run mints every case into its side's set; no recording is laid, so it stops there.
+    with pytest.raises(ValueError, match="no turn recording"):
+        await _eval(tmp_path, arms).run()
+    gone = await asyncio.to_thread(_the_misfit_case, tmp_path)
+    (tmp_path / "cases" / "r2-without-its-gates.json.gz").unlink()
+
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, arms).run()
+    assert str(refused.value) == (
+        f"the held-out set of scope {SCOPE!r} lists 1 case(s) no file in {tmp_path / 'cases'} holds ({gone}); retire "
+        "them (writer_case_archive), or run in a fresh scope (scope=)"
+    )
+    assert offline == []
+
+
+def _the_misfit_case(tmp_path: Path) -> str:
+    """The stored id of the one case minted with the misfit stratum."""
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    template = storage.load_template_by_name("report writer", SCOPE)
+    assert template is not None
+    bank = writer_case_bank(storage.query_test_cases(SCOPE, template_id=template.id))
+    (misfit,) = [stored.id for stored, _ in bank.cases if stored.stratum == "misfit"]
+    return misfit
+
+
+async def test_a_scope_holding_a_report_writer_template_of_another_kind_is_refused(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    _case_files(tmp_path / "cases")
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    other = EvalTemplate(
+        id="not-a-writer", scope_id=SCOPE, name="report writer", intent="Score a callable.", candidate_kind="callable"
+    )
+    await asyncio.to_thread(storage.save_template, other)
+
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, _arms()).run()
+    assert str(refused.value) == (
+        f"scope {SCOPE!r} holds a template named 'report writer' of kind 'callable'; run the writer eval in another "
+        "scope (scope=)"
+    )
+    assert offline == []
+
+
+async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=DEV)
+
+    result = await _eval(tmp_path, arms, side="dev").run()
+
+    assert result.side == "dev"
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.n_cases == len(DEV)
+    assert result.decisions == {} and result.gates == {}
+    assert result.exit_code() == 0 and result.why_failed() is None
+    text = result.render()
+    assert text.startswith(f"writer: variant against shipped, {len(DEV)} dev case(s) x 1")
+    assert "promotion: read on the held-out side only" in text
+    assert "promotion of" not in text
+    assert offline == []
+
+
+async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_exits_1(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+    result = await _eval(tmp_path, arms).run()
+    assert result.exit_code() == 0 and result.why_failed() is None, "the control: the replay read no regression"
+
+    # The same read, its first verdict shown worse than the control: the gate the promotion read gates with fails.
+    read = result.gates["variant"].gated[0]
+    regressed = read.model_copy(update={"kind": "contrast", "outcome": "regressed"})
+    gate = gate_verdicts([regressed])
+    assert gate.failed and gate.why() is not None
+    failing = replace(result, gates={"variant": gate})
+    assert failing.exit_code() == 4
+    assert failing.why_failed() == f"variant's promotion gate {gate.why()}"
+
+    # An arm whose run did not complete exits 1, whatever its gates read.
+    unfinished = {**result.arms, "variant": result.arms["variant"].model_copy(update={"status": "failed"})}
+    assert replace(failing, arms=unfinished).exit_code() == 1
+    assert offline == []
+
+
+@pytest.mark.parametrize(
+    ("build", "refusal"),
+    [
+        (lambda: Writer(" "), "names its model by id, and this one is blank"),
+        (lambda: Writer(WRITER, effort="loud"), "effort 'loud' is none of none, minimal, low"),
+        (lambda: Writer(WRITER, revisions=MOST_REVISIONS + 1), f"revisions are 0 to {MOST_REVISIONS}, not 3"),
+        (lambda: Writer(WRITER, revisions=-1), f"revisions are 0 to {MOST_REVISIONS}, not -1"),
+        (lambda: _declared(held_out_fraction=0.0), "strictly between 0 and 1, not 0.0"),
+        (lambda: _declared(held_out_fraction=1.0), "strictly between 0 and 1, not 1.0"),
+        (lambda: _declared(side="both"), "side is 'held_out' or 'dev', not 'both'"),
+        (lambda: _declared(name="w" * (DECLARED_NAME_CHARS + 1)), f"at most {DECLARED_NAME_CHARS} characters"),
+        (lambda: _declared(budget_usd=0.0), "budget_usd is above 0, not 0.0"),
+        (lambda: _declared(max_cost_usd=-1.0), "max_cost_usd is above 0, not -1.0"),
+        (lambda: _declared(turns=0), "turns is above 0, not 0"),
+        (lambda: _declared(request_s=0.0), "request_s is above 0, not 0.0"),
+    ],
+)
+def test_a_writer_or_writer_eval_declared_out_of_range_is_refused(build: Callable[[], object], refusal: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        build()
+
+
+def _declared(**overrides: Any) -> WriterEval:
+    """A writer eval declared with two distinct arms and ``overrides``; nothing is read until it runs."""
+    arguments: dict[str, Any] = {
+        "arms": _arms(),
+        "judge": Model(JUDGE, api_key="unused"),
+        "recordings": "turns",
+        "budget_usd": 1.0,
+        "max_cost_usd": 4.0,
+    }
+    return WriterEval("cases", **{**arguments, **overrides})
+
+
+@dataclass(frozen=True)
+class _Scored:
+    """One scripted judge reply, in the attribute names the engine reads."""
+
+    content: str
+    input_tokens: int | None = 200
+    output_tokens: int | None = 30
+    cost_usd: float | None = 0.0
+    price_source: str | None = "scripted rate"
+    model: str = JUDGE
+    served_model: str | None = JUDGE
+    reasoning_tokens: int | None = None
+    stop_reason: StopReason = "end_turn"
+    temperature: float | None = None
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeScoringJudge:
+    """A scoring judge that sends nothing: it scores the dimension its system prompt names 4, and keeps every call."""
+
+    model_name = JUDGE
+    provider = "openrouter"
+    base_url = None
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Scored:
+        match = re.search(r'single key "([^"]+)"', system)
+        assert match is not None, "the judge's system prompt names no dimension"
+        self.calls.append(match[1])
+        return _Scored(json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: 4}}))
+
+
+def _stored_report_lines() -> list[dict[str, Any]]:
+    """Kairo's report as a recording keeps it: the analyst reads the dominance and submits the document; the editor
+    reads it too and clears it."""
+    sessions = {
+        "analyst": [reply(call(1, "options_dominance", "{snapshot}"), model=WRITER), reply(submitted(), model=WRITER)],
+        "editor-1": [reply(call(9, "options_dominance", "{snapshot}"), model=WRITER), reply(review(), model=WRITER)],
+    }
+    lines: list[dict[str, Any]] = []
+    for session, replies in sessions.items():
+        for index, said in enumerate(replies):
+            stamp = {"recorder_version": 1, "recorded_at": "2026-11-03T00:00:00+00:00", "session": session}
+            lines.append({**stamp, "index": index, "kind": "ceiling", "ceiling": 0.05})
+            lines.append({**stamp, "index": index, "kind": "reply", "reply": said.to_json()})
+    return lines
+
+
+async def test_a_replay_whose_pages_reach_the_judge_makes_no_network_call(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _arms()
+    group, withhold = SEED[KAIRO]
+    kairo = WriterCaseFile(
+        name="kairo",
+        group=group,
+        stratum="reference",
+        withhold=list(withhold),
+        snapshot=fixture_snapshots("frozen-elsewhere")[KAIRO],
+    )
+    kairo.write(tmp_path / "cases" / "kairo.json.gz")
+    for arm, writer in arms.items():
+        routed = writer_turns(
+            tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
+        )
+        path = routed.path(WRITER, None, kairo.snapshot.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(line) + "\n" for line in _stored_report_lines()), encoding="utf-8")
+    judge = FakeScoringJudge()
+
+    result = await _eval(tmp_path, arms, judge=judge).run()
+
+    # Every arm's page was stored and judged on all seven dimensions, and nothing was sent anywhere.
+    dims = [dim.name for dim in writer_scoring_rubric()]
+    assert sorted(judge.calls) == sorted(dims * len(arms))
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.n_cases == 1
+        assert summary.errors == []
+        assert {dimension.name for dimension in summary.judged} == set(dims)
+    assert any(line.endswith("(judged) | 4.00 | 4.00 |") for line in result.render().splitlines())
+    assert offline == []

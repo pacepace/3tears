@@ -5,7 +5,10 @@
 run as an ``Eval`` is. ``analyse`` has the report writer write a result's report, replaying its recording with no key
 and writing ``analysis.html``; a replay that leaves recorded lines unasked says so. The harness door runs a file as
 the file door does, then analyses each result; with no recording and no key it is refused, naming the file and
-``ANTHROPIC_API_KEY``.
+``ANTHROPIC_API_KEY``. Over a result held in hand (a runnable whose run hands it back, so its snapshot is fixed and
+its recording laid in advance), the door's every after-hook ending is held offline: the page written (exit 0), the
+writer storing nothing (1), the store refusing the report (1), a campaign the freeze cannot find (2), and a result
+that files no campaign (2).
 
 The re-run check: rung 1 run twice makes two campaigns, two snapshots, and a recording keyed to the first's, which the
 second finds none of. Nothing reaches a model: every reply is scripted, and every tool call runs live on the
@@ -14,11 +17,13 @@ frozen snapshot.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 import pytest
 
@@ -34,6 +39,7 @@ from packages.evals.tests.report_writer_support import (
 from packages.evals.tests.rung_support import rung_copy
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.actions.report_writing import write_report
+from threetears.evals.harness.__main__ import PROG
 from threetears.evals.harness.__main__ import main as harness_main
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness.analyse import analyse, analysis_page, recording_path
@@ -41,14 +47,19 @@ from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
-from threetears.evals.quick import EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED
-from threetears.evals.quick.files import load_evals, main
+from threetears.evals.kernel import EvalReportDoc, EvalReportSession
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.quick import EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
+from threetears.evals.quick.files import RunResult, load_evals, main
 from threetears.evals.quick.result import CREATED_BY, Result
-from threetears.evals.schema.turns import TurnReply
+from threetears.evals.schema.turns import TurnReply, TurnText
 from threetears.evals.testing import RecordedTurns, RecordingRefused
 
 #: Rung 1's eval, named for its cases file.
 RUNG_ONE: Final = "emails"
+
+#: How many analyst replies a report that never submits asks for before the loop gives up on it.
+SILENT_TURNS: Final = 4
 
 #: A report on rung 1's one-arm campaign that passes validity and every invariant on its snapshot: it recommends no
 #: arm, lists the caveat code assigns, and shows its lead claim on the lookalike examples, by query.
@@ -317,3 +328,122 @@ async def test_a_re_run_of_rung_one_is_a_new_snapshot_no_earlier_recording_repla
 
     assert (replayed.ending, replayed.outcome.analyst_rounds, replayed.outcome.editor_rounds) == ("stored", 1, 1)
     assert "drift:" not in capsys.readouterr().out
+
+
+# parity-with: threetears.evals.quick.files.Runnable
+class FakeHeldRunnable:
+    """A runnable whose run hands back a result already run, set on the class by the test: its campaign, and so the
+    snapshot the writer reads, are fixed before the door runs it, so the writer's recording is laid in advance."""
+
+    name = RUNG_ONE
+    held: ClassVar[RunResult | None] = None
+
+    async def run(self) -> RunResult:
+        assert self.held is not None, "the test holds a result before the door runs the file"
+        return self.held
+
+
+#: An eval file defining one runnable over a result held in hand.
+HELD = f"""\
+from {__name__} import FakeHeldRunnable
+
+held = FakeHeldRunnable()
+"""
+
+
+def _held(monkeypatch: pytest.MonkeyPatch, result: RunResult) -> Path:
+    """An eval file in the working directory whose one runnable hands back ``result``."""
+    monkeypatch.setattr(FakeHeldRunnable, "held", result)
+    path = Path("held.py")
+    path.write_text(HELD, encoding="utf-8")
+    return path
+
+
+def _ran_rung_one() -> tuple[Result, str]:
+    """Rung 1 run in a loop of its own, and the snapshot its campaign freezes as, in another."""
+    result = asyncio.run(_run_rung_one())
+    return result, asyncio.run(_snapshot_of(result))
+
+
+def test_the_harness_door_writes_the_analysis_of_a_held_result_from_its_recording(
+    rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result, snapshot = _ran_rung_one()
+    recording = _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
+
+    assert harness_main([str(_held(monkeypatch, result)), "--write-report", MODEL]) == EXIT_OK
+
+    printed = capsys.readouterr().out
+    assert f"analysis: {analysis_page(RUNG_ONE)}, written from {recording}" in printed
+    assert "drift:" not in printed
+    assert "Triage passes most emails" in analysis_page(RUNG_ONE).read_text(encoding="utf-8")
+
+
+def test_a_writer_that_stores_nothing_exits_1_with_no_page(
+    rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result, snapshot = _ran_rung_one()
+    silent = [reply(TurnText("I have no report yet.")) for _ in range(SILENT_TURNS)]
+    _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), {"analyst": silent})
+
+    assert harness_main([str(_held(monkeypatch, result)), "--write-report", MODEL]) == EXIT_RUN_DID_NOT_COMPLETE
+
+    (said,) = [line for line in capsys.readouterr().out.splitlines() if line.startswith("analysis:")]
+    assert said.startswith("analysis: none; the writer ended refused: ")
+    assert not analysis_page(RUNG_ONE).exists()
+
+
+def test_a_report_the_store_refuses_exits_1_saying_so(
+    rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result, snapshot = _ran_rung_one()
+    _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
+
+    def refuse(report: EvalReportDoc, *, sessions: Sequence[EvalReportSession] = ()) -> None:
+        raise StorageError("the document is larger than the store takes")
+
+    monkeypatch.setattr(result.host.storage, "save_report_doc", refuse)
+    path = _held(monkeypatch, result)
+
+    assert harness_main([str(path), "--write-report", MODEL]) == EXIT_RUN_DID_NOT_COMPLETE
+
+    refused = capsys.readouterr().err
+    assert f"{PROG} {path}: {RUNG_ONE}: the writer's report was not stored: the report ended stored" in refused
+    assert not analysis_page(RUNG_ONE).exists()
+
+
+def test_a_campaign_the_freeze_cannot_find_is_refused_with_exit_2(
+    rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result, _ = _ran_rung_one()
+    path = _held(monkeypatch, replace(result, campaign_id="campaign-nowhere"))
+
+    assert harness_main([str(path), "--write-report", MODEL]) == EXIT_REFUSED
+
+    refused = capsys.readouterr().err
+    assert f"{PROG} {path}: {RUNG_ONE}: " in refused and "campaign-nowhere" in refused
+    assert not analysis_page(RUNG_ONE).exists()
+
+
+def test_a_result_that_files_no_campaign_is_refused_with_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("double.py").write_text(f"from {__name__} import FakeRunnable\n\npasses = FakeRunnable('passes')\n")
+
+    assert harness_main(["double.py", "--write-report", MODEL]) == EXIT_REFUSED
+
+    captured = capsys.readouterr()
+    assert "report: .evals/reports/passes/report.html" in captured.out, "the file door ran and reported first"
+    assert f"{PROG} double.py: passes: its result files no campaign for the writer to read" in captured.err
+
+
+def test_the_file_door_refusing_write_report_names_the_door_that_takes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("doubles.py").write_text(DOUBLES, encoding="utf-8")
+
+    assert main(["doubles.py", "--write-report", MODEL]) == EXIT_REFUSED
+
+    assert "(--write-report is python -m threetears.evals.harness's)" in capsys.readouterr().err

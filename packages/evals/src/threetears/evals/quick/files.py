@@ -215,7 +215,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args and Path(args[0]).suffix in EVAL_FILES:
         rest = args[1:]
         if unknown := [arg for arg in rest if arg != "--verbose"]:
-            sys.stderr.write(f"{DEFAULT_PROG} FILE takes only --verbose; not {' '.join(unknown)}\n")
+            # The harness door takes the writer's flag; this door names it rather than leave the author guessing.
+            elsewhere = (
+                " (--write-report is python -m threetears.evals.harness's)" if "--write-report" in unknown else ""
+            )
+            sys.stderr.write(f"{DEFAULT_PROG} FILE takes only --verbose; not {' '.join(unknown)}{elsewhere}\n")
             return EXIT_REFUSED
         return run_file(Path(args[0]), verbose="--verbose" in rest)
     return run_cli(args)
