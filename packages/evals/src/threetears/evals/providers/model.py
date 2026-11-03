@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import cache
 from typing import Any, Final, Self, get_args
 
 import httpx
@@ -92,9 +93,24 @@ _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
 #: not list for it: the plain prompt rate, or the dearer of two write rates the reply does not split between.
 _CACHE_APPROXIMATE: Final = ";cache-approximate"
 
-#: When this module was imported. Under ``RECORD=1`` a recording last written before it is from an earlier run and
-#: is started afresh; one written since is this run's, and is added to.
-_IMPORTED_AT: Final = time.time()
+
+_FILE_CLOCK_SLACK_SECONDS: Final = 1.0
+
+
+@cache
+def _run_started_at() -> float:
+    """When this run's first recording check happened, read once and kept.
+
+    Under ``RECORD=1`` a recording last written before it is from an earlier run and is started afresh; one written
+    since is this run's, and is added to. The clock is read on the first call, never at import, so importing the
+    module is a pure definition. A file system stamps a write with a clock coarser than ``time.time()``, so the
+    instant is taken one second early: a recording written just after the first call is never read as older than it.
+
+    :return: epoch seconds, one second before the first call
+    :rtype: float
+    """
+    return time.time() - _FILE_CLOCK_SLACK_SECONDS
+
 
 #: The engine's roles (:data:`~threetears.evals.kernel.host.CompletionRole`).
 _ROLES: Final = frozenset(get_args(CompletionRole))
@@ -982,7 +998,7 @@ class Model:
             self._client = live
             return
 
-        stale = rerecording and self.recording.exists() and self.recording.stat().st_mtime < _IMPORTED_AT
+        stale = rerecording and self.recording.exists() and self.recording.stat().st_mtime < _run_started_at()
         self._client = RecordedCompletions.record(live, self.recording, settings=self._settings, replace=stale)
 
     def derive(self, id: str | None = None, *, temperature: float | None, catalogue: Catalogue | None = None) -> Model:

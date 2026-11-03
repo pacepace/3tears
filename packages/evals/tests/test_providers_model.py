@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -1124,3 +1126,29 @@ async def test_record_starts_a_stale_recording_afresh_and_adds_to_one_written_th
     assert [json.loads(line)["result"]["content"] for line in lines] == ["new", "newer"]
     replay = RecordedCompletions.replay(path, settings=ClientRequestSettings(max_tokens=8192))
     assert (await replay.generate(system="", user="x")).content == "new"
+
+
+def test_importing_the_model_module_reads_no_clock() -> None:
+    script = (
+        "import time\n"
+        "def refuse(*a, **k):\n"
+        "    raise AssertionError('the clock was read at import')\n"
+        "time.time = refuse\n"
+        "import threetears.evals.providers.model\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+
+
+async def test_the_run_start_is_read_on_first_use_and_kept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "triage.jsonl"
+    monkeypatch.delenv("RECORD", raising=False)
+    await model("vendor/m", Scripted(chat("old")), recording=path).text("x")
+    os.utime(path, (time.time() - 3600, time.time() - 3600))
+    monkeypatch.setenv("RECORD", "1")
+    await model("vendor/m", Scripted(chat("first")), recording=path).text("x")
+    stamp = path.stat().st_mtime
+    # a later call within the same run keeps what was written since the first check
+    await model("vendor/m", Scripted(chat("second")), recording=path).text("x")
+    assert path.stat().st_mtime >= stamp
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 2
