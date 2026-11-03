@@ -727,27 +727,14 @@ class TestNumericReadsBackAsDecimal:
             b.reset()
 
 
-def _count_statements(backend: SQLiteBackend) -> list[str]:
-    """every statement this thread's connection runs from now on, as SQLite traces it.
-
-    :param backend: the backend
-    :ptype backend: SQLiteBackend
-    :return: the list the statements are appended to
-    :rtype: list[str]
-    """
-    statements: list[str] = []
-    backend.get_connection().set_trace_callback(statements.append)
-    return statements
-
-
 class TestDeleteManyById:
     """many rows leave in one write transaction: one lock and one commit for N rows, not N of each."""
 
-    def test_n_ids_take_one_transaction(self, backend: SQLiteBackend) -> None:
+    def test_n_ids_take_one_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
         ids = [str(uuid.uuid4()) for _ in range(40)]
         for entity_id in ids:
             backend.upsert("test_entities", {"id": entity_id, "name": "row"})
-        statements = _count_statements(backend)
+        statements = l1_statements(backend)
 
         backend.delete_many_by_id("test_entities", ids)
 
@@ -755,8 +742,8 @@ class TestDeleteManyById:
         assert statements.count("COMMIT") == 1
         assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 0}]
 
-    def test_nothing_named_takes_no_transaction(self, backend: SQLiteBackend) -> None:
-        statements = _count_statements(backend)
+    def test_nothing_named_takes_no_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
+        statements = l1_statements(backend)
         backend.delete_many_by_id("test_entities", [])
         assert statements == []
 

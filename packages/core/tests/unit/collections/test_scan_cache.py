@@ -308,7 +308,7 @@ class TestAReadOvertakenByAnEvictionIsNotStored:
 
 
 class TestDropIsOneL1Write:
-    def test_every_dependent_entry_leaves_in_one_transaction(self) -> None:
+    def test_every_dependent_entry_leaves_in_one_transaction(self, l1_statements: Any) -> None:
         l1 = SQLiteBackend(db_name=f"scan-{uuid4().hex}")
         cache = ScanCache(l1, trusted=lambda _tables: True)
         keys = [ScanCacheKey("concepts", f"user-{i}") for i in range(20)]
@@ -316,8 +316,7 @@ class TestDropIsOneL1Write:
             cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
         kept = ScanCacheKey("conversations", "user-1")
         cache.put(kept, _ROWS, token=cache.begin_read(("conversations",)))
-        statements: list[str] = []
-        l1.get_connection().set_trace_callback(statements.append)
+        statements = l1_statements(l1)
 
         assert cache.drop_for_table("concepts") == len(keys)
 

@@ -2169,28 +2169,25 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _evict_l1(self, entity_id: Any) -> None:
         """drop ``entity_id``'s row from this process's L1, and stop any read or write in flight caching it.
 
-        The one way a row leaves this collection's L1, so every eviction also reaches the fence: a
-        pull-through that read the row before the eviction would otherwise cache it after.
+        One key through :meth:`_evict_l1_many`, the one way a row leaves this collection's L1.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        self._l1_fence.changed(self._fence_key(entity_id))
-        l1 = self._l1_holding_table()
-        if l1 is not None:
-            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        self._l1_changed(entity_id)
+        self._evict_l1_many((entity_id,))
 
     def _evict_l1_many(self, entity_ids: Sequence[Any]) -> None:
-        """drop many keys' rows from this process's L1 in one write, as :meth:`_evict_l1` does for one.
+        """drop many keys' rows from this process's L1 in one write; the one way a row leaves this collection's L1.
 
-        Each key reaches the fence before the delete and each listener hears its key after it,
-        as one at a time; the delete is one backend write, so the SQLite L1 takes its write lock
-        and commits once for every key rather than once a key -- run on the event loop as a
-        commit settles, that was a stall per key (prod 2026-11-02). A failed delete raises as
-        it did, every key already fenced.
+        Every key reaches the fence before the delete, so a pull-through that read a row before
+        the eviction does not cache it after. The delete is one backend write, so the SQLite L1
+        takes its write lock and commits once for every key rather than once a key. Every change
+        listener hears every key after the delete, and also when the delete fails: a backend that
+        deletes a row at a time (the DuckDB L1) may have dropped some keys before the failure, and
+        hearing a key that did not leave only voids what the listener holds. A failed delete then
+        raises unchanged.
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
         :ptype entity_ids: Sequence[Any]
@@ -2202,13 +2199,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         fence = self._l1_fence
         for entity_id in entity_ids:
             fence.changed(self._fence_key(entity_id))
-        l1 = self._l1_holding_table()
-        if l1 is not None:
-            l1.delete_many_by_id(
-                self.table_name, [self.normalize_pk(entity_id) for entity_id in entity_ids], self.primary_key_columns
-            )
-        for entity_id in entity_ids:
-            self._l1_changed(entity_id)
+        try:
+            l1 = self._l1_holding_table()
+            if l1 is not None:
+                l1.delete_many_by_id(
+                    self.table_name,
+                    [self.normalize_pk(entity_id) for entity_id in entity_ids],
+                    self.primary_key_columns,
+                )
+        finally:
+            for entity_id in entity_ids:
+                self._l1_changed(entity_id)
 
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
@@ -2261,7 +2262,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :mod:`threetears.core.collections.complete_copy`): every row this collection writes into L1
         (a write through, a pull-through, a new entity) goes through :meth:`_l1_upsert`, and every
         eviction (a write this process settled, a peer's invalidation broadcast) through
-        :meth:`_evict_l1`, so a listener here hears each change. It runs synchronously inside the
+        :meth:`_evict_l1_many`, so a listener here hears each change. It runs synchronously inside the
         change and must not raise.
 
         :param listener: called with the row's key (pk value, or tuple of pk values)
@@ -2949,11 +2950,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self.l1_backend
         if l1 is not None and (not hasattr(l1, "has_table") or l1.has_table(self.table_name)):
             columns = self.primary_key_columns
-            selected = ", ".join(f'"{column}"' for column in columns)
-            # identifiers are this collection's own declared table and pk column names
+            selected = ", ".join(quote_identifier(column) for column in columns)
             keys = [
                 tuple(row[column] for column in columns)
-                for row in l1.execute_query(f'SELECT {selected} FROM "{self.table_name}"')
+                for row in l1.execute_query(f"SELECT {selected} FROM {quote_identifier(self.table_name)}")
             ]
             self._evict_l1_many([key if len(key) > 1 else key[0] for key in keys])
             dropped = len(keys)

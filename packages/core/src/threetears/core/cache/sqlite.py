@@ -506,9 +506,8 @@ class SQLiteBackend:
         """delete many rows by primary key in one write transaction.
 
         One ``BEGIN IMMEDIATE`` and one ``COMMIT`` for every row, where ``delete_by_id``
-        a row at a time takes the write lock and commits once a row: a commit settling
-        hundreds of keys on the event loop paid for each (prod 2026-11-02, 92 ms median
-        stalls). A failure rolls every row back and propagates unchanged.
+        a row at a time takes the write lock and commits once a row. A failure rolls every
+        row back and propagates unchanged.
 
         :param table: target table name
         :ptype table: str

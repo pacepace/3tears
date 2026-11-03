@@ -1429,9 +1429,8 @@ class DuckDBBackend:
         """delete many rows by primary key, through ``delete_by_id`` a row at a time.
 
         Through it and not around it: a subclass that keeps something in step with each
-        delete (the reports pod's retention copy renews what it takes in the delete's
-        own transaction) stays in step for these too. The batched write is the SQLite
-        L1's (:class:`SQLiteBackend`), where the per-row cost was measured.
+        delete stays in step for these too. Not atomic: a failure partway leaves the rows
+        before it deleted, and raises unchanged.
 
         :param table: target table name
         :ptype table: str
