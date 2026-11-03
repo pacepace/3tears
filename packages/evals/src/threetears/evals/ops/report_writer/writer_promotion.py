@@ -46,6 +46,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
+from threetears.evals.kernel.run_pages import results_without_payloads
 from threetears.evals.ops.jobs import JobStatus
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
@@ -132,9 +133,16 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
 
 
 def _primary(
-    pairwise_job: JobStatus, *, campaign_id: str, candidate: CampaignArm, control: CampaignArm, judge_model: str
+    pairwise_job: JobStatus,
+    *,
+    campaign_id: str,
+    candidate: CampaignArm,
+    control: CampaignArm,
+    judge_model: str,
+    results: frozenset[str],
 ) -> Verdict:
-    """The pass's verdict over every pair, refusing a job that is no completed pass over what this read reads."""
+    """The pass's verdict over every pair, refusing a job that is no completed pass over what this read reads:
+    ``results`` are the ids of both arms' results in the campaign's runs as they stand."""
     job = pairwise_job.job_id
     if pairwise_job.kind != "action" or pairwise_job.state != "completed" or pairwise_job.result is None:
         raise ValidationFailedError(
@@ -164,6 +172,14 @@ def _primary(
         raise ValidationFailedError(
             f"job {job}'s pass names " + "; ".join(named) + ", so its preference is no reading of this campaign",
             remedy="run the pass over this campaign's candidate (writer_pairwise), then read with its job id",
+        )
+    read = {result for pair in report.pairs for result in (pair.candidate_result_id, pair.control_result_id)}
+    gone, unread = read - results, results - read - set(report.unpaired)
+    if gone or unread:
+        raise ValidationFailedError(
+            f"job {job}'s pass read {len(gone)} result(s) the campaign's runs no longer hold and left {len(unread)} "
+            "of theirs unread, so its preference is a reading of other runs",
+            remedy="run the pass again over the campaign as it stands (writer_pairwise), then read with its job id",
         )
     return report.whole.verdict
 
@@ -211,7 +227,9 @@ def _readout(primary: Verdict | None, verdicts: Sequence[Verdict]) -> str:
     """Each reading the decision read as one table row: its role, what it reads, its difference and interval."""
     role = {"contrast": "gated", "guardrail": "guardrail", "bar": "reported"}
     rows = [
-        [preference_rubric().name, "primary", "not read", "", "", ""] if primary is None else _row(primary, "primary"),
+        [preference_rubric().name, "primary", "not read", "", "", ""]
+        if primary is None
+        else [preference_rubric().name, *_row(primary, "primary")[1:]],
         *(_row(verdict, role[verdict.kind]) for verdict in verdicts),
     ]
     lines = ["| Reading | Role | Reads | Difference | Interval | Level |", "|---|---|---|---|---|---|"]
@@ -293,11 +311,23 @@ def writer_promotion(
     control_keys = {control.variant_key, *resolve_control_arm(control).variant_keys}
     judge_model = runs[0].judge_model
     assert judge_model is not None  # refuse_unfixed_scoring_judge refuses a run that recorded none
-    primary = (
-        None
-        if pairwise_job is None
-        else _primary(pairwise_job, campaign_id=campaign_id, candidate=arm, control=control, judge_model=judge_model)
-    )
+    primary = None
+    if pairwise_job is not None:
+        arms = keys | {control.variant_key, *resolve_control_arm(control).variant_keys}
+        results = frozenset(
+            result.id
+            for run in runs
+            for result in results_without_payloads(host.storage, run.id, scope_id)
+            if result.variant_key in arms
+        )
+        primary = _primary(
+            pairwise_job,
+            campaign_id=campaign_id,
+            candidate=arm,
+            control=control,
+            judge_model=judge_model,
+            results=results,
+        )
     verdicts = [verdict for verdict in campaign_verdicts(host, campaign_id, scope_id) if verdict.variant_key in keys]
     decision, why = _decided(primary, verdicts, candidate=arm.label, control=control.label)
     boards = [board for aspect in bundle.aspects for board in aspect.scoreboard]

@@ -45,7 +45,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops import JobsStarted, JobStatus, OpsHost, await_job
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND
+from threetears.evals.ops.report_writer.writer_contract import MUST_FIX_OPEN_MEASURE, WRITER_KIND
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.run.judge import CANNOT_TELL
@@ -254,6 +254,35 @@ async def test_a_preferred_candidate_with_no_gated_regression_and_every_guardrai
     assert stored is not None and stored.call is None, "the read never writes"
 
 
+async def test_a_gated_reading_not_separated_beside_an_improved_primary_is_promoted() -> None:
+    """The judged layout score does not separate the arms; only the primary is asked to, and it improved."""
+    host, campaign_id = _campaign(
+        _prefers_the_candidate, {**BETTER, "layout_fidelity": 4}, control={**CONTROL, "layout_fidelity": 2}
+    )
+    read = _read(host, campaign_id, await _pass(host, campaign_id))
+
+    assert _outcomes(read, "contrast")["extraction.layout_fidelity"] == "not_separated"
+    assert read.primary is not None and read.primary.outcome == "improved"
+    assert read.decision == "promote", read.why
+
+
+async def test_a_gated_reading_regressed_on_too_few_cases_reads_not_tested_and_keeps_nothing_out() -> None:
+    """A gated reading under the cases a rate needs reads as its page prints it, not tested, whatever its test came to:
+    the must-fix findings open, landed on four documents only, far more on the candidate."""
+    few = sorted(TOYHOST_DOCUMENTS)[: MIN_CASES - 1]
+    writer = (
+        {document: {MUST_FIX_OPEN_MEASURE: 0.0 + (index % 2)} for index, document in enumerate(few)},
+        {document: {MUST_FIX_OPEN_MEASURE: 60.0 + 2 * index} for index, document in enumerate(few)},
+    )
+    host, campaign_id = _campaign(_prefers_the_candidate, writer=writer)
+    read = _read(host, campaign_id, await _pass(host, campaign_id))
+
+    (must_fix,) = [verdict for verdict in read.verdicts if verdict.name == MUST_FIX_OPEN_MEASURE]
+    assert (must_fix.outcome, must_fix.reason) == ("regressed", "too_few_cases")
+    assert read.decision == "promote", read.why
+    assert f"| {must_fix.heading} | gated | too few cases |" in read.readout
+
+
 async def test_a_primary_reading_regressed_keeps_the_control_beside_every_gated_reading_improved() -> None:
     assert _computed(_prefers_the_control) == ("regressed", "separated")
     host, campaign_id = _campaign(_prefers_the_control)
@@ -329,6 +358,28 @@ async def test_a_primary_reading_on_too_few_cases_is_undecided_and_named_by_its_
     assert "| primary | too few cases |" in read.readout
 
 
+async def test_a_primary_reading_left_untested_by_a_stopped_pass_is_undecided_and_says_why() -> None:
+    host, campaign_id = _campaign(_prefers_the_candidate)
+    status = await _pass(host, campaign_id)
+    report = WriterPairwiseReport.model_validate(status.result)
+    why = "the account behind the judge refused a call"
+    untested = report.whole.verdict.model_copy(
+        update={
+            "outcome": "untested",
+            "reason": "untestable",
+            "reason_detail": why,
+            "interval": None,
+            "interval_level": None,
+            "p_adjusted": None,
+        }
+    )
+    stopped = report.model_copy(update={"stopped": why, "whole": report.whole.model_copy(update={"verdict": untested})})
+    read = _read(host, campaign_id, status.model_copy(update={"result": stopped.model_dump(mode="json")}))
+
+    assert read.decision == "undecided", read.why
+    assert f"the primary reading is untested ({why})" in read.why
+
+
 def test_with_no_pairwise_pass_the_read_never_promotes_and_says_the_primary_is_absent() -> None:
     host, campaign_id = promotion_campaign(BETTER)
     read = writer_promotion(host, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE)
@@ -349,7 +400,7 @@ async def test_the_readout_is_one_table_row_per_reading_with_its_role_and_number
     assert header == "| Reading | Role | Reads | Difference | Interval | Level |" and rule.startswith("|---|")
     assert len(rows) == 1 + len(read.verdicts)
     assert read.primary is not None and read.primary.interval is not None
-    assert rows[0].startswith(f"| {read.primary.heading} | primary | improved | ")
+    assert rows[0].startswith("| report_writer.preferred | primary | improved | ")
     assert [row.split(" | ")[1] for row in rows[1:]] == [
         {"contrast": "gated", "guardrail": "guardrail", "bar": "reported"}[verdict.kind] for verdict in read.verdicts
     ]
@@ -361,9 +412,15 @@ async def test_the_readout_is_one_table_row_per_reading_with_its_role_and_number
 
 @pytest.mark.parametrize(
     ("named", "other"),
-    [("campaign", "campaign_id"), ("candidate", "candidate_key"), ("judge", "judge_model")],
+    [
+        ("campaign", "campaign_id"),
+        ("candidate", "candidate_key"),
+        ("control", "control_key"),
+        ("judge", "judge_model"),
+        ("criterion", "criterion"),
+    ],
 )
-async def test_a_pass_naming_another_campaign_candidate_or_judge_than_the_read_is_refused(
+async def test_a_pass_naming_another_campaign_candidate_control_judge_or_criterion_is_refused(
     named: str, other: str
 ) -> None:
     host, campaign_id = _campaign(_prefers_the_candidate)
@@ -372,6 +429,21 @@ async def test_a_pass_naming_another_campaign_candidate_or_judge_than_the_read_i
     moved = status.model_copy(update={"result": {**status.result, other: "another"}})
     with pytest.raises(ValidationFailedError, match=f"names {named} another, where the read's is"):
         _read(host, campaign_id, moved)
+
+
+async def test_a_pass_over_results_the_campaign_no_longer_holds_is_refused() -> None:
+    """A pass read before the campaign's runs moved is a reading of other runs: one result swapped is refused."""
+    host, campaign_id = _campaign(_prefers_the_candidate)
+    status = await _pass(host, campaign_id)
+    report = WriterPairwiseReport.model_validate(status.result)
+    first, *rest = report.pairs
+    stale = report.model_copy(
+        update={"pairs": [first.model_copy(update={"candidate_result_id": "result-gone"}), *rest]}
+    )
+    with pytest.raises(
+        ValidationFailedError, match=r"read 1 result\(s\) the campaign's runs no longer hold and left 1"
+    ):
+        _read(host, campaign_id, status.model_copy(update={"result": stale.model_dump(mode="json")}))
 
 
 async def test_a_job_that_is_no_completed_pass_is_refused() -> None:
