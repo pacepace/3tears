@@ -50,7 +50,10 @@ from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
-from threetears.evals.providers import Model, ProviderError
+from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS
+from threetears.evals.providers import Catalogue, Model, ProviderError
+from threetears.evals.providers.model import DEFAULT_MAX_TOKENS
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
 from threetears.evals.harness.writer_turns import writer_turns
@@ -185,10 +188,17 @@ def _recordings(
             path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
 
+def _rates(rows: list[dict[str, Any]]) -> Catalogue:
+    """A catalogue read from ``rows`` over a scripted fetch, never the network."""
+    payload = {"data": rows}
+    return Catalogue(http=httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))))
+
+
 def _eval(tmp_path: Path, arms: dict[str, Writer], **overrides: Any) -> WriterEval:
     arguments: dict[str, Any] = {
         "arms": arms,
-        "judge": Model(JUDGE, api_key="unused", transport=httpx.MockTransport(_refuse)),
+        # A live judge the run never asks, whose catalogue prices nothing: it cannot price a call before launch.
+        "judge": Model(JUDGE, api_key="unused", transport=httpx.MockTransport(_refuse), catalogue=_rates([])),
         "recordings": tmp_path / "turns",
         "budget_usd": 0.75,
         "max_cost_usd": 8.0,
@@ -355,6 +365,114 @@ async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before
     assert str(refused.value) == expected
     storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
     assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
+    assert offline == []
+
+
+#: The judge's rates, per token, as OpenRouter's catalogue lists the rung-5 judge's: prompt, then output.
+PROMPT_RATE: Final = 0.825e-6
+OUTPUT_RATE: Final = 4.125e-6
+
+#: The judge's output cap, as rung 5 builds it.
+JUDGE_CAP: Final = 2048
+
+#: The judge's catalogue row.
+JUDGE_ROW: Final = {
+    "id": JUDGE,
+    "pricing": {"prompt": f"{PROMPT_RATE:.10f}", "completion": f"{OUTPUT_RATE:.10f}"},
+    "supported_parameters": ["max_tokens", "temperature", "reasoning", "response_format", "structured_outputs"],
+}
+
+#: One judge call with no page in it: the output cap and the prompt every call is allowed, at the judge's rates.
+FLOOR: Final = JUDGE_CAP * OUTPUT_RATE + PROMPT_FRAMING_TOKENS * PROMPT_RATE
+
+
+def _priced_judge() -> Model:
+    """A live judge priced from its catalogue row at rung 5's output cap, which the run never asks."""
+    return Model(
+        JUDGE,
+        api_key="unused",
+        transport=httpx.MockTransport(_refuse),
+        catalogue=_rates([JUDGE_ROW]),
+        max_tokens=JUDGE_CAP,
+    )
+
+
+async def test_the_judge_s_floor_is_its_own_output_cap_and_the_prompt_allowance_at_its_rates() -> None:
+    judge = _priced_judge()
+    await judge.refresh_prices()
+    assert judge.price_ceiling(system="", user="") == pytest.approx(FLOOR)
+    # The cap the judge is built with prices each call; built with none, it is priced at the client's default cap.
+    uncapped = Model(JUDGE, api_key="unused", transport=httpx.MockTransport(_refuse), catalogue=_rates([JUDGE_ROW]))
+    await uncapped.refresh_prices()
+    assert uncapped.price_ceiling(system="", user="") == pytest.approx(
+        DEFAULT_MAX_TOKENS * OUTPUT_RATE + PROMPT_FRAMING_TOKENS * PROMPT_RATE
+    )
+
+
+@pytest.mark.parametrize("what", ["pass", "arm"])
+async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_before_any_arm_launches(
+    tmp_path: Path, offline: list[object], what: str
+) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+    cases, dims, max_cost_usd = len(HELD_OUT_FIXTURES), len(writer_scoring_rubric()), 8.0
+    each = f"${FLOOR:.4f} each before any page is read ({JUDGE}'s output cap and {PROMPT_FRAMING_TOKENS} prompt tokens)"
+    pass_calls = cases * 2 * JUDGE_CALL_ATTEMPTS
+    judge_calls = cases * dims * JUDGE_CALL_ATTEMPTS
+    if what == "pass":
+        # A hundredth of $8 for the pass: under its calls at their floor, though the arms' parts hold theirs.
+        share, budget_usd = 0.01, 0.75
+        pass_part, arm_part = max_cost_usd * share, max_cost_usd * (1 - share) / len(arms)
+        assert pass_calls * FLOOR > pass_part and cases * budget_usd + judge_calls * FLOOR <= arm_part
+        expected = (
+            f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
+            f"attempts each) are priced at {each}, ${pass_calls * FLOOR:.2f} in all, above the pass's "
+            f"${pass_part:.2f} part of max_cost_usd ${max_cost_usd:.2f} (pairwise_share {share}); raise "
+            "pairwise_share or max_cost_usd, or lower the judge's max_tokens"
+        )
+    else:
+        # The reports alone fit the arm's part, and do not once its judging is priced beside them.
+        share, budget_usd = 0.2, 0.95
+        pass_part, arm_part = max_cost_usd * share, max_cost_usd * (1 - share) / len(arms)
+        assert pass_calls * FLOOR <= pass_part and cases * budget_usd <= arm_part
+        total = cases * budget_usd + judge_calls * FLOOR
+        assert total > arm_part
+        expected = (
+            f"an arm's {cases} report(s) at ${budget_usd:.2f} and its {judge_calls} judge call(s) ({cases} case(s) x "
+            f"{dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to ${total:.2f}, above "
+            f"the arm's ${arm_part:.2f} part of max_cost_usd ${max_cost_usd:.2f}; raise max_cost_usd, or lower "
+            "budget_usd or the judge's max_tokens"
+        )
+    with pytest.raises(ValueError) as refused:
+        await _eval(
+            tmp_path,
+            arms,
+            judge=_priced_judge(),
+            budget_usd=budget_usd,
+            max_cost_usd=max_cost_usd,
+            pairwise_share=share,
+        ).run()
+    assert str(refused.value) == expected
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
+    assert offline == []
+
+
+async def test_a_judge_whose_calls_at_their_floor_fit_every_part_is_admitted(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _arms()
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+    cases, dims = len(HELD_OUT_FIXTURES), len(writer_scoring_rubric())
+    assert cases * 0.75 + cases * dims * JUDGE_CALL_ATTEMPTS * FLOOR <= 8.0 * 0.8 / 2
+    assert cases * 2 * JUDGE_CALL_ATTEMPTS * FLOOR <= 8.0 * 0.2
+
+    result = await _eval(tmp_path, arms, judge=_priced_judge()).run()
+
+    assert all(summary.status == "completed" for summary in result.arms.values())
+    assert result.pairwise_unread == {}
     assert offline == []
 
 
@@ -581,6 +699,63 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     )
     assert campaign is not None and campaign.question == QUESTION
     assert result.exit_code() == 0
+
+
+def _scored(request: httpx.Request) -> httpx.Response:
+    """OpenRouter's reply to a judge call, as the scripted judge scores it: the dimension its system prompt names, 4."""
+    body = json.loads(request.content)
+    system = next(message["content"] for message in body["messages"] if message["role"] == "system")
+    match = re.search(r'single key "([^"]+)"', system)
+    assert match is not None, "the judge's system prompt names no dimension"
+    content = json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: JUDGED_SCORE}})
+    choice = {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+    usage = {"prompt_tokens": 200, "completion_tokens": 30}
+    return httpx.Response(200, json={"model": JUDGE, "choices": [choice], "usage": usage})
+
+
+async def test_a_judge_recorded_over_stored_pages_replays_in_a_fresh_store_with_no_key(
+    tmp_path: Path, offline: list[object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    arms = _kairo_arms(tmp_path)
+    recording = tmp_path / "recordings" / "judge.jsonl"
+    monkeypatch.delenv("RECORD", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    recorder = Model(
+        JUDGE,
+        api_key="scripted",
+        transport=httpx.MockTransport(_scored),
+        catalogue=_rates([JUDGE_ROW]),
+        max_tokens=JUDGE_CAP,
+        recording=recording,
+    )
+
+    recorded = await _eval(tmp_path, arms, judge=recorder).run()
+    await recorder.aclose()
+
+    # Both pages were judged on every dimension and side by side in both orders, and every call was recorded.
+    asked = len(arms) * len(writer_scoring_rubric()) + 2
+    assert len(recording.read_text(encoding="utf-8").splitlines()) == asked
+    assert recorded.pairwise["variant"].calls_made == 2 and recorded.pairwise_unread == {}
+
+    # A fresh store, no key: the judge replays what it recorded, and nothing it is asked is missing from it.
+    replayer = Model(JUDGE, max_tokens=JUDGE_CAP, recording=recording)
+    replayed = await _eval(tmp_path, arms, judge=replayer, store=tmp_path / "fresh.sqlite").run()
+
+    assert len(recording.read_text(encoding="utf-8").splitlines()) == asked, "the replay recorded nothing"
+    for summary in replayed.arms.values():
+        assert summary.status == "completed" and summary.errors == []
+        assert {dimension.name: dimension.mean for dimension in summary.judged} == {
+            dim.name: JUDGED_SCORE for dim in writer_scoring_rubric()
+        }
+    read = replayed.pairwise["variant"]
+    status = await job_poll(OpsHost.reading(replayed.host), read.job_id, SCOPE)
+    (pair,) = WriterPairwiseReport.model_validate(status.result).pairs
+    assert [(answer.candidate, answer.answer) for answer in pair.answers] == [("B", "scored"), ("A", "scored")]
+    assert read.calls_made == 2 and read.stopped is None and replayed.pairwise_unread == {}
+    # The promotion read took the replayed pass as its primary reading.
+    assert read.read_on == read.job_id and replayed.decisions == {"variant": "undecided"}
+    assert replayed.exit_code() == 0
+    assert offline == []
 
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge

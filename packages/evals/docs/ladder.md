@@ -419,7 +419,9 @@ The arms are two versions of the analyst's skill, the Markdown it is told to wor
 control = AnalystSkill.at("skills/control")  # frozen: recordings are keyed by the skill's digest
 variant = (Path(__file__).parent / "skills" / "lead-first.md").read_text(encoding="utf-8")  # SKILL.md, lead claim first
 lead_first = control.with_file("SKILL.md", variant)
-judge = Model("google/gemini-3.8-flash", temperature=0, recording="recordings/judge.jsonl")  # another family
+judge = Model(  # another family; a score and a short reason fit 2,048 output tokens, the cap each call is priced at
+    "google/gemini-3.8-flash", temperature=0, max_tokens=2048, recording="recordings/judge.jsonl"
+)
 ```
 
 and the eval is a `WriterEval` over a directory of frozen campaigns:
@@ -433,9 +435,10 @@ writer_eval = WriterEval(
     },
     judge=judge,
     recordings="recordings/turns",  # one file per arm and case, keyed by skill, model, effort and snapshot
-    budget_usd=1.5,  # each report's cap
-    max_cost_usd=23.0,  # the whole eval's, judge and pairwise pass included
-    pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.15; each arm gets half the rest, $10.93
+    budget_usd=2.5,  # each report's cap
+    turns=45,  # each report's turn cap, the analyst's and the editor's together
+    max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
+    pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
     held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
     name="writer",
 )
@@ -467,7 +470,8 @@ python -m threetears.evals examples/5-writer/writer.py: writer: arm 'shipped' ha
 ```
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records both, and what
-it may spend: 14 reports at $1.50 each and the pairwise pass, at most $23 in all. Once recorded, the run prints a table of the writer's readings per arm
+it may spend: 14 reports, their judging and the pairwise pass, under the `max_cost_usd` the file sets, and what to do
+when a recording run is cut short. Once recorded, the run prints a table of the writer's readings per arm
 (reports finished; bounces, a submission code's checks sent back; rounds, the analyst's drafts and the editor's
 reviews; turns; each judged dimension), the cases per stratum, and one line per candidate:
 the promotion read.

@@ -1,0 +1,2 @@
+# The store a command run from packages/evals/ writes (rung 5's record command among them); never committed.
+/.evals/

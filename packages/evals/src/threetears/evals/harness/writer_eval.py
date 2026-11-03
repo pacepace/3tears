@@ -32,9 +32,26 @@ reserved for the pairwise passes, in one equal part per candidate; each part is 
 admitted under. The arms share the rest equally, and each arm's part holds its reports and their absolute judging. The
 run is refused before any arm launches when an arm's reports, each at ``budget_usd``, could pass the arm's part, so
 the reports always leave the pass its reserve. With two arms, ``max_cost_usd`` $12 and the default share, the pass may
-spend $2.40 and each arm $4.80. Whether the reserve covers the pass itself cannot be checked before launch: its calls
-are priced on the pages they read, which are not yet written. A pass its part cannot cover is refused with nothing
-spent once they are, and the result says so and exits 1, as it does for a pass that stops before its last pair.
+spend $2.40 and each arm $4.80.
+
+**The judge's calls are priced before launch, as far as they can be.** A judge call is priced at the judge's output
+cap and a prompt bound read off the pages it shows, which are not yet written; but one call with no page in it, the
+judge's ``price_ceiling`` over an empty prompt (its output cap, and the
+:data:`~threetears.evals.kernel.capped_completion.PROMPT_FRAMING_TOKENS` every prompt is allowed), is a floor no real
+call comes in under. Each arm's cases are judged on every dimension of the rubric, and each pass's pairs in both
+orders, each call with :data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS` attempts, so the run is refused before
+any arm launches when either part cannot hold its floor:
+
+==========  ==========================================================================================
+part        refused when
+==========  ==========================================================================================
+an arm's    reports x ``budget_usd`` + cases x dimensions x attempts x floor is above the arm's part
+a pass's    cases x 2 orders x attempts x floor is above the pass's part
+==========  ==========================================================================================
+
+A judge that cannot price a call yet (its rates unread) is not checked here; a pass its part cannot cover is then
+refused with nothing spent once its pages are written, and the result says so and exits 1, as it does for a pass that
+stops before its last pair.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -92,6 +109,7 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
+from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -127,6 +145,7 @@ from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_ca
 from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
 
 #: The effort lever's id, as the writer's overlays name it.
@@ -561,8 +580,9 @@ class WriterEval:
         :param budget_usd: Each report's dollar cap.
         :ptype budget_usd: float
         :param max_cost_usd: The most the whole eval may spend, judge and pairwise pass included, split as the module
-            docstring says. The run is refused when an arm's reports, each at ``budget_usd``, could pass its part:
-            the absolute judge's calls ride in the same part, so leave them room.
+            docstring says. The run is refused when an arm's reports, each at ``budget_usd``, could pass its part,
+            and, for a judge that prices its calls, when they and the judge's calls at their floor could, or a pass's
+            calls at their floor could pass its part.
         :ptype max_cost_usd: float
         :param held_out_fraction: The share of split groups placed on the held-out side when first minted.
         :ptype held_out_fraction: float
@@ -653,7 +673,8 @@ class WriterEval:
         :rtype: WriterResult
         :raises ValueError: The case files do not read; a case withholds a note an arm's skill lacks; the side holds
             no case, or its set lists a case the directory no longer holds; a recording is missing with no key to
-            make it; or the reports' budgets could pass an arm's share.
+            make it; or the reports' budgets, or they and the judge's calls at their floor, could pass an arm's part,
+            or a pass's calls at their floor its part.
         :raises ValidationFailedError: The launch refused an arm (a judge of the writer's family, an arm whose cells
             could outlast its job), or the campaign's declaration.
         """
@@ -721,6 +742,7 @@ class WriterEval:
                 f"${self.max_cost_usd * self.pairwise_share:.2f} (pairwise_share {self.pairwise_share}); raise "
                 "max_cost_usd or lower budget_usd"
             )
+        await self._refuse_judging_past_its_part(host, template_id, cases=len(on_side) * self.k)
         launches = {arm: self._launch(template_id, case_set, writer, share) for arm, writer in self.arms.items()}
         for arguments in launches.values():  # every arm is quoted, and refused, before any is started
             await quote_launch(host.launch, **arguments)
@@ -757,6 +779,40 @@ class WriterEval:
     def _arm_part(self) -> float:
         """Each arm's part of what the pairwise reserve leaves: the ceiling its launch names."""
         return self.max_cost_usd * (1 - self.pairwise_share) / len(self.arms)
+
+    async def _refuse_judging_past_its_part(self, host: OpsHost, template_id: str, *, cases: int) -> None:
+        """Refuse the run before any arm launches when the judge's calls, each at its floor, could pass an arm's part
+        beside its reports or a pass's part (the module docstring); nothing is checked for a judge that cannot price a
+        call yet."""
+        await refresh_prices(self.judge)
+        floor = self.judge.price_ceiling(system="", user="", response_format=None)
+        if floor is None:
+            return
+        template = await run_blocking(
+            host.eval_host.blocking_executor, host.eval_host.storage.load_template, template_id, self.scope_id
+        )
+        dims = 0 if template is None else len(template.rubric)
+        each = (
+            f"${floor:.4f} each before any page is read ({self.judge.model_name}'s output cap and "
+            f"{PROMPT_FRAMING_TOKENS} prompt tokens)"
+        )
+        pass_calls = cases * 2 * JUDGE_CALL_ATTEMPTS
+        if pass_calls * floor > self._pass_part:
+            raise ValueError(
+                f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
+                f"attempts each) are priced at {each}, ${pass_calls * floor:.2f} in all, above the pass's "
+                f"${self._pass_part:.2f} part of max_cost_usd ${self.max_cost_usd:.2f} (pairwise_share "
+                f"{self.pairwise_share}); raise pairwise_share or max_cost_usd, or lower the judge's max_tokens"
+            )
+        judge_calls = cases * dims * JUDGE_CALL_ATTEMPTS
+        reports = 0.0 if self.budget.usd is None else cases * self.budget.usd
+        if reports + judge_calls * floor > self._arm_part:
+            raise ValueError(
+                f"an arm's {cases} report(s) at ${self.budget.usd or 0:.2f} and its {judge_calls} judge call(s) "
+                f"({cases} case(s) x {dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to "
+                f"${reports + judge_calls * floor:.2f}, above the arm's ${self._arm_part:.2f} part of max_cost_usd "
+                f"${self.max_cost_usd:.2f}; raise max_cost_usd, or lower budget_usd or the judge's max_tokens"
+            )
 
     async def _pairwise(self, host: OpsHost, campaign_id: str, candidate: str) -> _Pass:
         """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not

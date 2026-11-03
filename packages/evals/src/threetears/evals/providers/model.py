@@ -99,7 +99,7 @@ _FILE_CLOCK_SLACK_SECONDS: Final = 1.0
 
 @cache
 def _run_started_at() -> float:
-    """When this run's first recording check happened, read once and kept.
+    """When this run first built a model to record under ``RECORD=1``, read once and kept.
 
     Under ``RECORD=1`` a recording last written before it is from an earlier run and is started afresh; one written
     since is this run's, and is added to. The clock is read on the first call, never at import, so importing the
@@ -998,7 +998,10 @@ class Model:
             self._client = live
             return
 
-        stale = rerecording and self.recording.exists() and self.recording.stat().st_mtime < _run_started_at()
+        # The run's start is read whenever this run records, before the file is looked at: a file this run goes on to
+        # write is then never older than it, however much later another model is built on the same file.
+        started = _run_started_at() if rerecording else None
+        stale = started is not None and self.recording.exists() and self.recording.stat().st_mtime < started
         self._client = RecordedCompletions.record(live, self.recording, settings=self._settings, replace=stale)
 
     def derive(self, id: str | None = None, *, temperature: float | None, catalogue: Catalogue | None = None) -> Model:
