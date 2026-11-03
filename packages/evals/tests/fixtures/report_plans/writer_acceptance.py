@@ -548,13 +548,26 @@ def refuse_too_few_cases(cases_dir: Path | None, held_out_fraction: float) -> No
         )
 
 
+#: The live judge's output cap, the one rung 5 records with.
+JUDGE_MAX_TOKENS = 2048
+
+
 def _live_judge(judge: str, out: Path) -> WriterJudge:
     """The live scoring judge, its calls recorded under ``out``; refused by name when its key is missing."""
     refuse_missing_keys(judge)
     provider = judge_provider(judge)
     from threetears.evals.providers import Model
 
-    return Model(judge, provider=provider, api_key=os.environ[_KEYS[provider]], recording=out / "judge.jsonl")
+    # The same cap and effort as rung 5's judge: a score and a short reason fit in 2,048 tokens, and the pre-launch
+    # bound prices every rubric call at this cap, so the engine's 8,192 default would refuse a run the cap admits.
+    return Model(
+        judge,
+        provider=provider,
+        api_key=os.environ[_KEYS[provider]],
+        max_tokens=JUDGE_MAX_TOKENS,
+        effort="low",
+        recording=out / "judge.jsonl",
+    )
 
 
 async def _measured(
