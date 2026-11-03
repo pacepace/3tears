@@ -19,12 +19,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.actions import Caller
-from threetears.evals.actions.report_writing import write_report
+from threetears.evals.harness.analyse import analyse, recording_path
 from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.kernel.host import check_world_conformance
-from threetears.evals.ops import OpsHost, ReportBudget
+from threetears.evals.ops import OpsHost
 from threetears.evals.ops.analyst import report_snapshot_freeze, snapshot_input
 from threetears.evals.quick import run_cli
 from threetears.evals.run import get_result_trace, list_results
@@ -40,13 +39,8 @@ from packages.evals.tests.ladder_support import (
     secret_markers,
     stated_spend,
 )
-from packages.evals.tests.doc_writer_support import (
-    TOY_DOC,
-    FakeAnalystClient,
-    passing_review,
-    scripted_reply,
-    submission,
-)
+from packages.evals.tests.doc_writer_support import TOY_DOC
+from packages.evals.tests.report_writer_support import MODEL, hand_written, reply, review, submitted
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
@@ -188,8 +182,8 @@ def test_serve_hosts_the_runs_on_the_command_line(
 _HEADLINE = "The agent books where a free hour fits and declines a full day."
 
 
-async def _scripted_report(result: Any) -> str:
-    """A report the writer stores over the run's campaign, scripted (nothing reaches a model): its document's id."""
+async def _scripted_report(result: Any) -> None:
+    """The harness door's report on the run's campaign, from a recording laid by hand (nothing reaches a model)."""
     host = OpsHost.reading(result.host)
     frozen = await report_snapshot_freeze(host, result.scope_id, campaign_id=result.campaign_id, created_by="test")
     read = await snapshot_input(host, result.scope_id, frozen.snapshot_id)
@@ -202,39 +196,31 @@ async def _scripted_report(result: Any) -> str:
     doc["lede"] = "One arm ran, so nothing is compared."
     doc["decision"] = [{"slot": "recommendation", "text": "No call: one arm ran."}]
     doc["method"] = [{"term": "Arms", "text": "One agent.", "caveats": []}]
-    analyst = FakeAnalystClient(
-        {"analyst": [scripted_reply(submission(doc))], "editor-1": [scripted_reply(passing_review())]}
-    )
-    written = await write_report(
-        host,
-        Caller(scope_id=result.scope_id, identity="test"),
-        model=analyst,
-        budget=ReportBudget(usd=1.0),
-        snapshot_id=frozen.snapshot_id,
-    )
+    sessions = {"analyst": [reply(submitted(doc))], "editor-1": [reply(review())]}
+    hand_written(recording_path(result.name, MODEL, frozen.snapshot_id), sessions)
+    written = await analyse(result, MODEL)
     assert written.ending == "stored" and written.stored is not None, written.outcome.reason
-    return written.stored.id
 
 
-async def test_serve_reports_the_campaign_s_page_as_code_built_it_beside_a_stored_report(
+async def test_serve_reports_the_harness_door_s_report_as_the_campaign_s_page(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``report`` over ``serve:host`` prints the campaign's page as code builds it. A report the writer stored over
-    the campaign (the harness door's) is not that page: no analysis links it, so the page reads code's words."""
+    """``report`` over ``serve:host`` prints the campaign's page as code builds it until the harness door writes a
+    report; from then on it prints the writer's, which ``analyse`` linked as the campaign's analysis."""
     module = _agent(tmp_path, monkeypatch)
     result = await module.booking.run()  # the default store, which serve.py's host reads
-    doc_id = await _scripted_report(result)
-    stored = off_loop(result.host.storage.load_report_doc, doc_id, result.scope_id)
-    assert stored is not None and stored.campaign_id == result.campaign_id
+    argv = ["report", result.campaign_id, "--host", "serve:host", "--scope", "booking"]
     capsys.readouterr()
 
-    code = await asyncio.to_thread(
-        run_cli, ["report", result.campaign_id, "--host", "serve:host", "--scope", "booking"]
-    )
-
+    assert await asyncio.to_thread(run_cli, argv) == 0
     page = capsys.readouterr().out
-    assert code == 0 and page.startswith("# agent · score (booking)\n"), page[:200]
-    assert _HEADLINE not in page
+    assert page.startswith("# agent · score (booking)\n") and _HEADLINE not in page, page[:200]
+
+    await _scripted_report(result)
+    capsys.readouterr()
+
+    assert await asyncio.to_thread(run_cli, argv) == 0
+    assert _HEADLINE in capsys.readouterr().out
 
 
 async def test_serve_mounts_the_read_actions_over_mcp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -97,13 +97,16 @@ from threetears.evals.ops.host import ANALYSIS_PREPARATION_BUDGET_S, AnalysisGen
 from threetears.evals.ops.analysis import ReportWriter
 from threetears.evals.ops.report_writer.analyst import AnalystLimits
 from threetears.evals.ops.report_writer.editor import EditorLimits
-from threetears.evals.ops.report_writer.loop import WriterLimits
+from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.session import SessionLimits
-from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.tally import ReportBudget, WriterRole
 from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND_CONTRACT,
     WRITER_KIND_MEASURES,
+    WriterArm,
+    WriterModelFactory,
 )
+from threetears.evals.ops.report_writer.writer_launch import ModelFamily
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,
@@ -462,4 +465,9 @@ __all__ = [
     "judge_drift_check",
     "judge_second",
     "judge_second_estimate",
+    "ModelFamily",
+    "TurnModel",
+    "WriterArm",
+    "WriterModelFactory",
+    "WriterRole",
 ]

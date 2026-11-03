@@ -48,6 +48,7 @@ __all__ = [
     "RecordedModel",
     "answer",
     "call",
+    "hand_written",
     "kairo_id",
     "replay_cases",
     "reply",
@@ -200,6 +201,24 @@ def reply(
         price_source=None if cost is None else "catalogue",
         pricing_failure="no rate for the model" if cost is None else None,
     )
+
+
+def hand_written(path: Path, sessions: Mapping[str, Sequence[TurnReply]]) -> Path:
+    """Write ``sessions`` as a turn recording by hand, any snapshot already the placeholder (``{snapshot}``): each
+    turn's ceiling, then its reply. ``harness.analyse`` replays it from the path ``recording_path`` names."""
+    lines: list[dict[str, Any]] = []
+    for session, replies in sessions.items():
+        for index, said in enumerate(replies):
+            line = {
+                "recorder_version": RecordedTurns.FORMAT_VERSION,
+                "recorded_at": "2026-11-03T00:00:00+00:00",
+                "session": session,
+                "index": index,
+            }
+            lines += [{**line, "kind": "ceiling", "ceiling": 0.05}, {**line, "kind": "reply", "reply": said.to_json()}]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    return path
 
 
 def call(n: int, action: str, snapshot: str, **arguments: Any) -> TurnToolUse:
