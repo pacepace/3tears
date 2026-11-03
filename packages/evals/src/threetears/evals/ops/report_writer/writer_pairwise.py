@@ -297,7 +297,7 @@ def _by_case_and_repeat(results: Sequence[EvalResult], arm: CampaignArm) -> dict
             raise ValidationFailedError(
                 f"arm {arm.label} holds two results of case {key[0]} repeat {key[1]} ({indexed[key].id}, {result.id}), "
                 "so a pair of it has no one page",
-                remedy="keep one run of each arm on the campaign (campaign_update), then ask again",
+                remedy="take the extra run off the campaign (campaign_runs_remove), then ask again",
             )
         indexed[key] = result
     return indexed
@@ -320,7 +320,7 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         raise NotFoundError(
             f"campaign {campaign_id}'s run",
             ", ".join(missing),
-            remedy="restore the run, or take it off the campaign (campaign_update), then ask again",
+            remedy="restore the run, or take it off the campaign (campaign_runs_remove), then ask again",
         )
     runs = [run for run in loaded.values() if run is not None]
     refuse_unfixed_scoring_judge(runs)
@@ -334,7 +334,7 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
     if control is None:
         raise ValidationFailedError(
             f"campaign {campaign_id} names no control, so no page is read against one",
-            remedy="name the control arm (campaign_update), then ask again",
+            remedy="name the control arm (campaign_update, control_from_run_id), then ask again",
         )
     arm = _arm(bundle.arms, candidate, campaign_id)
     if arm.variant_key == control.variant_key:
@@ -343,18 +343,18 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
             remedy="name a candidate arm",
         )
     candidate_keys, control_keys = _keys(arm), _keys(control)
-    rigs = sorted(
-        {
-            cell.apparatus_class_id
-            for aspect in bundle.aspects
-            for cell in aspect.cells
-            if cell.variant_key in candidate_keys
-        }
-    )
-    if len(rigs) != 1:
+    rigs = {
+        side.label: sorted(
+            {cell.apparatus_class_id for aspect in bundle.aspects for cell in aspect.cells if cell.variant_key in keys}
+        )
+        for side, keys in ((arm, candidate_keys), (control, control_keys))
+    }
+    if any(len(each) != 1 for each in rigs.values()) or rigs[arm.label] != rigs[control.label]:
+        counts = ", ".join(f"{label} under {len(each)}" for label, each in rigs.items())
         raise ValidationFailedError(
-            f"arm {arm.label} was measured under {len(rigs)} rigs, and a pair compares two pages under one",
-            remedy="read a campaign whose candidate ran under one rig (campaigns_list names its runs)",
+            f"a pair compares two pages written under one rig, and the arms were not each measured under the same "
+            f"one ({counts})",
+            remedy="take the runs of the other rigs off the campaign (campaign_runs_remove), then ask again",
         )
     results = [result for run in runs for result in results_without_payloads(storage, run.id, scope_id)]
     mine = _by_case_and_repeat([result for result in results if result.variant_key in candidate_keys], arm)
@@ -390,7 +390,7 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         campaign_id=campaign_id,
         candidate=arm,
         control=control,
-        apparatus_class_id=rigs[0],
+        apparatus_class_id=rigs[arm.label][0],
         judge_model=judge_model,
         template=template,
         writer_models=sorted({result.model for result in paired}),
@@ -447,7 +447,17 @@ async def _prepare(
         are priced above the cap or cannot be priced under it. All before any call.
     """
     collected = await run_blocking(host.blocking_executor, _collect, host, campaign_id, scope_id, candidate)
-    judge_family = [judge_family_check(model, collected.judge_model, model_family) for model in collected.writer_models]
+    try:
+        judge_family = [
+            judge_family_check(model, collected.judge_model, model_family) for model in collected.writer_models
+        ]
+    except ValidationFailedError as same:
+        # The launcher's refusal, whose remedy names a judge to launch with; the pass asks the campaign's own judge.
+        raise ValidationFailedError(
+            same.message,
+            remedy="launch the arms again with a scoring judge of another family (run_launch, judge_model), "
+            "and read that campaign",
+        ) from same
     clients = host.completion_clients("a writer pairwise pass")
     budget = OutOfRunBudget(
         store=host.storage,
@@ -509,9 +519,14 @@ def _judgments(pair: PairwisePair) -> list[PairJudgment]:
 def _verdict(shares: Sequence[float], *, collected: _Collected, stopped: str | None) -> tuple[Verdict, float | None]:
     """The candidate's per-case shares against the control's, as the contrast verdict on the preference, and its p."""
     control = [1.0 - share for share in shares]
-    p = bounded_separation_p(control, shares, paired=True, value_range=_SHARE_RANGE)
-    interval = bounded_difference_interval(
-        control, shares, paired=True, value_range=_SHARE_RANGE, confidence=INTERVAL_LEVEL
+    # A pass stopped part-way read some pairs and not others, so no test is run on what it read.
+    p = None if stopped is not None else bounded_separation_p(control, shares, paired=True, value_range=_SHARE_RANGE)
+    interval = (
+        None
+        if stopped is not None
+        else bounded_difference_interval(
+            control, shares, paired=True, value_range=_SHARE_RANGE, confidence=INTERVAL_LEVEL
+        )
     )
     delta = (math.fsum(shares) - math.fsum(control)) / len(shares) if shares else None
     arm, against = collected.candidate.label, collected.control.label
@@ -679,7 +694,7 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
 # --- the work, and its start ---------------------------------------------------------------------------------------
 
 
-async def writer_pairwise_work(
+async def _writer_pairwise_work(
     host: EvalHost,
     campaign_id: str,
     scope_id: str,
@@ -753,7 +768,7 @@ def _places_none(_model: str) -> str | None:
 async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, candidate: str) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
-    Every refusal and admission is :func:`writer_pairwise_work`'s, made here with nothing spent. The judge's family is
+    Every refusal is made and every call admitted here, with nothing spent; the job makes the calls. The judge's family is
     the host's to tell (:attr:`~threetears.evals.ops.OpsHost.model_family`); a host that tells none has each check
     recorded as not made, as a launch records it.
 
@@ -768,11 +783,14 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
-    :raises NotFoundError: See :func:`writer_pairwise_work`.
-    :raises ValidationFailedError: See :func:`writer_pairwise_work`.
+    :raises NotFoundError: No campaign with that id, or a run, case or template it names is not stored.
+    :raises ValidationFailedError: The arms were not scored by one judge on one rubric; the campaign has no control;
+        the candidate is none of its arms or is the control; an arm sits under more than one rig or ran a case and
+        repeat twice; the arms share no case and repeat; a stored page names a subject; the judge is of a writer's
+        family; or the calls are priced above the cap or cannot be priced under it.
     """
     family: Callable[[str], str | None] = host.model_family or _places_none
-    work = await writer_pairwise_work(
+    work = await _writer_pairwise_work(
         host.eval_host,
         campaign_id,
         scope_id,
@@ -785,17 +803,6 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
     )
 
 
-#: The engine's ``writer_pairwise`` action starts the pass for a host; the work and its report are what a host that
-#: runs it in the foreground reads.
-__all__ = [
-    "PairAnswer",
-    "PairwiseCase",
-    "PairwisePair",
-    "PairwiseReading",
-    "PairwiseReliability",
-    "WRITER_PAIRWISE_ACTION",
-    "WRITER_PAIRWISE_BUDGET_S",
-    "WriterPairwiseReport",
-    "writer_pairwise",
-    "writer_pairwise_work",
-]
+#: The engine's ``writer_pairwise`` action starts the pass for a host. Its report's models are the job's result, read
+#: back as JSON; they join the surface when a reader in the package names them (the promotion read, P2 chunk D).
+__all__ = ["writer_pairwise"]

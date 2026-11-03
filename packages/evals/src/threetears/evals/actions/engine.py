@@ -11,6 +11,7 @@ storage round-trip never stalls the loop a transport serves calls on.
 
 from __future__ import annotations
 
+import uuid
 from functools import partial
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal, get_args
@@ -173,7 +174,16 @@ from threetears.evals.ops.report_writer.writer_bank import (
 from threetears.evals.ops.report_writer.writer_pairwise import writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.ops.runs import PERSON_DESCRIPTION
-from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
+    RUN_LABELS_MAX,
+    EvalTrace,
+    JudgedArtifact,
+    JudgeEvidence,
+    SecondJudge,
+    eval_trace_doc_id,
+)
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
     JudgeCaseFreezeReport,
@@ -184,7 +194,6 @@ from threetears.evals.run import (
     regrade,
     resumable_jobs,
     run_blocking,
-    start_run,
 )
 
 # --- the parameters, each declared once ---------------------------------------------------------------
@@ -1796,45 +1805,78 @@ async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
 
 
 async def _writer_pairwise_path(stage: ConformanceStage) -> Mapping[str, Any]:
-    """Two arms of the sample's template, one a model each, run to their end, and a campaign naming the first the
-    control: a pairwise pass over them asks the judge about every case's two pages."""
-    models = list(stage.sample.models[:2])
-    if len(models) < 2:
-        raise ValueError("a pairwise pass reads two arms, so the conformance sample names two candidate models")
+    """A campaign of two arms over the sample's finished run, the control the run and the candidate a copy of it under
+    another model, each result's page stored as a document that speaks for itself: a pairwise pass over it asks the
+    judge about every case's two pages, whatever the host's kind renders. Arranged in the stage host's own store."""
+    run_id = await stage.finished_run()
     eval_host = stage.host.eval_host
-    runs = await start_run(
-        stage.host.launch,
-        template_id=stage.sample.template_id,
-        subject_id=stage.sample.subject_id,
-        models=models,
-        k_runs=1,
-        scope_id=stage.caller.scope_id,
+    campaign_id = await run_blocking(
+        eval_host.blocking_executor, _paired_campaign, eval_host, run_id, stage.caller.scope_id, stage.caller.identity
     )
-    await stage.host.launch.job_manager.wait_for([run.id for run in runs])
+    return {"campaign_id": campaign_id, "candidate": "candidate"}
+
+
+def _paired_campaign(eval_host: EvalHost, run_id: str, scope_id: str, created_by: str) -> str:
+    """Store the candidate arm beside the finished run, and the campaign naming both; its id. Blocking."""
+    storage = eval_host.storage
+    control = storage.load_eval_run(run_id, scope_id)
+    assert control is not None  # the stage's run finished, so its record is stored
+    # Another model and no recorded lever map: the copy's key is derived as a reader derives it, so it is its own arm.
+    candidate = control.model_copy(
+        update={
+            "id": str(uuid.uuid4()),
+            "candidate_model": f"{control.candidate_model} (paired)",
+            "variant_levers": None,
+            "identity_version": None,
+        }
+    )
+    identity = resolve_variant_identity(run=candidate, profile=eval_host.profile)
+    storage.save_eval_run(candidate)
+    for result in storage.query_eval_results(scope_id, run_id=run_id):
+        paired = result.model_copy(
+            update={
+                "id": str(uuid.uuid4()),
+                "eval_run_id": candidate.id,
+                "model": candidate.candidate_model,
+                "variant_key": identity.variant_key,
+                "identity_version": identity.identity_version,
+            }
+        )
+        for arm, stored in (("control", result), ("candidate", paired)):
+            page = JudgeEvidence(
+                case_material=f"The facts of case {stored.test_case_id}.",
+                artifact=f"The {arm} arm's page on case {stored.test_case_id}.",
+            )
+            trace = EvalTrace(
+                id=eval_trace_doc_id(stored.id),
+                scope_id=scope_id,
+                result_id=stored.id,
+                eval_run_id=stored.eval_run_id,
+                judge_evidence=page,
+                judged_artifact=JudgedArtifact.DOCUMENT,
+            )
+            storage.save_eval_result(stored, trace)
+    models = [control.candidate_model, candidate.candidate_model]
     design = {
         "axes": [{"axis_id": "model", "values": [{"content": model, "display": model} for model in models]}],
         "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
     }
-    campaign = await run_blocking(
-        eval_host.blocking_executor,
-        partial(
-            campaign_create,
-            eval_host,
-            CampaignDefinition(
-                name="jobs conformance pairs",
-                subject_id=stage.sample.subject_id,
-                behavior="conformance",
-                arms=[
-                    {"label": "control", "role": "control", "from_run_ids": [runs[0].id]},
-                    {"label": "candidate", "role": "candidate", "from_run_ids": [runs[1].id]},
-                ],
-                aspects=[{"label": "pairs", "run_ids": [run.id for run in runs], "design": design}],
-            ),
-            stage.caller.scope_id,
-            created_by=stage.caller.identity,
+    campaign = campaign_create(
+        eval_host,
+        CampaignDefinition(
+            name="jobs conformance pairs",
+            subject_id=control.subject_snapshot.subject_id,
+            behavior="conformance",
+            arms=[
+                {"label": "control", "role": "control", "from_run_ids": [control.id]},
+                {"label": "candidate", "role": "candidate", "from_run_ids": [candidate.id]},
+            ],
+            aspects=[{"label": "pairs", "run_ids": [control.id, candidate.id], "design": design}],
         ),
+        scope_id,
+        created_by=created_by,
     )
-    return {"campaign_id": campaign.id, "candidate": "candidate"}
+    return campaign.id
 
 
 async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:

@@ -100,7 +100,7 @@ def judge_family_check(candidate_model: str, judge_model: str, model_family: Mod
     """The family check, refused when the writer and its scoring judge are of one family; else what was checked.
 
     The launcher's rule, and the pairwise pass's
-    (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise_work`), which asks the same judge
+    (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`), which asks the same judge
     about each arm's pages: a model the host cannot place is admitted with the check recorded as not made.
 
     :param candidate_model: The writer, by the id its launch names.

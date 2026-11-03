@@ -20,23 +20,19 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_DOCUMENTS, TOYHOST_SCOPE
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.writer_promotion_support import BETTER, CANDIDATE, SCORING_JUDGE, promotion_campaign
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, bounded_separation_p
-from threetears.evals.kernel import JobLeases
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.ops import JobsStarted, OpsHost, await_job
 from threetears.evals.ops.report_writer.writer_contract import FINISHED_MEASURE, WRITER_KIND
-from threetears.evals.ops.report_writer.writer_pairwise import (
-    WRITER_PAIRWISE_ACTION,
-    WriterPairwiseReport,
-    writer_pairwise_work,
-)
-from threetears.evals.run import run_job_work
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS
+from threetears.evals.schema.completion import ProviderFailure
 from threetears.evals.schema.models import (
     EvalTemplate,
     EvalTrace,
@@ -87,6 +83,23 @@ def _page(arm: str, document: str, repeat: int) -> str:
     return f"# {arm} page on {document}, repeat {repeat}\n\nThe {arm} arm's findings."
 
 
+#: A policy's answer that makes the judge's call raise, as an account out of credit does.
+_REFUSED = "refused"
+#: A policy's answer the judge sends as text no parse reads.
+_GARBLED = "garbled"
+
+
+class _AccountRefused(Exception):
+    """What the scripted judge raises for a refused call."""
+
+
+def _describe_account_refusal(exc: BaseException) -> ProviderFailure:
+    """The host's describer: :class:`_AccountRefused` is a refusal for the account, anything else is not."""
+    return ProviderFailure(
+        type(exc).__name__, payload_withheld=True, owner="account" if isinstance(exc, _AccountRefused) else "candidate"
+    )
+
+
 @dataclass(frozen=True)
 class _Completion:
     content: str
@@ -120,9 +133,12 @@ class _ScriptedJudge:
         document = re.search(r" page on (\S+),", first).group(1)  # type: ignore[union-attr]
         slot = "A" if first.startswith("# candidate") else "B"
         self.calls.append((document, slot, first, second))
-        return _Completion(
-            content=json.dumps({"reasoning": "read both", "criteria_scores": {dim: self.policy(document, slot)}})
-        )
+        answer = self.policy(document, slot)
+        if answer == _REFUSED:
+            raise _AccountRefused("out of credit")
+        if answer == _GARBLED:
+            return _Completion(content="not json")
+        return _Completion(content=json.dumps({"reasoning": "read both", "criteria_scores": {dim: answer}}))
 
     async def aclose(self) -> None:
         """Nothing to release."""
@@ -182,25 +198,32 @@ def _store_pages(host: EvalHost, campaign_id: str, pages: Pages) -> None:
             storage.save_eval_result(result, trace)
 
 
+def _apart(model: str) -> str | None:
+    """A host's reading of a model's family: the scoring judge in one, every writer in another."""
+    return "judges" if model == SCORING_JUDGE else "writers"
+
+
+def _ops(host: EvalHost, *, family: Callable[[str], str | None] | None = None, cap: float | None = None) -> OpsHost:
+    """The ops host over ``host``'s store, reading families by ``family`` and enforcing ``cap`` when one is given."""
+    settings = TOYHOST_LAUNCH_SETTINGS.model_copy(
+        update={
+            "enforcement_enabled": cap is not None,
+            "max_out_of_run_cost_usd": TOYHOST_LAUNCH_SETTINGS.max_out_of_run_cost_usd if cap is None else cap,
+        }
+    )
+    launch = off_loop(ops_fixture, generation=False, settings=settings).host.launch
+    return OpsHost(launch=replace(launch, eval_host=host), model_family=family)
+
+
 async def _pass(
-    host: EvalHost,
-    campaign_id: str,
-    *,
-    family: Callable[[str], str | None] = lambda _model: None,
-    cap: float | None = None,
+    host: EvalHost, campaign_id: str, *, family: Callable[[str], str | None] | None = None, cap: float | None = None
 ) -> WriterPairwiseReport:
-    """Run the pass in the foreground, as a script does: admitted, run to its end, its report read off its record."""
-    leases = JobLeases(host.storage)
-    try:
-        work = await writer_pairwise_work(
-            host, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE, model_family=family, out_of_run_cap_usd=cap
-        )
-        ended = await run_job_work(work, store=host.storage, executor=host.blocking_executor, leases=leases)
-    finally:
-        await leases.shut_down()
-    assert ended.action == WRITER_PAIRWISE_ACTION
-    assert ended.outcome == "completed" and ended.result is not None, ended.detail
-    return WriterPairwiseReport.model_validate(ended.result)
+    """Start the pass as a job through its front door, wait for it to end, and read its report off its record."""
+    ops = _ops(host, family=family, cap=cap)
+    started = await writer_pairwise(ops, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE)
+    (status,) = await await_job(ops, started, TOYHOST_SCOPE)
+    assert status.state == "completed" and status.result is not None, status.detail
+    return WriterPairwiseReport.model_validate(status.result)
 
 
 def _share(score: int, slot: str) -> Fraction:
@@ -267,15 +290,8 @@ async def test_the_cap_refuses_the_pass_before_its_first_call() -> None:
     host, campaign_id = _campaign(judge)
     pairs = len(TOYHOST_DOCUMENTS) * len(_REPEATS)
     planned = 2 * pairs * JUDGE_CALL_ATTEMPTS * _CEILING
-    with pytest.raises(ValidationFailedError):
-        await writer_pairwise_work(
-            host,
-            campaign_id,
-            TOYHOST_SCOPE,
-            candidate=CANDIDATE,
-            model_family=lambda _model: None,
-            out_of_run_cap_usd=planned / 2,
-        )
+    with pytest.raises(ValidationFailedError, match="cap"):
+        await writer_pairwise(_ops(host, cap=planned / 2), campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE)
     assert judge.calls == []
     report = await _pass(host, campaign_id, cap=planned)
     assert report.cap_usd == planned and report.calls_made == 2 * pairs
@@ -285,16 +301,11 @@ async def test_a_judge_of_a_writers_family_is_refused_before_any_call() -> None:
     judge = _ScriptedJudge()
     host, campaign_id = _campaign(judge)
     with pytest.raises(ValidationFailedError, match="is of the writer .* family"):
-        await writer_pairwise_work(
-            host,
-            campaign_id,
-            TOYHOST_SCOPE,
-            candidate=CANDIDATE,
-            model_family=lambda _model: "one-vendor",
-            out_of_run_cap_usd=None,
+        await writer_pairwise(
+            _ops(host, family=lambda _model: "one-vendor"), campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE
         )
     assert judge.calls == []
-    placed = await _pass(host, campaign_id, family=lambda model: "judges" if model == SCORING_JUDGE else "writers")
+    placed = await _pass(host, campaign_id, family=_apart)
     assert placed.judge_family == ["writer writers, judge judges"]
     unplaced = await _pass(host, campaign_id)
     assert all(check.startswith("unchecked") for check in unplaced.judge_family)
@@ -385,11 +396,7 @@ async def test_the_reading_over_pairs_whose_pages_both_finished_is_reported_besi
 async def test_the_action_starts_the_pass_as_a_job_that_completes_with_its_report() -> None:
     judge = _ScriptedJudge()
     eval_host, campaign_id = _campaign(judge)
-    launch = off_loop(ops_fixture, generation=False).host.launch
-    host = OpsHost(
-        launch=replace(launch, eval_host=eval_host),
-        model_family=lambda model: "judges" if model == SCORING_JUDGE else "writers",
-    )
+    host = _ops(eval_host, family=_apart)
     tool = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}["evals"]
     started = await tool.call(
         {"action": "writer_pairwise", "campaign_id": campaign_id, "candidate": CANDIDATE}, host=host, caller=CALLER
@@ -403,3 +410,63 @@ async def test_the_action_starts_the_pass_as_a_job_that_completes_with_its_repor
     assert report.whole.verdict.outcome == "improved"
     assert report.judge_family == ["writer writers, judge judges"]
     assert len(judge.calls) == 2 * len(report.pairs)
+
+
+@pytest.mark.parametrize("kept", [3, 1])
+async def test_a_reading_on_too_few_cases_is_never_read_as_tested(kept: int) -> None:
+    """Under the five cases a rate needs the verdict says it is not tested; under the two the test needs, it is
+    untested, with no p and no interval."""
+    scored = set(sorted(TOYHOST_DOCUMENTS)[:kept])
+
+    def policy(document: str, slot: str) -> int | str:
+        return _prefers_the_candidate(document, slot) if document in scored else CANNOT_TELL
+
+    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    report = await _pass(host, campaign_id)
+
+    verdict = report.whole.verdict
+    assert report.whole.cases == kept
+    shares = [1.0] * kept
+    p, interval = _expected([0.0] * kept, shares)
+    assert report.whole.p == p and verdict.interval == interval
+    if kept >= 2:
+        assert verdict.reason == "too_few_cases" and verdict.words == f"not tested (n={kept})"
+    else:
+        assert p is None and interval is None
+        assert (verdict.outcome, verdict.reason) == ("untested", "untestable")
+
+
+async def test_a_failed_call_is_counted_and_scores_nothing() -> None:
+    broken = sorted(TOYHOST_DOCUMENTS)[0]
+
+    def policy(document: str, slot: str) -> int | str:
+        return _GARBLED if document == broken else _prefers_the_candidate(document, slot)
+
+    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    report = await _pass(host, campaign_id)
+
+    assert report.reliability.failed == 2 * len(_REPEATS)
+    cases = {case.case_id: case for case in report.cases}
+    assert cases[broken].share is None and cases[broken].scored == 0
+    assert report.whole.cases == len(TOYHOST_DOCUMENTS) - 1
+    assert all(answer.answer == "failed" for pair in report.pairs if pair.case_id == broken for answer in pair.answers)
+
+
+async def test_an_account_refusal_stops_the_pass_and_leaves_its_verdicts_untested() -> None:
+    refused = sorted(TOYHOST_DOCUMENTS)[5]
+
+    def policy(document: str, slot: str) -> int | str:
+        return _REFUSED if document == refused else _prefers_the_candidate(document, slot)
+
+    judge = _ScriptedJudge(policy=policy)
+    host, campaign_id = _campaign(judge)
+    host = dataclasses.replace(host, failure_describer=_describe_account_refusal)
+    report = await _pass(host, campaign_id)
+
+    assert report.stopped is not None and refused in report.stopped
+    asked = [pair for pair in report.pairs if pair.answers]
+    assert asked[-1].case_id == refused and len(asked[-1].answers) == 1
+    assert all(not pair.answers for pair in report.pairs[len(asked) :])
+    for reading in (report.whole, report.finished_only):
+        assert (reading.verdict.outcome, reading.verdict.reason) == ("untested", "untestable")
+        assert reading.p is None and reading.verdict.interval is None
