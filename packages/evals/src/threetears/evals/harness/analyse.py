@@ -2,8 +2,10 @@
 
 :func:`analyse` freezes the campaign's evidence (``report_snapshot_freeze``, through the result's host read as
 :meth:`OpsHost.reading <threetears.evals.ops.host.OpsHost.reading>`), runs
-:func:`~threetears.evals.actions.report_writing.write_report` over the snapshot in the result's scope, and writes the
-stored document's page to ``.evals/reports/<name>/analysis.html``. Nothing is checked about the campaign first: a
+:func:`~threetears.evals.actions.report_writing.write_report` over the snapshot in the result's scope, links the stored
+document as the campaign's analysis as ``analysis_generate``'s job does
+(:func:`~threetears.evals.ops.analysis.link_written_report`), so ``report`` and ``report_read`` serve its page, and
+writes that page to ``.evals/reports/<name>/analysis.html``. Nothing is checked about the campaign first: a
 world, classifier or judged campaign is frozen and read like any other, and the freeze and the analyst's tools refuse
 what they cannot read, each with its own remedy.
 
@@ -40,12 +42,14 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.ops.analysis import link_written_report
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
-from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.writer_contract import WriterArm
 from threetears.evals.quick.files import report_dir
 from threetears.evals.quick.result import CREATED_BY
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 
 #: The page the writer's report is written to, in the eval's report directory.
@@ -141,19 +145,22 @@ async def analyse(
     :param recording: The directory the report's recordings sit under (the module docstring); a relative path is read
         beside the eval file being loaded, else in the working directory.
     :ptype recording: str | os.PathLike[str]
-    :return: How the writing ended, the stored document and its page. With nothing stored there is no page, and a
-        page an earlier run wrote is removed, so the directory never shows a report this run did not write.
+    :return: How the writing ended, the stored document and its page. A stored document is the campaign's analysis
+        from then on. With nothing stored there is no page and no analysis, and a page an earlier run wrote is
+        removed, so the directory never shows a report this run did not write.
     :rtype: ReportWritten
     :raises ValueError: A budget that is no finite amount above 0, or a model id that is no single path segment.
     :raises RecordingRefused: No recording over this campaign's snapshot, and ``ANTHROPIC_API_KEY`` is not set to make
         one.
     :raises EvalServiceError: The freeze refused the campaign, with its remedy.
     :raises ReportNotStored: The writer ended with a document, and the store refused it.
+    :raises StorageError: The document is stored, and the analysis linking it could not be.
     """
     budget = ReportBudget(usd=budget_usd, turns=TURN_CAP)
     ops = OpsHost.reading(result.host)
     frozen = await report_snapshot_freeze(ops, result.scope_id, campaign_id=result.campaign_id, created_by=CREATED_BY)
     turns = _turns(result.name, frozen.snapshot_id, recording)
+    tally, started_at = Tally(), utc_now_iso()
     try:
         written = await write_report(
             ops,
@@ -161,11 +168,22 @@ async def analyse(
             model=turns(WriterArm(model=model, skill=load_skill()))(None),
             budget=budget,
             snapshot_id=frozen.snapshot_id,
+            tally=tally,
         )
     finally:
         await turns.aclose()
     for left in turns.unconsumed():
         sys.stdout.write(f"drift: {left}\n")
+    if written.stored is not None:
+        await link_written_report(
+            ops,
+            written,
+            campaign_id=result.campaign_id,
+            scope_id=result.scope_id,
+            generator_model=model,
+            started_at=started_at,
+            tally=tally,
+        )
     await run_blocking(result.host.blocking_executor, _write_page, analysis_page(result.name), written.page)
     return written
 

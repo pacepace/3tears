@@ -2,9 +2,9 @@
 
 ``python -m threetears.evals FILE`` runs every module-level value that satisfies ``Runnable`` (a ``name`` and an
 ``async run()`` whose result satisfies ``RunResult``), with nothing naming its kind: a test double here is found and
-run as an ``Eval`` is. ``analyse`` has the report writer write a result's report, replaying its recording with no key
-and writing ``analysis.html``; a replay that leaves recorded lines unasked says so. The harness door runs a file as
-the file door does, then analyses each result; with no recording and no key it is refused, naming the file and
+run as an ``Eval`` is. ``analyse`` has the report writer write a result's report, replaying its recording with no key,
+writing ``analysis.html`` and linking the stored document as the campaign's analysis, so ``report_read`` serves the
+writer's page; a replay that leaves recorded lines unasked says so. The harness door runs a file as the file door does, then analyses each result; with no recording and no key it is refused, naming the file and
 ``ANTHROPIC_API_KEY``. Over a result held in hand (a runnable whose run hands it back, so its snapshot is fixed and
 its recording laid in advance), the door's every after-hook ending is held offline: the page written (exit 0), the
 writer storing nothing (1), the store refusing the report (1), a campaign the freeze cannot find (2), and a result
@@ -18,9 +18,8 @@ frozen snapshot.
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar, Final
@@ -32,10 +31,12 @@ from packages.evals.tests.report_writer_support import (
     FakeToolTurnClient,
     RecordedModel,
     call,
+    hand_written,
     reply,
     review,
     submitted,
 )
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.rung_support import rung_copy
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.actions.report_writing import write_report
@@ -43,6 +44,8 @@ from threetears.evals.harness.__main__ import PROG
 from threetears.evals.harness.__main__ import main as harness_main
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness.analyse import analyse, analysis_page, recording_path
+from threetears.evals.analysis.service import list_analysis_attempts
+from threetears.evals.ops import campaigns_list, report_read
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
@@ -124,24 +127,6 @@ def _session(snapshot: str) -> dict[str, list[TurnReply]]:
         "analyst": [reply(call(1, "examples_list", snapshot, **examples)), reply(submitted(RUNG_ONE_DOC))],
         "editor-1": [reply(call(2, "examples_list", snapshot, **examples)), reply(review())],
     }
-
-
-def _hand_written(path: Path, sessions: Mapping[str, Sequence[TurnReply]]) -> Path:
-    """Write ``sessions`` as a turn recording by hand, the snapshot already the placeholder: each turn's ceiling, then
-    its reply."""
-    lines: list[dict[str, Any]] = []
-    for session, replies in sessions.items():
-        for index, said in enumerate(replies):
-            line = {
-                "recorder_version": RecordedTurns.FORMAT_VERSION,
-                "recorded_at": "2026-11-03T00:00:00+00:00",
-                "session": session,
-                "index": index,
-            }
-            lines += [{**line, "kind": "ceiling", "ceiling": 0.05}, {**line, "kind": "reply", "reply": said.to_json()}]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
-    return path
 
 
 @pytest.fixture
@@ -234,7 +219,7 @@ async def test_analyse_writes_the_page_from_a_hand_written_recording_with_no_key
     rung_one: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     result = await _run_rung_one()
-    recording = _hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), _session("{snapshot}"))
+    recording = hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), _session("{snapshot}"))
     assert recording.is_relative_to(rung_one / "recordings" / "report")
 
     written = await analyse(result, MODEL)
@@ -245,12 +230,37 @@ async def test_analyse_writes_the_page_from_a_hand_written_recording_with_no_key
     assert "Triage passes most emails" in html and "<html" in html
 
 
+async def test_analyse_links_its_stored_report_as_the_campaign_s_analysis(
+    rung_one: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The page ``report`` and ``report_read`` serve is the writer's once ``analyse`` has stored it: the document is
+    the campaign's analysis (``doc``), one attempt reads ``stored``, and the listing reads the report written."""
+    result = await _run_rung_one()
+    hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), _session("{snapshot}"))
+    before = off_loop(report_read, result.host, result.campaign_id, result.scope_id, format="json")
+    assert (before.basis, before.analysis_id) == ("code_only", None)
+
+    written = await analyse(result, MODEL)
+
+    assert written.stored is not None
+    served = off_loop(report_read, result.host, result.campaign_id, result.scope_id, format="json")
+    assert (served.basis, served.analysis_basis, served.needs_regeneration) == ("analysis", "doc", None)
+    assert served.doc is not None and served.doc["headline"] == RUNG_ONE_DOC["headline"]
+    page = off_loop(report_read, result.host, result.campaign_id, result.scope_id, format="markdown")
+    assert RUNG_ONE_DOC["headline"] in page.body
+    (attempt,) = off_loop(list_analysis_attempts, result.host.storage, result.campaign_id, result.scope_id)
+    assert (attempt.outcome, attempt.analysis_id, attempt.generator_model) == ("stored", served.analysis_id, MODEL)
+    (line,) = off_loop(campaigns_list, result.host, result.scope_id).campaigns
+    assert line.report_state == "written" and line.report is not None
+    assert line.report.analysis_id == served.analysis_id
+
+
 async def test_a_replay_that_leaves_lines_unasked_prints_a_disclosure(
     rung_one: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     result = await _run_rung_one()
     leftover = {**_session("{snapshot}"), "editor-9": [reply(review())]}
-    recording = _hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), leftover)
+    recording = hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), leftover)
 
     written = await analyse(result, MODEL)
 
@@ -369,7 +379,7 @@ def test_the_harness_door_writes_the_analysis_of_a_held_result_from_its_recordin
     rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     result, snapshot = _ran_rung_one()
-    recording = _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
+    recording = hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
 
     assert harness_main([str(_held(monkeypatch, result)), "--write-report", MODEL]) == EXIT_OK
 
@@ -384,7 +394,7 @@ def test_a_writer_that_stores_nothing_exits_1_with_no_page(
 ) -> None:
     result, snapshot = _ran_rung_one()
     silent = [reply(TurnText("I have no report yet.")) for _ in range(SILENT_TURNS)]
-    _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), {"analyst": silent})
+    hand_written(recording_path(RUNG_ONE, MODEL, snapshot), {"analyst": silent})
 
     assert harness_main([str(_held(monkeypatch, result)), "--write-report", MODEL]) == EXIT_RUN_DID_NOT_COMPLETE
 
@@ -397,7 +407,7 @@ def test_a_report_the_store_refuses_exits_1_saying_so(
     rung_one: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     result, snapshot = _ran_rung_one()
-    _hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
+    hand_written(recording_path(RUNG_ONE, MODEL, snapshot), _session("{snapshot}"))
 
     def refuse(report: EvalReportDoc, *, sessions: Sequence[EvalReportSession] = ()) -> None:
         raise StorageError("the document is larger than the store takes")
