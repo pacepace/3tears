@@ -392,6 +392,8 @@ __all__ = [
     "TURNS_MEASURE",
     "UNPRICED_TURNS_MEASURE",
     "WRITER_KIND",
+    "WRITER_KIND_CONTRACT",
+    "WRITER_KIND_MEASURES",
     "WriterModels",
     "WriterOverlays",
     "refuse_undeliverable_writer_template",
