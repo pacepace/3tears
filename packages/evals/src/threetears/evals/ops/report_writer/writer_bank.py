@@ -146,6 +146,13 @@ class WriterCaseMint(EvalBaseModel):
         "the case is its own group.",
     )
     split: WriterSplit = Field(default_factory=WriterSplit, description="The sets the case joins, by side.")
+    stratum: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The kind of case it is, in the host's words (the campaign's domain), stored as the case's stratum "
+        "so a writer campaign's readings split by it. Metadata, never part of what makes two mints one case: a mint "
+        "repeating a case under another stratum relabels it in place. Omitted, the case keeps the stratum it has.",
+    )
 
     @model_validator(mode="after")
     def _one_source(self) -> WriterCaseMint:
@@ -169,6 +176,7 @@ class MintedWriterCase(EvalBaseModel):
     withhold: list[str] = Field(description="The notes its analyst is never given.")
     group: str = Field(description="Its split group.")
     side: WriterSide = Field(description="The side of the split it sits on.")
+    stratum: str | None = Field(description="The kind of case it is, as stored on the case; none when none was named.")
     case_set: CaseSetRef = Field(description="The version of its side's set that lists it.")
     reused: bool = Field(description="True when the same case was minted before, and this is that case.")
 
@@ -416,6 +424,7 @@ def _mint_blocking(
             template_id=template.id,
             scope_id=scope_id,
             host_payload=writer_case_payload(WriterCase.of(snapshot, withhold=mint.withhold, origin=origin)),
+            stratum=mint.stratum,
         )
     # The case lands in its own side's set, and never in a set of the other side of the split it is minted under.
     other = mint.split.set_of("dev" if origin.side == "held_out" else "held_out")
@@ -425,6 +434,11 @@ def _mint_blocking(
             "too: a case decided on is never one a change was tuned on",
             remedy=f"mint a version of {other!r} without it (case_set_mint)",
         )
+    if reused and mint.stratum is not None and stored.stratum != mint.stratum:
+        # The stratum is metadata, in no identity key: the case is relabelled in place and keeps its id and history.
+        stored = EvalTestCase.from_dict({**stored.to_dict(), "stratum": mint.stratum})
+        storage.save_test_case(stored)
+        log.info("eval.writer_case_relabel case=%s stratum=%s", stored.id, mint.stratum)
     if not reused:
         storage.save_test_case(stored)
         log.info(
@@ -455,6 +469,7 @@ def _mint_blocking(
         withhold=list(mint.withhold),
         group=origin.group,
         side=origin.side,
+        stratum=stored.stratum,
         case_set=listed.ref,
         reused=reused,
     )
@@ -467,9 +482,9 @@ async def writer_case_mint(host: OpsHost, mint: WriterCaseMint, scope_id: str, *
     be a note of the skill this build ships, checked before anything is frozen; the snapshot is frozen
     (:func:`~threetears.evals.ops.analyst.report_snapshot_freeze`) or read, and must read as every analyst tool
     reads it; the bank must read whole. Then the source's live case is returned when this mint repeats it, or the mint
-    is refused when it differs; else the case is stored, placed on its group's side. Last, the case is listed in its
-    side's set as the next version, unless the latest version lists it already, and refused when the other side's
-    set lists it in any version.
+    is refused when it differs (a stratum named anew relabels it in place); else the case is stored, placed on its
+    group's side, with the stratum named. Last, the case is listed in its side's set as the next version, unless the
+    latest version lists it already, and refused when the other side's set lists it in any version.
 
     :param host: The host whose store holds the source and receives the case.
     :ptype host: OpsHost

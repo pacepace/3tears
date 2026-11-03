@@ -741,6 +741,7 @@ class WriterCaseMintParams(EvalBaseModel):
     snapshot_id: str | None = Field(default=None, min_length=1, description=_MINT["snapshot_id"].description)
     withhold: list[str] = Field(default_factory=list, description=_MINT["withhold"].description)
     group: str | None = Field(default=None, min_length=1, description=_MINT["group"].description)
+    stratum: str | None = Field(default=None, min_length=1, description=_MINT["stratum"].description)
     dev_set: str = Field(default=_SPLIT["dev"].default, min_length=1, description=_SPLIT["dev"].description)
     held_out_set: str = Field(
         default=_SPLIT["held_out"].default, min_length=1, description=_SPLIT["held_out"].description
@@ -764,6 +765,7 @@ class WriterCaseMintParams(EvalBaseModel):
                 snapshot_id=self.snapshot_id,
                 withhold=self.withhold,
                 group=self.group,
+                stratum=self.stratum,
                 split=WriterSplit(
                     dev=self.dev_set, held_out=self.held_out_set, held_out_fraction=self.held_out_fraction
                 ),
