@@ -18,8 +18,8 @@ from threetears.evals.harness import AnalystSkill, Writer, WriterEval
 control = AnalystSkill.at("skills/control")  # frozen: recordings are keyed by the skill's digest
 variant = (Path(__file__).parent / "skills" / "lead-first.md").read_text(encoding="utf-8")  # SKILL.md, lead claim first
 lead_first = control.with_file("SKILL.md", variant)
-judge = Model(  # another family; a score and a short reason fit 2,048 output tokens, the cap each call is priced at
-    "google/gemini-3.8-flash", temperature=0, max_tokens=2048, recording="recordings/judge.jsonl"
+judge = Model(  # another family; low effort leaves a score and a short reason room in 2,048 tokens, the priced cap
+    "google/gemini-3.8-flash", temperature=0, max_tokens=2048, effort="low", recording="recordings/judge.jsonl"
 )
 
 writer_eval = WriterEval(
