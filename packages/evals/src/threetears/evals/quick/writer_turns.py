@@ -32,7 +32,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import Final, Protocol
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.eval_file import beside_eval_file
@@ -41,9 +41,6 @@ from threetears.evals.ops.report_writer.writer_contract import EffortWord, Write
 from threetears.evals.schema.turns import ToolTurnClient
 from threetears.evals.testing.recorded_completions import RecordingRefused
 from threetears.evals.testing.recorded_turns import RecordedTurns
-
-if TYPE_CHECKING:
-    from threetears.evals.providers import Model
 
 #: The variable a recording run reads its key from.
 KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
@@ -59,6 +56,14 @@ class _Sessions(Protocol):
     """What hands out a case's named sessions: a replay, or a model recording one."""
 
     def turn_session(self, name: str, *, snapshot: str) -> ToolTurnClient: ...
+
+
+class _Recorder(_Sessions, Protocol):
+    """A model recording a case live: it prices a turn before one is sent, and is closed when the arm is done."""
+
+    async def turn_pricing_refusal(self) -> str | None: ...
+
+    async def aclose(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +115,7 @@ class WriterTurns:
         self._cases = dict(cases)
         self._served: set[Path] = set()
         self._replays: list[tuple[str, RecordedTurns]] = []
-        self._recorders: list[Model] = []
+        self._recorders: list[_Recorder] = []
 
     def path(self, model: str, effort: EffortWord | None, case: str) -> Path:
         """The recording one case's sessions are routed to, for a model at an effort.
@@ -170,7 +175,7 @@ class WriterTurns:
         paths = (self.path(model, effort, case) for case in self._cases.values())
         return [path for path in paths if not path.is_file()]
 
-    def _recorder(self, model: str, effort: EffortWord | None, path: Path) -> Model:
+    def _recorder(self, model: str, effort: EffortWord | None, path: Path) -> _Recorder:
         """A model that records ``path``'s sessions live, on the key the environment holds; closed by :meth:`aclose`."""
         from threetears.evals.providers import Model  # the completion client, loaded only to record a missing case
 
@@ -211,7 +216,7 @@ class WriterTurns:
 class _CellModel:
     """One cell's model: each session routed to its case's recording by the snapshot it reads."""
 
-    def __init__(self, model: str, route: Callable[[str], _Sessions], probe: Model | None) -> None:
+    def __init__(self, model: str, route: Callable[[str], _Sessions], probe: _Recorder | None) -> None:
         self.model_name = model
         self._route = route
         self._probe = probe
