@@ -1956,8 +1956,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? AND generation != ?",
             (self.table_name, generation),
         )
-        for row in dead:
-            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
+        self._l1.delete_many_by_id(_ABSENT_MARKER_TABLE, [(row["key"],) for row in dead], ("key",))
         self._marker_generation = generation
 
     def _write_l1_marker(self, entity_id: Any, generation: str) -> None:
@@ -2007,8 +2006,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             f"SELECT key FROM {_ABSENT_MARKER_TABLE} WHERE table_name = ? ORDER BY rowid LIMIT {excess:d}",
             (self.table_name,),
         )
-        for row in oldest:
-            self._l1.delete_by_id(_ABSENT_MARKER_TABLE, (row["key"],), ("key",))
+        self._l1.delete_many_by_id(_ABSENT_MARKER_TABLE, [(row["key"],) for row in oldest], ("key",))
 
     def _clear_l1_marker(self, entity_id: Any) -> None:
         """drop this pod's L1 absent-marker for ``entity_id``, if it holds one.
@@ -2171,19 +2169,47 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _evict_l1(self, entity_id: Any) -> None:
         """drop ``entity_id``'s row from this process's L1, and stop any read or write in flight caching it.
 
-        The one way a row leaves this collection's L1, so every eviction also reaches the fence: a
-        pull-through that read the row before the eviction would otherwise cache it after.
+        One key through :meth:`_evict_l1_many`, the one way a row leaves this collection's L1.
 
         :param entity_id: pk value (single-pk) or tuple of pk values in declared order
         :ptype entity_id: Any
         :return: nothing
         :rtype: None
         """
-        self._l1_fence.changed(self._fence_key(entity_id))
-        l1 = self._l1_holding_table()
-        if l1 is not None:
-            l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
-        self._l1_changed(entity_id)
+        self._evict_l1_many((entity_id,))
+
+    def _evict_l1_many(self, entity_ids: Sequence[Any]) -> None:
+        """drop many keys' rows from this process's L1 in one write; the one way a row leaves this collection's L1.
+
+        Every key reaches the fence before the delete, so a pull-through that read a row before
+        the eviction does not cache it after. The delete is one backend write, so the SQLite L1
+        takes its write lock and commits once for every key rather than once a key. Every change
+        listener hears every key after the delete, and also when the delete fails: a backend that
+        deletes a row at a time (the DuckDB L1) may have dropped some keys before the failure, and
+        hearing a key that did not leave only voids what the listener holds. A failed delete then
+        raises unchanged.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if not entity_ids:
+            return
+        fence = self._l1_fence
+        for entity_id in entity_ids:
+            fence.changed(self._fence_key(entity_id))
+        try:
+            l1 = self._l1_holding_table()
+            if l1 is not None:
+                l1.delete_many_by_id(
+                    self.table_name,
+                    [self.normalize_pk(entity_id) for entity_id in entity_ids],
+                    self.primary_key_columns,
+                )
+        finally:
+            for entity_id in entity_ids:
+                self._l1_changed(entity_id)
 
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
@@ -2236,7 +2262,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :mod:`threetears.core.collections.complete_copy`): every row this collection writes into L1
         (a write through, a pull-through, a new entity) goes through :meth:`_l1_upsert`, and every
         eviction (a write this process settled, a peer's invalidation broadcast) through
-        :meth:`_evict_l1`, so a listener here hears each change. It runs synchronously inside the
+        :meth:`_evict_l1_many`, so a listener here hears each change. It runs synchronously inside the
         change and must not raise.
 
         :param listener: called with the row's key (pk value, or tuple of pk values)
@@ -2924,12 +2950,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self.l1_backend
         if l1 is not None and (not hasattr(l1, "has_table") or l1.has_table(self.table_name)):
             columns = self.primary_key_columns
-            selected = ", ".join(f'"{column}"' for column in columns)
-            # identifiers are this collection's own declared table and pk column names
-            for row in l1.execute_query(f'SELECT {selected} FROM "{self.table_name}"'):
-                key = tuple(row[column] for column in columns)
-                self._evict_l1(key if len(key) > 1 else key[0])
-                dropped += 1
+            selected = ", ".join(quote_identifier(column) for column in columns)
+            keys = [
+                tuple(row[column] for column in columns)
+                for row in l1.execute_query(f"SELECT {selected} FROM {quote_identifier(self.table_name)}")
+            ]
+            self._evict_l1_many([key if len(key) > 1 else key[0] for key in keys])
+            dropped = len(keys)
         return dropped
 
     async def _seed_l2(self, entity_id: Any, stored: dict[str, Any], revision: int) -> bool:
@@ -4846,8 +4873,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             write generation; every key has left L1 and L2 and every eviction was broadcast
         """
         self._set_span_table()
-        for entity_id in entity_ids:
-            self._evict_l1(entity_id)
+        self._evict_l1_many(entity_ids)
         if not entity_ids:
             return
         seen: Sequence[dict[str, Any] | None] = rows if rows is not None else (None,) * len(entity_ids)

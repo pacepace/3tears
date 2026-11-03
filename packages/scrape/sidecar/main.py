@@ -269,6 +269,12 @@ class DownloadResponse(BaseModel):
     timing_ms: float
 
 
+def _removal_failed(_function: object, path: str, exc: BaseException) -> None:
+    """log a part of a download directory that would not go; a part already gone is what was wanted."""
+    if not isinstance(exc, FileNotFoundError):
+        log.warning("download: could not remove %s: %s", path, exc)
+
+
 def _is_main_frame_document(event: uc.cdp.network.ResponseReceived, main_frame_id: str) -> bool:
     """True for the top-level navigation's own document response, not a sub-resource.
 
@@ -762,7 +768,7 @@ async def _download(url: str, *, timeout: float = 30.0) -> _DownloadResult:
             await _browser.send(uc.cdp.target.dispose_browser_context(context_id))
         except Exception as exc:  # noqa: BLE001 -- prawduct:allow prawduct/broad-except -- context disposal is best-effort cleanup, must never mask the real download outcome above
             log.debug("download: browser context disposal failed: %s", exc)
-        shutil.rmtree(download_dir, ignore_errors=True)
+        shutil.rmtree(download_dir, onexc=_removal_failed)
 
 
 #: How long to wait on each window-manager call. Local X clients against a local Xvfb, so this is

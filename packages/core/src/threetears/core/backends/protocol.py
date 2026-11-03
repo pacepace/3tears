@@ -50,6 +50,7 @@ __all__ = [
     "TruncatingStore",
     "load_requests",
     "load_wait_seconds",
+    "side_by_side_requests",
     "parse_rowcount",
 ]
 
@@ -446,6 +447,41 @@ def load_requests(files: Sequence[LoadFile], *, rows_per_transaction: int, timeo
         requests[-1].append(file)
         held += needed
     return requests
+
+
+def side_by_side_requests(requests: Sequence[Sequence[LoadFile]], connections: int) -> list[list[LoadFile]]:
+    """:func:`load_requests`' requests cut further, so a load can run over ``connections`` connections at once.
+
+    The broker copies one request's files one after another on one connection, so a load sent as one request runs
+    at one connection's rate. Each request is cut into contiguous runs of whole files, each of about the load's rows
+    over ``connections``; a run never crosses a request's bounds, so each fits its wait as its request did. No file is
+    cut and no run is empty: a file larger than a run's share is a run of its own.
+
+    :param requests: the load's requests, as :func:`load_requests` cut them
+    :ptype requests: Sequence[Sequence[LoadFile]]
+    :param connections: the most requests the load runs at once; at least one
+    :ptype connections: int
+    :return: the requests, in the files' order
+    :rtype: list[list[LoadFile]]
+    :raises ValueError: when ``connections`` is under one
+    """
+    if connections < 1:
+        raise ValueError(f"a load runs over at least one connection, not {connections} connections")
+    total = sum(file.rows for request in requests for file in request)
+    target = max(1, math.ceil(total / connections))
+    cut: list[list[LoadFile]] = []
+    for request in requests:
+        run: list[LoadFile] = []
+        held = 0
+        for file in request:
+            if run and held + file.rows > target:
+                cut.append(run)
+                run, held = [], 0
+            run.append(file)
+            held += file.rows
+        if run:
+            cut.append(run)
+    return cut
 
 
 @dataclass(frozen=True)
