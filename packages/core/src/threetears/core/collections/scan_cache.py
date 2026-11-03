@@ -285,8 +285,8 @@ class ScanCache:
         dropped = 0
         if self._l1 is not None and self._l1.has_table("collection_scan_cache"):
             rows = self._l1.execute_query("SELECT key, depends_on FROM collection_scan_cache")
-            for row in rows:
-                if table in json.loads(row["depends_on"]):
-                    self._l1.delete_by_id("collection_scan_cache", row["key"], "key")
-                    dropped += 1
+            keys = [row["key"] for row in rows if table in json.loads(row["depends_on"])]
+            # one write for every entry: the SQLite L1 locks and commits once, not once an entry
+            self._l1.delete_many_by_id("collection_scan_cache", keys, "key")
+            dropped = len(keys)
         return dropped
