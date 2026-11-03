@@ -27,6 +27,7 @@ WRITER_PATH: Final = (
     "fixtures.report_plans.analyst_cli",
     "fixtures.report_plans.writer_smoke",
     "fixtures.report_plans.writer_calibration",
+    "fixtures.report_plans.writer_acceptance",
 )
 
 #: The planner's and the memo's fixtures, which the writer's path never loads.

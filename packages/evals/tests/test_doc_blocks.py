@@ -5,9 +5,10 @@ above them defined, and each page says so at its top. A reader runs them in ``py
 ``async def main()``, which puts every block on a running event loop. That is where a synchronous store call is
 refused (``StoreCalledOnEventLoop``), so a block that makes one bare raises for the reader exactly as it raises
 here. The ladder runs nothing of its own: each of its blocks is a verbatim excerpt of an example, which the rung's
-own test runs, so the page is held to the files it quotes. What the ladder shows a rung printing is held to a replay:
-each rung's file is run through the door from a copy with no key, and every line of each ``text`` block under its
-heading is found in what it printed or in the ``report.md`` it wrote, ``...`` standing for what the page leaves out.
+own test runs, so the page is held to the files it quotes. What the ladder and the examples' README show a rung
+printing is held to a replay: each rung's file is run through the door from a copy with no key, and every line of
+each ``text`` block under its heading is found in what it printed or in the ``report.md`` it wrote, ``...`` standing
+for what the page leaves out.
 
 Each block is compiled as a reader's REPL compiles it (``PyCF_ALLOW_TOP_LEVEL_AWAIT``) and awaited on the test's own
 loop. A block the page presents as a fragment, or one that needs more than the page builds, is named below with
@@ -102,11 +103,18 @@ REPLAYED = {
 }
 
 
-def ladder_text_lines(rung: str) -> list[str]:
-    """Every line of every ``text`` block under the ladder's heading for ``rung``, each ``...`` line left out."""
-    sections = (DOCS / "ladder.md").read_text(encoding="utf-8").split("\n## ")
-    (section,) = [section for section in sections if section.startswith(f"{rung}:")]
-    return [line for block in _TEXT.findall(section) for line in block.splitlines() if line.strip() != "..."]
+#: The pages that show a rung's output, and the heading each puts a rung under.
+SHOWN_ON = {DOCS / "ladder.md": "\n## ", EXAMPLES / "README.md": "\n### "}
+
+
+def shown_lines(rung: str) -> list[str]:
+    """Every line of every ``text`` block under a heading for ``rung`` on :data:`SHOWN_ON`, each ``...`` line left out."""
+    lines: list[str] = []
+    for page, heading in SHOWN_ON.items():
+        sections = page.read_text(encoding="utf-8").split(heading)
+        for section in (section for section in sections if section.startswith(f"{rung}:")):
+            lines += [line for block in _TEXT.findall(section) for line in block.splitlines() if line.strip() != "..."]
+    return lines
 
 
 def _shown_in(line: str, printed: list[str]) -> bool:
@@ -119,10 +127,10 @@ def _shown_in(line: str, printed: list[str]) -> bool:
 def test_what_the_ladder_shows_a_rung_printing_is_what_its_replay_prints(
     rung: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Each line the ladder shows under a rung is in the door's print of its replay, or in the report it wrote."""
+    """Each line a page shows under a rung is in the door's print of its replay, or in the report it wrote."""
     directory, program = REPLAYED[rung]
-    shown = ladder_text_lines(rung)
-    assert shown, f"the ladder shows nothing {rung} printed"
+    shown = shown_lines(rung)
+    assert shown, f"no page shows what {rung} printed"
     # Run as the ladder runs it, from the directory above ``examples/``, so every path prints as the page shows it.
     rung_copy(directory, tmp_path / "examples", monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -132,7 +140,7 @@ def test_what_the_ladder_shows_a_rung_printing_is_what_its_replay_prints(
     for report in sorted((tmp_path / ".evals" / "reports").glob("*/report.md")):
         printed += report.read_text(encoding="utf-8").splitlines()
     missing = [line for line in shown if not _shown_in(line, printed)]
-    assert not missing, f"the ladder shows {rung} printing lines its replay does not print:\n" + "\n".join(missing)
+    assert not missing, f"the docs show {rung} printing lines its replay does not print:\n" + "\n".join(missing)
 
 
 def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:

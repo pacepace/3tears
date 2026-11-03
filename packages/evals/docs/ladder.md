@@ -5,9 +5,9 @@ to point an eval at your own function, grade with a judge you can check, compare
 reviewer can act on, grade an agent by the world it leaves, then serve the runs to your team, and evaluate the model
 that writes your reports. Each rung is one directory under [`examples/`](../examples/), in its own domain. Rungs 1 to
 4 are recorded on cheap models, so they run offline and free; rung 5's recordings are a paid step not yet taken, and
-until then it prints what it would need. Every block of Python below is a verbatim excerpt of the example it names
-(`tests/test_doc_blocks.py` holds it so), and every output is what the recording replays, or, for rung 5, what the
-file prints today.
+until then it prints what it would need. Every block of Python below is a verbatim excerpt of the example it names,
+and every output of rungs 1 to 4 is what the recording replays (`tests/test_doc_blocks.py` holds both); rung 5's is
+what the file prints today.
 
 **Running a rung.** In a checkout, after `uv sync` at the repository root, from `packages/evals`:
 
@@ -15,11 +15,12 @@ file prints today.
 uv run python -m threetears.evals examples/1-triage/triage.py
 ```
 
-The command finds every `Eval` the file defines at module level, runs it, prints it quietly, writes its report under
-`.evals/reports/<name>/`, keeps its runs in `.evals/evals.sqlite` (both under the directory you run from), and exits
-with its code. Paths a file names (its cases, its recordings) are read beside the file. A recording that exists is
-replayed: no key, no network, no cost. `RECORD=1` with `OPENROUTER_API_KEY` set records it again, live. After a pip
-install, fetch the examples first ([how](../examples/README.md#running-them)).
+The command finds every eval the file defines at module level (an `Eval`, or rung 5's `WriterEval`), runs it, prints
+it quietly, writes its report under `.evals/reports/<name>/`, keeps its runs in `.evals/evals.sqlite` (both under the
+directory you run from), and exits with its code. The report is code's: built from the readings, with no model
+called. A second door, at rung 3, has a model write one too. Paths a file names (its cases, its recordings) are read
+beside the file. A recording that exists is replayed: no key, no network, no cost. `RECORD=1` with
+`OPENROUTER_API_KEY` set records it again, live. After a pip install, fetch the examples first ([how](../examples/README.md#running-them)).
 
 The ladder's line counts are of non-blank lines: rung 1's program is 15 of them, rung 4's agent and server together
 stay under 100.
@@ -76,24 +77,25 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: 18/30 cases passed; 12 misses: double-charge, gdpr-delete, book-demo, phish-suspend, phish-invoice, and 7 more
+emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more
 90 result(s): 90 scored
   urgent: mean 0.8333 (n=90, min 0, max 1)
   escalates: mean 0.9889 (n=90, min 0, max 1)
   category: mean 0.9 (n=90, min 0, max 1)
   per label:
-    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases, ...)
+    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases, ...
     ...
   total spend: $0.00192, the results' cost
 top misses (5 of 20):
-  case double-charge (repeat 1): urgent gave 0
-  case gdpr-delete (repeat 1): urgent gave 0
+  case double-charge (repeat ...): urgent gave 0
+  case refund-after-cancel (repeat ...): urgent gave 0
   ...
 stored in .evals/evals.sqlite, scope 'emails'
 report: .evals/reports/emails/report.html
 ```
 
-The misses print in the report's order, the order its Trials table lists the failed trials in.
+The misses print in the report's order, the order its Trials table lists the failed trials in. Which repeat of a
+case missed can differ between replays: a recorded answer may serve another repeat of the same case.
 
 **The lesson: the rule you write decides what you measured, so read the misses before the means.** Rung 0 graded
 `needs_human` both ways and read 0.81; 16 of its 17 misses were emails escalated that did not need a person, a minute
@@ -252,8 +254,7 @@ v1 (control): 90 result(s): 90 scored
 v2: 90 result(s): 89 scored, 1 failed by the candidate
   number: mean 1 (n=89, min 1, max 1)
   ...
-  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice
-  Invalid JSON: expected `:` at line 1 column 7 [type=json_invalid, input_value='{"{  "currency": "GBP", ...7",  "total": 270.00  }', input_type=str]
+  error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
 exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it)
 ```
@@ -262,17 +263,17 @@ And what the report (`.evals/reports/invoices/report.md`, the same page as `repo
 title, warning and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
 
 ```text
-# invoices
+# v1 vs v2 · classify (invoices)
 **v2 is not yet shown safe on the no invented total guardrail on classify.**
-| classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-1.4, 34.7] pts | v2 and v1 not separated | 30 paired |
+| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
+| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.2, 34.8] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,
-and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches just below zero.
+and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches below zero.
 The guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy invoice that prints
 none, the interval on the difference is ±13 points against a margin of 2, and an undecided guardrail is never read as
 held, so the gate fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only
@@ -280,6 +281,27 @@ an invoice that prints no amount due can fail it (7 of the 30 do): more of those
 failed on malformed JSON from the model, and it counts against v2, stated, never excluded: a model's unusable answer
 is the candidate's failure. [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict, and
 [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) how many cases a question needs.
+
+### Have a model write the analysis
+
+Every page so far is code's. The harness door runs the same file, then hands the campaign to the report writer: an
+analyst model that reads the frozen evidence through tools and writes the page, and an editor that reviews it before
+it is stored.
+
+```bash
+ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/extract.py --write-report claude-sonnet-5-5
+```
+
+| What | The harness door |
+|---|---|
+| Key | `ANTHROPIC_API_KEY`: the writer's every turn is live |
+| Cost | at most `--budget-usd` a report, $3 unless you name less |
+| Page | `.evals/reports/invoices/analysis.html`, beside code's `report.html` |
+| Turns | recorded under `examples/3-invoices/recordings/report/` |
+
+The writer's turns never replay here: each run of the file is a new campaign with a new snapshot, so no earlier
+recording is of it, and with no key the door refuses, naming the file it would record. A writer replays offline only
+over frozen campaigns, which is rung 5.
 
 ## Rung 4: an agent, graded on the world it leaves
 
@@ -380,15 +402,17 @@ uv run python -m threetears.evals agent.py
 uv run python -m threetears.evals ls --host serve:host --scope booking
 ```
 
-The store is any `DocumentStore`: the SQLite file by default, or your own database to share it.
+`report CAMPAIGN --host serve:host --scope booking` prints a campaign's page, and `report_read` over MCP reads the
+same page. It is code's page: a report the harness door wrote stays in its own `analysis.html`. The store is any
+`DocumentStore`: the SQLite file by default, or your own database to share it.
 [Serving](serving.md) covers the commands, the actions an agent calls, and the MCP transport.
 
 ## Rung 5: evaluate the evaluator
 
 [`examples/5-writer/`](../examples/5-writer/) turns the eval on the report writer itself: the analyst model that reads
-a campaign through tools and writes its page, and the editor that reviews the page before it is stored. Every report
-in rungs 1 to 4 came from it, so it gets the same treatment as anything else you ship: arms, cases, a judge, a
-verdict. The arms are two versions of the analyst's skill, the Markdown it is told to work from:
+a campaign through tools and writes its page, and the editor that reviews the page before it is stored: the model
+behind rung 3's second door. It gets the same treatment as anything else you ship: arms, cases, a judge, a verdict.
+The arms are two versions of the analyst's skill, the Markdown it is told to work from:
 
 ```python
 control = AnalystSkill.at("skills/control")  # frozen: recordings are keyed by the skill's digest
@@ -416,9 +440,10 @@ writer_eval = WriterEval(
 ```
 
 - **A case is a campaign, frozen.** Each file in `cases/` holds one campaign's evidence exactly as the writer's tools
-  read it: the four campaigns rungs 1 to 4 store when they replay, a larger campaign the package ships, and six of
-  the package's report inputs reshaped to fit no exemplar (the `misfit` stratum). Each case's `stratum` is its domain,
-  so the readings split by it.
+  read it: the four campaigns rungs 1 to 4 store when they replay, a larger campaign the package ships as a fixture
+  (the `kairo` stratum), and six of the package's report inputs reshaped to fit no exemplar (the `misfit` stratum).
+  Each case's `stratum` is its domain, so the readings split by it, and its `withhold` names the skill's exemplar
+  notes the analyst is not given: the one reasoned on that same campaign.
 - **Cases are split before anything runs.** A case's split group (related cases share one) lands on the dev side,
   where a change is tuned, or the held-out side, where it is decided. The promotion is read on held-out cases only.
 - **`Writer(model, skill=, effort=)`** is an arm. A writer can also differ in its revisions or its editor's own model
@@ -441,7 +466,8 @@ python -m threetears.evals examples/5-writer/writer.py: writer: arm 'shipped' ha
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records both, and what
 it may spend: 14 reports, at most $15 in all. Once recorded, the run prints a table of the writer's readings per arm
-(reports finished, bounces, rounds, turns, each judged dimension), the cases per stratum, and one line per candidate:
+(reports finished; bounces, a submission code's checks sent back; rounds, the analyst's drafts and the editor's
+reviews; turns; each judged dimension), the cases per stratum, and one line per candidate:
 the promotion read.
 
 **The lesson: a writer is a model too, and whether a change to it ships is a decision the engine makes, not one you
@@ -462,6 +488,8 @@ how many a question needs.
 | decide what to test before writing cases, and how many | [Building an inventory](building-an-inventory.md) |
 | trust a judge, and measure it as a subject | [Judges and calibration](judges-and-calibration.md) |
 | read every part of a report | [Reading reports](reading-reports.md) |
+| have a model write a comparison's report, and read it | [The analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence) |
+| promote a change to the report writer | [Pairwise preference for the report writer](judges-and-calibration.md#pairwise-preference-for-the-report-writer) |
 | choose a design, k and a case count, and avoid known traps | [Measuring soundly](measuring-soundly.md) |
 | price a run before it spends | [Cost and budgets](cost-and-budgets.md) |
 | evaluate an agent in your production world | [Evaluating a tool-using agent](evaluating-agents.md) |

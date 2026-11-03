@@ -12,13 +12,16 @@ before.
 | 0 | [`1-triage/triage.toml`](1-triage/triage.toml), after [Building an inventory](../docs/building-an-inventory.md) | Write down what your app must never get wrong, then run it with one TOML file. |
 | 1 | [`1-triage/triage.py`](1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
 | 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
-| 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
-| 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
-| 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine make the call. |
+| 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
+| 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
+| 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. |
 
-One door runs every rung: `python -m threetears.evals <file>`, from any directory. The paths a rung names (its
-cases, its recordings, a judge's labels) are read beside its file; the store (`.evals/evals.sqlite`) and the report
-(`.evals/reports/<name>/report.html`) are written under the directory you run from. In a checkout, from
+One door runs every rung: `python -m threetears.evals <file>`, from any directory. It runs every eval the file
+defines (an `Eval`, or rung 5's `WriterEval`). The paths a rung names (its cases, its recordings, a judge's labels)
+are read beside its file; the store (`.evals/evals.sqlite`) and the report (`.evals/reports/<name>/report.html`) are
+written under the directory you run from. That report is code's, built from the readings with no model called. A
+second door, `python -m threetears.evals.harness <file> --write-report MODEL`, also has the report writer write one
+(rung 3). In a checkout, from
 `packages/evals/`, after `uv sync`:
 
 ```bash
@@ -75,7 +78,7 @@ campaign to measure the judge on, and calls no model to do it.
 dimensions. That is what an unchecked judge looks like, not proof the replies are right: read a few, and you will find
 claims the policy never makes. The run says so in the line it never quiets:
 
-```
+```text
 judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
 ```
 
@@ -109,13 +112,13 @@ What the recorded run said: nothing separated v2 from v1, and it exits 4, its la
 screen opens on the guardrail's warning and reads v2 against v1 in one row
 
 ```text
-**Not yet shown safe on classify: v2 on no invented total.**
-
-# invoices
-
-| Aspect | Arm | Cases | ▸ v1 | Arm passed | Change (pts) | Interval (pts) | Margin (pts) | Reading |
-|---|---|---|---|---|---|---|---|---|
-| classify | v2 | 30 | 73 of 90 | 88 of 90 | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
+# v1 vs v2 · classify (invoices)
+...
+**v2 is not yet shown safe on the no invented total guardrail on classify.**
+...
+| Aspect | Cases | ▸ v1 (%) | v2 (pts) |
+|---|---|---|---|
+| classify | 30 | 81.1 | 16.7 (unclear, a lead) |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
@@ -128,6 +131,17 @@ ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JS
 
 Recorded on `deepseek/deepseek-v4-flash` at `max_tokens=8192`: 180 calls, $0.0105 (`recordings/invoices.jsonl`).
 
+**A model writes the analysis.** The harness door runs the same file, then the report writer (an analyst model and
+its editor) writes the campaign's report over its frozen evidence:
+
+```bash
+ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoices/extract.py --write-report claude-sonnet-5-5
+```
+
+It is live on every run, at most `--budget-usd` a report ($3 unless you name less), and writes
+`.evals/reports/invoices/analysis.html`, its turns under `3-invoices/recordings/report/`. Each run is a new campaign,
+so no recording is ever replayed here; rung 5 is the writer offline.
+
 ### Rung 4: an agent graded on the world it leaves, `4-booking/`
 
 [`agent.py`](4-booking/agent.py) books meetings: each request ([`requests.jsonl`](4-booking/requests.jsonl)) seeds one
@@ -137,14 +151,15 @@ check beats. [`serve.py`](4-booking/serve.py) serves the eval's runs to the team
 call (`mount_fastmcp(host(), scope="booking").run()`, the `[fastmcp]` extra, read-only;
 [Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
 [the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`),
-both from `4-booking/`, where `agent.py`'s runs are stored when it is run there.
+both from `4-booking/`, where `agent.py`'s runs are stored when it is run there. `report CAMPAIGN` and `report_read`
+read a campaign's page there: code's page, while a report the harness door wrote stays in its `analysis.html`.
 
 Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
 
 ### Rung 5: the report writer evaluated, `5-writer/`
 
-[`writer.py`](5-writer/writer.py) evaluates the report writer, the analyst model and its editor that wrote every
-report above, as the thing under test. Its two arms are two versions of the analyst's skill: a frozen copy of the
+[`writer.py`](5-writer/writer.py) evaluates the report writer, the analyst model and its editor behind rung 3's
+harness door, as the thing under test. Its two arms are two versions of the analyst's skill: a frozen copy of the
 shipped one ([`skills/control/`](5-writer/skills/control/), frozen because every recording is keyed by the skill's
 digest; [`skills/README.md`](5-writer/skills/README.md) says which) and [`skills/lead-first.md`](5-writer/skills/lead-first.md),
 which puts each report's lead claim first. Both write on `claude-sonnet-5-5` at effort `medium`; the judge is
@@ -156,15 +171,13 @@ Its eleven cases ([`cases/`](5-writer/cases/), one `.json.gz` each) are frozen c
 |---|---|---|
 | `support-triage` | rung 1's campaign | held-out |
 | `support-replies`, `invoices`, `booking` | rungs 2, 3 and 4's | dev |
-| `kairo` | a consumer's campaign the package ships as a fixture | held-out |
+| `kairo` | a larger campaign the package ships as a fixture | held-out |
 | `misfit` | five of the package's report inputs reshaped to fit no exemplar | held-out |
 | `misfit` | one more, in the r3 group | dev |
 
-Kairo's campaign ships here as a case file: its data is not sensitive, and the owner allowed excerpts of it to be
-committed (2026-10-25). Nothing in the rung's code or tests names it; it is one case among eleven. A case's side is
-its split group's: `held_out_fraction=0.35` puts 7 cases on the held-out side, where a promotion is read, because the
-default 0.3 puts only 4 there, under the 5 a rate needs. `tests/fixtures/report_plans/export_writer_cases.py` wrote
-the files; a ladder case is frozen once, since a rung run again is new evidence with a new snapshot id.
+A case's side is its split group's, and `held_out_fraction=0.35` puts 7 of the 11 on the held-out side, where a
+promotion is read. `tests/fixtures/report_plans/export_writer_cases.py` wrote the files; a ladder case is frozen
+once, since a rung run again is new evidence with a new snapshot id.
 
 Until its recordings exist it refuses, naming the first missing file and its key;
 [`recordings/README.md`](5-writer/recordings/README.md) holds the one command that records them (both
@@ -215,6 +228,7 @@ RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recording
 
 Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
 records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).
+Rung 3's harness door needs `ANTHROPIC_API_KEY` alone, and records every run, since each is a new campaign.
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever a rung's prompt, cases or
 request settings change: the rung's test checks the recording still covers every prompt the rung sends before it

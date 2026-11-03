@@ -228,7 +228,9 @@ async def test_serve_reports_the_campaign_s_page_as_code_built_it_beside_a_store
     assert stored is not None and stored.campaign_id == result.campaign_id
     capsys.readouterr()
 
-    code = await asyncio.to_thread(run_cli, ["report", result.campaign_id, "--host", "serve:host", "--scope", "booking"])
+    code = await asyncio.to_thread(
+        run_cli, ["report", result.campaign_id, "--host", "serve:host", "--scope", "booking"]
+    )
 
     page = capsys.readouterr().out
     assert code == 0 and page.startswith("# agent · score (booking)\n"), page[:200]

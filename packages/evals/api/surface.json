@@ -8631,6 +8631,21 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.WRITER_KIND_CONTRACT": {
+      "kind": "constant (KindContract)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.writer_kind_contract": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.WRITER_KIND_MEASURES": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.WriterLimits": {
       "kind": "dataclass",
       "signature": "WriterLimits(analyst: AnalystLimits = AnalystLimits(), editor: EditorLimits = EditorLimits(), revisions: int = 2)",
