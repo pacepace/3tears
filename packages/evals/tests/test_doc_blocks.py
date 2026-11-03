@@ -85,7 +85,7 @@ def _quotes(block: str, source: str) -> bool:
 
 
 def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:
-    """``ladder.md`` walks the four examples by quoting them, so an edited example cannot leave the page behind."""
+    """``ladder.md`` walks the five examples by quoting them, so an edited example cannot leave the page behind."""
     sources = {path: path.read_text(encoding="utf-8") for path in sorted(EXAMPLES.glob("*/*.py"))}
     blocks = page_blocks("ladder.md")
     assert len(blocks) >= 4, "the ladder quotes at least one block per rung"
@@ -93,7 +93,7 @@ def test_every_ladder_block_is_a_verbatim_excerpt_of_an_example() -> None:
         holding = [path.relative_to(EXAMPLES).as_posix() for path, text in sources.items() if _quotes(block, text)]
         assert holding, f"this ladder block is in no example, line for line:\n{block}"
     quoted = {path.parent.name for path, text in sources.items() for block in blocks if _quotes(block, text)}
-    assert quoted == {"1-triage", "2-replies", "3-invoices", "4-booking"}, f"rungs quoted: {sorted(quoted)}"
+    assert quoted == {"1-triage", "2-replies", "3-invoices", "4-booking", "5-writer"}, f"rungs quoted: {sorted(quoted)}"
 
 
 async def test_evaluating_agents_runs_top_to_bottom(capsys: pytest.CaptureFixture[str]) -> None:

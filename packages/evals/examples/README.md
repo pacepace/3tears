@@ -1,8 +1,9 @@
 # Examples
 
-The ladder comes first: one directory per rung, each in its own domain and recorded on cheap models through
-OpenRouter, so every rung runs offline and free from the recordings beside it. Climb it in order; each rung adds one
-idea to the one before.
+The ladder comes first: one directory per rung, each in its own domain. Rungs 1 to 4 are recorded on cheap models
+through OpenRouter, so each runs offline and free from the recordings beside it; rung 5's recordings are a paid step
+not yet taken, and until then it refuses, naming what it needs. Climb it in order; each rung adds one idea to the one
+before.
 
 ## The ladder
 
@@ -13,6 +14,7 @@ idea to the one before.
 | 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
 | 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
 | 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
+| 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine make the call. |
 
 One door runs every rung: `python -m threetears.evals <file>`, from any directory. The paths a rung names (its
 cases, its recordings, a judge's labels) are read beside its file; the store (`.evals/evals.sqlite`) and the report
@@ -25,6 +27,7 @@ uv run python -m threetears.evals examples/1-triage/triage.py      # rung 1
 uv run python -m threetears.evals examples/2-replies/replies.py    # rung 2
 uv run python -m threetears.evals examples/3-invoices/extract.py   # rung 3
 uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4
+uv run python -m threetears.evals examples/5-writer/writer.py      # rung 5, once recorded
 ```
 
 The one exception is rung 4's [`serve.py`](4-booking/serve.py), which runs from `examples/4-booking/` because it imports `agent.py` as a module.
@@ -138,10 +141,40 @@ both from `4-booking/`, where `agent.py`'s runs are stored when it is run there.
 
 Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
 
+### Rung 5: the report writer evaluated, `5-writer/`
+
+[`writer.py`](5-writer/writer.py) evaluates the report writer, the analyst model and its editor that wrote every
+report above, as the thing under test. Its two arms are two versions of the analyst's skill: a frozen copy of the
+shipped one ([`skills/control/`](5-writer/skills/control/), frozen because every recording is keyed by the skill's
+digest; [`skills/README.md`](5-writer/skills/README.md) says which) and [`skills/lead-first.md`](5-writer/skills/lead-first.md),
+which puts each report's lead claim first. Both write on `claude-sonnet-5-5` at effort `medium`; the judge is
+`google/gemini-3.8-flash`, another family.
+
+Its eleven cases ([`cases/`](5-writer/cases/), one `.json.gz` each) are frozen campaigns, by stratum:
+
+| Stratum | Cases | Side |
+|---|---|---|
+| `support-triage` | rung 1's campaign | held-out |
+| `support-replies`, `invoices`, `booking` | rungs 2, 3 and 4's | dev |
+| `kairo` | a consumer's campaign the package ships as a fixture | held-out |
+| `misfit` | five of the package's report inputs reshaped to fit no exemplar | held-out |
+| `misfit` | one more, in the r3 group | dev |
+
+Kairo's campaign ships here as a case file: its data is not sensitive, and the owner allowed excerpts of it to be
+committed (2026-10-25). Nothing in the rung's code or tests names it; it is one case among eleven. A case's side is
+its split group's: `held_out_fraction=0.35` puts 7 cases on the held-out side, where a promotion is read, because the
+default 0.3 puts only 4 there, under the 5 a rate needs. `tests/fixtures/report_plans/export_writer_cases.py` wrote
+the files; a ladder case is frozen once, since a rung run again is new evidence with a new snapshot id.
+
+Until its recordings exist it refuses, naming the first missing file and its key;
+[`recordings/README.md`](5-writer/recordings/README.md) holds the one command that records them (both
+`ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, at most $15). [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator)
+walks it.
+
 ## Running them
 
-Every rung replays the recordings beside it when it runs with no key, so it calls nothing and costs nothing, and its
-output is a real model's, as of that recording. There is no scripted stand-in for a model anywhere in them.
+Every recorded rung replays the recordings beside it when it runs with no key, so it calls nothing and costs nothing,
+and its output is a real model's, as of that recording. There is no scripted stand-in for a model anywhere in them.
 
 **Outside a checkout** (you installed `3tears-evals` with pip): the examples are not part of the installed
 package, so fetch this whole directory from the repository, at the tag of the version you installed (the
@@ -179,6 +212,9 @@ RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recording
 RECORD=1 python -m threetears.evals 3-invoices/extract.py  # 3-invoices/recordings/invoices.jsonl
 RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recordings/agent.jsonl
 ```
+
+Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
+records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).
 
 `RECORD=1` with no key is refused: a recording is of a live run. Record again whenever a rung's prompt, cases or
 request settings change: the rung's test checks the recording still covers every prompt the rung sends before it

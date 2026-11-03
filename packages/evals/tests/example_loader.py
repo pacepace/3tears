@@ -23,7 +23,11 @@ from threetears.evals.testing import RecordedCompletions, RecordingRefused
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
 #: The ladder: every example under ``examples/`` lives in one of these directories, a rung each.
-RUNGS = ("1-triage", "2-replies", "3-invoices", "4-booking")
+RUNGS = ("1-triage", "2-replies", "3-invoices", "4-booking", "5-writer")
+
+#: The rungs whose recordings are an owner-approved paid step not yet taken: each holds a ``recordings/README.md``
+#: stating the one command that records them, and refuses to run until they are recorded.
+UNRECORDED_RUNGS = ("5-writer",)
 
 
 @dataclass

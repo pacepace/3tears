@@ -1,11 +1,13 @@
-# The ladder: four examples, one idea each
+# The ladder: five examples, one idea each
 
 **For** anyone who ran rung 0 (the TOML file on the [README](../README.md)) and wants the next step. **Answers:** how
 to point an eval at your own function, grade with a judge you can check, compare two versions with a verdict a
-reviewer can act on, and grade an agent by the world it leaves, then serve the runs to your team. Each rung is one
-directory under [`examples/`](../examples/), in its own domain, recorded on cheap models, so every rung runs offline
-and free. Every block of Python below is a verbatim excerpt of the example it names (`tests/test_doc_blocks.py`
-holds it so), and every output is what the recording replays.
+reviewer can act on, grade an agent by the world it leaves, then serve the runs to your team, and evaluate the model
+that writes your reports. Each rung is one directory under [`examples/`](../examples/), in its own domain. Rungs 1 to
+4 are recorded on cheap models, so they run offline and free; rung 5's recordings are a paid step not yet taken, and
+until then it prints what it would need. Every block of Python below is a verbatim excerpt of the example it names
+(`tests/test_doc_blocks.py` holds it so), and every output is what the recording replays, or, for rung 5, what the
+file prints today.
 
 **Running a rung.** In a checkout, after `uv sync` at the repository root, from `packages/evals`:
 
@@ -380,6 +382,78 @@ uv run python -m threetears.evals ls --host serve:host --scope booking
 
 The store is any `DocumentStore`: the SQLite file by default, or your own database to share it.
 [Serving](serving.md) covers the commands, the actions an agent calls, and the MCP transport.
+
+## Rung 5: evaluate the evaluator
+
+[`examples/5-writer/`](../examples/5-writer/) turns the eval on the report writer itself: the analyst model that reads
+a campaign through tools and writes its page, and the editor that reviews the page before it is stored. Every report
+in rungs 1 to 4 came from it, so it gets the same treatment as anything else you ship: arms, cases, a judge, a
+verdict. The arms are two versions of the analyst's skill, the Markdown it is told to work from:
+
+```python
+control = AnalystSkill.at("skills/control")  # frozen: recordings are keyed by the skill's digest
+variant = (Path(__file__).parent / "skills" / "lead-first.md").read_text(encoding="utf-8")  # SKILL.md, lead claim first
+lead_first = control.with_file("SKILL.md", variant)
+judge = Model("google/gemini-3.8-flash", temperature=0, recording="recordings/judge.jsonl")  # another family
+```
+
+and the eval is a `WriterEval` over a directory of frozen campaigns:
+
+```python
+writer_eval = WriterEval(
+    "cases",  # eleven frozen campaigns: {name, group, stratum, withhold, snapshot}, one .json.gz each
+    arms={  # the first is the control; the arms differ in the skill alone
+        "shipped": Writer("claude-sonnet-5-5", skill=control, effort="medium"),
+        "lead-first": Writer("claude-sonnet-5-5", skill=lead_first, effort="medium"),
+    },
+    judge=judge,
+    recordings="recordings/turns",  # one file per arm and case, keyed by skill, model, effort and snapshot
+    budget_usd=1.0,  # each report's cap
+    max_cost_usd=15.0,  # the whole eval's, judge included: each arm runs under half
+    held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
+    name="writer",
+)
+```
+
+- **A case is a campaign, frozen.** Each file in `cases/` holds one campaign's evidence exactly as the writer's tools
+  read it: the four campaigns rungs 1 to 4 store when they replay, a larger campaign the package ships, and six of
+  the package's report inputs reshaped to fit no exemplar (the `misfit` stratum). Each case's `stratum` is its domain,
+  so the readings split by it.
+- **Cases are split before anything runs.** A case's split group (related cases share one) lands on the dev side,
+  where a change is tuned, or the held-out side, where it is decided. The promotion is read on held-out cases only.
+- **`Writer(model, skill=, effort=)`** is an arm. A writer can also differ in its revisions or its editor's own model
+  (`editor_model=`); each lever the arms differ in becomes an axis of the campaign's design.
+- **The control is a copy, frozen.** A recording is keyed by the skill's digest, so a recording made over the skill
+  the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
+- **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
+
+What it prints today, from `packages/evals/` with no key, since nothing is recorded yet (each path printed whole):
+
+```text
+python -m threetears.evals examples/5-writer/writer.py: no key for openrouter: pass api_key= or set OPENROUTER_API_KEY; or record .../examples/5-writer/recordings/judge.jsonl once with it set
+```
+
+and, with the judge's recording in place, the writer's:
+
+```text
+python -m threetears.evals examples/5-writer/writer.py: writer: arm 'shipped' has no turn recording for 7 of 7 case(s) (.../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2/1-triage-3273cd61f267.jsonl first), and ANTHROPIC_API_KEY is not set to record them; restore the files, or set it to record them once
+```
+
+[`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records both, and what
+it may spend: 14 reports, at most $15 in all. Once recorded, the run prints a table of the writer's readings per arm
+(reports finished, bounces, rounds, turns, each judged dimension), the cases per stratum, and one line per candidate:
+the promotion read.
+
+**The lesson: a writer is a model too, and whether a change to it ships is a decision the engine makes, not one you
+read off the table.** The table invites you to pick the arm with the bigger numbers; the promotion read does not. Its
+primary reading is fixed before the run: the judge's preference between the two arms' pages, case by case. It reads
+`promote` only when that preference favours the candidate on enough held-out cases, no gated reading regressed and
+every guardrail held; `keep` when something regressed; and `undecided`, with its reason, otherwise. Undecided never
+promotes, and recording the call stays a person's act. That bar is high on purpose here: 7 held-out cases, each written once (k=1), can
+separate only a large effect, so a small edit to a skill will most often read `undecided`. That is the honest answer
+at this size, stated rather than tuned around: what would answer it is more cases, or more repeats of each, and the
+cost of each is a recorded report. [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) covers
+how many a question needs.
 
 ## Where next
 
