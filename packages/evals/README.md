@@ -41,9 +41,9 @@ missed, and where its report page is. Then climb [the ladder](docs/ladder.md), o
 |---|---|---|
 | [1](docs/ladder.md#rung-1-your-own-function) | [`1-triage/triage.py`](examples/1-triage/triage.py) | Point it at your own function: 15 lines of Python. |
 | [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
-| [3](docs/ladder.md#rung-3-two-prompts-compared) | [`3-invoices/`](examples/3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
-| [4](docs/ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) | [`4-booking/`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
-| [5](docs/ladder.md#rung-5-evaluate-the-evaluator) | [`5-writer/`](examples/5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine make the call. |
+| [3](docs/ladder.md#rung-3-two-prompts-compared) | [`3-invoices/`](examples/3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
+| [4](docs/ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) | [`4-booking/`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
+| [5](docs/ladder.md#rung-5-evaluate-the-evaluator) | [`5-writer/`](examples/5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. |
 
 **Where the science lives:**
 - [Measuring soundly](docs/measuring-soundly.md): which design answers your question, how many cases, and the traps.
@@ -77,8 +77,8 @@ pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
 > **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. About 520
-> names are declared, [mapped by rung](docs/surface.md); the rest a root exports are provisional
+> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. The declared
+> names are [mapped by rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## What is different
@@ -141,7 +141,7 @@ this README is the package's description, they do not resolve, so read the docs 
 | A person's call, recorded against code's readings | `campaign_record` (`floors_overridden`, `bars_overridden`) | [Recording the call](docs/adopting-a-host.md#recording-the-call) | |
 | Cost against quality | `Answer`, `max_cost_usd=`, the frontier | [Cost and budgets](docs/cost-and-budgets.md), [the frontier](docs/measuring-soundly.md#the-frontier-passk-against-cost) | |
 | Judge calibration and evidence tiers | `Judge(labels=...)`, `rate_result`, `judge_agreement`, `JudgeEvidenceTier` | [Judges and calibration](docs/judges-and-calibration.md) | [`2-replies/`](examples/2-replies/replies.py) |
-| A report an analyst model writes over frozen evidence, checked by code and reviewed by an editor | `analysis_generate`, `report_read`; the `evals_analyst` tool | [The analyst's report](docs/reading-reports.md#the-analysts-report-written-over-frozen-evidence) | |
+| A report an analyst model writes over frozen evidence, checked by code and reviewed by an editor | `python -m threetears.evals.harness FILE --write-report MODEL`; on a host, `analysis_generate`, `report_read` and the `evals_analyst` tool | [The analyst's report](docs/reading-reports.md#the-analysts-report-written-over-frozen-evidence) | [`3-invoices/`](examples/3-invoices/extract.py) |
 | Cassettes | `World(tools=[...], recording=...)`; on a host, `cassette_mode="capture"` / `"replay"` | [Step 4](docs/evaluating-agents.md#step-4-cassettes-for-tool-results), [on a host](docs/adopting-a-host.md#cassettes-recording-and-replaying-tools) | |
 | MCP | `threetears.evals.actions`, `mount_fastmcp` (extra `fastmcp`) | [Serving](docs/serving.md#fastmcp) | [`4-booking/serve.py`](examples/4-booking/serve.py) |
 | Keeping runs | `Eval(...).run(store=path)` (by default `.evals/evals.sqlite`); any `DocumentStore`, proven with `STORE_CONFORMANCE_CASES` | [Keep your runs](docs/serving.md#keep-your-runs-and-read-them-back), [the store](docs/adopting-a-host.md#the-store-and-the-conformance-kit-that-proves-it) | |

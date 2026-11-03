@@ -100,6 +100,10 @@ from threetears.evals.ops.report_writer.editor import EditorLimits
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.session import SessionLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND_CONTRACT,
+    WRITER_KIND_MEASURES,
+)
 from threetears.evals.ops.jobs import (
     ACTION_JOB_PREFIX,
     JUDGE_TEMPERATURE_JOB_PREFIX,
@@ -381,6 +385,8 @@ __all__ = [
     "UndescribableArmsLine",
     "UndescribableArmsListing",
     "WriterLimits",
+    "WRITER_KIND_CONTRACT",
+    "WRITER_KIND_MEASURES",
     "UnreadableReporterCase",
     "analyses_list",
     "analyses_undescribable",

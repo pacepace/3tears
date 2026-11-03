@@ -16,7 +16,6 @@ import asyncio
 import json
 from typing import Any
 
-from threetears.evals.actions import Caller
 from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.analysis import assemble_campaign_bundle, prepare_analysis_generation, run_analysis_generation
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
@@ -46,6 +45,7 @@ from packages.evals.tests.toyhost_memo import (
 )
 from packages.evals.tests.doc_writer_support import ANALYST_MODEL, FakeAnalystClient
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.writer_host_support import CALLER
 from packages.evals.tests.toyhost_plan import PROSE_CONTRACT, STRUCTURE_CONTRACT, contract_name, replies_for
 from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.analysis.report_input_build import report_input
@@ -66,9 +66,6 @@ __all__ = [
     "ops_fixture",
     "settled",
 ]
-
-#: Who the tests call as: the toy host's scope, under a name a written campaign records.
-CALLER = Caller(scope_id=TOYHOST_SCOPE, identity="agent:test")
 
 #: The report writer a generation started as :data:`CALLER` runs, as the ``analysis_generate`` action hands it.
 WRITER = campaign_report_writer(CALLER)

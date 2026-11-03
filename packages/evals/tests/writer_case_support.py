@@ -6,18 +6,15 @@ r5, the six misfits, and Kairo round 2) is restored into the host's scope, as a 
 there, and minted by its id, withholding the exemplar note reasoned on its own campaign: the note each recorded run
 of ``fixtures/report_docs/prototype5`` withheld. A misfit is a reference input reshaped, so it is minted in its
 reference's split group and sits on its reference's side: a change is never tuned on one and decided on the other.
+The host and the template they are minted into are :mod:`packages.evals.tests.writer_host_support`'s.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Final
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
-from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
-from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture
-from threetears.evals.kernel.host.measures import MeasureRegistry
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.analyst import report_snapshot_restore
 from threetears.evals.ops.report_writer.writer_bank import (
@@ -25,18 +22,6 @@ from threetears.evals.ops.report_writer.writer_bank import (
     WriterCaseMint,
     WriterSplit,
     writer_case_mint,
-)
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_kind_contract
-from threetears.evals.run import LaunchSettings
-from threetears.evals.schema.models import EvalTemplate
-
-#: The writer template every seeded case is minted into.
-WRITER_TEMPLATE: Final = EvalTemplate(
-    id="writer-template",
-    scope_id=CALLER.scope_id,
-    name="Report writer",
-    intent="Write the report.",
-    candidate_kind=WRITER_KIND,
 )
 
 #: Each fixture's split group and the notes its case withholds: its reference's note, Kairo's own, and none for r5,
@@ -57,30 +42,10 @@ SEED: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 }
 
 
-def writer_host(*, settings: LaunchSettings = TOYHOST_LAUNCH_SETTINGS) -> OpsFixture:
-    """The toy host with the writer's contract on its kinds and its measures on its registry, the writer template
-    saved.
-
-    :param settings: The host's launch settings.
-    :ptype settings: LaunchSettings
-    :return: The fixture.
-    :rtype: OpsFixture
-    """
-    profile = toyhost_profile()
-    profile = replace(
-        profile,
-        kinds=(*profile.kinds, writer_kind_contract(host_seats=("reviewer_pool",))),
-        measures=MeasureRegistry((*TOYHOST_MEASURES, *WRITER_KIND_MEASURES), families=profile.measures.families),
-    )
-    fixture = ops_fixture(generation=False, profile=profile, settings=settings)
-    fixture.host.eval_host.storage.save_template(WRITER_TEMPLATE)
-    return fixture
-
-
 async def seed_writer_cases(host: OpsHost, *, split: WriterSplit | None = None) -> dict[str, MintedWriterCase]:
     """Mint a writer case of every fixture into :data:`WRITER_TEMPLATE`, in :data:`SEED`'s order.
 
-    :param host: The host, its writer template saved.
+    :param host: The host, :data:`WRITER_TEMPLATE` saved (``writer_host``).
     :ptype host: OpsHost
     :param split: The sets the cases join; ``None`` for the default names and share.
     :ptype split: WriterSplit | None

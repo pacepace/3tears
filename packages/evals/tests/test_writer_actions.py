@@ -21,8 +21,8 @@ from packages.evals.tests.analyst_support import fixture_snapshots
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import with_kinds
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, ops_fixture
-from packages.evals.tests.writer_case_support import writer_host
+from packages.evals.tests.ops_support import ops_fixture
+from packages.evals.tests.writer_host_support import CALLER, writer_host
 from packages.evals.tests.writer_promotion_support import BETTER, CANDIDATE, promotion_campaign
 from threetears.evals.actions import eval_catalogue, read_only_tools, standard_tools
 from threetears.evals.ops import OpsHost

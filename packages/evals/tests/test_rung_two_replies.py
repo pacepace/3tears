@@ -88,8 +88,8 @@ def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another
         ("safe", "pass"),
     ]
     assert judge.labels == Path("labels.csv")
-    writer_family, judge_family = module.writer.model_name.split("/")[0], judge.model.split("/")[0]
-    assert (writer_family, judge_family) == ("deepseek", "google")
+    drafter_family, judge_family = module.drafter.model_name.split("/")[0], judge.model.split("/")[0]
+    assert (drafter_family, judge_family) == ("deepseek", "google")
 
 
 def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:

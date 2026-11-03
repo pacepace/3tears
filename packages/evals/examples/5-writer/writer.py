@@ -1,8 +1,8 @@
 """Rung 5: evaluate the evaluator. Run ``python -m threetears.evals examples/5-writer/writer.py``.
 
 The report writer (an analyst model and its editor) is a model too, so it gets an eval of its own: two arms that
-differ in one file of the analyst's skill, over eleven frozen campaigns from five domains, scored by a judge of
-another family. The control is a frozen copy of the shipped skill (``skills/control/``); the candidate puts the lead
+differ in one file of the analyst's skill, over eleven frozen campaigns (the four ladder rungs', a larger one the
+package ships, six misfits), scored by a judge of another family. The control is a frozen copy of the shipped skill (``skills/control/``); the candidate puts the lead
 claim first (``skills/lead-first.md``). Each arm writes the held-out cases once, and the engine reads the promotion.
 
 It replays ``recordings/`` with no key. Until they are recorded, it refuses, naming the file and the key that would
