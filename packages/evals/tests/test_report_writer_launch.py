@@ -72,8 +72,8 @@ class _FakeSilentModel:
         return client
 
 
-def _models(model: str) -> Any:
-    """The host's model factory for an arm's candidate model: a fresh silent model per cell, at any effort."""
+def _models(model: str, _skill: AnalystSkill) -> Any:
+    """The host's model factory for an arm's candidate model: a fresh silent model per cell, at any skill and effort."""
 
     def at(effort: EffortWord | None) -> _FakeSilentModel:
         return _FakeSilentModel(model_name=model)
