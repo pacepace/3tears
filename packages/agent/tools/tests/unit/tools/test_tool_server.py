@@ -14,6 +14,7 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import (
+    CALLS_IN_FLIGHT,
     CallRequest,
     CallResponse,
     HeartbeatMessage,
@@ -34,7 +35,7 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
 )
 from threetears.media.contracts import ObjectHandle
-from threetears.nats import IncomingMessage
+from threetears.nats import IncomingMessage, NatsClient, Subjects
 
 from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
 from threetears.core.testing.replay_guard import FakeReplayGuard
@@ -813,6 +814,105 @@ class TestToolServerCallGroupMembership:
             server.open_calls()
             await asyncio.sleep(0.1)
             assert server.serving_calls is True, "one refused subscribe does not keep the replica out for good"
+            await self._stop(server, serve_task)
+
+    @staticmethod
+    def _held_subscribes(mock_nc: AsyncMock) -> list[Any]:
+        return [c for c in mock_nc.subscribe.call_args_list if str(c.kwargs.get("queue", "")).endswith(".held")]
+
+    async def test_a_held_server_answers_its_control_tools_in_a_group_of_their_own_once_asked(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            assert self._held_subscribes(mock_nc) == [], "nothing is answered before the owner says it can be"
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            held = self._held_subscribes(mock_nc)
+            assert len(held) == 1 and held[0].kwargs["queue"] == "testns.tools.internal.calls-pod.held"
+            assert held[0].kwargs["subject"].path == "testns.tools.internal.calls-pod"
+            assert server.serving_calls is False, "the readiness check stays not ready: readers' calls are held"
+            server.open_calls()
+            await asyncio.sleep(0.05)
+            assert server.serving_calls is True
+            # the held group drained once the call group took every call
+            assert mock_nc.drain.await_count == 1
+            await self._stop(server, serve_task)
+
+    async def test_both_call_subscriptions_take_calls_concurrently_and_the_bound_is_configurable(self) -> None:
+        """the call group and the held group each take up to ``max_calls_in_flight`` calls at once: a serial
+        subscription held every call behind a slow one (cobalt prod, 2026-10-31)."""
+        for configured, expected in ((None, CALLS_IN_FLIGHT), (5, 5)):
+            kwargs: dict[str, Any] = {} if configured is None else {"max_calls_in_flight": configured}
+            server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod", **kwargs)
+            server.register(StubTool())
+            server.hold_calls(answering=["test.stub"])
+            mock_nc = self._mock_nc()
+            with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+                serve_task = asyncio.create_task(server.serve())
+                await server.wait_ready(timeout=1.0)
+                server.answer_while_held()
+                await asyncio.sleep(0.05)
+                server.open_calls()
+                await asyncio.sleep(0.05)
+                calls = [
+                    c
+                    for c in mock_nc.subscribe.call_args_list
+                    if c.kwargs["subject"].path == "testns.tools.internal.calls-pod"
+                ]
+                assert len(calls) == 2, calls
+                assert [c.kwargs["max_in_flight"] for c in calls] == [expected, expected]
+                await self._stop(server, serve_task)
+
+    def test_max_calls_in_flight_below_one_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="max_calls_in_flight"):
+            ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod", max_calls_in_flight=0)
+
+    async def test_a_held_server_asked_to_answer_after_its_calls_opened_does_not(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        server.open_calls()
+        mock_nc = self._mock_nc()
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            await asyncio.sleep(0.05)
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            assert self._held_subscribes(mock_nc) == [] and server.serving_calls is True
+            await self._stop(server, serve_task)
+
+    async def test_a_held_subscribe_still_in_flight_when_the_replica_leaves_is_drained(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:9999", namespace="testns", pod_id="calls-pod")
+        server.register(StubTool())
+        server.hold_calls(answering=["test.stub"])
+        mock_nc = self._mock_nc()
+        release = asyncio.Event()
+        late = MagicMock(name="late-held-subscription")
+
+        async def subscribe(**kwargs: Any) -> MagicMock:
+            if str(kwargs.get("queue", "")).endswith(".held"):
+                await release.wait()
+                return late
+            return MagicMock(name=kwargs["subject"].path)
+
+        mock_nc.subscribe = AsyncMock(side_effect=subscribe)
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await server.wait_ready(timeout=1.0)
+            server.answer_while_held()
+            await asyncio.sleep(0.05)
+            assert await server.leave_calls(timeout=1.0) is True
+            release.set()
+            await asyncio.sleep(0.05)
+            drained = [c.args[0] if c.args else c.kwargs.get("subscription") for c in mock_nc.drain.await_args_list]
+            assert late in drained, "a subscription that landed after the replica left would be routed calls"
+            assert server.serving_calls is False
             await self._stop(server, serve_task)
 
     async def test_hold_calls_after_serve_is_refused(self) -> None:
@@ -2501,3 +2601,289 @@ class TestAssertionNoncesAreOwnerScoped:
             kv_key_scope_for(Principal.TOOL_POD, pod_id=self._TOOL_POD)
         ]
         assert built[0]["bucket_name"] == "proxy_assertion_nonces"
+
+
+class _NamedStub(StubTool):
+    """a stub whose calls are counted."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name=name)
+        self.runs = 0
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.runs += 1
+        return await super().execute(**kwargs)
+
+
+class TestAHeldReplicaAnswersOnlyItsControlTools:
+    """a held replica (its copy loading) answers the tools named for it and no other; a call it and a member of the
+    call group were both handed is run and answered once."""
+
+    _POD = "held-pod"
+
+    def _replica(self, guard: FakeReplayGuard) -> tuple[ToolServer, RecordingNatsClient, _NamedStub, _NamedStub]:
+        server, rec = _recording_tool_server(
+            pod_id=self._POD, jwks_provider=_pod_jwks_provider, assertion_replay_guard=guard
+        )
+        control, reader = _NamedStub("test.reset"), _NamedStub("test.rows")
+        server.register(control)
+        server.register(reader)
+        server.hold_calls(answering=["test.reset"])
+        return server, rec, control, reader
+
+    def _msg(self, tool_name: str) -> IncomingMessage:
+        payload = _signed_call_payload(pod_id=self._POD, tool_name=tool_name, agent_id=uuid4(), customer_id=uuid4())
+        return IncomingMessage(
+            data=json.dumps(payload).encode("utf-8"),
+            reply_subject="_INBOX.test",
+            subject=f"testns.tools.internal.{self._POD}",
+        )
+
+    async def test_a_control_call_is_answered_and_a_readers_call_is_left_to_the_siblings(self) -> None:
+        server, rec, control, reader = self._replica(FakeReplayGuard())
+
+        await server.handle_held_call(self._msg("test.reset"))
+        await server.handle_held_call(self._msg("test.rows"))
+
+        assert control.runs == 1 and reader.runs == 0
+        assert len(rec.replies) == 1, "the reader's call got an answer from the held replica"
+        assert rec.replies[0][1].success is True
+
+    async def test_a_call_handed_to_a_held_replica_and_to_the_call_group_is_run_and_answered_once(self) -> None:
+        guard = FakeReplayGuard()  # one ledger: the pod's replicas share its nonce bucket
+        held, held_rec, held_control, _ = self._replica(guard)
+        serving, serving_rec, serving_control, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await asyncio.gather(held.handle_held_call(msg), serving.handle_call(msg))
+
+        assert held_control.runs + serving_control.runs == 1
+        replies = held_rec.replies + serving_rec.replies
+        assert len(replies) == 1 and replies[0][1].success is True, replies
+
+    async def test_a_replayed_call_to_a_tool_not_answered_while_held_is_still_refused(self) -> None:
+        guard = FakeReplayGuard()
+        server, rec, _, reader = self._replica(guard)
+        msg = self._msg("test.rows")
+
+        await server.handle_call(msg)
+        await server.handle_call(msg)
+
+        assert reader.runs == 1
+        assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+
+    async def test_control_calls_claimed_at_once_on_one_replica_are_each_answered_once(self) -> None:
+        """Flips if the per-group claim misjudges calls that run side by side on one replica (up to
+        max_calls_in_flight at once): distinct calls are each answered, and one publish this replica is handed by
+        both groups while it moves from the held group to the call group is answered once."""
+        server, rec, control, _ = self._replica(FakeReplayGuard())
+        server.open_calls()
+        distinct = [self._msg("test.reset") for _ in range(8)]
+        both = self._msg("test.reset")
+
+        await asyncio.gather(
+            *(server.handle_call(msg) for msg in distinct), server.handle_held_call(both), server.handle_call(both)
+        )
+
+        assert control.runs == 9
+        assert len(rec.replies) == 9 and all(reply.success for _, reply in rec.replies)
+        outcomes = [
+            json.loads(payload)["outcome"]
+            for subject, payload in rec.published
+            if str(subject).endswith(".audit.tool.call")
+        ]
+        assert outcomes == ["success"] * 9, "the second delivery of one publish is the sibling's, never audited"
+
+    async def test_a_replayed_control_call_is_refused_and_audited(self) -> None:
+        """Flips if a control tool's replayed assertion is taken for a sibling's duplicate: the second publish of
+        one assertion is refused and audited as a failure, never counted answered_by_sibling."""
+        server, rec, control, _ = self._replica(FakeReplayGuard())
+        msg = self._msg("test.reset")
+
+        await server.handle_call(msg)
+        await server.handle_call(msg)
+
+        assert control.runs == 1
+        assert len(rec.replies) == 2 and rec.replies[1][1].error_code == "TOOL_PROXY_ASSERTION_UNVERIFIED"
+        audits = [
+            json.loads(payload)["outcome"]
+            for subject, payload in rec.published
+            if str(subject).endswith(".audit.tool.call")
+        ]
+        assert audits == ["success", "failure"]
+
+    async def test_a_replayed_control_call_handed_to_both_groups_is_refused_by_both(self) -> None:
+        """Flips if a replay that reaches a held replica and the call group again is silent: one publish is answered
+        once, and its second publish is refused and audited by each replica it is handed to."""
+        guard = FakeReplayGuard()
+        held, held_rec, held_control, _ = self._replica(guard)
+        serving, serving_rec, serving_control, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await held.handle_held_call(msg)
+        await serving.handle_call(msg)
+        await held.handle_held_call(msg)
+        await serving.handle_call(msg)
+
+        assert held_control.runs + serving_control.runs == 1
+        refused = [reply for _, reply in held_rec.replies + serving_rec.replies if not reply.success]
+        assert len(refused) == 2 and {r.error_code for r in refused} == {"TOOL_PROXY_ASSERTION_UNVERIFIED"}
+
+    async def test_the_replica_that_finds_the_nonce_used_counts_it_answered_by_a_sibling_not_failed(self) -> None:
+        """Flips if the silent replica of a call handed to a held replica and the call group counts or audits it as a
+        failure: the call ran once, on the sibling, and a failure there is noise on every held control call."""
+        guard = FakeReplayGuard()
+        held, held_rec, _, _ = self._replica(guard)
+        serving, serving_rec, _, _ = self._replica(guard)
+        serving.open_calls()
+        msg = self._msg("test.reset")
+
+        await held.handle_held_call(msg)
+        await serving.handle_call(msg)
+
+        def outcomes(server: ToolServer) -> dict[str, float]:
+            _content_type, body = server.render_metrics()
+            found: dict[str, float] = {}
+            for line in body.decode("utf-8").splitlines():
+                if line.startswith("threetears_tools_calls_total{"):
+                    sample, _, value = line.rpartition(" ")
+                    found[sample.split('outcome="')[1].split('"')[0]] = float(value)
+            return found
+
+        assert outcomes(held) == {"success": 1.0}
+        assert outcomes(serving) == {"answered_by_sibling": 1.0}, "the sibling's silence is counted apart"
+
+        def audits(rec: RecordingNatsClient) -> list[str]:
+            return [
+                json.loads(payload)["outcome"]
+                for subject, payload in rec.published
+                if str(subject).endswith(".audit.tool.call")
+            ]
+
+        assert audits(held_rec) == ["success"]
+        assert audits(serving_rec) == [], "the call is audited once, by the replica that answered it"
+
+
+# -- calls in flight together --
+
+
+class _GatedTool(StubTool):
+    """a tool whose calls wait on a gate until the test opens it, counting how many wait at once."""
+
+    def __init__(self, name: str, gate: asyncio.Event) -> None:
+        super().__init__(name=name, version="1.0")
+        self.gate = gate
+        self.waiting = 0
+        self.peak = 0
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.waiting += 1
+        self.peak = max(self.peak, self.waiting)
+        try:
+            await self.gate.wait()
+        finally:
+            self.waiting -= 1
+        return await super().execute(**kwargs)
+
+
+class _RawSubscription:
+    """the nats-py subscription the real client reads its messages from: a queue the test feeds."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    @property
+    def messages(self) -> Any:
+        async def _gen() -> Any:
+            while (msg := await self.queue.get()) is not None:
+                yield msg
+
+        return _gen()
+
+    async def unsubscribe(self) -> None:
+        await self.queue.put(None)
+
+
+class _RawMsg:
+    def __init__(self, data: bytes, reply: str) -> None:
+        self.data, self.reply, self.subject, self.headers = data, reply, "testns.tools.internal.test-pod", None
+
+
+class _RawTransport:
+    """answers every PING the subscribe's round trip writes with its PONG."""
+
+    def __init__(self, owner: _RawNats) -> None:
+        self._owner = owner
+
+    def writelines(self, payload: list[bytes]) -> None:
+        del payload
+
+    def write(self, payload: bytes) -> None:
+        del payload
+        self._owner.pongs.pop(0).set_result(True)
+
+
+class _RawNats:
+    """just enough of nats-py for :class:`NatsClient` to subscribe and deliver."""
+
+    is_closed = False
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.subscription = _RawSubscription()
+        self._pending: list[bytes] = []
+        self._pending_data_size = 0
+        self._pongs: list[asyncio.Future[bool]] = []
+        self._transport = _RawTransport(self)
+        self._flush_queue: asyncio.Queue[asyncio.Future[None]] = asyncio.Queue()
+
+    @property
+    def pongs(self) -> list[asyncio.Future[bool]]:
+        """the PONG futures still waiting, oldest first (nats-py's own field, which the round trip fills)."""
+        return self._pongs
+
+    async def _send_unsubscribe(self, sid: int, limit: int = 0) -> None:
+        del sid, limit
+
+    async def subscribe(self, subject: str, queue: str = "") -> _RawSubscription:
+        return self.subscription
+
+
+@pytest.mark.asyncio
+async def test_a_slow_call_never_holds_the_calls_behind_it() -> None:
+    """through the real client's subscription, as the server binds it (max_in_flight): two slow calls run
+    together, and a reader's fast call is answered while both still run. Serial, as the server once
+    subscribed, the fast call waited until the slow ones answered."""
+    server, rec = _recording_tool_server(
+        pod_id="test-pod", jwks_provider=_pod_jwks_provider, assertion_replay_guard=FakeReplayGuard()
+    )
+    gate = asyncio.Event()
+    slow = _GatedTool("test.slow", gate)
+    server.register(slow)
+    server.register(StubTool(name="test.fast", version="1.0"))
+    raw = _RawNats()
+    client = NatsClient(raw=raw, namespace="testns", client_name="test")  # type: ignore[arg-type]
+    subscription = await client.subscribe(
+        subject=Subjects.tools_internal("test-pod"), cb=server.handle_call, max_in_flight=CALLS_IN_FLIGHT
+    )
+
+    def call(tool: str, reply: str) -> _RawMsg:
+        payload = _signed_call_payload(pod_id="test-pod", tool_name=tool, tool_version="1.0")
+        return _RawMsg(json.dumps(payload).encode(), reply)
+
+    await raw.subscription.queue.put(call("test.slow", "_INBOX.slow1"))
+    await raw.subscription.queue.put(call("test.slow", "_INBOX.slow2"))
+    await raw.subscription.queue.put(call("test.fast", "_INBOX.fast"))
+    began = time.monotonic()
+    while not any(subject == "_INBOX.fast" for subject, _ in rec.replies):
+        assert time.monotonic() - began < 2.0, "the fast call waited behind the slow ones"
+        await asyncio.sleep(0.01)
+    assert slow.peak == 2, "the two slow calls did not run together"
+    assert [subject for subject, _ in rec.replies] == ["_INBOX.fast"]
+    gate.set()
+    while len(rec.replies) < 3:
+        assert time.monotonic() - began < 4.0, "the slow calls never answered"
+        await asyncio.sleep(0.01)
+    await client.unsubscribe(subscription)

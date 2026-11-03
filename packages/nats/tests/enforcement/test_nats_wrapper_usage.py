@@ -69,6 +69,10 @@ _WRAPPER_MODULES: set[str] = {
     # _named_read.py is the one named-consumer read loop kv.py and object_store.py share; it builds
     # nats-py's ConsumerConfig, the same reason those two consume nats-py.
     "threetears.nats._named_read",
+    # _stream_listing.py is the stream-subjects listing kv.py and object_store.py share in place of
+    # a consumer replay: it reads STREAM.INFO's subjects and each subject's latest message by request,
+    # and classifies nats-py's APIError / NotFoundError by class, the same reason those two consume nats-py.
+    "threetears.nats._stream_listing",
     # _publish.py is the wrapper's own publish path -- it exists precisely to
     # hold nats-py publish semantics the caller cannot reach from outside (an
     # ack wait that survives cancellation, an oversized-publish refusal raised

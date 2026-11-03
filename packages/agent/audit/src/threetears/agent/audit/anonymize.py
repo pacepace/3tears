@@ -396,8 +396,11 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
                 "updates",
             }
         ),
-        # federated / password (hub)
-        "user.create": frozenset({"credential"}),
+        # federated / password / emailed_link, and whether the invitation email went: emailed / not_emailed /
+        # not_sent, never the address or the link (hub)
+        "user.create": frozenset({"credential", "invitation"}),
+        # whether a waiting invite's email went: emailed / not_emailed / not_sent (hub)
+        "user.invite": frozenset({"invitation"}),
         # a fixed failure stage label (hub)
         "schema.introspect": frozenset({"stage"}),
         "schema.introspect_refresh": frozenset({"stage"}),
