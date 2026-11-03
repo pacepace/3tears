@@ -44,7 +44,7 @@ from typing import Annotated, Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract, Ordinal
 from threetears.evals.kernel.metrics import MeritAxis, MetricDescriptor
@@ -67,6 +67,10 @@ EffortWord = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 #: The host's model factory: the arm's candidate model, built at the reasoning effort the arm's lever names, or at the
 #: model's own default for ``None``. Called once per cell, so each cell's sessions start from a model of their own.
 WriterModels = Callable[[EffortWord | None], TurnModel]
+
+#: The host's model factory for one arm: its writer, by the candidate model id the launch names and the skill the arm
+#: runs (two arms on one model differ by their skill, and a recording of one must never replay as the other's).
+WriterModelFactory = Callable[[str, AnalystSkill], WriterModels]
 
 
 def _shipped_skill() -> str:
@@ -394,6 +398,7 @@ __all__ = [
     "WRITER_KIND",
     "WRITER_KIND_CONTRACT",
     "WRITER_KIND_MEASURES",
+    "WriterModelFactory",
     "WriterModels",
     "WriterOverlays",
     "refuse_undeliverable_writer_template",

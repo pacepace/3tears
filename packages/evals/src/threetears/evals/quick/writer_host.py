@@ -32,7 +32,7 @@ plan refuses it, naming what to lower.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Final
@@ -57,7 +57,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND,
     WRITER_KIND_CONTRACT,
     WRITER_KIND_MEASURES,
-    WriterModels,
+    WriterModelFactory,
 )
 from threetears.evals.ops.report_writer.writer_launch import (
     admit_writer_launch,
@@ -113,7 +113,7 @@ def writer_ops_host(
     store: DocumentStore,
     *,
     judge: Model,
-    models: Callable[[str], WriterModels],
+    models: WriterModelFactory,
     budget: ReportBudget,
     request_s: RequestCeiling,
     max_cost_usd: float,
@@ -129,8 +129,9 @@ def writer_ops_host(
     :param judge: The scoring judge, built with its route and its recording; every arm's pages are scored on it, and a
         launch names its ``model_name`` as the judge.
     :ptype judge: Model
-    :param models: The model factory: an arm's writer, by the model id its launch names, at a reasoning effort.
-    :ptype models: Callable[[str], WriterModels]
+    :param models: The model factory: an arm's writer, by the model id its launch names and the skill the arm runs, at
+        a reasoning effort.
+    :ptype models: WriterModelFactory
     :param budget: Each report's budget; its turn cap bounds how long a cell can run.
     :ptype budget: ReportBudget
     :param request_s: The ceiling for one request on the writer's client, by output cap, in seconds.

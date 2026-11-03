@@ -68,6 +68,7 @@ class FakeSilentWriter:
     """A writer whose every analyst reply holds no document: each cell ends with nothing stored, and nothing judged."""
 
     model_name: str = WRITER
+    skill: str = ""
     sessions: list[str] = field(default_factory=list)
 
     async def turn_pricing_refusal(self) -> str | None:
@@ -96,9 +97,9 @@ def _host(
     skills: dict[str, AnalystSkill] | None = None,
     built: list[FakeSilentWriter] | None = None,
 ) -> OpsHost:
-    def models(model: str) -> Callable[[EffortWord | None], FakeSilentWriter]:
+    def models(model: str, skill: AnalystSkill) -> Callable[[EffortWord | None], FakeSilentWriter]:
         def at(_effort: EffortWord | None) -> FakeSilentWriter:
-            writer = FakeSilentWriter(model_name=model)
+            writer = FakeSilentWriter(model_name=model, skill=skill.digest)
             if built is not None:
                 built.append(writer)
             return writer
@@ -196,8 +197,10 @@ async def test_two_arms_launch_over_five_held_out_cases_and_the_promotion_read_a
         assert all(ENDING_MEASURE in result.host_measures for result in results)
         assert run.judge_model == JUDGE
         assert run.host_payload[WRITER_KIND]["judge_family"] == "writer anthropic, judge google"
-    # Every cell built its own writer from the factory, on the model its arm named.
+    # Every cell built its own writer from the factory, on the model and the skill its arm named.
     assert len(built) == 2 * len(CASES) and {writer.model_name for writer in built} == {WRITER}
+    by_skill = {digest: sum(writer.skill == digest for writer in built) for digest in (shipped.digest, variant.digest)}
+    assert by_skill == {shipped.digest: len(CASES), variant.digest: len(CASES)}
 
     line = await asyncio.to_thread(
         campaign_create,
