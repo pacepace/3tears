@@ -1,8 +1,17 @@
 # Rung 5's recordings
 
-Not recorded yet. Until they are, `python -m threetears.evals examples/5-writer/writer.py` refuses before anything
-runs, naming the first missing file and the key that would record it: `judge.jsonl` and `OPENROUTER_API_KEY` first,
-then the writer's first turn file and `ANTHROPIC_API_KEY`.
+`python -m threetears.evals examples/5-writer/writer.py` replays these with no key: no network, no cost.
+
+| What | Recorded |
+|---|---|
+| On | 2026-11-03, at head `28efc1fd1` |
+| Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
+| Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
+| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.66 |
+| Total | $7.56 |
+
+A file deleted or gone stale is refused by name, with the key that would record it: `judge.jsonl` and
+`OPENROUTER_API_KEY`, or the writer's first turn file and `ANTHROPIC_API_KEY`.
 
 **The one command that records them**, from `packages/evals/` (Sonnet for both the analyst and its editor, effort
 `medium`, under the owner-approved $39 cap):

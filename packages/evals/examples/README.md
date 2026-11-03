@@ -1,9 +1,8 @@
 # Examples
 
 The ladder comes first: one directory per rung, each in its own domain. Rungs 1 to 4 are recorded on cheap models
-through OpenRouter, so each runs offline and free from the recordings beside it; rung 5's recordings are a paid step
-not yet taken, and until then it refuses, naming what it needs. Climb it in order; each rung adds one idea to the one
-before.
+through OpenRouter and rung 5 on Claude Sonnet, and each runs offline and free from the recordings beside it. Climb
+it in order; each rung adds one idea to the one before.
 
 ## The ladder
 
@@ -14,7 +13,7 @@ before.
 | 2 | [`2-replies/replies.py`](2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
 | 3 | [`3-invoices/extract.py`](3-invoices/extract.py) | Changing a prompt? Compare it against the current one, get a report you can hand to a reviewer, and have a model write the analysis over it. |
 | 4 | [`4-booking/agent.py`](4-booking/agent.py), then [`serve.py`](4-booking/serve.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals, and the reports over them, to the team. |
-| 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. |
+| 5 | [`5-writer/writer.py`](5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine read the promotion. Its Sonnet recording replays offline, free. |
 
 One door runs every rung: `python -m threetears.evals <file>`, from any directory. It runs every eval the file
 defines (an `Eval`, or rung 5's `WriterEval`). The paths a rung names (its cases, its recordings, a judge's labels)
@@ -30,7 +29,7 @@ uv run python -m threetears.evals examples/1-triage/triage.py      # rung 1
 uv run python -m threetears.evals examples/2-replies/replies.py    # rung 2
 uv run python -m threetears.evals examples/3-invoices/extract.py   # rung 3
 uv run python -m threetears.evals examples/4-booking/agent.py      # rung 4
-uv run python -m threetears.evals examples/5-writer/writer.py      # rung 5, once recorded
+uv run python -m threetears.evals examples/5-writer/writer.py      # rung 5
 ```
 
 The one exception is rung 4's [`serve.py`](4-booking/serve.py), which runs from `examples/4-booking/` because it imports `agent.py` as a module.
@@ -180,10 +179,11 @@ A case's side is its split group's, and `held_out_fraction=0.35` puts 7 of the 1
 promotion is read. `tests/fixtures/report_plans/export_writer_cases.py` wrote the files; a ladder case is frozen
 once, since a rung run again is new evidence with a new snapshot id.
 
-Until its recordings exist it refuses, naming the first missing file and its key;
-[`recordings/README.md`](5-writer/recordings/README.md) holds the one command that records them (both
-`ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, at most $23). [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator)
-walks it.
+It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages,
+recorded on 2026-11-03 for $7.56. The read is `Undecided`: the judge preferred lead-first's pages (a share of 0.68),
+but 7 held-out cases do not separate it. [`recordings/README.md`](5-writer/recordings/README.md) holds the one command
+that records them again (both `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, under the $39 cap).
+[The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator) walks it.
 
 ## Running them
 

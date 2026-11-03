@@ -1,11 +1,14 @@
 """Rung 5, ``examples/5-writer/``: the report writer evaluated as the thing under test, replayed with no key.
 
-The rung's turn recordings are an owner-approved paid step, not yet made, so nothing here replays a real writer. What
-is held: the eleven case files read back and split 7 held-out to 4 dev; ``writer.py`` stays short and reaches the
-engine through public roots; with nothing recorded the door refuses, first for the judge's recording, then, with that
-in place, for the writer's, naming the file and ``ANTHROPIC_API_KEY``; and with a hand-scripted recording for two
-cases (laid in the test's own copy, never under ``examples/``) ``python -m threetears.evals writer.py`` replays with no
-key and prints the promotion read, ``undecided`` on two cases, with its reason. Every socket connect fails.
+The rung's recordings (14 reports on ``claude-sonnet-5-5``, the flash judge and its pairwise pass, recorded
+2026-11-03) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
+``writer.py`` stays short and reaches the engine through public roots; ``python -m threetears.evals writer.py``
+replays the shipped recordings with no key, every turn and judge call served from them and none left unasked, and
+prints the judge's preference and the promotion read. In a copy with its recordings stripped, the door refuses,
+first for the judge's recording, then, with that in place, for the writer's, naming the file and
+``ANTHROPIC_API_KEY``; and with a hand-scripted recording for two cases laid in that copy (never under
+``examples/``) it replays and prints the promotion read, ``undecided`` on two cases, with its reason. Every socket
+connect fails.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shutil
 import socket
 from collections import Counter
 from pathlib import Path
@@ -56,6 +60,16 @@ def writer_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     monkeypatch.setattr(socket.socket, "connect", connect)
     return copy
+
+
+@pytest.fixture
+def unrecorded_dir(writer_dir: Path) -> Path:
+    """The copy with its recordings stripped, the README that says how to record them left in place."""
+    recordings = writer_dir / "recordings"
+    (recordings / "judge.jsonl").unlink()
+    shutil.rmtree(recordings / "turns")
+    assert [path.name for path in recordings.iterdir()] == ["README.md"]
+    return writer_dir
 
 
 def test_the_eleven_case_files_read_back_and_split_seven_held_out_to_four_dev() -> None:
@@ -104,36 +118,61 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert 'effort="medium"' in writer and "max_cost_usd=39.0" in writer
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
+    # The recording's date, the head it was made at, and what it cost.
+    assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
+    assert "Not recorded" not in readme
+
+
+def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_the_promotion_read(
+    writer_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["writer.py"]) == 0
+    printed = capsys.readouterr().out
+    lines = printed.splitlines()
+    assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
+    # The pairwise preference, the primary reading: lead-first's share, not separated at 7 cases.
+    assert "| share | 0.6786 |" in lines and "| reads | not separated |" in lines
+    assert "| order consistency | 0.8571 (6 of 7) |" in lines
+    (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
+    assert promotion == (
+        "promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only "
+        "an improved primary reading promotes."
+    )
+    # Every arm replayed whole: nothing recorded now, and no recorded turn left unasked.
+    assert "shipped: writer turns replayed from" in printed and "lead-first: writer turns replayed from" in printed
+    assert "0 replayed" not in printed and "unasked" not in printed
+    # Every judge call served from its recording: a refused one would exclude its result.
+    assert printed.count("7 result(s): 7 scored, 0 excluded") == 2
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(
-    writer_dir: Path, capsys: pytest.CaptureFixture[str]
+    unrecorded_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["writer.py"]) == 2
     refused = capsys.readouterr().err
     assert "recordings/judge.jsonl" in refused and "OPENROUTER_API_KEY" in refused
-    assert not (writer_dir / ".evals").exists(), "the file is refused as it is loaded, before a store is opened"
+    assert not (unrecorded_dir / ".evals").exists(), "the file is refused as it is loaded, before a store is opened"
 
 
 def test_with_the_writer_s_turns_unrecorded_the_door_refuses_naming_the_file_and_the_key(
-    writer_dir: Path, capsys: pytest.CaptureFixture[str]
+    unrecorded_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _judge_recording(writer_dir)
+    _judge_recording(unrecorded_dir)
 
     assert main(["writer.py"]) == 2
     refused = capsys.readouterr().err
     assert "arm 'shipped' has no turn recording for 7 of 7 case(s)" in refused
     named = re.search(r"\((\S+\.jsonl) first\)", refused)
-    assert named is not None and Path(named[1]).is_relative_to(writer_dir / "recordings" / "turns")
+    assert named is not None and Path(named[1]).is_relative_to(unrecorded_dir / "recordings" / "turns")
     assert "ANTHROPIC_API_KEY is not set" in refused
 
 
 def test_a_two_case_scripted_recording_replays_with_no_key_and_prints_the_promotion_read(
-    writer_dir: Path, capsys: pytest.CaptureFixture[str]
+    unrecorded_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    kept = _two_held_out_cases(writer_dir)
-    _judge_recording(writer_dir)
-    (writer_eval,) = load_evals(writer_dir / "writer.py")
+    kept = _two_held_out_cases(unrecorded_dir)
+    _judge_recording(unrecorded_dir)
+    (writer_eval,) = load_evals(unrecorded_dir / "writer.py")
     assert isinstance(writer_eval, WriterEval)
     _silent_recordings(writer_eval, kept)
 
@@ -147,7 +186,7 @@ def test_a_two_case_scripted_recording_replays_with_no_key_and_prints_the_promot
     assert "shipped: writer turns replayed from" in printed and "lead-first: writer turns replayed from" in printed
     assert "| misfit | 2 |" in printed
     assert "report: .evals/reports/writer/report.html" in lines
-    assert (writer_dir / ".evals" / "reports" / "writer" / "report.html").is_file()
+    assert (unrecorded_dir / ".evals" / "reports" / "writer" / "report.html").is_file()
 
 
 def _two_held_out_cases(directory: Path) -> dict[str, str]:
