@@ -104,6 +104,9 @@ WRITER_PAIRWISE_ACTION: Final = "writer_pairwise"
 #: refusal, so this only ends one whose provider hangs.
 WRITER_PAIRWISE_BUDGET_S: Final = 6 * 3600.0
 
+#: The heading the pass's verdict on the preference carries, which a reader reads it by.
+PREFERRED_HEADING: Final = "Preferred by the judge, side by side"
+
 #: The candidate's slot in each of a pair's two orders: the control is read first, then the candidate.
 _SLOTS: Final[tuple[Slot, Slot]] = ("B", "A")
 
@@ -554,7 +557,7 @@ def _verdict(shares: Sequence[float], *, collected: _Collected, stopped: str | N
         reason_detail=detail,
         reading="judged",
         name=preferred.name,
-        heading="Preferred by the judge, side by side",
+        heading=PREFERRED_HEADING,
         arm=arm,
         variant_key=collected.candidate.variant_key,
         apparatus_class_id=collected.apparatus_class_id,

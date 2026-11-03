@@ -438,7 +438,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when writer_pairwise joined it (the pairwise pass over a writer campaign, as a job).
 #: The evals tool moved again when writer_promotion gained pairwise_job (the pass whose report is its primary reading)
 #: and its help came to state the decision rule that reads it.
-_EVALS_BYTES = "04898c5c19241e84da41949f0b1678e0965e60909f06a7d887fde1b025193225"
+#: The evals tool moved again when writer_promotion's help came to say a regressed reading keeps on too few cases, that
+#: order consistency below 0.7 voids the primary, and that it reports the finished-only reading and the cases to settle.
+_EVALS_BYTES = "859b76705191f4a880583e2cb5b26d75a469d75ed503c9776f8a0175ac54ca04"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"

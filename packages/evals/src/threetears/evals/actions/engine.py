@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 from functools import partial
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, get_args
 
 from datetime import datetime
@@ -1813,32 +1813,83 @@ async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
 async def _writer_pairwise_path(stage: ConformanceStage) -> Mapping[str, Any]:
     """A campaign of two arms over the sample's finished run, the control the run and the candidate a copy of it under
     another model, each result's page stored as a document that speaks for itself: a pairwise pass over it asks the
-    judge about every case's two pages, whatever the host's kind renders. Arranged in the stage host's own store."""
+    judge about every case's two pages, whatever the host's kind renders. Arranged in the stage host's own store.
+
+    The pass refuses a judge the host places in a writer's family, and a sample's judge may share its candidate's, so
+    where the host places them together the pair is scored by the sample's second judge (:func:`_pair_judge`)."""
     run_id = await stage.finished_run()
     eval_host = stage.host.eval_host
+    family, second = stage.host.model_family, stage.sample.second_judge_model
     campaign_id = await run_blocking(
-        eval_host.blocking_executor, _paired_campaign, eval_host, run_id, stage.caller.scope_id, stage.caller.identity
+        eval_host.blocking_executor,
+        partial(_paired_campaign, family=family, second_judge=second),
+        eval_host,
+        run_id,
+        stage.caller.scope_id,
+        stage.caller.identity,
     )
     return {"campaign_id": campaign_id, "candidate": "candidate"}
 
 
-def _paired_campaign(eval_host: EvalHost, run_id: str, scope_id: str, created_by: str) -> str:
-    """Store the candidate arm beside the finished run, and the campaign naming both; its id. Blocking."""
+def _pair_judge(own: str, second: str, writers: Sequence[str], family: Callable[[str], str | None] | None) -> str:
+    """The judge the kit's pair is scored by: the run's own, unless the host places it in a writer's family, then the
+    sample's second judge, as the pass's family check reads them
+    (:func:`~threetears.evals.ops.report_writer.writer_launch.judge_family_check`).
+
+    :raises ValidationFailedError: The host places both judges in a writer's family, so no pair the kit builds passes.
+    """
+    if family is None:
+        return own
+    for judge in (own, second):
+        placed = family(judge)
+        if placed is None or all(family(writer) != placed for writer in writers):
+            return judge
+    raise ValidationFailedError(
+        f"the sample's judge {own!r} and its second judge {second!r} are both of a candidate model's family, so the "
+        "pairwise pass refuses every pair the kit builds",
+        remedy="name a second judge of another family than the sample's candidate models (second_judge_model)",
+    )
+
+
+def _paired_campaign(
+    eval_host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    created_by: str,
+    *,
+    family: Callable[[str], str | None] | None,
+    second_judge: str,
+) -> str:
+    """Store the candidate arm beside the finished run, and the campaign naming both; its id. Blocking.
+
+    Where the pair is scored by the second judge, the control is a copy of the run under that judge too, so both arms
+    name one scoring judge."""
     storage = eval_host.storage
-    control = storage.load_eval_run(run_id, scope_id)
-    assert control is not None  # the stage's run finished, so its record is stored
+    run = storage.load_eval_run(run_id, scope_id)
+    assert run is not None and run.judge_model is not None  # the stage's run finished judged, so its record is stored
+    writers = [run.candidate_model, f"{run.candidate_model} (paired)"]
+    judge = _pair_judge(run.judge_model, second_judge, writers, family)
+    control = (
+        run if judge == run.judge_model else run.model_copy(update={"id": str(uuid.uuid7()), "judge_model": judge})
+    )
     # Another model and no recorded lever map: the copy's key is derived as a reader derives it, so it is its own arm.
-    candidate = control.model_copy(
+    candidate = run.model_copy(
         update={
             "id": str(uuid.uuid7()),
-            "candidate_model": f"{control.candidate_model} (paired)",
+            "candidate_model": writers[1],
+            "judge_model": judge,
             "variant_levers": None,
             "identity_version": None,
         }
     )
     identity = resolve_variant_identity(run=candidate, profile=eval_host.profile)
+    if control is not run:
+        storage.save_eval_run(control)
     storage.save_eval_run(candidate)
     for result in storage.query_eval_results(scope_id, run_id=run_id):
+        mine = (
+            result if control is run else result.model_copy(update={"id": str(uuid.uuid7()), "eval_run_id": control.id})
+        )
         paired = result.model_copy(
             update={
                 "id": str(uuid.uuid7()),
@@ -1848,7 +1899,7 @@ def _paired_campaign(eval_host: EvalHost, run_id: str, scope_id: str, created_by
                 "identity_version": identity.identity_version,
             }
         )
-        for arm, stored in (("control", result), ("candidate", paired)):
+        for arm, stored in (("control", mine), ("candidate", paired)):
             page = JudgeEvidence(
                 case_material=f"The facts of case {stored.test_case_id}.",
                 artifact=f"The {arm} arm's page on case {stored.test_case_id}.",
@@ -2744,9 +2795,12 @@ def engine_actions() -> tuple[Action, ...]:
                 "Reads one primary reading, the pairwise pass's preference (report_writer.preferred, from the "
                 "completed writer_pairwise job named as pairwise_job), and gates the candidate's other corrected "
                 "verdicts on regression only. Promote when the primary reads improved, no other reading regressed "
-                "and every guardrail is held. Keep when the primary or any other reading regressed, or a guardrail "
-                "is breached. Undecided otherwise, naming the primary's reason (not separated, too few cases, not "
-                "read), and undecided never promotes. It also names the levers the candidate changed, the held-out "
+                "and every guardrail is held. Keep when the primary or any other reading regressed, too few cases "
+                "included, or a guardrail is breached. Undecided otherwise, naming the primary's reason (not "
+                "separated, too few cases, void, not read), and undecided never promotes. The primary is void when "
+                "the judge's order consistency is below 0.7. It reports the reading over the pairs whose pages were "
+                "both finished beside the primary, and for a primary that does not separate, the held-out cases that "
+                "would settle it. It also names the levers the candidate changed, the held-out "
                 "cases read, both arms' costs and the skill this build ships with its ledger entry. Refused for arms "
                 "scored by different judges or rubrics, a campaign run over anything but held-out writer cases, and "
                 "a pairwise job that is not a completed pass over this campaign's candidate, control and judge. "

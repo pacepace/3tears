@@ -10,12 +10,9 @@ asked and against the stats functions on shares the test computes itself. No mod
 from __future__ import annotations
 
 import dataclasses
-import json
-import re
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from fractions import Fraction
-from typing import Any
 
 import pytest
 
@@ -23,129 +20,40 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_DOCUMENTS, TOYH
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.writer_pairwise_support import (
+    GARBLED,
+    PAIR_CEILING,
+    REFUSED,
+    Pages,
+    Policy,
+    ScriptedPairJudge,
+    describe_account_refusal,
+    every_page,
+    pair_page,
+    prefers_report_a,
+    prefers_the_candidate,
+    prefers_the_control,
+    store_pages,
+    ties,
+)
 from packages.evals.tests.writer_promotion_support import BETTER, CANDIDATE, SCORING_JUDGE, promotion_campaign
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, bounded_separation_p
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.ops import JobsStarted, OpsHost, await_job
-from threetears.evals.ops.report_writer.writer_contract import FINISHED_MEASURE, WRITER_KIND
+from threetears.evals.ops.report_writer.writer_contract import FINISHED_MEASURE
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.run.judge import CANNOT_TELL, JUDGE_CALL_ATTEMPTS
-from threetears.evals.schema.completion import ProviderFailure
-from threetears.evals.schema.models import (
-    EvalTemplate,
-    EvalTrace,
-    JudgedArtifact,
-    JudgeEvidence,
-    eval_trace_doc_id,
-)
 
-#: The template every run is pointed at, so the judge's prompt carries its intent.
-_TEMPLATE = "writer-template"
 #: Every repeat a document ran, on both arms.
 _REPEATS = (1, 2, 3)
-#: What one judge call is priced at.
-_CEILING = 0.01
 #: The share range every bounded reading here is on.
 _RANGE = (0.0, 1.0)
 
-#: A page by arm, document and repeat: whether the cell stored one.
-Pages = Callable[[str, str, int], bool]
-#: The judge's answer, given the document and which slot (A or B) holds the candidate's page: a 1-5 score, or
-#: CANNOT_TELL.
-Policy = Callable[[str, str], int | str]
-
-
-def _every_page(_arm: str, _document: str, _repeat: int) -> bool:
-    return True
-
-
-def _prefers_the_candidate(_document: str, slot: str) -> int:
-    """Report A clearly better when the candidate is A, Report B when it is B."""
-    return 1 if slot == "A" else 5
-
-
-def _prefers_the_control(_document: str, slot: str) -> int:
-    return 5 if slot == "A" else 1
-
-
-def _ties(_document: str, _slot: str) -> int:
-    return 3
-
-
-def _prefers_report_a(_document: str, _slot: str) -> int:
-    """A judge that always prefers the page it reads first, whoever wrote it."""
-    return 1
-
-
-def _page(arm: str, document: str, repeat: int) -> str:
-    return f"# {arm} page on {document}, repeat {repeat}\n\nThe {arm} arm's findings."
-
-
-#: A policy's answer that makes the judge's call raise, as an account out of credit does.
-_REFUSED = "refused"
-#: A policy's answer the judge sends as text no parse reads.
-_GARBLED = "garbled"
-
-
-class _AccountRefused(Exception):
-    """What the scripted judge raises for a refused call."""
-
-
-def _describe_account_refusal(exc: BaseException) -> ProviderFailure:
-    """The host's describer: :class:`_AccountRefused` is a refusal for the account, anything else is not."""
-    return ProviderFailure(
-        type(exc).__name__, payload_withheld=True, owner="account" if isinstance(exc, _AccountRefused) else "candidate"
-    )
-
-
-@dataclass(frozen=True)
-class _Completion:
-    content: str
-    stop_reason: str = "end_turn"
-    temperature: float | None = None
-    input_tokens: int = 10
-    output_tokens: int = 5
-    reasoning_tokens: int | None = None
-    cost_usd: float | None = 0.001
-    model: str = SCORING_JUDGE
-    served_model: str | None = SCORING_JUDGE
-
-
-@dataclass
-class _ScriptedJudge:
-    """The scoring judge: reads which report is the candidate's off the two pages it is shown, answers by ``policy``."""
-
-    policy: Policy = _prefers_the_candidate
-    calls: list[tuple[str, str, str, str]] = field(default_factory=list)
-    model_name: str = SCORING_JUDGE
-
-    def price_ceiling(self, *, system: str, user: str, response_format: Any = None) -> float | None:
-        return _CEILING
-
-    async def generate(self, *, system: str, user: str, response_format: Any = None) -> _Completion:
-        """Record which pages it read, in which slots, and answer."""
-        dim = re.search(r'the single key "(.+?)"', system).group(1)  # type: ignore[union-attr]
-        pages = re.search(r"=== Report A ===\n(.*?)\n\n=== Report B ===\n(.*)$", user, re.S)
-        assert pages is not None, user
-        first, second = pages.group(1), pages.group(2)
-        document = re.search(r" page on (\S+),", first).group(1)  # type: ignore[union-attr]
-        slot = "A" if first.startswith("# candidate") else "B"
-        self.calls.append((document, slot, first, second))
-        answer = self.policy(document, slot)
-        if answer == _REFUSED:
-            raise _AccountRefused("out of credit")
-        if answer == _GARBLED:
-            return _Completion(content="not json")
-        return _Completion(content=json.dumps({"reasoning": "read both", "criteria_scores": {dim: answer}}))
-
-    async def aclose(self) -> None:
-        """Nothing to release."""
-
 
 def _campaign(
-    judge: _ScriptedJudge, *, pages: Pages = _every_page, unfinished_control: int = 0
+    judge: ScriptedPairJudge, *, pages: Pages = every_page, unfinished_control: int = 0
 ) -> tuple[EvalHost, str]:
     """The promotion read's campaign, each result's page stored as ``pages`` says, the judge on its clients.
 
@@ -159,43 +67,8 @@ def _campaign(
         "candidate": {document: {FINISHED_MEASURE: True} for document in TOYHOST_DOCUMENTS},
     }
     host, campaign_id = off_loop(promotion_campaign, BETTER, writer=(finished["control"], finished["candidate"]))
-    off_loop(_store_pages, host, campaign_id, pages)
+    off_loop(store_pages, host, campaign_id, pages)
     return dataclasses.replace(host, clients=lambda _role, _model, *, temperature=None: judge), campaign_id
-
-
-def _store_pages(host: EvalHost, campaign_id: str, pages: Pages) -> None:
-    storage = host.storage
-    storage.save_template(
-        EvalTemplate(
-            id=_TEMPLATE,
-            scope_id=TOYHOST_SCOPE,
-            name="writer",
-            intent="Write the campaign's report.",
-            candidate_kind=WRITER_KIND,
-        )
-    )
-    campaign = storage.load_campaign(campaign_id, TOYHOST_SCOPE)
-    assert campaign is not None
-    for arm, run_id in zip(("control", "candidate"), campaign.run_ids, strict=True):
-        run = storage.load_eval_run(run_id, TOYHOST_SCOPE)
-        assert run is not None
-        storage.save_eval_run(run.model_copy(update={"template_id": _TEMPLATE}))
-        for result in storage.query_eval_results(TOYHOST_SCOPE, run_id=run_id):
-            if not pages(arm, result.test_case_id, result.k_iteration):
-                continue
-            evidence = JudgeEvidence(
-                case_material=f"Computed facts of {result.test_case_id}.",
-                artifact=_page(arm, result.test_case_id, result.k_iteration),
-            )
-            trace = EvalTrace(
-                id=eval_trace_doc_id(result.id),
-                scope_id=TOYHOST_SCOPE,
-                result_id=result.id,
-                eval_run_id=run_id,
-                judge_evidence=evidence,
-                judged_artifact=JudgedArtifact.DOCUMENT,
-            )
-            storage.save_eval_result(result, trace)
 
 
 def _apart(model: str) -> str | None:
@@ -241,7 +114,7 @@ def _expected(control: list[float], candidate: list[float]) -> tuple[float | Non
 
 
 async def test_every_pair_is_asked_in_both_orders_from_its_stored_pages() -> None:
-    judge = _ScriptedJudge()
+    judge = ScriptedPairJudge()
     host, campaign_id = _campaign(judge)
     report = await _pass(host, campaign_id)
 
@@ -251,7 +124,7 @@ async def test_every_pair_is_asked_in_both_orders_from_its_stored_pages() -> Non
     asked = sorted((document, slot, first, second) for document, slot, first, second in judge.calls)
     for document in TOYHOST_DOCUMENTS:
         for repeat in _REPEATS:
-            mine, theirs = _page("candidate", document, repeat), _page("control", document, repeat)
+            mine, theirs = pair_page("candidate", document, repeat), pair_page("control", document, repeat)
             assert (document, "A", mine, theirs) in asked
             assert (document, "B", theirs, mine) in asked
     for pair in report.pairs:
@@ -265,7 +138,7 @@ async def test_every_pair_is_asked_in_both_orders_from_its_stored_pages() -> Non
 async def test_a_side_with_no_page_loses_its_pair_and_both_missing_is_a_tie() -> None:
     gone = {("candidate", TOYHOST_DOCUMENTS[0], 1), ("control", TOYHOST_DOCUMENTS[1], 1)}
     gone |= {(arm, TOYHOST_DOCUMENTS[2], 1) for arm in ("candidate", "control")}
-    judge = _ScriptedJudge(policy=_ties)
+    judge = ScriptedPairJudge(policy=ties)
     host, campaign_id = _campaign(judge, pages=lambda arm, document, repeat: (arm, document, repeat) not in gone)
     report = await _pass(host, campaign_id)
 
@@ -286,10 +159,10 @@ async def test_a_side_with_no_page_loses_its_pair_and_both_missing_is_a_tie() ->
 
 
 async def test_the_cap_refuses_the_pass_before_its_first_call() -> None:
-    judge = _ScriptedJudge()
+    judge = ScriptedPairJudge()
     host, campaign_id = _campaign(judge)
     pairs = len(TOYHOST_DOCUMENTS) * len(_REPEATS)
-    planned = 2 * pairs * JUDGE_CALL_ATTEMPTS * _CEILING
+    planned = 2 * pairs * JUDGE_CALL_ATTEMPTS * PAIR_CEILING
     with pytest.raises(ValidationFailedError, match="cap"):
         await writer_pairwise(_ops(host, cap=planned / 2), campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE)
     assert judge.calls == []
@@ -298,7 +171,7 @@ async def test_the_cap_refuses_the_pass_before_its_first_call() -> None:
 
 
 async def test_a_judge_of_a_writers_family_is_refused_before_any_call() -> None:
-    judge = _ScriptedJudge()
+    judge = ScriptedPairJudge()
     host, campaign_id = _campaign(judge)
     with pytest.raises(ValidationFailedError, match="is of the writer .* family"):
         await writer_pairwise(
@@ -320,14 +193,14 @@ def _graded(document: str, slot: str) -> int:
 @pytest.mark.parametrize(
     ("policy", "outcome"),
     [
-        (_prefers_the_candidate, "improved"),
-        (_prefers_the_control, "regressed"),
-        (_ties, "not_separated"),
+        (prefers_the_candidate, "improved"),
+        (prefers_the_control, "regressed"),
+        (ties, "not_separated"),
         (_graded, None),
     ],
 )
 async def test_the_verdict_is_the_bounded_test_on_the_candidates_shares(policy: Policy, outcome: str | None) -> None:
-    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    host, campaign_id = _campaign(ScriptedPairJudge(policy=policy))
     report = await _pass(host, campaign_id)
 
     candidate = [
@@ -358,9 +231,9 @@ async def test_order_consistency_first_slot_bias_and_cannot_tell_are_reported() 
     def policy(document: str, slot: str) -> int | str:
         if document == undecided and slot == "A":
             return CANNOT_TELL
-        return _prefers_report_a(document, slot)
+        return prefers_report_a(document, slot)
 
-    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    host, campaign_id = _campaign(ScriptedPairJudge(policy=policy))
     report = await _pass(host, campaign_id)
 
     reliability = report.reliability
@@ -378,7 +251,7 @@ async def test_order_consistency_first_slot_bias_and_cannot_tell_are_reported() 
 
 async def test_the_reading_over_pairs_whose_pages_both_finished_is_reported_beside_the_whole() -> None:
     unfinished = 3
-    host, campaign_id = _campaign(_ScriptedJudge(policy=_graded), unfinished_control=unfinished)
+    host, campaign_id = _campaign(ScriptedPairJudge(policy=_graded), unfinished_control=unfinished)
     report = await _pass(host, campaign_id)
 
     kept = len(TOYHOST_DOCUMENTS) - unfinished
@@ -394,7 +267,7 @@ async def test_the_reading_over_pairs_whose_pages_both_finished_is_reported_besi
 
 
 async def test_the_action_starts_the_pass_as_a_job_that_completes_with_its_report() -> None:
-    judge = _ScriptedJudge()
+    judge = ScriptedPairJudge()
     eval_host, campaign_id = _campaign(judge)
     host = _ops(eval_host, family=_apart)
     tool = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}["evals"]
@@ -419,9 +292,9 @@ async def test_a_reading_on_too_few_cases_is_never_read_as_tested(kept: int) -> 
     scored = set(sorted(TOYHOST_DOCUMENTS)[:kept])
 
     def policy(document: str, slot: str) -> int | str:
-        return _prefers_the_candidate(document, slot) if document in scored else CANNOT_TELL
+        return prefers_the_candidate(document, slot) if document in scored else CANNOT_TELL
 
-    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    host, campaign_id = _campaign(ScriptedPairJudge(policy=policy))
     report = await _pass(host, campaign_id)
 
     verdict = report.whole.verdict
@@ -440,9 +313,9 @@ async def test_a_failed_call_is_counted_and_scores_nothing() -> None:
     broken = sorted(TOYHOST_DOCUMENTS)[0]
 
     def policy(document: str, slot: str) -> int | str:
-        return _GARBLED if document == broken else _prefers_the_candidate(document, slot)
+        return GARBLED if document == broken else prefers_the_candidate(document, slot)
 
-    host, campaign_id = _campaign(_ScriptedJudge(policy=policy))
+    host, campaign_id = _campaign(ScriptedPairJudge(policy=policy))
     report = await _pass(host, campaign_id)
 
     assert report.reliability.failed == 2 * len(_REPEATS)
@@ -456,11 +329,11 @@ async def test_an_account_refusal_stops_the_pass_and_leaves_its_verdicts_unteste
     refused = sorted(TOYHOST_DOCUMENTS)[5]
 
     def policy(document: str, slot: str) -> int | str:
-        return _REFUSED if document == refused else _prefers_the_candidate(document, slot)
+        return REFUSED if document == refused else prefers_the_candidate(document, slot)
 
-    judge = _ScriptedJudge(policy=policy)
+    judge = ScriptedPairJudge(policy=policy)
     host, campaign_id = _campaign(judge)
-    host = dataclasses.replace(host, failure_describer=_describe_account_refusal)
+    host = dataclasses.replace(host, failure_describer=describe_account_refusal)
     report = await _pass(host, campaign_id)
 
     assert report.stopped is not None and refused in report.stopped
