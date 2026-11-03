@@ -9,6 +9,7 @@ green by construction.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,6 +19,7 @@ from threetears.evals.actions import Action, Caller, ConformanceStage, eval_cata
 from threetears.evals.ops import JobsStarted, OpsHost, await_job, job_poll, start_action_job
 from pydantic import Field
 
+from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.storage import DocTypeRoute, InMemoryDocumentStore, RoutedDocumentStore
 from threetears.evals.testing import (
@@ -115,6 +117,44 @@ def _cases(handler: Any, *, call_return_timeout_s: float = 10.0) -> dict[str, Jo
 )
 async def test_every_engine_action_keeps_the_job_rule(case: JobsConformanceCase) -> None:
     await case.check(conformance_host)
+
+
+def _placing(families: Mapping[str, str]) -> Any:
+    """The conformance host, its ops host reading a model's family from ``families`` (anything else unplaced)."""
+
+    def build(guard: CompletionGuard) -> JobsConformanceHost:
+        built = conformance_host(guard)
+        return dataclasses.replace(built, host=dataclasses.replace(built.host, model_family=families.get))
+
+    return build
+
+
+def _pairwise_happy_path() -> JobsConformanceCase:
+    (case,) = [
+        case
+        for case in jobs_conformance_cases(eval_catalogue(), job_timeout_s=30.0)
+        if case.name == "writer_pairwise.happy_path"
+    ]
+    return case
+
+
+async def test_the_pairwise_happy_path_passes_on_a_host_placing_its_sample_judge_in_its_candidates_family() -> None:
+    """The sample's judge shares its candidate's family, as a Claude judge on a Claude candidate does outside the
+    writer: the kit scores its pair by the sample's second judge, of another family, and the case passes."""
+    families = {
+        "candidate-a": "first",
+        "candidate-a (paired)": "first",
+        "judge/first": "first",
+        "judge/second": "other",
+    }
+    await _pairwise_happy_path().check(_placing(families))
+
+
+async def test_the_pairwise_happy_path_names_the_sample_field_when_both_judges_share_the_candidates_family() -> None:
+    families = {"candidate-a": "first", "judge/first": "first", "judge/second": "first"}
+    with pytest.raises(ValidationFailedError, match="second judge of another family") as refused:
+        await _pairwise_happy_path().check(_placing(families))
+    assert "second_judge_model" in refused.value.remedy
 
 
 def test_every_engine_spend_action_has_a_happy_path_case() -> None:

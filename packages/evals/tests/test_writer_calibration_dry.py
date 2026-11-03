@@ -132,6 +132,13 @@ def test_each_pair_of_rounds_gives_two_cases_the_swapped_one_mirrored(dry: Calib
     assert [preferred(delta) for delta in (-5, -2, -1, 0, 1, 2, 5)] == [1, 1, 2, 3, 4, 5, 5]
     frozen = dry.frozen[PAIR_SET]
     assert len(frozen.cases) == len(cases) and {case.dim for case in frozen.cases} == {criterion.name}
+    # Frozen, each pair case carries the digest of the criterion the pass asks, as an absolute case carries its own.
+    gate = judge_criterion_digest(criterion.name, criterion.scale, criterion)
+    for case in frozen.cases:
+        stored = off_loop(dry.host.storage.load_test_case, case.test_case_id, TOYHOST_SCOPE)
+        assert stored is not None
+        judge_case = judge_case_of(stored)
+        assert judge_case is not None and judge_case.criterion_digest() == gate
 
 
 def test_both_case_sets_are_frozen_and_listed_by_name(dry: Calibration) -> None:

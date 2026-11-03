@@ -137,7 +137,9 @@ class ConformanceSample:
     :ivar template_id: A template in the caller's scope whose kind the host launches.
     :ivar subject_id: The subject its runs measure.
     :ivar models: The candidate models, one arm each; at least one, since a sweep's arm names its model.
-    :ivar second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check.
+    :ivar second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check. On
+        a host that places models in families (``OpsHost.model_family``) and places the run's own judge in a candidate
+        model's, it is of another family: the pairwise pass's happy path scores its pair by it.
     """
 
     template_id: str
