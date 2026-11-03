@@ -4804,8 +4804,18 @@ async def test_a_fresh_replica_beside_a_write_in_progress_is_ready_and_serves_ev
         lambda: "enr.s.TX" in pointers.entries and json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2,
         what="TX published at the write's epoch once it committed",
     )
-    await _until(lambda: _indexed(pointers) == {"DE", "TX"}, what="the index whole")
-    assert snapshot.status().phase is SnapshotPhase.READY, snapshot.status()
+    # the index a rebuild beside a write made names only what it published (partial): once the write commits, the
+    # next pass rebuilds from L3 to write it whole. That rebuild moves TX's pointer first, then the index, and is
+    # READY only at its last step, so neither one alone means READY yet (CI on 73377322 read the status between)
+    await _until(
+        lambda: json.loads(pointers.entries["enr.index"][0]) == {"scopes": ["DE", "TX"]}, what="the index whole"
+    )
+    await _until(
+        lambda: snapshot.status().phase is SnapshotPhase.READY,
+        what="ready again once the rebuild after the commit ends",
+    )
+    assert snapshot.applied_epoch("TX") == 2, "TX did not move on to the write's epoch"
+    assert _held_votes(snapshot, "DE") == [2] and _held_votes(snapshot, "TX") == [99], "a scope was lost on the way"
     await snapshot.stop()
 
 
