@@ -61,6 +61,9 @@ class FakeScoringJudge:
         """Nothing: a scripted judge sends nothing."""
         return 0.0
 
+    async def aclose(self) -> None:
+        """Nothing to release."""
+
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
         match = re.search(r'single key "([^"]+)"', system)
         assert match is not None, "the judge's system prompt names no dimension"

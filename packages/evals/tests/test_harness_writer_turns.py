@@ -23,7 +23,7 @@ from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER
 from packages.evals.tests.report_writer_support import HAND_RECORDINGS, MODEL, kairo_id, written
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals import providers
-from threetears.evals.harness.writer_turns import KEY_VARIABLES, TurnsLeft, WriterProvider, WriterTurns, writer_turns
+from threetears.evals.harness.writer_turns import TurnsLeft, WriterTurns, writer_turns
 from threetears.evals.providers import Provider
 from threetears.evals.providers.wire import KEY_VARIABLES as SHIPPED_KEY_VARIABLES
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
@@ -238,9 +238,14 @@ def test_revisions_outside_the_lever_s_range_are_refused(tmp_path: Path) -> None
         writer_turns(tmp_path, arm="shipped", skill=SHIPPED, cases={"s1": "kairo"}, revisions=MOST_REVISIONS + 1)
 
 
-def test_the_providers_and_their_key_variables_are_the_shipped_client_s() -> None:
-    assert sorted(get_args(WriterProvider)) == sorted(get_args(Provider))
-    assert dict(KEY_VARIABLES) == dict(SHIPPED_KEY_VARIABLES)
+def test_each_provider_s_key_variable_is_the_shipped_client_s_and_another_provider_is_refused(tmp_path: Path) -> None:
+    read = {
+        provider: writer_turns(tmp_path, arm="a", skill=SHIPPED, cases={}, provider=provider).key_variable
+        for provider in get_args(Provider)
+    }
+    assert read == dict(SHIPPED_KEY_VARIABLES)
+    with pytest.raises(ValueError, match="not 'carrier-pigeon'"):
+        writer_turns(tmp_path, arm="a", skill=SHIPPED, cases={}, provider="carrier-pigeon")
 
 
 # parity-exempt: stands in for the client's constructor only, to keep the route a recording model is built on

@@ -24,8 +24,9 @@ import pytest
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import Writer, WriterEval, WriterResult
-from threetears.evals.harness.writer_turns import KEY_VARIABLES, writer_turns
+from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.providers.wire import KEY_VARIABLES as SHIPPED_KEY_VARIABLES
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import SqliteDocumentStore
 
@@ -41,7 +42,7 @@ SCOPE: Final = "editor-lever"
 @pytest.fixture
 def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     """No key in the environment, and every socket connect refused and counted."""
-    for variable in KEY_VARIABLES.values():
+    for variable in SHIPPED_KEY_VARIABLES.values():
         monkeypatch.delenv(variable, raising=False)
     attempts: list[object] = []
 

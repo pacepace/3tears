@@ -4,10 +4,9 @@ The quick path (:mod:`threetears.evals.quick`) evaluates a callable; this packag
 analyst and its editor that write a campaign's page. An eval file imports its names from here:
 
 - :class:`WriterEval` is the eval: arms of :class:`Writer` (a model, an :class:`AnalystSkill`, an effort, its
-  revisions, its editor's model) over a directory of portable writer cases, replayed from turn recordings, filed as one campaign and read
-  for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`; ``python -m threetears.evals FILE``
-  runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them, and
-  its writers are built on a :data:`WriterProvider`.
+  revisions, its editor's model) over a directory of portable writer cases, replayed from turn recordings, filed as
+  one campaign and read for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`;
+  ``python -m threetears.evals FILE`` runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
   :class:`MintedWriterCase`, on a :data:`WriterSide`.
@@ -42,7 +41,6 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText
 from threetears.evals.harness.writer_cases import WriterCaseFile, WriterCaseFormat, read_writer_cases
 from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterResult
 from threetears.evals.harness.writer_host import WriterJudge
-from threetears.evals.harness.writer_turns import WriterProvider
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
 
@@ -55,7 +53,6 @@ __all__ = [
     "WriterCaseFormat",
     "WriterEval",
     "WriterJudge",
-    "WriterProvider",
     "WriterResult",
     "WriterSide",
     "WriterSplit",

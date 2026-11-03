@@ -7631,11 +7631,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.harness.WriterProvider": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.harness.WriterResult": {
       "kind": "dataclass",
       "signature": "",

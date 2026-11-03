@@ -45,7 +45,7 @@ from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRIT
 from threetears.evals.providers import Model
 from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
-from threetears.evals.harness.writer_turns import KEY_VARIABLES, writer_turns
+from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, EvalTemplate
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.storage import SqliteDocumentStore
@@ -79,7 +79,7 @@ SILENT_TURNS: Final = 4
 SCOPE: Final = "writer"
 
 #: The variable a recording run reads the default writer provider's key from.
-KEY_VARIABLE: Final = KEY_VARIABLES["anthropic"]
+KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
 
 
 def _variant() -> AnalystSkill:

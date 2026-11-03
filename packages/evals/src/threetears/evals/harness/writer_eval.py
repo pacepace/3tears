@@ -105,7 +105,7 @@ from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.analyse import TURN_CAP
 from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
-from threetears.evals.harness.writer_turns import WriterProvider, WriterTurns, writer_turns
+from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
 
@@ -319,7 +319,7 @@ class WriterEval:
         turns: int = TURN_CAP,
         request_s: float = 120.0,
         margin: float = 5.0,
-        writer_provider: WriterProvider = "anthropic",
+        writer_provider: str = "anthropic",
         store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
     ) -> None:
@@ -356,7 +356,7 @@ class WriterEval:
         :ptype margin: float
         :param writer_provider: The provider every writer (and editor) is built on to record, whose key a recording run
             reads, and which tells a writer's family to the judge's check.
-        :ptype writer_provider: WriterProvider
+        :ptype writer_provider: str
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
         :ptype store: DocumentStore | str | os.PathLike[str] | None

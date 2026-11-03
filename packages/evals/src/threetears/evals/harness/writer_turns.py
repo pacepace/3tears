@@ -27,7 +27,7 @@ model's replies, recorded by one client.
   :class:`~threetears.evals.providers.Model`, which asks for ``ANTHROPIC_API_KEY`` even to replay.
 - **A missing file is recorded when the provider's key is set**, through ``Model(id, provider=..., turn_recording=path)``
   on the arm's provider (``anthropic`` unless told), and refused when it is not: the refusal names the file and the
-  variable (``ANTHROPIC_API_KEY``, :data:`KEY_VARIABLES`). A refusal is a
+  variable (``ANTHROPIC_API_KEY``, :attr:`WriterTurns.key_variable`). A refusal is a
   :class:`~threetears.evals.testing.RecordingRefused`, an apparatus fault, so its cell is excluded, never scored.
 - **One file serves one cell.** A second cell on the same case would replay the first one's report as a repeat, so
   it is refused: a recorded arm runs each case once.
@@ -41,7 +41,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, Protocol
+from typing import Final, Protocol, get_args
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.eval_file import beside_eval_file
@@ -51,16 +51,16 @@ from threetears.evals.schema.turns import ToolTurnClient
 from threetears.evals.testing.recorded_completions import RecordingRefused
 from threetears.evals.testing.recorded_turns import RecordedTurns
 
-#: A provider a writer is built on, as the shipped client names it (a test holds the two equal).
-WriterProvider = Literal["openrouter", "anthropic", "openai"]
+#: The provider a writer is built on when none is named.
+DEFAULT_PROVIDER: Final = "anthropic"
 
-#: The variable a recording run reads each provider's key from, as the shipped client reads it (a test holds the two
-#: equal): declared here, since the harness loads the client only to record.
-KEY_VARIABLES: Final[Mapping[WriterProvider, str]] = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
+
+def _providers() -> tuple[str, ...]:
+    """The providers the shipped client sends to, read off it when a router is built: none is spelled here."""
+    from threetears.evals.providers import Provider  # the client's own list, loaded only to check a router's
+
+    return get_args(Provider)
+
 
 #: How many hex digits of the skill digest a recording directory carries, and of the snapshot id a file name carries.
 _DIGITS: Final = 12
@@ -134,18 +134,18 @@ class WriterTurns:
         revisions: int,
         cases: Mapping[str, str],
         editor_model: str | None = None,
-        provider: WriterProvider = "anthropic",
+        provider: str = DEFAULT_PROVIDER,
     ) -> None:
         if not 0 <= revisions <= MOST_REVISIONS:
             raise ValueError(f"an arm's revisions are 0 to {MOST_REVISIONS}, and {revisions} is not")
-        if provider not in KEY_VARIABLES:
-            raise ValueError(f"a writer is built on {', '.join(KEY_VARIABLES)}, not {provider!r}")
+        if provider not in (known := _providers()):
+            raise ValueError(f"a writer is built on {', '.join(known)}, not {provider!r}")
         self._recordings = recordings
         self._arm = _segment(arm, "arm label")
         self._skill = skill.digest
         self._revisions = revisions
         self._editor = None if editor_model is None else _segment(editor_model, "editor model id")
-        self._provider: WriterProvider = provider
+        self._provider = provider
         named: dict[str, str] = {}
         for snapshot, case in cases.items():
             _snapshot12(snapshot)
@@ -159,8 +159,9 @@ class WriterTurns:
 
     @property
     def key_variable(self) -> str:
-        """The variable a recording run reads the arm's provider's key from (:data:`KEY_VARIABLES`)."""
-        return KEY_VARIABLES[self._provider]
+        """The variable a recording run reads the arm's provider's key from, as the shipped client names it: the
+        provider's name, upper-cased, then ``_API_KEY`` (``ANTHROPIC_API_KEY``)."""
+        return f"{self._provider.upper()}_API_KEY"
 
     def directory(self, model: str, effort: EffortWord | None) -> Path:
         """The directory the arm's recordings sit in, for a model at an effort.
@@ -281,9 +282,10 @@ class WriterTurns:
 
     def _recorder(self, model: str, effort: EffortWord | None, path: Path) -> _Recorder:
         """A model that records ``path``'s sessions live, on the key the environment holds; closed by :meth:`aclose`."""
-        from threetears.evals.providers import Model  # the completion client, loaded only to record a missing case
+        from threetears.evals.providers import Model, Provider  # the client, loaded only to record a missing case
 
-        built = Model(model, provider=self._provider, effort=effort, turn_recording=path)
+        provider = next(known for known in get_args(Provider) if known == self._provider)
+        built = Model(model, provider=provider, effort=effort, turn_recording=path)
         self._recorders.append(built)
         return built
 
@@ -351,7 +353,7 @@ def writer_turns(
     cases: Mapping[str, str],
     revisions: int = MOST_REVISIONS,
     editor_model: str | None = None,
-    provider: WriterProvider = "anthropic",
+    provider: str = DEFAULT_PROVIDER,
 ) -> WriterTurns:
     """One writer arm's recorded model factory, for the writer kind's ``models``.
 
@@ -372,7 +374,7 @@ def writer_turns(
         for an arm whose editor runs on the candidate model.
     :ptype editor_model: str | None
     :param provider: The provider every model built to record is sent to, whose key a recording run reads.
-    :ptype provider: WriterProvider
+    :ptype provider: str
     :return: The factory.
     :rtype: WriterTurns
     :raises ValueError: The arm label, a case name, a snapshot id or the editor's model id is no single path segment,
@@ -390,6 +392,6 @@ def writer_turns(
     )
 
 
-#: The writer eval builds each arm's models here, typed by the providers it may build them on, and reads each
-#: provider's key variable to say whether a run replays or records.
-__all__ = ["KEY_VARIABLES", "WriterProvider", "WriterTurns", "writer_turns"]
+#: The writer eval builds each arm's models here, and reads each router's key variable to say whether a run replays
+#: or records.
+__all__ = ["WriterTurns", "writer_turns"]
