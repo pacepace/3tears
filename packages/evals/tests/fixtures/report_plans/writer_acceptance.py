@@ -463,9 +463,9 @@ class Acceptance:
         yield "|---|---|---|"
         for arm, summary in result.arms.items():
             spent = "unpriced" if summary.total_cost_usd is None else f"${summary.total_cost_usd:.2f}"
-            yield f"| {arm} | ${summary.max_cost_usd or 0.0:.2f} | {spent} |"
+            yield f"| {arm} | {_cap(summary.max_cost_usd)} | {spent} |"
         pass_cost = "unpriced" if self.report.cost_usd is None else f"${self.report.cost_usd:.2f}"
-        yield f"| pairwise pass ({self.report.calls_made} calls) | ${self.report.cap_usd or 0.0:.2f} | {pass_cost} |"
+        yield f"| pairwise pass ({self.report.calls_made} calls) | {_cap(self.report.cap_usd)} | {pass_cost} |"
         if self.dry:
             yield ""
             yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
@@ -500,6 +500,11 @@ class Acceptance:
             },
             "readout": "\n".join(self.readout()),
         }
+
+
+def _cap(usd: float | None) -> str:
+    """A part of the cap as the readout's table prints it; none when no cap was enforced."""
+    return "none" if usd is None else f"${usd:.2f}"
 
 
 #: Each provider's key, by the variable it is read from.

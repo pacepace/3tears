@@ -49,7 +49,7 @@ from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
-from threetears.evals.providers import Model
+from threetears.evals.providers import Model, ProviderError
 from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
 from threetears.evals.harness.writer_turns import writer_turns
@@ -556,7 +556,7 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     table = result.pairwise_text()
     assert table in text
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
-    assert rows["side by side"] == "| side by side | variant |"
+    assert rows["preference"] == "| preference | variant |"
     # One case is too few for the test to run, and the orders' disagreement voids it besides.
     assert report.whole.verdict.outcome == "untested"
     assert rows["reads"] == "| reads | untested (void) |"
@@ -565,7 +565,7 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     # Report B was preferred in both orders: a lean away from the page read first.
     assert rows["first-slot lean"] == "| first-slot lean | -0.25 |"
     assert rows["can't tell"] == "| can't tell | 0 |"
-    assert rows["cases to settle"] == "| cases to settle | - |"
+    assert rows["held-out cases to settle"] == "| held-out cases to settle | - |"
     assert rows["spent"] == "| spent | $0 of $1.6 |"
     for label in ("difference", "reads, both pages finished", "share, both pages finished"):
         assert label in rows
@@ -588,6 +588,54 @@ class FakeDearPairJudge(FakeScoringJudge):
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """$100 for a preference call, nothing for an absolute one."""
         return 100.0 if f'"{preference_rubric().name}"' in system else 0.0
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeBrokeJudge(FakeScoringJudge):
+    """The scripted judge, whose account is refused on a side-by-side call: out of credit."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        """The scripted reply, or the provider's 402 for a preference call."""
+        if f'"{preference_rubric().name}"' in system:
+            raise ProviderError("openrouter", 402, "insufficient credits")
+        return await super().generate(system=system, user=user, response_format=response_format)
+
+
+async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _kairo_arms(tmp_path)
+
+    result = await _eval(tmp_path, arms, judge=FakeBrokeJudge()).run()
+
+    report = result.pairwise["variant"]
+    assert report.stopped is not None and report.whole.verdict.outcome == "untested"
+    assert result.pairwise_unread == {"variant": f"stopped before its last pair: {report.stopped}"}
+    assert result.promotions["variant"].primary == report.whole.verdict
+    assert result.exit_code() == 1
+    text = result.render()
+    assert "| reads | untested |" in text
+    assert f"pairwise pass of variant: stopped before its last pair: {report.stopped}" in text
+    assert offline == []
+
+
+async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = {**_arms(), "fewer": Writer(WRITER, skill=load_skill(), revisions=0)}
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+
+    result = await _eval(tmp_path, arms, budget_usd=0.5).run()
+
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.max_cost_usd == pytest.approx(8.0 * 0.8 / 3)
+    assert list(result.pairwise) == ["variant", "fewer"]
+    for report in result.pairwise.values():
+        assert report.control == "shipped" and report.cap_usd == pytest.approx(8.0 * 0.2 / 2)
+    assert list(result.promotions) == ["variant", "fewer"]
+    assert "| preference | variant | fewer |" in result.render()
+    assert offline == []
 
 
 async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_and_exits_1(

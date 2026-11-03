@@ -30,10 +30,11 @@ editor's own model. ``await WriterEval(...).run()``:
 **The cap is split before anything launches.** ``pairwise_share`` of ``max_cost_usd`` (a fifth unless told) is
 reserved for the pairwise passes, in one equal part per candidate; each part is the out-of-run cap its pass's calls are
 admitted under. The arms share the rest equally, and each arm's part holds its reports and their absolute judging. The
-run is refused before any arm launches when the reports and the pass cannot both fit: when an arm's reports, each at
-``budget_usd``, could pass the arm's part. With two arms, ``max_cost_usd`` $12 and the default share, the pass may
-spend $2.40 and each arm $4.80. A pass's calls can only be priced once the pages they read are written; a pass its part
-cannot cover is refused with nothing spent, and the result says so and exits 1.
+run is refused before any arm launches when an arm's reports, each at ``budget_usd``, could pass the arm's part, so
+the reports always leave the pass its reserve. With two arms, ``max_cost_usd`` $12 and the default share, the pass may
+spend $2.40 and each arm $4.80. Whether the reserve covers the pass itself cannot be checked before launch: its calls
+are priced on the pages they read, which are not yet written. A pass its part cannot cover is refused with nothing
+spent once they are, and the result says so and exits 1, as it does for a pass that stops before its last pair.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -155,10 +156,26 @@ _TEMPLATE_NAME = "report writer"
 #: The part of ``max_cost_usd`` a writer eval reserves for its pairwise passes unless told (the module docstring).
 PAIRWISE_SHARE: Final = 0.2
 
+#: The pairwise table's rows, in order; the interval's carries its level when a pass read one.
+_PAIRWISE_ROWS: Final = (
+    "reads",
+    "share",
+    "difference",
+    "interval",
+    "reads, both pages finished",
+    "share, both pages finished",
+    "order consistency",
+    "first-slot lean",
+    "can't tell",
+    "held-out cases to settle",
+    "spent",
+)
+
 #: What the pairwise table says once, above it: what a share and order consistency are.
 _PAIRWISE_LEAD: Final = (
     "Side by side, the judge read each case's two pages in both orders: a share is the part of a pair it gave the "
-    "candidate (0.5 is no preference), and order consistency the part of cases whose two orders agreed."
+    "candidate (0.5 is no preference), order consistency the part of cases whose two orders agreed, and first-slot "
+    "lean how far it favoured the page it read first (-0.5 to 0.5)."
 )
 
 
@@ -360,24 +377,15 @@ class WriterResult:
         level = next(
             (r.whole.verdict.interval_level for r in self.pairwise.values() if r.whole.verdict.interval_level), None
         )
-        labels = (
-            "reads",
-            "share",
-            "difference",
-            "interval" if level is None else f"interval, {format_number(level * 100)}%",
-            "reads, both pages finished",
-            "share, both pages finished",
-            "order consistency",
-            "first-slot lean",
-            "can't tell",
-            "cases to settle",
-            "spent",
+        labels = tuple(
+            f"{row}, {format_number(level * 100)}%" if row == "interval" and level is not None else row
+            for row in _PAIRWISE_ROWS
         )
         columns = {arm: self._pairwise_column(arm) for arm in arms}
         lines = [
             _PAIRWISE_LEAD,
             "",
-            "| side by side | " + " | ".join(arms) + " |",
+            "| preference | " + " | ".join(arms) + " |",
             "|---|" + "---|" * len(arms),
             *(
                 f"| {label} | " + " | ".join(columns[arm][row] for arm in arms) + " |"
@@ -392,7 +400,7 @@ class WriterResult:
         """One candidate's cells of the pairwise table, in its rows' order; a dash in each when its pass is unread."""
         report = self.pairwise.get(arm)
         if report is None:
-            return ["-"] * 11
+            return ["-"] * len(_PAIRWISE_ROWS)
         read = self.promotions.get(arm)
         whole, finished = report.whole, report.finished_only
         reliability = report.reliability
@@ -683,9 +691,10 @@ class WriterEval:
         return self.max_cost_usd * (1 - self.pairwise_share) / len(self.arms)
 
     async def _pairwise(self, host: OpsHost, campaign_id: str, candidate: str) -> _Pass:
-        """Run one candidate's pairwise pass against the control as a job, and await it; its status, or why it did not
-        start (a refusal the pass makes before any call: its calls priced over its part, a judge of a writer's family,
-        no case both arms ran)."""
+        """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
+        complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
+        a writer's family, no case both arms ran), a job that ended other than completed, or a pass stopped before its
+        last pair (an account refusal), whose report is still read."""
         try:
             started = await writer_pairwise(host, campaign_id, self.scope_id, candidate=candidate)
         except (ValidationFailedError, NotFoundError) as refused:
@@ -693,7 +702,9 @@ class WriterEval:
         (status,) = await await_job(host, started, self.scope_id)
         if status.state != "completed" or status.result is None:
             return _Pass(status=None, why_not=f"ended {status.state}: {status.detail or 'no detail recorded'}")
-        return _Pass(status=status, why_not=None)
+        stopped = WriterPairwiseReport.model_validate(status.result).stopped
+        # A pass stopped part-way completes its job with its verdicts untested: read, printed, and still not complete.
+        return _Pass(status=status, why_not=None if stopped is None else f"stopped before its last pair: {stopped}")
 
     def _template(self, host: OpsHost) -> str:
         """The writer template in the scope: the one there, or one created now. Blocking."""
