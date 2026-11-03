@@ -5,7 +5,7 @@ analyst and its editor that write a campaign's page. An eval file imports its na
 
 - :class:`WriterEval` is the eval: arms of :class:`Writer` (a model, an :class:`AnalystSkill`, an effort, its
   revisions, its editor's model) over a directory of portable writer cases, replayed from turn recordings, filed as
-  one campaign and read for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`;
+  one campaign, each candidate's pages judged beside the control's and read for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`;
   ``python -m threetears.evals FILE`` runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a

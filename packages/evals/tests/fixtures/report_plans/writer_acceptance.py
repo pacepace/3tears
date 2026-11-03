@@ -5,13 +5,10 @@ the shipped skill with ``principles.md`` and ``statistics.md`` each left as one 
 module, so the files stay; every other file is byte-identical, ``editor.md`` included, so the in-loop editor is the
 same instrument for both arms and the code measures stay comparable. Then:
 
-1. the arms run through the writer eval (:class:`~threetears.evals.harness.WriterEval`), each launched naming its
-   equal share of the arms' part of the cap, its pages scored by the fixed scoring judge;
-2. the pairwise pass (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`) shows that judge
-   each case's two pages in both orders, under the pass's part of the cap;
-3. the promotion read (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`) reads the
-   pass as its primary reading (``pairwise_job``);
-4. the pass criterion is decided by code: the read answers ``keep``, and its primary reading
+1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
+   the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
+   in both orders, under the pass's part; then its promotion read reads the pass as its primary reading;
+2. the pass criterion is decided by code: the read answers ``keep``, and its primary reading
    (``report_writer.preferred``) reads ``regressed``, separated, its interval below 0, with the order check standing
    and bounces not separated. Anything else fails; a primary that does not separate states the held-out cases that
    would settle it, and the run stops there: nobody re-rolls.
@@ -28,10 +25,10 @@ of its prompt. Nothing is sent and the verdict carries no signal. The live run i
 records every writer turn and judge call under ``--out``. It refuses, before anything is sent, a case directory with
 fewer than 10 cases on the held-out side (design §4), so the default seven run dry only.
 
-**The cap.** ``--pass-usd`` ($2) goes to the pairwise pass; the arms share the rest equally, and each arm's share
-holds its reports and their absolute judging. At ``--cap-usd 12`` over eleven cases each arm gets $5: its reports'
-budgets come to 11 × $0.35 = $3.85, leaving $1.15 for 77 absolute judge calls (about $0.77 on flash). The expected
-spend is about $6 in all; the cap bounds the worst case.
+**The cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest equally,
+each arm's part holding its reports and their absolute judging. At ``--cap-usd 12`` over eleven cases the pass gets
+$2.40 and each arm $4.80: its reports' budgets come to 11 × $0.35 = $3.85, leaving $0.95 for 77 absolute judge calls
+(about $0.77 on flash). The expected spend is about $6 in all; the cap bounds the worst case.
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
 seven fixture snapshots prototype 5 wrote over (Kairo round 2 and six misfits, in four split groups), written as
@@ -66,17 +63,14 @@ from threetears.evals.analysis import EvalSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
-from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
+from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
-from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.ops import JobStatus, await_job
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
-from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, EffortWord, WriterArm, WriterModels
-from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
-from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
-from threetears.evals.quick.contract import open_store
+from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, EffortWord
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
+from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
 from threetears.evals.schema.turns import TurnReply, TurnText
 
 #: The writer both arms run on: the smoke's, the owner-ruled build-and-test ceiling, on Anthropic's own API.
@@ -105,9 +99,6 @@ HELD_OUT_FRACTION: Final = 0.99
 
 #: The fewest held-out cases a live run reads (reset P2 §4).
 MIN_LIVE_CASES: Final = 10
-
-#: What the pairwise pass may spend: its calls are admitted against this before the first is sent.
-PASS_USD: Final = 2.0
 
 #: The arms, control first.
 SHIPPED: Final = "shipped"
@@ -312,11 +303,6 @@ class FakeDryJudge:
         """Nothing to release."""
 
 
-def _launches_nothing(arm: WriterArm) -> WriterModels:
-    """The pass host's writer factory: the pass reads stored pages and writes none."""
-    raise ValueError(f"the pairwise pass's host launches no writer, and was asked for {arm.model!r}")
-
-
 # --- the criterion ---------------------------------------------------------------------------------------------
 
 
@@ -439,12 +425,10 @@ class Acceptance:
     hollow: AnalystSkill
     result: WriterResult
     with_documents: int | None
-    pass_job: JobStatus
     report: WriterPairwiseReport
     read: WriterPromotion
     criterion: Criterion
     cap_usd: float
-    pass_usd: float
     editor_model: str | None = None
 
     def readout(self) -> Iterator[str]:
@@ -475,14 +459,13 @@ class Acceptance:
                 + (f"; the other {blank} write no page, so their pairs tie." if blank else ".")
             )
         yield ""
-        arms_share = (self.cap_usd - self.pass_usd) / len(result.arms)
         yield "| Part | Cap | Spent |"
         yield "|---|---|---|"
         for arm, summary in result.arms.items():
             spent = "unpriced" if summary.total_cost_usd is None else f"${summary.total_cost_usd:.2f}"
-            yield f"| {arm} | ${arms_share:.2f} | {spent} |"
+            yield f"| {arm} | ${summary.max_cost_usd or 0.0:.2f} | {spent} |"
         pass_cost = "unpriced" if self.report.cost_usd is None else f"${self.report.cost_usd:.2f}"
-        yield f"| pairwise pass ({self.report.calls_made} calls) | ${self.pass_usd:.2f} | {pass_cost} |"
+        yield f"| pairwise pass ({self.report.calls_made} calls) | ${self.report.cap_usd or 0.0:.2f} | {pass_cost} |"
         if self.dry:
             yield ""
             yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
@@ -507,7 +490,7 @@ class Acceptance:
             "campaign": self.result.campaign_id,
             "scope": self.result.scope_id,
             "skills": {SHIPPED: self.shipped.digest, HOLLOW: self.hollow.digest},
-            "pass_job": self.pass_job.job_id,
+            "pass_job": self.read.pairwise_job,
             "pairwise": self.report.model_dump(mode="json"),
             "promotion": self.read.model_dump(mode="json"),
             "criterion": {
@@ -572,17 +555,14 @@ async def _measured(
     cases: Path,
     arms: Mapping[str, Writer],
     *,
-    skills: Sequence[AnalystSkill],
     store_at: Path | None,
     recordings: Path,
     budget: ReportBudget,
     request_s: float,
     held_out_fraction: float,
     cap_usd: float,
-    pass_usd: float,
-) -> tuple[WriterResult, JobStatus, WriterPromotion]:
-    """Run the arms through the writer eval, then the pairwise pass on a host over the same store, then the read."""
-    store, _where = open_store(":memory:" if store_at is None else store_at)
+) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
+    """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
     result = await WriterEval(
         cases,
@@ -590,40 +570,18 @@ async def _measured(
         judge=scoring,
         recordings=recordings,
         budget_usd=budget.usd,
-        max_cost_usd=cap_usd - pass_usd,
+        max_cost_usd=cap_usd,
         held_out_fraction=held_out_fraction,
         name=NAME,
+        question=QUESTION,
         turns=budget.turns,
         request_s=request_s,
         writer_provider=WRITER_PROVIDER,
-        store=store,
+        store=":memory:" if store_at is None else store_at,
     ).run()
-    # The eval's own host is shut down with its run; the pass runs as a job on a host of its own over the same store,
-    # held to the pass's part of the cap as its out-of-run ceiling.
-    host = writer_ops_host(
-        store,
-        judge=scoring,
-        models=_launches_nothing,
-        budget=budget,
-        request_s=lambda _max_tokens: request_s,
-        max_cost_usd=pass_usd,
-        skills={skill.digest: skill for skill in skills},
-        writer_provider=WRITER_PROVIDER,
-    )
-    try:
-        started = await writer_pairwise(host, result.campaign_id, result.scope_id, candidate=HOLLOW)
-        (status,) = await await_job(host, started, result.scope_id)
-    finally:
-        await host.launch.job_manager.shutdown()
-    if status.state != "completed" or status.result is None:
-        raise SystemExit(f"writer_acceptance.py: the pairwise pass ended {status.state}: {status.detail}")
-    read = await run_blocking(
-        host.eval_host.blocking_executor,
-        lambda: writer_promotion(
-            host.eval_host, result.campaign_id, result.scope_id, candidate=HOLLOW, pairwise_job=status
-        ),
-    )
-    return result, status, read
+    if HOLLOW in result.pairwise_unread:
+        raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[HOLLOW]}")
+    return result, result.pairwise[HOLLOW], result.promotions[HOLLOW]
 
 
 async def acceptance(
@@ -640,18 +598,15 @@ async def acceptance(
     turns: int = TURNS,
     request_s: float = REQUEST_S,
     held_out_fraction: float = HELD_OUT_FRACTION,
-    pass_usd: float = PASS_USD,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
     :param dry: Scripted models, nothing sent; ``out`` may be ``None``.
     :param cases_dir: The writer case files; ``None`` for the default cases, written into a scratch directory.
-    :param cap_usd: The whole run's cap: ``pass_usd`` for the pass, the rest in equal shares for the arms.
+    :param cap_usd: The whole run's cap, split by the writer eval's rule (the module docstring).
     :param out: Where a live run's recordings, store and result go.
     :return: What it found.
     """
-    if not 0 < pass_usd < cap_usd:
-        raise SystemExit(f"writer_acceptance.py: the pass's ${pass_usd} must leave the arms part of the ${cap_usd} cap")
     shipped, hollow = load_skill(), hollow_variant()
     refuse_unlike_editors(shipped, hollow)
     arms = {
@@ -670,18 +625,16 @@ async def acceptance(
             assert out is not None
             scoring = _live_judge(judge, out)
         try:
-            result, status, read = await _measured(
+            result, report, read = await _measured(
                 scoring,
                 cases,
                 arms,
-                skills=(shipped, hollow),
                 store_at=None if dry else root / "acceptance.sqlite",
                 recordings=recordings,
                 budget=ReportBudget(usd=budget_usd, turns=turns),
                 request_s=request_s,
                 held_out_fraction=held_out_fraction,
                 cap_usd=cap_usd,
-                pass_usd=pass_usd,
             )
         finally:
             await scoring.aclose()
@@ -691,12 +644,10 @@ async def acceptance(
         hollow=hollow,
         result=result,
         with_documents=with_documents,
-        pass_job=status,
-        report=WriterPairwiseReport.model_validate(status.result),
+        report=report,
         read=read,
         criterion=pass_criterion(read, result.arms),
         cap_usd=cap_usd,
-        pass_usd=pass_usd,
         editor_model=editor_model,
     )
 
@@ -713,7 +664,6 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--dry", action="store_true", help="scripted models, nothing sent")
     parser.add_argument("--cases", type=Path, help="a directory of writer case files; default: prototype 5's seven")
     parser.add_argument("--cap-usd", type=_amount, help="the owner's cap for the whole run; a live run names it")
-    parser.add_argument("--pass-usd", type=_amount, default=PASS_USD, help="the pairwise pass's part of the cap")
     parser.add_argument("--writer", default=WRITER, help="the model both arms write on, on Anthropic's API")
     parser.add_argument("--editor-model", help="the model the editor runs on; default: the writer's")
     parser.add_argument("--judge", default=JUDGE, help="the fixed scoring judge, of another family than the writer")
@@ -745,7 +695,6 @@ def main(argv: Sequence[str]) -> int:
             turns=options.turns,
             request_s=options.request_s,
             held_out_fraction=options.held_out_fraction,
-            pass_usd=options.pass_usd,
         )
     )
     summary = found.summary()
