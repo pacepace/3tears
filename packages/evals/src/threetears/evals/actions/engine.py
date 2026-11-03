@@ -1824,7 +1824,7 @@ def _paired_campaign(eval_host: EvalHost, run_id: str, scope_id: str, created_by
     # Another model and no recorded lever map: the copy's key is derived as a reader derives it, so it is its own arm.
     candidate = control.model_copy(
         update={
-            "id": str(uuid.uuid4()),
+            "id": str(uuid.uuid7()),
             "candidate_model": f"{control.candidate_model} (paired)",
             "variant_levers": None,
             "identity_version": None,
@@ -1835,7 +1835,7 @@ def _paired_campaign(eval_host: EvalHost, run_id: str, scope_id: str, created_by
     for result in storage.query_eval_results(scope_id, run_id=run_id):
         paired = result.model_copy(
             update={
-                "id": str(uuid.uuid4()),
+                "id": str(uuid.uuid7()),
                 "eval_run_id": candidate.id,
                 "model": candidate.candidate_model,
                 "variant_key": identity.variant_key,
