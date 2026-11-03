@@ -492,6 +492,14 @@ class Result:
             return 4
         return 0
 
+    def why_failed(self) -> str | None:
+        """Why :meth:`exit_code` is 4, in one line and the report's words: ``the gate failed on ...``, naming each
+        verdict it failed on (:meth:`gate`); ``None`` for any other exit code, whose cause the summary already says.
+        """
+        if self.exit_code() != 4:
+            return None
+        return f"the gate {self.gate().why()}"
+
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
         """Every contrast against the control the report tested, the ones its page leaves out under the case floor too.
 
