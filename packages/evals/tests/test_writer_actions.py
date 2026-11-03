@@ -116,7 +116,8 @@ async def test_a_host_reads_a_promotion_decision_and_nothing_is_recorded() -> No
 
     read = await _call(host, action="writer_promotion", campaign_id=campaign_id, candidate=CANDIDATE)
     assert not read.is_error, read.text
-    assert read.structured["decision"] == "promote"
+    # No pairwise pass is named, so the primary reading is absent and the read never promotes.
+    assert read.structured["decision"] == "undecided"
     assert read.structured["candidate"] == CANDIDATE and read.structured["changed"] == ["chunk_tokens"]
     stored = off_loop(eval_host.storage.load_campaign, campaign_id, TOYHOST_SCOPE)
     assert stored is not None and stored.call is None
@@ -127,4 +128,4 @@ async def test_a_host_reads_a_promotion_decision_and_nothing_is_recorded() -> No
     from_read_only = await read_only.call(
         {"action": "writer_promotion", "campaign_id": campaign_id, "candidate": CANDIDATE}, host=host, caller=CALLER
     )
-    assert from_read_only.structured["decision"] == "promote"
+    assert from_read_only.structured["decision"] == "undecided"

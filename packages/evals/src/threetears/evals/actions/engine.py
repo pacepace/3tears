@@ -803,6 +803,11 @@ class WriterPromotionParams(EvalBaseModel):
     candidate: str = Field(
         min_length=1, description="The candidate arm, by its label or its variant key; never the control."
     )
+    pairwise_job: JobId | None = Field(
+        default=None,
+        description="The completed writer_pairwise job over this candidate, whose report is the primary reading; "
+        "without one the read never promotes.",
+    )
 
 
 class WriterPairwiseParams(EvalBaseModel):
@@ -1479,9 +1484,10 @@ async def _writer_case_archive(host: OpsHost, caller: Caller, params: WriterCase
 
 async def _writer_promotion(host: OpsHost, caller: Caller, params: WriterPromotionParams) -> WriterPromotion:
     eval_host = host.eval_host
+    pairwise = None if params.pairwise_job is None else await job_poll(host, params.pairwise_job, caller.scope_id)
     return await run_blocking(
         eval_host.blocking_executor,
-        partial(writer_promotion, candidate=params.candidate),
+        partial(writer_promotion, candidate=params.candidate, pairwise_job=pairwise),
         eval_host,
         params.campaign_id,
         caller.scope_id,
@@ -2729,15 +2735,22 @@ def engine_actions() -> tuple[Action, ...]:
             result=WriterPromotion,
             handler=_writer_promotion,
             render=render.render_model,
-            example={"campaign_id": campaign_id, "candidate": "edited skill"},
+            example={
+                "campaign_id": campaign_id,
+                "candidate": "edited skill",
+                "pairwise_job": "action:0193a1b2-pairwise",
+            },
             detail=(
-                "Gates the candidate's corrected verdicts against the control's and answers promote, keep or "
-                "undecided. Keep when the candidate is shown worse on a reading, or a guardrail is not shown held. "
-                "Undecided when any reading is not decided, and undecided never promotes. Promote when every reading "
-                "is decided and at least one shows the candidate better. It also names the levers the candidate "
-                "changed, the held-out cases read, both arms' costs and the skill this build ships with its ledger "
-                "entry. Refused for arms scored by different judges or rubrics, and for a campaign run over anything "
-                "but held-out writer cases. Records nothing: a person records the call with campaign_record."
+                "Reads one primary reading, the pairwise pass's preference (report_writer.preferred, from the "
+                "completed writer_pairwise job named as pairwise_job), and gates the candidate's other corrected "
+                "verdicts on regression only. Promote when the primary reads improved, no other reading regressed "
+                "and every guardrail is held. Keep when the primary or any other reading regressed, or a guardrail "
+                "is breached. Undecided otherwise, naming the primary's reason (not separated, too few cases, not "
+                "read), and undecided never promotes. It also names the levers the candidate changed, the held-out "
+                "cases read, both arms' costs and the skill this build ships with its ledger entry. Refused for arms "
+                "scored by different judges or rubrics, a campaign run over anything but held-out writer cases, and "
+                "a pairwise job that is not a completed pass over this campaign's candidate, control and judge. "
+                "Records nothing: a person records the call with campaign_record."
             ),
         ),
         Action(
@@ -2761,7 +2774,7 @@ def engine_actions() -> tuple[Action, ...]:
                 "priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under "
                 "purpose judge. Refused in the call, with nothing spent, for arms scored by different judges or "
                 "rubrics, a judge of a writer's family, or a cap that cannot cover the calls. job_poll returns the "
-                "report once the job completes; writer_promotion reads the campaign's other verdicts."
+                "report once the job completes; writer_promotion reads it as its primary reading."
             ),
         ),
         Action(

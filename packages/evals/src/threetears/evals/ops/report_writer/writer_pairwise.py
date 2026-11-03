@@ -803,6 +803,6 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
     )
 
 
-#: The engine's ``writer_pairwise`` action starts the pass for a host. Its report's models are the job's result, read
-#: back as JSON; they join the surface when a reader in the package names them (the promotion read, P2 chunk D).
-__all__ = ["writer_pairwise"]
+#: The engine's ``writer_pairwise`` action starts the pass for a host, and the promotion read
+#: (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`) reads its report back off the job.
+__all__ = ["WriterPairwiseReport", "writer_pairwise"]

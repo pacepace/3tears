@@ -1,11 +1,12 @@
-"""The promotion read: a candidate arm is promoted only when the engine's corrected verdicts show it better.
+"""The promotion read on the campaign's own verdicts, with no pairwise pass named: they gate on regression only.
 
 Each campaign is the toy host's, scripted: a control and a candidate arm measured over its twelve documents, each
 stored as a writer case its mint put on the held-out side, every run naming the held-out set and scored by one judge
-on one rubric. What the candidate measures decides what the engine's verdicts say, and the read answers from those
-verdicts alone: promote when every reading is decided and some is better, keep when one is worse, undecided when any
-reading is not decided. It refuses a campaign run over the dev side, a run naming no case set, and arms scored by
-different judges, and it never records anything.
+on one rubric. What the candidate measures decides what the engine's verdicts say. With no pairwise pass named the
+primary reading (``report_writer.preferred``) is absent, so the read never promotes: it keeps the control when a
+reading is shown worse, and is undecided otherwise, however much better the candidate measures. Promotion on the
+primary reading is ``test_report_writer_promotion_pairwise.py``'s. The read refuses a campaign run over the dev side,
+a run naming no case set, and arms scored by different judges, and it never records anything.
 """
 
 from __future__ import annotations
@@ -65,9 +66,10 @@ def _read(candidate: dict[str, Any], control: dict[str, Any] = CONTROL, **campai
     return writer_promotion(host, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE)
 
 
-def test_a_candidate_shown_better_on_every_reading_is_promoted_with_what_was_read() -> None:
+def test_a_candidate_shown_better_on_every_reading_waits_on_the_primary_reading_and_says_what_was_read() -> None:
     read = _read(BETTER)
-    assert read.decision == "promote", read.why
+    assert read.decision == "undecided", read.why
+    assert read.primary is None and "no pairwise pass was read" in read.why
     assert {verdict.outcome for verdict in read.verdicts if verdict.kind == "contrast"} == {"improved"}
     assert {verdict.arm for verdict in read.verdicts} == {CANDIDATE}
     assert read.candidate == CANDIDATE and read.control == "control"
@@ -87,8 +89,9 @@ def test_a_candidate_shown_worse_on_a_reading_is_kept_out_however_much_better_it
     assert {"improved", "regressed"} <= {verdict.outcome for verdict in read.verdicts}
 
 
-def test_a_reading_left_undecided_never_promotes_even_beside_every_other_reading_improved() -> None:
-    """The judged layout score is not separated while every measure improves: the read stays undecided."""
+def test_a_reading_left_undecided_beside_every_other_reading_improved_is_undecided_with_no_primary() -> None:
+    """The judged layout score is not separated while every measure improves: neither keeps the control, and with
+    no primary reading the read is undecided."""
     read = _read({**BETTER, "layout_fidelity": 4}, {**CONTROL, "layout_fidelity": 2})
     outcomes = [verdict.outcome for verdict in read.verdicts if verdict.kind == "contrast"]
     assert "not_separated" in outcomes and "improved" in outcomes
@@ -123,15 +126,15 @@ def test_the_control_is_no_candidate() -> None:
 def test_the_read_records_no_call() -> None:
     """Promotion is a person's act: the read leaves the campaign as it was."""
     host, campaign_id = promotion_campaign(BETTER)
-    assert writer_promotion(host, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE).decision == "promote"
+    assert writer_promotion(host, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE).decision == "undecided"
     stored = host.storage.load_campaign(campaign_id, TOYHOST_SCOPE)
     assert stored is not None and stored.call is None
 
 
-def test_a_writer_better_on_its_own_measures_and_every_other_reading_is_promoted() -> None:
+def test_a_writer_better_on_its_own_measures_and_every_other_reading_is_read_improved_on_them() -> None:
     control = _writer(bounces=(3.0, 1.0), must_fix=(2.0, 1.0), unfinished=len(TOYHOST_DOCUMENTS))
     read = _read(_JUDGED_HIGH, _JUDGED_LOW, writer=(control, _STEADY_WRITER))
-    assert read.decision == "promote", read.why
+    assert read.decision == "undecided", read.why
     improved = {verdict.name for verdict in read.verdicts if verdict.outcome == "improved"}
     assert {BOUNCES_MEASURE, MUST_FIX_OPEN_MEASURE, FINISHED_MEASURE} <= improved
 

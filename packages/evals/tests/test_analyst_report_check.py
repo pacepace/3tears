@@ -436,7 +436,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: writer_case_archive, writer_promotion).
 #: The evals tool moved again when writer_case_mint gained stratum (the kind of case it is).
 #: The evals tool moved again when writer_pairwise joined it (the pairwise pass over a writer campaign, as a job).
-_EVALS_BYTES = "818b301776b736ecc55ad02a91ee26956c075393ad4a5d999476fe469bda4bf0"
+#: The evals tool moved again when writer_promotion gained pairwise_job (the pass whose report is its primary reading)
+#: and its help came to state the decision rule that reads it.
+_EVALS_BYTES = "04898c5c19241e84da41949f0b1678e0965e60909f06a7d887fde1b025193225"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"
