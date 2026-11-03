@@ -113,14 +113,33 @@ separation needs 120 results.
 
 *Evidence:* seeded simulation, 20 to 140 results, six marginals, 2026-10, `tests/test_simulated_agreement.py`.
 
-### Pairwise judging (declined for now)
+### Pairwise judging (adopted for the report writer only, 2026-11-03)
 
-Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined for now. Every judged score stays a
-single-trial score.
+Decided in [#599](https://github.com/pacepace/3tears/issues/599): declined engine-wide, and that stands. Every judged
+score the engine stores is a single-trial score.
 
-All judging scores one trial alone. For subjective comparisons (tone, style), practitioners find pairwise
-judging with position swap more reliable. It was deliberately not adopted, but "is arm B better than arm
-A" is exactly the pairwise case.
+Reversed for the report writer alone on 2026-11-03. Its promotion read takes a pairwise preference as its primary
+reading, built in `ops/report_writer/` with no engine change
+([pairwise preference for the report writer](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
+The writer is the exception because absolute scores cannot separate its arms:
+
+- its loop revises every page toward the rubric the absolute judge scores, so absolute scores bunch at the top;
+- a judge reading one page cannot see what the page leaves out, and beside another arm's page of the same case an
+  omission shows.
+
+**Why engine-wide pairwise stays declined.** A pair has no per-result value, so every layer that reads one would grow
+a second shape:
+
+- a pair score model, and a core schema bump;
+- a pairwise prompt with its built-in identity;
+- a post-run pass, since a cell never sees the other arm;
+- a pair label key, pair ratings and their agreement;
+- a preference summary, and a fourth comparison reading with its family, words and verdict;
+- a bundle-shape bump, and pair cases in the judge kind.
+
+That is about 2,700 source lines and 1,500 test lines: a program, not a fix. It is not planned. For subjective
+comparisons elsewhere (tone, style), practitioners still find pairwise judging with position swap more reliable, and
+"is arm B better than arm A" is still the pairwise case.
 
 ## Host contract
 
