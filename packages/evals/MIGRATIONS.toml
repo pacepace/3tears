@@ -59,13 +59,13 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.85.0"
+since = "v0.90.0"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
 the names a page prints for them, a reporter case may judge a report plan, and a campaign's report input may be
 frozen for the report analyst's tool, served on a cut of its own. Money is grouped by thousands. No public name
-has moved or been removed since 0.85.0; the durable version and what changed are in `notes`.
+has moved or been removed since 0.90.0; the durable version and what changed are in `notes`.
 """
 notes = [
     "`report_read` (and the campaign's report in every form: markdown, html, static html, json) no longer refuses a campaign whose newest analysis is a memo frozen over a bundle shape this build does not read (a memo frozen at shape 60 on a build reading 64). It returns the code-only page over the campaign's evidence as it stands, led by the one regenerate line with the bundle's shape after it, as a report plan or an unreadable report document already did: `basis` is `code_only`, `analysis_id` the memo's, `needs_regeneration` the line. A host that caught the `RefusedInput` to show \"generate again\" reads `needs_regeneration` instead. `analysis_report`, which reads one analysis by its id, still refuses.",
@@ -125,6 +125,47 @@ notes = [
     "Within the same unreleased shape 65: each corrected `FamilyComparison` gains `interval_basis` (`bounded` or `t`, the method its `interval` was drawn by; left out where it has no interval), so a host reads it instead of comparing `interval` with `bounded_interval`. A comparison whose `p_adjusted` is under alpha while its interval reaches zero (or a rate that has none) is `not_separated` with a `not_separated_reason` saying so, which the report's `Contrast.reason`, its typed `Verdict.reason_detail` and the contrast's words carry. `threetears.evals.kernel.metrics.reads_as_rate` (provisional, new) is the one predicate for what a rate is, which the contrasts, `floor_readings`, `decision_readings` and `rule_rates` read; no reading's standing as a rate moves.",
     "A late criterion names what it applies to: `LateCriterion` (the bundle's `reading_scope.late_criteria[]` and the report input's `caveats.late_criteria[]`) gains `aspect` and `reading`, a late floor's aspect and the reading its clause names, each left out when unset, so a stored input digests as before. A campaign with a late floor, frozen again, carries them, so its `report_input_digest` and its snapshot id move. `late_subject(report_input, late)` (was `late_subject(criterion, name)`) reads them and never splits a floor's key, whose reading may hold a slash; an input built before them names a late floor's aspect by its floors' reads, and no reading. On a page with more than one aspect, or more than one late criterion of a kind, a late criterion's caveat label reads `<criterion> on <measure> in <aspect>` (or on its aspect, or its measure alone) where it read the criterion alone. `arms_compare`'s `ComparisonRow` gains `cases`: the cited cases a paired row's contrast read, whether it paired them, and an unpaired test's control cases. A paired row whose contrast states its cases has `counted_unstated` False and is never `may_be_narrow`, and its basis text says it is paired over that many cases, or unpaired over each side's. A host pinning rendered page text, a compare row or the analyst's help text sees the change; nothing to change otherwise."
 ]
+
+[[release]]
+version = "0.90.0"
+since = "v0.89.0"
+summary = """
+A settling commit evicts its keys from L1 in one write: no 3tears-evals name has moved or been removed since 0.89.0,
+and no judge wording changed.
+"""
+
+[[release]]
+version = "0.89.0"
+since = "v0.88.0"
+summary = """
+A scope read from L3 pages in its index's order, a staged write whose pointer is behind is carried on from L2, a bulk
+read whose part changed while it was read reads it again, and the registry keeps each tool pod's key across a
+restart: no 3tears-evals name has moved or been removed since 0.88.0, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.88.0"
+since = "v0.87.0"
+summary = """
+An answer's JSON is never copied whole in one call: no 3tears-evals name has moved or been removed since 0.87.0, and
+no judge wording changed.
+"""
+
+[[release]]
+version = "0.87.0"
+since = "v0.86.0"
+summary = """
+A held tool server answers its control tools, and tables reach a worker process through a shared-memory hand-off: no
+3tears-evals name has moved or been removed since 0.86.0, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.86.0"
+since = "v0.85.0"
+summary = """
+Shared-memory Arrow between a serving process and its worker processes: no 3tears-evals name has moved or been
+removed since 0.85.0, and no judge wording changed.
+"""
 
 [[release]]
 version = "0.85.0"

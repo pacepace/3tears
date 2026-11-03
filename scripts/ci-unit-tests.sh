@@ -42,7 +42,7 @@ failed=()
 for session in "${SESSIONS[@]}"; do
     # shellcheck disable=SC2086 -- a session is a space-separated list of directories
     echo "::group::pytest ${session}"
-    uv run pytest $session -m "not integration" -n 4 --dist loadgroup "$@"
+    uv run pytest $session -m "not integration and not loop_timing" -n 4 --dist loadgroup "$@"
     status=$?
     echo "::endgroup::"
     # 5 = nothing collected, which a session of only integration tests legitimately is
@@ -50,6 +50,17 @@ for session in "${SESSIONS[@]}"; do
         failed+=("${session} (exit ${status})")
     fi
 done
+
+# the event-loop wall-clock tests, apart and serially: beside busy workers the kernel preempts the thread holding the
+# interpreter lock, and a bound on the code becomes a bound on the runner (release run 41231693608: 34.9 ms against
+# 25.4). 5 = nothing collected.
+echo "::group::pytest loop_timing (serial)"
+uv run pytest packages tests -m "loop_timing and not integration" -n 0 "$@"
+status=$?
+echo "::endgroup::"
+if [ "$status" -ne 0 ] && [ "$status" -ne 5 ]; then
+    failed+=("loop_timing (exit ${status})")
+fi
 
 if [ ${#failed[@]} -gt 0 ]; then
     echo "FAILED sessions:" >&2

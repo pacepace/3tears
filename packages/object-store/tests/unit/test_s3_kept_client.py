@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
 from aiobotocore.session import AioSession  # type: ignore[import-untyped]
 from aiohttp import web
+from botocore.loaders import JSONFileLoader  # type: ignore[import-untyped]
 
 from threetears.object_store.s3 import S3ObjectStore
 
@@ -103,3 +105,25 @@ async def test_a_store_given_a_session_opens_a_client_a_request(endpoint: str, o
     for n in range(3):
         await _read(store, f"part-{n}.parquet")
     assert len(opened) == 3
+
+
+async def test_the_first_client_never_reads_its_service_models_on_the_loop(
+    endpoint: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the s3 and sts models and endpoint rules a client is built from are read on a worker thread before the store's
+    first client opens: read on the loop, the open held it ~50 ms (cobalt prod, 2026-10-31, a load's first export
+    read)."""
+    on_loop: list[str] = []
+    loop_thread = threading.get_ident()
+    load_file = JSONFileLoader.load_file
+
+    def loading(self: Any, file_path: str, *args: Any, **kwargs: Any) -> Any:
+        if threading.get_ident() == loop_thread:
+            on_loop.append(file_path)
+        return load_file(self, file_path, *args, **kwargs)
+
+    monkeypatch.setattr(JSONFileLoader, "load_file", loading)
+    store = _store(endpoint)
+    assert await _read(store, "part-0.parquet") == len(_BODY)
+    await store.aclose()
+    assert on_loop == [], f"read on the event loop: {on_loop}"

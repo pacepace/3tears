@@ -25,6 +25,7 @@ from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
 
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.schema.hashing import canonical_digest
 
 #: The skill's role file, then the modules it tells the analyst to read with it, in the order it names them.
@@ -101,13 +102,14 @@ class AnalystSkill:
     def at(cls, path: str | Path) -> AnalystSkill:
         """A skill read from a directory laid out as the shipped one: a frozen copy, or a variant under test.
 
-        :param path: The skill's root directory; a relative path is read from the working directory.
+        :param path: The skill's root directory; a relative path is read beside the eval file being loaded, else in the
+            working directory.
         :ptype path: str | Path
         :return: The skill, checked whole.
         :rtype: AnalystSkill
         :raises ValueError: When ``path`` is not a directory, or the skill there is not whole.
         """
-        root = Path(path)
+        root = beside_eval_file(path)
         if not root.is_dir():
             raise ValueError(f"no analyst skill directory at {root}: name the directory holding its SKILL.md")
         return cls(files=_read_tree(root))

@@ -1,3 +1,13 @@
+---
+artifact: build-plan
+version: 1
+scope: report-read-memory
+branch: fix/report-read-one-analysis
+depends_on: []
+governed_by: []
+last_validated: 2026-10-30
+---
+
 # Build plan: one report read loads one analysis (#951)
 
 Bugfix / optimization, medium. Branch `fix/report-read-one-analysis` from origin/develop @33d17e405 (0.78.0). No version bump.
@@ -75,17 +85,34 @@ serializer's time is `_links_in_sight` parsing the page it wrote, so it scales w
 
 ## Chunks
 
-1. `load_reported_analysis` on the port and `EvalStorage`; `campaign_report` and `_reported_analysis` use it.
-   Tests: a counting store pins one analysis document read however many are archived; a tracemalloc test pins the
-   peak flat across archived counts. Re-measure.
-2. The fold builder takes the fingerprint already checked. Re-measure.
-3. `trials` option through the campaign page; failed table gains a stored-result column and row anchors in
-   `"table"`. Tests pin the new default exactly and that `"all"` lays out what the page laid out before. Docs:
-   action detail, op docstring, CHANGELOG, MIGRATIONS. Re-measure.
-4. Transport: body once. Test over the fastmcp client: report_read's structured content has no body and its text
-   is the body; another action's structured content is unchanged.
-5. Cache: measure; build or write up.
-6. Docs: the GIL rule beside the executor guidance in the host-adoption docs.
+### Chunk 01: One analysis read
+
+`load_reported_analysis` on the port and `EvalStorage`; `campaign_report` and `_reported_analysis` use it.
+Tests: a counting store pins one analysis document read however many are archived; a tracemalloc test pins the
+peak flat across archived counts. Re-measure. Shipped in #956.
+
+### Chunk 02: The fold builder's fingerprint
+
+The fold builder takes the fingerprint already checked. Re-measure. Shipped in #956.
+
+### Chunk 03: The trials option
+
+`trials` option through the campaign page; failed table gains a stored-result column and row anchors in
+`"table"`. Tests pin the new default exactly and that `"all"` lays out what the page laid out before. Docs:
+action detail, op docstring, CHANGELOG, MIGRATIONS. Re-measure. Shipped in #956.
+
+### Chunk 04: Transport: body once
+
+Transport: body once. Test over the fastmcp client: report_read's structured content has no body and its text
+is the body; another action's structured content is unchanged. Shipped in #956.
+
+### Chunk 05: Cache
+
+Cache: measure; build or write up. Shipped in #956.
+
+### Chunk 06: Docs: the GIL rule
+
+Docs: the GIL rule beside the executor guidance in the host-adoption docs. Shipped in #956.
 
 ## Results
 

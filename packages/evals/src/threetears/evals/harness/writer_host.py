@@ -11,15 +11,16 @@ over the same store, with nothing of the callable host changed:
 - **its launch registry** holds one entry,
   :func:`~threetears.evals.actions.report_writing.launchable_report_writer_kind`, and its template checks admit
   everything, since the writer's launch refuses a template it cannot honour itself;
-- **its scoring judge** is the judge :class:`~threetears.evals.providers.Model` the caller built, lent for the judge
-  role only, as :meth:`~threetears.evals.quick.judged.Judge.clients` lends a judged eval's;
+- **its scoring judge** is the judge model the caller built (the shipped client's ``Model``, or any client that names
+  its route), lent for the judge role only, as :meth:`~threetears.evals.quick.judged.Judge.clients` lends a judged
+  eval's;
 - **its launch settings** run at most two cells of a run at once, with the cost ceilings enforced, so every arm is
   launched naming its share of ``max_cost_usd``.
 
-**A model's family is read from the route it is built on**, never from a table of vendors: a model sent to
-``anthropic`` or ``openai`` is of that provider's family, an OpenRouter id is of the vendor its id names before the
-``/``, and a model on an endpoint of the caller's own (``base_url``) is of no family the host can tell, so its run
-records the check as not made. The judge's route is its ``Model``'s; every writer is built by the model factory on
+**A model's family is read from the route it is built on**, never from a table of vendors: an id that names its vendor
+before a ``/`` (an aggregator's route) is of that vendor's family, any other id is of the provider it is sent to, and
+a model on an endpoint of the caller's own (``base_url``) is of no family the host can tell, so its run records the
+check as not made. The judge's route is its ``Model``'s; every writer is built by the model factory on
 ``writer_provider``.
 
 **Every arm is held to its job's budget before it is priced.** A run's job is given a budget sized as if its cells ran
@@ -35,7 +36,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Protocol
 
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill
@@ -64,12 +65,11 @@ from threetears.evals.ops.report_writer.writer_launch import (
     plan_writer_arm,
     writer_launch_deadline,
 )
-from threetears.evals.providers import Model, Provider, describe_failure
 from threetears.evals.quick.judged import BorrowedJudgeClient
 from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.run import ArmPlan, LaunchHost, LaunchRequest, LaunchSettings
 from threetears.evals.run.jobs import adaptive_job_timeout_s
-from threetears.evals.schema import DocumentStore
+from threetears.evals.schema import CompletionClient, DocumentStore, ProviderFailureDescriber
 from threetears.evals.schema.completion import RequestCeiling
 
 #: The host id the writer host's profile carries.
@@ -79,17 +79,47 @@ _WRITER_HOST_ID: Final = "eval-writer"
 _WRITER_CELLS_AT_ONCE: Final = 2
 
 
-def _family(model_id: str, provider: Provider, base_url: str | None) -> str | None:
-    """A model's family from its route: the provider's, the vendor an OpenRouter id names, or none for an endpoint."""
+class WriterJudge(CompletionClient, Protocol):
+    """The scoring judge the writer host lends: a completion client that names the model it calls and its route.
+
+    The shipped client's ``Model`` is one; typed here by what the host reads, so importing the harness loads no client.
+    """
+
+    @property
+    def model_name(self) -> str:
+        """The model every call goes to, which a launch names as its judge."""
+        ...
+
+    @property
+    def provider(self) -> str:
+        """The provider its calls are sent to."""
+        ...
+
+    @property
+    def base_url(self) -> str | None:
+        """The endpoint of the caller's own it was built on, or ``None`` for its provider's own."""
+        ...
+
+
+def _family(model_id: str, provider: str, base_url: str | None) -> str | None:
+    """A model's family from its route: the vendor its id names before a ``/``, else its provider's; none for an
+    endpoint."""
     if base_url is not None:
         return None
-    if provider == "openrouter":
-        vendor, slash, _ = model_id.partition("/")
-        return vendor if slash and vendor else None
+    vendor, slash, _ = model_id.partition("/")
+    if slash:
+        return vendor or None
     return provider
 
 
-def _lent(judge: Model) -> CompletionClients:
+def _describe_failure() -> ProviderFailureDescriber:
+    """The shipped client's describer, imported when a host is built: the client loads only when a writer host does."""
+    from threetears.evals.providers import describe_failure
+
+    return describe_failure
+
+
+def _lent(judge: WriterJudge) -> CompletionClients:
     """The host's client factory: ``judge``, lent for the judge role on its own model, and nothing else."""
 
     def lend(role: CompletionRole, model: str | None, *, temperature: float | None = None) -> BorrowedJudgeClient:
@@ -112,13 +142,13 @@ def _admit(_checked: object) -> None:
 def writer_ops_host(
     store: DocumentStore,
     *,
-    judge: Model,
+    judge: WriterJudge,
     models: WriterModelFactory,
     budget: ReportBudget,
     request_s: RequestCeiling,
     max_cost_usd: float,
     skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
-    writer_provider: Provider = "anthropic",
+    writer_provider: str = "anthropic",
     max_arms: int = 2,
     identity: str = CREATED_BY,
 ) -> OpsHost:
@@ -128,7 +158,7 @@ def writer_ops_host(
     :ptype store: DocumentStore
     :param judge: The scoring judge, built with its route and its recording; every arm's pages are scored on it, and a
         launch names its ``model_name`` as the judge.
-    :ptype judge: Model
+    :ptype judge: WriterJudge
     :param models: The model factory: an arm's writer, by the model id its launch names and the skill the arm runs, at
         a reasoning effort.
     :ptype models: WriterModelFactory
@@ -141,7 +171,7 @@ def writer_ops_host(
     :param skills: The skill versions a launch may run, by digest; the shipped skill is always one.
     :ptype skills: Mapping[str, AnalystSkill]
     :param writer_provider: The provider the factory builds every writer on, which tells a writer's family.
-    :ptype writer_provider: Provider
+    :ptype writer_provider: str
     :param max_arms: The most arms launched together, and the most runs unfinished at once.
     :ptype max_arms: int
     :param identity: Who the cells' tool calls run as.
@@ -174,7 +204,7 @@ def writer_ops_host(
             kinds=(WRITER_KIND_CONTRACT,),
         ),
         storage=EvalStorage(store),
-        failure_describer=describe_failure,
+        failure_describer=_describe_failure(),
         trace_sink=None,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
@@ -230,6 +260,5 @@ def writer_ops_host(
     return host
 
 
-#: ``writer_ops_host`` joins ``__all__`` with its first caller outside this module, the quick path's writer eval; until
-#: then the public-API caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) would read it as test-only.
-__all__: list[str] = []
+#: The writer eval builds its host here, its judge typed as the host reads it.
+__all__ = ["WriterJudge", "writer_ops_host"]

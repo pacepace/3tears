@@ -1,7 +1,7 @@
 """Portable writer cases: a campaign frozen to a file, read back, and minted as a writer case in another store's scope.
 
 A writer eval ships its cases beside itself, so a case must leave the store it was frozen in. A
-:class:`~threetears.evals.quick.writer_cases.WriterCaseFile` is one frozen report snapshot and what minting it names
+:class:`~threetears.evals.harness.writer_cases.WriterCaseFile` is one frozen report snapshot and what minting it names
 (its group, its stratum, the notes it withholds), as one gzipped JSON file:
 
 - **A quick campaign travels.** A comparison run on scripted runners in a memory store is frozen through its own
@@ -11,12 +11,15 @@ A writer eval ships its cases beside itself, so a case must leave the store it w
 - **A stratum is metadata**: minting the same case under another stratum relabels it in place; the engine's mint
   action carries the stratum as the operation does.
 - **A skill loads from a directory** (``AnalystSkill.at``), and ``with_file`` makes a variant under its own digest.
+- **A relative path is the eval file's**: the skill directory and the case directory an eval file names are read beside
+  it, as its ``Eval``'s cases and its recordings are, whatever the working directory.
 
 Mutations that turn this file red: the file's bytes carrying a timestamp; a reader that drops or re-derives a field;
 the snapshot restored under the source scope, or minted under another id; the stratum not stored on the case, or
 dropped from the receipt or the action; a reader branching on the snapshot's source, so one of the two fails; two
 cases of one name read from one directory; ``at`` reading another tree than the one named; ``with_file`` keeping the
-old digest or adding a file it should refuse.
+old digest or adding a file it should refuse; ``at`` or the case reader resolving a relative path in the working
+directory while an eval file loads.
 """
 
 from __future__ import annotations
@@ -37,7 +40,8 @@ from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.writer_bank import WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import writer_case_of
-from threetears.evals.quick.writer_cases import WriterCaseFile, read_writer_cases, writer_case_freeze
+from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases, writer_case_freeze
+from threetears.evals.kernel.eval_file import loading_eval_file
 
 #: The quick eval's own scope, never the writer host's.
 SOURCE_SCOPE = "writer-cases-source"
@@ -265,3 +269,28 @@ class TestASkillLoadsFromADirectory:
             AnalystSkill.at(tmp_path)
         with pytest.raises(ValueError, match="holds no file 'skill.md' to replace"):
             load_skill().with_file("skill.md", "a typo of SKILL.md")
+
+
+class TestRelativePathsReadBesideTheEvalFile:
+    def test_the_skill_and_the_cases_an_eval_file_names_are_read_beside_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        shipped, example = load_skill(), tmp_path / "example"
+        for name, text in shipped.files.items():
+            (example / "skills" / "control" / name).parent.mkdir(parents=True, exist_ok=True)
+            (example / "skills" / "control" / name).write_text(text, encoding="utf-8")
+        misfit = _misfit_case()
+        misfit.write(example / "cases" / "r1.json.gz")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        with loading_eval_file(example / "writer.py"):
+            assert AnalystSkill.at("skills/control").digest == shipped.digest
+            assert read_writer_cases("cases") == (misfit,)
+            assert WriterCaseFile.read("cases/r1.json.gz") == misfit
+        # Outside a load, a relative path is the working directory's, which holds neither.
+        with pytest.raises(ValueError, match="no analyst skill directory"):
+            AnalystSkill.at("skills/control")
+        with pytest.raises(ValueError, match="no writer case directory"):
+            read_writer_cases("cases")

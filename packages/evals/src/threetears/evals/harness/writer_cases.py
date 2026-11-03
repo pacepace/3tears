@@ -32,6 +32,7 @@ from typing import Literal
 from pydantic import Field
 
 from threetears.evals.kernel.errors import NotFoundError
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.report_snapshot import FIND_SNAPSHOT, EvalReportSnapshot
 from threetears.evals.ops.analyst import report_snapshot_freeze, report_snapshot_restore
@@ -95,14 +96,15 @@ class WriterCaseFile(EvalBaseModel):
     def read(cls, path: str | Path) -> WriterCaseFile:
         """Read a case from its file, whatever source its snapshot was frozen from.
 
-        :param path: The file.
+        :param path: The file; a relative path is read beside the eval file being loaded, else in the working
+            directory.
         :ptype path: str | Path
         :return: The case, its snapshot's identity checked.
         :rtype: WriterCaseFile
         :raises ValueError: When the file is not gzip, or its content does not read as a writer case of this format.
         :raises OSError: When the file cannot be opened.
         """
-        source = Path(path)
+        source = beside_eval_file(path)
         try:
             return cls.from_json(gzip.decompress(source.read_bytes()).decode("utf-8"))
         except (gzip.BadGzipFile, EOFError, zlib.error, ValueError) as unread:
@@ -202,14 +204,15 @@ async def writer_case_freeze(
 def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
     """Every writer case file in a directory, by file name.
 
-    :param directory: The directory; only its ``*.json.gz`` files are read, and not its subdirectories.
+    :param directory: The directory; only its ``*.json.gz`` files are read, and not its subdirectories. A relative
+        path is read beside the eval file being loaded, else in the working directory.
     :ptype directory: str | Path
     :return: The cases, in file-name order.
     :rtype: tuple[WriterCaseFile, ...]
     :raises ValueError: When it is not a directory, holds no case file, holds one that does not read, or holds two
         cases of one name.
     """
-    root = Path(directory)
+    root = beside_eval_file(directory)
     if not root.is_dir():
         raise ValueError(f"no writer case directory at {root}")
     paths = sorted(path for path in root.glob(f"*{WRITER_CASE_SUFFIX}") if path.is_file())
@@ -224,10 +227,5 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
     return cases
 
 
-__all__ = [
-    "WRITER_CASE_SUFFIX",
-    "WriterCaseFile",
-    "WriterCaseFormat",
-    "read_writer_cases",
-    "writer_case_freeze",
-]
+#: The writer eval reads a case directory and mints each case; the freeze and the format's names wait for a caller.
+__all__ = ["WriterCaseFile", "read_writer_cases"]

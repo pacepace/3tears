@@ -5,9 +5,10 @@ properties keep it a client the engine never depends on:
 
 * **The engine never imports it.** No module of the package outside ``providers/`` names it, by an import
   statement or by a string a dynamic import could use, except the package root's declarations (``PUBLIC_ROOTS``, and
-  ``_LAZY_EXPORTS``, which loads ``Model`` by name on first read) and ``quick``'s imports inside a function body (the
-  batteries build the client's ``Model`` where an eval names a model by id, and only then); and importing every other
-  public root in a fresh interpreter does not load it. A host that brings its own client never loads this one.
+  ``_LAZY_EXPORTS``, which loads ``Model`` by name on first read) and ``quick``'s and ``harness``'s imports inside a
+  function body (the batteries build the client's ``Model`` where an eval names a model by id, and the writer harness
+  where it records a missing case, and only then); and importing every other public root, and every harness module,
+  in a fresh interpreter does not load it. A host that brings its own client never loads this one.
 * **It imports only public names of the engine.** Every reach into ``threetears.evals`` from it goes through a public
   root's ``__all__`` (:func:`nonpublic_engine_reaches`), so the client is held to exactly what a host is.
 * **It depends on nothing but ``httpx`` and pydantic.** No provider SDK, no LangChain, and no other 3tears package:
@@ -89,12 +90,18 @@ def _inside_functions(tree: ast.Module) -> set[int]:
     return nested
 
 
+#: The packages that build the client's ``Model`` inside a function body, and only there: the batteries, and the
+#: writer harness above them.
+_BUILDS_A_MODEL_ON_CALL = frozenset({"quick", "harness"})
+
+
 def engine_reaches(source_root: Path) -> Iterator[str]:
     """Every place a module outside ``providers/`` names the client: an import, or a string naming its module.
 
     The package root's declarations are not reaches, nor is an import the root makes for the type checker alone, nor
-    one ``quick`` makes inside a function body: the batteries build the client's ``Model`` where an eval names a model
-    by id, so importing ``quick`` loads no client (:func:`test_importing_every_other_root_loads_no_client`).
+    one ``quick`` or ``harness`` makes inside a function body: the batteries build the client's ``Model`` where an eval
+    names a model by id, and the writer harness where it records a missing case, so importing either loads no client
+    (:func:`test_importing_every_other_root_loads_no_client`, :func:`test_importing_the_harness_loads_no_client`).
 
     :param source_root: The directory holding the ``threetears`` namespace; ``threetears/evals`` below it is walked.
     :ptype source_root: Path
@@ -110,7 +117,7 @@ def engine_reaches(source_root: Path) -> Iterator[str]:
         is_root = relative == Path("__init__.py")
         declaration = _root_declarations(tree) if is_root else set()
         checker_only = _under_type_checking(tree) if is_root else set()
-        on_call = _inside_functions(tree) if relative.parts[0] == "quick" else set()
+        on_call = _inside_functions(tree) if relative.parts[0] in _BUILDS_A_MODEL_ON_CALL else set()
         for node in ast.walk(tree):
             if id(node) in checker_only or id(node) in on_call:
                 continue
@@ -278,6 +285,31 @@ def test_importing_every_other_root_loads_no_client() -> None:
     assert proc.returncode == 0, f"importing the engine's roots loaded the completion client:\n{proc.stderr}"
 
 
+#: Imports every module of the writer harness in a fresh interpreter, then reports whether the client was loaded.
+_HARNESS_PROBE = (
+    "import importlib, pkgutil, sys, threetears.evals.harness as h\n"
+    "for module in pkgutil.iter_modules(h.__path__, h.__name__ + '.'):\n"
+    "    importlib.import_module(module.name)\n"
+    f"loaded = sorted(n for n in sys.modules if n == {PROVIDERS!r} or n.startswith({PROVIDERS + '.'!r}))\n"
+    "assert not loaded, loaded\n"
+    "print(len(list(pkgutil.iter_modules(h.__path__))))\n"
+)
+
+
+def test_importing_the_harness_loads_no_client() -> None:
+    """The writer harness is no public root yet, so the probe above never imports it: every module of it, alone."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _HARNESS_PROBE],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert proc.returncode == 0, f"importing the writer harness loaded the completion client:\n{proc.stderr}"
+    assert int(proc.stdout) >= 3, "the probe imported no harness module"
+
+
 # --- each rule refuses what it should ------------------------------------------------------------------
 
 
@@ -302,6 +334,8 @@ def test_importing_every_other_root_loads_no_client() -> None:
         ("__init__.py", "from threetears.evals.providers import Model\n", True),
         ("quick/planted.py", "def build():\n    from threetears.evals.providers import Model\n", False),
         ("quick/planted.py", "from threetears.evals.providers import Model\n", True),
+        ("harness/planted.py", "def build():\n    from threetears.evals.providers import Model\n", False),
+        ("harness/planted.py", "from threetears.evals.providers import Model\n", True),
         ("run/planted.py", "def build():\n    from threetears.evals.providers import Model\n", True),
         ("__init__.py", "OTHER = 'threetears.evals.providers'\n", True),
     ],

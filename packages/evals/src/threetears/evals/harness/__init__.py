@@ -1,15 +1,29 @@
-"""The harness: the report writer evaluated as the thing under test, on the package's own store, from recordings.
+"""The writer harness: the report writer measured as the thing under test, over the quick path's own store.
 
 The quick path (:mod:`threetears.evals.quick`) evaluates a callable; this package evaluates the report writer, the
-analyst and its editor that write a campaign's page. It sits above ``quick`` and composes the engine's writer
-machinery (``ops``, ``actions``) with the quick path's store:
+analyst and its editor that write a campaign's page. An eval file imports its names from here:
 
-- :class:`WriterEval` is the eval: arms of :class:`Writer` (a model, an :class:`AnalystSkill`, an effort) over a
-  directory of portable writer cases, replayed from turn recordings, filed as one campaign and read for promotion;
-  ``await writer_eval.run()`` returns a :class:`WriterResult`, and ``python -m threetears.evals FILE`` runs every
-  writer eval a file defines.
+- :class:`WriterEval` is the eval: arms of :class:`Writer` (a model, an :class:`AnalystSkill`, an effort, its
+  revisions) over a directory of portable writer cases, replayed from turn recordings, filed as one campaign and read
+  for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`; ``python -m threetears.evals FILE``
+  runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them.
+
+Four modules build it, each for one part of a writer eval:
+
+- :mod:`~threetears.evals.harness.writer_eval`: the eval, its arms and its result;
+- :mod:`~threetears.evals.harness.writer_host`: a host that launches report writer arms over a store, beside the
+  quick host's runs in it;
+- :mod:`~threetears.evals.harness.writer_turns`: an arm's writer models, replayed from one recording per case, or
+  recorded once;
+- :mod:`~threetears.evals.harness.writer_cases`: a writer case frozen into a portable file, read back and minted
+  into any scope.
+
+This package sits above ``quick``: it composes the quick path with the surfaces above the engine (``ops``,
+``actions``) and the replay format (``testing``), and nothing in the package imports it. It may import ``schema``,
+``kernel``, ``run``, ``analysis``, ``storage``, ``testing``, ``quick``, ``ops``, ``actions`` and itself, and
+``providers`` only as ``quick`` does, inside the function that builds a ``Model``, so importing it loads no client.
 
 **This module is the package's public root.** An eval file imports from here and from no module below it, and only
 the names in ``__all__``.
@@ -18,8 +32,9 @@ the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText
+from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
 from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterResult, WriterSide
-from threetears.evals.quick.writer_cases import WriterCaseFile, read_writer_cases
+from threetears.evals.harness.writer_host import WriterJudge
 
 __all__ = [
     "AnalystSkill",
@@ -27,6 +42,7 @@ __all__ = [
     "Writer",
     "WriterCaseFile",
     "WriterEval",
+    "WriterJudge",
     "WriterResult",
     "WriterSide",
     "read_writer_cases",

@@ -580,7 +580,7 @@ _SHARED_CONTRACT_TYPES: dict[str, tuple[str, ...]] = {}
 #: adapter. Each exists to serve every host, so a host noun in either would be a leak. ``quick``, the
 #: batteries (``Eval`` and the command line), is whole from birth on the same terms, and so are the
 #: surfaces an agent drives the engine through — ``ops``, ``actions`` and ``transports`` — which every
-#: host mounts.
+#: host mounts, and ``harness``, the writer harness above ``quick``, which every writer eval runs on.
 #:
 #: ``providers``, the provider adapter the package ships as an optional extra, is whole from birth on the same
 #: terms: it serves every host that brings no client of its own. It names the providers it builds clients for,
@@ -600,6 +600,7 @@ _SHARED_CONTRACT_TREES: tuple[str, ...] = (
     "storage",
     "testing",
     "quick",
+    "harness",
     "ops",
     "actions",
     "transports",

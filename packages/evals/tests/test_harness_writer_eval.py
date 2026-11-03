@@ -24,13 +24,13 @@ from packages.evals.tests.writer_case_support import SEED
 from threetears.evals import Eval
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel import EvalStorage
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult
+from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES
 from threetears.evals.providers import Model
-from threetears.evals.quick.writer_cases import writer_case_freeze
-from threetears.evals.quick.writer_turns import KEY_VARIABLE, writer_turns
+from threetears.evals.harness.writer_cases import writer_case_freeze
+from threetears.evals.harness.writer_turns import KEY_VARIABLE, writer_turns
 from threetears.evals.schema.turns import TurnText
 from threetears.evals.storage import SqliteDocumentStore
 
@@ -132,13 +132,16 @@ def _silent_lines(turns: int) -> list[dict[str, Any]]:
     return lines
 
 
-def _recordings(directory: Path, arms: dict[str, Writer], *, extra: str | None = None) -> None:
+def _recordings(directory: Path, cases: Path, arms: dict[str, Writer], *, extra: str | None = None) -> None:
     """Lay a silent recording for every held-out case of every arm; ``extra`` gets one line no replay asks."""
+    held_out = {case.snapshot.id: case.name for case in read_writer_cases(cases) if case.name in HELD_OUT}
+    assert sorted(held_out.values()) == sorted(HELD_OUT)
     for arm, writer in arms.items():
-        assert writer.skill is not None
-        routed = writer_turns(directory, arm=arm, skill=writer.skill, cases={name: name for name in HELD_OUT})
-        for name in HELD_OUT:
-            path = routed.path(WRITER, None, name)
+        routed = writer_turns(
+            directory, arm=arm, skill=writer.analyst_skill, cases=held_out, revisions=writer.revisions
+        )
+        for snapshot, name in held_out.items():
+            path = routed.path(WRITER, None, snapshot)
             path.parent.mkdir(parents=True, exist_ok=True)
             lines = _silent_lines(SILENT_TURNS + (1 if arm == extra and name == "r1" else 0))
             path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
@@ -192,7 +195,7 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
     arms = _arms()
     _case_files(tmp_path / "cases")
     await _quick_case_file(tmp_path / "cases")
-    _recordings(tmp_path / "turns", arms, extra="variant")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, extra="variant")
 
     result = await _eval(tmp_path, arms).run()
 

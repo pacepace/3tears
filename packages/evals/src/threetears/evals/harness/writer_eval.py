@@ -35,7 +35,7 @@ request_s  turns = 40   no turn cap
 =========  ===========  ===========
 
 **A recorded arm runs each case once.** Each case's sessions replay from one file per arm
-(``<recordings>/<arm>-<skill12>-<model>-<effort>/<case>.jsonl``), with no key; a missing file is recorded when
+(``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>/<case>-<snapshot12>.jsonl``), with no key; a missing file is recorded when
 ``ANTHROPIC_API_KEY`` is set and refused before anything runs when it is not. After the arms have run, each session a
 replay left recorded lines of is printed with the result: the code now stops sooner than it did when it was recorded.
 
@@ -57,7 +57,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import Any, Literal, get_args
 
 from threetears.evals.analysis import (
     CampaignReport,
@@ -89,24 +89,24 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterModelFactory,
     WriterModels,
 )
-from threetears.evals.ops.report_writer.loop import TurnModel
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.quick.contract import StoreSpec, open_store
 from threetears.evals.quick.result import CREATED_BY
-from threetears.evals.quick.writer_cases import WriterCaseFile, read_writer_cases
-from threetears.evals.quick.writer_host import writer_ops_host
-from threetears.evals.quick.writer_turns import KEY_VARIABLE, WriterTurns, writer_turns
+from threetears.evals.harness.writer_cases import WriterCaseFile, read_writer_cases
+from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
+from threetears.evals.harness.writer_turns import KEY_VARIABLE, WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
-
-if TYPE_CHECKING:
-    from threetears.evals.providers import Model, Provider
 
 #: Which side of the split a writer eval launches on.
 WriterSide = Literal["held_out", "dev"]
 
 #: The effort lever's id, as the writer's overlays name it.
 _EFFORT_LEVER = f"{WRITER_KIND}.reasoning_effort"
+
+#: The revisions lever's id, as the writer's overlays name it.
+_REVISIONS_LEVER = f"{WRITER_KIND}.revisions"
 
 #: The efforts a writer may name.
 _EFFORTS: frozenset[str] = frozenset(get_args(EffortWord))
@@ -127,17 +127,21 @@ class Writer:
         variant of one (``.with_file(name, text)``); ``None`` for the skill this build ships.
     :ivar effort: The reasoning effort every turn is sent at (``low``, ``medium``, ``high`` ...); ``None`` for the
         model's own.
+    :ivar revisions: The revisions the analyst is given after a review that does not clear its report.
     """
 
     model_id: str
     skill: AnalystSkill | None = None
     effort: str | None = None
+    revisions: int = MOST_REVISIONS
 
     def __post_init__(self) -> None:
         if not self.model_id.strip():
             raise ValueError("a Writer names its model by id, and this one is blank")
         if self.effort is not None and self.effort not in _EFFORTS:
             raise ValueError(f"effort {self.effort!r} is none of {', '.join(get_args(EffortWord))}")
+        if not 0 <= self.revisions <= MOST_REVISIONS:
+            raise ValueError(f"a Writer's revisions are 0 to {MOST_REVISIONS}, not {self.revisions}")
 
     @property
     def analyst_skill(self) -> AnalystSkill:
@@ -287,7 +291,7 @@ class WriterEval:
         cases_dir: str | os.PathLike[str],
         *,
         arms: Mapping[str, Writer],
-        judge: Model,
+        judge: WriterJudge,
         recordings: str | os.PathLike[str],
         budget_usd: float,
         max_cost_usd: float,
@@ -297,7 +301,7 @@ class WriterEval:
         turns: int = 40,
         request_s: float = 120.0,
         margin: float = 5.0,
-        writer_provider: Provider = "anthropic",
+        writer_provider: str = "anthropic",
         store: StoreSpec = None,
         scope: str | None = None,
     ) -> None:
@@ -306,10 +310,10 @@ class WriterEval:
         :param cases_dir: The directory of writer case files (``*.json.gz``); relative, it is read beside the eval file
             being loaded.
         :ptype cases_dir: str | os.PathLike[str]
-        :param arms: The arms, by name; the first is the control. At least two, no two alike.
+        :param arms: The arms, by name; the first is the control. At least two, no two on one model, skill and effort.
         :ptype arms: Mapping[str, Writer]
         :param judge: The scoring judge, of another family than the writers, with its recording.
-        :ptype judge: Model
+        :ptype judge: WriterJudge
         :param recordings: The directory every arm's turn recordings sit under, read beside the eval file.
         :ptype recordings: str | os.PathLike[str]
         :param budget_usd: Each report's dollar cap.
@@ -330,13 +334,13 @@ class WriterEval:
             worse.
         :ptype margin: float
         :param writer_provider: The provider every writer is built on, which tells a writer's family.
-        :ptype writer_provider: Provider
+        :ptype writer_provider: str
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
         :ptype store: StoreSpec
         :param scope: The scope; ``None`` is ``name``.
         :ptype scope: str | None
-        :raises ValueError: Fewer than two arms, two arms alike, a name too long for a campaign, or a share, budget,
+        :raises ValueError: Fewer than two arms, two arms on one model, skill and effort, a name too long for a campaign, or a share, budget,
             turn cap or ceiling that is not above 0.
         """
         if len(arms) < 2:
@@ -345,7 +349,12 @@ class WriterEval:
         for arm, writer in arms.items():
             key = (writer.model_id, writer.analyst_skill.digest, writer.effort)
             if (twin := conditions.get(key)) is not None:
-                raise ValueError(f"arms {twin!r} and {arm!r} run one model, skill and effort, which is one arm")
+                # The launcher hands the model factory the model, the skill and the effort, never the revisions, so
+                # two arms alike in those three could not be told apart when a cell's recording is found.
+                raise ValueError(
+                    f"arms {twin!r} and {arm!r} run one model, skill and effort, which tells no cell's recording apart; "
+                    "vary one of the three, or compare their revisions in two evals"
+                )
             conditions[key] = arm
         if not 0 < held_out_fraction < 1:
             raise ValueError(f"held_out_fraction is a share strictly between 0 and 1, not {held_out_fraction}")
@@ -372,7 +381,7 @@ class WriterEval:
         self.side: WriterSide = side
         self.request_s = request_s
         self.margin = margin
-        self.writer_provider: Provider = writer_provider
+        self.writer_provider = writer_provider
         self.store = store
         self.scope_id = name if scope is None else scope
 
@@ -422,7 +431,10 @@ class WriterEval:
         case_set = await run_blocking(eval_host.blocking_executor, self._case_set, host, on_side)
         named = {receipt.snapshot_id: case.name for case, receipt in on_side}
         for arm in self.arms:
-            turns[arm] = writer_turns(self.recordings, arm=arm, skill=self.arms[arm].analyst_skill, cases=named)
+            writer = self.arms[arm]
+            turns[arm] = writer_turns(
+                self.recordings, arm=arm, skill=writer.analyst_skill, cases=named, revisions=writer.revisions
+            )
         held_elsewhere = await run_blocking(
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
         )
@@ -490,14 +502,14 @@ class WriterEval:
         recording = bool(os.environ.get(KEY_VARIABLE))
         for arm, routed in turns.items():
             writer = self.arms[arm]
-            paths = [routed.path(writer.model_id, _effort(writer), case) for case in named.values()]
+            paths = [routed.path(writer.model_id, _effort(writer), snapshot) for snapshot in named]
             missing = [path for path in paths if not path.is_file()]
             if missing and not recording:
                 raise ValueError(
                     f"arm {arm!r} has no turn recording for {len(missing)} of {len(paths)} case(s) ({missing[0]} first), "
                     f"and {KEY_VARIABLE} is not set to record them; restore the files, or set it to record them once"
                 )
-            folder = paths[0].parent if paths else self.recordings
+            folder = routed.directory(writer.model_id, _effort(writer))
             done = len(paths) - len(missing)
             said.append(
                 f"{arm}: writer turns replayed from {folder}"
@@ -519,7 +531,11 @@ class WriterEval:
             "k_runs": 1,
             "case_set": case_set,
             "judge_model": self.judge.model_name,
-            "overlays": {"skill": writer.analyst_skill.digest, "reasoning_effort": writer.effort},
+            "overlays": {
+                "skill": writer.analyst_skill.digest,
+                "reasoning_effort": writer.effort,
+                "revisions": writer.revisions,
+            },
         }
 
     def _declared(
@@ -537,7 +553,7 @@ class WriterEval:
         control, *candidates = self.arms
         levels = {arm: _levels(writer) for arm, writer in self.arms.items()}
         axes = []
-        for lever in (SKILL_LEVER, _EFFORT_LEVER, CANDIDATE_MODEL_LEVER):
+        for lever in (SKILL_LEVER, _EFFORT_LEVER, _REVISIONS_LEVER, CANDIDATE_MODEL_LEVER):
             values = dict.fromkeys(levels[arm][lever] for arm in self.arms)
             if len(values) > 1:
                 shown = {value: next(arm for arm in self.arms if levels[arm][lever] == value) for value in values}
@@ -603,6 +619,7 @@ def _levels(writer: Writer) -> dict[str, str]:
     return {
         SKILL_LEVER: writer.analyst_skill.digest,
         _EFFORT_LEVER: writer.effort or "default",
+        _REVISIONS_LEVER: str(writer.revisions),
         CANDIDATE_MODEL_LEVER: writer.model_id,
     }
 
@@ -616,8 +633,8 @@ def _routed(arms: Mapping[str, Writer], turns: Mapping[str, WriterTurns]) -> Wri
     """The host's model factory: each cell's writer, routed to its arm's recordings by model, skill and effort.
 
     The launcher hands the factory the candidate model and the arm's skill, and the cell's effort after; those three
-    are what tell the arms apart (no two arms share all three), so they find the arm whose recordings the cell replays.
-    ``turns`` is filled once the cases are minted, before any arm is launched.
+    are what tell the arms apart (no two arms share all three), so they find the arm whose recordings the cell replays,
+    whose own factory refuses any other skill. ``turns`` is filled once the cases are minted, before any arm launches.
     """
 
     def factory(model: str, skill: AnalystSkill) -> WriterModels:
@@ -633,7 +650,7 @@ def _routed(arms: Mapping[str, Writer], turns: Mapping[str, WriterTurns]) -> Wri
             arm = by_effort.get(effort)
             if arm is None:
                 raise ValueError(f"no arm writes on {model!r} with skill {skill.digest[:12]} at effort {effort!r}")
-            return turns[arm](model)(effort)
+            return turns[arm](model, skill)(effort)
 
         return at
 
