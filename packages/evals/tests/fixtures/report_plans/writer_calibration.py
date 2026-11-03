@@ -40,7 +40,7 @@ import os
 import re
 import sys
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -74,6 +74,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     EDITOR_ROUNDS_MEASURE,
     MUST_FIX_OPEN_MEASURE,
     SHOULD_FIX_OPEN_MEASURE,
+    WRITER_KIND,
     WriterOverlays,
     writer_scoring_rubric,
 )
@@ -82,6 +83,7 @@ from threetears.evals.providers import Model
 from threetears.evals.run import (
     EvalRunCostCap,
     JudgeCaseFreezeReport,
+    BudgetStoppedError,
     RunnerOptions,
     execute_run,
     freeze_judge_cases,
@@ -276,6 +278,10 @@ def absolute_cases(found: Sequence[Page]) -> list[AuthoredJudgeCase]:
         if len(items) != len(rubric):
             raise ValueError(f"{page.run} round {page.round}'s review scores {len(items)} items, not {len(rubric)}")
         for dim, item in zip(rubric, items, strict=True):
+            if dim.name != f"{WRITER_KIND}.{str(item['name']).lower().replace(' ', '_')}":
+                raise ValueError(
+                    f"{page.run} round {page.round}'s item {item['n']} is {item['name']!r}, not {dim.name}"
+                )
             cases.append(
                 AuthoredJudgeCase(
                     criterion=dim,
@@ -365,11 +371,8 @@ _KEY: Final = re.compile(r'single key "([^"]+)"')
 
 
 # parity-with: threetears.evals.schema.CompletionClient
-@dataclass
 class FakeDryJudge:
     """A judge that reads nothing: its score is a digest of the prompt, so the readout runs and measures no signal."""
-
-    calls: list[str] = field(default_factory=list)
 
     async def generate(
         self, *, system: str, user: str, response_format: dict[str, str] | None = None
@@ -377,7 +380,6 @@ class FakeDryJudge:
         match = _KEY.search(system)
         if match is None:
             raise ValueError("the built-in judge prompt names no score key")
-        self.calls.append(match.group(1))
         score = 1 + int(hashlib.sha256(user.encode()).hexdigest(), 16) % 5
         reply = {"reasoning": "dry: a digest of the prompt, not a reading", "criteria_scores": {match.group(1): score}}
         return ToyJudgeCompletion(
@@ -421,10 +423,40 @@ def _keys(judges: Sequence[str]) -> dict[str, str]:
     return keys
 
 
+#: What one call of each set reads, against an absolute call: a pair call reads two pages.
+CALL_WEIGHT: Final = {ABSOLUTE_SET: 1, PAIR_SET: 2}
+
+
+@dataclass(frozen=True)
+class Arm:
+    """One judge's run over one case set: the cases, the trials it landed, and why it stopped early, if it did."""
+
+    judge: str
+    case_set: str
+    cases: int
+    trials: int
+    stopped: str | None
+
+
+def arm_caps(frozen: dict[str, JudgeCaseFreezeReport], judges: Sequence[str], cap_usd: float) -> dict[str, float]:
+    """Each case set's share of one judge's part of ``cap_usd``, by the calls it plans weighted by :data:`CALL_WEIGHT`.
+
+    :param frozen: The freezes, by case set.
+    :param judges: The judges, each given an equal part.
+    :param cap_usd: The whole run's cap.
+    :return: Each case set's cap for one judge's arm over it.
+    """
+    weights = {name: len(report.cases) * CALL_WEIGHT[name] for name, report in frozen.items()}
+    total = sum(weights.values())
+    return {name: cap_usd / len(judges) * weight / total for name, weight in weights.items()}
+
+
 async def judge_arm(
     host: EvalHost, report: JudgeCaseFreezeReport, *, judge: str, k: int, cap_usd: float | None
-) -> list[EvalResult]:
-    """One judge's run over one frozen case set, through the engine's runner; its results.
+) -> tuple[list[EvalResult], Arm]:
+    """One judge's run over one frozen case set, through the engine's runner; its results and what it ran.
+
+    An arm its cap stops keeps what it landed, and says it stopped.
 
     :param host: The judge host, the cases frozen on its store.
     :param report: The case set's freeze.
@@ -455,18 +487,23 @@ async def judge_arm(
         failure_describer=withhold_failure_detail,
     )
     cap = None if cap_usd is None else EvalRunCostCap(run.id, cap_usd, enabled=True)
+    stopped: str | None = None
     async with kind:
-        await execute_run(
-            host,
-            run=run,
-            template=JUDGE_TEMPLATE,
-            test_cases=cases,
-            judge_service=None,
-            options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
-            budget_gate=None if cap is None else cap.check,
-            on_cost=None if cap is None else cap.record,
-        )
-    return await asyncio.to_thread(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+        try:
+            await execute_run(
+                host,
+                run=run,
+                template=JUDGE_TEMPLATE,
+                test_cases=cases,
+                judge_service=None,
+                options=RunnerOptions(candidate_kinds={JUDGE_KIND: lambda _cell: kind}),
+                budget_gate=None if cap is None else cap.check,
+                on_cost=None if cap is None else cap.record,
+            )
+        except BudgetStoppedError as cut:  # the arm's cap: what it landed is kept and read, and the stop is reported
+            stopped = str(cut)
+    results = await asyncio.to_thread(host.storage.query_eval_results_by_run, run.id, TOYHOST_SCOPE)
+    return results, Arm(judge, report.case_set.name, len(case_ids), len(results), stopped)
 
 
 def agreement_rows(readings: JudgeKindReadings) -> list[dict[str, Any]]:
@@ -499,14 +536,22 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
-def readout(rows: Sequence[dict[str, Any]], left: Sequence[LeftOut]) -> Iterator[str]:
-    """The printed readout: agreement with the Opus editor per judge and criterion, then every round left out."""
+def readout(rows: Sequence[dict[str, Any]], arms: Sequence[Arm], left: Sequence[LeftOut]) -> Iterator[str]:
+    """The printed readout: agreement with the Opus editor per judge and criterion, each arm's trials, then every
+    round left out."""
     yield "Agreement with the Opus editor (an agent's labels; no judge profile is recorded from them)."
     yield ""
     yield "| Judge | Criterion | Cases | Parse rate | κ | Weighted κ | Weighted κ bounds | Self κ |"
     yield "|---|---|---|---|---|---|---|---|"
     for row in rows:
         yield "| " + " | ".join(_cell(row[key]) for key in row) + " |"
+    yield ""
+    yield f"Each pair of rounds is two {PAIR_SET} cases, one per order, so its bounds count each pair twice."
+    yield ""
+    yield "| Judge | Case set | Cases | Trials | Stopped early |"
+    yield "|---|---|---|---|---|"
+    for arm in arms:
+        yield f"| {arm.judge} | {arm.case_set} | {arm.cases} | {arm.trials} | {arm.stopped or 'no'} |"
     if left:
         yield ""
         yield "| Round left out | Why |"
@@ -524,6 +569,7 @@ class Calibration:
     :ivar host: The judge host the cases are frozen on and the arms ran on.
     :ivar frozen: Each case set's freeze, by name.
     :ivar results: Every judge arm's results.
+    :ivar arms: What each judge arm ran.
     :ivar readings: The arms read per judge and criterion.
     """
 
@@ -532,10 +578,11 @@ class Calibration:
     host: EvalHost
     frozen: dict[str, JudgeCaseFreezeReport]
     results: list[EvalResult]
+    arms: list[Arm]
     readings: JudgeKindReadings
 
     def summary(self, *, dry: bool) -> dict[str, Any]:
-        """What the run found, as JSON: the pages, the rounds left out, the case sets and the agreement rows."""
+        """What the run found, as JSON: the pages, the rounds left out, the case sets, the arms and the agreement rows."""
         rows = agreement_rows(self.readings)
         return {
             "dry": dry,
@@ -545,8 +592,12 @@ class Calibration:
                 name: {"version": report.case_set.version if report.case_set else None, "cases": len(report.cases)}
                 for name, report in self.frozen.items()
             },
+            "arms": [
+                {"judge": a.judge, "case_set": a.case_set, "cases": a.cases, "trials": a.trials, "stopped": a.stopped}
+                for a in self.arms
+            ],
             "agreement_with_the_opus_editor": rows,
-            "readout": "\n".join(readout(rows, self.left)),
+            "readout": "\n".join(readout(rows, self.arms, self.left)),
         }
 
 
@@ -555,7 +606,7 @@ async def calibration(*, dry: bool, k: int, cap_usd: float, judges: Sequence[str
 
     :param dry: Run on :class:`FakeDryJudge` instead of ``judges``.
     :param k: Trials per case.
-    :param cap_usd: The live run's cap, shared equally across its arms.
+    :param cap_usd: The live run's cap: an equal part per judge, split over the case sets by :func:`arm_caps`.
     :param judges: The live judges.
     :return: What it found.
     """
@@ -565,12 +616,15 @@ async def calibration(*, dry: bool, k: int, cap_usd: float, judges: Sequence[str
     clients = (lambda _role, _model, *, temperature=None: dry_judge) if dry else _live_client(_keys(arms))
     host = await asyncio.to_thread(lambda: toyhost_host(clients=clients))
     frozen = await asyncio.to_thread(freeze, host, found)
-    share = None if dry else cap_usd / (len(arms) * len(frozen))
+    caps = arm_caps(frozen, arms, cap_usd)
     results: list[EvalResult] = []
+    ran: list[Arm] = []
     for judge in arms:
-        for report in frozen.values():
-            results.extend(await judge_arm(host, report, judge=judge, k=k, cap_usd=share))
-    return Calibration(found, left, host, frozen, results, judge_kind_readings(results))
+        for name, report in frozen.items():
+            landed, arm = await judge_arm(host, report, judge=judge, k=k, cap_usd=None if dry else caps[name])
+            results.extend(landed)
+            ran.append(arm)
+    return Calibration(found, left, host, frozen, results, ran, judge_kind_readings(results))
 
 
 def main(argv: Sequence[str]) -> int:
@@ -583,11 +637,13 @@ def main(argv: Sequence[str]) -> int:
     options = parser.parse_args(list(argv))
     if not options.dry and options.out is None:
         parser.error("a live run needs --out")
+    if options.out is not None:
+        # Made before anything is sent, so a directory already there refuses the run rather than its result.
+        options.out.mkdir(parents=True, exist_ok=False)
     found = asyncio.run(
         calibration(dry=options.dry, k=options.k, cap_usd=options.cap_usd, judges=options.judge or LIVE_JUDGES)
     ).summary(dry=options.dry)
     if options.out is not None:
-        options.out.mkdir(parents=True, exist_ok=False)
         (options.out / "calibration.json").write_text(json.dumps(found, indent=2, default=str), encoding="utf-8")
     print(found["readout"])
     return 0

@@ -6,7 +6,8 @@ mode builds everything the live run judges, on a scripted judge that calls no mo
 - every page comes from a replay through the writer kind at revisions 0, 1 or 2, paired with its own round's review;
 - each page gives seven cases on the gate's own criteria, its labels the Opus scores;
 - each pair of rounds gives two pair cases, the second the mirror of the first;
-- both case sets are frozen, a judge arm is read per criterion, and no judge profile is recorded.
+- both case sets are frozen, a judge arm is read per criterion, and no judge profile is recorded;
+- the summary a live run writes carries every row, arm and left-out round, and its cap is split by planned calls.
 
 Prototype 4's two second rounds no longer replay: their recorded round-2 reviews carry no ``continues`` or
 ``resolved``, which the editor's reader now asks for, so the replay asks a turn the recording lacks.
@@ -30,9 +31,9 @@ from packages.evals.tests.fixtures.report_plans.writer_calibration import (
     absolute_cases,
     calibration,
     pair_cases,
+    arm_caps,
     pairs,
     preferred,
-    readout,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
 from packages.evals.tests.off_loop import off_loop
@@ -151,5 +152,32 @@ def test_the_dry_judge_arm_is_read_per_criterion_and_no_profile_is_recorded(dry:
         assert reading.parse_validity.rate == 1.0 and reading.judge_model == DRY_JUDGE
         assert reading.label_agreement is not None and reading.label_agreement.n == reading.cases
     assert off_loop(dry.host.storage.query_judge_profiles, TOYHOST_SCOPE) == []
-    printed = "\n".join(readout([], dry.left))
-    assert printed.startswith("Agreement with the Opus editor")
+
+
+def test_the_summary_the_live_run_writes_carries_every_arm_row_and_left_out_round(dry: Calibration) -> None:
+    summary = json.loads(json.dumps(dry.summary(dry=True)))
+    assert summary["case_sets"] == {
+        ABSOLUTE_SET: {"version": 1, "cases": 7 * len(dry.found)},
+        PAIR_SET: {"version": 1, "cases": 42},
+    }
+    assert [(arm["case_set"], arm["cases"], arm["trials"], arm["stopped"]) for arm in summary["arms"]] == [
+        (ABSOLUTE_SET, 7 * len(dry.found), 7 * len(dry.found), None),
+        (PAIR_SET, 42, 42, None),
+    ]
+    rows = summary["agreement_with_the_opus_editor"]
+    assert len(rows) == 8 and {row["judge"] for row in rows} == {DRY_JUDGE}
+    assert len(summary["pages"]) == len(dry.found) and len(summary["left_out"]) == len(_UNREPLAYED)
+    lines = summary["readout"].splitlines()
+    assert lines[0].startswith("Agreement with the Opus editor")
+    # One table row per reading and per arm, each as wide as its header.
+    agreement = [line for line in lines if line.startswith(f"| {DRY_JUDGE} | report_writer.")]
+    assert len(agreement) == 8 and all(line.count("|") == 9 for line in agreement)
+    assert sum(1 for line in lines if line.startswith(f"| {DRY_JUDGE} | writer-opus-")) == 2
+    assert all(f"| {run} round {round_} |" in summary["readout"] for run, round_ in _UNREPLAYED)
+
+
+def test_a_live_runs_cap_is_split_by_the_calls_each_arm_plans(dry: Calibration) -> None:
+    caps = arm_caps(dry.frozen, ["one", "two"], 10.0)
+    assert sum(caps.values()) == pytest.approx(5.0)
+    # 196 absolute calls against 42 pair calls that read two pages each.
+    assert caps[ABSOLUTE_SET] / caps[PAIR_SET] == pytest.approx(7 * len(dry.found) / (2 * 42))
