@@ -212,10 +212,12 @@ async def write_rounds(
     tally: Tally,
     budget: ReportBudget,
     limits: WriterLimits | None = None,
+    editor_model: TurnModel | None = None,
 ) -> WritingOutcome:
     """Draft, review and revise a report over one frozen snapshot, until a review clears it or a limit ends it.
 
-    :param model: The model every session runs on, and the client of each named session.
+    :param model: The model the analyst's session runs on, and every review's unless ``editor_model`` is named; the
+        client of each named session it runs.
     :ptype model: TurnModel
     :param snapshot: The frozen snapshot's id.
     :ptype snapshot: str
@@ -237,10 +239,13 @@ async def write_rounds(
     :ptype budget: ReportBudget
     :param limits: What the loop is held to; plan §4.3's defaults when ``None``.
     :ptype limits: WriterLimits | None
+    :param editor_model: The model every review session runs on, and their client; ``None`` runs them on ``model``.
+    :ptype editor_model: TurnModel | None
     :return: How it ended, and what to store.
     :rtype: WritingOutcome
     """
     held = limits if limits is not None else WriterLimits()
+    editor = editor_model if editor_model is not None else model
     analyst = AnalystSession.start(
         model=model.model_name,
         client=model.turn_session(ANALYST_SESSION, snapshot=snapshot),
@@ -267,8 +272,8 @@ async def write_rounds(
                 round=drafted.round,
                 snapshot=snapshot,
                 earlier=seen.reviews[-1].findings if seen.reviews else (),
-                model=model.model_name,
-                client=model.turn_session(editor_session(drafted.round), snapshot=snapshot),
+                model=editor.model_name,
+                client=editor.turn_session(editor_session(drafted.round), snapshot=snapshot),
                 mount=editor_mount,
                 skill=editor_skill,
                 tally=tally,

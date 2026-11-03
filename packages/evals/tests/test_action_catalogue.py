@@ -139,6 +139,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "writer_template_create": "write",
         "writer_case_mint": "write",
         "writer_promotion": "read",
+        "writer_pairwise": "spend",
         "judge_template_create": "write",
         "judge_cases_freeze": "write",
         "judge_cases_list": "read",
@@ -174,6 +175,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_second",
         "judge_drift_check",
         "judge_temperature",
+        "writer_pairwise",
     }
     assert {action.name for action in engine_actions() if action.permission == "spend"} == {
         action.name for action in engine_actions() if action.long_running

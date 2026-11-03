@@ -51,7 +51,7 @@ from threetears.evals.ops import OpsHost
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import WriterCaseMint, WriterSplit, writer_case_mint
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, EffortWord, writer_scoring_rubric
+from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, EffortWord, WriterArm, writer_scoring_rubric
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.ops.analyst import report_snapshot_restore
 from threetears.evals.providers import Model
@@ -129,8 +129,8 @@ def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> Op
     built: list[int] = []
     if dry:
 
-        def models(model: str, _skill: AnalystSkill) -> Callable[[EffortWord | None], Any]:
-            return lambda _effort: _FakeDryModel(model_name=model)
+        def models(arm: WriterArm) -> Callable[[EffortWord | None], Any]:
+            return lambda _effort: _FakeDryModel(model_name=arm.session_model)
 
     else:
         keys = _keys()
@@ -143,11 +143,11 @@ def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> Op
 
         launch = replace(launch, eval_host=replace(launch.eval_host, clients=judge_clients))
 
-        def models(model: str, _skill: AnalystSkill) -> Callable[[EffortWord | None], Any]:
+        def models(arm: WriterArm) -> Callable[[EffortWord | None], Any]:
             def at(effort: EffortWord | None) -> Model:
                 built.append(1)
                 return Model(
-                    model,
+                    arm.session_model,
                     provider="anthropic",
                     api_key=keys["ANTHROPIC_API_KEY"],
                     effort=effort or EFFORT,

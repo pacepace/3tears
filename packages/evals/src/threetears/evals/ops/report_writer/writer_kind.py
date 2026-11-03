@@ -1,6 +1,6 @@
 """The report writer as a candidate kind: its skill and settings measured like any other candidate's.
 
-A change to the writer (a line of its skill, its reasoning effort, its revisions) is a decision the engine's corrected
+A change to the writer (a line of its skill, its reasoning effort, its revisions, its editor's model) is a decision the engine's corrected
 comparison makes, so the writer runs as a kind (:data:`~threetears.evals.ops.report_writer.writer_contract.WRITER_KIND`)
 through the ordinary run path, beside the analysis reporter.
 
@@ -14,7 +14,8 @@ through the ordinary run path, beside the analysis reporter.
   case again. Withholding is per case, so a blind run withholds what the case froze and nothing a launch chose.
 - **An arm** is a :class:`~threetears.evals.ops.report_writer.writer_contract.WriterOverlays` on the arm's candidate
   model. :class:`ReportWriterKind` is built per arm by the launcher, with the arm's overlays, the skill versions the
-  launch may run and the host's model factory. The arm's subject carries its skill as a component under the skill
+  launch may run and the host's model factory, and the editor's model the factory built for an arm naming one. The
+  arm's subject carries its skill as a component under the skill
   lever's own name (:func:`writer_subject_components`), so deriving the variant identity refuses a subject whose
   skill is not the lever's, and :meth:`ReportWriterKind.prepare` refuses a subject that names another.
 - **A cell** writes the report over the case by driving the writing loop
@@ -77,6 +78,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     SKILL_LEVER,
     TURNS_MEASURE,
     UNPRICED_TURNS_MEASURE,
+    EffortWord,
     WriterModels,
     WriterOverlays,
 )
@@ -317,12 +319,16 @@ class PreparedWriter:
     the cell's tracing windows.
 
     Per cell rather than on the kind, because one kind instance drives every cell of an arm.
+
+    :ivar model: The analyst's model, the cell's candidate.
+    :ivar editor_model: The model the editor's reviews run on, for an arm naming one; ``None`` runs them on ``model``.
     """
 
     model: TurnModel
     skill: AnalystSkill
     limits: WriterLimits
     span_window: CellSpanWindow
+    editor_model: TurnModel | None = None
 
 
 def _refused(message: str) -> CandidatePreparationFailed:
@@ -355,6 +361,7 @@ class ReportWriterKind:
         analyst_mount: ToolMount,
         editor_mount: ToolMount,
         skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
+        editor_models: WriterModels | None = None,
     ) -> None:
         """Bind the arm's levers and what its cells are written with.
 
@@ -375,6 +382,9 @@ class ReportWriterKind:
         :ptype editor_mount: ToolMount
         :param skills: The skill versions the launch may run, by digest. The shipped skill is always one of them.
         :ptype skills: Mapping[str, AnalystSkill]
+        :param editor_models: The host's model factory for the editor's model, at a reasoning effort, for an arm whose
+            overlays name an ``editor_model``; ``None`` for an arm whose editor runs on the candidate model.
+        :ptype editor_models: WriterModels | None
         :raises ValueError: A skill is keyed by a digest other than its own.
         """
         if misfiled := sorted(digest for digest, skill in skills.items() if skill.digest != digest):
@@ -385,6 +395,7 @@ class ReportWriterKind:
         self._scope_id = scope_id
         self._overlays = overlays
         self._models = models
+        self._editor_models = editor_models
         self._budget = budget
         self._analyst_mount = analyst_mount
         self._editor_mount = editor_mount
@@ -417,8 +428,8 @@ class ReportWriterKind:
         :rtype: PreparedWriter
         :raises CandidatePreparationFailed: The arm's revisions are not ones the loop runs; the arm's skill is not one
             the launch was given, or its ``editor.md`` states no rubric its reviews can be read on; the subject does
-            not carry it; the factory's model is not the cell's; or, under a dollar budget, the model's turns cannot
-            be priced. Each before anything is sent.
+            not carry it; the factory's model is not the cell's, or not the editor's the arm names; or, under a
+            dollar budget, a model's turns cannot be priced. Each before anything is sent.
         """
         try:
             limits = WriterLimits(revisions=self._overlays.revisions)
@@ -454,9 +465,33 @@ class ReportWriterKind:
                 f"this cell is recorded against model {variant_config.candidate_model!r} but the model factory built "
                 f"{model.model_name!r}, so running it would report one candidate's page under another's name"
             )
-        if self._budget.usd is not None and (unpriced := await model.turn_pricing_refusal()) is not None:
-            raise _refused(f"its {self._budget.spelled} budget admits each turn on its price ceiling, and {unpriced}")
-        return PreparedWriter(model=model, skill=skill, limits=limits, span_window=span_window)
+        editor = self._editor(self._overlays.reasoning_effort)
+        if self._budget.usd is not None:
+            for built in (model, *(() if editor is None else (editor,))):
+                if (unpriced := await built.turn_pricing_refusal()) is not None:
+                    raise _refused(
+                        f"its {self._budget.spelled} budget admits each turn on its price ceiling, and {unpriced}"
+                    )
+        return PreparedWriter(model=model, skill=skill, limits=limits, span_window=span_window, editor_model=editor)
+
+    def _editor(self, effort: EffortWord | None) -> TurnModel | None:
+        """The editor's model for an arm naming one, built by the host's factory and refused unless it is that model;
+        ``None`` for an arm whose editor runs on the candidate model."""
+        named = self._overlays.editor_model
+        if named is None:
+            return None
+        if self._editor_models is None:
+            raise _refused(f"the arm's editor runs on {named!r}, and the host's launcher built no editor model")
+        try:
+            editor = self._editor_models(effort)
+        except ValueError as refused:
+            raise _refused(f"the host's model factory refused the arm's editor: {refused}") from refused
+        if editor.model_name != named:
+            raise _refused(
+                f"the arm's editor runs on {named!r} but the model factory built {editor.model_name!r}, so its reviews "
+                "would be recorded under another editor's name"
+            )
+        return editor
 
     async def invoke(self, instance: PreparedWriter, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         """Write one report over the case's snapshot, and hand the judge its final page.
@@ -503,6 +538,7 @@ class ReportWriterKind:
                     tally=tally,
                     budget=ReportBudget(usd=self._budget.usd, tokens=self._budget.tokens, turns=self._budget.turns),
                     limits=instance.limits,
+                    editor_model=instance.editor_model,
                 )
         return self._output(outcome, tally, instance, report_input, analyst_skill, editor_skill)
 

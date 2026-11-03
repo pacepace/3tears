@@ -31,7 +31,7 @@ from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import WriterSplit, writer_case_archive, writer_split
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, EffortWord, writer_scoring_rubric
+from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, EffortWord, WriterArm, writer_scoring_rubric
 from threetears.evals.ops.report_writer.writer_kind import writer_cell_timeout_s
 from threetears.evals.run import JUDGE_CALL_ATTEMPTS, JUDGE_MAX_TOKENS, start_run
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
@@ -42,7 +42,7 @@ from threetears.evals.schema.turns import ToolTurnClient, TurnText
 _JUDGE = "google/gemini-flash"
 
 #: Each model's family as the host places it; a model absent here is one it cannot place.
-_FAMILIES = {MODEL: "anthropic", _JUDGE: "google", "anthropic/claude-opus": "anthropic"}
+_FAMILIES = {MODEL: "anthropic", _JUDGE: "google", "anthropic/claude-opus": "anthropic", "google/editor": "google"}
 
 #: The host's ceiling for one request: every request may take half a minute, whatever its output cap.
 _REQUEST_S = 30.0
@@ -72,11 +72,11 @@ class _FakeSilentModel:
         return client
 
 
-def _models(model: str, _skill: AnalystSkill) -> Any:
-    """The host's model factory for an arm's candidate model: a fresh silent model per cell, at any skill and effort."""
+def _models(arm: WriterArm) -> Any:
+    """The host's model factory for an arm's model: a fresh silent model per cell, at any lever and effort."""
 
     def at(effort: EffortWord | None) -> _FakeSilentModel:
-        return _FakeSilentModel(model_name=model)
+        return _FakeSilentModel(model_name=arm.session_model)
 
     return at
 
@@ -156,6 +156,18 @@ async def test_a_launch_over_a_named_set_runs_its_cases_each_under_the_writers_o
     assert run.host_payload == {WRITER_KIND: {"judge_family": "writer anthropic, judge google"}}
 
 
+async def test_an_arm_s_editor_is_held_to_another_family_than_the_judge_s_and_the_run_records_both_checks() -> None:
+    host = off_loop(_launching)
+    case_set = await _seeded(host)
+
+    run = await _launch(host, case_set, overlays={"editor_model": "anthropic/claude-opus"})
+
+    assert run.overlays["editor_model"] == "anthropic/claude-opus" and run.candidate_model == MODEL
+    assert run.host_payload == {
+        WRITER_KIND: {"judge_family": "writer anthropic, judge google; editor anthropic, judge google"}
+    }
+
+
 async def test_a_judge_the_host_cannot_place_is_launched_and_the_run_records_the_check_was_not_made() -> None:
     host = off_loop(_launching)
     case_set = await _seeded(host)
@@ -173,6 +185,7 @@ async def test_a_judge_the_host_cannot_place_is_launched_and_the_run_records_the
         ({"judge_model": "anthropic/claude-opus"}, "of the writer 'report-writer-model''s family \\(anthropic\\)"),
         ({"judge_model": None}, "this launch names none"),
         ({"overlays": {"skill": "f" * 64}}, f"the arm runs skill {'f' * 64}, which this launch was not given"),
+        ({"overlays": {"editor_model": "google/editor"}}, "of the writer 'google/editor''s family \\(google\\)"),
     ],
 )
 async def test_a_launch_the_writer_cannot_honour_is_refused_before_any_run(

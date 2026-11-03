@@ -198,6 +198,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "storage",
     "testing",
     "quick",
+    "harness",
     "ops",
     "actions",
     "transports.fastmcp",

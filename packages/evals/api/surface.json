@@ -7586,6 +7586,66 @@
       "signature": "WorldRunner(world: World, agent: Callable[[Mapping[str, Any], Any], Awaitable[Any]])",
       "tier": "stable"
     },
+    "threetears.evals.harness.AnalystSkill": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.MintedWriterCase": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.read_writer_cases": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.SkillText": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.Writer": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterCaseFile": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterCaseFormat": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterEval": {
+      "kind": "class",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterJudge": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterResult": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterSide": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterSplit": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.action_job_id": {
       "kind": "function",
       "signature": "",
@@ -8143,7 +8203,7 @@
     },
     "threetears.evals.ops.OpsHost": {
       "kind": "dataclass",
-      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None)",
+      "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None, model_family: Callable[[str], str | None] | None = None)",
       "tier": "stable"
     },
     "threetears.evals.ops.out_of_run_spend_text": {

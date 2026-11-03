@@ -12,8 +12,9 @@ over the same store, with nothing of the callable host changed:
   :func:`~threetears.evals.actions.report_writing.launchable_report_writer_kind`, and its template checks admit
   everything, since the writer's launch refuses a template it cannot honour itself;
 - **its scoring judge** is the judge model the caller built (the shipped client's ``Model``, or any client that names
-  its route), lent for the judge role only, as :meth:`~threetears.evals.quick.judged.Judge.clients` lends a judged
-  eval's;
+  its route and prices its calls), lent for the judge role only, as :meth:`~threetears.evals.quick.judged.Judge.clients`
+  lends a judged eval's, each call priced as the judge prices it, so a pass held to the out-of-run cap (the pairwise
+  pass) is admitted on the judge's own prices: nothing, for a judge replaying its recording;
 - **its launch settings** run at most two cells of a run at once, with the cost ceilings enforced, so every arm is
   launched naming its share of ``max_cost_usd``.
 
@@ -21,7 +22,8 @@ over the same store, with nothing of the callable host changed:
 before a ``/`` (an aggregator's route) is of that vendor's family, any other id is of the provider it is sent to, and
 a model on an endpoint of the caller's own (``base_url``) is of no family the host can tell, so its run records the
 check as not made. The judge's route is its ``Model``'s; every writer is built by the model factory on
-``writer_provider``.
+``writer_provider``. The host's reading is its :attr:`OpsHost.model_family <threetears.evals.ops.OpsHost.model_family>`
+too, so a launch and the pairwise pass over its campaigns check the judge's family alike.
 
 **Every arm is held to its job's budget before it is priced.** A run's job is given a budget sized as if its cells ran
 one after another, and clamped at the engine's ceiling (:func:`~threetears.evals.run.jobs.adaptive_job_timeout_s`); a
@@ -36,7 +38,7 @@ import math
 from collections.abc import Mapping
 from dataclasses import replace
 from types import MappingProxyType
-from typing import Final, Protocol
+from typing import Any, Final, Protocol
 
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill
@@ -100,6 +102,10 @@ class WriterJudge(CompletionClient, Protocol):
         """The endpoint of the caller's own it was built on, or ``None`` for its provider's own."""
         ...
 
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The most one call with this prompt pair can cost, ``0.0`` while replaying, or ``None`` when it cannot say."""
+        ...
+
 
 def _family(model_id: str, provider: str, base_url: str | None) -> str | None:
     """A model's family from its route: the vendor its id names before a ``/``, else its provider's; none for an
@@ -119,6 +125,18 @@ def _describe_failure() -> ProviderFailureDescriber:
     return describe_failure
 
 
+class _LentJudge(BorrowedJudgeClient):
+    """The judge, lent for one role at one temperature, each call priced as the judge prices it."""
+
+    def __init__(self, judge: WriterJudge, *, temperature: float | None) -> None:
+        super().__init__(judge, model_name=judge.model_name, temperature=temperature)
+        self._judge = judge
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The judge's own price for the call (:meth:`WriterJudge.price_ceiling`)."""
+        return self._judge.price_ceiling(system=system, user=user, response_format=response_format)
+
+
 def _lent(judge: WriterJudge) -> CompletionClients:
     """The host's client factory: ``judge``, lent for the judge role on its own model, and nothing else."""
 
@@ -130,7 +148,7 @@ def _lent(judge: WriterJudge) -> CompletionClients:
                 f"a judge config asked for {model!r}, and the writer host's judge calls {judge.model_name!r}; "
                 "every page is scored on its one judge"
             )
-        return BorrowedJudgeClient(judge, model_name=judge.model_name, temperature=temperature)
+        return _LentJudge(judge, temperature=temperature)
 
     return lend
 
@@ -176,7 +194,8 @@ def writer_ops_host(
     :ptype max_arms: int
     :param identity: Who the cells' tool calls run as.
     :ptype identity: str
-    :return: The host: launches the writer kind, generates no analysis.
+    :return: The host: launches the writer kind, generates no analysis, and places each model's family as its launches
+        do.
     :rtype: OpsHost
     """
     judge_family = _family(judge.model_name, judge.provider, judge.base_url)
@@ -254,12 +273,12 @@ def writer_ops_host(
             eval_host=replace(eval_host, template_checks=checks),
             settings=lambda: settings,
             job_timeout_factory=default_job_timeout,
-        )
+        ),
+        model_family=model_family,
     )
     holder.append(host)
     return host
 
 
-#: ``writer_ops_host`` and ``WriterJudge`` join ``__all__`` with their first caller outside this module, the writer eval;
-#: until then the public-API caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) would read it as test-only.
-__all__: list[str] = []
+#: The writer eval builds its host here, its judge typed as the host reads it.
+__all__ = ["WriterJudge", "writer_ops_host"]

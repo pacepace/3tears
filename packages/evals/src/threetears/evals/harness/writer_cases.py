@@ -31,6 +31,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.offload import run_blocking
@@ -118,6 +119,7 @@ class WriterCaseFile(EvalBaseModel):
         *,
         created_by: str,
         split: WriterSplit | None = None,
+        skill: AnalystSkill | None = None,
     ) -> MintedWriterCase:
         """Restore the snapshot into a scope and mint it there as a case of a writer template.
 
@@ -131,6 +133,9 @@ class WriterCaseFile(EvalBaseModel):
         :ptype created_by: str
         :param split: The sets the case joins; ``None`` for the default names and share.
         :ptype split: WriterSplit | None
+        :param skill: The skill the case's withheld notes are checked against, the one its arms run; ``None`` for the
+            skill this build ships.
+        :ptype skill: AnalystSkill | None
         :return: The mint's receipt: the case, its stratum, its side and the set version listing it.
         :rtype: MintedWriterCase
         :raises NotFoundError: The template is not in the scope.
@@ -145,8 +150,10 @@ class WriterCaseFile(EvalBaseModel):
             group=self.group or self.name,
             stratum=self.stratum,
             split=split or WriterSplit(),
+            skill=None if skill is None else skill.digest,
         )
-        return await writer_case_mint(host, mint, scope_id, created_by=created_by)
+        skills = {} if skill is None else {skill.digest: skill}
+        return await writer_case_mint(host, mint, scope_id, created_by=created_by, skills=skills)
 
 
 async def writer_case_freeze(
@@ -227,6 +234,5 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
     return cases
 
 
-#: Each name joins ``__all__`` with its first caller outside this module, the writer eval; until then the public-API
-#: caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) would read it as test-only.
-__all__: list[str] = []
+#: The writer eval reads a case directory and mints each case; the freeze and the format's names wait for a caller.
+__all__ = ["WriterCaseFile", "WriterCaseFormat", "read_writer_cases"]

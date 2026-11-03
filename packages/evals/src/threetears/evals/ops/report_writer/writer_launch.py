@@ -96,8 +96,23 @@ def _skill(overlays: WriterOverlays, skills: Mapping[str, AnalystSkill]) -> Anal
     return skill
 
 
-def _judge_family(candidate_model: str, judge_model: str, model_family: ModelFamily) -> str:
-    """The family check, refused when the writer and its scoring judge are of one family; else what was checked."""
+def judge_family_check(candidate_model: str, judge_model: str, model_family: ModelFamily) -> str:
+    """The family check, refused when the writer and its scoring judge are of one family; else what was checked.
+
+    The launcher's rule, and the pairwise pass's
+    (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`), which asks the same judge
+    about each arm's pages: a model the host cannot place is admitted with the check recorded as not made.
+
+    :param candidate_model: The writer, by the id its launch names.
+    :ptype candidate_model: str
+    :param judge_model: The scoring judge, by the id its launch names.
+    :ptype judge_model: str
+    :param model_family: The host's reading of a model's family.
+    :ptype model_family: ModelFamily
+    :return: The check as made: both families when the host placed both, else which model it could not place.
+    :rtype: str
+    :raises ValidationFailedError: The host placed both in one family.
+    """
     writer, judge = model_family(candidate_model), model_family(judge_model)
     if writer is not None and writer == judge:
         raise ValidationFailedError(
@@ -166,8 +181,8 @@ def admit_writer_launch(
     :return: What the arm resolved to.
     :rtype: WriterAdmitted
     :raises ValidationFailedError: The template asks for what a writer cannot honour or has no rubric; the arm's skill
-        was not given; the arm names no model or no judge; the judge is of the writer's family; or a case is
-        missing, unreadable, carries no writer case or is retired.
+        was not given; the arm names no model or no judge; the judge is of the writer's family, or of the editor's
+        the arm names; or a case is missing, unreadable, carries no writer case or is retired.
     """
     refuse_undeliverable_writer_template(request.template)
     overlays = request.overlays_as(WriterOverlays) if request.overlays is not None else WriterOverlays()
@@ -178,7 +193,11 @@ def admit_writer_launch(
             "a writer arm's pages are scored by one judge for the whole campaign, and this launch names none",
             remedy="name the scoring judge (judge_model), and name the same one for every arm of the campaign",
         )
-    judge_family = _judge_family(candidate_model, request.judge_model, model_family)
+    judge_family = judge_family_check(candidate_model, request.judge_model, model_family)
+    if overlays.editor_model is not None:
+        # The editor shapes the page the judge scores, so it is held to another family than the judge's too.
+        editor = judge_family_check(overlays.editor_model, request.judge_model, model_family)
+        judge_family += f"; editor {editor.removeprefix('writer ')}"
     return WriterAdmitted(
         overlays=overlays,
         skill=skill,
@@ -250,6 +269,7 @@ __all__ = [
     "ModelFamily",
     "WriterAdmitted",
     "admit_writer_launch",
+    "judge_family_check",
     "plan_writer_arm",
     "writer_launch_deadline",
 ]

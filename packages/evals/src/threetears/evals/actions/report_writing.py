@@ -17,7 +17,7 @@ from the key it holds. Nothing here reads an environment variable.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
@@ -34,6 +34,7 @@ from threetears.evals.ops.report_writer.write import AnalystSkill, report_write
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.ops.report_writer.writer_contract import (
     WRITER_KIND,
+    WriterArm,
     WriterModelFactory,
     WriterModels,
     WriterOverlays,
@@ -60,10 +61,11 @@ from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.schema.models import EvalRun, JudgedArtifact
 from threetears.evals.schema.subject import SubjectSnapshot
 
-#: What ``analysis_generate``'s action hands its job (actions/engine.py), and the launch registry entry the writer
-#: harness's host registers (harness/writer_host.py). ``write_report`` and ``report_writer_kind`` stay out until a
-#: caller outside this module imports them; ``tests/test_report_writer_exports.py`` lists each as awaiting one.
-__all__ = ["campaign_report_writer", "launchable_report_writer_kind"]
+#: What ``analysis_generate``'s action hands its job (actions/engine.py), the launch registry entry the writer
+#: harness's host registers (harness/writer_host.py), and the entry point the harness's ``analyse`` writes a report
+#: through (harness/analyse.py). ``report_writer_kind`` stays out until a caller outside this module imports it;
+#: ``tests/test_report_writer_exports.py`` lists it as awaiting one.
+__all__ = ["campaign_report_writer", "launchable_report_writer_kind", "write_report"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +189,7 @@ def report_writer_kind(
     budget: ReportBudget,
     skills: Mapping[str, AnalystSkill] = MappingProxyType({}),
     prefix: str = DEFAULT_PREFIX,
+    editor_models: WriterModels | None = None,
 ) -> ReportWriterKind:
     """One report writer arm as a candidate kind, its tools mounted as :func:`write_report` mounts them.
 
@@ -207,6 +210,8 @@ def report_writer_kind(
     :ptype skills: Mapping[str, AnalystSkill]
     :param prefix: The host's prefix for its eval tools.
     :ptype prefix: str
+    :param editor_models: The host's model factory for the editor's model, for an arm whose overlays name one.
+    :ptype editor_models: WriterModels | None
     :return: The arm's kind.
     :rtype: ReportWriterKind
     """
@@ -219,6 +224,7 @@ def report_writer_kind(
         analyst_mount=_mount(host, caller, prefix=prefix, role="analyst"),
         editor_mount=_mount(host, caller, prefix=prefix, role="editor"),
         skills=skills,
+        editor_models=editor_models,
     )
 
 
@@ -256,8 +262,9 @@ def launchable_report_writer_kind(
     :ptype ops_host: Callable[[], OpsHost]
     :param identity: Who the cells' tool calls run as, as the host names its campaign runner.
     :ptype identity: str
-    :param models: The host's model factory for an arm: its candidate model, by the id the launch names, and the
-        skill the arm runs.
+    :param models: The host's model factory for an arm: its writer, by every lever the arm runs
+        (:class:`~threetears.evals.ops.report_writer.writer_contract.WriterArm`), asked for the analyst's model and,
+        for an arm naming an editor model, for the editor's.
     :ptype models: WriterModelFactory
     :param budget: Each report's budget.
     :ptype budget: ReportBudget
@@ -289,14 +296,21 @@ def launchable_report_writer_kind(
         host = ops_host()
         eval_host = host.eval_host
         arm = await run_blocking(eval_host.blocking_executor, admitted, request)
+        levers = WriterArm(
+            model=arm.candidate_model,
+            skill=arm.skill,
+            revisions=arm.overlays.revisions,
+            editor_model=arm.overlays.editor_model,
+        )
         kind = report_writer_kind(
             host,
             Caller(scope_id=request.scope_id, identity=identity),
             overlays=arm.overlays,
-            models=models(arm.candidate_model, arm.skill),
+            models=models(levers),
             budget=budget,
             skills=skills,
             prefix=prefix,
+            editor_models=None if levers.editor_model is None else models(replace(levers, role="editor")),
         )
         judge = await run_blocking(
             eval_host.blocking_executor,

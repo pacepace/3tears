@@ -11,8 +11,9 @@ storage round-trip never stalls the loop a transport serves calls on.
 
 from __future__ import annotations
 
+import uuid
 from functools import partial
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, get_args
 
 from datetime import datetime
@@ -170,9 +171,19 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_case_mint,
     writer_template_create,
 )
+from threetears.evals.ops.report_writer.writer_pairwise import writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.ops.runs import PERSON_DESCRIPTION
-from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
+from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.schema.models import (
+    RUN_LABELS_MAX,
+    EvalTrace,
+    JudgedArtifact,
+    JudgeEvidence,
+    SecondJudge,
+    eval_trace_doc_id,
+)
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run import (
     JudgeCaseFreezeReport,
@@ -740,6 +751,7 @@ class WriterCaseMintParams(EvalBaseModel):
     analysis_id: str | None = Field(default=None, min_length=1, description=_described(AnalysisId))
     snapshot_id: str | None = Field(default=None, min_length=1, description=_MINT["snapshot_id"].description)
     withhold: list[str] = Field(default_factory=list, description=_MINT["withhold"].description)
+    skill: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", description=_MINT["skill"].description)
     group: str | None = Field(default=None, min_length=1, description=_MINT["group"].description)
     stratum: str | None = Field(default=None, min_length=1, description=_MINT["stratum"].description)
     dev_set: str = Field(default=_SPLIT["dev"].default, min_length=1, description=_SPLIT["dev"].description)
@@ -764,6 +776,7 @@ class WriterCaseMintParams(EvalBaseModel):
                 analysis_id=self.analysis_id,
                 snapshot_id=self.snapshot_id,
                 withhold=self.withhold,
+                skill=self.skill,
                 group=self.group,
                 stratum=self.stratum,
                 split=WriterSplit(
@@ -787,6 +800,20 @@ class WriterCaseArchiveParams(EvalBaseModel):
 
 class WriterPromotionParams(EvalBaseModel):
     """``writer_promotion``."""
+
+    campaign_id: CampaignId
+    candidate: str = Field(
+        min_length=1, description="The candidate arm, by its label or its variant key; never the control."
+    )
+    pairwise_job: JobId | None = Field(
+        default=None,
+        description="The completed writer_pairwise job over this candidate, whose report is the primary reading; "
+        "without one the read never promotes.",
+    )
+
+
+class WriterPairwiseParams(EvalBaseModel):
+    """``writer_pairwise``."""
 
     campaign_id: CampaignId
     candidate: str = Field(
@@ -1459,13 +1486,18 @@ async def _writer_case_archive(host: OpsHost, caller: Caller, params: WriterCase
 
 async def _writer_promotion(host: OpsHost, caller: Caller, params: WriterPromotionParams) -> WriterPromotion:
     eval_host = host.eval_host
+    pairwise = None if params.pairwise_job is None else await job_poll(host, params.pairwise_job, caller.scope_id)
     return await run_blocking(
         eval_host.blocking_executor,
-        partial(writer_promotion, candidate=params.candidate),
+        partial(writer_promotion, candidate=params.candidate, pairwise_job=pairwise),
         eval_host,
         params.campaign_id,
         caller.scope_id,
     )
+
+
+async def _writer_pairwise(host: OpsHost, caller: Caller, params: WriterPairwiseParams) -> JobsStarted:
+    return await writer_pairwise(host, params.campaign_id, caller.scope_id, candidate=params.candidate)
 
 
 async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
@@ -1778,6 +1810,132 @@ async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
 
 async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"run_id": await stage.finished_run(), "second_judge_model": stage.sample.second_judge_model}
+
+
+async def _writer_pairwise_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    """A campaign of two arms over the sample's finished run, the control the run and the candidate a copy of it under
+    another model, each result's page stored as a document that speaks for itself: a pairwise pass over it asks the
+    judge about every case's two pages, whatever the host's kind renders. Arranged in the stage host's own store.
+
+    The pass refuses a judge the host places in a writer's family, and a sample's judge may share its candidate's, so
+    where the host places them together the pair is scored by the sample's second judge (:func:`_pair_judge`)."""
+    run_id = await stage.finished_run()
+    eval_host = stage.host.eval_host
+    family, second = stage.host.model_family, stage.sample.second_judge_model
+    campaign_id = await run_blocking(
+        eval_host.blocking_executor,
+        partial(_paired_campaign, family=family, second_judge=second),
+        eval_host,
+        run_id,
+        stage.caller.scope_id,
+        stage.caller.identity,
+    )
+    return {"campaign_id": campaign_id, "candidate": "candidate"}
+
+
+def _pair_judge(own: str, second: str, writers: Sequence[str], family: Callable[[str], str | None] | None) -> str:
+    """The judge the kit's pair is scored by: the run's own, unless the host places it in a writer's family, then the
+    sample's second judge, as the pass's family check reads them
+    (:func:`~threetears.evals.ops.report_writer.writer_launch.judge_family_check`).
+
+    :raises ValidationFailedError: The host places both judges in a writer's family, so no pair the kit builds passes.
+    """
+    if family is None:
+        return own
+    for judge in (own, second):
+        placed = family(judge)
+        if placed is None or all(family(writer) != placed for writer in writers):
+            return judge
+    raise ValidationFailedError(
+        f"the sample's judge {own!r} and its second judge {second!r} are both of a candidate model's family, so the "
+        "pairwise pass refuses every pair the kit builds",
+        remedy="name a second judge of another family than the sample's candidate models (second_judge_model)",
+    )
+
+
+def _paired_campaign(
+    eval_host: EvalHost,
+    run_id: str,
+    scope_id: str,
+    created_by: str,
+    *,
+    family: Callable[[str], str | None] | None,
+    second_judge: str,
+) -> str:
+    """Store the candidate arm beside the finished run, and the campaign naming both; its id. Blocking.
+
+    Where the pair is scored by the second judge, the control is a copy of the run under that judge too, so both arms
+    name one scoring judge."""
+    storage = eval_host.storage
+    run = storage.load_eval_run(run_id, scope_id)
+    assert run is not None and run.judge_model is not None  # the stage's run finished judged, so its record is stored
+    writers = [run.candidate_model, f"{run.candidate_model} (paired)"]
+    judge = _pair_judge(run.judge_model, second_judge, writers, family)
+    control = (
+        run if judge == run.judge_model else run.model_copy(update={"id": str(uuid.uuid7()), "judge_model": judge})
+    )
+    # Another model and no recorded lever map: the copy's key is derived as a reader derives it, so it is its own arm.
+    candidate = run.model_copy(
+        update={
+            "id": str(uuid.uuid7()),
+            "candidate_model": writers[1],
+            "judge_model": judge,
+            "variant_levers": None,
+            "identity_version": None,
+        }
+    )
+    identity = resolve_variant_identity(run=candidate, profile=eval_host.profile)
+    if control is not run:
+        storage.save_eval_run(control)
+    storage.save_eval_run(candidate)
+    for result in storage.query_eval_results(scope_id, run_id=run_id):
+        mine = (
+            result if control is run else result.model_copy(update={"id": str(uuid.uuid7()), "eval_run_id": control.id})
+        )
+        paired = result.model_copy(
+            update={
+                "id": str(uuid.uuid7()),
+                "eval_run_id": candidate.id,
+                "model": candidate.candidate_model,
+                "variant_key": identity.variant_key,
+                "identity_version": identity.identity_version,
+            }
+        )
+        for arm, stored in (("control", mine), ("candidate", paired)):
+            page = JudgeEvidence(
+                case_material=f"The facts of case {stored.test_case_id}.",
+                artifact=f"The {arm} arm's page on case {stored.test_case_id}.",
+            )
+            trace = EvalTrace(
+                id=eval_trace_doc_id(stored.id),
+                scope_id=scope_id,
+                result_id=stored.id,
+                eval_run_id=stored.eval_run_id,
+                judge_evidence=page,
+                judged_artifact=JudgedArtifact.DOCUMENT,
+            )
+            storage.save_eval_result(stored, trace)
+    models = [control.candidate_model, candidate.candidate_model]
+    design = {
+        "axes": [{"axis_id": "model", "values": [{"content": model, "display": model} for model in models]}],
+        "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+    }
+    campaign = campaign_create(
+        eval_host,
+        CampaignDefinition(
+            name="jobs conformance pairs",
+            subject_id=control.subject_snapshot.subject_id,
+            behavior="conformance",
+            arms=[
+                {"label": "control", "role": "control", "from_run_ids": [control.id]},
+                {"label": "candidate", "role": "candidate", "from_run_ids": [candidate.id]},
+            ],
+            aspects=[{"label": "pairs", "run_ids": [control.id, candidate.id], "design": design}],
+        ),
+        scope_id,
+        created_by=created_by,
+    )
+    return campaign.id
 
 
 async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:
@@ -2630,15 +2788,49 @@ def engine_actions() -> tuple[Action, ...]:
             result=WriterPromotion,
             handler=_writer_promotion,
             render=render.render_model,
+            example={
+                "campaign_id": campaign_id,
+                "candidate": "edited skill",
+                "pairwise_job": "action:0193a1b2-pairwise",
+            },
+            detail=(
+                "Reads one primary reading, the pairwise pass's preference (report_writer.preferred, from the "
+                "completed writer_pairwise job named as pairwise_job), and gates the candidate's other corrected "
+                "verdicts on regression only. Promote when the primary reads improved, no other reading regressed "
+                "and every guardrail is held. Keep when the primary or any other reading regressed, too few cases "
+                "included, or a guardrail is breached. Undecided otherwise, naming the primary's reason (not "
+                "separated, too few cases, void, not read), and undecided never promotes. The primary is void when "
+                "the judge's order consistency is below 0.7. It reports the reading over the pairs whose pages were "
+                "both finished beside the primary, and for a primary that does not separate, the held-out cases that "
+                "would settle it. It also names the levers the candidate changed, the held-out "
+                "cases read, both arms' costs and the skill this build ships with its ledger entry. Refused for arms "
+                "scored by different judges or rubrics, a campaign run over anything but held-out writer cases, and "
+                "a pairwise job that is not a completed pass over this campaign's candidate, control and judge. "
+                "Records nothing: a person records the call with campaign_record."
+            ),
+        ),
+        Action(
+            name="writer_pairwise",
+            summary="Ask the scoring judge which page is better, candidate or control, for each case, as a job.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=WriterPairwiseParams,
+            result=JobsStarted,
+            handler=_writer_pairwise,
+            long_running=True,
+            happy_path=_writer_pairwise_path,
             example={"campaign_id": campaign_id, "candidate": "edited skill"},
             detail=(
-                "Gates the candidate's corrected verdicts against the control's and answers promote, keep or "
-                "undecided. Keep when the candidate is shown worse on a reading, or a guardrail is not shown held. "
-                "Undecided when any reading is not decided, and undecided never promotes. Promote when every reading "
-                "is decided and at least one shows the candidate better. It also names the levers the candidate "
-                "changed, the held-out cases read, both arms' costs and the skill this build ships with its ledger "
-                "entry. Refused for arms scored by different judges or rubrics, and for a campaign run over anything "
-                "but held-out writer cases. Records nothing: a person records the call with campaign_record."
+                "Pairs the candidate's results with the control's by case and repeat, and shows the scoring judge each "
+                "pair's two stored pages, nothing re-rendered, once with each first. A side that stored no page loses "
+                "its pair, and both missing is a tie. Each case's share of the preference the candidate won is read "
+                "against the control's on report_writer.preferred, by the bounded test every rate contrast reads, "
+                "over every pair and over the pairs whose pages were both finished. Order consistency, the lean to "
+                "the first page and the can't-tell count say how far the judge can be trusted on it. Every call is "
+                "priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under "
+                "purpose judge. Refused in the call, with nothing spent, for arms scored by different judges or "
+                "rubrics, a judge of a writer's family, or a cap that cannot cover the calls. job_poll returns the "
+                "report once the job completes; writer_promotion reads it as its primary reading."
             ),
         ),
         Action(

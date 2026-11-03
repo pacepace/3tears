@@ -29,6 +29,7 @@ Import only from these roots: a module under a root is internal and may move. Th
 - [`threetears.evals.storage`](#api-storage)
 - [`threetears.evals.testing`](#api-testing)
 - [`threetears.evals.quick`](#api-quick)
+- [`threetears.evals.harness`](#api-harness)
 - [`threetears.evals.ops`](#api-ops)
 - [`threetears.evals.actions`](#api-actions)
 - [`threetears.evals.transports.fastmcp`](#api-transports-fastmcp) (fails to import without the `[fastmcp]` extra)
@@ -832,6 +833,11 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 - **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
   <br>`= 1`
 
+<a id="api-harness"></a>
+### `threetears.evals.harness`
+
+The writer harness: the report writer measured as the thing under test, over the quick path's own store.
+
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
 
@@ -1610,8 +1616,9 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_case_freeze` | `write` | `template_id`, `campaign_id`, `recorded_analysis_id?`, `labels?`, `supersedes?` | Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template. |
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `writer_template_create` | `write` | `template_name`, `intent` | Write a report writer template, its scoring rubric seeded from the editor rubric this build ships. |
-| `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `group?`, `stratum?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
-| `writer_promotion` | `read` | `campaign_id`, `candidate` | Read whether a report writer campaign's candidate arm should replace its control. |
+| `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `skill?`, `group?`, `stratum?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
+| `writer_promotion` | `read` | `campaign_id`, `candidate`, `pairwise_job?` | Read whether a report writer campaign's candidate arm should replace its control. |
+| `writer_pairwise` | `spend`, job | `campaign_id`, `candidate` | Ask the scoring judge which page is better, candidate or control, for each case, as a job. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
@@ -1672,7 +1679,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
-| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `reporter_case_freeze`, `writer_promotion`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `reporter_case_freeze`, `writer_promotion`, `writer_pairwise`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
 | `campaign_id` (on `writer_case_mint`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
 | `candidate` | `string` | The candidate arm, by its label or its variant key; never the control. |
@@ -1745,6 +1752,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
+| `pairwise_job` | `string` or `null` | The completed writer_pairwise job over this candidate, whose report is the primary reading; without one the read never promotes. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
 | `person` (on `result_rate_person`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
 | `person` (on `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
@@ -1779,6 +1787,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
+| `skill` | `string` or `null` | The skill whose notes the withheld ones are checked against, by its content digest: the one the case's arms run, which the host gives the mint. Omitted, the skill this build ships. |
 | `snapshot_id` | `string` or `null` | A snapshot already frozen in the scope, as report_snapshot_freeze named it. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
@@ -1796,7 +1805,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `trials` | `'table'` \| `'all'` | How much of each failed or lost trial the report lays out: table (the default) is the census line and one row per such trial naming its stored result, read with result_get; all adds each one's full record (what it asked, what the judge saw and said, and why). JSON carries no records either way. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
-| `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the skill this build ships; empty withholds none. |
+| `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the mint's skill (skill); empty withholds none. |
 | `writer_case_id` | `string` | A writer case's id, the test_case_id writer_case_mint returned. |
 
 <a id="cli"></a>

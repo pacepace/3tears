@@ -40,7 +40,7 @@ _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/
 _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     analyst: frozenset({"InvariantVerdict"}),
     # The kind's factory is called only by the launcher, here; the writer harness's host registers the launcher.
-    report_writing: frozenset({"report_writer_kind", "write_report"}),
+    report_writing: frozenset({"report_writer_kind"}),
     # The writer harness's host profile declares the contract and the measures; a host seating apparatus of its own
     # calls the contract's builder, and none is written yet.
     writer_contract: frozenset({"writer_kind_contract"}),

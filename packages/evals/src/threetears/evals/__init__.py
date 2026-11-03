@@ -129,6 +129,7 @@ PUBLIC_ROOTS: tuple[str, ...] = (
     "threetears.evals.storage",
     "threetears.evals.testing",
     "threetears.evals.quick",
+    "threetears.evals.harness",
     "threetears.evals.ops",
     "threetears.evals.actions",
     "threetears.evals.transports.fastmcp",

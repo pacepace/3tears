@@ -7,7 +7,7 @@ measures is given, so what the engine's corrected verdicts say, and the read's d
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -30,6 +30,7 @@ from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND_MEASURES
 from threetears.evals.ops.report_writer.writer_kind import (
     WriterCase,
@@ -66,6 +67,7 @@ def promotion_campaign(
     case_sets: tuple[CaseSetRef | None, CaseSetRef | None] = (HELD_OUT, HELD_OUT),
     judges: tuple[str, str] = (SCORING_JUDGE, SCORING_JUDGE),
     writer: tuple[WriterMeasures, WriterMeasures] | None = None,
+    measures: Sequence[MetricDescriptor] = (),
 ) -> tuple[EvalHost, str]:
     """The toy host holding a campaign of a control and a candidate, its writer cases on ``side``; and its id.
 
@@ -82,13 +84,18 @@ def promotion_campaign(
     :param writer: The writer's measures each arm lands on each document, control first; none when ``None``. The
         profile declares the writer's measures either way.
     :ptype writer: tuple[WriterMeasures, WriterMeasures] | None
+    :param measures: More measures the profile declares beside the toy host's and the writer's (a guardrail), which
+        ``writer`` lands.
+    :ptype measures: Sequence[MetricDescriptor]
     :return: The host and the campaign's id.
     :rtype: tuple[EvalHost, str]
     """
     profile = toyhost_profile()
     profile = replace(
         profile,
-        measures=MeasureRegistry((*TOYHOST_MEASURES, *WRITER_KIND_MEASURES), families=profile.measures.families),
+        measures=MeasureRegistry(
+            (*TOYHOST_MEASURES, *WRITER_KIND_MEASURES, *measures), families=profile.measures.families
+        ),
     )
     host = toyhost_host(profile=profile)
     run_ids = []

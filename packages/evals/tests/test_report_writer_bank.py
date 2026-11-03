@@ -4,7 +4,8 @@ These tests seed the bank from the package fixtures (:mod:`packages.evals.tests.
 mints from its own snapshots, and mint from the toy host's campaign as a host mints from a campaign. They hold that
 both sets resolve and no case sits in both; that a group's cases sit on one side, its recorded side winning over the
 digest rule; that minting again returns the same case in the same set; that a mint differing from the source's case,
-a withheld note the shipped skill lacks, and a case listed on the other side are each refused; and that a launch over
+a withheld note the mint's skill lacks (the shipped one unless it names one it was given), and a case listed on the
+other side are each refused; and that a launch over
 a named set runs exactly its cases, each withholding its own note, with nothing chosen at launch.
 """
 
@@ -21,8 +22,9 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, OpsFixture
 from packages.evals.tests.report_writer_support import MODEL, FakeToolTurnClient, reply
 from packages.evals.tests.writer_case_support import SEED, WRITER_TEMPLATE, seed_writer_cases, writer_host
+from threetears.evals.actions.engine import WriterCaseMintParams
 from threetears.evals.actions.report_writing import report_writer_kind
-from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.ops import OpsHost
@@ -355,3 +357,53 @@ async def test_a_launch_over_a_named_set_runs_exactly_its_cases_each_withholding
         for note in notes:
             given = f'<file path="exemplars/{note}">' in system
             assert given is (note not in withheld[snapshot]), (snapshot, note)
+
+
+def _renamed_note() -> AnalystSkill:
+    """The shipped skill with r1's note renamed, file and index row: a frozen copy holding a note the shipped lacks."""
+    files = dict(load_skill().files)
+    files["exemplars/r1-renamed.md"] = files.pop("exemplars/r1-model-selection.md")
+    files["exemplars/INDEX.md"] = files["exemplars/INDEX.md"].replace("`r1-model-selection.md`", "`r1-renamed.md`")
+    return AnalystSkill(files=files)
+
+
+async def test_a_mint_checks_its_notes_against_the_skill_it_names_and_refuses_one_it_was_not_given() -> None:
+    fixture: OpsFixture = off_loop(writer_host)
+    renamed = _renamed_note()
+    named = {"campaign_id": fixture.campaign.id, "withhold": ["r1-renamed.md"]}
+
+    with pytest.raises(ValidationFailedError, match="the skill this build ships lacks"):
+        await _mint(fixture.host, **named)
+    with pytest.raises(ValidationFailedError, match=f"skill {renamed.digest}, which this mint was not given"):
+        await _mint(fixture.host, **named, skill=renamed.digest)
+    assert _stored(fixture.host) == []
+
+    minted = await writer_case_mint(
+        fixture.host,
+        WriterCaseMint(
+            template_id=WRITER_TEMPLATE.id,
+            campaign_id=fixture.campaign.id,
+            withhold=["r1-renamed.md"],
+            skill=renamed.digest,
+        ),
+        CALLER.scope_id,
+        created_by=CALLER.identity,
+        skills={renamed.digest: renamed},
+    )
+
+    (stored,) = _stored(fixture.host)
+    case = writer_case_of(stored)
+    assert case is not None and case.origin is not None
+    assert (stored.id, list(case.withhold), case.origin.skill) == (
+        minted.test_case_id,
+        ["r1-renamed.md"],
+        renamed.digest,
+    )
+    # The engine action's parameters carry the skill to the mint as the mint names it.
+    params = WriterCaseMintParams(
+        template_id=WRITER_TEMPLATE.id,
+        campaign_id=fixture.campaign.id,
+        withhold=["r1-renamed.md"],
+        skill=renamed.digest,
+    )
+    assert params.mint().skill == renamed.digest
