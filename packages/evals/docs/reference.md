@@ -838,6 +838,12 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 
 The writer harness: the report writer measured as the thing under test, over the quick path's own store.
 
+**Classes**
+
+- **`AnalystSkill`** · *host contract* · dataclass · The analyst skill's files, checked whole, and each role's system text built from them.
+- **`Writer`** · *host contract* · dataclass · One arm of a writer eval: the model that writes, the skill it starts from, and its reasoning effort.
+- **`WriterEval`** · *host contract* · class · The report writer, measured: arms of `Writer` over portable writer cases, replayed from recordings.
+
 <a id="api-ops"></a>
 ### `threetears.evals.ops`
 

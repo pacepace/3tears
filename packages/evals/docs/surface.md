@@ -59,6 +59,12 @@ An agent acting on declared state, an app's own logged outputs, the host a produ
 - `actions`: `Action`, `ActionCatalogue`, `ActionOutcome`, `Caller`, `ConformanceStage`, `eval_catalogue`, `standard_tools`
 - `transports.fastmcp`: `CallerResolver`, `CallTimedOut`, `HostResolution`, `mount_fastmcp`, `ToolCall`
 
+## Rung 5: the report writer evaluated
+
+The report writer as the thing under test: its arms, the skill each starts from, and the eval over frozen campaigns.
+
+- `harness`: `AnalystSkill`, `Writer`, `WriterEval`
+
 ## The host contract
 
 What a host writes against beyond the rungs: the host and profile, registries, the kind seam, launching, stored documents, the store port and its kits, refusals, versions, vocabularies and negotiation.

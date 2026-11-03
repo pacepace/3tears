@@ -7588,8 +7588,8 @@
     },
     "threetears.evals.harness.AnalystSkill": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "AnalystSkill(files: Mapping[str, str])",
+      "tier": "host-contract"
     },
     "threetears.evals.harness.MintedWriterCase": {
       "kind": "model",
@@ -7608,8 +7608,8 @@
     },
     "threetears.evals.harness.Writer": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Writer(model_id: str, skill: AnalystSkill | None = None, effort: str | None = None, revisions: int = 2, editor_model: str | None = None)",
+      "tier": "host-contract"
     },
     "threetears.evals.harness.WriterCaseFile": {
       "kind": "model",
@@ -7623,8 +7623,8 @@
     },
     "threetears.evals.harness.WriterEval": {
       "kind": "class",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', turns: int = 40, request_s: float = 120.0, margin: float = 5.0, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None) -> None",
+      "tier": "host-contract"
     },
     "threetears.evals.harness.WriterJudge": {
       "kind": "protocol",
