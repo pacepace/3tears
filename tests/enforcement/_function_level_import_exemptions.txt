@@ -15,3 +15,4 @@ packages/evals/src/threetears/evals/quick/toml_file.py::_prompt_runner  # builds
 packages/evals/src/threetears/evals/quick/toml_file.py::_graders  # builds a quick eval's graders once per run; test_providers_boundary pins that importing quick loads no providers client
 packages/evals/src/threetears/evals/quick/one_call.py::_describe_failure  # describes a failed candidate inside an eval job, not a request; test_providers_boundary pins that importing quick loads no client
 packages/evals/src/threetears/evals/quick/one_call.py::_owner_of  # names a failed candidate's owner inside an eval job, not a request; test_providers_boundary pins that importing quick loads no client
+packages/evals/src/threetears/evals/quick/writer_turns.py::WriterTurns._recorder  # builds the model that records a missing writer case, once per case of a paid recording run; test_providers_boundary pins that importing quick loads no providers client
