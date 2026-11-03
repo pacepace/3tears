@@ -1,7 +1,7 @@
 """The pairwise preference instrument: its criterion, the evidence of one order of a pair, and one case's reading.
 
-The criterion is built from the shipped editor rubric's items and digests stably: the same text gives the same
-criterion, a changed item another. One order's evidence lays out Report A then Report B, each page with its own facts
+The criterion is built from the shipped editor rubric's items and digests stably: built twice it is one criterion,
+and an item's text reaches it, so a changed item is another. One order's evidence lays out Report A then Report B, each page with its own facts
 labelled, and swapping the pages swaps the labels and nothing else. A case's reading turns each reply into the
 candidate's share from whichever slot it sat in, so a judge that answers the two orders as mirrors gives the candidate
 the same share from both; a "can't tell" reply is in no share and is counted; order consistency and the lean to the
@@ -15,14 +15,13 @@ from fractions import Fraction
 
 import pytest
 
-from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.ops.report_writer.preference import (
     PairJudgment,
     case_preference,
     pair_evidence,
     preference_rubric,
 )
-from threetears.evals.ops.report_writer.rubric import editor_rubric, shipped_rubric
+from threetears.evals.ops.report_writer.rubric import shipped_rubric
 from threetears.evals.schema.models import JudgeEvidence, fingerprint_criterion, fingerprint_judged_output
 
 _CONTROL = JudgeEvidence(case_material="Computed facts: control pass rate 0.62.", artifact="# Control page\n\nBody C.")
@@ -37,37 +36,33 @@ def _share(candidate: str, score: int) -> Fraction:
 # --- the criterion --------------------------------------------------------------------------------------------------
 
 
-def test_the_criterion_is_one_ordinal_builtin_dimension_carrying_every_shipped_item_in_order() -> None:
+def _item_lines() -> list[str]:
+    """The shipped rubric's items, one line each, as the criterion lists them."""
+    return [f"{item.n}. {item.name}. {item.definition}" for item in shipped_rubric().items]
+
+
+def test_the_criterion_is_one_ordinal_builtin_dimension_ending_in_every_shipped_item_in_order() -> None:
     dim = preference_rubric()
     assert (dim.name, dim.scale, dim.judge) == ("report_writer.preferred", "ordinal", "builtin")
     assert sorted(dim.scoring_guide) == ["1", "3", "5"]
     assert "Report A" in dim.scoring_guide["1"] and "Report B" in dim.scoring_guide["5"]
-    items = shipped_rubric().items
-    positions = [dim.description.index(f"{item.n}. {item.name}. {item.definition}") for item in items]
-    assert positions == sorted(positions)
-    assert len(dim.description.splitlines()) == len(items) + 1
+    lines = dim.description.splitlines()
+    items = _item_lines()
+    assert lines[-len(items) :] == items
+    # What comes before the items says the score is a direction between the two reports, A first.
+    preamble = "\n".join(lines[: -len(items)])
+    assert preamble.index("Report A") < preamble.index("Report B")
 
 
-def test_the_criterion_digests_the_same_for_the_same_rubric_text() -> None:
-    shipped = fingerprint_criterion(preference_rubric())
-    assert fingerprint_criterion(preference_rubric()) == shipped
-    assert fingerprint_criterion(preference_rubric(shipped_rubric())) == shipped
-    assert fingerprint_criterion(preference_rubric(editor_rubric(load_skill().editor().text))) == shipped
-
-
-def test_a_changed_rubric_item_in_editor_md_is_another_criterion_and_prose_outside_it_is_not() -> None:
-    text = load_skill().editor().text
-    first = shipped_rubric().items[0]
-    reworded = text.replace(first.definition, first.definition + " It also names the cost.")
-    assert reworded != text
-    assert fingerprint_criterion(preference_rubric(editor_rubric(reworded))) != fingerprint_criterion(
-        preference_rubric()
+def test_the_criterion_digests_the_same_every_time_and_another_when_an_item_changes() -> None:
+    dim = preference_rubric()
+    assert fingerprint_criterion(preference_rubric()) == fingerprint_criterion(dim)
+    first = _item_lines()[0]
+    reworded = dim.model_copy(
+        update={"description": dim.description.replace(first, first + " It also names the cost.")}
     )
-    elsewhere = text.replace("## The rubric\n", "## The rubric\n\nRead the whole report first.\n", 1)
-    assert elsewhere != text
-    assert fingerprint_criterion(preference_rubric(editor_rubric(elsewhere))) == fingerprint_criterion(
-        preference_rubric()
-    )
+    assert reworded.description != dim.description
+    assert fingerprint_criterion(reworded) != fingerprint_criterion(dim)
 
 
 # --- the evidence ---------------------------------------------------------------------------------------------------
@@ -98,9 +93,11 @@ def test_the_swapped_pair_is_the_mirror_and_a_judged_output_of_its_own() -> None
     assert fingerprint_judged_output(forward) != fingerprint_judged_output(back)
 
 
-def test_a_page_with_a_subject_is_refused_rather_than_dropped() -> None:
+@pytest.mark.parametrize("first", [True, False])
+def test_a_page_with_a_subject_is_refused_rather_than_dropped(first: bool) -> None:
+    briefed = _CONTROL.model_copy(update={"subject": "a brief"})
     with pytest.raises(ValueError, match="subject"):
-        pair_evidence(_CONTROL.model_copy(update={"subject": "a brief"}), _CANDIDATE)
+        pair_evidence(briefed, _CANDIDATE) if first else pair_evidence(_CANDIDATE, briefed)
 
 
 # --- one case's reading ---------------------------------------------------------------------------------------------
@@ -164,6 +161,11 @@ def test_a_case_the_judge_could_not_tell_at_all_has_no_share() -> None:
 def test_a_score_off_the_scale_is_refused(score: int) -> None:
     with pytest.raises(ValueError, match="1-5"):
         case_preference([PairJudgment("B", score)])
+
+
+def test_a_slot_that_is_neither_a_nor_b_is_refused() -> None:
+    with pytest.raises(ValueError, match="neither A nor B"):
+        case_preference([PairJudgment("C", 3)])  # type: ignore[arg-type]
 
 
 def test_a_case_with_no_judgment_is_refused() -> None:

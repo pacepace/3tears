@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Literal
 
-from threetears.evals.ops.report_writer.rubric import EditorRubric, shipped_rubric
+from threetears.evals.ops.report_writer.rubric import shipped_rubric
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND
 from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
@@ -27,7 +27,15 @@ from threetears.evals.schema.models import JudgeEvidence, RubricDim
 __all__ = ["CasePreference", "PairJudgment", "Slot", "case_preference", "pair_evidence", "preference_rubric"]
 
 #: The preference dimension's name.
-PREFERRED_DIM = f"{WRITER_KIND}.preferred"
+_PREFERRED_DIM = f"{WRITER_KIND}.preferred"
+
+#: The description's lines before the rubric's items: what is under review, and what the score means.
+_PREFERENCE_PREAMBLE = (
+    "The output under review is two reports written over the same data, Report A first and Report B second, read "
+    "together. The score is not a grade of either report: it says which one serves its reader better, and by how "
+    "much, so read 1 and 5 by the scoring guide, never as worst and best.",
+    "Weigh these items together:",
+)
 
 #: Which of the pair's two places a page sits in: ``A`` is read first, ``B`` second.
 type Slot = Literal["A", "B"]
@@ -36,34 +44,27 @@ type Slot = Literal["A", "B"]
 _LOW, _HIGH = 1, 5
 
 
-def preference_rubric(rubric: EditorRubric | None = None) -> RubricDim:
+def preference_rubric() -> RubricDim:
     """The dimension a pair is judged on: which report serves its reader better, on the editor rubric's items.
 
-    Its description is the rubric's items, numbered, as ``editor.md`` states them; its guide anchors 1 at Report A
-    clearly better, 3 at no difference a reader would act on, and 5 at Report B clearly better. Built from the
-    rubric's text alone, so the same text always gives the same criterion
-    (:func:`~threetears.evals.schema.models.fingerprint_criterion`), and a changed item gives another. It declares the
-    built-in judge prompt, as the writer's absolute dimensions do, so the prompt is held fixed with the criterion.
+    Its description says the output under review is the two reports together and that the score is a direction
+    between them, not a grade of either (the built-in prompt calls 1 worst and 5 best, which on this scale would
+    read as "Report A is worst"); then the shipped rubric's items, numbered, as ``editor.md`` states them
+    (:func:`~threetears.evals.ops.report_writer.rubric.shipped_rubric`). Its guide anchors 1 at Report A clearly
+    better, 3 at no difference a reader would act on, and 5 at Report B clearly better. Built from the rubric's text
+    alone, so the same ``editor.md`` always gives the same criterion
+    (:func:`~threetears.evals.schema.models.fingerprint_criterion`) and a changed item another. Like the writer's
+    absolute dimensions, it is always the shipped skill's, never an arm's, and declares the built-in judge prompt,
+    so the prompt is held fixed with the criterion.
 
-    :param rubric: The rubric to read the items from; None for the shipped skill's
-        (:func:`~threetears.evals.ops.report_writer.rubric.shipped_rubric`). A rubric read from a recorded
-        ``editor.md`` (:func:`~threetears.evals.ops.report_writer.rubric.editor_rubric`) asks the question a past
-        build asked.
-    :ptype rubric: EditorRubric | None
     :return: The dimension, ordinal 1-5.
     :rtype: RubricDim
     """
-    items = (rubric or shipped_rubric()).items
-    description = "\n".join(
-        [
-            "Which of two reports written over the same data, Report A or Report B, serves its reader better, "
-            "taking these items together:",
-            *(f"{item.n}. {item.name}. {item.definition}" for item in items),
-        ]
-    )
     return RubricDim(
-        name=PREFERRED_DIM,
-        description=description,
+        name=_PREFERRED_DIM,
+        description="\n".join(
+            [*_PREFERENCE_PREAMBLE, *(f"{item.n}. {item.name}. {item.definition}" for item in shipped_rubric().items)]
+        ),
         scale="ordinal",
         scoring_guide={
             "1": "Report A serves the reader clearly better.",
@@ -146,12 +147,14 @@ def case_preference(judgments: Sequence[PairJudgment]) -> CasePreference:
     :ptype judgments: Sequence[PairJudgment]
     :return: The case's reading.
     :rtype: CasePreference
-    :raises ValueError: There is no judgment, or a score is off the 1-5 scale.
+    :raises ValueError: There is no judgment, a slot is neither A nor B, or a score is off the 1-5 scale.
     """
     if not judgments:
         raise ValueError("a case's preference needs at least one judgment")
     shares: dict[Slot, list[Fraction]] = {"A": [], "B": []}
     for judgment in judgments:
+        if judgment.candidate not in shares:
+            raise ValueError(f"preference slot {judgment.candidate!r} is neither A nor B")
         score = judgment.score
         if score is None:
             continue
@@ -161,7 +164,6 @@ def case_preference(judgments: Sequence[PairJudgment]) -> CasePreference:
         shares[judgment.candidate].append(Fraction(won, _HIGH - _LOW))
     as_a, as_b = _mean(shares["A"]), _mean(shares["B"])
     by_order = [share for share in (as_a, as_b) if share is not None]
-    both = as_a is not None and as_b is not None
     scored = len(shares["A"]) + len(shares["B"])
     return CasePreference(
         share=float(sum(by_order) / len(by_order)) if by_order else None,
@@ -169,8 +171,8 @@ def case_preference(judgments: Sequence[PairJudgment]) -> CasePreference:
         share_as_b=None if as_b is None else float(as_b),
         scored=scored,
         cannot_tell=len(judgments) - scored,
-        order_consistent=_side(as_a) == _side(as_b) if both else None,
-        first_slot_bias=float((as_a - as_b) / 2) if as_a is not None and as_b is not None else None,
+        order_consistent=None if as_a is None or as_b is None else _side(as_a) == _side(as_b),
+        first_slot_bias=None if as_a is None or as_b is None else float((as_a - as_b) / 2),
     )
 
 
@@ -179,7 +181,7 @@ def _mean(values: list[Fraction]) -> Fraction | None:
     return sum(values, Fraction(0)) / len(values) if values else None
 
 
-def _side(share: Fraction | None) -> int:
+def _side(share: Fraction) -> int:
     """Which side a share picks: 1 the candidate, -1 the control, 0 neither."""
     half = Fraction(1, 2)
-    return 0 if share is None or share == half else (1 if share > half else -1)
+    return 0 if share == half else (1 if share > half else -1)
