@@ -11,6 +11,11 @@ silently when it fails at all:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -236,3 +241,53 @@ class TestSubjectSnapshotShape:
         )
 
         assert SubjectSnapshot.model_validate(original.model_dump(mode="json")) == original
+
+
+_NO_CLOCK_AT_IMPORT = textwrap.dedent(
+    """
+    import importlib
+    import uuid
+
+    from threetears.evals.schema import models, subject
+
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the clock or entropy was read while importing")
+
+
+    # A model field keeps the factory it was declared with, so each is re-pointed at the refusing one.
+    for module in (models, subject):
+        for name in dir(module):
+            cls = getattr(module, name)
+            if isinstance(cls, type) and hasattr(cls, "model_fields") and cls.__module__ == module.__name__:
+                for field in cls.model_fields.values():
+                    if field.default_factory in (subject._now_iso, models.utc_now_iso, uuid.uuid7):
+                        field.default_factory = refuse
+                cls.model_rebuild(force=True)
+    uuid.uuid7 = refuse
+
+    for name in ("tests.factories", "tests.fixtures.toyhost", "tests.fixtures.courierhost"):
+        importlib.import_module("packages.evals." + name)
+    for name in (
+        "test_strict_output",
+        "test_hostneutral_run_kind",
+        "test_hostneutral_sweepables",
+        "test_subject_snapshot",
+    ):
+        importlib.import_module("packages.evals.tests." + name)
+    """
+)
+
+
+def test_importing_the_test_support_modules_reads_no_clock() -> None:
+    """A subject built at import stamps the clock then, so every later test in the process is uncacheable.
+
+    This test is itself uncacheable (it starts a process); the cost is one test, not the suite.
+    """
+    root = Path(__file__).resolve().parents[3]
+
+    done = subprocess.run(
+        [sys.executable, "-c", _NO_CLOCK_AT_IMPORT], cwd=root, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 0, done.stderr[-2000:]

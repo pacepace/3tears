@@ -23,7 +23,9 @@ from threetears.evals.kernel.host.sweepables import CORE_SWEEPABLES, JUDGE_INPUT
 from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 
 
-_SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)
+_SUBJECT = SubjectSnapshot(
+    subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None, captured_at="2026-08-01T00:00:00+00:00"
+)
 
 #: Each role's apparatus dimension, the run field it reads (what the role was ASKED for), and the role's pins.
 ROLES = [
