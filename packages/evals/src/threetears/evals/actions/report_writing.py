@@ -32,7 +32,12 @@ from threetears.evals.ops.report_writer.write import ReportNotStored as ReportNo
 from threetears.evals.ops.report_writer.write import ReportWritten as ReportWritten
 from threetears.evals.ops.report_writer.write import AnalystSkill, report_write
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WriterModels, WriterOverlays
+from threetears.evals.ops.report_writer.writer_contract import (
+    WRITER_KIND,
+    WriterModelFactory,
+    WriterModels,
+    WriterOverlays,
+)
 from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind, writer_subject_components
 from threetears.evals.ops.report_writer.writer_launch import (
     WRITER_UNHONOURED_LAUNCH_ARGUMENTS,
@@ -55,10 +60,10 @@ from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.schema.models import EvalRun, JudgedArtifact
 from threetears.evals.schema.subject import SubjectSnapshot
 
-#: What ``analysis_generate``'s action hands its job (actions/engine.py). ``write_report``, ``report_writer_kind``
-#: and ``launchable_report_writer_kind`` stay out until a caller outside this module imports them (a host's launch
-#: registry); ``tests/test_report_writer_exports.py`` lists each as awaiting one.
-__all__ = ["campaign_report_writer"]
+#: What ``analysis_generate``'s action hands its job (actions/engine.py), and the launch registry entry the writer
+#: harness's host registers (harness/writer_host.py). ``write_report`` and ``report_writer_kind`` stay out until a
+#: caller outside this module imports them; ``tests/test_report_writer_exports.py`` lists each as awaiting one.
+__all__ = ["campaign_report_writer", "launchable_report_writer_kind"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +234,7 @@ def launchable_report_writer_kind(
     ops_host: Callable[[], OpsHost],
     *,
     identity: str,
-    models: Callable[[str], WriterModels],
+    models: WriterModelFactory,
     budget: ReportBudget,
     request_s: RequestCeiling,
     model_family: ModelFamily,
@@ -251,8 +256,9 @@ def launchable_report_writer_kind(
     :ptype ops_host: Callable[[], OpsHost]
     :param identity: Who the cells' tool calls run as, as the host names its campaign runner.
     :ptype identity: str
-    :param models: The host's model factory for an arm's candidate model, by the id the launch names.
-    :ptype models: Callable[[str], WriterModels]
+    :param models: The host's model factory for an arm: its candidate model, by the id the launch names, and the
+        skill the arm runs.
+    :ptype models: WriterModelFactory
     :param budget: Each report's budget.
     :ptype budget: ReportBudget
     :param request_s: The host's ceiling for one request on its client, by output cap.
@@ -287,7 +293,7 @@ def launchable_report_writer_kind(
             host,
             Caller(scope_id=request.scope_id, identity=identity),
             overlays=arm.overlays,
-            models=models(arm.candidate_model),
+            models=models(arm.candidate_model, arm.skill),
             budget=budget,
             skills=skills,
             prefix=prefix,

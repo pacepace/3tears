@@ -783,6 +783,7 @@ class Model:
 
     :ivar model_name: The model id, which every completion is attributed to.
     :ivar provider: The provider it goes to.
+    :ivar base_url: The OpenAI-compatible endpoint it was built on, or ``None`` for its provider's own.
     :ivar recording: The recording's path, or ``None``.
     :ivar pricer: The pricer it was handed, which every model derived from it keeps; ``None`` when it was handed none
         (it is then priced by the default, or by its catalogue: the class docstring says which).
@@ -895,6 +896,7 @@ class Model:
         #: Whether the model is priced by the default pricer, given when it is handed neither a pricer nor a catalogue.
         self._default_pricing = pricer is None and catalogue is None
         self.provider: Provider = _provider_of(id, provider, base_url)
+        self.base_url = base_url
         self.recording = beside_eval_file(recording) if recording is not None else None
         self.turn_recording = beside_eval_file(turn_recording) if turn_recording is not None else None
         self._options: dict[str, Any] = {  # Any: the constructor's keyword values, for derive()

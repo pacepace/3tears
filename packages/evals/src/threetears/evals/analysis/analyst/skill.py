@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 from functools import cache, cached_property
 from importlib.resources.abc import Traversable
 from importlib.resources import files
+from pathlib import Path
 from types import MappingProxyType
 
+from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.schema.hashing import canonical_digest
 
 #: The skill's role file, then the modules it tells the analyst to read with it, in the order it names them.
@@ -95,6 +97,39 @@ class AnalystSkill:
             raise ValueError(
                 f"exemplars/INDEX.md has no row for {', '.join(unlisted)}: give each note a row and its Structure"
             )
+
+    @classmethod
+    def at(cls, path: str | Path) -> AnalystSkill:
+        """A skill read from a directory laid out as the shipped one: a frozen copy, or a variant under test.
+
+        :param path: The skill's root directory; a relative path is read beside the eval file being loaded, else in the
+            working directory.
+        :ptype path: str | Path
+        :return: The skill, checked whole.
+        :rtype: AnalystSkill
+        :raises ValueError: When ``path`` is not a directory, or the skill there is not whole.
+        """
+        root = beside_eval_file(path)
+        if not root.is_dir():
+            raise ValueError(f"no analyst skill directory at {root}: name the directory holding its SKILL.md")
+        return cls(files=_read_tree(root))
+
+    def with_file(self, name: str, text: str) -> AnalystSkill:
+        """This skill with one file's text replaced: a variant differing in that file alone, under its own digest.
+
+        :param name: The file, by its path relative to the skill's root (``SKILL.md``, ``exemplars/INDEX.md``).
+        :ptype name: str
+        :param text: Its new text.
+        :ptype text: str
+        :return: The new skill, checked whole.
+        :rtype: AnalystSkill
+        :raises ValueError: When the skill holds no file of that name, or the new skill is not whole.
+        """
+        if name not in self.files:
+            raise ValueError(
+                f"the skill holds no file {name!r} to replace; its files are {', '.join(sorted(self.files))}"
+            )
+        return AnalystSkill(files={**self.files, name: text})
 
     @cached_property
     def _notes(self) -> tuple[str, ...]:

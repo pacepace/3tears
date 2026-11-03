@@ -129,7 +129,7 @@ def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> Op
     built: list[int] = []
     if dry:
 
-        def models(model: str) -> Callable[[EffortWord | None], Any]:
+        def models(model: str, _skill: AnalystSkill) -> Callable[[EffortWord | None], Any]:
             return lambda _effort: _FakeDryModel(model_name=model)
 
     else:
@@ -143,7 +143,7 @@ def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> Op
 
         launch = replace(launch, eval_host=replace(launch.eval_host, clients=judge_clients))
 
-        def models(model: str) -> Callable[[EffortWord | None], Any]:
+        def models(model: str, _skill: AnalystSkill) -> Callable[[EffortWord | None], Any]:
             def at(effort: EffortWord | None) -> Model:
                 built.append(1)
                 return Model(
