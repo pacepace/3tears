@@ -29,7 +29,8 @@ holds raises :class:`~threetears.evals.testing.RecordingRefused` naming the sess
 runs differently from when the recording was made, and the remedy is to the code, or to the recorded reply as data: a
 turn recording that exists is only ever replayed (:meth:`RecordedTurns.record` refuses one), since a second paid run
 would answer differently and hide what changed. The one exception is a recording run that was cut short (interrupted,
-or a turn that failed), which leaves a file a replay runs off the end of: that file is deleted and recorded again.
+or a turn that failed), which leaves a file a replay runs off the end of: nothing deletes it, so it is deleted by
+hand and recorded again.
 
 **The file.** One JSON object per line, appended as each event happens: the recorder's format version
 (:attr:`RecordedTurns.FORMAT_VERSION`), when it was written, the session's name, the index (from 0) of the turn the

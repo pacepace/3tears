@@ -101,7 +101,9 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     for needed in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "python -m threetears.evals examples/5-writer/writer.py"):
         assert needed in readme
     writer = (RUNG / "writer.py").read_text(encoding="utf-8")
-    assert 'effort="medium"' in writer and "max_cost_usd=23.0" in writer
+    assert 'effort="medium"' in writer and "max_cost_usd=39.0" in writer
+    assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
+    assert "owner-approved $39 cap" in readme and "awaiting" not in readme
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(

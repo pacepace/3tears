@@ -4,8 +4,8 @@ Not recorded yet. Until they are, `python -m threetears.evals examples/5-writer/
 runs, naming the first missing file and the key that would record it: `judge.jsonl` and `OPENROUTER_API_KEY` first,
 then the writer's first turn file and `ANTHROPIC_API_KEY`.
 
-**The one command that records them**, from `packages/evals/` (owner-approved: Sonnet for both the analyst and its
-editor, effort `medium`; at most $23 for the whole run, the judge and the pairwise pass included):
+**The one command that records them**, from `packages/evals/` (Sonnet for both the analyst and its editor, effort
+`medium`, under the owner-approved $39 cap):
 
 ```bash
 ANTHROPIC_API_KEY=... OPENROUTER_API_KEY=... uv run python -m threetears.evals examples/5-writer/writer.py
@@ -19,10 +19,49 @@ writes:
 | `judge.jsonl` | the scoring judge's calls, `google/gemini-3.8-flash` through OpenRouter | `OPENROUTER_API_KEY` |
 | `turns/<arm>-<skill12>-claude-sonnet-5-5-medium-r<revisions>/<case>-<snapshot12>.jsonl` | one report's analyst and editor sessions, one file per arm and case | `ANTHROPIC_API_KEY` |
 
-It writes the 7 held-out cases for each of the 2 arms: 14 reports, each capped at $1.50. `pairwise_share=0.05`
-holds $1.15 of the $23 `max_cost_usd` back for the pairwise pass, and each arm gets half the rest, $10.93, over its
-$10.50 of reports; the engine enforces each part on the run's spend. The 4 dev cases are for tuning a change and are
-not recorded by it.
+The store it writes, `packages/evals/.evals/`, is ignored: commit the recordings alone.
+
+## What it may spend
+
+It writes the 7 held-out cases for each of the 2 arms: 14 reports. The figures are set in `writer.py`, and these are
+the ones it sets today:
+
+| | dollars |
+|---|---|
+| `max_cost_usd`, the owner-approved cap | 39.00 |
+| the pairwise pass's reserve (`pairwise_share=0.05`) | 1.95 |
+| each arm's part, half the rest | 18.52 |
+| an arm's 7 reports, each capped at `budget_usd` 2.50 and 45 turns | 17.50 |
+| an arm's judging: 7 cases x 7 dimensions x 2 attempts at the judge's floor | 0.99 |
+| the pass: 7 pairs x 2 orders x 2 attempts at the judge's floor | 0.28 |
+
+The judge's floor is one call with no page in it, $0.0101: its 2,048-token output cap and 2,048 prompt tokens at
+OpenRouter's rates. The run is refused before any arm launches when an arm's reports and judging, or the pass, could
+pass its part at that floor. The pages a call reads are priced only once they are written, and the cap is checked
+between cells, so the cells in flight when an arm's part runs out can finish past it.
+
+## When a recording run is cut short
+
+A run stopped part-way (a 429 or 529 the retries did not outlast, a refusal, Ctrl-C) leaves files a later run cannot
+finish on its own.
+
+**A report's turn file.** The next run replays it, runs off its end, and refuses that cell, naming the file. A turn
+file is never recorded again over itself, so delete it by hand (the path matches
+`recordings/turns/<arm>-<skill12>-claude-sonnet-5-5-medium-r<revisions>/<case>-<snapshot12>.jsonl`), then run the
+record command again: every finished report replays free, and the deleted one is written and paid for again.
+
+**`judge.jsonl`.** Without `RECORD=1` a judge file that exists is replayed, and every call it lacks is refused. Once
+the turn files are whole, record it again from the start, from `packages/evals/`:
+
+```bash
+RECORD=1 ANTHROPIC_API_KEY=... OPENROUTER_API_KEY=... uv run python -m threetears.evals examples/5-writer/writer.py
+```
+
+`RECORD=1` starts a judge file written before this run afresh and makes every judge call again, the pass's included.
+It never records over a turn file, so the reports replay free. The judge's settings (`temperature`, `max_tokens`) are
+part of what each call is matched on: change one after recording, and record the judge again with this command.
+
+## What a recording is keyed by
 
 A turn recording is keyed by everything it does not check: the arm, the skill's digest, the model, the effort, the
 revisions and the case's snapshot. Edit `skills/lead-first.md`, or refreeze a case, and its old recordings are no
