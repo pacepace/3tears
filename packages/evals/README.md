@@ -43,6 +43,7 @@ missed, and where its report page is. Then climb [the ladder](docs/ladder.md), o
 | [2](docs/ladder.md#rung-2-a-judge-checked-against-a-person) | [`2-replies/`](examples/2-replies/replies.py) | When no code can grade the answer, let a model judge it, and check the judge against a person. |
 | [3](docs/ladder.md#rung-3-two-prompts-compared) | [`3-invoices/`](examples/3-invoices/extract.py) | Changing a prompt? Compare it against the current one, and get a report you can hand to a reviewer. |
 | [4](docs/ladder.md#rung-4-an-agent-graded-on-the-world-it-leaves) | [`4-booking/`](examples/4-booking/agent.py) | Is your agent doing the right thing to the world, not only saying it? Then serve your evals to the team. |
+| [5](docs/ladder.md#rung-5-evaluate-the-evaluator) | [`5-writer/`](examples/5-writer/writer.py) | Is the model that writes your reports writing them well? A writer is a model too: compare two of its skills on frozen campaigns, and let the engine make the call. |
 
 **Where the science lives:**
 - [Measuring soundly](docs/measuring-soundly.md): which design answers your question, how many cases, and the traps.
@@ -101,7 +102,7 @@ this README is the package's description, they do not resolve, so read the docs 
 
 - [Building an inventory](docs/building-an-inventory.md): what to test before a line of code, ending in rung 0; then
   which cases a classifier needs, and how many.
-- [The ladder](docs/ladder.md): rungs 1 to 4, through the four examples.
+- [The ladder](docs/ladder.md): rungs 1 to 5, through the five examples.
 - [Concepts](docs/concepts.md): the six concepts, and the glossary of every other word.
 
 **Go deeper**
