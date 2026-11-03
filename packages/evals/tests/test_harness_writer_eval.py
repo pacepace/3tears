@@ -440,6 +440,11 @@ async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_e
         (lambda: Writer(WRITER, effort="loud"), "effort 'loud' is none of none, minimal, low"),
         (lambda: Writer(WRITER, revisions=MOST_REVISIONS + 1), f"revisions are 0 to {MOST_REVISIONS}, not 3"),
         (lambda: Writer(WRITER, revisions=-1), f"revisions are 0 to {MOST_REVISIONS}, not -1"),
+        (lambda: Writer("vendor/model"), "model 'vendor/model' names its recordings' directory, so it holds no '/'"),
+        (
+            lambda: Writer(WRITER, editor_model="vendor/editor"),
+            "editor's model 'vendor/editor' names its recordings' directory",
+        ),
         (lambda: _declared(held_out_fraction=0.0), "strictly between 0 and 1, not 0.0"),
         (lambda: _declared(held_out_fraction=1.0), "strictly between 0 and 1, not 1.0"),
         (lambda: _declared(side="both"), "side is 'held_out' or 'dev', not 'both'"),

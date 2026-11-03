@@ -96,7 +96,9 @@ def _skill(overlays: WriterOverlays, skills: Mapping[str, AnalystSkill]) -> Anal
     return skill
 
 
-def judge_family_check(candidate_model: str, judge_model: str, model_family: ModelFamily) -> str:
+def judge_family_check(
+    candidate_model: str, judge_model: str, model_family: ModelFamily, *, role: str = "writer"
+) -> str:
     """The family check, refused when the writer and its scoring judge are of one family; else what was checked.
 
     The launcher's rule, and the pairwise pass's
@@ -109,6 +111,9 @@ def judge_family_check(candidate_model: str, judge_model: str, model_family: Mod
     :ptype judge_model: str
     :param model_family: The host's reading of a model's family.
     :ptype model_family: ModelFamily
+    :param role: What ``candidate_model`` is to the page, as the check names it: ``writer``, or ``editor`` for an arm
+        whose editor runs on a model of its own.
+    :ptype role: str
     :return: The check as made: both families when the host placed both, else which model it could not place.
     :rtype: str
     :raises ValidationFailedError: The host placed both in one family.
@@ -116,7 +121,7 @@ def judge_family_check(candidate_model: str, judge_model: str, model_family: Mod
     writer, judge = model_family(candidate_model), model_family(judge_model)
     if writer is not None and writer == judge:
         raise ValidationFailedError(
-            f"the scoring judge {judge_model!r} is of the writer {candidate_model!r}'s family ({writer}), and a judge "
+            f"the scoring judge {judge_model!r} is of the {role} {candidate_model!r}'s family ({writer}), and a judge "
             "scoring its own family's pages favours them",
             remedy="name a judge of another model family",
         )
@@ -126,7 +131,7 @@ def judge_family_check(candidate_model: str, judge_model: str, model_family: Mod
             "eval.writer_judge_family unchecked: the host places no family for %s", ", ".join(map(repr, unplaced))
         )
         return f"unchecked: the host places no family for {', '.join(map(repr, unplaced))}"
-    return f"writer {writer}, judge {judge}"
+    return f"{role} {writer}, judge {judge}"
 
 
 def _cases(request: LaunchRequest, stored: Sequence[EvalTestCase]) -> tuple[EvalTestCase, ...]:
@@ -196,8 +201,8 @@ def admit_writer_launch(
     judge_family = judge_family_check(candidate_model, request.judge_model, model_family)
     if overlays.editor_model is not None:
         # The editor shapes the page the judge scores, so it is held to another family than the judge's too.
-        editor = judge_family_check(overlays.editor_model, request.judge_model, model_family)
-        judge_family += f"; editor {editor.removeprefix('writer ')}"
+        editor = judge_family_check(overlays.editor_model, request.judge_model, model_family, role="editor")
+        judge_family += f"; {editor}"
     return WriterAdmitted(
         overlays=overlays,
         skill=skill,

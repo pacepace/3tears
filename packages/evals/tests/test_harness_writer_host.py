@@ -26,6 +26,7 @@ from packages.evals.tests.report_writer_support import FakeToolTurnClient, reply
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
+from threetears.evals.kernel import ceiling_is_estimate
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.harness import Writer, WriterEval
 from threetears.evals.ops import OpsHost, await_job
@@ -279,6 +280,15 @@ def test_the_judge_is_lent_for_the_judge_role_on_its_own_model_and_nothing_else(
 
     lent = clients("judge", None, temperature=0.0)
     assert isinstance(lent, BorrowedJudgeClient) and lent.model_name == JUDGE
+    # Lent, it prices each call as the judge does, and says its prices are estimates as the judge says: an OpenRouter
+    # route's are, so a cap checked on them says so; a judge that says nothing prices its own calls.
+    assert _judge().ceiling_is_estimate() is True
+    assert ceiling_is_estimate(lent) is True
+    scripted = _host(tmp_path, judge=FakeScoringJudge(JUDGE)).eval_host.clients
+    assert scripted is not None
+    priced = scripted("judge", None)
+    assert ceiling_is_estimate(priced) is False
+    assert priced.price_ceiling(system="Score it.", user="The page.") == 0.0
     assert isinstance(clients("judge", JUDGE), BorrowedJudgeClient)
     with pytest.raises(ValueError, match="'analysis' role"):
         clients("analysis", None)

@@ -63,7 +63,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, Final, get_args
 
 from threetears.evals.analysis import (
     CampaignReport,
@@ -121,6 +121,9 @@ _EDITOR_LEVER = f"{WRITER_KIND}.editor_model"
 #: What tells one arm from another: every lever the launcher hands the model factory, and the effort.
 _Condition = tuple[str, str, int, str | None, str | None]
 
+#: What a model id may not hold, since it names a recording directory.
+_NOT_IN_A_SEGMENT: Final = ("/", "\\", "\0")
+
 #: The efforts a writer may name.
 _EFFORTS: frozenset[str] = frozenset(get_args(EffortWord))
 
@@ -156,6 +159,14 @@ class Writer:
             raise ValueError("a Writer names its model by id, and this one is blank")
         if self.editor_model is not None and not self.editor_model.strip():
             raise ValueError("a Writer names its editor's model by id, and this one is blank")
+        for what, model in (("model", self.model_id), ("editor's model", self.editor_model)):
+            if model is not None and any(sep in model for sep in _NOT_IN_A_SEGMENT):
+                # Refused here, before any case is minted: each id names a recording directory.
+                raise ValueError(
+                    f"a Writer's {what} {model!r} names its recordings' directory, so it holds no '/' or '\\'; an "
+                    "aggregator's route (vendor/model) cannot be recorded by the harness: name the provider's own id "
+                    "and build it on that provider (writer_provider)"
+                )
         if self.effort is not None and self.effort not in _EFFORTS:
             raise ValueError(f"effort {self.effort!r} is none of {', '.join(get_args(EffortWord))}")
         if not 0 <= self.revisions <= MOST_REVISIONS:
