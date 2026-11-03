@@ -19,6 +19,7 @@ and nothing else.
 | What a launch may turn | `contract.py` | The extractor's `KindContract`: its overlay model and its template spec model |
 | The host value | `host.py` | The one `EvalHost` handed to every entrypoint |
 | Launching | `launch.py` | The `LaunchHost` and the extractor's launcher, for `start_run` |
+| Writing a report | `ops.py` | The `OpsHost`: its `AnalysisGeneration` (a report's budget, and a job ceiling derived from the writer's), its reading of a model's family, and the report writer's kind contract and measures on the profile |
 | Tracing | `tracing.py` | The host's own `TraceSink`, implemented without OpenTelemetry |
 | A model judge | `judge.py` | A rubric and a scripted `CompletionClient` the engine's `JudgeService` scores through |
 | Data | `corpus.py`, `run.py`, `campaign.py` | A hand-built observational corpus, a run path through the runner, and a declared campaign over each |

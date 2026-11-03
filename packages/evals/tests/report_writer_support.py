@@ -15,8 +15,8 @@ from typing import Any, Final
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host, snapshot_ids
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_doc_support import converted_doc
+from packages.evals.tests.writer_host_support import CALLER
 from threetears.evals.actions.report_writing import ReportWritten, write_report
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.ops import OpsHost

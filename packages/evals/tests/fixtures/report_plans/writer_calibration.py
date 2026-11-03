@@ -52,10 +52,9 @@ from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER as SM
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion
-from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_writer_support import RecordedModel
 from packages.evals.tests.scripted_table import FakeCellSink
-from packages.evals.tests.writer_case_support import WRITER_TEMPLATE, writer_host
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
 from threetears.evals.actions.report_writing import report_writer_kind
 from threetears.evals.analysis import judge_kind_readings
 from threetears.evals.analysis.analyst.skill import load_skill

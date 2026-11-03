@@ -9,8 +9,7 @@ from __future__ import annotations
 import pytest
 
 from packages.evals.tests.fixtures.toyhost.host import with_kinds
-from packages.evals.tests.ops_support import CALLER
-from packages.evals.tests.writer_case_support import writer_host
+from packages.evals.tests.writer_host_support import CALLER, writer_host
 from threetears.evals.kernel.errors import ConflictError, ValidationFailedError
 from threetears.evals.ops import OpsHost
 from threetears.evals.ops.report_writer.writer_bank import WriterTemplateCreate, writer_template_create

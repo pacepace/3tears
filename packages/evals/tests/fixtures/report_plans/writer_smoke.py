@@ -41,9 +41,10 @@ from typing import Any, Final
 from packages.evals.tests.analyst_support import fixture_snapshots
 from packages.evals.tests.fixtures.toyhost.host import with_kinds
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
-from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_writer_support import FakeToolTurnClient, reply
-from packages.evals.tests.writer_case_support import SEED, WRITER_TEMPLATE, writer_host
+from packages.evals.tests.writer_case_support import SEED
+from packages.evals.tests.writer_eval_support import FakeScoringJudge
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -128,6 +129,12 @@ def _host(*, dry: bool, out: Path | None, skills: dict[str, AnalystSkill]) -> Op
     )
     built: list[int] = []
     if dry:
+
+        def dry_judges(role: str, model: str | None, *, temperature: float | None = None) -> Any:
+            # The launch builds its judge; no page reaches it, so the scripted one is never asked.
+            return FakeScoringJudge(model or JUDGE)
+
+        launch = replace(launch, eval_host=replace(launch.eval_host, clients=dry_judges))
 
         def models(arm: WriterArm) -> Callable[[EffortWord | None], Any]:
             return lambda _effort: _FakeDryModel(model_name=arm.session_model)

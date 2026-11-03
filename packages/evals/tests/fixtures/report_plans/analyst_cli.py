@@ -69,7 +69,7 @@ if __name__ == "__main__" and not __package__:
 from fastmcp import Client, FastMCP
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
-from packages.evals.tests.ops_support import CALLER, ops_fixture
+from packages.evals.tests.writer_host_support import CALLER, writer_host
 from threetears.evals.actions import analyst_tools
 from threetears.evals.actions.report_writing import ReportNotStored, ReportWritten, write_report
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
@@ -115,15 +115,15 @@ def snapshot_ids() -> dict[str, str]:
 
 
 def seeded_host() -> OpsHost:
-    """The toy host as an operations host, its store seeded with every fixture snapshot, as every call here reads it.
+    """The writer's toy host (``writer_host``), its store seeded with every fixture snapshot, as every call here reads it.
 
     :return: The host.
     :rtype: OpsHost
     """
-    fixture = ops_fixture(generation=False)
+    host = writer_host().host
     for snapshot in _snapshots().values():
-        fixture.host.eval_host.storage.save_report_snapshot(snapshot)
-    return fixture.host
+        host.eval_host.storage.save_report_snapshot(snapshot)
+    return host
 
 
 def _server(role: str) -> FastMCP:

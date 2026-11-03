@@ -21,9 +21,10 @@ import pytest
 from packages.evals.tests.fixtures.toyhost.host import with_kinds
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_writer_support import MODEL, FakeToolTurnClient, reply
-from packages.evals.tests.writer_case_support import WRITER_TEMPLATE, seed_writer_cases, writer_host
+from packages.evals.tests.writer_eval_support import FakeScoringJudge
+from packages.evals.tests.writer_case_support import seed_writer_cases
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -81,10 +82,17 @@ def _models(arm: WriterArm) -> Any:
     return at
 
 
+def _judges(role: str, model: str | None, *, temperature: float | None = None) -> FakeScoringJudge:
+    """The host's clients: a scripted judge on the model the launch names, which a silent writer never asks."""
+    return FakeScoringJudge(model or _JUDGE)
+
+
 def _launching(*, skills: dict[str, AnalystSkill] | None = None) -> OpsHost:
     """The toy host with the writer registered, its template scored, its caps unenforced (a scripted turn costs a
     cent)."""
-    fixture = writer_host(settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}))
+    fixture = writer_host(
+        settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}), clients=_judges
+    )
     fixture.host.eval_host.storage.save_template(_SCORED)
     holder: list[OpsHost] = []
     entry = launchable_report_writer_kind(

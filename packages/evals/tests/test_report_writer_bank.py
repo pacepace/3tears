@@ -19,9 +19,9 @@ from pydantic import ValidationError
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, OpsFixture
 from packages.evals.tests.report_writer_support import MODEL, FakeToolTurnClient, reply
-from packages.evals.tests.writer_case_support import SEED, WRITER_TEMPLATE, seed_writer_cases, writer_host
+from packages.evals.tests.writer_case_support import SEED, seed_writer_cases
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, WriterHost, writer_host
 from threetears.evals.actions.engine import WriterCaseMintParams
 from threetears.evals.actions.report_writing import report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
@@ -188,7 +188,7 @@ async def test_restoring_a_case_whose_source_has_another_live_case_is_refused() 
 
 
 async def test_retiring_a_case_that_carries_no_writer_case_is_refused() -> None:
-    fixture: OpsFixture = off_loop(writer_host)
+    fixture: WriterHost = off_loop(writer_host)
     other = EvalTestCase(id="an-invoice", template_id=toyhost_template().id, scope_id=CALLER.scope_id)
     off_loop(fixture.host.eval_host.storage.save_test_case, other)
 
@@ -203,7 +203,7 @@ def _listed(host: OpsHost, ref: CaseSetRef) -> list[str]:
 
 
 async def test_a_withheld_note_the_shipped_skill_lacks_is_refused_before_anything_is_frozen() -> None:
-    fixture: OpsFixture = off_loop(writer_host)
+    fixture: WriterHost = off_loop(writer_host)
 
     with pytest.raises(ValidationFailedError, match="no exemplar is named nowhere.md"):
         await _mint(fixture.host, campaign_id=fixture.campaign.id, withhold=["nowhere.md"])
@@ -213,7 +213,7 @@ async def test_a_withheld_note_the_shipped_skill_lacks_is_refused_before_anythin
 
 
 async def test_a_campaign_is_minted_through_its_freeze_and_a_placed_group_keeps_its_side() -> None:
-    fixture: OpsFixture = off_loop(writer_host)
+    fixture: WriterHost = off_loop(writer_host)
     host = fixture.host
     seeded = await seed_writer_cases(host)
     held_out_group = next(receipt.group for receipt in seeded.values() if receipt.side == "held_out")
@@ -259,7 +259,7 @@ async def test_a_case_listed_on_the_other_side_is_refused_at_mint_and_when_the_s
 
 
 async def test_minting_into_a_template_of_another_kind_is_refused() -> None:
-    fixture: OpsFixture = off_loop(writer_host)
+    fixture: WriterHost = off_loop(writer_host)
     other = toyhost_template()
 
     with pytest.raises(ValidationFailedError, match=f"not {WRITER_KIND!r}"):
@@ -368,7 +368,7 @@ def _renamed_note() -> AnalystSkill:
 
 
 async def test_a_mint_checks_its_notes_against_the_skill_it_names_and_refuses_one_it_was_not_given() -> None:
-    fixture: OpsFixture = off_loop(writer_host)
+    fixture: WriterHost = off_loop(writer_host)
     renamed = _renamed_note()
     named = {"campaign_id": fixture.campaign.id, "withhold": ["r1-renamed.md"]}
 

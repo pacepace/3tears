@@ -32,8 +32,7 @@ import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
-from packages.evals.tests.writer_case_support import WRITER_TEMPLATE, writer_host
+from packages.evals.tests.writer_host_support import CALLER, WRITER_TEMPLATE, writer_host
 from threetears.evals import Eval, Result
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
