@@ -99,6 +99,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "ops/report_writer/writer_contract.py": {},
     "ops/report_writer/writer_bank.py": {},
     "ops/report_writer/rubric.py": {},
+    "ops/report_writer/preference.py": {},
     "ops/report_writer/gaps.py": {},
     "ops/report_writer/loop.py": {},
     "ops/report_writer/session.py": {},
