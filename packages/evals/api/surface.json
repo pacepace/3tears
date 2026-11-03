@@ -8206,6 +8206,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.ModelFamily": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.OpsHost": {
       "kind": "dataclass",
       "signature": "OpsHost(launch: LaunchHost, generation: AnalysisGeneration | None = None, seed_corpus: Callable[[str], SeedCorpus] | None = None, model_family: Callable[[str], str | None] | None = None)",
@@ -8611,6 +8616,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.TurnModel": {
+      "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.UndescribableArmsLine": {
       "kind": "model",
       "signature": "",
@@ -8646,10 +8656,25 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.ops.WriterArm": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.ops.WriterLimits": {
       "kind": "dataclass",
       "signature": "WriterLimits(analyst: AnalystLimits = AnalystLimits(), editor: EditorLimits = EditorLimits(), revisions: int = 2)",
       "tier": "stable"
+    },
+    "threetears.evals.ops.WriterModelFactory": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.ops.WriterRole": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.actions.Action": {
       "kind": "dataclass",
