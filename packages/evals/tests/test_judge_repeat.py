@@ -201,6 +201,7 @@ def _describe_account_refusal(exc: BaseException) -> ProviderFailure:
 
 #: What the other writer appends while the repeat is between its read and its write.
 _OTHER_WRITERS_REPEAT = JudgeRepeat(
+    repeated_at="2026-08-01T00:00:00+00:00",
     judge_model="judge/other-writer",
     scores=[
         RepeatedScore(

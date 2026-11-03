@@ -218,15 +218,15 @@ def test_a_refused_delete_writes_no_tombstone() -> None:
     ("corpus_fields", "said"),
     [
         (
-            {"templates": (toyhost_template(), toyhost_template().model_copy(update={"id": "other"}))},
+            lambda: {"templates": (toyhost_template(), toyhost_template().model_copy(update={"id": "other"}))},
             "two templates named 'Invoice field extraction'",
         ),
         (
-            {"rubric_dims": (make_rubric_dim(scope_id=SCOPE), make_rubric_dim(scope_id=SCOPE))},
+            lambda: {"rubric_dims": (make_rubric_dim(scope_id=SCOPE), make_rubric_dim(scope_id=SCOPE))},
             "two rubric dims keyed 'conversation.tone'",
         ),
         (
-            {
+            lambda: {
                 "judge_configs": (
                     make_judge_config(scope_id=SCOPE, rubric_dim_id=DIM, name="pacing", archived=True),
                     make_judge_config(scope_id=SCOPE, rubric_dim_id=DIM, name="pacing", archived=True),
@@ -235,7 +235,7 @@ def test_a_refused_delete_writes_no_tombstone() -> None:
             f"two judge configs named 'pacing' for rubric dim '{DIM}'",
         ),
         (
-            {
+            lambda: {
                 "judge_configs": (
                     make_judge_config(scope_id=SCOPE, rubric_dim_id=DIM, name="pacing-strict"),
                     make_judge_config(scope_id=SCOPE, rubric_dim_id=DIM, name="pacing-lenient"),
@@ -246,9 +246,11 @@ def test_a_refused_delete_writes_no_tombstone() -> None:
     ],
     ids=["template name", "rubric dim key", "judge config identity", "two active configs for one dim"],
 )
-def test_a_corpus_that_cannot_be_seeded_as_written_is_refused(corpus_fields: dict[str, Any], said: str) -> None:
+def test_a_corpus_that_cannot_be_seeded_as_written_is_refused(
+    corpus_fields: Callable[[], dict[str, Any]], said: str
+) -> None:
     with pytest.raises(ValueError, match=said):
-        SeedCorpus(scope_id=SCOPE, **corpus_fields)
+        SeedCorpus(scope_id=SCOPE, **corpus_fields())
 
 
 def test_the_shapes_beside_those_refusals_construct() -> None:

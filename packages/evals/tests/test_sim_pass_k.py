@@ -11,6 +11,7 @@ simulation can see the bias it had.
 from __future__ import annotations
 
 import math
+from functools import cache
 import random
 import statistics
 
@@ -35,15 +36,18 @@ def _true_pass_hat_k(k: int) -> float:
 
 #: One result per (run, case, attempt, outcome), built once: the estimator only reads them, and
 #: building a pydantic row per draw would cost the file its time budget.
-_BANK: dict[tuple[str, int, int, bool], EvalResult] = {
-    (run_id, case, attempt, passed): make_scored_result(
-        test_case_id=f"tc{case}", run_id=run_id, k=attempt, goal_passes=(passed,)
-    )
-    for run_id in ("r1", "r2")
-    for case in range(len(_P))
-    for attempt in range(1, 2 * _DEEPEST + 1)
-    for passed in (True, False)
-}
+@cache
+def _bank() -> dict[tuple[str, int, int, bool], EvalResult]:
+    """The rows, built on first use: a result stamps its id and clock, which an import must not."""
+    return {
+        (run_id, case, attempt, passed): make_scored_result(
+            test_case_id=f"tc{case}", run_id=run_id, k=attempt, goal_passes=(passed,)
+        )
+        for run_id in ("r1", "r2")
+        for case in range(len(_P))
+        for attempt in range(1, 2 * _DEEPEST + 1)
+        for passed in (True, False)
+    }
 
 
 def _attempts(rng: random.Random, depths: tuple[int, ...]) -> list[list[bool]]:
@@ -55,7 +59,7 @@ def _attempts(rng: random.Random, depths: tuple[int, ...]) -> list[list[bool]]:
 
 def _rows(attempts: list[list[bool]], *, run_id: str = "r1", first: int = 1) -> list[EvalResult]:
     return [
-        _BANK[(run_id, case, first + i, passed)]
+        _bank()[(run_id, case, first + i, passed)]
         for case, case_attempts in enumerate(attempts)
         for i, passed in enumerate(case_attempts)
     ]

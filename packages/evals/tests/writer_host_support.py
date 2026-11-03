@@ -40,6 +40,9 @@ WRITER_TEMPLATE: Final = EvalTemplate(
     name="Report writer",
     intent="Write the report.",
     candidate_kind=WRITER_KIND,
+    # Stamped, not read from the clock: a constant built at import reads no clock.
+    created_at="2026-08-01T00:00:00+00:00",
+    updated_at="2026-08-01T00:00:00+00:00",
 )
 
 

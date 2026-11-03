@@ -27,7 +27,9 @@ from threetears.evals.kernel.host.sweepables import SHARED_CORE
 from threetears.evals.schema.models import ClientRequestSettings, EvalRun
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 
-_SUBJECT = SubjectSnapshot(subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None)
+_SUBJECT = SubjectSnapshot(
+    subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None, captured_at="2026-08-01T00:00:00+00:00"
+)
 
 
 def _generator_settings() -> ClientRequestSettings:

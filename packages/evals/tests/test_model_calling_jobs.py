@@ -16,6 +16,7 @@ Pinned here, over a judged host (:mod:`packages.evals.tests.jobs_conformance_sup
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -173,9 +174,9 @@ async def test_a_held_second_judge_is_cancelled_through_the_job_contract() -> No
 
 
 @pytest.mark.parametrize(
-    "record",
+    "build_record",
     [
-        EvalSecondJudgePass(
+        lambda: EvalSecondJudgePass(
             scope_id=CONFORMANCE_SCOPE,
             run_id="run-1",
             asked_by="judge_second",
@@ -183,12 +184,15 @@ async def test_a_held_second_judge_is_cancelled_through_the_job_contract() -> No
             sample_fraction=1.0,
             sample_seed=0,
         ),
-        EvalJudgeTemperatureCheck(scope_id=CONFORMANCE_SCOPE, run_id="run-1", selection="all", repeats=2),
-        EvalActionJob(scope_id=CONFORMANCE_SCOPE, action="rubric_propose"),
+        lambda: EvalJudgeTemperatureCheck(scope_id=CONFORMANCE_SCOPE, run_id="run-1", selection="all", repeats=2),
+        lambda: EvalActionJob(scope_id=CONFORMANCE_SCOPE, action="rubric_propose"),
     ],
-    ids=lambda record: record.doc_type,
+    ids=["eval_second_judge_pass", "eval_judge_temperature_check", "eval_action_job"],
 )
-async def test_a_job_record_not_ended_whose_lease_is_gone_reads_lost_written_once(record: Any) -> None:
+async def test_a_job_record_not_ended_whose_lease_is_gone_reads_lost_written_once(
+    build_record: Callable[[], Any],
+) -> None:
+    record = build_record()
     built = off_loop(conformance_host, CompletionGuard())
     storage = built.host.eval_host.storage
     off_loop(storage.save_job_record, record.to_dict(), if_match=None)
