@@ -297,6 +297,7 @@ ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoi
 | Key | `ANTHROPIC_API_KEY`: the writer's every turn is live |
 | Cost | at most `--budget-usd` a report, $3 unless you name less |
 | Page | `.evals/reports/invoices/analysis.html`, beside code's `report.html` |
+| Served | the campaign's analysis from then on: `report` and `report_read` show this page |
 | Turns | recorded under `examples/3-invoices/recordings/report/` |
 
 The writer's turns never replay here: each run of the file is a new campaign with a new snapshot, so no earlier
@@ -403,7 +404,7 @@ uv run python -m threetears.evals ls --host serve:host --scope booking
 ```
 
 `report CAMPAIGN --host serve:host --scope booking` prints a campaign's page, and `report_read` over MCP reads the
-same page. It is code's page: a report the harness door wrote stays in its own `analysis.html`. The store is any
+same page: the report the harness door wrote, once it has written one, and code's page until then. The store is any
 `DocumentStore`: the SQLite file by default, or your own database to share it.
 [Serving](serving.md) covers the commands, the actions an agent calls, and the MCP transport.
 
@@ -432,8 +433,9 @@ writer_eval = WriterEval(
     },
     judge=judge,
     recordings="recordings/turns",  # one file per arm and case, keyed by skill, model, effort and snapshot
-    budget_usd=1.0,  # each report's cap
-    max_cost_usd=15.0,  # the whole eval's, judge included: each arm runs under half
+    budget_usd=1.5,  # each report's cap
+    max_cost_usd=23.0,  # the whole eval's, judge and pairwise pass included
+    pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.15; each arm gets half the rest, $10.93
     held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
     name="writer",
 )
@@ -465,7 +467,7 @@ python -m threetears.evals examples/5-writer/writer.py: writer: arm 'shipped' ha
 ```
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records both, and what
-it may spend: 14 reports, at most $15 in all. Once recorded, the run prints a table of the writer's readings per arm
+it may spend: 14 reports at $1.50 each and the pairwise pass, at most $23 in all. Once recorded, the run prints a table of the writer's readings per arm
 (reports finished; bounces, a submission code's checks sent back; rounds, the analyst's drafts and the editor's
 reviews; turns; each judged dimension), the cases per stratum, and one line per candidate:
 the promotion read.

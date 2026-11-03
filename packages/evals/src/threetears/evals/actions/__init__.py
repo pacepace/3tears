@@ -50,6 +50,7 @@ from threetears.evals.actions.analyst import analyst_actions, analyst_tools
 from threetears.evals.actions.definitions import definition_drift_actions
 from threetears.evals.actions.engine import engine_actions, eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
+from threetears.evals.actions.report_writing import launchable_report_writer_kind
 
 __all__ = [
     "ACTION_NAME",
@@ -81,6 +82,7 @@ __all__ = [
     "definition_drift_actions",
     "engine_actions",
     "eval_catalogue",
+    "launchable_report_writer_kind",
     "read_only_tools",
     "render_jobs_started",
     "standard_tools",

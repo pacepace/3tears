@@ -2,8 +2,9 @@
 
 The report writer (an analyst model and its editor) is a model too, so it gets an eval of its own: two arms that
 differ in one file of the analyst's skill, over eleven frozen campaigns (the four ladder rungs', a larger one the
-package ships, six misfits), scored by a judge of another family. The control is a frozen copy of the shipped skill (``skills/control/``); the candidate puts the lead
-claim first (``skills/lead-first.md``). Each arm writes the held-out cases once, and the engine reads the promotion.
+package ships, six misfits), scored by a judge of another family. The control is a frozen copy of the shipped skill
+(``skills/control/``); the candidate puts the lead claim first (``skills/lead-first.md``). Each arm writes the
+held-out cases once, and the engine reads the promotion.
 
 It replays ``recordings/`` with no key. Until they are recorded, it refuses, naming the file and the key that would
 record it; ``recordings/README.md`` holds the one command that records them.
@@ -27,8 +28,9 @@ writer_eval = WriterEval(
     },
     judge=judge,
     recordings="recordings/turns",  # one file per arm and case, keyed by skill, model, effort and snapshot
-    budget_usd=1.0,  # each report's cap
-    max_cost_usd=15.0,  # the whole eval's, judge included: each arm runs under half
+    budget_usd=1.5,  # each report's cap
+    max_cost_usd=23.0,  # the whole eval's, judge and pairwise pass included
+    pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.15; each arm gets half the rest, $10.93
     held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
     name="writer",
 )

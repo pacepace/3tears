@@ -139,8 +139,9 @@ ANTHROPIC_API_KEY=... uv run python -m threetears.evals.harness examples/3-invoi
 ```
 
 It is live on every run, at most `--budget-usd` a report ($3 unless you name less), and writes
-`.evals/reports/invoices/analysis.html`, its turns under `3-invoices/recordings/report/`. Each run is a new campaign,
-so no recording is ever replayed here; rung 5 is the writer offline.
+`.evals/reports/invoices/analysis.html`, its turns under `3-invoices/recordings/report/`. The report is stored as the
+campaign's analysis, so `report` and `report_read` serve it. Each run is a new campaign, so no recording is ever
+replayed here; rung 5 is the writer offline.
 
 ### Rung 4: an agent graded on the world it leaves, `4-booking/`
 
@@ -152,7 +153,7 @@ call (`mount_fastmcp(host(), scope="booking").run()`, the `[fastmcp]` extra, rea
 [Serving](../docs/serving.md#serving-the-runs-to-the-team)) and
 [the command line](../docs/serving.md#the-host-commands) (`python -m threetears.evals ls --host serve:host --scope booking`),
 both from `4-booking/`, where `agent.py`'s runs are stored when it is run there. `report CAMPAIGN` and `report_read`
-read a campaign's page there: code's page, while a report the harness door wrote stays in its `analysis.html`.
+read a campaign's page there: the report the harness door wrote, once it has written one, and code's page until then.
 
 Recorded on `deepseek/deepseek-v4-flash`: 100 calls, $0.0080 (`recordings/agent.jsonl`).
 
@@ -181,7 +182,7 @@ once, since a rung run again is new evidence with a new snapshot id.
 
 Until its recordings exist it refuses, naming the first missing file and its key;
 [`recordings/README.md`](5-writer/recordings/README.md) holds the one command that records them (both
-`ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, at most $15). [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator)
+`ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY`, at most $23). [The ladder](../docs/ladder.md#rung-5-evaluate-the-evaluator)
 walks it.
 
 ## Running them

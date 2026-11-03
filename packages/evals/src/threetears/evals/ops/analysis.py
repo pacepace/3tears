@@ -43,7 +43,7 @@ from threetears.evals.analysis.report.serialize import ReportFormat, serialize_r
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.analysis.doc_analysis import doc_analysis
+from threetears.evals.analysis.doc_analysis import DocAnalysis, doc_analysis
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
@@ -68,7 +68,7 @@ from threetears.evals.analysis.campaign_title import (
 )
 from threetears.evals.analysis.style import arm_name
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
-from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.declaration import (
     ArmRole,
@@ -2081,24 +2081,7 @@ async def _write_doc_analysis(
     # stored document is never left with no attempt saying what became of it. From record_written_generation on, the
     # ending is its own to write.
     try:
-        snapshot = await run_blocking(
-            eval_host.blocking_executor, eval_host.storage.load_report_snapshot, written.snapshot_id, attempt.scope_id
-        )
-        if snapshot is None or snapshot.bundle is None or snapshot.bundle_assembled_at is None:
-            raise StorageError(
-                f"the report document {stored.id} is stored, and its snapshot {written.snapshot_id} holds no bundle"
-            )
-        minted = doc_analysis(
-            CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}"),
-            await snapshot_input(host, attempt.scope_id, written.snapshot_id),
-            stored,
-            input_digest=snapshot.report_input_digest,
-            generator_model=attempt.generator_model,
-            skill_digest=attempt.prompt_id,
-            bundle_assembled_at=snapshot.bundle_assembled_at,
-            token_cost=tally.spent_usd(),
-            bounces=tally.to_json()["total"]["bounce_kinds"],
-        )
+        minted = await _minted_doc_analysis(host, stored, written.snapshot_id, attempt, tally)
         await ledger()
     except asyncio.CancelledError:
         await ended(
@@ -2132,6 +2115,96 @@ async def _write_doc_analysis(
         tally.sent,
         attempt.generator_model,
     )
+
+
+async def _minted_doc_analysis(
+    host: OpsHost, stored: EvalReportDoc, snapshot_id: str, attempt: WrittenAttempt, tally: Tally
+) -> DocAnalysis:
+    """The analysis linking ``stored`` and its insights, minted over its snapshot's bundle: the one mint both a
+    generation's job (:func:`_write_doc_analysis`) and a report written outside one (:func:`link_written_report`) make.
+
+    :raises StorageError: The snapshot is gone, or holds no bundle.
+    """
+    eval_host = host.eval_host
+    snapshot = await run_blocking(
+        eval_host.blocking_executor, eval_host.storage.load_report_snapshot, snapshot_id, attempt.scope_id
+    )
+    if snapshot is None or snapshot.bundle is None or snapshot.bundle_assembled_at is None:
+        raise StorageError(f"the report document {stored.id} is stored, and its snapshot {snapshot_id} holds no bundle")
+    return doc_analysis(
+        CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}"),
+        await snapshot_input(host, attempt.scope_id, snapshot_id),
+        stored,
+        input_digest=snapshot.report_input_digest,
+        generator_model=attempt.generator_model,
+        skill_digest=attempt.prompt_id,
+        bundle_assembled_at=snapshot.bundle_assembled_at,
+        token_cost=tally.spent_usd(),
+        bounces=tally.to_json()["total"]["bounce_kinds"],
+    )
+
+
+async def link_written_report(
+    host: OpsHost,
+    written: ReportWritten,
+    *,
+    campaign_id: str,
+    scope_id: str,
+    generator_model: str,
+    started_at: str,
+    tally: Tally,
+) -> EvalAnalysis:
+    """Link a report written outside a generation's job (the harness door's ``analyse``) as its campaign's analysis.
+
+    What :func:`analysis_generate`'s job does once its writer stores a document, with no job around it: the same
+    analysis is minted (``basis`` ``doc``, ``report_doc_id``) with its insights, and committed by
+    :func:`~threetears.evals.analysis.service.record_written_generation` under an attempt of its own, recorded
+    ``stored`` with what the turns came to, so ``report`` and ``report_read`` serve the document's page and the
+    campaign's analysis fields follow the rules every analysis follows. Its provenance is the analyst skill's digest.
+    No generation slot is claimed and nothing is ledgered: the caller ran the writing and holds its spend.
+
+    :param host: The host whose store holds the campaign, the document and its snapshot.
+    :ptype host: OpsHost
+    :param written: The writing, which stored a document.
+    :ptype written: ReportWritten
+    :param campaign_id: The campaign the document is about.
+    :ptype campaign_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param generator_model: The model the report was written with.
+    :ptype generator_model: str
+    :param started_at: When the writing started (ISO-8601).
+    :ptype started_at: str
+    :param tally: The tally every turn of the writing was counted in.
+    :ptype tally: Tally
+    :return: The analysis stored.
+    :rtype: EvalAnalysis
+    :raises ValueError: The writing stored no document.
+    :raises StorageError: The snapshot holds no bundle, or the analysis or an insight could not be stored.
+    """
+    stored = written.stored
+    if stored is None:
+        raise ValueError(f"the writing ended {written.ending} and stored no document, so there is nothing to link")
+    eval_host = host.eval_host
+    attempt = WrittenAttempt(
+        attempt_id=str(uuid.uuid7()),
+        campaign_id=campaign_id,
+        scope_id=scope_id,
+        generator_model=generator_model,
+        prompt_id=await run_blocking(eval_host.blocking_executor, _skill_digest),
+        started_at=started_at,
+        leases=None,
+    )
+    minted = await _minted_doc_analysis(host, stored, written.snapshot_id, attempt, tally)
+    await record_written_generation(
+        eval_host,
+        attempt,
+        outcome="stored",
+        tally=_attempt_tally(tally, prompt_version=attempt.prompt_id),
+        bundle_fingerprint=minted.analysis.generation.bundle_fingerprint,
+        stored=(minted.analysis, minted.insights),
+    )
+    return minted.analysis
 
 
 async def _note_gaps_not_stored(host: EvalHost, attempt: WrittenAttempt, written: ReportWritten) -> None:
@@ -2611,5 +2684,6 @@ __all__ = [
     "insight_delete",
     "insight_get",
     "insights_list",
+    "link_written_report",
     "report_read",
 ]
