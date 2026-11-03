@@ -207,6 +207,18 @@ def _keywords(node: Any, found: set[str]) -> set[str]:
     return found
 
 
+#: The calls ``_every_directive`` names, listed here so collecting the tests builds none of the directives.
+_DIRECTIVE_CALLS = [
+    "proposal",
+    "variation",
+    "judge (ordinal)",
+    "judge (pass_fail)",
+    "simulated user",
+    "next speaker",
+    "analysis",
+]
+
+
 def _every_directive() -> dict[str, dict[str, Any] | None]:
     """Every strict directive the package sends, by the call that sends it."""
     template = EvalTemplate(
@@ -230,7 +242,7 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
     }
 
 
-@pytest.mark.parametrize("call", list(_every_directive()))
+@pytest.mark.parametrize("call", _DIRECTIVE_CALLS)
 def test_every_directive_sends_only_keywords_both_providers_strict_modes_accept(call: str) -> None:
     """``minLength``, ``minimum`` and ``maximum`` rode in the proposal's schema, which a strict mode refuses or demotes."""
     schema = _strict(_every_directive()[call])
@@ -280,7 +292,7 @@ def _enumerated(node: Any, path: str = "") -> list[tuple[str, Any]]:
     return found
 
 
-@pytest.mark.parametrize("call", list(_every_directive()))
+@pytest.mark.parametrize("call", _DIRECTIVE_CALLS)
 def test_every_directive_enumerates_strings_only(call: str) -> None:
     """An integer enum was sent to a Gemini model under strict routing and not enforced: it left the field out.
 

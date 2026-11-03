@@ -212,8 +212,12 @@ class _FakeGmKind:
 
 # No goal checks: the fake kinds here grade none, and the runner refuses a completed cell that left a
 # template's checks ungraded.
-_TEMPLATE = make_template(id="tpl-ambush", candidate_kind=DEFAULT_KIND, goal_state_checks=[])
-_CASES = [make_test_case(id=f"case-{n}", template_id=_TEMPLATE.id) for n in (1, 2)]
+# Stamped here, not by the clock: building a constant at import must read no clock.
+_STAMP = "2026-08-01T00:00:00+00:00"
+_TEMPLATE = make_template(
+    id="tpl-ambush", candidate_kind=DEFAULT_KIND, goal_state_checks=[], created_at=_STAMP, updated_at=_STAMP
+)
+_CASES = [make_test_case(id=f"case-{n}", template_id=_TEMPLATE.id, created_at=_STAMP) for n in (1, 2)]
 
 
 def _run(*, model: str = "gm/a", **cassette: Any) -> EvalRun:

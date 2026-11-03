@@ -48,9 +48,9 @@ from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
-    CLEAN_SWEEP,
-    CONFOUNDED_SWEEP,
-    UNRECORDED_APPARATUS,
+    clean_sweep,
+    confounded_sweep,
+    unrecorded_apparatus,
     toyhost_observation,
 )
 from packages.evals.tests.fixtures.toyhost.profile import (
@@ -89,7 +89,7 @@ def test_the_engine_reads_a_second_hosts_vocabulary_off_the_same_carrier():
     other host, and the engine never learns what a ``chunk_tokens`` is.
     """
     profile = toyhost_profile()
-    values = profile.sweepables.read_all(CLEAN_SWEEP[0])
+    values = profile.sweepables.read_all(clean_sweep()[0])
 
     assert values["chunk_tokens"] == 256
     assert values["reviewer_pool"] == "pool-a"
@@ -105,7 +105,7 @@ def test_a_clean_sweep_over_a_second_hosts_vocabulary_reports_no_confound():
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in CLEAN_SWEEP]
+    observed = [sweepables.read_all(run) for run in clean_sweep()]
     apparatus = [d.name for d in sweepables.declarations if d.role == "apparatus"]
     verdicts = {name: sweepables.comparability(name, [row[name] for row in observed]) for name in apparatus}
 
@@ -123,7 +123,7 @@ def test_a_moved_apparatus_surfaces_with_the_hosts_own_reason_attached():
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in CONFOUNDED_SWEEP]
+    observed = [sweepables.read_all(run) for run in confounded_sweep()]
     verdict = sweepables.comparability("reviewer_pool", [row["reviewer_pool"] for row in observed])
     reason = sweepables.confound_reason("reviewer_pool")
 
@@ -143,7 +143,7 @@ def test_an_unrecorded_apparatus_dimension_is_neither_agreement_nor_difference()
     """
     profile = toyhost_profile()
     sweepables = profile.sweepables
-    observed = [sweepables.read_all(run) for run in UNRECORDED_APPARATUS]
+    observed = [sweepables.read_all(run) for run in unrecorded_apparatus()]
     verdict = sweepables.comparability("ocr_engine_version", [row["ocr_engine_version"] for row in observed])
 
     assert verdict == "unknown"

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from functools import cache
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -199,24 +200,43 @@ def toyhost_observation(**toyhost_values: Any) -> EvalRun:
 
 #: Two observations differing in exactly one lever. The confound scan must report nothing: this
 #: is the clean sweep, and an engine that invents a confound here is unusable.
-CLEAN_SWEEP: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-)
+@cache
+def clean_sweep() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(
+            chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+        toyhost_observation(
+            chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+    )
+
 
 #: The same sweep with the apparatus moved underneath it. The scan must surface ``reviewer_pool``
 #: carrying the host's own reason — a confound no generic engine could have guessed.
-CONFOUNDED_SWEEP: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-b"),
-)
+@cache
+def confounded_sweep() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(
+            chunk_tokens=256, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"
+        ),
+        toyhost_observation(
+            chunk_tokens=1024, retriever_top_k=3, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-b"
+        ),
+    )
+
 
 #: One side never recorded the OCR build. Neither agreement nor difference — the state that must
 #: not collapse into either, because both readings assert an observation nobody made.
-UNRECORDED_APPARATUS: tuple[EvalRun, ...] = (
-    toyhost_observation(chunk_tokens=256, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
-    toyhost_observation(chunk_tokens=1024, reviewer_pool="pool-a"),
-)
+@cache
+def unrecorded_apparatus() -> tuple[EvalRun, ...]:
+    """The sweep, built on first use: an EvalRun stamps its id and clock, which an import must not."""
+    return (
+        toyhost_observation(chunk_tokens=256, ocr_engine_version="tess-5.3.1", reviewer_pool="pool-a"),
+        toyhost_observation(chunk_tokens=1024, reviewer_pool="pool-a"),
+    )
 
 
 #: What each sampled document does to a batch's numbers, as
@@ -641,8 +661,8 @@ def toyhost_measurements(
 
 
 __all__ = [
-    "CLEAN_SWEEP",
-    "CONFOUNDED_SWEEP",
+    "clean_sweep",
+    "confounded_sweep",
     "TOYHOST_DOCUMENTS",
     "TOYHOST_EXTRACTOR",
     "TOYHOST_GRADER_VERSION",
@@ -650,7 +670,7 @@ __all__ = [
     "TOYHOST_OBSERVATIONAL_PLACEMENTS",
     "TOYHOST_SCOPE",
     "TOYHOST_SUBJECT",
-    "UNRECORDED_APPARATUS",
+    "unrecorded_apparatus",
     "ToyhostStorage",
     "toyhost_batch",
     "toyhost_measurements",

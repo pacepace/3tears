@@ -268,18 +268,16 @@ _NO_CLOCK_AT_IMPORT = textwrap.dedent(
 
     for name in ("tests.factories", "tests.fixtures.toyhost", "tests.fixtures.courierhost"):
         importlib.import_module("packages.evals." + name)
-    for name in (
-        "test_strict_output",
-        "test_hostneutral_run_kind",
-        "test_hostneutral_sweepables",
-        "test_subject_snapshot",
-    ):
-        importlib.import_module("packages.evals.tests." + name)
+    from pathlib import Path
+
+    here = Path("packages/evals/tests")
+    for path in sorted(here.glob("test_*.py")):
+        importlib.import_module("packages.evals.tests." + path.stem)
     """
 )
 
 
-def test_importing_the_test_support_modules_reads_no_clock() -> None:
+def test_importing_every_evals_test_module_reads_no_clock() -> None:
     """A subject built at import stamps the clock then, so every later test in the process is uncacheable.
 
     This test is itself uncacheable (it starts a process); the cost is one test, not the suite.
