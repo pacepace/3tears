@@ -114,11 +114,16 @@ class OpsHost:
     :ivar seed_corpus: The host's seed corpus for a scope (``load_seed_corpus(its directory, scope_id)``), which a case
         rename reads so a rename never changes how definition drift finds the case; ``None`` for a host that
         seeds no template cases.
+    :ivar model_family: The host's reading of a model's family (the vendor that trained it, such as ``anthropic``), by
+        the id a launch names it by, or ``None`` for a model it cannot place. Read where a judge is held to another
+        family than the model whose output it scores (``writer_pairwise``); ``None`` for a host that places no
+        model, where that check is recorded as not made, never guessed.
     """
 
     launch: LaunchHost
     generation: AnalysisGeneration | None = None
     seed_corpus: Callable[[str], SeedCorpus] | None = None
+    model_family: Callable[[str], str | None] | None = None
 
     @classmethod
     def reading(cls, eval_host: EvalHost) -> OpsHost:

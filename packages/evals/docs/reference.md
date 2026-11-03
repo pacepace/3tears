@@ -1617,7 +1617,8 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `reporter_cases_list` | `read` | `template_id`, `include_archived?` | List a reporter template's cases: which each campaign and memo launches, superseded or retired. |
 | `writer_template_create` | `write` | `template_name`, `intent` | Write a report writer template, its scoring rubric seeded from the editor rubric this build ships. |
 | `writer_case_mint` | `write` | `template_id`, `campaign_id?`, `analysis_id?`, `snapshot_id?`, `withhold?`, `skill?`, `group?`, `stratum?`, `dev_set?`, `held_out_set?`, `held_out_fraction?` | Freeze a campaign's report evidence into a writer case, listed in its side's dev or held-out set. |
-| `writer_promotion` | `read` | `campaign_id`, `candidate` | Read whether a report writer campaign's candidate arm should replace its control. |
+| `writer_promotion` | `read` | `campaign_id`, `candidate`, `pairwise_job?` | Read whether a report writer campaign's candidate arm should replace its control. |
+| `writer_pairwise` | `spend`, job | `campaign_id`, `candidate` | Ask the scoring judge which page is better, candidate or control, for each case, as a job. |
 | `judge_template_create` | `write` | `template_name`, `intent` | Write a judge template: the judge kind and an intent, which judge cases are frozen into. |
 | `judge_cases_freeze` | `write` | `template_id`, `judged_run_ids?`, `from_labels?`, `criteria?`, `judged_result_ids?`, `into_case_set?` | Freeze stored judged outputs, their criteria and their labels into cases of a judge template. |
 | `judge_cases_list` | `read` | `template_id` | List a judge template's stored cases: each id, criterion, expected verdict and whether it is live. |
@@ -1678,7 +1679,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
-| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `reporter_case_freeze`, `writer_promotion`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `reporter_case_freeze`, `writer_promotion`, `writer_pairwise`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
 | `campaign_id` (on `writer_case_mint`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
 | `candidate` | `string` | The candidate arm, by its label or its variant key; never the control. |
@@ -1751,6 +1752,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
 | `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
+| `pairwise_job` | `string` or `null` | The completed writer_pairwise job over this candidate, whose report is the primary reading; without one the read never promotes. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
 | `person` (on `result_rate_person`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
 | `person` (on `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |

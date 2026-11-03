@@ -435,9 +435,16 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when the report writer's actions joined it (writer_template_create, writer_case_mint,
 #: writer_case_archive, writer_promotion).
 #: The evals tool moved again when writer_case_mint gained stratum (the kind of case it is).
+#: The evals tool moved again when writer_pairwise joined it (the pairwise pass over a writer campaign, as a job).
+#: The evals tool moved again when writer_promotion gained pairwise_job (the pass whose report is its primary reading)
+#: and its help came to state the decision rule that reads it.
+#: The evals tool moved again when writer_promotion's help came to say a regressed reading keeps on too few cases, that
+#: order consistency below 0.7 voids the primary, and that it reports the finished-only reading and the cases to settle.
 #: The evals tool moved again when writer_case_mint gained skill (the skill its withheld notes are checked against),
 #: and withhold came to name that skill rather than the shipped one.
-_EVALS_BYTES = "2c51617a86e0142d9f8751edb3ee3b490526c69181e50a53bf9ffa207eb2025b"
+#: Merged (reset P1 wave B with P2): both of the changes above at once, writer_pairwise and writer_promotion's from
+#: P2, and writer_case_mint's skill from wave B.
+_EVALS_BYTES = "8f0a77fe8e76df7f8b45ebb127e1706cfdd50a206d7b320fc8c452ed8e67a78b"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"

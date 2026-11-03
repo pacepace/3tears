@@ -1,17 +1,31 @@
 """The promotion read: whether a report writer campaign's candidate arm is shown better than its control.
 
 A change to how the report writer works (its skill, its reasoning effort, its revisions, or its model) ships only on a
-measured decision, and this is the read that decides it. It adds no statistics: it reads the campaign's corrected
-verdicts as every other gate does (:func:`~threetears.evals.analysis.campaign_verdicts`, the code-only page's typed
-verdicts, each family corrected), keeps the candidate's, and gates them
-(:func:`~threetears.evals.analysis.gate.gate_verdicts`, failing on a regression, a breached guardrail and a guardrail
-not shown held):
+measured decision, and this is the read that decides it. It adds no statistics. It reads one pre-registered primary
+reading, the pairwise pass's preference (``report_writer.preferred``, at alpha 0.05, a family of one; its report is
+the completed ``writer_pairwise`` job's result), and the campaign's corrected verdicts
+(:func:`~threetears.evals.analysis.campaign_verdicts`), which gate on regression only:
 
-- ``keep`` when the gate failed: the candidate is shown worse on some reading, or a guardrail is not shown held;
-- ``undecided`` when it failed on nothing and left some verdict undecided, or there was none. **Undecided never
-  promotes**: a reading the evidence could not separate is not shown safe;
-- ``promote`` when every verdict was decided, none failing, and at least one shows the candidate better;
-- ``keep`` when every verdict was decided and none shows the candidate better: nothing is gained by the change.
+- ``promote`` when the primary reads improved on the cases a rate needs, no gated reading reads regressed, and every
+  guardrail is held;
+- ``keep`` when the primary reads regressed, a gated reading reads regressed, or a guardrail is breached;
+- ``undecided`` otherwise: the primary not separated, improved on too few cases, untested, void or not read at all, or
+  a guardrail not shown held. **Undecided never promotes.**
+
+A reading the package's gate calls regressed keeps the control whatever its reason, one read on fewer cases than a
+rate needs (reason ``too_few_cases``) included, and its row states that reason beside it: too few cases only stops an
+improved primary from promoting. A gated reading that is not separated decides nothing either way: the campaign's
+family of readings is too wide to separate on a small held-out set, so only the primary is asked to.
+
+**The instrument checks.** Order consistency is the share of the cases the judge scored in both orders whose two
+orders picked the same side; under 0.7 the primary reading is void, since a judge that contradicts itself that often
+has read the order of the pages and not the pages, so it neither keeps nor promotes, and the read is undecided unless
+another reading keeps. A case scored in one order only is counted apart, in no rate. The reading over the pairs whose
+pages were both stored finished is reported beside the primary and decides nothing: a draft's page carries its open
+findings, so a primary the finished-only reading does not repeat may be the judge preferring the page without them.
+A primary that does not separate states how many held-out cases like these would settle it, by the bounded interval's
+own projection (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, which the campaign report's ``To show
+the floors hold`` reads): a size to plan the next campaign at, never a reason to read this one again.
 
 **Generic over levers.** The candidate is an arm, and what it changed is read off the arms' recorded lever maps, so a
 model, an effort or a host's own lever is decided as a skill text is.
@@ -20,7 +34,8 @@ model, an effort or a host's own lever is decided as a skill text is.
 (:func:`~threetears.evals.ops.report_writer.writer_contract.refuse_unfixed_scoring_judge`), and one that ran over
 anything but held-out writer cases: each run must name its case set, and each case it ran must be a writer case its
 mint put on the held-out side of its split, in the set the run names. The dev side is where a change is tuned, so a
-decision read there would be read on the cases it was fitted to.
+decision read there would be read on the cases it was fitted to. And a pairwise job that is not a completed pass, or
+whose report names another campaign, candidate, control, judge or preference criterion than the read's.
 
 **The read never writes.** Promotion is a person's act: they record it as the campaign's call (``campaign_record``,
 naming the candidate) and commit the change with its entry in the skill ledger
@@ -32,24 +47,42 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.analyst.skill_ledger import ShippedSkill, skill_record
-from threetears.evals.analysis.gate import GateResult, gate_verdicts
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_verdicts
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, PROJECTION_CASE_CAP, bounded_cases_to_clear
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
+from threetears.evals.kernel.run_pages import results_without_payloads
+from threetears.evals.ops.jobs import JobStatus
+from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import refuse_unfixed_scoring_judge
+from threetears.evals.ops.report_writer.writer_pairwise import (
+    PREFERRED_HEADING,
+    PairwiseReliability,
+    WriterPairwiseReport,
+)
 from threetears.evals.schema.base import EvalBaseModel
-from threetears.evals.schema.models import CaseSetRef, EvalRun
+from threetears.evals.schema.models import CaseSetRef, EvalRun, fingerprint_criterion
 
 #: What a promotion read answers.
 PromotionDecision = Literal["promote", "keep", "undecided"]
+
+#: The order consistency under which the primary reading is void (the reset design's instrument check).
+_ORDER_CONSISTENCY_FLOOR = 0.7
+
+#: What a void primary's reason says, the same in the decision's sentence and in the readout.
+_VOID = f"order consistency below {_ORDER_CONSISTENCY_FLOOR}"
+
+#: The row the finished-only reading is read by.
+_FINISHED_ONLY = f"{PREFERRED_HEADING}, both pages finished"
 
 
 class WriterPromotion(EvalBaseModel):
@@ -59,13 +92,40 @@ class WriterPromotion(EvalBaseModel):
     decision: PromotionDecision = Field(
         description="promote, keep or undecided; undecided never promotes.",
     )
-    why: str = Field(description="The decision in one sentence.")
+    why: str = Field(description="The decision in one sentence; an undecided one names the primary reading's reason.")
+    readout: str = Field(
+        description="Every reading the decision read, its role and what it reads, then the judge's order checks, as "
+        "tables."
+    )
     candidate: str = Field(description="The candidate arm, by its label.")
     candidate_key: str = Field(description="The candidate arm's variant key, which a call records.")
     control: str = Field(description="The control arm, by its label.")
     levers: dict[str, str] = Field(description="The candidate's lever map: each lever's level, as a reader names it.")
     changed: list[str] = Field(description="The levers whose level differs from the control's, by name.")
-    verdicts: list[Verdict] = Field(description="The candidate's corrected verdicts, each reading's, in page order.")
+    pairwise_job: str | None = Field(description="The pairwise pass's job read; None when none was named.")
+    primary: Verdict | None = Field(
+        description="The primary reading: the pass's verdict on report_writer.preferred; None when no pass was read."
+    )
+    void: str | None = Field(
+        description="Why the primary reading is void, when it is (order consistency below 0.7); None when it stands "
+        "or none was read."
+    )
+    finished_only: Verdict | None = Field(
+        description="The pass's verdict over the pairs whose two pages were both stored finished, reported beside the "
+        "primary and deciding nothing; None when no pass was read."
+    )
+    reliability: PairwiseReliability | None = Field(
+        description="The pass's order consistency, one-order cases counted apart, first-slot lean, can't-tell and "
+        "failed calls; None when no pass was read."
+    )
+    cases_to_settle: int | None = Field(
+        description="The held-out cases like these at which a primary that does not separate would, by its bounded "
+        "interval at the spread its cases showed; one over the projection's cap when even that many would not; None "
+        "for a primary that separated, is untested or void, or whose estimate is zero."
+    )
+    verdicts: list[Verdict] = Field(
+        description="The candidate's corrected verdicts, each reading's, in page order: gated on regression only."
+    )
     cases: int = Field(description="The held-out cases the campaign's runs ran.")
     case_sets: list[CaseSetRef] = Field(description="The held-out case sets the runs named.")
     cost_usd: float | None = Field(description="What the candidate's trials cost; None when none was priced.")
@@ -118,31 +178,211 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
     return refs, len(ids)
 
 
-def _decided(gate: GateResult, candidate: str) -> tuple[PromotionDecision, str]:
-    """The decision a gate over the candidate's verdicts comes to, and its sentence."""
-    total = len(gate.gated)
-    if gate.failed:
-        return "keep", (
-            f"Keep the control: {candidate} is shown worse, or a guardrail is not shown held, on "
-            f"{len(gate.failures)} of {total} readings."
+def _pass_report(
+    pairwise_job: JobStatus,
+    *,
+    campaign_id: str,
+    candidate: CampaignArm,
+    control: CampaignArm,
+    judge_model: str,
+    results: frozenset[str],
+) -> WriterPairwiseReport:
+    """The pass's report, refusing a job that is no completed pass over what this read reads:
+    ``results`` are the ids of both arms' results in the campaign's runs as they stand."""
+    job = pairwise_job.job_id
+    if pairwise_job.kind != "action" or pairwise_job.state != "completed" or pairwise_job.result is None:
+        raise ValidationFailedError(
+            f"job {job} ({pairwise_job.kind}, {pairwise_job.state}) is not a completed writer_pairwise pass, and "
+            "only a completed pass's report holds the primary reading",
+            remedy="start the pass (writer_pairwise), poll it until it completes (job_poll), then read with its job id",
         )
-    if gate.outcome == "undecided":
-        if not total:
-            return "undecided", f"Undecided: the campaign holds no verdict on {candidate}, so nothing was shown."
+    try:
+        report = WriterPairwiseReport.model_validate(pairwise_job.result)
+    except ValidationError as other:
+        raise ValidationFailedError(
+            f"job {job}'s result is no writer_pairwise report",
+            remedy="name the job writer_pairwise started for this campaign's candidate",
+        ) from other
+    named = [
+        f"{what} {theirs}, where the read's is {ours}"
+        for what, theirs, ours in (
+            ("campaign", report.campaign_id, campaign_id),
+            ("candidate", report.candidate_key, candidate.variant_key),
+            ("control", report.control_key, control.variant_key),
+            ("judge", report.judge_model, judge_model),
+            ("criterion", report.criterion, fingerprint_criterion(preference_rubric())),
+        )
+        if theirs != ours
+    ]
+    if named:
+        raise ValidationFailedError(
+            f"job {job}'s pass names " + "; ".join(named) + ", so its preference is no reading of this campaign",
+            remedy="run the pass over this campaign's candidate (writer_pairwise), then read with its job id",
+        )
+    read = {result for pair in report.pairs for result in (pair.candidate_result_id, pair.control_result_id)}
+    gone, unread = read - results, results - read - set(report.unpaired)
+    if gone or unread:
+        raise ValidationFailedError(
+            f"job {job}'s pass read {len(gone)} result(s) the campaign's runs no longer hold and left {len(unread)} "
+            "of theirs unread, so its preference is a reading of other runs",
+            remedy="run the pass again over the campaign as it stands (writer_pairwise), then read with its job id",
+        )
+    return report
+
+
+def _void(reliability: PairwiseReliability) -> str | None:
+    """Why the pass's primary reading is void, when its order consistency is under the floor; else None."""
+    rate = reliability.order_consistency
+    if rate is None or rate >= _ORDER_CONSISTENCY_FLOOR:
+        return None
+    return (
+        f"{_VOID} ({reliability.order_consistent} of {reliability.both_orders} cases scored in both orders picked the "
+        "same side)"
+    )
+
+
+def _cases_to_settle(report: WriterPairwiseReport) -> int | None:
+    """The held-out cases like these at which a primary that does not separate would: the fewest at which its bounded
+    interval, on its cases' own spread, reaches no further toward zero than its estimate lies from it.
+
+    None for a primary that separated or is untested, an estimate of zero, and an interval that already excludes zero
+    on the cases read while the test does not separate, where no count of cases like these is the interval's to name.
+    """
+    verdict = report.whole.verdict
+    if verdict.outcome != "not_separated" or not verdict.delta:
+        return None
+    shares = [case.share for case in report.cases if case.share is not None]
+    control = [1.0 - share for share in shares]
+    # Oriented so the estimate is above zero: the projection reads how far below its estimate the interval reaches.
+    lower, upper = (control, shares) if verdict.delta > 0 else (shares, control)
+    needed = bounded_cases_to_clear(
+        lower,
+        upper,
+        paired=True,
+        value_range=(0.0, 1.0),
+        confidence=verdict.interval_level or INTERVAL_LEVEL,
+        room=abs(verdict.delta),
+    )
+    return None if needed is None or needed <= len(shares) else needed
+
+
+def _reads(verdict: Verdict) -> str:
+    """What a verdict reads, as its row prints it: its outcome, with too few cases beside it when it was read on fewer
+    cases than a rate needs."""
+    outcome = verdict.outcome.replace("_", " ")
+    return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
+
+
+def _decided(
+    primary: Verdict | None, void: str | None, verdicts: Sequence[Verdict], *, candidate: str, control: str
+) -> tuple[PromotionDecision, str]:
+    """The decision rule (the module docstring), and its sentence."""
+    standing = None if void is not None else primary
+    regressed = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.outcome == "regressed"]
+    guardrails = [verdict for verdict in verdicts if verdict.kind == "guardrail"]
+    worse = [
+        *(
+            [_named("the primary reading", standing)]
+            if standing is not None and standing.outcome == "regressed"
+            else []
+        ),
+        *(_named(verdict.heading, verdict) for verdict in regressed),
+        *(f"guardrail {verdict.heading} (breached)" for verdict in guardrails if verdict.outcome == "breached"),
+    ]
+    if worse:
+        return "keep", f"Keep the control: {candidate} is shown worse than {control} on {', '.join(worse)}."
+    unheld = sum(verdict.outcome != "held" for verdict in guardrails)
+    improved = standing is not None and standing.outcome == "improved" and standing.reason != "too_few_cases"
+    if improved and not unheld:
+        return "promote", (
+            f"Promote {candidate}: the judge prefers its pages to {control}'s on the primary reading, no gated "
+            "reading is shown worse and every guardrail is held."
+        )
+    if improved:
         return "undecided", (
-            f"Undecided: {len(gate.undecided)} of {total} readings did not decide {candidate} against the control, "
-            "and an undecided reading never promotes."
+            f"Undecided: the judge prefers {candidate}'s pages on the primary reading, but {unheld} of "
+            f"{len(guardrails)} guardrails are not shown held."
         )
-    better = sum(verdict.outcome == "improved" for verdict in gate.gated)
-    if better:
-        return (
-            "promote",
-            f"Promote {candidate}: it is shown better on {better} of {total} readings and no worse on any.",
-        )
-    return "keep", f"Keep the control: {candidate} is shown better on none of {total} readings."
+    detail = "" if primary is None or primary.reason_detail is None else f" ({primary.reason_detail})"
+    if primary is None:
+        because = "no pairwise pass was read, so the primary reading is absent"
+    elif void is not None:
+        because = f"{void}, so the primary reading is void"
+    elif primary.reason == "too_few_cases":
+        because = f"the primary reading has too few cases to decide{detail}"
+    elif primary.outcome == "not_separated":
+        because = f"the primary reading does not separate {candidate} from {control}"
+    else:
+        because = f"the primary reading is {primary.outcome.replace('_', ' ')}{detail}"
+    return "undecided", f"Undecided: {because}, and only an improved primary reading promotes."
 
 
-def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candidate: str) -> WriterPromotion:
+def _named(label: str, verdict: Verdict) -> str:
+    """A reading the decision names, with too few cases beside it when it was read on fewer than a rate needs."""
+    return f"{label} (on too few cases)" if verdict.reason == "too_few_cases" else label
+
+
+def _readout(
+    report: WriterPairwiseReport | None, void: str | None, settle: int | None, verdicts: Sequence[Verdict]
+) -> str:
+    """Each reading the decision read as one table row (its role, what it reads, its difference and interval), then
+    the judge's order checks as a second table when a pass was read."""
+    role = {"contrast": "gated", "guardrail": "guardrail", "bar": "reported"}
+    if report is None:
+        head = [[PREFERRED_HEADING, "primary", "not read", "", "", ""]]
+    else:
+        primary = _row(report.whole.verdict, "primary")
+        if void is not None:
+            primary[2] = f"{primary[2]} (void, {_VOID})"
+        head = [primary, [_FINISHED_ONLY, *_row(report.finished_only.verdict, "reported")[1:]]]
+    rows = [*head, *(_row(verdict, role[verdict.kind]) for verdict in verdicts)]
+    lines = ["| Reading | Role | Reads | Difference | Interval | Level |", "|---|---|---|---|---|---|"]
+    readings = "\n".join([*lines, *("| " + " | ".join(row) + " |" for row in rows)])
+    if report is None:
+        return readings
+    reliability = report.reliability
+    rate = reliability.order_consistency
+    checks = [
+        ["Cases scored in both orders", str(reliability.both_orders)],
+        ["Of those, both orders picked the same side", str(reliability.order_consistent)],
+        [
+            f"Order consistency, the primary void below {_ORDER_CONSISTENCY_FLOOR}",
+            "not measured" if rate is None else format_number(rate),
+        ],
+        ["Cases scored in one order only, counted apart", str(reliability.one_order)],
+        ["Answers the judge could not tell", str(reliability.cannot_tell)],
+        ["Calls that failed", str(reliability.failed)],
+        *(
+            []
+            if settle is None
+            else [
+                [
+                    "Held-out cases like these that would settle the primary",
+                    f"more than {PROJECTION_CASE_CAP}" if settle > PROJECTION_CASE_CAP else str(settle),
+                ]
+            ]
+        ),
+    ]
+    table = ["| Order check | Figure |", "|---|---|", *("| " + " | ".join(row) + " |" for row in checks)]
+    return readings + "\n\n" + "\n".join(table)
+
+
+def _row(verdict: Verdict, role: str) -> list[str]:
+    """One verdict's row of the readout."""
+    interval = verdict.interval
+    return [
+        verdict.heading,
+        role,
+        _reads(verdict),
+        "" if verdict.delta is None else format_number(verdict.delta),
+        "" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
+        "" if verdict.interval_level is None or interval is None else format_number(verdict.interval_level),
+    ]
+
+
+def writer_promotion(
+    host: EvalHost, campaign_id: str, scope_id: str, *, candidate: str, pairwise_job: JobStatus | None = None
+) -> WriterPromotion:
     """Read whether a report writer campaign's candidate arm should replace its control (the module docstring).
 
     :param host: The host whose store holds the campaign and its runs and cases.
@@ -153,12 +393,16 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
     :ptype scope_id: str
     :param candidate: The candidate arm, by its label or its variant key.
     :ptype candidate: str
+    :param pairwise_job: The completed ``writer_pairwise`` job over this campaign's candidate (``job_poll``'s status),
+        whose report holds the primary reading; ``None`` reads no primary, so the read never promotes.
+    :ptype pairwise_job: JobStatus | None
     :return: The decision and what it read.
     :rtype: WriterPromotion
     :raises NotFoundError: No campaign with that id in the scope, or a run it names is not stored.
     :raises ValidationFailedError: The campaign has no control, the candidate is none of its arms or is the control,
         an arm's lever map was not recorded, its arms were not scored by one judge on one rubric, or it ran over
-        anything but held-out writer cases; or the build's skill has no ledger entry.
+        anything but held-out writer cases; the pairwise job is no completed pass, or its report names another
+        campaign, candidate, control, judge or criterion than the read's; or the build's skill has no ledger entry.
     """
     campaign = host.storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -170,7 +414,7 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
         raise NotFoundError(
             f"campaign {campaign_id}'s run",
             ", ".join(missing),
-            remedy="restore the run, or take it off the campaign (campaign_update), then read the campaign again",
+            remedy="restore the run, or take it off the campaign (campaign_runs_remove), then read the campaign again",
         )
     runs = [run for run in loaded.values() if run is not None]
     refuse_unfixed_scoring_judge(runs)
@@ -196,8 +440,30 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
         )
     keys = {arm.variant_key, *resolve_control_arm(arm).variant_keys}
     control_keys = {control.variant_key, *resolve_control_arm(control).variant_keys}
+    judge_model = runs[0].judge_model
+    assert judge_model is not None  # refuse_unfixed_scoring_judge refuses a run that recorded none
+    report = None
+    if pairwise_job is not None:
+        arms = keys | {control.variant_key, *resolve_control_arm(control).variant_keys}
+        results = frozenset(
+            result.id
+            for run in runs
+            for result in results_without_payloads(host.storage, run.id, scope_id)
+            if result.variant_key in arms
+        )
+        report = _pass_report(
+            pairwise_job,
+            campaign_id=campaign_id,
+            candidate=arm,
+            control=control,
+            judge_model=judge_model,
+            results=results,
+        )
     verdicts = [verdict for verdict in campaign_verdicts(host, campaign_id, scope_id) if verdict.variant_key in keys]
-    decision, why = _decided(gate_verdicts(verdicts), arm.label)
+    primary = None if report is None else report.whole.verdict
+    void = None if report is None else _void(report.reliability)
+    settle = None if report is None or void is not None else _cases_to_settle(report)
+    decision, why = _decided(primary, void, verdicts, candidate=arm.label, control=control.label)
     boards = [board for aspect in bundle.aspects for board in aspect.scoreboard]
     costs = {
         side: [
@@ -209,6 +475,7 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
         campaign_id=campaign_id,
         decision=decision,
         why=why,
+        readout=_readout(report, void, settle, verdicts),
         candidate=arm.label,
         candidate_key=arm.variant_key,
         control=control.label,
@@ -220,6 +487,12 @@ def writer_promotion(host: EvalHost, campaign_id: str, scope_id: str, *, candida
             or (theirs := control.levers.get(name)) is None
             or mine.content_hash != theirs.content_hash
         ),
+        pairwise_job=None if pairwise_job is None else pairwise_job.job_id,
+        primary=primary,
+        void=void,
+        finished_only=None if report is None else report.finished_only.verdict,
+        reliability=None if report is None else report.reliability,
+        cases_to_settle=settle,
         verdicts=verdicts,
         cases=cases,
         case_sets=case_sets,

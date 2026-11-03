@@ -740,8 +740,14 @@ registry. It builds its case bank from its own campaigns through four actions, a
   `judge_model` for every arm, of another model family than the writer's. A launch with no judge is refused, and one
   with no case set runs the template's live cases on both sides of the split, which the promotion read refuses to
   decide on: that campaign is paid for and never decided.
-- `writer_promotion` (read) reads a held-out campaign's corrected verdicts for one candidate arm and answers
-  promote, keep or undecided. It records nothing; a person records the call with `campaign_record`.
+- `writer_pairwise` (spend, a job) shows the scoring judge each case's two stored pages, candidate and control, once
+  in each order, and reads the preference on `report_writer.preferred`: the promotion's primary reading.
+- `writer_promotion` (read) reads that pass (its job as `pairwise_job`) and the campaign's corrected verdicts for one
+  candidate arm, and answers promote, keep or undecided: promote only on a primary improved with no other reading
+  regressed and every guardrail held, keep on any regression (too few cases included) or a breached guardrail. The
+  judge's order consistency below 0.7 voids the primary. It reports the reading over the pairs whose pages were both
+  finished beside the primary, and for a primary that does not separate, the held-out cases that would settle it.
+  With no pass named it never promotes. It records nothing; a person records the call with `campaign_record`.
 
 ## Judge campaigns: evaluating a judge itself
 
