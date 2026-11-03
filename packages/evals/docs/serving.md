@@ -737,7 +737,9 @@ registry. It builds its case bank from its own campaigns through four actions, a
 - Then `run_launch` the writer template once per arm, over the held-out set: `case_set_name` naming it
   (`writer-held-out` unless the mint named another) and `case_set_version` naming one of its versions (the latest
   mint's), so every arm runs the same held-out cases. Name the same
-  `judge_model` for every arm, of another model family than the writer's. A launch with no judge is refused, and one
+  `judge_model` for every arm, of another model family than the writer's. An arm whose editor runs on a model of its
+  own (`editor_model`) holds that model to the same rule: a judge of the editor's family is refused too, and the run
+  records both checks. A launch with no judge is refused, and one
   with no case set runs the template's live cases on both sides of the split, which the promotion read refuses to
   decide on: that campaign is paid for and never decided.
 - `writer_pairwise` (spend, a job) shows the scoring judge each case's two stored pages, candidate and control, once

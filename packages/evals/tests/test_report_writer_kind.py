@@ -236,11 +236,18 @@ async def _execute(
     judge_service: JudgeService | None = None,
     cases: list[EvalTestCase] | None = None,
     overlays: WriterOverlays | None = None,
+    editor_models: Any = None,  # Any: the editor's factory, a test double of WriterModels
 ) -> EvalRun:
     """Run one arm over both cases, or over ``cases``; the run, as it was executed."""
     overlays = overlays if overlays is not None else WriterOverlays.model_validate(run.overlays)
     kind = report_writer_kind(
-        host, CALLER, overlays=overlays, models=models, budget=ReportBudget(usd=5.0), skills=skills
+        host,
+        CALLER,
+        overlays=overlays,
+        models=models,
+        budget=ReportBudget(usd=5.0),
+        skills=skills,
+        editor_models=editor_models,
     )
     if subject_skill is not None:
         run = run.model_copy(
@@ -678,36 +685,82 @@ class _ScriptedFactory:
         return model
 
 
+#: The model the editor's reviews run on, for an arm whose overlays name one.
+_EDITOR = "report-editor-model"
+
+
 @pytest.mark.parametrize(
-    ("factory", "refused"),
+    ("factory", "editor_model", "editor", "refused"),
     [
         (
             _ScriptedFactory(name="another-model"),
+            None,
+            None,
             f"recorded against model {MODEL!r} but the model factory built 'another-model'",
         ),
         (
             _ScriptedFactory(refuses="no route takes effort 'max'"),
+            None,
+            None,
             "the host's model factory refused the arm's settings: no route takes effort 'max'",
         ),
         (
             _ScriptedFactory(unpriced="report-writer-model has no rate"),
+            None,
+            None,
             "budget admits each turn on its price ceiling, and report-writer-model has no rate",
         ),
+        (
+            _ScriptedFactory(),
+            _EDITOR,
+            None,
+            f"the arm's editor runs on {_EDITOR!r}, and the host's launcher built no editor model",
+        ),
+        (
+            _ScriptedFactory(),
+            _EDITOR,
+            _ScriptedFactory(name=_EDITOR, refuses="no route takes the editor's effort"),
+            "the host's model factory refused the arm's editor: no route takes the editor's effort",
+        ),
+        (
+            _ScriptedFactory(),
+            _EDITOR,
+            _ScriptedFactory(name="another-editor"),
+            f"the arm's editor runs on {_EDITOR!r} but the model factory built 'another-editor', so its reviews would "
+            "be recorded under another editor's name",
+        ),
+        (
+            _ScriptedFactory(),
+            _EDITOR,
+            _ScriptedFactory(name=_EDITOR, unpriced=f"{_EDITOR} has no rate"),
+            f"budget admits each turn on its price ceiling, and {_EDITOR} has no rate",
+        ),
+    ],
+    ids=[
+        "the analyst renamed",
+        "the analyst refused",
+        "the analyst unpriced",
+        "no editor factory",
+        "the editor refused",
+        "the editor renamed",
+        "the editor unpriced",
     ],
 )
 async def test_a_cell_whose_model_would_not_be_the_arms_or_could_not_be_priced_is_refused_before_any_turn(
-    factory: _ScriptedFactory, refused: str
+    factory: _ScriptedFactory, editor_model: str | None, editor: _ScriptedFactory | None, refused: str
 ) -> None:
     host = off_loop(_host)
     run = _arm(load_skill())
+    overlays = WriterOverlays.model_validate({**run.overlays, "editor_model": editor_model})
 
     with pytest.raises(NothingMeasuredError, match=re.escape(refused)):
-        await _execute(host, run, factory, skills={})  # type: ignore[arg-type]
+        await _execute(host, run, factory, skills={}, overlays=overlays, editor_models=editor)  # type: ignore[arg-type]
 
     results = _results(host, run)
     assert {result.termination for result in results} == {"factory_failed"}
     assert all(refused in (result.runner_error or "") for result in results)
-    assert all(not model.asked for model in factory.built), "no session was opened"
+    built = [*factory.built, *(editor.built if editor is not None else [])]
+    assert all(not model.asked for model in built), "no session was opened"
 
 
 async def test_a_cell_whose_subject_carries_no_skill_is_refused_by_the_kind() -> None:

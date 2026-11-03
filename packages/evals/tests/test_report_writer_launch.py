@@ -185,7 +185,7 @@ async def test_a_judge_the_host_cannot_place_is_launched_and_the_run_records_the
         ({"judge_model": "anthropic/claude-opus"}, "of the writer 'report-writer-model''s family \\(anthropic\\)"),
         ({"judge_model": None}, "this launch names none"),
         ({"overlays": {"skill": "f" * 64}}, f"the arm runs skill {'f' * 64}, which this launch was not given"),
-        ({"overlays": {"editor_model": "google/editor"}}, "of the writer 'google/editor''s family \\(google\\)"),
+        ({"overlays": {"editor_model": "google/editor"}}, "of the editor 'google/editor''s family \\(google\\)"),
     ],
 )
 async def test_a_launch_the_writer_cannot_honour_is_refused_before_any_run(

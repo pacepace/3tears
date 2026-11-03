@@ -442,8 +442,6 @@ def _served(tool: MountedTool) -> list[str]:
 #: order consistency below 0.7 voids the primary, and that it reports the finished-only reading and the cases to settle.
 #: The evals tool moved again when writer_case_mint gained skill (the skill its withheld notes are checked against),
 #: and withhold came to name that skill rather than the shipped one.
-#: Merged (reset P1 wave B with P2): both of the changes above at once, writer_pairwise and writer_promotion's from
-#: P2, and writer_case_mint's skill from wave B.
 _EVALS_BYTES = "8f0a77fe8e76df7f8b45ebb127e1706cfdd50a206d7b320fc8c452ed8e67a78b"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).

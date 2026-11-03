@@ -42,7 +42,7 @@ from typing import Any, Final, Protocol
 
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 from threetears.evals.analysis.analyst.skill import AnalystSkill
-from threetears.evals.kernel import EvalStorage, default_job_timeout
+from threetears.evals.kernel import EvalStorage, ceiling_is_estimate, default_job_timeout
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import (
     SHARED_CORE,
@@ -135,6 +135,11 @@ class _LentJudge(BorrowedJudgeClient):
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The judge's own price for the call (:meth:`WriterJudge.price_ceiling`)."""
         return self._judge.price_ceiling(system=system, user=user, response_format=response_format)
+
+    def ceiling_is_estimate(self) -> bool:
+        """Whether the judge's prices are estimates, as it says (the shipped ``Model`` does: an OpenRouter route's are),
+        so a cap checked on them says so; a judge that says nothing is read as pricing its own calls."""
+        return ceiling_is_estimate(self._judge)
 
 
 def _lent(judge: WriterJudge) -> CompletionClients:
