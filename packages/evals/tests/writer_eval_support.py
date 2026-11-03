@@ -47,20 +47,26 @@ class ScoredReply:
 
 # parity-with: threetears.evals.harness.writer_host.WriterJudge
 class FakeScoringJudge:
-    """A scoring judge that sends nothing: it scores the dimension its system prompt names, and keeps every call."""
+    """A scoring judge that sends nothing: it scores the dimension its system prompt names, the pairwise pass's
+    preference among them, and keeps every call. Its model and route are the test's to name."""
 
-    model_name = JUDGE
-    provider = "openrouter"
     base_url = None
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str = JUDGE, *, provider: str = "openrouter") -> None:
+        self.model_name = model_name
+        self.provider = provider
         self.calls: list[str] = []
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """Nothing: a scripted judge sends nothing."""
+        return 0.0
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
         match = re.search(r'single key "([^"]+)"', system)
         assert match is not None, "the judge's system prompt names no dimension"
         self.calls.append(match[1])
-        return ScoredReply(json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: JUDGED_SCORE}}))
+        answer = json.dumps({"reasoning": f"read {match[1]}", "criteria_scores": {match[1]: JUDGED_SCORE}})
+        return ScoredReply(answer, model=self.model_name, served_model=self.model_name)
 
 
 def kairo_report(analyst: str, editor: str) -> dict[str, list[TurnReply]]:

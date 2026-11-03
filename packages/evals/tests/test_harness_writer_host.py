@@ -3,7 +3,8 @@
 Every writer is scripted to write nothing (each reply holds no document), so no page reaches the judge and nothing is
 sent anywhere; the judge is a :class:`~threetears.evals.providers.Model` whose transport fails any request it is
 handed. Cases are the package's fixture snapshots, restored into the scope and minted onto the held-out side, as a
-host mints its own.
+host mints its own. One campaign's pages are stored and judged, by a scripted judge that sends nothing, so the
+pairwise pass reads them on the host and checks its judge's family as the host's launches do.
 """
 
 from __future__ import annotations
@@ -23,11 +24,14 @@ from packages.evals.tests.analyst_support import fixture_snapshots
 from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_writer_support import FakeToolTurnClient, reply
 from packages.evals.tests.writer_case_support import SEED
+from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.ops import OpsHost
+from threetears.evals.harness import Writer, WriterEval
+from threetears.evals.ops import OpsHost, await_job
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.analyst import report_snapshot_restore
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import (
     WriterCaseMint,
@@ -355,3 +359,65 @@ async def test_an_arm_launches_through_its_recorded_models_and_replays_each_case
     assert result.termination == "completed" and result.host_measures[ENDING_MEASURE] == "refused"
     # The launcher handed the factory the arm's skill, and the cell replayed its case's recording to the end.
     assert turns.unconsumed() == []
+
+
+#: The pairwise pass's judge: a bare id, so its family is its provider's.
+PAIR_JUDGE = "scoring-judge"
+
+
+async def _judged_campaign(tmp_path: Path) -> str:
+    """A two-arm writer eval over Kairo's case, each page judged by :data:`PAIR_JUDGE` on OpenRouter: its campaign."""
+    arms = {"shipped": Writer(WRITER, skill=load_skill()), "variant": Writer(WRITER, skill=_variant())}
+    kairo = kairo_case(tmp_path / "cases")
+    for arm, writer in arms.items():
+        routed = writer_turns(
+            tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
+        )
+        lay_recording(routed.path(WRITER, None, kairo.snapshot.id), kairo_report(WRITER, WRITER))
+    result = await WriterEval(
+        tmp_path / "cases",
+        arms=arms,
+        judge=FakeScoringJudge(PAIR_JUDGE),
+        recordings=tmp_path / "turns",
+        budget_usd=0.75,
+        max_cost_usd=5.0,
+        name=CALLER.scope_id,
+        store=tmp_path / "evals.sqlite",
+    ).run()
+    assert all(summary.status == "completed" for summary in result.arms.values())
+    return result.campaign_id
+
+
+async def _pairwise(tmp_path: Path, campaign_id: str, *, writer_provider: str) -> WriterPairwiseReport:
+    """The pairwise pass over ``campaign_id`` on a writer host over the same store, its writers on ``writer_provider``."""
+    host = writer_ops_host(
+        SqliteDocumentStore(tmp_path / "evals.sqlite"),
+        judge=FakeScoringJudge(PAIR_JUDGE),
+        models=lambda arm: lambda effort: FakeSilentWriter(model_name=arm.session_model, skill=arm.skill.digest),
+        budget=BUDGET,
+        request_s=lambda _max_tokens: 120.0,
+        max_cost_usd=5.0,
+        writer_provider=writer_provider,
+    )
+    try:
+        started = await writer_pairwise(host, campaign_id, CALLER.scope_id, candidate="variant")
+        (status,) = await await_job(host, started, CALLER.scope_id)
+    finally:
+        await host.launch.job_manager.shutdown()
+    assert status.state == "completed" and status.result is not None, status.detail
+    return WriterPairwiseReport.model_validate(status.result)
+
+
+async def test_the_pairwise_pass_on_the_writer_host_checks_the_judge_s_family_as_its_launches_do(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    campaign_id = await _judged_campaign(tmp_path)
+
+    report = await _pairwise(tmp_path, campaign_id, writer_provider="anthropic")
+
+    # The host places both: the check is made, never recorded as not made.
+    assert report.judge_family == ["writer anthropic, judge openrouter"]
+    # Writers the host places in the judge's own family: the pass is refused before any call.
+    with pytest.raises(ValidationFailedError, match=r"is of the writer .* family \(openrouter\)"):
+        await _pairwise(tmp_path, campaign_id, writer_provider="openrouter")
