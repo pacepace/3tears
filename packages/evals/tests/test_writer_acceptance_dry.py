@@ -130,7 +130,9 @@ def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[obj
     assert report.calls_made == 2 * DEFAULT_CASES
     assert report.reliability.both_orders == DEFAULT_CASES
     # The eval's own pass, under its part of the cap: a fifth of it.
-    assert found.result.pairwise[HOLLOW] == report and found.result.pairwise_unread == {}
+    read = found.result.pairwise[HOLLOW]
+    assert found.result.pairwise_unread == {} and read.primary == report.whole.verdict
+    assert read.read_on == read.job_id == found.read.pairwise_job
     assert report.cap_usd == pytest.approx(10.0 * 0.2)
 
 

@@ -44,9 +44,10 @@ from threetears.evals.kernel import EvalStorage
 from threetears.evals.analysis import gate_verdicts
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.analyse import Filed
-from threetears.evals.ops import OpsHost
+from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
 from threetears.evals.providers import Model, ProviderError
@@ -251,13 +252,13 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
         assert summary.status == "completed" and summary.n_cases == len(HELD_OUT)
         assert summary.max_cost_usd == pytest.approx(8.0 * 0.8 / 2)
     # The pass ran, under the reserve: no page was stored, so every pair is a tie and no call was made.
-    report = result.pairwise["variant"]
-    assert {pair.missing for pair in report.pairs} == {"both"} and report.calls_made == 0
-    assert report.cap_usd == pytest.approx(8.0 * 0.2)
+    read = result.pairwise["variant"]
+    assert read.calls_made == 0 and read.share == 0.5
+    assert read.cap_usd == pytest.approx(8.0 * 0.2)
     assert result.pairwise_unread == {}
     # The promotion read answered on the held-out cases, the pass as its primary reading.
     assert result.decisions == {"variant": "undecided"}
-    assert result.promotions["variant"].primary == report.whole.verdict
+    assert read.read_on == read.job_id
     assert result.exit_code() == 0 and result.why_failed() is None
     # The page is written.
     written = result.write(tmp_path / "report")
@@ -416,9 +417,9 @@ async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
     assert result.side == "dev"
     for summary in result.arms.values():
         assert summary.status == "completed" and summary.n_cases == len(DEV)
-    assert result.decisions == {} and result.gates == {} and result.promotions == {}
+    assert result.decisions == {} and result.gates == {}
     # The pass is still run and printed on the dev side, with no promotion read on it.
-    assert list(result.pairwise) == ["variant"]
+    assert list(result.pairwise) == ["variant"] and result.pairwise["variant"].read_on is None
     assert result.exit_code() == 0 and result.why_failed() is None
     text = result.render()
     assert text.startswith(f"writer: variant against shipped, {len(DEV)} dev case(s) x 1")
@@ -537,18 +538,19 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     assert offline == []
 
     # The pass: the candidate's page read second, then first, each order scored, under the pass's part of the cap.
-    report = result.pairwise["variant"]
+    read = result.pairwise["variant"]
+    status = await job_poll(OpsHost.reading(result.host), read.job_id, SCOPE)
+    report = WriterPairwiseReport.model_validate(status.result)
     assert (report.candidate, report.control, report.campaign_id) == ("variant", "shipped", result.campaign_id)
     (pair,) = report.pairs
     assert pair.missing is None
     assert [(answer.candidate, answer.answer) for answer in pair.answers] == [("B", "scored"), ("A", "scored")]
-    assert report.calls_made == 2 and report.cap_usd == pytest.approx(8.0 * 0.2)
+    assert read.calls_made == 2 and read.cap_usd == pytest.approx(8.0 * 0.2)
+    assert read.primary == report.whole.verdict and read.share == report.whole.candidate_share
     # The judge scored 4 both times, so it preferred Report B in both orders: the orders disagree on the candidate.
-    assert report.reliability.both_orders == 1 and report.reliability.order_consistent == 0
-    # The promotion read was given the pass's completed job: its primary reading is the pass's verdict, void here.
-    read = result.promotions["variant"]
-    assert read.pairwise_job is not None and read.pairwise_job.startswith("action:")
-    assert read.primary == report.whole.verdict
+    assert (read.both_orders, read.order_consistent, read.order_consistency) == (1, 0, 0.0)
+    # The promotion read was given the pass's completed job, and voided its primary on that disagreement.
+    assert read.read_on == read.job_id and read.job_id.startswith("action:")
     assert read.void is not None and result.decisions == {"variant": "undecided"}
 
     # The summary and the written page carry the pass's readings as one table, a column per candidate.
@@ -558,7 +560,7 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
     assert rows["preference"] == "| preference | variant |"
     # One case is too few for the test to run, and the orders' disagreement voids it besides.
-    assert report.whole.verdict.outcome == "untested"
+    assert read.primary.outcome == "untested"
     assert rows["reads"] == "| reads | untested (void) |"
     assert rows["share"] == "| share | 0.5 |"
     assert rows["order consistency"] == "| order consistency | 0 (0 of 1) |"
@@ -609,9 +611,9 @@ async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
     result = await _eval(tmp_path, arms, judge=FakeBrokeJudge()).run()
 
     report = result.pairwise["variant"]
-    assert report.stopped is not None and report.whole.verdict.outcome == "untested"
+    assert report.stopped is not None and report.primary.outcome == "untested"
     assert result.pairwise_unread == {"variant": f"stopped before its last pair: {report.stopped}"}
-    assert result.promotions["variant"].primary == report.whole.verdict
+    assert report.read_on == report.job_id
     assert result.exit_code() == 1
     text = result.render()
     assert "| reads | untested |" in text
@@ -631,9 +633,10 @@ async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
     for summary in result.arms.values():
         assert summary.status == "completed" and summary.max_cost_usd == pytest.approx(8.0 * 0.8 / 3)
     assert list(result.pairwise) == ["variant", "fewer"]
-    for report in result.pairwise.values():
-        assert report.control == "shipped" and report.cap_usd == pytest.approx(8.0 * 0.2 / 2)
-    assert list(result.promotions) == ["variant", "fewer"]
+    for read in result.pairwise.values():
+        assert read.primary.control == "shipped" and read.cap_usd == pytest.approx(8.0 * 0.2 / 2)
+        assert read.read_on == read.job_id
+    assert list(result.decisions) == ["variant", "fewer"]
     assert "| preference | variant | fewer |" in result.render()
     assert offline == []
 
@@ -652,7 +655,8 @@ async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_a
     (why,) = result.pairwise_unread.values()
     assert why.startswith("refused before any call: ") and "above the out-of-run cap $1.60" in why
     # The read had no pass, so it never promotes; the run exits 1, the pass not completed.
-    assert result.promotions["variant"].pairwise_job is None and result.decisions == {"variant": "undecided"}
+    assert result.decisions == {"variant": "undecided"}
+    assert result.promotion_why["variant"].startswith("Undecided: no pairwise pass was read")
     assert result.exit_code() == 1
     assert f"pairwise pass of variant: {why}" in result.render()
     assert "| reads | - |" in result.render()

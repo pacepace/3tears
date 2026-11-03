@@ -5,7 +5,8 @@ analyst and its editor that write a campaign's page. An eval file imports its na
 
 - :class:`WriterEval` is the eval: arms of :class:`Writer` (a model, an :class:`AnalystSkill`, an effort, its
   revisions, its editor's model) over a directory of portable writer cases, replayed from turn recordings, filed as
-  one campaign, each candidate's pages judged beside the control's and read for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`;
+  one campaign, each candidate's pages judged beside the control's and read for promotion. ``await writer_eval.run()`` returns a :class:`WriterResult`,
+  which carries each candidate's pass as a :class:`WriterPairwise`;
   ``python -m threetears.evals FILE`` runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
@@ -39,7 +40,7 @@ from __future__ import annotations
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText
 from threetears.evals.harness.writer_cases import WriterCaseFile, WriterCaseFormat, read_writer_cases
-from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterResult
+from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterPairwise, WriterResult
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
@@ -53,6 +54,7 @@ __all__ = [
     "WriterCaseFormat",
     "WriterEval",
     "WriterJudge",
+    "WriterPairwise",
     "WriterResult",
     "WriterSide",
     "WriterSplit",

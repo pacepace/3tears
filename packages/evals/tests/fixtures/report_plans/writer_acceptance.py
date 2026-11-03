@@ -7,7 +7,8 @@ same instrument for both arms and the code measures stay comparable. Then:
 
 1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
    the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
-   in both orders, under the pass's part; then its promotion read reads the pass as its primary reading;
+   in both orders, under the pass's part; then its promotion read reads the pass as its primary reading, which the
+   criterion reads again whole, off the pass's stored job;
 2. the pass criterion is decided by code: the read answers ``keep``, and its primary reading
    (``report_writer.preferred``) reads ``regressed``, separated, its interval below 0, with the order check standing
    and bounces not separated. Anything else fails; a primary that does not separate states the held-out cases that
@@ -65,12 +66,13 @@ from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
+from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, EffortWord
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
-from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
+from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.schema.turns import TurnReply, TurnText
 
 #: The writer both arms run on: the smoke's, the owner-ruled build-and-test ceiling, on Anthropic's own API.
@@ -586,7 +588,13 @@ async def _measured(
     ).run()
     if HOLLOW in result.pairwise_unread:
         raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[HOLLOW]}")
-    return result, result.pairwise[HOLLOW], result.promotions[HOLLOW]
+    # The eval read the promotion on its pass; the criterion reads the whole of both, off the pass's stored job.
+    job = result.pairwise[HOLLOW].job_id
+    status = await job_poll(OpsHost.reading(result.host), job, result.scope_id)
+    read = await asyncio.to_thread(
+        writer_promotion, result.host, result.campaign_id, result.scope_id, candidate=HOLLOW, pairwise_job=status
+    )
+    return result, WriterPairwiseReport.model_validate(status.result), read
 
 
 async def acceptance(

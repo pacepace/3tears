@@ -180,6 +180,80 @@ _PAIRWISE_LEAD: Final = (
 
 
 @dataclass(frozen=True)
+class WriterPairwise:
+    """One candidate's pairwise pass against the control, as a writer eval read it: the judge's side-by-side
+    preference, the same over the pairs whose pages were both finished, the judge's order checks, and what the
+    promotion read made of it.
+
+    :ivar job_id: The pass's job, whose record holds its whole report.
+    :ivar read_on: The job the promotion read took as its primary reading: ``job_id`` on the held-out side, ``None``
+        on the dev side, where no promotion is read.
+    :ivar primary: The verdict over every pair, a missing page counted as the side it leaves: the promotion's primary
+        reading. Its ``delta`` is the candidate's mean share less the control's, and its ``interval`` the interval on
+        it.
+    :ivar share: The candidate's mean share of a pair, 0 to 1 (0.5 is no preference); ``None`` when nothing scored.
+    :ivar finished_only: The verdict over the pairs whose two pages were both stored finished, deciding nothing.
+    :ivar finished_share: The candidate's mean share over those pairs.
+    :ivar both_orders: The cases the judge scored in both orders.
+    :ivar order_consistent: Of those, the cases whose two orders picked the same side.
+    :ivar order_consistency: That share; ``None`` when no case was scored both ways.
+    :ivar first_slot_bias: The judge's mean lean to the page it read first, -0.5 to 0.5.
+    :ivar cannot_tell: The answers the judge gave that it could not tell.
+    :ivar void: Why the promotion read voided the primary reading (order consistency under its floor); ``None`` when it
+        stands or no read was made.
+    :ivar cases_to_settle: The held-out cases like these at which a primary that did not separate would, as the
+        promotion read projects it; ``None`` when it separated, is untested or void, or no read was made.
+    :ivar stopped: Why the pass stopped before its last pair, when it did; its verdicts are then untested.
+    :ivar calls_made: The judge calls it made.
+    :ivar cost_usd: What they cost; ``None`` when any went unpriced.
+    :ivar cap_usd: The part of ``max_cost_usd`` its calls were admitted under; ``None`` when none was enforced.
+    """
+
+    job_id: str
+    read_on: str | None
+    primary: Verdict
+    share: float | None
+    finished_only: Verdict
+    finished_share: float | None
+    both_orders: int
+    order_consistent: int
+    order_consistency: float | None
+    first_slot_bias: float | None
+    cannot_tell: int
+    void: str | None
+    cases_to_settle: int | None
+    stopped: str | None
+    calls_made: int
+    cost_usd: float | None
+    cap_usd: float | None
+
+
+def _read_pass(status: JobStatus, read: WriterPromotion | None) -> WriterPairwise:
+    """A completed pass's report, and the promotion read made on it if one was, as the result carries them."""
+    report = WriterPairwiseReport.model_validate(status.result)
+    reliability = report.reliability
+    return WriterPairwise(
+        job_id=status.job_id,
+        read_on=None if read is None else read.pairwise_job,
+        primary=report.whole.verdict,
+        share=report.whole.candidate_share,
+        finished_only=report.finished_only.verdict,
+        finished_share=report.finished_only.candidate_share,
+        both_orders=reliability.both_orders,
+        order_consistent=reliability.order_consistent,
+        order_consistency=reliability.order_consistency,
+        first_slot_bias=reliability.first_slot_bias,
+        cannot_tell=reliability.cannot_tell,
+        void=None if read is None else read.void,
+        cases_to_settle=None if read is None else read.cases_to_settle,
+        stopped=report.stopped,
+        calls_made=report.calls_made,
+        cost_usd=report.cost_usd,
+        cap_usd=report.cap_usd,
+    )
+
+
+@dataclass(frozen=True)
 class _Pass:
     """One candidate's pairwise pass: its completed job, or why it has none."""
 
@@ -254,11 +328,10 @@ class WriterResult:
     :ivar store: Where the runs are stored, in words.
     :ivar disclosures: What the run must say about how it was run: replays, recordings, drift, results held elsewhere.
     :ivar k: The repeats of each case each arm ran.
-    :ivar pairwise: Each candidate's pairwise pass against the control, by arm: the judge's side-by-side preference,
-        its finished-only reading and the judge's order checks.
-    :ivar pairwise_unread: Why a candidate's pass did not complete, by arm: refused before any call, or ended short.
-    :ivar promotions: Each candidate's whole promotion read, by arm, its pass's job as the primary reading; empty on
-        the dev side.
+    :ivar pairwise: Each candidate's pairwise pass against the control, by arm, as :class:`WriterPairwise` reads it;
+        a pass that did not start, or whose job ended other than completed, has none.
+    :ivar pairwise_unread: Why a candidate's pass did not complete, by arm: refused before any call, ended other than
+        completed, or stopped before its last pair.
     """
 
     name: str
@@ -277,9 +350,8 @@ class WriterResult:
     store: str = ""
     disclosures: tuple[str, ...] = ()
     k: int = 1
-    pairwise: dict[str, WriterPairwiseReport] = field(default_factory=dict, repr=False)
+    pairwise: dict[str, WriterPairwise] = field(default_factory=dict, repr=False)
     pairwise_unread: dict[str, str] = field(default_factory=dict)
-    promotions: dict[str, WriterPromotion] = field(default_factory=dict, repr=False)
 
     def __str__(self) -> str:
         """The quiet summary (:meth:`render`)."""
@@ -375,7 +447,7 @@ class WriterResult:
         """
         arms = [arm for arm in self.arms if arm != self.control]
         level = next(
-            (r.whole.verdict.interval_level for r in self.pairwise.values() if r.whole.verdict.interval_level), None
+            (read.primary.interval_level for read in self.pairwise.values() if read.primary.interval_level), None
         )
         labels = tuple(
             f"{row}, {format_number(level * 100)}%" if row == "interval" and level is not None else row
@@ -398,37 +470,33 @@ class WriterResult:
 
     def _pairwise_column(self, arm: str) -> list[str]:
         """One candidate's cells of the pairwise table, in its rows' order; a dash in each when its pass is unread."""
-        report = self.pairwise.get(arm)
-        if report is None:
+        read = self.pairwise.get(arm)
+        if read is None:
             return ["-"] * len(_PAIRWISE_ROWS)
-        read = self.promotions.get(arm)
-        whole, finished = report.whole, report.finished_only
-        reliability = report.reliability
-        reads = _pairwise_reads(whole.verdict)
-        if read is not None and read.void is not None:
+        reads = _pairwise_reads(read.primary)
+        if read.void is not None:
             reads = f"{reads} (void)"
-        interval = whole.verdict.interval
-        rate = reliability.order_consistency
-        settle = None if read is None else read.cases_to_settle
-        spent = "unpriced" if report.cost_usd is None else format_number(report.cost_usd, prefix="$")
+        interval = read.primary.interval
+        rate, settle = read.order_consistency, read.cases_to_settle
+        spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
         return [
             reads,
-            _number(whole.candidate_share),
-            _number(whole.verdict.delta),
+            _number(read.share),
+            _number(read.primary.delta),
             "-" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
-            _pairwise_reads(finished.verdict),
-            _number(finished.candidate_share),
+            _pairwise_reads(read.finished_only),
+            _number(read.finished_share),
             "not measured"
             if rate is None
-            else f"{format_number(rate)} ({reliability.order_consistent} of {reliability.both_orders})",
-            _number(reliability.first_slot_bias),
-            str(reliability.cannot_tell),
+            else f"{format_number(rate)} ({read.order_consistent} of {read.both_orders})",
+            _number(read.first_slot_bias),
+            str(read.cannot_tell),
             "-"
             if settle is None
             else f"more than {PROJECTION_CASE_CAP}"
             if settle > PROJECTION_CASE_CAP
             else str(settle),
-            spent if report.cap_usd is None else f"{spent} of {format_number(report.cap_usd, prefix='$')}",
+            spent if read.cap_usd is None else f"{spent} of {format_number(read.cap_usd, prefix='$')}",
         ]
 
     def exit_code(self) -> int:
@@ -862,12 +930,11 @@ class WriterEval:
             disclosures=disclosures,
             k=self.k,
             pairwise={
-                arm: WriterPairwiseReport.model_validate(ran.status.result)
+                arm: _read_pass(ran.status, promotions.get(arm))
                 for arm, ran in passes.items()
                 if ran.status is not None
             },
             pairwise_unread={arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None},
-            promotions=promotions,
         )
 
 
@@ -968,4 +1035,4 @@ def _results_held_elsewhere(
     return [f"{len(naming)} case(s) name example results stored only where they were frozen"]
 
 
-__all__ = ["Writer", "WriterEval", "WriterResult"]
+__all__ = ["Writer", "WriterEval", "WriterPairwise", "WriterResult"]
