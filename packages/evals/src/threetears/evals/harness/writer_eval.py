@@ -12,15 +12,29 @@ editor's own model. ``await WriterEval(...).run()``:
 3. **creates the writer template** in the eval's scope, or reuses the one there, and **restores and mints every case**
    into it with its stratum, each landing on its split group's side at ``held_out_fraction``, its withheld notes
    checked against the control arm's skill;
-4. **launches every arm on one side's cases** (``side``, the held-out side by default), each naming its equal share of
-   ``max_cost_usd``. A replayed writer prices nothing, and the engine admits an unpriced arm only because its launch
-   names that share, so the share is the ceiling every arm runs under;
+4. **launches every arm on one side's cases** (``side``, the held-out side by default), each naming its part of
+   ``max_cost_usd`` (below). A replayed writer prices nothing, and the engine admits an unpriced arm only because its
+   launch names that part, so the part is the ceiling every arm runs under;
 5. **files the campaign**: the control is the first arm, one design axis per lever the arms differ on (the skill, the
-   effort, the revisions, the editor's model, the model), and the declared ``margin``;
-6. **reads the promotion** of each candidate against the control
-   (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), on the held-out side only: the dev
-   side is where a change is tuned, so the read refuses it by design, and a dev run says so instead of reading it;
-7. returns a :class:`WriterResult`, which prints the campaign's readings as a table and writes the campaign's page.
+   effort, the revisions, the editor's model, the model), the eval's ``question`` and the declared ``margin``;
+6. **runs the pairwise pass** (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`) for each
+   candidate against the control, on the eval's own host over the same store: the eval's judge reads each case's two
+   pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
+7. **reads the promotion** of each candidate against the control
+   (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), its pass's completed job as the
+   primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
+   design, and a dev run says so instead of reading it (its pass is still run and printed);
+8. returns a :class:`WriterResult`, which prints the campaign's readings and each pass's as tables and writes the
+   campaign's page.
+
+**The cap is split before anything launches.** ``pairwise_share`` of ``max_cost_usd`` (a fifth unless told) is
+reserved for the pairwise passes, in one equal part per candidate; each part is the out-of-run cap its pass's calls are
+admitted under. The arms share the rest equally, and each arm's part holds its reports and their absolute judging. The
+run is refused before any arm launches when an arm's reports, each at ``budget_usd``, could pass the arm's part, so
+the reports always leave the pass its reserve. With two arms, ``max_cost_usd`` $12 and the default share, the pass may
+spend $2.40 and each arm $4.80. Whether the reserve covers the pass itself cannot be checked before launch: its calls
+are priced on the pages they read, which are not yet written. A pass its part cannot cover is refused with nothing
+spent once they are, and the result says so and exits 1, as it does for a pass that stops before its last pair.
 
 **The job budget sets how many cases an arm may run.** A writer cell's deadline is a whole report: every turn its
 budget allows at the request ceiling, and its page's judging after. The engine gives an arm's job a budget sized as
@@ -37,12 +51,13 @@ request_s  turns = 40   no turn cap
 180 s      4            0
 =========  ===========  ===========
 
-**A recorded arm runs each case once.** Each case's sessions replay from one file per arm
-(``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>[-e<editor>]/<case>-<snapshot12>.jsonl``, and the
-editor's beside it for an arm whose editor runs on a model of its own), with no key; a missing file is recorded when
-the writer provider's key (``ANTHROPIC_API_KEY`` by default) is set and refused before anything runs when it is not.
-After the arms have run, each session a replay left recorded lines of is printed with the result: the code now stops
-sooner than it did when it was recorded.
+**A recorded arm runs each case once** (``k`` is 1, and refused above it). Each case's sessions replay from one file
+per arm (``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>[-e<editor>]/<case>-<snapshot12>.jsonl``, and
+the editor's beside it for an arm whose editor runs on a model of its own), with no key; a second repeat of a case
+would replay that same file, so it would repeat the first report rather than measure another. A missing file is
+recorded when the writer provider's key (``ANTHROPIC_API_KEY`` by default) is set and refused before anything runs
+when it is not. After the arms have run, each session a replay left recorded lines of is printed with the result: the
+code now stops sooner than it did when it was recorded.
 
 **Withheld notes are checked against every arm's skill.** A case withholds the exemplar note reasoned on its own
 campaign, and each cell takes that note out of its own arm's skill (a frozen copy of the control's included), so a case
@@ -75,11 +90,15 @@ from threetears.evals.analysis import (
     summarize_run,
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
+from threetears.evals.analysis.report.blocks import Verdict
+from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
+from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.ops import OpsHost
+from threetears.evals.ops import JobStatus, OpsHost, await_job
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
@@ -98,7 +117,8 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterModels,
 )
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel
-from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
+from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
 from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
@@ -132,6 +152,113 @@ _SIDE_WORDS: Mapping[WriterSide, str] = {"held_out": "held-out", "dev": "dev"}
 
 #: The writer template every writer eval's cases are minted into, in its scope.
 _TEMPLATE_NAME = "report writer"
+
+#: The part of ``max_cost_usd`` a writer eval reserves for its pairwise passes unless told (the module docstring).
+PAIRWISE_SHARE: Final = 0.2
+
+#: The pairwise table's rows, in order; the interval's carries its level when a pass read one.
+_PAIRWISE_ROWS: Final = (
+    "reads",
+    "share",
+    "difference",
+    "interval",
+    "reads, both pages finished",
+    "share, both pages finished",
+    "order consistency",
+    "first-slot lean",
+    "can't tell",
+    "held-out cases to settle",
+    "spent",
+)
+
+#: What the pairwise table says once, above it: what a share and order consistency are.
+_PAIRWISE_LEAD: Final = (
+    "Side by side, the judge read each case's two pages in both orders: a share is the part of a pair it gave the "
+    "candidate (0.5 is no preference), order consistency the part of cases whose two orders agreed, and first-slot "
+    "lean how far it favoured the page it read first (-0.5 to 0.5)."
+)
+
+
+@dataclass(frozen=True)
+class WriterPairwise:
+    """One candidate's pairwise pass against the control, as a writer eval read it: the judge's side-by-side
+    preference, the same over the pairs whose pages were both finished, the judge's order checks, and what the
+    promotion read made of it.
+
+    :ivar job_id: The pass's job, whose record holds its whole report.
+    :ivar read_on: The job the promotion read took as its primary reading: ``job_id`` on the held-out side, ``None``
+        on the dev side, where no promotion is read.
+    :ivar primary: The verdict over every pair, a missing page counted as the side it leaves: the promotion's primary
+        reading. Its ``delta`` is the candidate's mean share less the control's, and its ``interval`` the interval on
+        it.
+    :ivar share: The candidate's mean share of a pair, 0 to 1 (0.5 is no preference); ``None`` when nothing scored.
+    :ivar finished_only: The verdict over the pairs whose two pages were both stored finished, deciding nothing.
+    :ivar finished_share: The candidate's mean share over those pairs.
+    :ivar both_orders: The cases the judge scored in both orders.
+    :ivar order_consistent: Of those, the cases whose two orders picked the same side.
+    :ivar order_consistency: That share; ``None`` when no case was scored both ways.
+    :ivar first_slot_bias: The judge's mean lean to the page it read first, -0.5 to 0.5.
+    :ivar cannot_tell: The answers the judge gave that it could not tell.
+    :ivar void: Why the promotion read voided the primary reading (order consistency under its floor); ``None`` when it
+        stands or no read was made.
+    :ivar cases_to_settle: The held-out cases like these at which a primary that did not separate would, as the
+        promotion read projects it; ``None`` when it separated, is untested or void, or no read was made.
+    :ivar stopped: Why the pass stopped before its last pair, when it did; its verdicts are then untested.
+    :ivar calls_made: The judge calls it made.
+    :ivar cost_usd: What they cost; ``None`` when any went unpriced.
+    :ivar cap_usd: The part of ``max_cost_usd`` its calls were admitted under; ``None`` when none was enforced.
+    """
+
+    job_id: str
+    read_on: str | None
+    primary: Verdict
+    share: float | None
+    finished_only: Verdict
+    finished_share: float | None
+    both_orders: int
+    order_consistent: int
+    order_consistency: float | None
+    first_slot_bias: float | None
+    cannot_tell: int
+    void: str | None
+    cases_to_settle: int | None
+    stopped: str | None
+    calls_made: int
+    cost_usd: float | None
+    cap_usd: float | None
+
+
+def _read_pass(status: JobStatus, read: WriterPromotion | None) -> WriterPairwise:
+    """A completed pass's report, and the promotion read made on it if one was, as the result carries them."""
+    report = WriterPairwiseReport.model_validate(status.result)
+    reliability = report.reliability
+    return WriterPairwise(
+        job_id=status.job_id,
+        read_on=None if read is None else read.pairwise_job,
+        primary=report.whole.verdict,
+        share=report.whole.candidate_share,
+        finished_only=report.finished_only.verdict,
+        finished_share=report.finished_only.candidate_share,
+        both_orders=reliability.both_orders,
+        order_consistent=reliability.order_consistent,
+        order_consistency=reliability.order_consistency,
+        first_slot_bias=reliability.first_slot_bias,
+        cannot_tell=reliability.cannot_tell,
+        void=None if read is None else read.void,
+        cases_to_settle=None if read is None else read.cases_to_settle,
+        stopped=report.stopped,
+        calls_made=report.calls_made,
+        cost_usd=report.cost_usd,
+        cap_usd=report.cap_usd,
+    )
+
+
+@dataclass(frozen=True)
+class _Pass:
+    """One candidate's pairwise pass: its completed job, or why it has none."""
+
+    status: JobStatus | None
+    why_not: str | None
 
 
 @dataclass(frozen=True)
@@ -200,6 +327,11 @@ class WriterResult:
     :ivar gates: Each candidate's verdicts, gated as the promotion read gates them: what a failing exit code reads.
     :ivar store: Where the runs are stored, in words.
     :ivar disclosures: What the run must say about how it was run: replays, recordings, drift, results held elsewhere.
+    :ivar k: The repeats of each case each arm ran.
+    :ivar pairwise: Each candidate's pairwise pass against the control, by arm, as :class:`WriterPairwise` reads it;
+        a pass that did not start, or whose job ended other than completed, has none.
+    :ivar pairwise_unread: Why a candidate's pass did not complete, by arm: refused before any call, ended other than
+        completed, or stopped before its last pair.
     """
 
     name: str
@@ -217,16 +349,21 @@ class WriterResult:
     gates: dict[str, GateResult] = field(repr=False)
     store: str = ""
     disclosures: tuple[str, ...] = ()
+    k: int = 1
+    pairwise: dict[str, WriterPairwise] = field(default_factory=dict, repr=False)
+    pairwise_unread: dict[str, str] = field(default_factory=dict)
 
     def __str__(self) -> str:
         """The quiet summary (:meth:`render`)."""
         return self.render()
 
     def render(self, *, full: bool = False) -> str:
-        """The result as text: the readings table, each arm's results and spend, the promotion read and disclosures.
+        """The result as text: the readings table, the pairwise table, each arm's results and spend, the promotion read
+        and disclosures.
 
         Each reading is a measure the writer host declares, named as its descriptor names it, then each judged
-        dimension of the template's rubric. ``full`` adds every arm's whole summary and the campaign's page.
+        dimension of the template's rubric. The pairwise table has a column per candidate
+        (:meth:`pairwise_text`). ``full`` adds every arm's whole summary and the campaign's page.
 
         :param full: Every arm's whole summary and the whole page, as Markdown, after the quiet summary.
         :ptype full: bool
@@ -236,10 +373,11 @@ class WriterResult:
         candidates = " and ".join(arm for arm in self.arms if arm != self.control)
         cases = next(iter(self.arms.values())).n_cases
         lines = [
-            f"{self.name}: {candidates} against {self.control}, {cases} {_SIDE_WORDS[self.side]} case(s) x 1, "
+            f"{self.name}: {candidates} against {self.control}, {cases} {_SIDE_WORDS[self.side]} case(s) x {self.k}, "
             f"judged by {self.judge}"
         ]
         lines += self._readings()
+        lines += ["", self.pairwise_text(), ""]
         lines += ["| stratum | cases |", "|---|---|", *(f"| {name} | {n} |" for name, n in self.strata.items())]
         for arm, summary in self.arms.items():
             label = f"{arm}{' (control)' if arm == self.control else ''}"
@@ -289,11 +427,82 @@ class WriterResult:
         :return: Each file written, by role (``html``, ``markdown``, ``json``, ``bundle:<aspect>``).
         :rtype: dict[str, Path]
         """
-        return self.page.write(out_dir)
+        written = self.page.write(out_dir)
+        pairwise = Path(out_dir) / "pairwise.md"
+        pairwise.write_text(f"# Side by side\n\n{self.pairwise_text()}\n", encoding="utf-8")
+        return {**written, "pairwise": pairwise}
+
+    def pairwise_text(self) -> str:
+        """Each candidate's pairwise pass as one table, a column per candidate, under the one sentence defining its
+        terms; then a line for each pass that did not complete.
+
+        The rows: what the preference reads (``void`` beside it when the order checks void it), the candidate's mean
+        share, its difference from the control's and the interval on it, the same reading over the pairs whose pages
+        were both stored finished, order consistency, the lean to the page read first, the answers the judge could not
+        tell, the held-out cases like these that would settle a reading that did not separate, and what the pass spent
+        of its part.
+
+        :return: The text, as Markdown.
+        :rtype: str
+        """
+        arms = [arm for arm in self.arms if arm != self.control]
+        level = next(
+            (read.primary.interval_level for read in self.pairwise.values() if read.primary.interval_level), None
+        )
+        labels = tuple(
+            f"{row}, {format_number(level * 100)}%" if row == "interval" and level is not None else row
+            for row in _PAIRWISE_ROWS
+        )
+        columns = {arm: self._pairwise_column(arm) for arm in arms}
+        lines = [
+            _PAIRWISE_LEAD,
+            "",
+            "| preference | " + " | ".join(arms) + " |",
+            "|---|" + "---|" * len(arms),
+            *(
+                f"| {label} | " + " | ".join(columns[arm][row] for arm in arms) + " |"
+                for row, label in enumerate(labels)
+            ),
+        ]
+        if self.pairwise_unread:
+            lines += ["", *(f"pairwise pass of {arm}: {why}" for arm, why in self.pairwise_unread.items())]
+        return "\n".join(lines)
+
+    def _pairwise_column(self, arm: str) -> list[str]:
+        """One candidate's cells of the pairwise table, in its rows' order; a dash in each when its pass is unread."""
+        read = self.pairwise.get(arm)
+        if read is None:
+            return ["-"] * len(_PAIRWISE_ROWS)
+        reads = _pairwise_reads(read.primary)
+        if read.void is not None:
+            reads = f"{reads} (void)"
+        interval = read.primary.interval
+        rate, settle = read.order_consistency, read.cases_to_settle
+        spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
+        return [
+            reads,
+            _number(read.share),
+            _number(read.primary.delta),
+            "-" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
+            _pairwise_reads(read.finished_only),
+            _number(read.finished_share),
+            "not measured"
+            if rate is None
+            else f"{format_number(rate)} ({read.order_consistent} of {read.both_orders})",
+            _number(read.first_slot_bias),
+            str(read.cannot_tell),
+            "-"
+            if settle is None
+            else f"more than {PROJECTION_CASE_CAP}"
+            if settle > PROJECTION_CASE_CAP
+            else str(settle),
+            spent if read.cap_usd is None else f"{spent} of {format_number(read.cap_usd, prefix='$')}",
+        ]
 
     def exit_code(self) -> int:
-        """What a command line exits with: 0, 1 when an arm's run did not complete, 4 when a promotion gate failed."""
-        if any(summary.status != "completed" for summary in self.arms.values()):
+        """What a command line exits with: 0; 1 when an arm's run or a pairwise pass did not complete; 4 when a
+        promotion gate failed."""
+        if any(summary.status != "completed" for summary in self.arms.values()) or self.pairwise_unread:
             return 1
         return 4 if any(gate.failed for gate in self.gates.values()) else 0
 
@@ -327,6 +536,9 @@ class WriterEval:
         held_out_fraction: float = 0.35,
         side: WriterSide = "held_out",
         name: str = "writer",
+        question: str | None = None,
+        k: int = 1,
+        pairwise_share: float = PAIRWISE_SHARE,
         turns: int = TURN_CAP,
         request_s: float = 120.0,
         margin: float = 5.0,
@@ -348,9 +560,9 @@ class WriterEval:
         :ptype recordings: str | os.PathLike[str]
         :param budget_usd: Each report's dollar cap.
         :ptype budget_usd: float
-        :param max_cost_usd: The most the whole eval may spend, judge included; each arm runs under an equal share.
-            The run is refused when an arm's reports, each at ``budget_usd``, could pass its share: the judge's
-            calls ride in the same share, so leave them room.
+        :param max_cost_usd: The most the whole eval may spend, judge and pairwise pass included, split as the module
+            docstring says. The run is refused when an arm's reports, each at ``budget_usd``, could pass its part:
+            the absolute judge's calls ride in the same part, so leave them room.
         :ptype max_cost_usd: float
         :param held_out_fraction: The share of split groups placed on the held-out side when first minted.
         :ptype held_out_fraction: float
@@ -358,6 +570,13 @@ class WriterEval:
         :ptype side: WriterSide
         :param name: The eval's name, its scope's unless ``scope`` says, and its campaign's.
         :ptype name: str
+        :param question: The question the campaign is filed asking; ``None`` asks whether the candidates write reports
+            better than the control.
+        :ptype question: str | None
+        :param k: Repeats of each case per arm: 1, the only count a recorded arm can run (the module docstring).
+        :ptype k: int
+        :param pairwise_share: The part of ``max_cost_usd`` reserved for the pairwise passes, strictly between 0 and 1.
+        :ptype pairwise_share: float
         :param turns: Each report's turn cap, which bounds how long a cell can run (the module docstring's table).
         :ptype turns: int
         :param request_s: The ceiling for one request on the writer's client, in seconds.
@@ -373,8 +592,8 @@ class WriterEval:
         :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
         :ptype scope: str | None
-        :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, or a
-            share, budget, turn cap or ceiling that is not above 0.
+        :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, a
+            blank question, a ``k`` other than 1, or a share, budget, turn cap or ceiling out of its range.
         """
         if len(arms) < 2:
             raise ValueError("a writer eval compares arms: name a control and at least one candidate")
@@ -392,6 +611,15 @@ class WriterEval:
             raise ValueError(f"side is 'held_out' or 'dev', not {side!r}")
         if len(name) > DECLARED_NAME_CHARS:
             raise ValueError(f"a writer eval's name titles its campaign, at most {DECLARED_NAME_CHARS} characters")
+        if question is not None and not question.strip():
+            raise ValueError("a writer eval's question is filed on its campaign, and this one is blank")
+        if k != 1:
+            raise ValueError(
+                f"k is 1 for a writer eval, not {k}: each arm replays one recording per case, so a second repeat would "
+                "replay the first's turns and repeat its report rather than measure another; run more cases instead"
+            )
+        if not 0 < pairwise_share < 1:
+            raise ValueError(f"pairwise_share is a share strictly between 0 and 1, not {pairwise_share}")
         for what, value in (
             ("budget_usd", budget_usd),
             ("max_cost_usd", max_cost_usd),
@@ -409,6 +637,9 @@ class WriterEval:
         self.max_cost_usd = max_cost_usd
         self.split = WriterSplit(held_out_fraction=held_out_fraction)
         self.side: WriterSide = side
+        self.question = question
+        self.k = k
+        self.pairwise_share = pairwise_share
         self.request_s = request_s
         self.margin = margin
         self.writer_provider = writer_provider
@@ -440,6 +671,7 @@ class WriterEval:
             skills={writer.analyst_skill.digest: writer.analyst_skill for writer in self.arms.values()},
             writer_provider=self.writer_provider,
             max_arms=len(self.arms),
+            out_of_run_cost_usd=self._pass_part,
         )
         try:
             return await self._run(host, cases, turns, where)
@@ -481,11 +713,13 @@ class WriterEval:
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
         )
         disclosures = [*self._recording_disclosures(turns, named), *held_elsewhere]
-        share = self.max_cost_usd / len(self.arms)
-        if self.budget.usd is not None and len(on_side) * self.budget.usd > share:
+        share = self._arm_part
+        if self.budget.usd is not None and len(on_side) * self.k * self.budget.usd > share:
             raise ValueError(
-                f"{len(on_side)} report(s) at ${self.budget.usd:.2f} each could pass an arm's ${share:.2f} share of "
-                f"max_cost_usd ${self.max_cost_usd:.2f}; raise max_cost_usd or lower budget_usd"
+                f"{len(on_side) * self.k} report(s) at ${self.budget.usd:.2f} each could pass an arm's ${share:.2f} "
+                f"part of max_cost_usd ${self.max_cost_usd:.2f}, after the pairwise pass's "
+                f"${self.max_cost_usd * self.pairwise_share:.2f} (pairwise_share {self.pairwise_share}); raise "
+                "max_cost_usd or lower budget_usd"
             )
         launches = {arm: self._launch(template_id, case_set, writer, share) for arm, writer in self.arms.items()}
         for arguments in launches.values():  # every arm is quoted, and refused, before any is started
@@ -494,19 +728,51 @@ class WriterEval:
         await host.launch.job_manager.wait_for([run.id for run in runs.values()])
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
+        run_ids = {arm: run.id for arm, run in runs.items()}
+        campaign_id = await run_blocking(
+            eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id
+        )
+        passes = {arm: await self._pairwise(host, campaign_id, arm) for arm in list(self.arms)[1:]}
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
         return await run_blocking(
             eval_host.blocking_executor,
             lambda: self._declared(
                 eval_host,
-                {arm: run.id for arm, run in runs.items()},
-                template_id,
+                run_ids,
+                campaign_id,
+                passes,
                 case_names=case_names,
                 strata=Counter(case.stratum or "none" for case, _ in on_side),
                 where=where,
                 disclosures=tuple(disclosures),
             ),
         )
+
+    @property
+    def _pass_part(self) -> float:
+        """Each candidate's part of the pairwise reserve: the out-of-run cap its pass is admitted under."""
+        return self.max_cost_usd * self.pairwise_share / (len(self.arms) - 1)
+
+    @property
+    def _arm_part(self) -> float:
+        """Each arm's part of what the pairwise reserve leaves: the ceiling its launch names."""
+        return self.max_cost_usd * (1 - self.pairwise_share) / len(self.arms)
+
+    async def _pairwise(self, host: OpsHost, campaign_id: str, candidate: str) -> _Pass:
+        """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
+        complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
+        a writer's family, no case both arms ran), a job that ended other than completed, or a pass stopped before its
+        last pair (an account refusal), whose report is still read."""
+        try:
+            started = await writer_pairwise(host, campaign_id, self.scope_id, candidate=candidate)
+        except (ValidationFailedError, NotFoundError) as refused:
+            return _Pass(status=None, why_not=f"refused before any call: {refused}")
+        (status,) = await await_job(host, started, self.scope_id)
+        if status.state != "completed" or status.result is None:
+            return _Pass(status=None, why_not=f"ended {status.state}: {status.detail or 'no detail recorded'}")
+        stopped = WriterPairwiseReport.model_validate(status.result).stopped
+        # A pass stopped part-way completes its job with its verdicts untested: read, printed, and still not complete.
+        return _Pass(status=status, why_not=None if stopped is None else f"stopped before its last pair: {stopped}")
 
     def _template(self, host: OpsHost) -> str:
         """The writer template in the scope: the one there, or one created now. Blocking."""
@@ -572,7 +838,7 @@ class WriterEval:
             "scope_id": self.scope_id,
             "subject_id": self.name,
             "models": [writer.model_id],
-            "k_runs": 1,
+            "k_runs": self.k,
             "case_set": case_set,
             "judge_model": self.judge.model_name,
             "overlays": {
@@ -583,18 +849,8 @@ class WriterEval:
             },
         }
 
-    def _declared(
-        self,
-        host: EvalHost,
-        run_ids: Mapping[str, str],
-        template_id: str,
-        *,
-        case_names: Mapping[str, str],
-        strata: Mapping[str, int],
-        where: str,
-        disclosures: tuple[str, ...],
-    ) -> WriterResult:
-        """File the campaign, read each candidate's promotion, and summarise each arm. Blocking."""
+    def _file_campaign(self, host: EvalHost, run_ids: Mapping[str, str], template_id: str) -> str:
+        """File the campaign over every arm's run, control first; its id. Blocking."""
         control, *candidates = self.arms
         levels = {arm: _levels(writer) for arm, writer in self.arms.items()}
         axes = []
@@ -603,13 +859,14 @@ class WriterEval:
             if len(values) > 1:
                 shown = {value: next(arm for arm in self.arms if levels[arm][lever] == value) for value in values}
                 axes.append({"axis_id": lever, "values": [{"content": v, "display": shown[v]} for v in values]})
+        asked = self.question or f"Does {' or '.join(candidates)} write reports better than {control}?"
         line = campaign_create(
             host,
             CampaignDefinition(
                 name=self.name,
                 subject_id=self.name,
                 behavior="report-writing",
-                question=f"Does {' or '.join(candidates)} write reports better than {control}?",
+                question=asked,
                 arms=[
                     {"label": arm, "role": "control" if arm == control else "candidate", "from_run_ids": [run_id]}
                     for arm, run_id in run_ids.items()
@@ -622,7 +879,7 @@ class WriterEval:
                         "design": {
                             "axes": axes,
                             "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                            "intended_repetitions": 1,
+                            "intended_repetitions": self.k,
                         },
                     }
                 ],
@@ -630,13 +887,28 @@ class WriterEval:
             self.scope_id,
             created_by=CREATED_BY,
         )
-        decisions: dict[str, str] = {}
-        why: dict[str, str] = {}
-        gates: dict[str, GateResult] = {}
+        return line.id
+
+    def _declared(
+        self,
+        host: EvalHost,
+        run_ids: Mapping[str, str],
+        campaign_id: str,
+        passes: Mapping[str, _Pass],
+        *,
+        case_names: Mapping[str, str],
+        strata: Mapping[str, int],
+        where: str,
+        disclosures: tuple[str, ...],
+    ) -> WriterResult:
+        """Read each candidate's promotion on its pass, and summarise each arm. Blocking."""
+        control = next(iter(self.arms))
+        promotions: dict[str, WriterPromotion] = {}
         if self.side == "held_out":
-            for arm in candidates:
-                read = writer_promotion(host, line.id, self.scope_id, candidate=arm)
-                decisions[arm], why[arm], gates[arm] = read.decision, read.why, gate_verdicts(read.verdicts)
+            promotions = {
+                arm: writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
+                for arm, ran in passes.items()
+            }
         return WriterResult(
             name=self.name,
             scope_id=self.scope_id,
@@ -647,16 +919,35 @@ class WriterEval:
                 for arm, run_id in run_ids.items()
             },
             host=host,
-            campaign_id=line.id,
-            page=campaign_report(host, line.id, self.scope_id),
+            campaign_id=campaign_id,
+            page=campaign_report(host, campaign_id, self.scope_id),
             judge=self.judge.model_name,
             strata=dict(sorted(strata.items())),
-            decisions=decisions,
-            promotion_why=why,
-            gates=gates,
+            decisions={arm: read.decision for arm, read in promotions.items()},
+            promotion_why={arm: read.why for arm, read in promotions.items()},
+            gates={arm: gate_verdicts(read.verdicts) for arm, read in promotions.items()},
             store=where,
             disclosures=disclosures,
+            k=self.k,
+            pairwise={
+                arm: _read_pass(ran.status, promotions.get(arm))
+                for arm, ran in passes.items()
+                if ran.status is not None
+            },
+            pairwise_unread={arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None},
         )
+
+
+def _pairwise_reads(verdict: Verdict) -> str:
+    """What a pairwise verdict reads, as its cell prints it: its outcome, too few cases beside it when it was read on
+    fewer cases than a rate needs."""
+    outcome = verdict.outcome.replace("_", " ")
+    return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
+
+
+def _number(value: float | None) -> str:
+    """A number as a cell prints it; a dash for none."""
+    return "-" if value is None else format_number(value)
 
 
 def _levels(writer: Writer) -> dict[str, str]:
@@ -744,4 +1035,4 @@ def _results_held_elsewhere(
     return [f"{len(naming)} case(s) name example results stored only where they were frozen"]
 
 
-__all__ = ["Writer", "WriterEval", "WriterResult"]
+__all__ = ["Writer", "WriterEval", "WriterPairwise", "WriterResult"]

@@ -16,7 +16,8 @@ over the same store, with nothing of the callable host changed:
   lends a judged eval's, each call priced as the judge prices it, so a pass held to the out-of-run cap (the pairwise
   pass) is admitted on the judge's own prices: nothing, for a judge replaying its recording;
 - **its launch settings** run at most two cells of a run at once, with the cost ceilings enforced, so every arm is
-  launched naming its share of ``max_cost_usd``.
+  launched naming its share of ``max_cost_usd``, and hold an out-of-run pass to ``out_of_run_cost_usd`` (the writer
+  eval's part of its cap for one pairwise pass).
 
 **A model's family is read from the route it is built on**, never from a table of vendors: an id that names its vendor
 before a ``/`` (an aggregator's route) is of that vendor's family, any other id is of the provider it is sent to, and
@@ -174,6 +175,7 @@ def writer_ops_host(
     writer_provider: str = "anthropic",
     max_arms: int = 2,
     identity: str = CREATED_BY,
+    out_of_run_cost_usd: float | None = None,
 ) -> OpsHost:
     """A host that launches report writer arms over ``store``, beside the quick host's runs in it (the module docstring).
 
@@ -199,6 +201,9 @@ def writer_ops_host(
     :ptype max_arms: int
     :param identity: Who the cells' tool calls run as.
     :ptype identity: str
+    :param out_of_run_cost_usd: The most one out-of-run pass (the pairwise pass) may be priced at; ``None`` for
+        ``max_cost_usd``.
+    :ptype out_of_run_cost_usd: float | None
     :return: The host: launches the writer kind, generates no analysis, and places each model's family as its launches
         do.
     :rtype: OpsHost
@@ -218,7 +223,7 @@ def writer_ops_host(
         enforcement_enabled=True,
         max_cost_usd=max_cost_usd,
         max_metered_calls=None,
-        max_out_of_run_cost_usd=max_cost_usd,
+        max_out_of_run_cost_usd=max_cost_usd if out_of_run_cost_usd is None else out_of_run_cost_usd,
     )
     eval_host = EvalHost(
         profile=HostProfile(

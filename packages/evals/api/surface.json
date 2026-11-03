@@ -7623,11 +7623,16 @@
     },
     "threetears.evals.harness.WriterEval": {
       "kind": "class",
-      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', turns: int = 40, request_s: float = 120.0, margin: float = 5.0, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None) -> None",
+      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', question: str | None = None, k: int = 1, pairwise_share: float = 0.2, turns: int = 40, request_s: float = 120.0, margin: float = 5.0, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.harness.WriterJudge": {
       "kind": "protocol",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WriterPairwise": {
+      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },

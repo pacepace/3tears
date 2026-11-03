@@ -3,8 +3,14 @@
 Every case is a package fixture snapshot written as a writer case file; every arm's writer is a turn recording laid
 where the arm's router reads it. Most recordings' analyst replies hold no document, so each cell ends with nothing
 stored and nothing reaches the judge, a :class:`~threetears.evals.providers.Model` whose transport fails any request.
-One recording stores Kairo's report, whose page a scripted judge scores. Every socket connect fails too: a replay-only
-run makes no network call, whether or not its pages reach the judge.
+One recording stores Kairo's report, whose page a scripted judge scores, and whose two arms' pages the eval's own
+pairwise pass shows that judge side by side. Every socket connect fails too: a replay-only run makes no network call,
+whether or not its pages reach the judge.
+
+Mutations that turn this file red: the pass not run, run in one order, or run without its part of the cap; the
+promotion read made without the pass's job; the pairwise readings missing from the summary or the written page; a cap
+that covers the reports but not the pass admitted; ``question=`` not filed; ``k`` above 1 admitted; a pass refused
+before any call left unsaid or exiting 0.
 """
 
 from __future__ import annotations
@@ -38,11 +44,13 @@ from threetears.evals.kernel import EvalStorage
 from threetears.evals.analysis import gate_verdicts
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.analyse import Filed
-from threetears.evals.ops import OpsHost
+from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
+from threetears.evals.ops.report_writer.preference import preference_rubric
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
-from threetears.evals.providers import Model
+from threetears.evals.providers import Model, ProviderError
 from threetears.evals.quick.files import RunResult, Runnable, runnable
 from threetears.evals.harness.writer_cases import writer_case_freeze
 from threetears.evals.harness.writer_turns import writer_turns
@@ -183,7 +191,7 @@ def _eval(tmp_path: Path, arms: dict[str, Writer], **overrides: Any) -> WriterEv
         "judge": Model(JUDGE, api_key="unused", transport=httpx.MockTransport(_refuse)),
         "recordings": tmp_path / "turns",
         "budget_usd": 0.75,
-        "max_cost_usd": 6.0,
+        "max_cost_usd": 8.0,
         "held_out_fraction": 0.35,
         "name": SCOPE,
         "store": tmp_path / "evals.sqlite",
@@ -239,12 +247,18 @@ async def test_a_two_arm_replay_mints_launches_files_reads_the_promotion_and_wri
     assert isinstance(result, WriterResult)
     await asyncio.to_thread(_holds_the_cases_template_and_campaign, tmp_path, result)
     assert result.strata == {"misfit": 1, "reference": 2, "support-triage": 1}
-    # Both arms ran the held-out cases alone, each under its share of the ceiling.
+    # Both arms ran the held-out cases alone, each under its part of what the pairwise reserve (a fifth) leaves.
     for summary in result.arms.values():
         assert summary.status == "completed" and summary.n_cases == len(HELD_OUT)
-        assert summary.max_cost_usd == pytest.approx(3.0)
-    # The promotion read answered on the held-out cases.
+        assert summary.max_cost_usd == pytest.approx(8.0 * 0.8 / 2)
+    # The pass ran, under the reserve: no page was stored, so every pair is a tie and no call was made.
+    read = result.pairwise["variant"]
+    assert read.calls_made == 0 and read.share == 0.5
+    assert read.cap_usd == pytest.approx(8.0 * 0.2)
+    assert result.pairwise_unread == {}
+    # The promotion read answered on the held-out cases, the pass as its primary reading.
     assert result.decisions == {"variant": "undecided"}
+    assert read.read_on == read.job_id
     assert result.exit_code() == 0 and result.why_failed() is None
     # The page is written.
     written = result.write(tmp_path / "report")
@@ -325,13 +339,16 @@ async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before
     arms = _arms()
     _case_files(tmp_path / "cases")
     _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
-    budget_usd, max_cost_usd = 1.25, 6.0
-    share = max_cost_usd / len(arms)
-    assert len(HELD_OUT_FIXTURES) * budget_usd > share, "the control: the reports' budgets pass the share"
+    budget_usd, max_cost_usd = 1.25, 8.0
+    share = max_cost_usd * 0.8 / len(arms)
+    reports = len(HELD_OUT_FIXTURES) * budget_usd
+    # The control: the cap would cover the reports alone, split with no reserve; with the pass's part taken, it does not.
+    assert reports <= max_cost_usd / len(arms) and reports > share
 
     expected = (
-        f"{len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} share of "
-        f"max_cost_usd ${max_cost_usd:.2f}; raise max_cost_usd or lower budget_usd"
+        f"{len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} part of "
+        f"max_cost_usd ${max_cost_usd:.2f}, after the pairwise pass's $1.60 (pairwise_share 0.2); raise max_cost_usd "
+        "or lower budget_usd"
     )
     with pytest.raises(ValueError) as refused:
         await _eval(tmp_path, arms, budget_usd=budget_usd, max_cost_usd=max_cost_usd).run()
@@ -401,6 +418,8 @@ async def test_a_dev_side_run_launches_the_dev_cases_and_reads_no_promotion(
     for summary in result.arms.values():
         assert summary.status == "completed" and summary.n_cases == len(DEV)
     assert result.decisions == {} and result.gates == {}
+    # The pass is still run and printed on the dev side, with no promotion read on it.
+    assert list(result.pairwise) == ["variant"] and result.pairwise["variant"].read_on is None
     assert result.exit_code() == 0 and result.why_failed() is None
     text = result.render()
     assert text.startswith(f"writer: variant against shipped, {len(DEV)} dev case(s) x 1")
@@ -453,6 +472,15 @@ async def test_a_failed_promotion_gate_exits_4_naming_it_and_an_unfinished_arm_e
         (lambda: _declared(max_cost_usd=-1.0), "max_cost_usd is above 0, not -1.0"),
         (lambda: _declared(turns=0), "turns is above 0, not 0"),
         (lambda: _declared(request_s=0.0), "request_s is above 0, not 0.0"),
+        (
+            lambda: _declared(k=2),
+            "k is 1 for a writer eval, not 2: each arm replays one recording per case, so a second repeat would "
+            "replay the first's turns and repeat its report rather than measure another; run more cases instead",
+        ),
+        (lambda: _declared(k=0), "k is 1 for a writer eval, not 0"),
+        (lambda: _declared(question=" "), "a writer eval's question is filed on its campaign, and this one is blank"),
+        (lambda: _declared(pairwise_share=0.0), "pairwise_share is a share strictly between 0 and 1, not 0.0"),
+        (lambda: _declared(pairwise_share=1.0), "pairwise_share is a share strictly between 0 and 1, not 1.0"),
     ],
 )
 def test_a_writer_or_writer_eval_declared_out_of_range_is_refused(build: Callable[[], object], refusal: str) -> None:
@@ -472,9 +500,8 @@ def _declared(**overrides: Any) -> WriterEval:
     return WriterEval("cases", **{**arguments, **overrides})
 
 
-async def test_a_replay_whose_pages_reach_the_judge_makes_no_network_call(
-    tmp_path: Path, offline: list[object]
-) -> None:
+def _kairo_arms(tmp_path: Path) -> dict[str, Writer]:
+    """Two arms over Kairo's case, each laid Kairo's report, so both pages are stored and judged."""
     arms = _arms()
     kairo = kairo_case(tmp_path / "cases")
     for arm, writer in arms.items():
@@ -482,19 +509,162 @@ async def test_a_replay_whose_pages_reach_the_judge_makes_no_network_call(
             tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases={kairo.snapshot.id: "kairo"}
         )
         lay_recording(routed.path(WRITER, None, kairo.snapshot.id), kairo_report(WRITER, WRITER))
+    return arms
+
+
+#: The question a test files its campaign asking.
+QUESTION: Final = "Does a blank line in SKILL.md change the reports?"
+
+
+async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders_and_reads_the_promotion_on_it(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _kairo_arms(tmp_path)
     judge = FakeScoringJudge()
 
-    result = await _eval(tmp_path, arms, judge=judge).run()
+    result = await _eval(tmp_path, arms, judge=judge, question=QUESTION).run()
 
-    # Every arm's page was stored and judged on all seven dimensions, and nothing was sent anywhere.
+    # Every arm's page was stored and judged on all seven dimensions, then the pair once in each order, and nothing
+    # was sent anywhere.
     dims = [dim.name for dim in writer_scoring_rubric()]
-    assert sorted(judge.calls) == sorted(dims * len(arms))
+    preferred = preference_rubric().name
+    assert sorted(judge.calls) == sorted([*(dims * len(arms)), preferred, preferred])
     for summary in result.arms.values():
         assert summary.status == "completed" and summary.n_cases == 1
         assert summary.errors == []
         assert {dimension.name for dimension in summary.judged} == set(dims)
     judged = f"(judged) | {JUDGED_SCORE:.2f} | {JUDGED_SCORE:.2f} |"
     assert any(line.endswith(judged) for line in result.render().splitlines())
+    assert offline == []
+
+    # The pass: the candidate's page read second, then first, each order scored, under the pass's part of the cap.
+    read = result.pairwise["variant"]
+    status = await job_poll(OpsHost.reading(result.host), read.job_id, SCOPE)
+    report = WriterPairwiseReport.model_validate(status.result)
+    assert (report.candidate, report.control, report.campaign_id) == ("variant", "shipped", result.campaign_id)
+    (pair,) = report.pairs
+    assert pair.missing is None
+    assert [(answer.candidate, answer.answer) for answer in pair.answers] == [("B", "scored"), ("A", "scored")]
+    assert read.calls_made == 2 and read.cap_usd == pytest.approx(8.0 * 0.2)
+    assert read.primary == report.whole.verdict and read.share == report.whole.candidate_share
+    # The judge scored 4 both times, so it preferred Report B in both orders: the orders disagree on the candidate.
+    assert (read.both_orders, read.order_consistent, read.order_consistency) == (1, 0, 0.0)
+    # The promotion read was given the pass's completed job, and voided its primary on that disagreement.
+    assert read.read_on == read.job_id and read.job_id.startswith("action:")
+    assert read.void is not None and result.decisions == {"variant": "undecided"}
+
+    # The summary and the written page carry the pass's readings as one table, a column per candidate.
+    text = result.render()
+    table = result.pairwise_text()
+    assert table in text
+    rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
+    assert rows["preference"] == "| preference | variant |"
+    # One case is too few for the test to run, and the orders' disagreement voids it besides.
+    assert read.primary.outcome == "untested"
+    assert rows["reads"] == "| reads | untested (void) |"
+    assert rows["share"] == "| share | 0.5 |"
+    assert rows["order consistency"] == "| order consistency | 0 (0 of 1) |"
+    # Report B was preferred in both orders: a lean away from the page read first.
+    assert rows["first-slot lean"] == "| first-slot lean | -0.25 |"
+    assert rows["can't tell"] == "| can't tell | 0 |"
+    assert rows["held-out cases to settle"] == "| held-out cases to settle | - |"
+    assert rows["spent"] == "| spent | $0 of $1.6 |"
+    for label in ("difference", "reads, both pages finished", "share, both pages finished"):
+        assert label in rows
+    assert sum(1 for line in table.splitlines() if line and not line.startswith("|")) == 1, "one sentence over it"
+    written = result.write(tmp_path / "report")
+    assert table in written["pairwise"].read_text(encoding="utf-8")
+
+    # The campaign is filed asking the eval's question.
+    campaign = await asyncio.to_thread(
+        EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite")).load_campaign, result.campaign_id, SCOPE
+    )
+    assert campaign is not None and campaign.question == QUESTION
+    assert result.exit_code() == 0
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeDearPairJudge(FakeScoringJudge):
+    """The scripted judge, pricing each side-by-side call above any part of the cap the pass could be given."""
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """$100 for a preference call, nothing for an absolute one."""
+        return 100.0 if f'"{preference_rubric().name}"' in system else 0.0
+
+
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeBrokeJudge(FakeScoringJudge):
+    """The scripted judge, whose account is refused on a side-by-side call: out of credit."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
+        """The scripted reply, or the provider's 402 for a preference call."""
+        if f'"{preference_rubric().name}"' in system:
+            raise ProviderError("openrouter", 402, "insufficient credits")
+        return await super().generate(system=system, user=user, response_format=response_format)
+
+
+async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _kairo_arms(tmp_path)
+
+    result = await _eval(tmp_path, arms, judge=FakeBrokeJudge()).run()
+
+    report = result.pairwise["variant"]
+    assert report.stopped is not None and report.primary.outcome == "untested"
+    assert result.pairwise_unread == {"variant": f"stopped before its last pair: {report.stopped}"}
+    assert report.read_on == report.job_id
+    assert result.exit_code() == 1
+    text = result.render()
+    assert "| reads | untested |" in text
+    assert f"pairwise pass of variant: stopped before its last pair: {report.stopped}" in text
+    assert offline == []
+
+
+async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = {**_arms(), "fewer": Writer(WRITER, skill=load_skill(), revisions=0)}
+    _case_files(tmp_path / "cases")
+    _recordings(tmp_path / "turns", tmp_path / "cases", arms, names=HELD_OUT_FIXTURES)
+
+    result = await _eval(tmp_path, arms, budget_usd=0.5).run()
+
+    for summary in result.arms.values():
+        assert summary.status == "completed" and summary.max_cost_usd == pytest.approx(8.0 * 0.8 / 3)
+    assert list(result.pairwise) == ["variant", "fewer"]
+    for read in result.pairwise.values():
+        assert read.primary.control == "shipped" and read.cap_usd == pytest.approx(8.0 * 0.2 / 2)
+        assert read.read_on == read.job_id
+    assert list(result.decisions) == ["variant", "fewer"]
+    assert "| preference | variant | fewer |" in result.render()
+    assert offline == []
+
+
+async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_and_exits_1(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = _kairo_arms(tmp_path)
+    judge = FakeDearPairJudge()
+
+    result = await _eval(tmp_path, arms, judge=judge).run()
+
+    assert all(summary.status == "completed" for summary in result.arms.values())
+    assert preference_rubric().name not in judge.calls, "no preference call was made"
+    assert result.pairwise == {}
+    (why,) = result.pairwise_unread.values()
+    assert why.startswith("refused before any call: ") and "above the out-of-run cap $1.60" in why
+    # The read had no pass, so it never promotes; the run exits 1, the pass not completed.
+    assert result.decisions == {"variant": "undecided"}
+    assert result.promotion_why["variant"].startswith("Undecided: no pairwise pass was read")
+    assert result.exit_code() == 1
+    assert f"pairwise pass of variant: {why}" in result.render()
+    assert "| reads | - |" in result.render()
+    # The campaign is filed asking the generic question.
+    campaign = await asyncio.to_thread(
+        EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite")).load_campaign, result.campaign_id, SCOPE
+    )
+    assert campaign is not None and campaign.question == "Does variant write reports better than shipped?"
     assert offline == []
 
 

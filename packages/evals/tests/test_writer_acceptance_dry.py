@@ -1,8 +1,8 @@
 """The reset's P2 acceptance script, dry: the whole path on scripted models, offline, its criterion decided by code.
 
-``tests/fixtures/report_plans/writer_acceptance.py --dry`` runs two arms (the shipped skill and its hollow variant)
-over the held-out writer cases, the pairwise pass and the promotion read, with every writer turn replayed from a
-scripted recording and a judge that sends nothing. Every socket connect is refused here, so a run that reached a
+``tests/fixtures/report_plans/writer_acceptance.py --dry`` runs one writer eval: two arms (the shipped skill and its
+hollow variant) over the held-out writer cases, then the eval's own pairwise pass and promotion read, with every
+writer turn replayed from a scripted recording and a judge that sends nothing. Every socket connect is refused here, so a run that reached a
 provider fails. The criterion's two answers are each checked on a read of the right shape.
 
 Mutations that turn this file red: the hollow variant changing ``editor.md`` or a third file, or leaving a hollowed
@@ -129,7 +129,11 @@ def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[obj
         assert all(answer.answer == "scored" for answer in pair.answers)
     assert report.calls_made == 2 * DEFAULT_CASES
     assert report.reliability.both_orders == DEFAULT_CASES
-    assert found.pass_job.state == "completed"
+    # The eval's own pass, under its part of the cap: a fifth of it.
+    read = found.result.pairwise[HOLLOW]
+    assert found.result.pairwise_unread == {} and read.primary == report.whole.verdict
+    assert read.read_on == read.job_id == found.read.pairwise_job
+    assert report.cap_usd == pytest.approx(10.0 * 0.2)
 
 
 def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_it(
@@ -137,7 +141,7 @@ def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_
 ) -> None:
     found, _ = dry
     read = found.read
-    assert read.pairwise_job == found.pass_job.job_id
+    assert read.pairwise_job is not None and found.summary()["pass_job"] == read.pairwise_job
     assert read.primary is not None
     assert read.primary.name == preference_rubric().name
     assert read.primary == found.report.whole.verdict
@@ -171,6 +175,9 @@ def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
     assert re.search(r"^(PASS|FAIL): ", text, re.M)
     assert "principles.md, statistics.md" in text
     assert found.summary()["criterion"]["passed"] is found.criterion.passed
+    # The campaign is filed asking the acceptance's own question.
+    campaign = found.result.host.storage.load_campaign(found.result.campaign_id, found.result.scope_id)
+    assert campaign is not None and campaign.question == writer_acceptance.QUESTION
 
 
 def _shaped(read: WriterPromotion, *, decision: str, outcome: str, reason: str, high: float) -> WriterPromotion:
