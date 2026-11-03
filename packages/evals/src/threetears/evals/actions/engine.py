@@ -170,6 +170,7 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_case_mint,
     writer_template_create,
 )
+from threetears.evals.ops.report_writer.writer_pairwise import writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.ops.runs import PERSON_DESCRIPTION
 from threetears.evals.schema.models import RUN_LABELS_MAX, SecondJudge
@@ -183,6 +184,7 @@ from threetears.evals.run import (
     regrade,
     resumable_jobs,
     run_blocking,
+    start_run,
 )
 
 # --- the parameters, each declared once ---------------------------------------------------------------
@@ -787,6 +789,15 @@ class WriterCaseArchiveParams(EvalBaseModel):
 
 class WriterPromotionParams(EvalBaseModel):
     """``writer_promotion``."""
+
+    campaign_id: CampaignId
+    candidate: str = Field(
+        min_length=1, description="The candidate arm, by its label or its variant key; never the control."
+    )
+
+
+class WriterPairwiseParams(EvalBaseModel):
+    """``writer_pairwise``."""
 
     campaign_id: CampaignId
     candidate: str = Field(
@@ -1468,6 +1479,10 @@ async def _writer_promotion(host: OpsHost, caller: Caller, params: WriterPromoti
     )
 
 
+async def _writer_pairwise(host: OpsHost, caller: Caller, params: WriterPairwiseParams) -> JobsStarted:
+    return await writer_pairwise(host, params.campaign_id, caller.scope_id, candidate=params.candidate)
+
+
 async def _scope_pivot(host: OpsHost, caller: Caller, params: ScopePivotParams) -> PivotTable:
     eval_host = host.eval_host
     return await run_blocking(
@@ -1778,6 +1793,48 @@ async def _analysis_generate_path(stage: ConformanceStage) -> Mapping[str, Any]:
 
 async def _second_judge_path(stage: ConformanceStage) -> Mapping[str, Any]:
     return {"run_id": await stage.finished_run(), "second_judge_model": stage.sample.second_judge_model}
+
+
+async def _writer_pairwise_path(stage: ConformanceStage) -> Mapping[str, Any]:
+    """Two arms of the sample's template, one a model each, run to their end, and a campaign naming the first the
+    control: a pairwise pass over them asks the judge about every case's two pages."""
+    models = list(stage.sample.models[:2])
+    if len(models) < 2:
+        raise ValueError("a pairwise pass reads two arms, so the conformance sample names two candidate models")
+    eval_host = stage.host.eval_host
+    runs = await start_run(
+        stage.host.launch,
+        template_id=stage.sample.template_id,
+        subject_id=stage.sample.subject_id,
+        models=models,
+        k_runs=1,
+        scope_id=stage.caller.scope_id,
+    )
+    await stage.host.launch.job_manager.wait_for([run.id for run in runs])
+    design = {
+        "axes": [{"axis_id": "model", "values": [{"content": model, "display": model} for model in models]}],
+        "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+    }
+    campaign = await run_blocking(
+        eval_host.blocking_executor,
+        partial(
+            campaign_create,
+            eval_host,
+            CampaignDefinition(
+                name="jobs conformance pairs",
+                subject_id=stage.sample.subject_id,
+                behavior="conformance",
+                arms=[
+                    {"label": "control", "role": "control", "from_run_ids": [runs[0].id]},
+                    {"label": "candidate", "role": "candidate", "from_run_ids": [runs[1].id]},
+                ],
+                aspects=[{"label": "pairs", "run_ids": [run.id for run in runs], "design": design}],
+            ),
+            stage.caller.scope_id,
+            created_by=stage.caller.identity,
+        ),
+    )
+    return {"campaign_id": campaign.id, "candidate": "candidate"}
 
 
 async def _judge_temperature_path(stage: ConformanceStage) -> Mapping[str, Any]:
@@ -2639,6 +2696,30 @@ def engine_actions() -> tuple[Action, ...]:
                 "changed, the held-out cases read, both arms' costs and the skill this build ships with its ledger "
                 "entry. Refused for arms scored by different judges or rubrics, and for a campaign run over anything "
                 "but held-out writer cases. Records nothing: a person records the call with campaign_record."
+            ),
+        ),
+        Action(
+            name="writer_pairwise",
+            summary="Ask the scoring judge which page is better, candidate or control, for each case, as a job.",
+            workflow=ANALYSE,
+            permission="spend",
+            params=WriterPairwiseParams,
+            result=JobsStarted,
+            handler=_writer_pairwise,
+            long_running=True,
+            happy_path=_writer_pairwise_path,
+            example={"campaign_id": campaign_id, "candidate": "edited skill"},
+            detail=(
+                "Pairs the candidate's results with the control's by case and repeat, and shows the scoring judge each "
+                "pair's two stored pages, nothing re-rendered, once with each first. A side that stored no page loses "
+                "its pair, and both missing is a tie. Each case's share of the preference the candidate won is read "
+                "against the control's on report_writer.preferred, by the bounded test every rate contrast reads, "
+                "over every pair and over the pairs whose pages were both finished. Order consistency, the lean to "
+                "the first page and the can't-tell count say how far the judge can be trusted on it. Every call is "
+                "priced and admitted against the host's out-of-run cap before the first is sent, and ledgered under "
+                "purpose judge. Refused in the call, with nothing spent, for arms scored by different judges or "
+                "rubrics, a judge of a writer's family, or a cap that cannot cover the calls. job_poll returns the "
+                "report once the job completes; writer_promotion reads the campaign's other verdicts."
             ),
         ),
         Action(

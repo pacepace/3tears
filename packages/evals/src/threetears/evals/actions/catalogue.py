@@ -136,7 +136,8 @@ class ConformanceSample:
 
     :ivar template_id: A template in the caller's scope whose kind the host launches.
     :ivar subject_id: The subject its runs measure.
-    :ivar models: The candidate models, one arm each; at least one, since a sweep's arm names its model.
+    :ivar models: The candidate models, one arm each; at least one, since a sweep's arm names its model, and two for
+        ``writer_pairwise``'s happy path, which reads two arms' pages side by side.
     :ivar second_judge_model: A judge model other than the run's own, for a second judge's pass and a drift check.
     """
 

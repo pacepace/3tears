@@ -53,6 +53,8 @@ CONFORMANCE_SCOPE = "conformance"
 _TEMPLATE = "tmpl-judged"
 _SUBJECT = "subject-judged"
 _CANDIDATE = "candidate-a"
+#: A second candidate, so a pairwise pass has two arms to read.
+_OTHER_CANDIDATE = "candidate-b"
 _JUDGE = "judge/first"
 _SECOND = "judge/second"
 #: The analyst's replies a generation reads: its draft and each of its three bounces, none holding a document.
@@ -182,7 +184,8 @@ def conformance_host(
 
     settings = LaunchSettings(
         max_launch_arms=2,
-        max_admitted_runs=4,
+        # Every long action's happy path runs on one host in the read-back test, two candidate models each.
+        max_admitted_runs=8,
         judge_concurrency=1,
         enforcement_enabled=False,
         max_cost_usd=1.0,
@@ -213,6 +216,9 @@ def conformance_host(
         host=host,
         caller=Caller(scope_id=CONFORMANCE_SCOPE, identity="agent:conformance"),
         sample=ConformanceSample(
-            template_id=_TEMPLATE, subject_id=_SUBJECT, models=(_CANDIDATE,), second_judge_model=_SECOND
+            template_id=_TEMPLATE,
+            subject_id=_SUBJECT,
+            models=(_CANDIDATE, _OTHER_CANDIDATE),
+            second_judge_model=_SECOND,
         ),
     )
