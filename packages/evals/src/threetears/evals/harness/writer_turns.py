@@ -1,19 +1,24 @@
 """Recorded writer models: an arm's report writer sessions, replayed from one file per case, or recorded once.
 
-A writer arm's model factory (:data:`~threetears.evals.ops.report_writer.writer_contract.WriterModels`, by the
-candidate model's id) built by :func:`writer_turns`. Each cell's model routes every session of a report (the
-analyst's, each editor round's) to the recording of the case the cell writes over, found by the snapshot id the
-session reads:
+A writer arm's model factory
+(:data:`~threetears.evals.ops.report_writer.writer_contract.WriterModelFactory`: by the candidate model's id and the
+skill the arm runs) built by :func:`writer_turns`. Each cell's model routes every session of a report (the analyst's,
+each editor round's) to the recording of the case the cell writes over, found by the snapshot id the session reads:
 
-    ``<recordings>/<arm>-<skill12>-<model>-<effort>/<case>.jsonl``
+    ``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>/<case>-<snapshot12>.jsonl``
 
-where ``skill12`` is the first 12 hex digits of the arm's skill digest and ``effort`` is the effort word, or
-``default`` for none.
+where ``skill12`` is the first 12 hex digits of the arm's skill digest, ``effort`` is the effort word (``default``
+for none), ``revisions`` is the arm's revisions lever and ``snapshot12`` is the first 12 hex digits of the case's
+snapshot id.
 
-- **The directory carries what a recording does not check.** A turn recording keeps the replies alone and never what
-  was sent (:class:`~threetears.evals.testing.RecordedTurns`), so one recorded under one skill, model or effort would
-  replay under another without a word. Keying the directory by all three keeps each recording to the condition that
-  made it.
+- **The path carries what a recording does not check.** A turn recording keeps the replies alone and never what was
+  sent (:class:`~threetears.evals.testing.RecordedTurns`), so one recorded under one skill, model, effort or number of
+  revisions would replay under another without a word, and one recorded over one snapshot would replay over another
+  of the same case name, citing evidence the new one does not hold. Keying the path by every lever and by the snapshot
+  keeps each recording to the condition, and the evidence, that made it: a case exported again over moved evidence
+  has a new snapshot id, so its old recording is never found.
+- **The factory refuses another skill.** The launcher hands the factory the skill the arm runs; a skill other than the
+  one the recordings were made under is refused, never replayed.
 - **A file that exists is replayed, with no key.** It is read through
   :meth:`RecordedTurns.replay <threetears.evals.testing.RecordedTurns.replay>` directly, never through
   :class:`~threetears.evals.providers.Model`, which asks for ``ANTHROPIC_API_KEY`` even to replay.
@@ -36,17 +41,17 @@ from typing import Final, Protocol
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.eval_file import beside_eval_file
-from threetears.evals.ops.report_writer.loop import TurnModel
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel
 from threetears.evals.ops.report_writer.writer_contract import EffortWord, WriterModels
 from threetears.evals.schema.turns import ToolTurnClient
 from threetears.evals.testing.recorded_completions import RecordingRefused
 from threetears.evals.testing.recorded_turns import RecordedTurns
 
 #: The variable a recording run reads its key from.
-KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
+_KEY_VARIABLE: Final = "ANTHROPIC_API_KEY"
 
-#: How many hex digits of the skill digest a recording directory carries.
-_SKILL_DIGITS: Final = 12
+#: How many hex digits of the skill digest a recording directory carries, and of the snapshot id a file name carries.
+_DIGITS: Final = 12
 
 #: The directory's effort for an arm that names none.
 _NO_EFFORT: Final = "default"
@@ -95,20 +100,31 @@ def _segment(value: str, what: str) -> str:
     return value
 
 
+def _snapshot12(snapshot: str) -> str:
+    """The first 12 hex digits of a snapshot id (``report-snapshot:<hex>``), which a recording's file name carries."""
+    return _segment(snapshot.rpartition(":")[2][:_DIGITS], "snapshot id")
+
+
 class WriterTurns:
-    """One arm's model factory over its recordings: by candidate model id, the arm's
+    """One arm's model factory over its recordings: by candidate model id and the arm's skill, the arm's
     :data:`~threetears.evals.ops.report_writer.writer_contract.WriterModels`.
 
     Built by :func:`writer_turns`. Read :meth:`unconsumed` after the arm's cells have run, and close it
     (:meth:`aclose`) to close every model it built to record.
     """
 
-    def __init__(self, recordings: Path, *, arm: str, skill: AnalystSkill, cases: Mapping[str, str]) -> None:
+    def __init__(
+        self, recordings: Path, *, arm: str, skill: AnalystSkill, revisions: int, cases: Mapping[str, str]
+    ) -> None:
+        if not 0 <= revisions <= MOST_REVISIONS:
+            raise ValueError(f"an arm's revisions are 0 to {MOST_REVISIONS}, and {revisions} is not")
         self._recordings = recordings
         self._arm = _segment(arm, "arm label")
-        self._skill = skill.digest[:_SKILL_DIGITS]
+        self._skill = skill.digest
+        self._revisions = revisions
         named: dict[str, str] = {}
         for snapshot, case in cases.items():
+            _snapshot12(snapshot)
             if (other := named.get(_segment(case, "case name"))) is not None:
                 raise ValueError(f"snapshots {other} and {snapshot} are both case {case!r}, which is one recording")
             named[case] = snapshot
@@ -117,35 +133,59 @@ class WriterTurns:
         self._replays: list[tuple[str, RecordedTurns]] = []
         self._recorders: list[_Recorder] = []
 
-    def path(self, model: str, effort: EffortWord | None, case: str) -> Path:
+    def directory(self, model: str, effort: EffortWord | None) -> Path:
+        """The directory the arm's recordings sit in, for a model at an effort.
+
+        :param model: The candidate model's id.
+        :ptype model: str
+        :param effort: The arm's reasoning effort, or ``None`` for the model's own.
+        :ptype effort: EffortWord | None
+        :return: ``<recordings>/<arm>-<skill12>-<model>-<effort>-r<revisions>``.
+        :rtype: Path
+        :raises ValueError: The model id is no single path segment.
+        """
+        levers = f"{_segment(model, 'model id')}-{effort or _NO_EFFORT}-r{self._revisions}"
+        return self._recordings / f"{self._arm}-{self._skill[:_DIGITS]}-{levers}"
+
+    def path(self, model: str, effort: EffortWord | None, snapshot: str) -> Path:
         """The recording one case's sessions are routed to, for a model at an effort.
 
         :param model: The candidate model's id.
         :ptype model: str
         :param effort: The arm's reasoning effort, or ``None`` for the model's own.
         :ptype effort: EffortWord | None
-        :param case: The case's name.
-        :ptype case: str
-        :return: ``<recordings>/<arm>-<skill12>-<model>-<effort>/<case>.jsonl``.
+        :param snapshot: The id of the snapshot the case is written over.
+        :ptype snapshot: str
+        :return: ``<directory>/<case>-<snapshot12>.jsonl`` (:meth:`directory`).
         :rtype: Path
-        :raises ValueError: The model id or case name is no single path segment.
+        :raises ValueError: The model id is no single path segment.
+        :raises KeyError: The snapshot is no case of the arm.
         """
-        condition = f"{self._arm}-{self._skill}-{_segment(model, 'model id')}-{effort or _NO_EFFORT}"
-        return self._recordings / condition / f"{_segment(case, 'case name')}.jsonl"
+        return self.directory(model, effort) / f"{self._cases[snapshot]}-{_snapshot12(snapshot)}.jsonl"
 
-    def __call__(self, model: str) -> WriterModels:
+    def __call__(self, model: str, skill: AnalystSkill) -> WriterModels:
         """The arm's model factory for one candidate model: a fresh routed model per cell, at the arm's effort.
 
         :param model: The candidate model's id.
         :ptype model: str
+        :param skill: The skill the launched arm runs, which must be the one its recordings were made under.
+        :ptype skill: AnalystSkill
         :return: The factory, by effort.
         :rtype: WriterModels
         :raises ValueError: The model id is no single path segment.
+        :raises RecordingRefused: The skill is not the arm's own, whose recordings would replay as another's.
         """
         _segment(model, "model id")
+        if skill.digest != self._skill:
+            raise RecordingRefused(
+                self._recordings,
+                f"arm {self._arm!r} was launched on skill {skill.digest[:_DIGITS]}, and its recordings were made under "
+                f"skill {self._skill[:_DIGITS]}",
+                "build each arm's recorded models with the skill that arm runs",
+            )
 
         def at(effort: EffortWord | None) -> TurnModel:
-            missing = self._missing(model, effort) if os.environ.get(KEY_VARIABLE) else []
+            missing = self._missing(model, effort) if os.environ.get(_KEY_VARIABLE) else []
             # A recording run's settings are refused here, when the cell is prepared, before any turn is sent.
             probe = self._recorder(model, effort, missing[0]) if missing else None
             return _CellModel(model, lambda snapshot: self._sessions(model, effort, snapshot), probe)
@@ -172,7 +212,7 @@ class WriterTurns:
 
     def _missing(self, model: str, effort: EffortWord | None) -> list[Path]:
         """The recordings of the arm's cases that do not exist yet."""
-        paths = (self.path(model, effort, case) for case in self._cases.values())
+        paths = (self.path(model, effort, snapshot) for snapshot in self._cases)
         return [path for path in paths if not path.is_file()]
 
     def _recorder(self, model: str, effort: EffortWord | None, path: Path) -> _Recorder:
@@ -188,11 +228,11 @@ class WriterTurns:
         case = self._cases.get(snapshot)
         if case is None:
             raise RecordingRefused(
-                self.path(model, effort, "_").parent,
+                self.directory(model, effort),
                 f"snapshot {snapshot} is no case of arm {self._arm!r}",
                 "map every snapshot the arm writes over to its case's name",
             )
-        path = self.path(model, effort, case)
+        path = self.path(model, effort, snapshot)
         if path in self._served:
             raise RecordingRefused(
                 path,
@@ -204,11 +244,12 @@ class WriterTurns:
             replay = RecordedTurns.replay(path)
             self._replays.append((case, replay))
             return replay
-        if not os.environ.get(KEY_VARIABLE):
+        if not os.environ.get(_KEY_VARIABLE):
             raise RecordingRefused(
                 path,
-                f"there is no such turn recording, and {KEY_VARIABLE} is not set to record it",
-                f"restore the file, or set {KEY_VARIABLE} to record it once against the live model",
+                f"there is no turn recording of case {case!r} over snapshot {snapshot}, and {_KEY_VARIABLE} is not set "
+                "to record it",
+                f"restore the file, or set {_KEY_VARIABLE} to record it once against the live model",
             )
         return self._recorder(model, effort, path)
 
@@ -237,7 +278,12 @@ class _CellModel:
 
 
 def writer_turns(
-    recordings: str | os.PathLike[str], *, arm: str, skill: AnalystSkill, cases: Mapping[str, str]
+    recordings: str | os.PathLike[str],
+    *,
+    arm: str,
+    skill: AnalystSkill,
+    cases: Mapping[str, str],
+    revisions: int = MOST_REVISIONS,
 ) -> WriterTurns:
     """One writer arm's recorded model factory, for the writer kind's ``models``.
 
@@ -248,13 +294,21 @@ def writer_turns(
     :ptype arm: str
     :param skill: The skill the arm runs, whose digest's first 12 hex digits the directory name carries.
     :ptype skill: AnalystSkill
-    :param cases: Snapshot id -> case name, for every case the arm writes over; a case's recording is named for it.
+    :param cases: Snapshot id -> case name, for every case the arm writes over; a case's recording is named for it and
+        its snapshot.
     :ptype cases: Mapping[str, str]
+    :param revisions: The arm's revisions lever, which its recordings' directory name carries; the lever's default
+        when the arm names none.
+    :ptype revisions: int
     :return: The factory.
     :rtype: WriterTurns
-    :raises ValueError: The arm label or a case name is no single path segment, or two snapshots name one case.
+    :raises ValueError: The arm label, a case name or a snapshot id is no single path segment, two snapshots name one
+        case, or the revisions are outside the lever's range.
     """
-    return WriterTurns(beside_eval_file(recordings).absolute(), arm=arm, skill=skill, cases=cases)
+    return WriterTurns(beside_eval_file(recordings).absolute(), arm=arm, skill=skill, revisions=revisions, cases=cases)
 
 
-__all__ = ["KEY_VARIABLE", "TurnsLeft", "WriterTurns", "writer_turns"]
+#: Each name joins ``__all__`` with its first caller outside this module (``writer_turns``: the harness's ``analyse``);
+#: until then the public-API caller gate (``tests/enforcement/test_public_api_has_a_caller.py``) would read it as
+#: test-only.
+__all__ = ["writer_turns"]

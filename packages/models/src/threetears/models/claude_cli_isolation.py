@@ -35,14 +35,15 @@ from __future__ import annotations
 
 import atexit
 import hashlib
-import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from threetears.observe import BuildOnce
+from threetears.observe import BuildOnce, get_logger, remove_tree
 
 __all__ = ["ClaudeCliIsolation", "claude_cli_isolation"]
+
+log = get_logger(__name__)
 
 #: The CLI flag that stops a session being written to disk.
 NO_SESSION_PERSISTENCE_FLAG = "no-session-persistence"
@@ -83,7 +84,7 @@ def _make_root(key: str) -> Path:
     root = Path(tempfile.mkdtemp(prefix=f"threetears-claude-cli-{key}-"))
     # One directory per credential per process start would otherwise accumulate in the temp
     # directory for the life of the host.
-    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    atexit.register(remove_tree, root, log=log, what="a claude CLI isolation directory")
     return root
 
 

@@ -39,11 +39,11 @@ _SOURCES = sorted([*_REPO.glob("packages/*/src"), *_REPO.glob("packages/agent/*/
 #: Per module, the public names it defines and leaves out of its ``__all__`` until a production caller imports them.
 _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     analyst: frozenset({"InvariantVerdict"}),
-    # The kind's factory is called only by the launcher, here; the quick writer host registers the launcher.
+    # The kind's factory is called only by the launcher, here; the writer harness's host registers the launcher.
     report_writing: frozenset({"report_writer_kind"}),
-    # The quick writer host's profile declares the contract and the measures; a host seating apparatus of its own
+    # The writer harness's host profile declares the contract and the measures; a host seating apparatus of its own
     # calls the contract's builder, and none is written yet.
-    writer_contract: frozenset({"EffortWord", "writer_kind_contract"}),
+    writer_contract: frozenset({"writer_kind_contract"}),
     writer_kind: frozenset({"PreparedWriter", "WRITER_CASE_KEY", "WRITER_CASE_VERSION", "log"}),
     writer_launch: frozenset({"log"}),
     # The engine's writer actions call the mint, the retirement and the template creation; the split's own reads and

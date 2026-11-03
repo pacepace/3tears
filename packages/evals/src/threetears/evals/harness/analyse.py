@@ -8,10 +8,13 @@ world, classifier or judged campaign is frozen and read like any other, and the 
 what they cannot read, each with its own remedy.
 
 **The model is a recording.** Every session of the report goes to one file, routed as a writer arm's are
-(:func:`~threetears.evals.quick.writer_turns.writer_turns`), under the shipped skill's digest, the model and its
-effort, so a recording made under one skill or model never replays under another:
+(:func:`~threetears.evals.harness.writer_turns.writer_turns`), under the shipped skill's digest, the model, its effort,
+the revisions and the snapshot, so a recording made under one skill or model, or over other evidence, never replays:
 
-    ``<recording>/shipped-<skill12>-<model>-default/<name>.jsonl``
+    ``<recording>/shipped-<skill12>-<model>-default-r<revisions>/<name>-<snapshot12>.jsonl``
+
+The snapshot's id is derived from the campaign, so a recording replays over the campaign it was made on, and a run
+filed again as a new campaign is written live (the key), never from another campaign's recording.
 
 - **A file that exists is replayed, with no key**, through
   :meth:`RecordedTurns.replay <threetears.evals.testing.RecordedTurns.replay>`, never through ``Model``.
@@ -42,7 +45,7 @@ from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.quick.files import report_dir
 from threetears.evals.quick.result import CREATED_BY
-from threetears.evals.quick.writer_turns import writer_turns
+from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 
 #: The page the writer's report is written to, in the eval's report directory.
 ANALYSIS_PAGE: Final = "analysis.html"
@@ -88,21 +91,30 @@ class Filed(Protocol):
         ...
 
 
-def recording_path(name: str, model: str, *, recording: str | os.PathLike[str] = DEFAULT_RECORDING) -> Path:
-    """The file the writer's sessions on the eval named ``name`` replay from, or are recorded onto, on ``model``.
+def recording_path(
+    name: str, model: str, snapshot_id: str, *, recording: str | os.PathLike[str] = DEFAULT_RECORDING
+) -> Path:
+    """The file the writer's sessions on the eval named ``name`` replay from, or are recorded onto, on ``model``, over
+    the snapshot ``snapshot_id`` (:attr:`ReportWritten.snapshot_id <threetears.evals.actions.report_writing.ReportWritten>`).
 
     :param name: The eval's name.
     :ptype name: str
     :param model: The writer's model id.
     :ptype model: str
+    :param snapshot_id: The snapshot the report is written over.
+    :ptype snapshot_id: str
     :param recording: The directory the recordings sit under, read as :func:`analyse` reads it.
     :ptype recording: str | os.PathLike[str]
-    :return: ``<recording>/shipped-<skill12>-<model>-default/<name>.jsonl``.
+    :return: ``<recording>/shipped-<skill12>-<model>-default-r<revisions>/<name>-<snapshot12>.jsonl``.
     :rtype: Path
-    :raises ValueError: The model id is no single path segment.
+    :raises ValueError: The model id or the snapshot id is no single path segment.
     """
-    case = analysis_page(name).parent.name
-    return writer_turns(recording, arm=_ARM, skill=load_skill(), cases={}).path(model, None, case)
+    return _turns(name, snapshot_id, recording).path(model, None, snapshot_id)
+
+
+def _turns(name: str, snapshot_id: str, recording: str | os.PathLike[str]) -> WriterTurns:
+    """The writer's recorded models over one snapshot, the case named for the eval's report directory."""
+    return writer_turns(recording, arm=_ARM, skill=load_skill(), cases={snapshot_id: analysis_page(name).parent.name})
 
 
 def analysis_page(name: str) -> Path:
@@ -132,20 +144,20 @@ async def analyse(
         page an earlier run wrote is removed, so the directory never shows a report this run did not write.
     :rtype: ReportWritten
     :raises ValueError: A budget that is no finite amount above 0, or a model id that is no single path segment.
-    :raises RecordingRefused: No recording, and ``ANTHROPIC_API_KEY`` is not set to make one.
+    :raises RecordingRefused: No recording over this campaign's snapshot, and ``ANTHROPIC_API_KEY`` is not set to make
+        one.
     :raises EvalServiceError: The freeze refused the campaign, with its remedy.
     :raises ReportNotStored: The writer ended with a document, and the store refused it.
     """
     budget = ReportBudget(usd=budget_usd, turns=TURN_CAP)
     ops = OpsHost.reading(result.host)
     frozen = await report_snapshot_freeze(ops, result.scope_id, campaign_id=result.campaign_id, created_by=CREATED_BY)
-    page = analysis_page(result.name)
-    turns = writer_turns(recording, arm=_ARM, skill=load_skill(), cases={frozen.snapshot_id: page.parent.name})
+    turns = _turns(result.name, frozen.snapshot_id, recording)
     try:
         written = await write_report(
             ops,
             Caller(scope_id=result.scope_id, identity=CREATED_BY),
-            model=turns(model)(None),
+            model=turns(model, load_skill())(None),
             budget=budget,
             snapshot_id=frozen.snapshot_id,
         )
@@ -153,7 +165,7 @@ async def analyse(
         await turns.aclose()
     for left in turns.unconsumed():
         sys.stdout.write(f"drift: {left}\n")
-    await run_blocking(result.host.blocking_executor, _write_page, page, written.page)
+    await run_blocking(result.host.blocking_executor, _write_page, analysis_page(result.name), written.page)
     return written
 
 
@@ -166,13 +178,5 @@ def _write_page(path: Path, page: DocPage | None) -> None:
     path.write_text(doc_page_html(page), encoding="utf-8")
 
 
-__all__ = [
-    "ANALYSIS_PAGE",
-    "DEFAULT_BUDGET_USD",
-    "DEFAULT_RECORDING",
-    "TURN_CAP",
-    "Filed",
-    "analyse",
-    "analysis_page",
-    "recording_path",
-]
+#: The names the harness's command line calls; the constants above are read through them.
+__all__ = ["DEFAULT_BUDGET_USD", "Filed", "analyse", "analysis_page", "recording_path"]

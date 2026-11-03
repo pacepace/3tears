@@ -1,6 +1,6 @@
 """Structural gate: the engine's packages import only what the allowed-dependency matrix permits.
 
-``threetears.evals`` is thirteen physical subpackages, and one allowed-dependency matrix says which may
+``threetears.evals`` is fourteen physical subpackages, and one allowed-dependency matrix says which may
 import which:
 
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
@@ -14,6 +14,7 @@ gen           yes     yes     --     --        yes  --       --       --     pyd
 storage       yes     --      --     --        --   yes      --       --     (none)
 testing       yes     yes     --     --        --   --       yes      --     (none)
 quick         yes     yes     yes    yes       --   yes      --       yes    pydantic
+harness       yes     yes     yes    yes       --   yes      yes      yes    pydantic
 ============  ======  ======  =====  ========  ===  =======  =======  =====  ===========
 
 ``schema`` is the stored shapes and the ports a host implements; ``kernel`` is the behaviour every
@@ -33,8 +34,8 @@ name them:
   adapter its own server alone (``transports.fastmcp``: ``fastmcp``, the package's ``fastmcp`` extra).
 
 Nothing in the engine imports any of the three, ``quick`` included, but ``testing``, whose jobs conformance kit
-runs ``ops`` and ``actions`` from above them (see below): the run summary it prints, the
-report it serializes and the spend it totals live in ``analysis``, below both.
+runs ``ops`` and ``actions`` from above them (see below), and ``harness``, which sits above them all (see below): the
+run summary it prints, the report it serializes and the spend it totals live in ``analysis``, below both.
 
 ``providers`` is the shipped completion client: it speaks each provider's HTTP API and implements the completion
 port, so it may import schema, kernel and itself, ``run`` for the request settings a judged run records
@@ -67,6 +68,13 @@ in-memory store would be the engine reaching an adapter. Nothing in the engine i
 composing sits above everything it composes. ``python -m threetears.evals`` (``__main__``) is held to its
 row. It reaches ``providers`` for one thing: a model named by id is built as the shipped client's ``Model``.
 
+``harness`` is the writer harness: the report writer measured as the thing under test, over the quick path's own
+store. It sits above ``quick`` and composes it with what ``quick`` may not reach: the writer's launch registry entry
+(``actions``), its operations and job contract (``ops``) and the turn replay format (``testing``), so its row is
+quick's, plus ``testing``, ``ops`` and ``actions``, without ``providers`` at module level. Like ``quick``, it builds the
+shipped client's ``Model`` only inside the function that records a missing case, so importing it loads no client
+(``tests/test_providers_boundary.py``). Nothing in the package imports it.
+
 **The root** (``threetears.evals``) is held to a row of its own: the schema, the quick path whose names
 (``Eval``, ``Judge``, ...) and ``providers``, whose ``Model``, its module ``__getattr__`` serves on first use, so
 ``import threetears.evals`` loads none of the engine. Nothing in the package imports the root: ``testing`` above
@@ -77,7 +85,7 @@ No row names a 3tears package: the engine depends on none. Its loggers are stdli
 
 **Placement is the path, not a list.** A module is in a package because it lives in that package's
 directory: ``threetears/evals/schema/``, ``kernel/``, ``run/``, ``analysis/``, ``gen/``, ``storage/``,
-``testing/`` or ``quick/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
+``testing/``, ``quick/``, ``harness/``, ``ops/``, ``actions/``, ``transports/``, ``negotiation/`` or ``providers/``. The two markers the path cannot place -- the ``threetears.evals`` root and its
 ``__main__`` -- are placed by name in :data:`~packages.evals.tests.package_placement.TREE_MARKERS`, the root
 held to a row of its own (``root``: the schema, ``quick`` and ``providers``, whose names it exports lazily) and
 ``__main__`` to quick's. The rule
@@ -126,7 +134,7 @@ TESTS_ROOT = Path(__file__).resolve().parent
 #: The repository root, which the probes run from.
 REPO_ROOT = TESTS_ROOT.parents[2]
 
-#: The matrix, for the thirteen packages.
+#: The matrix, for the fourteen packages.
 ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "schema": frozenset({"schema"}),
     "kernel": frozenset({"schema", "kernel"}),
@@ -136,6 +144,10 @@ ALLOWED_PACKAGES: dict[str, frozenset[str]] = {
     "storage": frozenset({"schema", "storage"}),
     "testing": frozenset({"schema", "kernel", "ops", "actions", "testing"}),
     "quick": frozenset({"schema", "kernel", "run", "analysis", "storage", "providers", "quick"}),
+    # The writer harness: quick's row, and what quick may not reach (the writer's ops, its launch entry, the replay).
+    "harness": frozenset(
+        {"schema", "kernel", "run", "analysis", "storage", "testing", "quick", "ops", "actions", "providers", "harness"}
+    ),
     "ops": frozenset({"schema", "kernel", "run", "analysis", "ops"}),
     "actions": frozenset({"schema", "kernel", "run", "ops", "actions"}),
     "transports": frozenset({"schema", "kernel", "ops", "actions", "transports"}),
@@ -156,6 +168,7 @@ ALLOWED_THIRD_PARTY: dict[str, frozenset[str]] = {
     "storage": frozenset(),
     "testing": frozenset(),
     "quick": frozenset({"pydantic"}),
+    "harness": frozenset({"pydantic"}),
     "root": frozenset(),
     "ops": frozenset({"pydantic"}),
     "actions": frozenset({"pydantic"}),
@@ -665,6 +678,7 @@ _BASE_FILES = {
     "threetears/evals/ops/lenses.py": "",
     "threetears/evals/negotiation/loop.py": "",
     "threetears/evals/quick/contract.py": "",
+    "threetears/evals/harness/writer_host.py": "",
     "threetears/evals/providers/__init__.py": "",
 }
 
@@ -749,6 +763,20 @@ _BASE_FILES = {
             "threetears.evals.quick.contract",
             "quick",
         ),
+        # Nothing in the package reaches the writer harness above it, quick included.
+        (
+            "threetears/evals/quick/cli.py",
+            "from threetears.evals.harness.writer_host import writer_ops_host\n",
+            "threetears.evals.harness.writer_host",
+            "harness",
+        ),
+        # The harness composes the quick path; it never reaches the generator, which no row above the engine needs.
+        (
+            "threetears/evals/harness/writer_host.py",
+            "from threetears.evals.gen.proposers import propose\n",
+            "threetears.evals.gen.proposers",
+            "gen",
+        ),
         # Nothing reaches the root, whose lazy names would close a cycle: the replay format above all.
         ("threetears/evals/testing/recorded.py", "from threetears.evals import Model\n", "threetears.evals", "root"),
     ],
@@ -787,6 +815,12 @@ def test_the_matrix_refuses_each_forbidden_edge(
         ("threetears/evals/__init__.py", "def f():\n    from threetears.evals.providers import Model\n"),
         # quick builds the client's Model where an eval names a model by id.
         ("threetears/evals/quick/judged.py", "def f():\n    from threetears.evals.providers import Model\n"),
+        # The writer harness composes quick with the writer's ops, its launch entry and the replay format.
+        (
+            "threetears/evals/harness/writer_host.py",
+            "from threetears.evals.quick.contract import Eval\nfrom threetears.evals.ops.lenses import pivot_text\n"
+            "from threetears.evals.run.jobs import J\n",
+        ),
     ],
 )
 def test_the_matrix_admits_each_permitted_edge(tmp_path: Path, relative: str, source: str) -> None:

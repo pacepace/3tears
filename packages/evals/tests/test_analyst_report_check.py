@@ -434,7 +434,8 @@ def _served(tool: MountedTool) -> list[str]:
 #: figure-key grammar it serves.
 #: The evals tool moved again when the report writer's actions joined it (writer_template_create, writer_case_mint,
 #: writer_case_archive, writer_promotion).
-_EVALS_BYTES = "fa3148225544ced19dd7c2cde4db8d686f09cfb1fe2bb79a700e33a818e1221e"
+#: The evals tool moved again when writer_case_mint gained stratum (the kind of case it is).
+_EVALS_BYTES = "8f28f99dd29c3086dd7ad608748e1d321e63304ca55a2180ea6072001647e209"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"

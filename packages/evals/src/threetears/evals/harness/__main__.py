@@ -2,8 +2,9 @@
 
 The file's evals are run, printed and reported as ``python -m threetears.evals FILE`` runs them
 (:func:`~threetears.evals.quick.files.run_file`, which finds them through its ``Runnable`` protocol), then the report
-writer analyses each one (:func:`~threetears.evals.harness.analyse.analyse`), replaying its recording beside the file
-(``recordings/report/``) with no key. The line after each eval's report names the analysis page and the recording it was
+writer analyses each one (:func:`~threetears.evals.harness.analyse.analyse`), its recordings beside the file
+(``recordings/report/``). Each run files a new campaign, whose snapshot no earlier recording was made over, so this
+door writes live, on ``ANTHROPIC_API_KEY``: an offline replay is :func:`analyse` over a result held in hand. The line after each eval's report names the analysis page and the recording it was
 written from, or says why there is none.
 
 Exit codes are the file door's, each eval's analysis folded in: 1 when the writer stored nothing, 2 when the
@@ -54,7 +55,7 @@ def _analysed(path: Path, model: str, budget_usd: float) -> AfterRun:
         try:
             with loading_eval_file(path):  # the recordings are read beside the file, as its own paths are
                 written = asyncio.run(analyse(result, model, budget_usd=budget_usd))
-                replayed = recording_path(result.name, model)
+                replayed = recording_path(result.name, model, written.snapshot_id)
         except (ValueError, RecordingRefused, EvalServiceError) as refused:
             sys.stderr.write(f"{PROG} {path}: {ev.name}: {refused}\n")
             return EXIT_REFUSED
@@ -105,6 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if model is None:
         return _refuse("--write-report MODEL names the writer's model")
     return run_file(path, verbose=verbose, after=_analysed(path, model, budget_usd))
+
+
+#: Nothing here is called from outside: the module is run.
+__all__: list[str] = []
 
 
 if __name__ == "__main__":

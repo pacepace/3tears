@@ -1,19 +1,21 @@
-"""The file door's one protocol, and ``python -m threetears.evals.harness FILE --write-report MODEL``.
+"""The file door's one protocol, and ``harness.analyse``, and ``python -m threetears.evals.harness FILE --write-report MODEL``.
 
 ``python -m threetears.evals FILE`` runs every module-level value that satisfies ``Runnable`` (a ``name`` and an
 ``async run()`` whose result satisfies ``RunResult``), with nothing naming its kind: a test double here is found and
-run as an ``Eval`` is. The harness door runs a file the same way, then the report writer analyses each result
-(``harness.analyse``), replaying its recording with no key and writing ``analysis.html``; with no recording and no key
-it is refused, naming the file and ``ANTHROPIC_API_KEY``; a replay that leaves recorded lines unasked says so.
+run as an ``Eval`` is. ``analyse`` has the report writer write a result's report, replaying its recording with no key
+and writing ``analysis.html``; a replay that leaves recorded lines unasked says so. The harness door runs a file as
+the file door does, then analyses each result; with no recording and no key it is refused, naming the file and
+``ANTHROPIC_API_KEY``.
 
-The re-run check: rung 1 run twice makes two campaigns, and a session recorded on the first run's campaign replays on
-the second's as recorded. Nothing reaches a model: every reply is scripted, and every tool call runs live on the
+The re-run check: rung 1 run twice makes two campaigns, two snapshots, and a recording keyed to the first's, which the
+second finds none of. Nothing reaches a model: every reply is scripted, and every tool call runs live on the
 frozen snapshot.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
@@ -33,15 +35,17 @@ from packages.evals.tests.rung_support import rung_copy
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.actions.report_writing import write_report
 from threetears.evals.harness.__main__ import main as harness_main
-from threetears.evals.harness.analyse import TURN_CAP, analyse, analysis_page, recording_path
+from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.harness.analyse import analyse, analysis_page, recording_path
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.quick import EXIT_GATE_FAILED, EXIT_OK, EXIT_REFUSED
 from threetears.evals.quick.files import load_evals, main
 from threetears.evals.quick.result import CREATED_BY, Result
 from threetears.evals.schema.turns import TurnReply
-from threetears.evals.testing import RecordedTurns
+from threetears.evals.testing import RecordedTurns, RecordingRefused
 
 #: Rung 1's eval, named for its cases file.
 RUNG_ONE: Final = "emails"
@@ -200,45 +204,63 @@ def test_the_file_door_runs_every_value_the_protocol_reads_and_nothing_else(
     assert "not async" not in printed
 
 
-def test_write_report_writes_the_analysis_from_a_hand_written_recording_with_no_key(
+async def _run_rung_one() -> Result:
+    """Rung 1 loaded afresh and run, as the file door runs it: every call replayed from its recording."""
+    (ev,) = load_evals(Path("triage.py"))
+    result = await ev.run()
+    assert isinstance(result, Result)
+    return result
+
+
+async def _snapshot_of(result: Result) -> str:
+    """The snapshot ``analyse`` freezes ``result``'s campaign as: the same evidence frozen twice names one."""
+    ops = OpsHost.reading(result.host)
+    frozen = await report_snapshot_freeze(ops, result.scope_id, campaign_id=result.campaign_id, created_by=CREATED_BY)
+    return frozen.snapshot_id
+
+
+async def test_analyse_writes_the_page_from_a_hand_written_recording_with_no_key(
     rung_one: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    recording = _hand_written(rung_one / recording_path(RUNG_ONE, MODEL), _session("{snapshot}"))
+    result = await _run_rung_one()
+    recording = _hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), _session("{snapshot}"))
+    assert recording.is_relative_to(rung_one / "recordings" / "report")
 
-    assert harness_main(["triage.py", "--write-report", MODEL]) == EXIT_OK
+    written = await analyse(result, MODEL)
 
-    printed = capsys.readouterr().out
-    page = analysis_page(RUNG_ONE)
-    assert f"analysis: {page}, written from" in printed and str(recording) in printed
-    assert "drift:" not in printed
-    html = page.read_text(encoding="utf-8")
+    assert (written.ending, written.outcome.analyst_rounds, written.outcome.editor_rounds) == ("stored", 1, 1)
+    assert "drift:" not in capsys.readouterr().out
+    html = analysis_page(RUNG_ONE).read_text(encoding="utf-8")
     assert "Triage passes most emails" in html and "<html" in html
-    assert (page.parent / "report.html").is_file(), "the eval's own report is written first, as the file door writes it"
 
 
-def test_no_recording_and_no_key_is_refused_naming_the_file_and_the_key(
+async def test_a_replay_that_leaves_lines_unasked_prints_a_disclosure(
+    rung_one: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    result = await _run_rung_one()
+    leftover = {**_session("{snapshot}"), "editor-9": [reply(review())]}
+    recording = _hand_written(recording_path(RUNG_ONE, MODEL, await _snapshot_of(result)), leftover)
+
+    written = await analyse(result, MODEL)
+
+    drift = [line for line in capsys.readouterr().out.splitlines() if line.startswith("drift:")]
+    assert len(drift) == 1 and "'editor-9'" in drift[0] and str(recording) in drift[0]
+    assert written.ending == "stored", "the recorded sessions still ran as recorded"
+
+
+def test_write_report_with_no_recording_and_no_key_is_refused_naming_the_file_and_the_key(
     rung_one: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert harness_main(["triage.py", "--write-report", MODEL]) == EXIT_REFUSED
 
-    refused = capsys.readouterr().err
-    assert str(rung_one / recording_path(RUNG_ONE, MODEL)) in refused and "ANTHROPIC_API_KEY" in refused
+    captured = capsys.readouterr()
+    assert "report: .evals/reports/emails/report.html" in captured.out, "the file door ran and reported first"
+    refused = captured.err
+    directory = (
+        rung_one / "recordings" / "report" / f"shipped-{load_skill().digest[:12]}-{MODEL}-default-r{MOST_REVISIONS}"
+    )
+    assert f"{directory}/{RUNG_ONE}-" in refused and ".jsonl" in refused and "ANTHROPIC_API_KEY" in refused
     assert not analysis_page(RUNG_ONE).exists()
-
-
-def test_a_replay_that_leaves_lines_unasked_prints_a_disclosure(
-    rung_one: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    session = _session("{snapshot}")
-    leftover = {**session, "editor-9": [reply(review())]}
-    recording = _hand_written(rung_one / recording_path(RUNG_ONE, MODEL), leftover)
-
-    assert harness_main(["triage.py", "--write-report", MODEL]) == EXIT_OK
-
-    printed = capsys.readouterr().out
-    drift = [line for line in printed.splitlines() if line.startswith("drift:")]
-    assert len(drift) == 1 and "'editor-9'" in drift[0] and str(recording) in drift[0]
-    assert analysis_page(RUNG_ONE).is_file(), "the recorded sessions still ran as recorded"
 
 
 @pytest.mark.parametrize(
@@ -258,40 +280,40 @@ def test_the_harness_door_refuses_what_it_cannot_run(
     assert refusal in capsys.readouterr().err
 
 
-async def _run_rung_one() -> Result:
-    """Rung 1 loaded afresh and run, as the file door runs it: every call replayed from its recording."""
-    (ev,) = load_evals(Path("triage.py"))
-    result = await ev.run()
-    assert isinstance(result, Result)
-    return result
-
-
-async def test_a_session_recorded_on_one_run_replays_on_a_re_run_of_rung_one(
+async def test_a_re_run_of_rung_one_is_a_new_snapshot_no_earlier_recording_replays_over(
     rung_one: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The re-run check (P1 design, section 3). A session recorded on the first run's campaign is keyed to its
+    snapshot, so the second run's campaign finds no recording and, with no key, is refused: ``--write-report`` over
+    a fresh run is a keyed, live action. The replies themselves do not drift: laid at the second snapshot's path,
+    the same recording replays to the same ending with nothing unasked."""
     first = await _run_rung_one()
     ops = OpsHost.reading(first.host)
-    frozen = await report_snapshot_freeze(ops, first.scope_id, campaign_id=first.campaign_id, created_by=CREATED_BY)
+    snapshot = await _snapshot_of(first)
     # Recorded as a live model would be: its replies quote the first run's snapshot, which the recording keeps as the
     # placeholder; one client answers the analyst's turns, then the editor's.
-    script = _session(frozen.snapshot_id)
+    script = _session(snapshot)
     live = FakeToolTurnClient(*script["analyst"], *script["editor-1"], ceiling=0.05)
-    path = recording_path(RUNG_ONE, MODEL)
+    path = recording_path(RUNG_ONE, MODEL, snapshot)
     recorded = await write_report(
         ops,
         Caller(scope_id=first.scope_id, identity=CREATED_BY),
         model=RecordedModel(RecordedTurns.record(live, path), MODEL),
-        budget=ReportBudget(usd=3.0, turns=TURN_CAP),
-        snapshot_id=frozen.snapshot_id,
+        budget=ReportBudget(usd=3.0, turns=40),
+        snapshot_id=snapshot,
     )
     assert recorded.ending == "stored" and path.is_file()
 
     second = await _run_rung_one()
-    assert second.campaign_id != first.campaign_id
+    again = await _snapshot_of(second)
+    assert second.campaign_id != first.campaign_id and again != snapshot
 
+    with pytest.raises(RecordingRefused, match="ANTHROPIC_API_KEY") as refused:
+        await analyse(second, MODEL)
+    assert refused.value.path == recording_path(RUNG_ONE, MODEL, again)
+
+    shutil.copyfile(path, recording_path(RUNG_ONE, MODEL, again))
     replayed = await analyse(second, MODEL)
 
-    assert replayed.snapshot_id != frozen.snapshot_id, "the second run's campaign freezes its own snapshot"
     assert (replayed.ending, replayed.outcome.analyst_rounds, replayed.outcome.editor_rounds) == ("stored", 1, 1)
     assert "drift:" not in capsys.readouterr().out
-    assert "Triage passes most emails" in analysis_page(RUNG_ONE).read_text(encoding="utf-8")
