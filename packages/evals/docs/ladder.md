@@ -4,10 +4,9 @@
 to point an eval at your own function, grade with a judge you can check, compare two versions with a verdict a
 reviewer can act on, grade an agent by the world it leaves, then serve the runs to your team, and evaluate the model
 that writes your reports. Each rung is one directory under [`examples/`](../examples/), in its own domain. Rungs 1 to
-4 are recorded on cheap models, so they run offline and free; rung 5's recordings are a paid step not yet taken, and
-until then it prints what it would need. Every block of Python below is a verbatim excerpt of the example it names,
-and every output of rungs 1 to 4 is what the recording replays (`tests/test_doc_blocks.py` holds both); rung 5's is
-what the file prints today.
+4 are recorded on cheap models and rung 5 on Claude Sonnet, and every rung replays its recordings, so each runs
+offline and free. Every block of Python below is a verbatim excerpt of the example it names, and every output shown
+is what the recording replays (`tests/test_doc_blocks.py` holds both).
 
 **Running a rung.** In a checkout, after `uv sync` at the repository root, from `packages/evals`:
 
@@ -457,35 +456,81 @@ writer_eval = WriterEval(
   the package ships today would go stale with its next edit. The rung measures the copy that was recorded.
 - **The judge is another family** than the writers, as in rung 2, and the eval refuses one of the writers' own.
 
-What it prints today, from `packages/evals/` with no key, since nothing is recorded yet (each path printed whole):
+What the recording printed (made 2026-11-03), replayed from `packages/evals/` with no key: the arms, the first
+readings and the judged ones, the judge's preference between the two arms' pages, the promotion read, and where the
+turns came from (each path printed whole):
 
 ```text
-python -m threetears.evals examples/5-writer/writer.py: no key for openrouter: pass api_key= or set OPENROUTER_API_KEY; or record .../examples/5-writer/recordings/judge.jsonl once with it set
+writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gemini-3.8-flash
+| reading | shipped | lead-first |
+|---|---|---|
+| Report finished | 0.14 | 0.43 |
+| Bounces | 0.86 | 1.00 |
+...
+| Must-fix findings open | 0.43 | 0.29 |
+| Should-fix findings open | 2.43 | 1.57 |
+...
+| Writer turns | 12.57 | 12.29 |
+...
+| report_writer.first_screen (judged) | 5.00 | 5.00 |
+| report_writer.coherent_story (judged) | 4.86 | 5.00 |
+| report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
+| report_writer.sound_elision (judged) | 4.86 | 5.00 |
+| report_writer.confounds_handled (judged) | 5.00 | 5.00 |
+| report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
+| report_writer.evidence_fits_claims (judged) | 4.43 | 4.86 |
+...
+| preference | lead-first |
+|---|---|
+| reads | not separated |
+| share | 0.6786 |
+| difference | 0.3571 |
+| interval, 95% | -0.2762 to 1 |
+| reads, both pages finished | untested |
+| share, both pages finished | - |
+| order consistency | 0.8571 (6 of 7) |
+| first-slot lean | 0.07143 |
+| can't tell | 0 |
+| held-out cases to settle | 39 |
+| spent | $0.1404 of $1.95 |
+...
+promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only an improved primary reading promotes.
+shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
+lead-first: writer turns replayed from .../examples/5-writer/recordings/turns/lead-first-af11aac84890-claude-sonnet-5-5-medium-r2
 ```
 
-and, with the judge's recording in place, the writer's:
+A report finished is one the editor cleared, so it is stored finished rather than as a draft. The report
+(`.evals/reports/writer/report.md`) reads the two code measures that moved most:
 
 ```text
-python -m threetears.evals examples/5-writer/writer.py: writer: arm 'shipped' has no turn recording for 7 of 7 case(s) (.../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2/1-triage-3273cd61f267.jsonl first), and ANTHROPIC_API_KEY is not set to record them; restore the files, or set it to record them once
+| Report finished | 14.3% [2.6%, 51.3%] | 42.9% [15.8%, 75%] | 28.6 pts | [-74.6, 100] pts | lead-first and shipped not separated | 7 paired |
+| Must-fix findings open | 0.4286 [0, 0.9229] | 0.2857 [0, 0.9848] | -0.1429 | [-1.313, 1.027] | lead-first and shipped not separated | 7 paired |
 ```
 
-[`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records both, and what
-it may spend: 14 reports, their judging and the pairwise pass, under the `max_cost_usd` the file sets, and what to do
-when a recording run is cut short. Once recorded, the run prints a table of the writer's readings per arm
-(reports finished; bounces, a submission code's checks sent back; rounds, the analyst's drafts and the editor's
-reviews; turns; each judged dimension), the cases per stratum, and one line per candidate:
-the promotion read.
+| What | Recorded |
+|---|---|
+| Reports | 14: 2 arms x 7 held-out cases, once each |
+| Writer turns | about 12.4 a report |
+| Writer | $6.90, about $0.49 a report |
+| Judge | $0.66, 112 calls: 98 scores and the pass's 14 |
+| Total | $7.56, under the $39 `max_cost_usd` |
 
-**The lesson: a writer is a model too, and whether a change to it ships is a decision the engine makes, not one you
-read off the table.** The table invites you to pick the arm with the bigger numbers; the promotion read does not. Its
-primary reading is fixed before the run: the judge's preference between the two arms' pages, case by case. It reads
-`promote` only when that preference favours the candidate on enough held-out cases, no gated reading regressed and
-every guardrail held; `keep` when something regressed; and `undecided`, with its reason, otherwise. Undecided never
-promotes, and recording the call stays a person's act. That bar is high on purpose here: 7 held-out cases, each written once (k=1), can
-separate only a large effect, so a small edit to a skill will most often read `undecided`. That is the honest answer
-at this size, stated rather than tuned around: what would answer it is more cases, or more repeats of each, and the
-cost of each is a recorded report. [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) covers
-how many a question needs.
+[`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records it again, what
+it may spend, and what to do when a recording run is cut short.
+
+**The lesson: a judge that scores one page at a time sits at the ceiling here, so the reading that decides is the
+judge's preference between two pages.** Every judged item reads 5 or near it for both arms: the writer revises each page
+until the editor passes it on the same rubric, so the scores bunch at the top and cannot tell the arms apart. Read side
+by side, the same judge gave lead-first a share of 0.68 (0.5 is no preference), and its two orders agreed on 6 of the 7
+cases. Two code measures moved the same way: 3 of 7 lead-first reports finished against 1 of 7, with fewer must-fix
+findings left open (0.29 a report against 0.43). None of it separates. That preference is the promotion read's primary
+reading, fixed before the run: it reads `promote` only when the preference favours the candidate on enough held-out
+cases, no gated reading regressed and every guardrail held. 7 held-out cases, each written once (k=1), separate only a
+large effect, and the pass gives the size that would settle this one: 39 held-out cases. So the read is `Undecided`,
+which never promotes, and recording the call stays a person's act. That is the answer at this size, stated rather than
+tuned around: what would answer it is more cases or more repeats of each, and each costs a recorded report. [Pairwise
+preference](judges-and-calibration.md#pairwise-preference-for-the-report-writer) covers the share and the promotion
+rule, and [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) how many cases a question needs.
 
 ## Where next
 

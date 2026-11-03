@@ -94,12 +94,12 @@ def _quotes(block: str, source: str) -> bool:
 _TEXT = re.compile(r"```text\n(.*?)```", re.S)
 
 #: The rungs whose output the ladder shows from a replay: each rung's heading, its directory and the file the door runs.
-#: Rung 5 is not here: until its recordings ship, what it prints is a refusal its own test holds.
 REPLAYED = {
     "Rung 1": ("1-triage", "triage.py"),
     "Rung 2": ("2-replies", "replies.py"),
     "Rung 3": ("3-invoices", "extract.py"),
     "Rung 4": ("4-booking", "agent.py"),
+    "Rung 5": ("5-writer", "writer.py"),
 }
 
 
