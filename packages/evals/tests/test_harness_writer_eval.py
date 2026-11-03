@@ -35,7 +35,7 @@ from threetears.evals.schema.turns import TurnText
 from threetears.evals.storage import SqliteDocumentStore
 
 #: The writer every arm names.
-WRITER: Final = "claude-haiku-5-5"
+WRITER: Final = "report-writer-candidate"
 
 #: The scoring judge: OpenRouter's, of the google family.
 JUDGE: Final = "google/gemini-3.8-flash"

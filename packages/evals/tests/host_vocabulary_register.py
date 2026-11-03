@@ -390,6 +390,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "quick/world.py": {},
     "harness/__init__.py": {},
     "harness/writer_cases.py": {},
+    "harness/writer_eval.py": {},
     "harness/writer_host.py": {},
     "harness/writer_turns.py": {},
     "ops/__init__.py": {},
