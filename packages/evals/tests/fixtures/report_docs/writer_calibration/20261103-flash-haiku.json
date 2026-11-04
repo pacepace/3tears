@@ -1,0 +1,436 @@
+{
+  "dry": false,
+  "pages": [
+    {
+      "run": "prototype5/kairo",
+      "round": 1,
+      "total": 9,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/kairo",
+      "round": 2,
+      "total": 14,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/kairo",
+      "round": 3,
+      "total": 12,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-reading-only-bars",
+      "round": 1,
+      "total": 11,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-reading-only-bars",
+      "round": 2,
+      "total": 14,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-reading-only-bars",
+      "round": 3,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-without-its-gates",
+      "round": 1,
+      "total": 11,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-without-its-gates",
+      "round": 2,
+      "total": 12,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r1-without-its-gates",
+      "round": 3,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-its-gates-read-in-each-task",
+      "round": 1,
+      "total": 11,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-its-gates-read-in-each-task",
+      "round": 2,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-its-gates-read-in-each-task",
+      "round": 3,
+      "total": 14,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-one-gate",
+      "round": 1,
+      "total": 11,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-one-gate",
+      "round": 2,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-with-one-gate",
+      "round": 3,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-without-its-gates",
+      "round": 1,
+      "total": 9,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-without-its-gates",
+      "round": 2,
+      "total": 14,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r2-without-its-gates",
+      "round": 3,
+      "total": 12,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r3-without-its-configs",
+      "round": 1,
+      "total": 10,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r3-without-its-configs",
+      "round": 2,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype5/r3-without-its-configs",
+      "round": 3,
+      "total": 14,
+      "author": "agent:claude-opus-5-5 report editor @07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611"
+    },
+    {
+      "run": "prototype4/kairo",
+      "round": 1,
+      "total": 12,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r1-reading-only-bars",
+      "round": 1,
+      "total": 12,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r1-without-its-gates",
+      "round": 1,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r2-with-its-gates-read-in-each-task",
+      "round": 1,
+      "total": 11,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r2-with-one-gate",
+      "round": 1,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r2-without-its-gates",
+      "round": 1,
+      "total": 13,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    },
+    {
+      "run": "prototype4/r3-without-its-configs",
+      "round": 1,
+      "total": 9,
+      "author": "agent:claude-opus-5-5 report editor @04bb62e6ceabfbc514ad721ada9fd5433c750923bd20e107e54afcdbeb0ad82a"
+    }
+  ],
+  "left_out": [
+    {
+      "run": "prototype4/r2-with-its-gates-read-in-each-task",
+      "round": 2,
+      "why": "the replay stored no page: RecordingRefused: recording /opt/3tears/.claude/wt/rung5-record/packages/evals/tests/fixtures/report_docs/prototype4/r2-with-its-gates-read-in-each-task/turns.jsonl: session 'editor-2' recorded no price ceiling for its turn 8, and one was asked; if the recording run was cut short (interrupted, or a turn failed), delete the file and record it again; otherwise the code now runs differently from when the recording was made: fix the code, or edit the recorded reply as data"
+    },
+    {
+      "run": "prototype4/r3-without-its-configs",
+      "round": 2,
+      "why": "the replay stored no page: RecordingRefused: recording /opt/3tears/.claude/wt/rung5-record/packages/evals/tests/fixtures/report_docs/prototype4/r3-without-its-configs/turns.jsonl: session 'editor-2' recorded no price ceiling for its turn 5, and one was asked; if the recording run was cut short (interrupted, or a turn failed), delete the file and record it again; otherwise the code now runs differently from when the recording was made: fix the code, or edit the recorded reply as data"
+    }
+  ],
+  "case_sets": {
+    "writer-opus-abs": {
+      "version": 1,
+      "cases": 196
+    },
+    "writer-opus-pair": {
+      "version": 1,
+      "cases": 42
+    }
+  },
+  "arms": [
+    {
+      "judge": "google/gemini-3.8-flash",
+      "case_set": "writer-opus-abs",
+      "cases": 196,
+      "trials": 256,
+      "stopped": "stopped by its cost cap: $2.8077 of $2.8000 at the stop after 256/392 results \u2014 run stopped gracefully"
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "case_set": "writer-opus-pair",
+      "cases": 42,
+      "trials": 76,
+      "stopped": "stopped by its cost cap: $1.2098 of $1.2000 at the stop after 76/84 results \u2014 run stopped gracefully"
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "case_set": "writer-opus-abs",
+      "cases": 196,
+      "trials": 392,
+      "stopped": null
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "case_set": "writer-opus-pair",
+      "cases": 42,
+      "trials": 84,
+      "stopped": null
+    }
+  ],
+  "agreement_with_the_opus_editor": [
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.actionable_next_steps",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": 0.038992438895727156,
+      "weighted_kappa": 0.1211857018308632,
+      "interval": [
+        -0.13174965789396142,
+        0.4293337018151118
+      ],
+      "self_kappa": 0.4716981132075472
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.actionable_next_steps",
+      "cases": 27,
+      "parse_rate": 1.0,
+      "kappa": 0.22417153996101363,
+      "weighted_kappa": 0.35192504757722154,
+      "interval": [
+        -0.52751360743084,
+        0.7932519739083339
+      ],
+      "self_kappa": null
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.coherent_story",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": -0.028409090909090884,
+      "weighted_kappa": 0.1684383969384501,
+      "interval": [
+        -0.08057743000315412,
+        0.46572071038779106
+      ],
+      "self_kappa": 0.1561643835616439
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.coherent_story",
+      "cases": 25,
+      "parse_rate": 1.0,
+      "kappa": 0.48220032840722504,
+      "weighted_kappa": 0.5945904761904762,
+      "interval": [
+        0.18982864898743856,
+        0.8452399905328072
+      ],
+      "self_kappa": 0.5238095238095238
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.confounds_handled",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": 0.015277777777777748,
+      "weighted_kappa": 0.23001351090523064,
+      "interval": [
+        -0.054607297266845406,
+        0.5350524655716825
+      ],
+      "self_kappa": 0.6705882352941177
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.confounds_handled",
+      "cases": 25,
+      "parse_rate": 1.0,
+      "kappa": 0.3510112359550562,
+      "weighted_kappa": 0.403305785123967,
+      "interval": [
+        -0.3404193121071506,
+        0.8010276760722546
+      ],
+      "self_kappa": 0.625
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.evidence_fits_claims",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": 0.07602611940298512,
+      "weighted_kappa": 0.19588550983899822,
+      "interval": [
+        -0.3935309249550222,
+        0.6317600882392604
+      ],
+      "self_kappa": 0.3563218390804598
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.evidence_fits_claims",
+      "cases": 25,
+      "parse_rate": 1.0,
+      "kappa": 0.2089671584959544,
+      "weighted_kappa": 0.33162129607323537,
+      "interval": [
+        -0.05911506244086022,
+        0.665494693730643
+      ],
+      "self_kappa": 0.7058823529411764
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.first_screen",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": 0.03770706190061024,
+      "weighted_kappa": 0.06492835936491545,
+      "interval": [
+        -0.14561614035070003,
+        0.3560161212969372
+      ],
+      "self_kappa": 0.6391752577319588
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.first_screen",
+      "cases": 27,
+      "parse_rate": 1.0,
+      "kappa": 0.1525054466230937,
+      "weighted_kappa": 0.1525054466230937,
+      "interval": [
+        -1.0,
+        0.816693886162206
+      ],
+      "self_kappa": null
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.honest_emphasis",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": 0.06055974782691759,
+      "weighted_kappa": 0.23267919109728366,
+      "interval": [
+        -0.12379130211163346,
+        0.5718480847381012
+      ],
+      "self_kappa": 0.38834951456310673
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.honest_emphasis",
+      "cases": 24,
+      "parse_rate": 1.0,
+      "kappa": 0.3103178879310345,
+      "weighted_kappa": 0.4041062566896955,
+      "interval": [
+        0.020788988727238823,
+        0.7160120069273974
+      ],
+      "self_kappa": 0.5384615384615384
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.preferred",
+      "cases": 42,
+      "parse_rate": 1.0,
+      "kappa": 0.10233160621761661,
+      "weighted_kappa": 0.5942857142857143,
+      "interval": [
+        0.36158427863702736,
+        0.7825641508226989
+      ],
+      "self_kappa": 0.7859327217125383
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.preferred",
+      "cases": 41,
+      "parse_rate": 1.0,
+      "kappa": 0.4025500910746812,
+      "weighted_kappa": 0.6848847139197267,
+      "interval": [
+        0.4463606683346176,
+        0.8519297758616439
+      ],
+      "self_kappa": 0.945736434108527
+    },
+    {
+      "judge": "claude-haiku-5-5",
+      "criterion": "report_writer.sound_elision",
+      "cases": 28,
+      "parse_rate": 1.0,
+      "kappa": -0.012711864406779627,
+      "weighted_kappa": 0.053465346534653437,
+      "interval": [
+        -0.11400849300241614,
+        0.31655274862621335
+      ],
+      "self_kappa": 0.4716981132075472
+    },
+    {
+      "judge": "google/gemini-3.8-flash",
+      "criterion": "report_writer.sound_elision",
+      "cases": 25,
+      "parse_rate": 1.0,
+      "kappa": 0.4608,
+      "weighted_kappa": 0.4608,
+      "interval": [
+        -0.4844958971781299,
+        0.8575212502079749
+      ],
+      "self_kappa": 0.6285714285714286
+    }
+  ],
+  "readout": "Agreement with the Opus editor (an agent's labels; no judge profile is recorded from them).\n\n| Judge | Criterion | Cases | Parse rate | \u03ba | Weighted \u03ba | Weighted \u03ba bounds | Self \u03ba |\n|---|---|---|---|---|---|---|---|\n| claude-haiku-5-5 | report_writer.actionable_next_steps | 28 | 1.00 | 0.04 | 0.12 | -0.13 to 0.43 | 0.47 |\n| google/gemini-3.8-flash | report_writer.actionable_next_steps | 27 | 1.00 | 0.22 | 0.35 | -0.53 to 0.79 | undetermined |\n| claude-haiku-5-5 | report_writer.coherent_story | 28 | 1.00 | -0.03 | 0.17 | -0.08 to 0.47 | 0.16 |\n| google/gemini-3.8-flash | report_writer.coherent_story | 25 | 1.00 | 0.48 | 0.59 | 0.19 to 0.85 | 0.52 |\n| claude-haiku-5-5 | report_writer.confounds_handled | 28 | 1.00 | 0.02 | 0.23 | -0.05 to 0.54 | 0.67 |\n| google/gemini-3.8-flash | report_writer.confounds_handled | 25 | 1.00 | 0.35 | 0.40 | -0.34 to 0.80 | 0.62 |\n| claude-haiku-5-5 | report_writer.evidence_fits_claims | 28 | 1.00 | 0.08 | 0.20 | -0.39 to 0.63 | 0.36 |\n| google/gemini-3.8-flash | report_writer.evidence_fits_claims | 25 | 1.00 | 0.21 | 0.33 | -0.06 to 0.67 | 0.71 |\n| claude-haiku-5-5 | report_writer.first_screen | 28 | 1.00 | 0.04 | 0.06 | -0.15 to 0.36 | 0.64 |\n| google/gemini-3.8-flash | report_writer.first_screen | 27 | 1.00 | 0.15 | 0.15 | -1.00 to 0.82 | undetermined |\n| claude-haiku-5-5 | report_writer.honest_emphasis | 28 | 1.00 | 0.06 | 0.23 | -0.12 to 0.57 | 0.39 |\n| google/gemini-3.8-flash | report_writer.honest_emphasis | 24 | 1.00 | 0.31 | 0.40 | 0.02 to 0.72 | 0.54 |\n| claude-haiku-5-5 | report_writer.preferred | 42 | 1.00 | 0.10 | 0.59 | 0.36 to 0.78 | 0.79 |\n| google/gemini-3.8-flash | report_writer.preferred | 41 | 1.00 | 0.40 | 0.68 | 0.45 to 0.85 | 0.95 |\n| claude-haiku-5-5 | report_writer.sound_elision | 28 | 1.00 | -0.01 | 0.05 | -0.11 to 0.32 | 0.47 |\n| google/gemini-3.8-flash | report_writer.sound_elision | 25 | 1.00 | 0.46 | 0.46 | -0.48 to 0.86 | 0.63 |\n\nEach pair of rounds is two writer-opus-pair cases, one per order, so its bounds count each pair twice.\n\n| Judge | Case set | Cases | Trials | Stopped early |\n|---|---|---|---|---|\n| google/gemini-3.8-flash | writer-opus-abs | 196 | 256 | stopped by its cost cap: $2.8077 of $2.8000 at the stop after 256/392 results \u2014 run stopped gracefully |\n| google/gemini-3.8-flash | writer-opus-pair | 42 | 76 | stopped by its cost cap: $1.2098 of $1.2000 at the stop after 76/84 results \u2014 run stopped gracefully |\n| claude-haiku-5-5 | writer-opus-abs | 196 | 392 | no |\n| claude-haiku-5-5 | writer-opus-pair | 42 | 84 | no |\n\n| Round left out | Why |\n|---|---|\n| prototype4/r2-with-its-gates-read-in-each-task round 2 | the replay stored no page: RecordingRefused: recording /opt/3tears/.claude/wt/rung5-record/packages/evals/tests/fixtures/report_docs/prototype4/r2-with-its-gates-read-in-each-task/turns.jsonl: session 'editor-2' recorded no price ceiling for its turn 8, and one was asked; if the recording run was cut short (interrupted, or a turn failed), delete the file and record it again; otherwise the code now runs differently from when the recording was made: fix the code, or edit the recorded reply as data |\n| prototype4/r3-without-its-configs round 2 | the replay stored no page: RecordingRefused: recording /opt/3tears/.claude/wt/rung5-record/packages/evals/tests/fixtures/report_docs/prototype4/r3-without-its-configs/turns.jsonl: session 'editor-2' recorded no price ceiling for its turn 5, and one was asked; if the recording run was cut short (interrupted, or a turn failed), delete the file and record it again; otherwise the code now runs differently from when the recording was made: fix the code, or edit the recorded reply as data |"
+}
