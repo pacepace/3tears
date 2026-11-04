@@ -5687,6 +5687,213 @@ async def test_a_diff_whose_partition_values_ask_fails_reads_no_value_the_copy_n
     await snapshot.stop()
 
 
+class _HistoryOnly(DuckDBBackend):
+    """a DuckDB L1 whose retention keeps of each run only its history rows (an item named ``h...`` with votes not
+    below zero): a copy holding part of each run it keeps, as reports' LSF county projections' does."""
+
+    def export_rows(self, *args: Any, **kwargs: Any) -> Any:
+        exported = super().export_rows(*args, **kwargs)
+        if not exported.num_rows:
+            return exported
+        items, votes = exported.column("item").to_pylist(), exported.column("votes").to_pylist()
+        return exported.filter(
+            _pa.array([i.startswith("h") and (v or 0) >= 0 for i, v in zip(items, votes, strict=True)])
+        )
+
+
+_RUN_ITEMS = ("h0", "h1", "x0", "x1", "x2")
+
+
+def _run_rows(run: str, version: int = 1) -> list[dict[str, Any]]:
+    return [{"state": "TX", "run": run, "item": item, "votes": 1, "source_version": version} for item in _RUN_ITEMS]
+
+
+def _thinned_l3(runs: int = 5) -> _SqlL3:
+    """TX's runs r1..r<runs>, five rows each, two of them history rows."""
+    rows = [row for run in range(1, runs + 1) for row in _run_rows(f"r{run}")]
+    return _SqlL3("runs", ["state", "run", "item", "votes", "source_version"], rows)
+
+
+async def _thinned_copy(l3: _SqlL3, kept: list[str]) -> tuple[ScopedSnapshot, DuckDBBackend]:
+    """a copy of TX keeping the runs ``kept`` names (asked anew each time) and, of each, its history rows."""
+
+    async def runs(l3: Any, scope: str) -> list[str]:
+        return list(kept)
+
+    table = SnapshotTable(
+        name="runs",
+        scope_column="state",
+        key=("run", "item"),
+        partition_by="run",
+        partition_values=runs,
+        version_column="source_version",
+        retained=True,
+        partial_groups=True,
+    )
+    metadata = MetaData()
+    _RUNS.to_sqlalchemy_table(metadata)
+    backend = _HistoryOnly()
+    backend.initialize(metadata)
+    return await _geos_snapshot(l3, table, backend=backend), backend
+
+
+def _thinned_held(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
+    return sorted(tuple(r.values()) for r in backend.execute_query("SELECT run, item, votes FROM runs"))
+
+
+def _l3_kept(l3: _SqlL3, kept: list[str]) -> list[tuple[Any, ...]]:
+    """L3's rows of the runs kept, as the copy's retention keeps them."""
+    found = l3.db.execute('SELECT run, item, votes FROM "runs" WHERE "state" = ?', ("TX",)).fetchall()
+    return sorted(tuple(r) for r in found if r["run"] in kept and r["item"].startswith("h") and (r["votes"] or 0) >= 0)
+
+
+def _row_reads(l3: _SqlL3) -> list[tuple[str, tuple[Any, ...]]]:
+    """each statement that read rows of the runs, with its parameters (not a count, not the scopes' listing)."""
+    return [(sql, args) for sql, args in l3.statements if sql.startswith('SELECT "state", "run", "item"')]
+
+
+def _runs_named(l3: _SqlL3) -> list[set[str]]:
+    """each statement's runs, as its parameters name them."""
+    return [{a for a in args if isinstance(a, str) and a.startswith("r")} for _, args in l3.statements]
+
+
+async def test_a_thinned_copy_rebuild_reads_only_the_runs_it_keeps_and_holds_what_its_retention_keeps() -> None:
+    """a rebuild of a table whose copy keeps some runs, and some rows of each, reads only the runs the ask names, a
+    run at a time, and this L1's retention keeps of them what it keeps."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r3"]
+
+    snapshot, backend = await _thinned_copy(l3, kept)
+
+    assert set().union(*_runs_named(l3)) == {"r1", "r3"}, "a run the copy does not keep was read"
+    assert (
+        _thinned_held(backend)
+        == _l3_kept(l3, kept)
+        == [("r1", "h0", 1), ("r1", "h1", 1)]
+        + [
+            ("r3", "h0", 1),
+            ("r3", "h1", 1),
+        ]
+    )
+    await snapshot.stop()
+
+
+async def test_a_thinned_copy_diffs_only_the_stamped_rows_of_the_runs_it_keeps_and_never_a_pruned_one() -> None:
+    """reports' LSF county projections: the copy keeps a thinned set of a night's runs, and of each its history rows.
+    The diff counted every run L3 holds (its GROUP BY grew with the night), and every kept run whose copy holds
+    part of its rows was of another count and re-read whole. It counts only the kept runs, reads only the rows
+    stamped since the copy's epoch, and of no pruned run."""
+    l3 = _thinned_l3(runs=45)
+    kept = ["r1", "r3", "r5"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    # write 2: a kept run's history row changed and two rows added to it, a pruned run's row changed, a new run
+    l3.db.execute('UPDATE "runs" SET votes = 10, source_version = 2 WHERE run = ? AND item = ?', ("r1", "h0"))
+    l3.add(
+        [
+            {"state": "TX", "run": "r1", "item": "h9", "votes": 9, "source_version": 2},
+            {"state": "TX", "run": "r1", "item": "x9", "votes": 9, "source_version": 2},
+        ]
+    )
+    l3.db.execute('UPDATE "runs" SET votes = 7, source_version = 2 WHERE run = ? AND item = ?', ("r2", "h0"))
+    l3.add(_run_rows("r46", version=2))
+    kept.append("r46")
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _thinned_held(backend) == _l3_kept(l3, kept)
+    named = _runs_named(l3)
+    assert set().union(*named) <= {"r1", "r3", "r5", "r46"}, f"a pruned run was read or counted: {named}"
+    counts = [(sql, args) for sql, args in l3.statements if "count(*) AS total" in sql]
+    assert len(counts) == 1, counts
+    sql, args = counts[0]
+    assert args == ("TX", 1, "r1", "r3", "r5", "r46"), args
+    # the count answers a row a kept run, however many runs L3 holds (46 here)
+    assert len(await l3.fetch(sql, *args)) == 4
+    reads = _row_reads(l3)
+    r1 = [sql for sql, args in reads if "r1" in args]
+    assert r1 and all('"source_version" > 1' in sql for sql in r1), f"r1 was read past its stamped rows: {r1}"
+    assert not [args for _, args in reads if {"r3", "r5"} & set(args)], "a kept run nothing stamped was read"
+    await snapshot.stop()
+
+
+async def test_a_kept_run_whose_copy_holds_part_of_its_rows_is_no_difference() -> None:
+    """a kept run whose copy holds 2 of its 5 rows is of another count than L3's: no failure, and no read of it."""
+    l3 = _thinned_l3()
+    kept = ["r1"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    l3.db.execute('UPDATE "runs" SET votes = 7, source_version = 2 WHERE run = ? AND item = ?', ("r2", "h0"))
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",) and not outcome.left, outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _row_reads(l3) == [], "a partly held kept run was read"
+    assert _thinned_held(backend) == _l3_kept(l3, kept)
+    await snapshot.stop()
+
+
+async def test_a_kept_run_gone_from_l3_is_dropped_from_a_thinned_copy() -> None:
+    """a run the ask still names that L3 holds no more is seen by the count and dropped from the copy; the kept run
+    beside it, held in part, is not read."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r3"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    l3.db.execute('DELETE FROM "runs" WHERE run = ?', ("r3",))
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _thinned_held(backend) == _l3_kept(l3, kept) == [("r1", "h0", 1), ("r1", "h1", 1)]
+    assert _row_reads(l3) == [], "a kept run was read"
+    await snapshot.stop()
+
+
+async def test_a_thinned_copy_equals_l3_restricted_to_its_retention_after_the_diff() -> None:
+    """a stamped row the retention lets go replaces the copy's row of its key all the same: the copy is L3's rows of
+    its kept runs as its retention keeps them, read from the stamped rows alone. A run the ask no longer names goes."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r2", "r3"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    l3.db.execute('UPDATE "runs" SET votes = 10, source_version = 2 WHERE run = ? AND item = ?', ("r1", "h0"))
+    # a history row the retention keeps no more once changed
+    l3.db.execute('UPDATE "runs" SET votes = -1, source_version = 2 WHERE run = ? AND item = ?', ("r1", "h1"))
+    kept.remove("r2")
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _thinned_held(backend) == _l3_kept(l3, kept) == [("r1", "h0", 10), ("r3", "h0", 1), ("r3", "h1", 1)]
+    reads = [sql for sql, _ in _row_reads(l3)]
+    assert reads and all('"source_version" > 1' in sql for sql in reads), reads
+    await snapshot.stop()
+
+
+def test_partial_groups_without_retained_or_named_partitions_is_refused() -> None:
+    async def named(l3: Any, scope: str) -> list[str]:
+        return []
+
+    common: dict[str, Any] = {"name": "t", "scope_column": "state", "key": ("run", "item"), "partition_by": "run"}
+    with pytest.raises(ValueError, match="partial_groups"):
+        SnapshotTable(**common, partition_values=named, partial_groups=True)
+    with pytest.raises(ValueError, match="partial_groups"):
+        SnapshotTable(**common, partition_values=named, retained=False, partial_groups=True)
+    with pytest.raises(ValueError, match="partial_groups"):
+        SnapshotTable(**common, retained=True, partial_groups=True)
+    assert SnapshotTable(**common, partition_values=named, retained=True, partial_groups=True).partial_groups
+
+
 async def test_a_catch_up_rebuilding_a_scope_with_no_copy_is_not_stopped_while_its_whole_read_pages_on() -> None:
     """a scope neither L2 nor this L1 holds is rebuilt whole inside a catch-up, which is watched by what it lands.
     Nothing lands until the scope commits, so a read longer than rebuild_stall was stopped as stalled and began

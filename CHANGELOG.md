@@ -109,6 +109,22 @@ with the square of its rows (reports' LSF county projections, election night 202
 for ~30 million rows). A rebuild whose ask fails reads every value: slower, never fewer rows. A partition column
 that does not lead the key is put back in key order once read.
 
+### core: a diff over a copy that keeps some rows of some partitions reads only what was stamped
+
+**Added:** `SnapshotTable.partial_groups` (with `retained=True` and `partition_values`; refused otherwise): the copy
+keeps only the partitions the ask names, and only some rows of each (reports' `lsf_projections`, keyed by run: a
+thinned set of a night's runs, and of each kept run its history rows). Before, a diff of such a table counted every
+run L3 holds (a `GROUP BY` over the whole night that grew with it), and every kept run whose copy held part of its
+rows was of another count and read again whole. Now the diff's count names only the asked-for partitions; a kept
+partition a write stamped since the copy's epoch has only its stamped rows read, each replacing the copy's row of
+its key; one the copy holds no rows of is read whole; one whose copy holds fewer rows than L3 is no difference and is
+not read. A kept partition L3 no longer holds, and one the ask no longer names, is dropped from the copy, and neither
+is read. The rows then pass the L1's retention whole. A kept partition whose copy holds more rows than L3 holds
+unchanged since the copy's epoch has lost rows the copy holds, and is read whole; a delete that leaves L3 at least
+as many unchanged rows of a partition as the copy holds is not seen (`lsf_projections` writes and deletes runs
+whole). A diff whose ask fails falls back to `retained`'s judgement. A rebuild already read only the asked-for
+partitions, a value at a time, each page handed to the L1's retention.
+
 ## v0.90.0 -- 2026-11-02
 
 ### core: a settling commit evicts its keys from L1 in one write

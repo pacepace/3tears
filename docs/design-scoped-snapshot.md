@@ -172,6 +172,16 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
   answers. A `retained` table (a retention
   keeps some rows) cannot be diffed when rows it kept went from L3 (rows it let go may count again):
   the scope stays behind, said at ERROR, never guessed at and never read whole.
+  A `partial_groups` table (with `retained` and `partition_values`: reports' `lsf_projections`, a
+  thinned set of runs and of each its history rows) is diffed over the named partitions alone: the
+  count statement names them (`AND run IN (...)`), so it does not grow with every run L3 holds; a
+  stamped partition has only its rows stamped after the copy's epoch read, each replacing the copy's
+  row of its key (by the key as L3 answered it, before the L1's retention judges it); a partition the
+  copy holds none of is read whole; one the copy holds fewer rows of than L3 is no difference. A named
+  partition L3 holds no more, and one the ask no longer names, is dropped and never read. A partition
+  whose copy holds more rows than L3 holds unchanged since the copy's epoch has lost rows and is read
+  whole; a delete that leaves L3 at least as many unchanged rows as the copy holds is not seen, so such
+  a table's writes add and delete whole partitions. The composed rows pass the L1's retention whole.
   The contract it rests on: every write stamps every row it inserts or updates. A delete is seen by the
   counts; an update that stamps nothing is not seen at all.
 - **Each scope on its own,** before its first read and after its last: unchanged in L3 and untouched by
