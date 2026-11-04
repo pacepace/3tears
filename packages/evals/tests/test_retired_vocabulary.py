@@ -3,7 +3,7 @@
 The memo writer, the report planner, its planned page and the analysis reporter kind are retired. What survived them
 (the page's parts, the chart vocabulary, the answer section's lines, the prose checks a report document runs) is named
 for what it is now, so no identifier the package ships names a retired generation, except a name kept for one minor
-so a host's import does not break. Held here, on identifiers only (prose is a Critic's read, never a word list):
+so a host's import does not break. Held here on identifiers, and on the page modules' printed strings (prose is a Critic's read, never a word list):
 
 - **no module path** under ``src/`` names one;
 - **no top-level public name** any module defines names one, outside the modules that serve the retired names
