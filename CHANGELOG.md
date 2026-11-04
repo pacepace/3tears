@@ -6,8 +6,6 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.89.0 -- 2026-10-31
-
 ### nats: a put the Object Store has no room for is refused before any chunk is written
 
 **Fixed:** `NatsObjectStore.put` wrote its chunks before its metadata, and a store at its `max_bytes` refused it part
@@ -20,6 +18,248 @@ when the bytes it adds -- counted as the server counts them, `stored_bytes_of_pu
 holds exactly what it held. Writers racing past the check meet the server's refusal, as before. A store with no bound
 (`max_bytes` 0 or -1) is not checked. A principal putting into a store now needs `STREAM.INFO` on it, which every pod
 granted its own store already holds (it binds with it). New public name: `threetears.nats.object_store.stored_bytes_of_put`.
+
+## v0.91.0 -- 2026-11-04
+
+### core: a scoped snapshot recovers a behind copy from the diff, never by reading a scope whole from L3
+
+**Fixed:** on election night (cobalt prod, 2026-11-04) the copy fell behind L3 again and again (a full shared store,
+writers killed mid-write by pod rolls, a write racing its own copy), and every recovery re-read each behind scope's
+whole night from L3: 47 states, then 30, tens of minutes each, while pages went stale. Four paths led there: a writer
+killed between its stage and its publish left no record of its stage (one was kept only after a commit, and only for
+a pointer found behind); a writer whose own copy was behind staged the scope whole from L3 (`stage_from_l3`) or read
+the tables its stage left out from L3 (`_filled_from_l3`); a catch-up threw away every scope it read once ANY write
+had committed meanwhile, so writes every few seconds kept it from finishing; and a scope with no record was rebuilt
+from L3 whole. Now:
+
+- **Records before the commit.** `ScopedSnapshot.record_staged(staged, carry_at=)` keeps each stage as the change it
+  is (from the scope's rows at `carry_at` to its epoch) before the writer commits. Whatever happens to the writer
+  after, any replica carries the scope's pointer on from L2 in seconds. A record is never carried past the scope's
+  epoch in L3 (a write still committing, or one that never will), by a catch-up or by any publish; `discard_staged`
+  drops a write's records with its stages. The writer calls it only once every data transaction of its write that
+  touches the staged scopes has committed: an abandoned write commits what it left at its own number, and a record
+  kept beside an open or rolled-back data transaction would be carried there with rows L3 never held.
+- **Rows from L2.** `ScopedSnapshot.rows_at(scope, epoch, tables=None)` answers a scope's rows at an epoch from this
+  L1, or from the pointer carried there by its records, never from L3; `None` when neither reaches it. A writer
+  whose copy is behind builds its stage from it, or leaves the scope to the recovery.
+- **The diff.** `SnapshotTable.version_column` names the L3 column holding the version of the write that last
+  changed a row. When every table of a snapshot names one, a scope behind L3 is brought forward from the rows a
+  copy holds (its pointer's chunks, or this L1's) and the groups of rows L3 changed since (grouped by
+  `partition_by`, or else the first column the table is read in after the scope): one statement counts each group's
+  rows and those stamped since, and only a group stamped, missing or of another count is read, pinned to its value.
+  A group whose value is NULL (reports' `join_geo_id`) is read from the rows where it is NULL, paged by the other key
+  columns. A table naming `partition_values` diffs only the groups the ask names; when the ask fails, no group the
+  copy does not hold is read unless a write stamped it: a `retained` table is judged as one the copy keeps part of,
+  any other stays behind until an ask answers (tried again a minute later).
+  A table not `retained` must then number L3's rows. `SnapshotTable.retained` marks a table the copy keeps only some
+  rows of (a retention); a diff that finds rows such a table kept gone from L3 cannot bring it forward. Such a scope
+  stays behind, said at ERROR and in the new `CatchUpOutcome.left`, and is never guessed at.
+- **Each scope on its own.** The recovery judges each scope by its own epoch (unchanged, and untouched by a write in
+  progress, before its first read and after its last), so a commit to another scope never throws its work away. It
+  writes L2 before this L1 takes the change, so a copy that cannot take it now (a full store) never holds L2 back.
+- **One whole read left.** In a snapshot whose every table names a version column, a scope is read whole from L3 only
+  to rebuild what L2 holds no copy of: the cold rebuild (NATS lost the snapshot, or never held it), and a scope
+  neither L2 nor this L1 holds. Each says so at ERROR (`rebuilding <scope> whole from L3: L2 holds no copy`). Any
+  other whole read raises a refusal (an internal error, never reaching a caller that stays inside the rule): `stage_from_l3` refuses, a staged publish whose pointer is
+  behind with no record to bridge it leaves the scope to the recovery (its stage kept), and a scope whose chunks
+  cannot be applied is brought forward from the diff over this L1's rows. A snapshot with a table that names no
+  version column keeps the earlier behaviour, whole reads included.
+
+### core: the stall breaker watches what a catch-up lands, and every wait says what it waits on
+
+**Fixed:** election night the rebuild claim was held 04:38:57-04:58Z while its holder's last progress was at
+04:42:31Z: every page its L3 reads answered counted as progress, so the watchdog never let the claim go, and nothing
+said what it waited on. A catch-up in a snapshot that recovers from the diff is now watched by what it LANDS (a scope
+committed or judged, a pointer or the index moved): one that reads on and lands nothing for `rebuild_stall` lets the
+claim go. The cold rebuild is still watched by its every step (a large scope's read is long and correct), and so is
+the whole read of a scope with no copy inside a catch-up: each of its pages counts as landed.
+
+**Added:** every wait says at INFO what it waits for, on whom and since when, when it begins and then at most once a
+minute while it lasts: a catch-up waiting on the rebuild claim (its holder and since when), a flow waiting on a write
+in progress, a staged publish waiting on an earlier write still publishing, a writer's commit running without the
+claim (who holds it), a run under the claim (its last step and last landing), and the reads under way (table, scope,
+pages, rows). Each wait ends where it resolves (a stage's when its scope's pointer moves or its publish ends without
+waiting, the claim's when a catch-up takes it or finds nothing behind, the reads' when the last under way ends), so
+the next one says how long it has waited from its own start.
+
+### core: a scope a host no longer announces can be forgotten
+
+**Added:** `VersionedAnswers.forget(scope)` retires a scope a host no longer announces: its announced-version record
+and every answer its versions row names go, and the row stays naming no version, holding its floor. A host whose
+scopes come and go (reports announces one a deploy) left a record, a versions row and the answers per scope that
+nothing removed, so they grew by the scopes of every release; a forgotten scope now leaves one row of a few bytes.
+The floor is what keeps it so: a replica still reading at a retired version is answered and stores nothing, where
+with no floor it wrote the row and its answers back. Every change is a compare-and-set through the index, and the
+record's key is the call's gate: the record is deleted only as the call read it, or, with none, the key taken with
+a marker of the call's own. An `announce` landing before the call is done replaces either and wins: the call puts
+the floor back where it found it and answers `False`. The gate is looked at again after the floor rises, before
+any answer is deleted, and last of all, so an announce before the answers go loses no answer and one after them is
+stored again once the floor is back. Answers are retired below the order the
+forgotten record held (with no record, the row's newest). Forgetting a retired scope answers `True`, as many times
+as it is called; deleted keys are purged as a retirement's are.
+
+### core: a whole read of a scope never loses a row to a NULL in a column it is paged by
+
+**Fixed:** a scope's L3 read pages by its key (or `read_order`), each page past the last row's values. A NULL in a
+paged column makes that comparison NULL: a page whose last row held one ended the read, and rows holding one were
+dropped from every page after the first, with no count to see it. A `partition_by` value that was NULL was read
+pinned `= NULL` and named no row. The cold rebuild, the one whole read left, would have built a copy missing them.
+Now every key column the L1 does not hold NOT NULL (outside its table's own primary key, the new
+`DuckDBBackend.not_null_columns`) is read NULL-safe: the rows with no NULL in those columns are the keyset read they
+always were, and each pattern of NULLs is read apart, paged by the columns left; a NULL partition value is read from
+the rows where it is NULL; the scope is put back in key order (NULL last). A table whose every paged column is held
+NOT NULL sends the same statements as before. `DuckDBBackend.export_rows` refuses a NULL only in a column its table
+holds NOT NULL, not in every column of the key it is given. A backend that does not say which columns it holds NOT
+NULL is read as before. Reports' snapshot tables hold every key, `read_order` and `partition_by` column NOT NULL, so
+none of their reads change.
+
+### core: a scoped snapshot table can be read from L3 one partition value at a time
+
+**Added:** `SnapshotTable.partition_by`, a key column a scope's rows are read one value at a time (each value's rows
+paged on their own), and `SnapshotTable.partition_values`, an ask of L3 for the values a rebuild reads. On
+YugabyteDB a keyset page over a key of many columns scanned the scope's rows from their start, so a scope's read grew
+with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1 billion keys scanned
+for ~30 million rows). A rebuild whose ask fails reads every value: slower, never fewer rows. A partition column
+that does not lead the key is put back in key order once read.
+
+### core: a diff over a copy that keeps some rows of some partitions reads only what was stamped
+
+**Added:** `SnapshotTable.partial_groups` (with `retained=True` and `partition_values`; refused otherwise): the copy
+keeps only the partitions the ask names, and only some rows of each (reports' `lsf_projections`, keyed by run: a
+thinned set of a night's runs, and of each kept run its history rows). Before, a diff of such a table counted every
+run L3 holds (a `GROUP BY` over the whole night that grew with it), and every kept run whose copy held part of its
+rows was of another count and read again whole. Now:
+
+- **The count names only the asked-for and the held partitions** (`IN` their values, `IS NULL` for a NULL one), so
+  it does not grow with every run L3 holds.
+- **Only what moved is read.** A kept partition a write stamped since the copy's epoch has only its stamped rows
+  read, each replacing the copy's row of its key, both as the L1 types them. One is read whole when the copy holds
+  none of it, when a write stamped its every row (one read), when the copy holds more of its rows than L3 holds
+  unchanged since the copy's epoch (rows it holds went from L3), or when the L1's retention lets go of a stamped row
+  of it. One whose copy holds fewer rows than L3 is no difference and is not read.
+- **Only a partition L3 no longer holds is dropped.** Every partition the copy holds is counted and diffed beside
+  the asked-for ones, named or not: an ask may not yet name a run L3 holds (reports' `lsf_runs` records a run once
+  every state's rows are written), and a diff that dropped it would publish fewer rows than L3 holds. Letting go of
+  a run the thinning no longer names is the L1 retention's job. The count stays bounded by the asked-for and the
+  held partitions.
+- **A failed ask reads nothing:** the scope stays behind and is tried again, never diffed as a plain `retained`
+  table. An ask naming no partition is no failure: every held partition is diffed and kept while L3 holds it, so
+  it thins nothing, and a scope whose partitions L3 dropped comes forward empty.
+- **What each diff dropped, read whole and read stamped-only is said at INFO**, per table and scope.
+- **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows of it
+  as the copy holds is not seen, so a table set so adds and deletes whole partitions (`lsf_projections` writes and
+  deletes whole runs).
+
+- **No group is read forever.** A group (any diff, `partial_groups` or not) read on two published diffs in a row while
+  L3's count and newest stamp of it stayed the same is a read the L1 did not keep (its retention lets the rows go,
+  or a `retained` table's copy of part never meets L3's count): it is said at ERROR, naming the table, scope, group
+  and why, and is not read again, the copy's rows of it kept as they are, until L3's count or stamp of it changes.
+  Only a diff that publishes, with L3's epoch for the scope unchanged across it, counts: one that fails (another
+  table's ask, a count a racing write upset) or a write left pending counts nothing, so a real change is never
+  skipped. An ask naming a value its column cannot hold (a NUMERIC asked as text that is no number) is said at
+  ERROR with the value and taken as a failed ask.
+- **A failure that repeats backs off.** A scope whose diff fails the same way, its diff seeing the same counts and
+  newest stamps of L3 as the last failed try, is tried again after 1, 2, 4 and 8 minutes, then every 15, said at
+  ERROR at each try with when the next is. A write that moves the scope's epoch in L3 has it tried at the next
+  catch-up, and a try seeing other counts or stamps waits a minute again: a retry is delayed, a change never
+  skipped. A recovery that raises (a publish into a full store, a lost claim) backs off alike, said at ERROR with
+  the error and the next try, and the stuck-chunk recheck waits out a scope's backoff too, taking no claim for a
+  scope the recovery would not try.
+- **A read from L3 says how far it is.** A step's reads from L3 (a rebuild, a diff, a catch-up beside a write) that
+  run a minute or more say at INFO, once a minute: `<phase> from L3, <s> s in: scope <n> of <m> (<scope>), <table>
+  partition <p> of <P>` (or `<table> rows <r> of <R>`) `; <done> of <total> rows read, <rate> rows/s over the last
+  minute, about <N> min left (estimate)`, saying "total not yet counted" until it is; and, once a scope that took a
+  minute is read, `read scope <scope> (<n> of <m>): <rows> rows in <s> s, <rate> rows/s`. A whole read still under way
+  a minute in counts its table and scope's rows once (`SELECT count(*) AS rows_total`, the named partitions only for
+  a `partition_values` table); a diff counts nothing more, its own counts saying what it reads. `SnapshotStatus.reading`
+  (the new `L3ReadProgress`) carries the same: `phase`, `started_at`, `scope`, `table`, `scopes_done`/`scopes_total`,
+  `partitions_done`/`partitions_total`, `table_rows_done`/`table_rows_total`, `rows_done`/`rows_total`,
+  `rows_per_second` and `eta_seconds`, kept a page at a time with no statement of its own.
+- **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
+  L1's stored form, from the one conversion the L1 writes through, now public as
+  `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID
+  as its text, an instant as its ISO text, a decimal at its column's scale. A run of a `NUMERIC(12, 2)` column asked
+  for as a float is the run the copy holds.
+
+After a diff, a diff with nothing written since counts and reads nothing, whatever brought the first about. A rebuild
+already read only the asked-for partitions, a value at a time, each page handed to the L1's retention.
+
+## v0.90.0 -- 2026-11-02
+
+### core: a settling commit evicts its keys from L1 in one write
+
+**Fixed:** a commit's settle evicted each key it wrote from the SQLite L1 in a transaction of its own (`BEGIN
+IMMEDIATE`, `DELETE`, `COMMIT`), synchronously on the event loop. On cobalt prod (2026-11-02) about 14% of the reports
+pods' event-loop stall time (18 stalls, 92 ms median, 136 ms max) was that eviction, after an ENR commit.
+`invalidate_cache_many` now evicts every key in one write transaction: one write lock and one commit for N rows. A
+collection's `drop_cached_table`, `save_rows` and `delete_rows`, the scan cache's `drop_for_table`, and the
+absent-marker sweeps evict the same way; a single key's eviction goes through the same path. Each key still reaches
+the in-process fence before the delete and each L1 change listener still hears its key after it; the eviction stays
+synchronous and finishes before the settle returns. A failed delete raises the same exception as before, every key
+already fenced, so no read in flight caches over it. On the SQLite L1 it rolls the whole delete back (where one at a
+time left the keys before the failure evicted); the DuckDB L1 deletes a row at a time, so the keys before the failure
+stay evicted. Either way every listener hears every key of the batch, failed or not, so a complete copy over the L1
+is voided rather than left serving with rows missing.
+
+**Added:** `delete_many_by_id(table, entity_ids, primary_key)` on the `L1Backend` protocol, `SQLiteBackend` (one
+`executemany` in one write transaction) and `DuckDBBackend` (through `delete_by_id` a row at a time, so a subclass
+that keeps something in step with each delete stays in step). A new public method, so a minor bump. The protocol now
+requires it: an `L1Backend` implemented outside these two classes must add `delete_many_by_id`, or every settling
+commit, `drop_cached_table` and scan-cache drop over it raises `AttributeError`.
+
+## v0.89.0 -- 2026-10-31
+
+### core: a sweep never takes an open slot's staging directory
+
+**Fixed:** `SegmentSlot`'s write makes its staging directory, then its lock file, then locks it, and the serving
+process's sweep runs on other threads meanwhile (reserve, claim, discard, release, close). A sweep between those
+steps retired the directory (no lock file yet), or locked and renamed it away (no lock taken yet) and the write went
+on unlocked; the worker's export then failed with `FileNotFoundError` and its states fell back to the slow L3
+republish (the local replay of 2026-11-01: 3 times in 40 minutes, 8 states each). A sweep now leaves every staging
+directory of a slot still open, as it does an open hand-off's; a discarded or claimed slot's leftover staging still
+goes. A write whose staging directory cannot be locked raises `RuntimeError` instead of writing unlocked.
+
+### nats: a declaration never lowers a live stream's or bucket's replicas
+
+**Fixed:** a NATS audit of cobalt prod (2026-11-02) found 56 of its 58 streams on one server. `ensure_jetstream_stream`
+took no replica count and, on a stream already live, sent its declaration as an update: an update sends every
+field, and an unsent count is the server's one, so every declarer's start moved its stream back onto one server,
+whatever an operator had raised it to. `ensure_object_store` sent its own count (default 1) the same way, and an
+owner's `ensure_kv_bucket(replicas=N)` reconciled a bucket live on more servers down to N. Now every update of a
+live stream sends the larger of its live count and the one declared, a declaration that asks for none keeps the live
+count, an owner's recreate of a file bucket on memory creates it on no fewer servers than it was live on, and the
+stream declaration remembered for a restoration after a NATS restart carries the count sent. Every KV open (the
+locks, counters, leases, collections, epochs and IAM stores) updates a live bucket only from its live config, so none
+lowers it. A new stream declared without a count is still created on one server (the local stack's single-node
+NATS). Lowering a stream's replicas is now an operator's step, never a side effect of a start.
+
+**Added:** `replicas` on `NatsClient.ensure_jetstream_stream` and `NatsClient.kv_bucket` (passed through to the
+bucket it creates); both refuse a count below one with `ValueError`. `ensure_object_store`'s `replicas` now
+defaults to `None` (create on one, keep a live bucket's) where it was 1. New keyword arguments, so a minor bump.
+
+### core: a write whose writer is gone is abandoned, and a fresh replica is ready beside a write in progress
+
+**Fixed:** a load that failed part way through its write (a YugabyteDB statement timeout, SQLSTATE 57014, in the
+replay of the night of 2026-11-01) left that write open, and only the next `begin` ended it. Until then every reader
+was told the write was in progress. A replica with no copy of its own (a pod restarted while NATS held only the
+scopes published since it lost the snapshot) waited on that write, served nothing, and the dead write outlived a
+pod restart. Stale data is acceptable; missing data is not. Two changes:
+
+- `ScopeEpochs(writer=WriterLease(lease, key))` takes the lease every writer holds while it writes. When
+  `settled()` finds a write in progress and that lease free (the writer let it go or it lapsed), it abandons the
+  write. The abandon is a commit of what the write left: the scopes it touched, and the data's version, move to its
+  number, and `writing` clears. The row lock is taken without waiting, so a write with a data transaction still open
+  is not abandoned. A live writer renews its lease and is never abandoned, however slow it is. A writer that comes
+  back is refused by the existing fence. Nothing new is timed. Without `writer` nothing changes.
+- A `ScopedSnapshot` whose full rebuild meets a write in progress that records what it touched no longer waits for
+  it. Each scope the write has not touched is read whole at its committed epoch. A scope it has touched is served
+  from the copy NATS holds of it, and that pointer is never replaced by a read of a write in progress, so no replica
+  shows less than before. A touched scope that NATS holds no copy of is read from L3 as it stands. The copy then
+  becomes ready, and once the write commits the next rebuild reads only the scopes whose epochs moved. A write that
+  records nothing still makes the rebuild wait, as before.
+
+**Added:** `threetears.core.collections.scope_epochs.WriterLease`, and the keyword `writer` on `ScopeEpochs`.
+
 ### registry: a call no endpoint took answers `TOOL_NOT_READY`, not `TOOL_UNAVAILABLE`
 
 **Fixed:** when every endpoint the caller may use failed to take a call (no responders, the connection closed, the
@@ -67,8 +307,11 @@ through it while the warehouse rewrites the table, and a run so failed held the 
 (cobalt prod, 2026-11-01). A read whose closing proof fails is now read again, counted and fingerprinted afresh, up
 to `CHANGED_READ_ATTEMPTS` (3) reads in all, each re-read logged at warning; a relation still moving on the third
 read raises the same error as before, logged at error. What is returned is still one whole state of the relation.
-The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again. A one-time change
-during a read is no longer an error; the tests that changed the relation once now change it on every read.
+The guards the pages raise from (a run of keys filling a page, a runaway read) are not read again, nor is a read
+short of its count whose relation's fingerprint did not move (rows the key cannot page past, such as a NULL in it,
+which every read loses alike): it is raised after one read, as `read_partitions` does for such a part. A short read
+now takes the second fingerprint to tell the two apart. A one-time change during a read is no longer an error; the
+tests that changed the relation once now change it on every read.
 
 **Added:** `CHANGED_READ_ATTEMPTS` in `threetears.datasources.query_client`, the bound `read_partitions` already
 used, now shared. New public name.
@@ -96,8 +339,10 @@ page of its own, the pod's parse 7 ms.
 **Added:** `SnapshotTable.read_order`: the columns an L3 index led by the scope column orders a scope's rows by
 after it. Its pages are then read `ORDER BY` those columns and the rest of the key (`SnapshotTable.paged_by`, unique
 as the key is), which the index serves with about a page's rows: 1,028 to 123 ms a page in the database for that
-table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Empty by
-default: nothing changes for a table that does not set it. New public names, so a minor bump.
+table. The scope is put back in key order once read, so its chunks and its L1 rows are what they were. Every column
+it names must be one of the key's, refused with `ValueError` otherwise: a keyset page steps past its last row by
+comparing every paged column, and a NULL would drop every row after it with no count to see it; a key column is
+never NULL. Empty by default: nothing changes for a table that does not set it. New public names, so a minor bump.
 
 **Changed:** a scope's read fetches each next page while this one is typed (a shared-memory copy types each page in
 a job of its worker: 50 to 75 ms a page locally, beside a fetch of 120 to 150 ms). Each page is still typed on its

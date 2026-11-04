@@ -741,6 +741,8 @@ class _WarehouseWithNullKeys:
             dataset,
             key=lambda r: (r[_KEY[0]] is None, tuple(r[c] or "" for c in _KEY)),
         )
+        #: how many fingerprints were taken: two a read that is proven, and one more for a read short of its count
+        self.fingerprints = 0
 
     def forwarded_identity_token(self) -> str:
         """
@@ -815,6 +817,7 @@ class _WarehouseWithNullKeys:
         :return: the relation's current count and digest
         :rtype: RelationFingerprintResult
         """
+        self.fingerprints += 1
         columns = tuple(key)
         payload = "\x1e".join(
             "\x1f".join("\x00" if row.get(c) is None else str(row[c]) for c in columns) for row in self._rows
@@ -922,6 +925,39 @@ class TestARowTheKeyCannotReachIsNotLost:
             )
 
     @pytest.mark.asyncio
+    async def test_a_null_key_short_read_is_raised_after_one_read_and_never_read_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing moved, so every read loses the same rows: the first read raises, with no warning that the
+        relation changed. ``read_partitions`` does the same for a part short of its count, its fingerprint unmoved.
+
+        :return: nothing
+        :rtype: None
+        """
+        dataset = [
+            _row("ca", "2026-01"),
+            _row("ny", "2026-01"),
+            {"jurisdiction": None, "period": "2026-01"},
+        ]
+        warehouse = _WarehouseWithNullKeys(dataset)
+        caplog.set_level(logging.WARNING)
+
+        with pytest.raises(
+            IncompleteReadError, match="counted 3 rows and the read returned 2. 1 row\\(s\\) were never"
+        ):
+            await read_all(
+                warehouse,
+                "published-files",
+                columns=_COLUMNS,
+                relation="published_files",
+                key=_KEY,
+                page_size=1,
+            )
+
+        assert warehouse.fingerprints == 2, "one read: its count, and the reading that shows nothing moved"
+        assert "changed while it was read" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_a_relation_with_no_nulls_is_unaffected(self) -> None:
         """The guard must not refuse a read it could have completed.
 
@@ -984,6 +1020,22 @@ class TestARelationRewrittenWhileReadIsReadAgain:
 
         assert len(rows) == 7
         assert warehouse.fingerprints == 3, "the count disagreed, so the read that moved took no second reading"
+
+    @pytest.mark.asyncio
+    async def test_a_relation_that_shrank_between_its_count_and_its_pages_is_read_again(self) -> None:
+        dataset = [_row(f"s{i:02d}", "2026-01") for i in range(6)]
+        warehouse = _PagingWarehouse(dataset)
+
+        def _shrink_once(fake: _PagingWarehouse) -> None:
+            if fake.fingerprints == 1:
+                fake.replace_rows(fake.current_rows()[1:])
+
+        warehouse.on_fingerprint = _shrink_once
+
+        rows = await _read(warehouse, page_size=2)
+
+        assert len(rows) == 5
+        assert warehouse.fingerprints == 4, "the short read took a second reading, which moved: read again"
 
     @pytest.mark.asyncio
     async def test_a_relation_moving_on_every_read_gives_up_after_three_with_the_same_error(

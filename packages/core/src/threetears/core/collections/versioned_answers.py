@@ -80,6 +80,7 @@ import itertools
 import json
 import math
 import re
+import uuid
 from collections.abc import Awaitable, Buffer, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -271,6 +272,23 @@ def _announced_version(body: Any) -> AnnouncedVersion | None:
     return AnnouncedVersion(str(body["version"]), int(body["order"]), dict(body.get("detail") or {}))
 
 
+#: the member a :meth:`VersionedAnswers.forget` writes in a scope's announced-version key while it works, where no
+#: record was: an announce replaces it, as it would no record
+_FORGETTING: Final = "forgetting"
+
+
+def _forgetting(row: dict[str, Any] | None) -> bool:
+    """whether an announced-version row is a forget's marker, not a record.
+
+    :param row: the row, or ``None``
+    :ptype row: dict[str, Any] | None
+    :return: whether it is the marker
+    :rtype: bool
+    """
+    members = row.get("members") if row is not None else None
+    return isinstance(members, dict) and _FORGETTING in members
+
+
 def _announced_from(row: dict[str, Any] | None, table: str) -> Announced | None:
     """the record a row holds; ``None`` for none, and for one that cannot be read (it is then replaced).
 
@@ -281,7 +299,8 @@ def _announced_from(row: dict[str, Any] | None, table: str) -> Announced | None:
     :return: the record
     :rtype: Announced | None
     """
-    if row is None:
+    if row is None or _forgetting(row):
+        # a forget at work: no record, which the next announcement replaces
         return None
     try:
         body = row["members"]
@@ -1284,6 +1303,171 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         """
         return _announced_from(await self._index.ensure(f"{_ANNOUNCED}{scope}"), self._index.table_name)
 
+    async def forget(self, scope: str) -> bool:
+        """retire a scope a host no longer announces: its announced-version record goes, and so does every answer its
+        versions row names, leaving only the row's floor.
+
+        For a host whose scopes come and go (one a deploy, nothing reading at it once the next is out): each left a
+        record, a versions row and its answers that nothing else removed, so they grew by the scopes of every
+        release. Every change is a compare-and-set through the index, as every other change here.
+
+        The record's key is the call's gate. A record is deleted only as this call read it; with none, the call
+        takes the key with a marker of its own (create-if-absent). An :meth:`announce` that lands at any point
+        before the call is done replaces either and is newer than the call: the call then lets the scope be, puts
+        the floor back where it found it, and answers ``False``. The gate is looked at again after the floor rises,
+        before any answer is deleted, and last of all, so an announce before the answers go loses no answer and one
+        after them is answered and stored again once the floor is put back. The answers are retired below the order the record
+        held (with no record, the versions row's newest), so a version answered past it is kept.
+
+        The versions row stays, naming no version and holding the floor: a replica still reading at a retired
+        version is answered and never stores it, where with no floor it wrote the row and its answers back. One
+        row of a few bytes a forgotten scope is left, not its answers. This replica's own background retirement of
+        the scope is let finish first. A scope with nothing left is ``True``: forgetting one twice is the same as
+        once. The keys deleted are purged, as a retirement's are.
+
+        :param scope: the scope, as :meth:`announce` and :meth:`answer` were given it
+        :ptype scope: str
+        :return: whether the scope is retired: ``False`` when an announce kept it, or a version past the record's
+            (or one still being written) is still named; a later call finishes it
+        :rtype: bool
+        :raises KvError: when the index could not be read or changed
+        :raises ConcurrentModificationError: when the index kept changing past the retry budget
+        """
+        retirement = self._retirements.pop(scope, None)
+        if retirement is not None and retirement.task is not None:
+            # its failures are recorded by itself: here only its end matters
+            await asyncio.gather(retirement.task, return_exceptions=True)
+        name, row_name = f"{_ANNOUNCED}{scope}", _versions_row(scope)
+        touched: list[str] = []
+        read = await self._index.read_l2(name)
+        record = None if _forgetting(read) else _announced_from(read, self._index.table_name)
+        marker: dict[str, Any] | None = None
+
+        async def overtaken() -> bool:
+            # an announce holds the gate: a record in place of the one this call deleted, or of its own marker
+            row = await self._index.read_l2(name)
+            return row is not None and not (row.get("members") == marker if marker else _forgetting(row))
+
+        if record is not None and read is not None:
+            seen = read["members"]
+
+            def drop_as_read(row: dict[str, Any] | None) -> _Action:
+                # an announce since the read changed the record: it is newer than this call, and it stays
+                if row is None or row.get("members") != seen:
+                    return ("noop", None)
+                return ("delete", None)
+
+            if (await self._index.l2_cas_mutate(name, drop_as_read)).action == "deleted":
+                touched.append(self._relative(self._index.l2_key(name)))
+            elif await overtaken():
+                return False
+        else:
+            marker = {_FORGETTING: uuid.uuid7().hex}
+
+            def take(row: dict[str, Any] | None) -> _Action:
+                # the key is this call's while it works; a record an announce wrote is not
+                if row is not None and not _forgetting(row):
+                    return ("noop", None)
+                return ("upsert", {"name": name, "members": marker})
+
+            if (await self._index.l2_cas_mutate(name, take)).action == "noop":
+                return False
+
+        retired = True
+        raised: tuple[int | None, int | None] | None = None
+        versions = await self._index.read_l2(row_name)
+        if versions is not None:
+            members: dict[str, int] = dict(versions["members"])
+            bound = record.latest.order if record is not None else max(members.values(), default=None)
+            if bound is not None:
+                taken, before, after = await self._raise_floor(bound + 1, row_name)
+                raised = (after, before)
+                if await overtaken():
+                    await self._lower_floor(row_name, after, before)
+                    return False
+                try:
+                    await self._clear_versions(taken, touched, row_name)
+                finally:
+                    await self._purge(touched)
+                    touched = []
+                if await overtaken():
+                    await self._lower_floor(row_name, after, before)
+                    return False
+            remaining = await self._index.read_l2(row_name)
+            retired = remaining is None or not remaining["members"]
+        if marker is not None:
+
+            def drop_marker(row: dict[str, Any] | None) -> _Action:
+                return ("delete", None) if row is not None and row.get("members") == marker else ("noop", None)
+
+            if (await self._index.l2_cas_mutate(name, drop_marker)).action == "deleted":
+                touched.append(self._relative(self._index.l2_key(name)))
+            else:
+                # an announce replaced the marker after the last look: it is newer than this call
+                marker = None
+        await self._purge(touched)
+        # the last look: an announce that landed after the answers went holds the gate, so the floor goes back and
+        # the versions it answers are stored again
+        if (marker is None and record is None) or await overtaken():
+            if raised is not None:
+                await self._lower_floor(row_name, *raised)
+            retired = False
+        log.info("forgot a scope: table=%s scope=%s retired=%s", self.table_name, scope, retired)
+        return retired
+
+    async def _raise_floor(self, order: int, row_name: str) -> tuple[dict[str, int], int | None, int | None]:
+        """raise a versions row's floor to ``order - 1``, by compare-and-set: from here no replica records a version
+        at or below it.
+
+        :param order: the order retired below
+        :ptype order: int
+        :param row_name: the versions row
+        :ptype row_name: str
+        :return: each version below ``order`` with its order, and the floor before and after
+        :rtype: tuple[dict[str, int], int | None, int | None]
+        """
+        taken: dict[str, int] = {}
+        floors: list[int | None] = [None, None]
+
+        def raise_floor(row: dict[str, Any] | None) -> _Action:
+            nonlocal taken
+            members: dict[str, int] = dict(row["members"]) if row else {}
+            floor = row.get("floor") if row else None
+            taken = {version: older for version, older in members.items() if older < order}
+            new_floor = order - 1 if floor is None else max(floor, order - 1)
+            floors[:] = [floor, new_floor]
+            if row is not None and new_floor == floor:
+                return ("noop", None)
+            return ("upsert", {"name": row_name, "members": members, "floor": new_floor})
+
+        await self._index.l2_cas_mutate(row_name, raise_floor)
+        return taken, floors[0], floors[1]
+
+    async def _lower_floor(self, row_name: str, raised: int | None, back: int | None) -> None:
+        """put a versions row's floor back to ``back``, if it is still the ``raised`` a :meth:`forget` left there.
+
+        For a forget an announce overtook: the scope is in use, and the versions its announcer answers must be
+        stored again. A floor anything else has raised since stays.
+
+        :param row_name: the versions row
+        :ptype row_name: str
+        :param raised: the floor the forget set
+        :ptype raised: int | None
+        :param back: the floor before it
+        :ptype back: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if raised == back:
+            return
+
+        def lower(row: dict[str, Any] | None) -> _Action:
+            if row is None or row.get("floor") != raised:
+                return ("noop", None)
+            return ("upsert", {"name": row_name, "members": dict(row["members"]), "floor": back})
+
+        await self._index.l2_cas_mutate(row_name, lower)
+
     async def retire_older_than(self, order: int, *, scope: str = "") -> int:
         """delete every answer this owner holds at a version of the scope of a lower order.
 
@@ -1299,21 +1483,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :raises Exception: whatever the purger raises outside its contract (:data:`KeyPurger`), once
             every retired version is cleared
         """
-        taken: dict[str, int] = {}
         row_name = _versions_row(scope)
-
-        def raise_floor(row: dict[str, Any] | None) -> _Action:
-            nonlocal taken
-            members: dict[str, int] = dict(row["members"]) if row else {}
-            floor = row.get("floor") if row else None
-            taken = {version: older for version, older in members.items() if older < order}
-            new_floor = order - 1 if floor is None else max(floor, order - 1)
-            if row is not None and new_floor == floor:
-                return ("noop", None)
-            return ("upsert", {"name": row_name, "members": members, "floor": new_floor})
-
         # first the floor: from here no replica records a version below it, so what is listed is final
-        await self._index.l2_cas_mutate(row_name, raise_floor)
+        taken, _, _ = await self._raise_floor(order, row_name)
         # the purge runs once every version is cleared, so a purger that fails outside its contract
         # cannot leave a version's answers behind; keys already deleted are purged even when a later
         # version fails, since a forgotten version is never visited again

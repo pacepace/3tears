@@ -324,6 +324,31 @@ class L1Backend(Protocol):
         """
         ...
 
+    def delete_many_by_id(
+        self,
+        table: str,
+        entity_ids: Sequence[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete many rows by primary key, as ``delete_by_id`` would one by one.
+
+        For the callers that evict many keys at once (a commit settling): a backend
+        that pays a lock and a commit per write pays them once here, not once a row.
+        A failure raises as ``delete_by_id``'s would.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: pk values (single-PK) or tuples of pk values in declared
+            column order (composite-PK); nothing named deletes nothing
+        :ptype entity_ids: Sequence[Any]
+        :param primary_key: pk column name (single-PK) or tuple of pk column names
+            in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""
         ...

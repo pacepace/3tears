@@ -47,4 +47,4 @@ def test_version():
     """Package version is set."""
     from threetears.observe import __version__
 
-    assert __version__ == "0.89.0"
+    assert __version__ == "0.91.0"

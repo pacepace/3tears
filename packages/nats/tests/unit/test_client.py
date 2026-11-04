@@ -1344,6 +1344,8 @@ def _client_with_js() -> tuple[NatsClient, Any]:
     js = MagicMock()
     js.add_stream = AsyncMock()
     js.update_stream = AsyncMock()
+    # a live stream, on one server: what an update of one reads its replica count from
+    js.stream_info = AsyncMock(return_value=MagicMock(config=MagicMock(num_replicas=1)))
     js.publish = AsyncMock()
     js.subscribe = AsyncMock(return_value="sub-handle")
     # a fresh server: no durable exists yet, so a bind creates it with the config it is given
@@ -1450,6 +1452,7 @@ async def test_ensure_jetstream_stream_reconciles_existing() -> None:
         "3tears.channels.deliver.*",
         "3tears.channels.deliver.slack",
     ]
+    assert config.num_replicas == 1, "the update did not carry the live stream's replica count"
 
 
 @pytest.mark.asyncio

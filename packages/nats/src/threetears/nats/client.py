@@ -5818,6 +5818,7 @@ class NatsClient:
         create_if_missing: bool = True,
         history: int = 1,
         direct: bool | None = None,
+        replicas: int | None = None,
     ) -> NatsKvBucket:
         """obtain (or create) a JetStream KV bucket.
 
@@ -5850,14 +5851,20 @@ class NatsClient:
             ordinary consumer wants: it binds to whatever the declaring identity
             established. see :meth:`ensure_kv_bucket`
         :ptype direct: bool | None
+        :param replicas: how many servers hold a bucket this call creates. ``None`` (the default) creates
+            it on one and asks nothing of a live bucket; a live bucket's replicas are never lowered
+        :ptype replicas: int | None
         :return: ready KV bucket handle
         :rtype: NatsKvBucket
+        :raises ValueError: if ``replicas`` is given and not positive
         :raises KvBucketNotFoundError: if ``create_if_missing`` is ``False`` and the bucket does not
             exist once the wait for its declarer is spent (a ``KvError``)
         :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         full_name = f"{self._namespace}-{name}"
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"KV bucket {full_name!r} needs at least one replica, got {replicas!r}")
         cached = self._buckets.get(full_name)
         if cached is not None:
             return cached
@@ -5874,6 +5881,7 @@ class NatsClient:
                 history=history,
                 direct=direct,
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
+                replicas=replicas,
             )
             self._buckets[full_name] = bucket
         return bucket
@@ -6040,9 +6048,10 @@ class NatsClient:
             without this client hearing of it. ``None`` restores it always
         :ptype still_wanted: Callable[[], Awaitable[bool]] | None
         :param replicas: how many servers hold the bucket. ``None`` (the default) creates it on one,
-            as nats-py does, and asks nothing of a live bucket's placement. an owner reconciles a
-            live bucket's replicas in place (JetStream keeps its entries), and a restoration after a
-            reconnect creates it again with them
+            as nats-py does, and asks nothing of a live bucket's placement. an owner raises a live
+            bucket's replicas in place (JetStream keeps its entries) and never lowers them: a live
+            bucket on more servers than asked stays on them. a restoration after a reconnect creates
+            it again with them
         :ptype replicas: int | None
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
@@ -6131,6 +6140,7 @@ class NatsClient:
         storage: str = "memory",
         max_age_seconds: float | None = None,
         max_msgs_per_subject: int | None = None,
+        replicas: int | None = None,
     ) -> str:
         """create (or update) a JetStream stream over given subjects.
 
@@ -6172,14 +6182,23 @@ class NatsClient:
             whose subjects are minted per call and answered once -- a retry that republishes cannot
             then leave a stale first answer behind for the waiter to pick up
         :ptype max_msgs_per_subject: int | None
+        :param replicas: how many servers hold the stream. ``None`` (the default) creates it on one (a
+            local single-node NATS) and keeps a live stream's. a live stream's replicas are never
+            lowered: an update sends the larger of the live count and this one, so a stream raised to
+            three (by its declarer or by an operator) stays on three when a declarer that asks for
+            fewer, or for none, starts. the count remembered for a restoration is the one sent
+        :ptype replicas: int | None
         :return: full namespace-prefixed stream name
         :rtype: str
+        :raises ValueError: if ``replicas`` is given and not positive
         :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
         :raises RuntimeError: if stream creation and update both fail
         """
         full_name = f"{self._namespace}-{name}"
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"JetStream stream {full_name!r} needs at least one replica, got {replicas!r}")
         storage_type = _NatsStorageType.FILE if storage == "file" else _NatsStorageType.MEMORY
-        config = _NatsStreamConfig(name=full_name, subjects=subjects, storage=storage_type)
+        config = _NatsStreamConfig(name=full_name, subjects=subjects, storage=storage_type, num_replicas=replicas)
         if max_age_seconds is not None:
             config.max_age = max_age_seconds
         if max_msgs_per_subject is not None:
@@ -6207,13 +6226,19 @@ class NatsClient:
                     f"subject namespace; resolve the conflicting stream or correct the "
                     f"namespace."
                 ) from exc
+            # an update sends every field, and an unsent replica count is the server's one: never lower
+            # the live stream's (cobalt prod, 2026-11-02: 56 of 58 streams back on one server after
+            # their declarers restarted)
+            live = (await js.stream_info(full_name)).config
+            config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
             await js.update_stream(config)
         self._declarations[full_name] = dataclasses.replace(config)
         log.info(
-            "jetstream stream ensured: stream=%s subjects=%s storage=%s",
+            "jetstream stream ensured: stream=%s subjects=%s storage=%s replicas=%s",
             full_name,
             ",".join(subjects),
             storage,
+            config.num_replicas or 1,
         )
         return full_name
 
@@ -6243,7 +6268,7 @@ class NatsClient:
         name: str,
         max_bytes: int,
         storage: str = "memory",
-        replicas: int = 1,
+        replicas: int | None = None,
         prefix_namespace: bool = True,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
     ) -> NatsObjectStore:
@@ -6267,8 +6292,9 @@ class NatsClient:
         :ptype max_bytes: int
         :param storage: ``"memory"`` (the default: NATS is the L2 tier) or ``"file"``
         :ptype storage: str
-        :param replicas: how many servers hold the bucket
-        :ptype replicas: int
+        :param replicas: how many servers hold the bucket. ``None`` (the default) creates it on one and keeps
+            a live bucket's; a live bucket's replicas are raised in place, never lowered
+        :ptype replicas: int | None
         :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
         :ptype prefix_namespace: bool
         :param still_wanted: asked before each restoration after a reconnect; a declaration it says
@@ -6282,7 +6308,7 @@ class NatsClient:
         """
         if max_bytes <= 0:
             raise ValueError(f"an object store needs a positive max_bytes, got {max_bytes!r}")
-        if replicas <= 0:
+        if replicas is not None and replicas <= 0:
             raise ValueError(f"an object store needs at least one replica, got {replicas!r}")
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         stream = object_store_stream_name(full_name)
@@ -6312,6 +6338,8 @@ class NatsClient:
             # name in use: the bucket is live with another shape (an identical one creates idempotently)
             try:
                 live = (await js.stream_info(stream)).config
+                # never onto fewer servers than it is live on (an unsent count is the server's one)
+                config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
                 await js.update_stream(config)
             except _NatsJsAPIError as update_exc:
                 raise ObjectStoreError(
@@ -6323,7 +6351,7 @@ class NatsClient:
                     "extra_data": {
                         "bucket": full_name,
                         "max_bytes": {"was": live.max_bytes, "now": max_bytes},
-                        "replicas": {"was": live.num_replicas, "now": replicas},
+                        "replicas": {"was": live.num_replicas, "now": config.num_replicas},
                     }
                 },
             )
@@ -6335,7 +6363,12 @@ class NatsClient:
         log.info(
             "object store ensured",
             extra={
-                "extra_data": {"bucket": full_name, "max_bytes": max_bytes, "storage": storage, "replicas": replicas}
+                "extra_data": {
+                    "bucket": full_name,
+                    "max_bytes": max_bytes,
+                    "storage": storage,
+                    "replicas": config.num_replicas or 1,
+                }
             },
         )
         return NatsObjectStore(client=self, full_name=full_name)
@@ -7074,6 +7107,22 @@ async def _on_disconnected() -> None:
     :rtype: None
     """
     log.warning("NATS disconnected")
+
+
+def _never_fewer_replicas(live: int | None, requested: int | None) -> int:
+    """the replica count an update of a live stream sends: the larger of its live count and the one asked.
+
+    An update sends every field, and an unsent count is the server's one, so an update built from a declaration
+    alone moves a stream raised to three back onto one. A declaration that asks for none keeps the live count.
+
+    :param live: the live stream's count (unset and zero are one)
+    :ptype live: int | None
+    :param requested: the count the declaration asks for, or None
+    :ptype requested: int | None
+    :return: the count to send
+    :rtype: int
+    """
+    return max(live or 1, requested or 1)
 
 
 def _is_authorization_violation(exc: Exception) -> bool:

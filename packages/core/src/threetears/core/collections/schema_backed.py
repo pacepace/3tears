@@ -2156,7 +2156,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         for key, data in zip(keys, stamped, strict=True):
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
             transaction.enroll(self, key, row=data)
-            self._evict_l1(key)
+        # every key leaves L1 in one write before the store's, not one write a key
+        self._evict_l1_many(keys)
         written = 0
         if copy:
             written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
@@ -2494,6 +2495,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(
                 f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
             )
+        entity_keys: list[Any] = []
         for key in named:
             entity_key = key if width > 1 else key[0]
             # a collection whose row messages carry columns reads each row before it goes, on the
@@ -2506,7 +2508,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
             transaction.enroll(self, entity_key, row=seen)
-            self._evict_l1(entity_key)
+            entity_keys.append(entity_key)
+        # every key leaves L1 in one write before the store's delete, not one write a key
+        self._evict_l1_many(entity_keys)
         deleted = 0
         if named and isinstance(store, BulkDeletingStore):
             deleted = await store.delete_many(

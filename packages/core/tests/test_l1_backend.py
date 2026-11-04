@@ -263,6 +263,23 @@ class TestDelete:
         # Should not raise
         backend.delete_by_id("test_entities", str(uuid.uuid4()))
 
+    def test_delete_many_by_id_removes_every_named_row_and_no_other(self, backend: L1Backend) -> None:
+        rows = [_sample_row() for _ in range(5)]
+        for row in rows:
+            backend.upsert("test_entities", row)
+
+        backend.delete_many_by_id("test_entities", [row["id"] for row in rows[:4]] + [str(uuid.uuid4())])
+
+        assert [backend.select_by_id("test_entities", row["id"]) for row in rows[:4]] == [None] * 4
+        kept = backend.select_by_id("test_entities", rows[4]["id"])
+        assert kept is not None and str(kept["id"]) == rows[4]["id"]
+
+    def test_delete_many_by_id_of_nothing_is_a_noop(self, backend: L1Backend) -> None:
+        row = _sample_row()
+        backend.upsert("test_entities", row)
+        backend.delete_many_by_id("test_entities", [])
+        assert backend.select_by_id("test_entities", row["id"]) is not None
+
 
 class TestReset:
     """Test reset clears state."""

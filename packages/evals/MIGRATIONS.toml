@@ -58,6 +58,22 @@
 # callers.
 
 [[release]]
+version = "0.91.0"
+since = "v0.90.0"
+summary = """
+A scoped snapshot recovers a behind copy from the diff and reads a table one partition value at a time: no
+3tears-evals name has moved or been removed since 0.90.0, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.90.0"
+since = "v0.89.0"
+summary = """
+A settling commit evicts its keys from L1 in one write: no 3tears-evals name has moved or been removed since 0.89.0,
+and no judge wording changed.
+"""
+
+[[release]]
 version = "0.89.0"
 since = "v0.88.0"
 summary = """

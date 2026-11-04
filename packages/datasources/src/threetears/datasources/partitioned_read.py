@@ -193,10 +193,6 @@ _BATCH_ROWS: Final = 50_000
 #: the most page boundaries one statement may answer: under the hub's row cap
 _MAX_BOUNDARIES: Final = 990
 
-#: the most times a batch is read when one of its parts changed while it was read: ``read_all``'s own bound
-#: (:data:`~threetears.datasources.query_client.CHANGED_READ_ATTEMPTS`)
-_CHANGED_READ_ATTEMPTS: Final = CHANGED_READ_ATTEMPTS
-
 
 def _bound(key: Sequence[str], values: Sequence[Any], *, below: bool, first: int) -> tuple[str, list[Any]]:
     """the condition keeping keys at or above ``values`` (``below`` False) or strictly below them.
@@ -469,11 +465,11 @@ async def read_partitions(
 
     async def batch(members: list[str]) -> list[tuple[str, list[dict[str, Any]]]]:
         moved: str | None = None
-        for attempt in range(1, _CHANGED_READ_ATTEMPTS + 1):
+        for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
             read, after, moved = await read_batch(members)
             if moved is None:
                 return read
-            if attempt < _CHANGED_READ_ATTEMPTS:
+            if attempt < CHANGED_READ_ATTEMPTS:
                 log.warning(
                     "a part changed while it was read; reading its batch again",
                     extra={
@@ -481,7 +477,7 @@ async def read_partitions(
                             "relation": relation,
                             "part": moved,
                             "attempt": attempt,
-                            "attempts": _CHANGED_READ_ATTEMPTS,
+                            "attempts": CHANGED_READ_ATTEMPTS,
                         }
                     },
                 )
@@ -495,7 +491,7 @@ async def read_partitions(
                         counts[part] = 0
         log.error(
             "a part changed during every read of its batch",
-            extra={"extra_data": {"relation": relation, "part": moved, "attempts": _CHANGED_READ_ATTEMPTS}},
+            extra={"extra_data": {"relation": relation, "part": moved, "attempts": CHANGED_READ_ATTEMPTS}},
         )
         raise IncompleteReadError(
             f"{datasource_name}: {relation} {partition_by}={moved} changed while it was read; re-read once it is settled"
