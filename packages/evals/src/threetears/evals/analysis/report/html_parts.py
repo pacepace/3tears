@@ -32,7 +32,7 @@ _KIT_CSS = files("threetears.evals.analysis.report").joinpath("kit", "kit.css").
 #: one script, at the end of the body, and nothing else that runs.
 KIT_JS = files("threetears.evals.analysis.report").joinpath("kit", "kit.js").read_text(encoding="utf-8")
 
-#: The kit's fonts, as the reference memos load them: a preconnect to each Google Fonts host, then the one stylesheet
+#: The kit's fonts, as the kit's reference pages load them: a preconnect to each Google Fonts host, then the one stylesheet
 #: naming the three Plex faces. Written here and only here: no field of a report reaches the page's head.
 _FONT_LINKS = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
@@ -453,7 +453,7 @@ def glossary_slug(term: str) -> str:
 
 
 def markdown_html(text: str) -> str:
-    """The Markdown a memo uses — paragraphs, bullet lists, bold, code — over text escaped first.
+    """The Markdown an author's words use — paragraphs, bullet lists, bold, code — over text escaped first.
 
     :param text: An author's words.
     :ptype text: str

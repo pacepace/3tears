@@ -3,7 +3,7 @@
 The memo writer, the report planner, its planned page and the analysis reporter kind are retired. What survived them
 (the page's parts, the chart vocabulary, the answer section's lines, the prose checks a report document runs) is named
 for what it is now, so no identifier the package ships names a retired generation, except a name kept for one minor
-so a host's import does not break. Held here, on identifiers only (prose is a Critic's read, never a word list):
+so a host's import does not break. Held here on identifiers, and on the page modules' printed strings (prose is a Critic's read, never a word list):
 
 - **no module path** under ``src/`` names one;
 - **no top-level public name** any module defines names one, outside the modules that serve the retired names
@@ -117,3 +117,86 @@ def test_no_action_and_no_document_type_names_a_retired_generation() -> None:
     actions = [action.name for action in eval_catalogue().actions if RETIRED.search(action.name)]
     doc_types = [doc_type for doc_type in DOC_TYPE_FACTS if RETIRED.search(doc_type)]
     assert (actions, doc_types) == ([], [])
+
+
+#: The modules that lay a page out (its models, its blocks, its words, its two serializers and their HTML parts) and
+#: build one: what a reader is shown, and what a host reads a page's fields by.
+_PAGE_MODULES: Final = (
+    "analysis/report/blocks.py",
+    "analysis/report/build.py",
+    "analysis/report/campaign/page.py",
+    "analysis/report/html_parts.py",
+    "analysis/report/model.py",
+    "analysis/report/serialize_html.py",
+    "analysis/report/serialize_md.py",
+    "analysis/report/words.py",
+)
+
+#: The retired memo writer's word, as an identifier or a string would hold it: never ``memory`` or ``memoised``.
+_MEMO: Final = re.compile(r"memo(?![ri])", re.IGNORECASE)
+
+#: The one string a page may hold the word in: the stored section and disclosure literal, pinned by the goldens.
+_PINNED_LITERAL: Final = "memo"
+
+
+def _docstrings(tree: ast.Module) -> set[int]:
+    """The ids of every docstring's node: the module's, each class's and each function's first string."""
+    owners = [tree, *(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef | ast.FunctionDef))]
+    return {
+        id(owner.body[0].value)
+        for owner in owners
+        if owner.body
+        and isinstance(owner.body[0], ast.Expr)
+        and isinstance(owner.body[0].value, ast.Constant)
+        and isinstance(owner.body[0].value.value, str)
+    }
+
+
+def _identifiers(node: ast.AST) -> list[str]:
+    """Every name a node binds or reads: a name, an attribute, an argument, a keyword, a definition, an import."""
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, ast.keyword):
+        return [node.arg] if node.arg is not None else []
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return [node.name]
+    if isinstance(node, ast.alias):
+        return [node.asname or node.name]
+    return []
+
+
+def test_the_page_modules_name_the_memo_only_in_the_pinned_literal() -> None:
+    """A page's models and serializers hold no identifier and print no string naming the retired memo writer: the
+    stored ``"memo"`` section and disclosure literal is the one string that holds the word."""
+    named: list[str] = []
+    for module in _PAGE_MODULES:
+        tree = ast.parse((SOURCE / module).read_text(encoding="utf-8"))
+        docstrings = _docstrings(tree)
+        for node in ast.walk(tree):
+            named += [f"{module}:{name}" for name in _identifiers(node) if _MEMO.search(name)]
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+                and node.value != _PINNED_LITERAL
+                and _MEMO.search(node.value)
+            ):
+                named.append(f"{module}:{node.lineno}:{node.value!r}")
+    assert named == []
+
+
+def test_the_page_check_reads_a_memo_in_a_string_and_a_name_and_lets_the_literal_and_a_docstring_pass() -> None:
+    tree = ast.parse('"""A docstring on the memo."""\nX = "memo"\nY = "The memo recommends"\ndef memo_lead(): ...\n')
+    docstrings = _docstrings(tree)
+    strings = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+    ]
+    names = [name for node in ast.walk(tree) for name in _identifiers(node)]
+    assert [s for s in strings if s != _PINNED_LITERAL and _MEMO.search(s)] == ["The memo recommends"]
+    assert [name for name in names if _MEMO.search(name)] == ["memo_lead"]

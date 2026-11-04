@@ -57,7 +57,7 @@ def worded(words: dict[str, str], annotation: Any, what: str) -> dict[str, str]:
     """
     if set(words) != _literal_values(annotation):
         raise RuntimeError(
-            f"the memo's words for {what} {sorted(words)} do not match the model's {sorted(_literal_values(annotation))}"
+            f"the page's words for {what} {sorted(words)} do not match the model's {sorted(_literal_values(annotation))}"
         )
     return words
 

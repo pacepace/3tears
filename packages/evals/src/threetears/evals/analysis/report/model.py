@@ -128,7 +128,11 @@ ReportFile = Literal["html", "bundle", "markdown"]
 class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
-    basis: ReportBasis = Field(description="`analysis` over a generated memo, `code_only` over the evidence alone.")
+    basis: ReportBasis = Field(
+        description=(
+            "`analysis` over a generated analysis; `code_only` over the evidence alone, as every page built now is."
+        )
+    )
     title: str = Field(
         min_length=1,
         description=(
@@ -136,7 +140,7 @@ class Report(EvalDocumentModel):
             "(`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict."
         ),
     )
-    finding_count: int = Field(ge=0, description="How many findings the memo holds.")
+    finding_count: int = Field(ge=0, description="How many findings the page holds: 0 on every page built now.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
     verdicts: list[Verdict] = Field(
@@ -290,7 +294,7 @@ CAMPAIGN_JSON_SHAPE = 5
 
 
 class CampaignAspectFold(EvalDocumentModel):
-    """One aspect's fold of a campaign's page: a retired memo's summary of the aspect, if any, then its own page."""
+    """One aspect's fold of a campaign's page: any text blocks it holds over the aspect, then its own page."""
 
     aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
     shows: str = Field(
@@ -299,10 +303,7 @@ class CampaignAspectFold(EvalDocumentModel):
     )
     summary: list[ReportBlock] = Field(
         default_factory=list,
-        description=(
-            "A retired memo's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
-            "with no memo, or none for this aspect."
-        ),
+        description="Text blocks laid out over the aspect, above its own page; empty on every page built now.",
     )
     report: Report = Field(
         description=(
@@ -340,12 +341,12 @@ class CampaignReport(EvalDocumentModel):
     the title.
 
     **Then, each under its heading** (:attr:`headed_sections`), in the order
-    :func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report` describes: the Scorecard, the memo's
+    :func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report` describes: the Scorecard, the
     Findings and Next steps, and Design & provenance. Then :attr:`aspects`, one fold each, in the campaign's order,
     and after them how the page was made.
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
-    nothing else, and a code-only campaign page (no memo) holds none.
+    nothing else, and a code-only campaign page, every page built now, holds none.
 
     **A report document's page** holds no blocks either: its :attr:`doc_page` is the page its stored report document
     draws on its own snapshot, which the serializers write whole in place of the campaign's page (the document's own
@@ -353,7 +354,9 @@ class CampaignReport(EvalDocumentModel):
     stay, as the JSON form's readings and bundles, and with :attr:`doc_trials` as the document's evidence record.
     """
 
-    basis: ReportBasis = Field(description="`analysis` with a memo over the campaign, `code_only` without one.")
+    basis: ReportBasis = Field(
+        description="`analysis` on a report document's page (`doc_page`), `code_only` on every other page."
+    )
     title: str = Field(
         min_length=1,
         description="The title line: what the campaign compares and on what, with its name as a qualifier.",
@@ -362,9 +365,9 @@ class CampaignReport(EvalDocumentModel):
     campaign_name: str | None = Field(default=None, description="The campaign's name, where known.")
     scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
     analysis_id: str | None = Field(
-        default=None, description="The stored analysis whose memo the page lays out; None on a code-only page."
+        default=None, description="The stored analysis the page was read for; None where it was read for none."
     )
-    finding_count: int = Field(ge=0, description="How many findings the memo holds.")
+    finding_count: int = Field(ge=0, description="How many findings the page holds: 0 on every page built now.")
     blocks: list[ReportBlock] = Field(
         description="Every block but the folds': the first screen, then each headed section's, in reading order."
     )
@@ -374,7 +377,7 @@ class CampaignReport(EvalDocumentModel):
     recommendation: Recommendation | None = Field(
         default=None,
         description=(
-            "The writer's recommendation, as the memo holds it; None with no memo. A report document's page carries "
+            "The recommendation the page holds; None on every page built now. A report document's page carries "
             "none here: the arms its document recommends are `report_doc.doc.recommends`."
         ),
     )
@@ -523,7 +526,7 @@ class CampaignReport(EvalDocumentModel):
             if self.analysis_id is not None:
                 raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
             if self.recommendation is not None:
-                raise ValueError("a code-only page has no memo, so it holds no recommendation")
+                raise ValueError("a code-only page holds no recommendation")
             if self.finding_count:
                 raise ValueError(f"a code-only page has no findings, and this one counts {self.finding_count}")
             if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
@@ -625,11 +628,11 @@ class CampaignReport(EvalDocumentModel):
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
-        the writer's recommendation (its arm's label and variant key, and how sure) where there is a memo, the call,
+        the recommendation (its arm's label and variant key, and how sure) where the page holds one, the call,
         and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
         and when (``late_criteria``, empty where none was), since its readings read the same either way; and
         ``report_doc``, the stored report document a document's page draws (:attr:`report_doc`, never a session's
-        transcript; the arms it recommends are ``report_doc.doc.recommends``, ``recommendation`` being a memo's),
+        transcript; the arms it recommends are ``report_doc.doc.recommends``, ``recommendation`` being None there),
         ``None`` on every other page; and ``needs_regeneration``, the one regenerate line and why, on a code-only page
         standing in for an analysis or a document this version no longer reads, ``None`` on every other.
 

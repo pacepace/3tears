@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the page's models and serializers stop laying out a memo
+
+**Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
+retired memo writer wrote, and both serializers drop the lines that laid them out. No page this version builds held
+one, so no printed page changes. `Report`'s and `CampaignReport`'s `basis`, `finding_count`, `analysis_id` and
+`recommendation`, and `CampaignAspectFold.summary`, keep their fields and describe what a page built now holds. Messages
+reword: the remedy for an analysis of several aspects names `get_analysis` as reading the analysis, a double brace in
+report prose is refused as the retired figure reference, and the import-time word check and the code-only
+recommendation refusal name the page, not the memo. Nothing stored changes.
+`tests/test_retired_vocabulary.py` holds the page's modules to no identifier or string naming the memo, the
+`"memo"` section literal aside.
+
+**Hosts:** a host that built a `TextBlock` in one of the four roles builds it in another, or leaves it out.
+
 ### evals: 18 declared names nothing outside the package imports go provisional
 
 **Changed:** the declared surface (`host-contract` and `stable`) drops from 553 names to 535. A name goes provisional
