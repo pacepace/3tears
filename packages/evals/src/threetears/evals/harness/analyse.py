@@ -180,7 +180,7 @@ async def analyse(
             written,
             campaign_id=result.campaign_id,
             scope_id=result.scope_id,
-            generator_model=model,
+            writer_model=model,
             started_at=started_at,
             tally=tally,
         )

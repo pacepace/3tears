@@ -1,7 +1,7 @@
 """One chart's rules, apart from any plan: what it can read, what code completes it with, and what refuses it.
 
 A chart is a block of evidence: a kind (``forest``, ``bars``, a ``table``, …) over a query of the report input
-(:class:`~threetears.evals.kernel.report_plan.ChartQuery`). A planned page draws the charts its plan stores, and an
+(:class:`~threetears.evals.kernel.chart_query.ChartQuery`). A planned page draws the charts its plan stores, and an
 analyst draws one to see what a claim's evidence would show (``block_render``). Both go through this module, so a
 chart the plan checks accept is one an analyst sees drawn, and a chart refused one way is refused the other:
 
@@ -119,7 +119,7 @@ from threetears.evals.analysis.report_rows import (
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
 if TYPE_CHECKING:  # an arm's facts are read by type only: the module that defines them sits above the page's parts.
     from threetears.evals.analysis.report_arms import FactArm

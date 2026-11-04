@@ -11,12 +11,12 @@ that lays it out.
 - :class:`AspectNames` is what it calls each aspect, which those lines take
   (:mod:`~threetears.evals.analysis.report.campaign.names`).
 - :data:`NO_RECOMMENDATION` and :data:`NO_CALL` are its lines where no report or no call exists
-  (:mod:`~threetears.evals.analysis.report.campaign.memo_blocks`).
+  (:mod:`~threetears.evals.analysis.report.campaign.answer_blocks`).
 """
 
 from __future__ import annotations
 
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_CALL, NO_RECOMMENDATION
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report.campaign.provenance import timing_caveats

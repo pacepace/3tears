@@ -44,7 +44,7 @@ from packages.evals.tests.report_support import stored_memo_analysis, stored_pla
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import CampaignReport
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
 from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis

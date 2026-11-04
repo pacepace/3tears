@@ -15,7 +15,7 @@ import functools
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle

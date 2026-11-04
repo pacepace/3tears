@@ -1,6 +1,6 @@
 """The prototype's analyst command line: what it prints is what the mounted analyst tool answers.
 
-Contracts held here (``tests/fixtures/report_plans/analyst_cli.py``):
+Contracts held here (``tests/fixtures/writer_cases/analyst_cli.py``):
 
 - **the text is the tool's**: a call's printed text is, byte for byte, the text the analyst tool cut for that role
   answers over the same fixture snapshots, for help, a reference page, a read and a paged read; ``--json`` carries the
@@ -28,8 +28,8 @@ import httpx
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots, shape_snapshots
-from packages.evals.tests.fixtures.report_plans import analyst_cli
-from packages.evals.tests.fixtures.report_plans.analyst_cli import main, seeded_host
+from packages.evals.tests.fixtures.writer_cases import analyst_cli
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import main, seeded_host
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.report_writer_support import (
     MODEL,

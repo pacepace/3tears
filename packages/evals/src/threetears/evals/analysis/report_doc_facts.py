@@ -120,7 +120,7 @@ from threetears.evals.analysis.report_decision import control_arm, floors_not_he
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
 from threetears.evals.kernel.report_doc import Claim, ReportDoc, report_doc_prose
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 #: The names with a caller outside this module: the writing loop's editor turn, whose user message carries the facts.
 #: ``EditorFact`` and ``EditorFactKind`` join them with their first production caller outside this module.

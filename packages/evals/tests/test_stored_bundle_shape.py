@@ -14,7 +14,7 @@ from html import escape
 import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
 from threetears.evals.ops.analysis import analyses_list, report_read
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis

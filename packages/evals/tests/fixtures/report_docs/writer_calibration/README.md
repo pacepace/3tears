@@ -1,11 +1,11 @@
 # Writer judge calibration: flash and haiku against the Opus editor, 2026-11-03
 
-The record of one paid run of `tests/fixtures/report_plans/writer_calibration.py`, kept as small JSON plus its log. The turn
+The record of one paid run of `tests/fixtures/writer_cases/writer_calibration.py`, kept as small JSON plus its log. The turn
 recordings are not kept. Files: `20261103-flash-haiku.json` (the result), `20261103-flash-haiku-run.txt` (the printed run).
 
 ## What ran
 
-`uv run python -m packages.evals.tests.fixtures.report_plans.writer_calibration --cap-usd 8 --out <dir>` at head 1edac5200,
+`uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --cap-usd 8 --out <dir>` at head 1edac5200,
 2026-11-03 22:20 to 23:41 UTC, two live judges (`google/gemini-3.8-flash` and `claude-haiku-5-5`), two trials per case. The cap
 of $4 is the sum of the two flash arms' caps in the log ($2.80 and $1.20); the command line itself was not logged.
 

@@ -41,8 +41,8 @@ DOC_WRITTEN = (
     "is the code-only page over the same evidence."
 )
 
-#: The one line every surface prints where the campaign's reported analysis is one this version no longer reads: every
-#: analysis the report planner wrote (``report-plan/1``), and a report document that no longer validates, whose snapshot
+#: The one line every surface prints where the campaign's reported analysis is one this version no longer reads: a
+#: report document that no longer validates, whose snapshot
 #: is gone or no longer reads, or whose campaign no longer lays out over it. Worded once, here: the page's first screen
 #: (the stand-in line below), ``ReportDocument.needs_regeneration`` and the analysis listing's ``needs_regeneration``
 #: each print it byte for byte. It names the action bare: the HTML page sets a backticked word as code, which would

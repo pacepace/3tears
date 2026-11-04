@@ -18,7 +18,7 @@ from functools import cache
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_EXTRACTION_FAMILY, TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.report_shapes_support import CHECKS, SHAPES

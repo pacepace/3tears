@@ -1,7 +1,7 @@
 """What every chart resolver shares: the chart it is drawing, and the rules each kind fills its data by.
 
 A resolver (one per kind, in a ``resolve_*`` module's ``RESOLVERS``) turns a stored chart's
-:class:`~threetears.evals.kernel.report_plan.ChartSpec` into the kit's chart data, reading the rows its query
+:class:`~threetears.evals.kernel.chart_query.ChartSpec` into the kit's chart data, reading the rows its query
 selects (:func:`~threetears.evals.analysis.report_rows.query_rows`, the one owner of that selection). It is handed a
 :class:`ChartContext` and returns a :class:`Drawn`. The rules every kind fills by (the planned page's design, §3) are
 here, once:
@@ -74,7 +74,7 @@ from threetears.evals.analysis.report.charts import ChartReference, KitChart, Le
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
-from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
     COMPUTED_NOTE,
@@ -91,7 +91,7 @@ from threetears.evals.analysis.report_margins import criterion_aspect, criterion
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.metrics import goal_check_of
-from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
+from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
 __all__ = [
     "COMPUTED",
@@ -237,7 +237,7 @@ def chart_block(context: ChartContext, data: KitChart, *, read_at: str = "") -> 
     kind = context.spec.kind
     if kind == "table":
         raise context.refuse("a table is laid out as a table block, not drawn as a chart")
-    return ChartBlock(section=PLANNED_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
+    return ChartBlock(section=WRITER_SECTION, chart=kind, title=context.title, data=data, unit=read_at)
 
 
 def money_drawn(

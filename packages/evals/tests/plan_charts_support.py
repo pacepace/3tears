@@ -3,7 +3,7 @@ the tests that hold the resolvers on every chart a plan stored (an anchor, a rec
 
 The plans are kept as JSON under ``fixtures/plan_charts/`` (``rN-anchor``, ``rN-run``, ``r5-reference``), never
 validated as a plan: :class:`StoredCharts` reads only their charts (each a
-:class:`~threetears.evals.kernel.report_plan.ChartSpec`) and the look they were drawn with (each arm's colour slot,
+:class:`~threetears.evals.kernel.chart_query.ChartSpec`) and the look they were drawn with (each arm's colour slot,
 the options table's order, the recommended arm). :func:`anchor_look` is that look on an input, with each arm's tag
 and name and every id's reader name as code reads them. :func:`drawn_charts` draws every summary and section chart
 through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under it, its title's figure keys
@@ -28,7 +28,7 @@ from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_plan import ChartSpec
+from threetears.evals.kernel.chart_query import ChartSpec
 
 __all__ = [
     "PLAN_CHARTS",

@@ -338,7 +338,7 @@ PINNED: dict[str, str] = {
 #: digests to the value ``00107a5b7`` wrote, so the names still move nothing.
 #: The two bundles, and in :data:`PINNED` each aspect's fingerprint and the campaign's, were re-pinned at bundle shape 65
 #: by building this fixture on this tree: the shape-64 bundles, moved to 65 by
-#: ``fixtures/report_plans/migrate_bundle_shape_65.py`` (the shape, each rate contrast's interval and each corrected
+#: ``fixtures/report_inputs/migrate_bundle_shape_65.py`` (the shape, each rate contrast's interval and each corrected
 #: comparison's interval basis, and nothing else), are these bundles leaf for leaf, so the names still move nothing.
 PINNED_DOCUMENTS: dict[str, str] = {
     "Queue discipline under a full queue bundle": "a9b41f1e36f3b4d67bc92132849081a1fa6636ab647b3200fe90f241fc4eb7e4",

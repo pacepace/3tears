@@ -908,8 +908,8 @@ known. The control is the shipped skill. The candidate, **hollow**, is the shipp
 editor is one instrument for both arms. Both arms run one writer over the held-out cases, then the pass, then the read.
 
 ```bash
-uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry
-uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
+uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
+uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
 ```
 
 `--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run needs an

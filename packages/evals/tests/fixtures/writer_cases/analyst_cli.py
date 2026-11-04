@@ -5,14 +5,14 @@ call builds the toy operations host over an in-memory store, seeds it with every
 misfit inputs, Kairo round 2 and the shape campaigns s1 to s3, :mod:`packages.evals.tests.analyst_support`), mounts ``evals_analyst`` on a FastMCP
 server as a host does (:func:`~threetears.evals.transports.fastmcp.mount_fastmcp`, its primer as the server's
 instructions), calls it once through an in-memory MCP client, and prints the text the client got. Run from the
-repository root, as a file or as ``python -m packages.evals.tests.fixtures.report_plans.analyst_cli``::
+repository root, as a file or as ``python -m packages.evals.tests.fixtures.writer_cases.analyst_cli``::
 
-    uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py --list-snapshots
-    uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py --primer
-    uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py '{"action": "help"}'
-    uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py --snapshot-of r4 \\
+    uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py --list-snapshots
+    uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py --primer
+    uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py '{"action": "help"}'
+    uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py --snapshot-of r4 \\
         '{"action": "campaign_overview"}'
-    uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py --role editor --json --snapshot-of kairo \\
+    uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py --role editor --json --snapshot-of kairo \\
         '{"action": "options_dominance"}'
 
 - ``--role analyst|editor``: the analyst's cut (every workflow) or the report editor's (no blocks). Either is mounted
@@ -25,7 +25,7 @@ repository root, as a file or as ``python -m packages.evals.tests.fixtures.repor
 **Writing a report** (``write``): the report writer's entry point (``write_report``) run live over one fixture
 snapshot, recorded, the one route here that reads a key::
 
-    ANTHROPIC_API_KEY=... uv run python packages/evals/tests/fixtures/report_plans/analyst_cli.py write \\
+    ANTHROPIC_API_KEY=... uv run python packages/evals/tests/fixtures/writer_cases/analyst_cli.py write \\
         --snapshot-of kairo --model <claude model id> --budget-usd 20 --out report_docs/prototype5/kairo \\
         [--withhold kairo-round2.md] [--effort high]
 
@@ -58,7 +58,7 @@ from pathlib import Path
 from typing import Any
 
 #: This file as a module, named from the repository root as the test suite names it.
-_MODULE = "packages.evals.tests.fixtures.report_plans.analyst_cli"
+_MODULE = "packages.evals.tests.fixtures.writer_cases.analyst_cli"
 
 if __name__ == "__main__" and not __package__:
     # Run as a file, its imports could not be named from the repository root: run it again as the module, from the

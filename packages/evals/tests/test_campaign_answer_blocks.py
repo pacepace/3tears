@@ -40,7 +40,7 @@ from packages.evals.tests.campaign_page_support import (
 )
 
 
-async def test_with_no_memo_the_page_says_no_recommendation_was_written_and_holds_no_writer_s_words() -> None:
+async def test_with_no_report_the_page_says_no_recommendation_was_written_and_holds_no_writer_s_words() -> None:
     page = await page_of("billing", "tone")
     assert page.basis == "code_only"
     assert NO_RECOMMENDATION in first_screen_markdown(page)

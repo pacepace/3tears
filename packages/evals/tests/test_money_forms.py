@@ -51,7 +51,7 @@ from threetears.evals.analysis.report.parts.look import figure_text, quantity
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
-from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered

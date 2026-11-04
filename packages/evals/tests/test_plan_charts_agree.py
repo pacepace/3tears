@@ -21,7 +21,7 @@ input's anchor plan gave its charts (``fixtures/plan_charts/``).
   read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
   page's own drawing, so none is refused at render.
 - **The floor.** That inclusion makes "nothing accepted is refused" hold by construction, so the (kind, source) pairs
-  each input's charts were accepted and drawn on are pinned (``fixtures/report_plans/sweep_floor.json``): a pair the
+  each input's charts were accepted and drawn on are pinned (``fixtures/report_inputs/sweep_floor.json``): a pair the
   page stops drawing fails here rather than quietly leaving the accepted set.
 - **Over figures by measure, at both ends.** A dot strip over measures in two units is accepted and drawn a strip per
   unit; bars and diverging bars over them are refused by the checks and the page alike; a share and a percent are one
@@ -48,7 +48,7 @@ from typing import Any, get_args
 import pytest
 
 from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from threetears.evals.analysis import ChartBlock, TableBlock
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import (
@@ -69,7 +69,7 @@ from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec, PlannedChart
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
 

@@ -102,7 +102,7 @@ def _observations(
                 # An arm whose levels cannot be described is indexed anyway, saying why. It was
                 # measured and it pools; what nothing today can supply is a DESCRIPTION of it.
                 # Leaving it out of the index instead is what made such an arm vanish: every
-                # consumer of the index — the arm table, the generator prompt, the coverage gate —
+                # consumer of the index — the arm table, the writer's input, the coverage gate —
                 # reads arms from here, so an unindexed arm is one no surface can report and no
                 # reader can miss.
                 index[key] = VariantIndexEntry(variant_key=key, levers=levers, levels_unavailable=unavailable)

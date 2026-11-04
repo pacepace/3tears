@@ -1732,7 +1732,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |
 | `min_relative_change` | `number` | The smallest move from the baseline a flag counts, as a fraction; 0 lets the test decide. |
-| `model` | `string` or `null` | The analysis generator's model; omitted for the host's. A model outside the host's allowed writers is refused before anything is spent. |
+| `model` | `string` or `null` | The report writer's model; omitted for the host's. A model outside the host's allowed writers is refused before anything is spent. |
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |

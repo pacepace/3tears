@@ -5,7 +5,7 @@ Code reports, the writer recommends, a person decides, and the page keeps the th
 writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
 The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
 (:mod:`.provenance`); one line on where the campaign's report is: the report document it is stored as, the analysis
-this version no longer reads or a retired writer wrote, or that no recommendation was written (:mod:`.memo_blocks`);
+this version no longer reads or a retired writer wrote, or that no recommendation was written (:mod:`.answer_blocks`);
 then **what warns**, one line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
 safe on (:mod:`.warnings`), and each report-wide caveat once (:mod:`.provenance`); then the person's call (a
 measurement's only once one is recorded).
@@ -30,7 +30,7 @@ from threetears.evals.analysis.campaign_title import declared_title, named_title
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
-from threetears.evals.analysis.report.campaign.memo_blocks import (
+from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
     NO_RECOMMENDATION,
     call_blocks,
@@ -98,16 +98,16 @@ def build_campaign_report(
     :ptype report_doc_id: str | None
     :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
         for: the first screen says so in the one regenerate line
-        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`), in place of "no analysis has
+        (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), in place of "no analysis has
         been generated", and the page names it (``CampaignReport.unread_analysis_id``); None for any other page.
     :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: The report document, read by its id, this version no longer reads, which this
         code-only page stands in for: the first screen says so in the same line
-        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`); None for any other page.
+        (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`); None for any other page.
     :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as its line says:
-        :data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`, or the line of the retired
-        writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`).
+        :data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`, or the line of the retired
+        writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
     :ptype unread_line: str
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the title names; None names the arms its readings label.

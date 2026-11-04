@@ -3,7 +3,7 @@
 The engine is five packages: :mod:`~threetears.evals.schema` (the stored shapes and the ports a host
 implements), :mod:`~threetears.evals.kernel` (the behaviour every other package runs on, and the host
 contract under :mod:`~threetears.evals.kernel.host`), :mod:`~threetears.evals.run` (launching, executing, judging
-and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, memos and reports) and :mod:`~threetears.evals.gen` (generating
+and storing runs), :mod:`~threetears.evals.analysis` (campaigns, bundles, analyses and reports) and :mod:`~threetears.evals.gen` (generating
 cases), plus three that sit beside the engine rather than inside it: :mod:`~threetears.evals.storage`
 (the in-memory reference store), :mod:`~threetears.evals.testing` (the store conformance kit) and
 :mod:`~threetears.evals.quick` (an eval's host, and the command line). Above the engine sit the surfaces an

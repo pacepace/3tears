@@ -4,7 +4,7 @@ No transport call waits on a model: an action whose work calls one starts that w
 :class:`~threetears.evals.ops.JobsStarted`, and the job makes the calls. That is a property of where a call is
 made, and nothing in a completion client's arguments says it, so the job runner says it: the job manager
 (:class:`~threetears.evals.run.EvalJobManager`) runs each job's work inside :func:`job_running`, and
-:func:`running_job` reads it from anywhere below — a judge, a generator, a host's own client.
+:func:`running_job` reads it from anywhere below — a judge, a writer, a host's own client.
 
 The value is a :class:`~contextvars.ContextVar`, so it is per task and never per process: a job's work and every
 task it creates see it, the caller that started the job does not, and two hosts in one process never read each

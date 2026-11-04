@@ -10,7 +10,7 @@ tier and per-arm figure is the pipeline's own. Two things here are orderings, no
 shown as examples, and in what order (where the candidates lose most first), and which strata come first (most cases
 first).
 
-**Examples.** The planner's input shows one failed trial per aspect, arm and stratum (and cause, with no judged
+**Examples.** An uncounted input shows one failed trial per aspect, arm and stratum (and cause, with no judged
 dimension), its excerpt the start of what the judge read. A wider pool (``per_slice``) shows up to that many per
 slice, every slice's first before any slice's second, a slice's other cases before another repeat of one it shows; and
 ``excerpt="failure"`` cuts each excerpt around the failure rather than from the start: centred on the longest passage
@@ -929,7 +929,7 @@ class _Builder:
             outcome=trial.cause,
             input=_started(asked, EXAMPLE_EXCERPT_CHARS) or None,
             # Every judged dimension's reason, the primary's among them, for an analyst; none where the trial was judged
-            # on none, or for a planner, whose input carries the primary's alone.
+            # on none, or for an uncounted input, which carries the primary's alone.
             reasons=_reasons(trial) if inputs else None,
         )
 

@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.doc_writer_support import TOY_DOC
-from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY, seeded_host, snapshot_ids
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import RECORDING, REPLAY, seeded_host, snapshot_ids
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import (
     CALLER,
@@ -48,7 +48,7 @@ from packages.evals.tests.report_kit_support import chromium_unavailable, render
 from packages.evals.tests.report_writer_support import RecordedModel, written
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.engine import ReportReadParams
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report_doc_store import read_report_doc

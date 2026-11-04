@@ -31,13 +31,13 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked, rendered, run_script
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 #: The plan the Kairo page was written from, as the retired report planner's reference plan stored it.
 KAIRO_PLAN = PLAN_CHARTS / "r5-reference.json"

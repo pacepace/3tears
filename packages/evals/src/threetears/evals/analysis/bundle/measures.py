@@ -1381,9 +1381,9 @@ def _measure_summary(
             "max": numeric[-1],
             "sem": sem,
             "n_zero": sum(1 for value in numeric if value == 0.0),
-            # An interval on the MEAN at `stats.INTERVAL_LEVEL`, carried structurally so the generator never
+            # An interval on the MEAN at `stats.INTERVAL_LEVEL`, carried structurally so the writer never
             # has to derive one. The viz contract requires a `ci` on the distribution
-            # and null_result payloads while forbidding the generator from inventing a
+            # and null_result payloads while forbidding the writer from inventing a
             # statistic the bundle does not give it — with only `sem` here, both of
             # those payloads were unfillable, so the findings that most need them (a
             # null result draws the arms' intervals, and a distribution its spread)

@@ -2,7 +2,7 @@
 
 Each model mirrors the kit's ``data-chart`` contract (``docs/eval-report-kit/kit/API.md``, "Chart data") field for
 field: the same names, the same nesting, the same required fields, so :meth:`kit_data` is the JSON the kit's
-``kit.js`` draws, and a chart a reference memo draws validates as its model and dumps back to the same JSON. A field
+``kit.js`` draws, and a chart a reference page draws validates as its model and dumps back to the same JSON. A field
 the contract leaves optional is ``None`` until set and is left out of the JSON, so an explicit ``false`` the producer
 wrote stays in it.
 

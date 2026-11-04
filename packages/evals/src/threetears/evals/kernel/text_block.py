@@ -1,6 +1,6 @@
 """Free text kept under the item it belongs to, every line of it.
 
-A list the engine prints -- a run's summary, an action's help, the memo a judge reads -- puts an item's
+A list the engine prints -- a run's summary, an action's help, the report a judge reads -- puts an item's
 text after an indent or a list marker. Written as ``f"  error: {error}"``, only the first line of a
 many-line text gets that place; its other lines land at the margin, where they read as the next item.
 So a text that can hold line breaks goes through :func:`under`, which indents every line, or

@@ -48,7 +48,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report_doc_checks import DocVerdict, InvariantNumber, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import NotFoundError, RefusedInput
@@ -411,7 +411,7 @@ def read_report_doc(
     :raises RefusedInput: The document is one this version no longer reads: its record does not validate (its version,
         or its document or findings), its snapshot is gone or no longer reads as this version's report input, or its
         generation record is not one the made line reads. Its remedy is the one regenerate line
-        (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`).
+        (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`).
     """
     try:
         record = storage.load_report_doc(report_doc_id, scope_id)

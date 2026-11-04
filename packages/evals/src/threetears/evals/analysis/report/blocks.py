@@ -184,7 +184,7 @@ TextRole = Literal[
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and ``cost``: how the run was laid out, what was not charted and where a cost
 #: is a floor, in the methods; ``cost`` is also the first-screen line saying each cost figure is its runs' provider
-#: routing's. ``memo``: who wrote the memo, or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
+#: routing's. ``memo``: who wrote the report, or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.

@@ -26,11 +26,11 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel.report_plan import ChartSpec, PlannedChart
+from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
 ASPECT = "character adherence (v2)"
 

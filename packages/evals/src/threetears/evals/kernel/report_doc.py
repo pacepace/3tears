@@ -70,7 +70,7 @@ from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, ReferenceKind
+from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, ReferenceKind
 from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.schema.prose import ModelProse

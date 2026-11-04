@@ -38,7 +38,7 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 R5_PLAN = Path(__file__).resolve().parent / "fixtures" / "plan_charts" / "r5-reference.json"
 R5_PAGE = KIT / "references" / "r5-kairo-round2.html"
 

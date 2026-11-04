@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the modules that outlived the retired writers are named for what they hold now
+
+**Changed:** the surviving modules move, unchanged in behaviour, by `git mv`: the chart vocabulary
+`threetears.evals.kernel.report_plan` is `threetears.evals.kernel.chart_query` (`ChartQuery`, `ChartSpec`,
+`ChartReference`, `PlannedChart`, `PlanChartKind`, `ReferenceKind`); `threetears.evals.analysis.report_prose_checks` is
+`threetears.evals.analysis.report_doc_prose`; and `threetears.evals.analysis.report.campaign.memo_blocks` is
+`threetears.evals.analysis.report.campaign.answer_blocks`. The parts' block section constant `PLANNED_SECTION` is
+`WRITER_SECTION`; its value, the section literal `"memo"`, is unchanged on every page and document. The figure-key
+grammar's `planner=` argument is `uncounted=`, after the `counted` flag of the input it describes.
+`analysis_generate`'s and `analysis_estimate`'s `model` argument is described as the report writer's model. The test
+fixtures split by subject: `tests/fixtures/report_plans/` becomes `tests/fixtures/report_inputs/` (the r1 to r5 inputs,
+the Kairo round 2 bundle and the helpers that read them) and `tests/fixtures/writer_cases/` (the writer's exporter,
+dev command line and live lanes). No root's names, no stored field, document type or version changes, and that
+description is the only served text that moves. `tests/test_retired_vocabulary.py` holds identifiers to the one vocabulary.
+
+**Hosts:** nothing to do: none of the moved modules is a public root. A script importing one by its module path
+imports it from its new path.
+
 ### evals: the memo page is retired; a stored memo is held as JSON, and the host's style fields are deprecated
 
 **Removed:** the memo page: `build_report` (one aspect's memo page), the memo blocks of the campaign page (the writer's

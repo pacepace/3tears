@@ -78,7 +78,7 @@ from threetears.evals.analysis.report.parts.look import (
     quantity,
     quantity_of,
 )
-from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.tables import pass_rate_cell
 from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
@@ -127,7 +127,7 @@ def _table(
     that measure, across the table. Every column's head or row names the count its money is drawn per, so it never
     carries the per-1,000 mark beside it."""
     return TableBlock(
-        section=PLANNED_SECTION,
+        section=WRITER_SECTION,
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),

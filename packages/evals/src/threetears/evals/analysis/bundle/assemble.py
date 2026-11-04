@@ -1,13 +1,11 @@
 """Closed context-bundle assembler for the eval analysis subsystem.
 
-The generated Analysis lens is a *closed system*: the
-generator reads a **pre-assembled context bundle** — the computed
-reporting lenses' data plus a coverage map and prior insights — and writes the
-:class:`~threetears.evals.kernel.campaign.EvalAnalysis` in one shot. Nothing fetches
-during generation; the bundle *is* the context. This module builds that bundle.
+An analysis is a *closed system*: the report writer reads a **pre-assembled context bundle** — the computed
+reporting lenses' data plus a coverage map and prior insights — frozen into the report input its tools read, and the
+:class:`~threetears.evals.kernel.campaign.EvalAnalysis` is stored over it. Nothing fetches while the writer works; the
+bundle *is* the context. This module builds that bundle.
 
-Why closed matters: to A/B a generation prompt you regenerate over a **fixed**
-bundle and compare. So the bundle is fingerprinted
+Why closed matters: to A/B a writer you write again over a **fixed** bundle and compare. So the bundle is fingerprinted
 (:meth:`AnalysisContextBundle.fingerprint`, ``v2:`` and a sha256 over its canonical JSON with every float
 rounded to twelve significant figures) and
 that fingerprint is stamped onto every analysis' ``generation`` provenance — two
@@ -700,7 +698,7 @@ def assemble_context_bundle(
         design=design,
         # A run that did not finish is still IN every aggregate above — archiving is what
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
-        # here is what lets the generator say a partial arm is partial instead of reading its
+        # here is what lets the writer say a partial arm is partial instead of reading its
         # truncated case count as a real one.
         incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed"},
         # Status cannot answer how much of the matrix a run delivered: a run that reaches the
@@ -912,7 +910,7 @@ def assemble_context_bundle(
     )
     bundle.package_version = package_version()
     # Divergences pair measures by unit, which only the catalog knows, so they are derived
-    # after it — and from the same descriptors the generator will read, never a second lookup
+    # after it — and from the same descriptors the writer will read, never a second lookup
     # that could disagree with what the bundle says a measure is.
     bundle.scope_divergences, bundle.whole_swings, bundle.divergences_omitted, divergence_count = _scope_divergences(
         runs,

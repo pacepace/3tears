@@ -86,7 +86,7 @@ from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.model import (
-    PLANNED_SECTION,
+    WRITER_SECTION,
     PageChart,
     PageMasthead,
     PageSlot,
@@ -107,7 +107,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
-from threetears.evals.kernel.report_plan import ChartSpec, PlannedChart
+from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
 #: The entry point, with its callers: the writing loop's editor (the page text); the store gate
 #: (``analysis/report_doc_store.py``), the one checker, which builds a draft's page strict for the analyst's
@@ -440,7 +440,7 @@ def _explore(doc: ReportDoc, reader: _Reader) -> TableBlock | None:
         for index, row in enumerate(doc.explore)
     ]
     return TableBlock(
-        section=PLANNED_SECTION,
+        section=WRITER_SECTION,
         name="explore",
         title=EXPLORE_TITLE,
         columns=[TableColumn(key=key, header=header) for key, header in EXPLORE_HEADERS.items()],

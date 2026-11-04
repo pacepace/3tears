@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
 from threetears.evals.analysis.report.figure_keys import cost_arms
 from threetears.evals.analysis.report_doc_facts import EditorFact, editor_facts

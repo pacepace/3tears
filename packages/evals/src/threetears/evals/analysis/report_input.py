@@ -26,7 +26,7 @@ readings sit on their aspect (``Aspect.pairs``).
 **Counted off the bundle, for an analyst.** ``failed_trials`` (each slice's failed trials, the pool its examples are
 kept from) and ``case_overlap`` (which cases each two aspects share, by stored case id) are tallies of the bundle's
 trials, not statistics: an analyst's snapshot counts them
-(:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`). A planner's input and a bare one leave them
+(:func:`~threetears.evals.analysis.analyst.snapshot.analyst_input`). An uncounted input and a bare one leave them
 ``None``, which reads as not known, never as none.
 
 **The rig, and the calls nobody answered.** ``apparatus`` copies each run's apparatus off the bundle's run summary
@@ -349,7 +349,7 @@ class Aspect(_Part):
 
 
 #: The aspect fields only an analyst's input states: how a trial on the aspect passes, read off the bundle's census.
-#: A planner's input leaves each unset.
+#: An uncounted input leaves each unset.
 ANALYST_ASPECT_FIELDS: frozenset[str] = frozenset({"description", "graded_by", "pass_rule"})
 
 
@@ -527,7 +527,7 @@ class Contrast(_Part):
     )
 
 
-#: The contrast fields only an analyst's input states: what its test counted. A planner's input leaves each unset.
+#: The contrast fields only an analyst's input states: what its test counted. An uncounted input leaves each unset.
 ANALYST_CONTRAST_FIELDS: frozenset[str] = frozenset({"n_cases", "control_n_cases", "paired", "pairing_r"})
 
 
@@ -828,7 +828,7 @@ class ReportInput(_Part):
         default_factory=dict, description="Each label axis's confusion, by axis id."
     )
     human_pref: HumanPreference | None = Field(default=None, description="Blind human ratings.")
-    # Left out of the document when unset, as a planner's input and a bare one leave them, so their digest is as it was.
+    # Left out of the document when unset, as an uncounted input and a bare one leave them: their digest is as it was.
     failed_trials: list[FailedTrials] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,

@@ -23,9 +23,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from threetears.evals.schema.prose import ModelProse
 
 #: An id a chart names something by: never empty.
-_PlanId = Annotated[str, StringConstraints(min_length=1)]
+_ChartId = Annotated[str, StringConstraints(min_length=1)]
 
-#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a plan's chart
+#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a chart
 #: and a report document's evidence block (:mod:`threetears.evals.kernel.report_doc`) may be drawn as.
 PlanChartKind = Literal[
     "forest",
@@ -69,7 +69,7 @@ _ChartSource = Literal[
 _ChartTransform = Literal["none", "per_1k", "arm_minus_control"]
 #: What a chart repeats its panel by.
 _SmallMultiplesBy = Literal["none", "arm", "aspect", "task"]
-#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``), on a plan's
+#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``), on a
 #: chart or a report document's evidence block.
 ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
 
@@ -83,7 +83,7 @@ class _Plan(BaseModel):
 class ChartQuery(_Plan):
     """What a chart reads from the report input, structured so code can check it names things that exist.
 
-    Planner-written. An empty list or string means no filter there: every arm, every measure, every stratum, no
+    Writer-written. An empty list or string means no filter there: every arm, every measure, every stratum, no
     aspect, no limit (``limit`` 0).
     """
 
@@ -98,20 +98,20 @@ class ChartQuery(_Plan):
 
 
 class _PlannedChartReference(_Plan):
-    """A reference line as the planner asks for it: what kind of line it is."""
+    """A reference line as the writer asks for it: what kind of line it is."""
 
     kind: ReferenceKind
 
 
 class ChartReference(_PlannedChartReference):
-    """A reference line on a chart: what kind of line it is, and the figure it sits at. The planner picks the kind;
+    """A reference line on a chart: what kind of line it is, and the figure it sits at. The writer picks the kind;
     code fills the key from the chart's aspect, and the renderer reads the value from it and writes the label."""
 
-    key: _PlanId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
+    key: _ChartId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
 
 
 class PlannedChart(_Plan):
-    """A chart as the planner chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
+    """A chart as the writer chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
 
     kind: PlanChartKind
     title: ModelProse = Field(description="The chart's title; empty when the section headline says it.")
@@ -121,7 +121,7 @@ class PlannedChart(_Plan):
 
 
 class ChartSpec(PlannedChart):
-    """A chart as stored: the planner's choice plus what code reads off the data. ``level``, ``unit`` and ``domain``
+    """A chart as stored: the writer's choice plus what code reads off the data. ``level``, ``unit`` and ``domain``
     are code-filled; an empty ``domain`` lets the renderer fit the axis."""
 
     reference: Sequence[ChartReference] = Field(max_length=1, description="At most one reference line.")

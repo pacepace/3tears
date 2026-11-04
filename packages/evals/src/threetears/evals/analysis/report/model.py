@@ -4,7 +4,7 @@
 campaign compares, its name a qualifier —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
 it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
-means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
+means (the findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
 table), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
 of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the

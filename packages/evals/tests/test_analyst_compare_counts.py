@@ -25,7 +25,7 @@ from collections.abc import Iterator
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.misfits import reference_data
+from packages.evals.tests.fixtures.report_inputs.misfits import reference_data
 from threetears.evals.analysis.analyst.compare import ArmsComparison, ComparisonRow, arms_compare
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference

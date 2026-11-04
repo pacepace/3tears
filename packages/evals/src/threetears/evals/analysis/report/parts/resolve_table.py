@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.parts.charting import (
 )
 from threetears.evals.analysis.report.figure_keys import cost_basis
 from threetears.evals.analysis.report.parts.look import Quantity, in_change_form, quantity, quantity_of
-from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.resolve_changes import compare_basis, lever_label, narrow_notes
 from threetears.evals.analysis.report.parts.resolve_magnitudes import price_notes, settle_label, settle_notes
 from threetears.evals.analysis.analyst.cited import CitedFigure
@@ -685,7 +685,7 @@ def _table(context: ChartContext) -> Drawn:
         else computed_notes(context)
     )
     table = TableBlock(
-        section=PLANNED_SECTION,
+        section=WRITER_SECTION,
         name=context.query.source,
         title=context.title,
         columns=columns,

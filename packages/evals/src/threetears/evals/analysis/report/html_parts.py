@@ -1,7 +1,7 @@
 """The pieces of a report page every HTML writer shares: the page's head, a table, a chart, a status pill, an arm
 chip, and the escaping and inline Markdown under every text node.
 
-One owner for each, so a campaign's memo page and a page built from a report plan lay a table, a chart or a pill out
+One owner for each, so a campaign's page and a report document's page lay a table, a chart or a pill out
 alike, byte for byte. Every function here escapes what it is given as text before it makes any markup of it, so no
 field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``javascript:`` URL; a function taking
 ``markup`` takes HTML this package already wrote. The page's contract (one script, the kit's; nothing loaded but the
@@ -140,7 +140,7 @@ details.trial dd { margin: .15rem 0 0; }
 """
 
 
-#: Inline Markdown a memo uses, applied to text already escaped — so its delimiters are the only markup it can make.
+#: Inline Markdown a report uses, applied to text already escaped — so its delimiters are the only markup it can make.
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
 

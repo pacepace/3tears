@@ -18,7 +18,7 @@ Contracts held here, on the memory store and the SQLite store alike:
 
 from __future__ import annotations
 
-from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
 
 import gc
 import tracemalloc

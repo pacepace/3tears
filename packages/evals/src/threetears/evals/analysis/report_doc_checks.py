@@ -23,7 +23,7 @@ refused, so a revision sees everything at once.
    a cost's unit (``per 1,000``, ``per 1k``, ``$/1k``) and the document's own claim ids (``c1``, never an id of digits
    alone, which reads as a number; above the appendix invariant 5 refuses a claim id); and no prose writes
    a unit right after a key that prints it, nor keys sub-cent money per reply on a page that states its costs per
-   1,000 (:mod:`~threetears.evals.analysis.report_prose_checks`).
+   1,000 (:mod:`~threetears.evals.analysis.report_doc_prose`).
 2. **Every evidence block resolves and renders**, as ``block_render`` draws it: completed
    (:func:`~threetears.evals.analysis.report.block_spec.complete_chart`), held to the chart rules
    (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`,
@@ -40,10 +40,10 @@ refused, so a revision sees everything at once.
 4. **The confidence form** matches its caveats: ``high`` holds no open caveat, ``high_if_immaterial`` at least one (each
    open caveat states its ``material_if``), and ``low`` holds whatever it holds.
 5. **No internal id above the appendix.** The prose above it (everything but ``omitted`` and ``method``) types no id
-   that reads as one (:func:`~threetears.evals.analysis.report_prose_checks.reads_as_id`) where a reader is shown a
+   that reads as one (:func:`~threetears.evals.analysis.report_doc_prose.reads_as_id`) where a reader is shown a
    name: an aspect, measure, judged dimension, stratum, task or criterion id, an arm id the page prints by another
    name and that is not its served model (a hyphen or a digit marks an arm id too: ``fanout-1`` where the page prints
-   "fanout 1"; :func:`~threetears.evals.analysis.report_prose_checks.internal_ids`), a caveat id, a decision slot's
+   "fanout 1"; :func:`~threetears.evals.analysis.report_doc_prose.internal_ids`), a caveat id, a decision slot's
    word, an example's trial or case id, or one of the document's own claim ids (the page places claims and never
    shows their ids; an example or claim id is matched in its own case, so a case ``q3`` is not the word "Q3"). The
    rendered page's text above the appendix is checked the same way where the caller passes it
@@ -72,7 +72,7 @@ from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_prose_checks import (
+from threetears.evals.analysis.report_doc_prose import (
     internal_ids,
     literal_faults,
     reads_as_id,
@@ -86,7 +86,7 @@ from threetears.evals.kernel.report_doc import (
     report_doc_prose,
     report_doc_validity,
 )
-from threetears.evals.kernel.report_plan import PlannedChart
+from threetears.evals.kernel.chart_query import PlannedChart
 
 #: The names with a caller outside this module: :func:`check_report_doc`, :class:`DocVerdict` and
 #: :data:`InvariantNumber`, the invariants surface: the store gate (``analysis/report_doc_store.py``) calls it, the one

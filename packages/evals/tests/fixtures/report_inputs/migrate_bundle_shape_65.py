@@ -21,7 +21,7 @@ Nothing else is written. Before it writes, the script compares every leaf of the
 when any path but those moved, and it reads the result back through :meth:`CampaignBundle.from_dict`, which refuses a
 bundle of any shape but this build's. Run from the repository root, once per fixture::
 
-    uv run python packages/evals/tests/fixtures/report_plans/migrate_bundle_shape_65.py <bundle.json | bundle.json.gz>...
+    uv run python packages/evals/tests/fixtures/report_inputs/migrate_bundle_shape_65.py <bundle.json | bundle.json.gz>...
 
 A file is written in the serialization it was read in (a gzipped one compact, at gzip level 9 with no timestamp; a
 plain one indented by two), so running it on a shape-65 file refuses and writes nothing.

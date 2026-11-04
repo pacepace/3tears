@@ -25,8 +25,8 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY, snapshot_ids
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import RECORDING, REPLAY, snapshot_ids
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked
 from packages.evals.tests.report_writer_support import RecordedModel, written

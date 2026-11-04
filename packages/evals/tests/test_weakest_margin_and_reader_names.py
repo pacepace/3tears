@@ -1,6 +1,6 @@
 """The weakest margin and reader names: two facts code computes about a report input.
 
-Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figure_keys``, ``report_prose_checks``):
+Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figure_keys``, ``report_doc_prose``):
 
 - **The weakest margin** is the figure nearest the line it is read against, relative to the line: on r1 to r5 it is the
   margin a reviewer names (the pick at its troubleshooting floor; the pick a fraction over the pass-rate gate; the pick's
@@ -22,13 +22,13 @@ import math
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import reader_name, reader_names, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_margins import criterion_figures, margins, weakest_margin
-from threetears.evals.analysis.report_prose_checks import typed_ids
+from threetears.evals.analysis.report_doc_prose import typed_ids
 
 
 def _input(name: str) -> ReportInput:

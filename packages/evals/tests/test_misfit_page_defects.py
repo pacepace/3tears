@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_inputs, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.analyst_cli import REPLAY, snapshot_ids
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import REPLAY, snapshot_ids
 from packages.evals.tests.ops_support import CALLER
 from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ForestChart, ForestRow

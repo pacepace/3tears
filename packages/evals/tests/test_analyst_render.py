@@ -36,7 +36,7 @@ import pytest
 
 from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
@@ -54,7 +54,7 @@ from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
 ANCHORS = ("r1", "r2", "r3", "r4", "r5")
 

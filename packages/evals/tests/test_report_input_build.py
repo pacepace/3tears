@@ -1,7 +1,7 @@
 """The report input built from a campaign's bundle.
 
 ``report_input(bundle)`` ports the report kit's adapter onto the bundle's typed objects. Contracts held here, on the four shape campaigns (``report_shapes_support``) and on the
-kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
+kit's real Kairo input (``fixtures/report_inputs/r5/input.json``):
 
 - the input validates, as the model and against the docs schema, for a change, a choice and a measurement;
 - the committed Kairo round 2 bundle is under two megabytes, and ``report_input(bundle)`` on it matches the r5 report
@@ -33,7 +33,7 @@ from typing import Any
 import jsonschema
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.dataset import KAIRO_BUNDLE, kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import KAIRO_BUNDLE, kairo_bundle
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.report_shapes_support import SHAPES, Shape
 from threetears.evals.analysis.bundle.schema import LateCriterion as BundleLateCriterion
@@ -51,7 +51,7 @@ from threetears.evals.analysis.report_input import (
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 SCHEMA = KIT / "schema" / "report-input.schema.json"
 
 
@@ -462,8 +462,8 @@ def _listed(grammar: str, family: str) -> set[str]:
     return set(options.group(1).split(", "))
 
 
-def test_the_fields_only_an_analysts_input_states_are_declared_once_and_the_planners_grammar_lists_none() -> None:
-    """The input contract's one list: a planner's input leaves each unset, and the planner's grammar teaches none of
+def test_the_fields_only_a_counted_input_states_are_declared_once_and_the_uncounted_grammar_lists_none() -> None:
+    """The input contract's one list: an uncounted input leaves each unset, and the uncounted grammar teaches none of
     them."""
     from threetears.evals.analysis.report.figure_keys import figure_key_grammar
 
@@ -474,7 +474,7 @@ def test_the_fields_only_an_analysts_input_states_are_declared_once_and_the_plan
     assert all(getattr(c, field) is None for c in planner.contrasts for field in ANALYST_CONTRAST_FIELDS)
     assert all(getattr(aspect, field) is not None for aspect in analyst.aspects for field in ANALYST_ASPECT_FIELDS)
     assert any(contrast.n_cases is not None for contrast in analyst.contrasts)
-    taught = figure_key_grammar(planner=True)
+    taught = figure_key_grammar(uncounted=True)
     assert not _listed(taught, "aspects.<aspect>.<field>") & ANALYST_ASPECT_FIELDS
     assert not _listed(taught, "contrast.<arm>.<measure>.<statistic>") & ANALYST_CONTRAST_FIELDS
     whole = figure_key_grammar()
@@ -498,19 +498,20 @@ def _kairo_with_a_stated_reason() -> CampaignBundle:
     return CampaignBundle.from_dict(held)
 
 
-def test_every_aspect_and_contrast_field_the_planners_grammar_lists_is_one_a_planners_input_fills() -> None:
-    """A field the grammar teaches the planner is one it can cite: some planner input over the fixtures resolves it.
+def test_every_aspect_and_contrast_field_the_uncounted_grammar_lists_is_one_an_uncounted_input_fills() -> None:
+    """A field the uncounted grammar teaches is one an uncounted input can cite: some such input over the fixtures
+    resolves it.
 
-    Every input is built from a bundle as the planner's is: the report shapes', the Kairo bundle's, and that bundle
-    with one comparison stating why it is not separated. The planner eval's hand-built inputs are left out, since
+    Every input is built from a bundle uncounted: the report shapes', the Kairo bundle's, and that bundle
+    with one comparison stating why it is not separated. The hand-built reference inputs are left out, since
     ``r4``'s states fields only an analyst's input holds and would hide the defect this guards. A field is filled when
     its key resolves on some aspect or contrast of some input. Scoped to the aspect and contrast families, whose fields
-    are the input contract's own; a field the planner's input never states, as an analyst-only one, fails by name.
+    are the input contract's own; a field an uncounted input never states, as a counted-only one, fails by name.
     """
     from threetears.evals.analysis.errors import UnresolvableReference
     from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
 
-    taught = figure_key_grammar(planner=True)
+    taught = figure_key_grammar(uncounted=True)
     inputs = [
         *(report_input(_bundle(make())) for make in SHAPES.values()),
         report_input(kairo_bundle()),

@@ -25,7 +25,7 @@ from threetears.evals.analysis.report.figure_keys import figure_key_grammar, fig
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 from threetears.evals.ops.analyst import snapshot_input
 from threetears.evals.ops.host import OpsHost
 

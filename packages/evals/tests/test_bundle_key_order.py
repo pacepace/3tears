@@ -32,7 +32,7 @@ from threetears.evals.kernel import AspectDesign, ControlDeclaration, EvalStorag
 from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_aspect_campaign
-from packages.evals.tests.fixtures.report_plans.dataset import KAIRO_BUNDLE
+from packages.evals.tests.fixtures.report_inputs.dataset import KAIRO_BUNDLE
 from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import TOYHOST_SCOPE

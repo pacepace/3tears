@@ -14,7 +14,7 @@ here, on the analyst's input (``analyst_input``, what every snapshot is frozen f
 
 from __future__ import annotations
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from threetears.evals.analysis.analyst.facts import examples_list
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow

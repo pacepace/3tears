@@ -10,7 +10,7 @@
 - :mod:`.depth_blocks` — how deep each arm ran, pass^k at the common depth, the opt-in model, and what limits each
   comparison's interval.
 - :mod:`.aggregate` — figures across aspects; none yet.
-- :mod:`.memo_blocks` — where the campaign's report is (a report document, an analysis this version no longer reads,
+- :mod:`.answer_blocks` — where the campaign's report is (a report document, an analysis this version no longer reads,
   or none written), and the person's call.
 - :mod:`.names` — what the page calls an aspect.
 - :mod:`.common` — what several parts share: the arms' names, a floor by its key, a rate by its name, a change in

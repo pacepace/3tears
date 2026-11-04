@@ -28,7 +28,7 @@ from typing import Any, Literal, get_args
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
@@ -66,7 +66,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
+from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
 

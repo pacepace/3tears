@@ -1,6 +1,6 @@
 """The reset's P2 acceptance script, dry: the whole path on scripted models, offline, its criterion decided by code.
 
-``tests/fixtures/report_plans/writer_acceptance.py --dry`` runs one writer eval: two arms (the shipped skill and its
+``tests/fixtures/writer_cases/writer_acceptance.py --dry`` runs one writer eval: two arms (the shipped skill and its
 hollow variant) over the held-out writer cases, then the eval's own pairwise pass and promotion read, with every
 writer turn replayed from a scripted recording and a judge that sends nothing. Every socket connect is refused here, so a run that reached a
 provider fails. The criterion's two answers are each checked on a read of the right shape.
@@ -27,8 +27,8 @@ from typing import Final
 import pytest
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans import writer_acceptance
-from packages.evals.tests.fixtures.report_plans.writer_acceptance import (
+from packages.evals.tests.fixtures.writer_cases import writer_acceptance
+from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     HOLLOW,
     HOLLOWED,
     INDEX,

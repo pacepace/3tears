@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
@@ -60,7 +60,7 @@ from threetears.evals.analysis.report_gates import gate_check, routing_picks, ta
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartSpec
+from threetears.evals.kernel.chart_query import ChartSpec
 
 #: The kinds this file holds.
 _KINDS = frozenset({"gate_matrix", "gate_scatter", "lattice"})

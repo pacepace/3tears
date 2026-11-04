@@ -2,8 +2,8 @@
 
 Run from the repository root, with no key set (every rung replays its recordings)::
 
-    uv run python -m packages.evals.tests.fixtures.report_plans.export_writer_cases
-    uv run python -m packages.evals.tests.fixtures.report_plans.export_writer_cases --refreeze
+    uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases
+    uv run python -m packages.evals.tests.fixtures.writer_cases.export_writer_cases --refreeze
 
 The eleven cases, each a :class:`~threetears.evals.harness.WriterCaseFile`:
 
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Final
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze

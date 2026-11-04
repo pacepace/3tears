@@ -49,7 +49,7 @@ packages/evals/tests/test_pricing_port.py::pricing-port tests: the Claude id (an
 # the evals examples' model pin: the owner ruled every example calls claude-haiku-5-5 and nothing else, and the
 # test holds the examples to that exact id; a canonical DEFAULT_* constant would let them drift with the family default.
 packages/evals/tests/test_examples.py::pins the owner's ruling that every evals example calls claude-haiku-5-5 and no other model
-packages/evals/tests/fixtures/report_plans/writer_smoke.py::#1009 chunk 06 live smoke; names the writer its record (report_docs/writer_smoke) was made on, the owner-ruled build-and-test ceiling; not a default
+packages/evals/tests/fixtures/writer_cases/writer_smoke.py::#1009 chunk 06 live smoke; names the writer its record (report_docs/writer_smoke) was made on, the owner-ruled build-and-test ceiling; not a default
 
 # the evals completion client's per-model facts table (_DECLARED_FACTS): patterns for the Claude ids that refuse a
 # temperature, a thinking budget or disabled thinking, matched against whatever id a caller passes; it selects a

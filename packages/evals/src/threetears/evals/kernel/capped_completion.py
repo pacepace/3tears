@@ -7,7 +7,7 @@ for a completion client, written once: before each call it opens a reservation o
 reservation to what the call cost.
 
 The engine wraps its own cell-side clients in it — the simulated user's
-(:func:`~threetears.evals.run.conversation.drive_conversation`) and the reporter kind's generator — and a
+(:func:`~threetears.evals.run.conversation.drive_conversation`) — and a
 host's kind wraps its candidate's client the same way. :func:`call_ceiling` is the pricing it does,
 for a caller that reserves a call it makes through something other than ``generate`` (a judge request,
 whose service sends it).

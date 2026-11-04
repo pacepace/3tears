@@ -38,7 +38,7 @@ from packages.evals.tests.analyst_support import (
     fixture_inputs,
     fixture_snapshots,
 )
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, reference_data
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, reference_data
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from threetears.evals.actions import Action, MountedTool, analyst_actions, analyst_tools, eval_catalogue
@@ -68,7 +68,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 #: The fields of a listing that page it, which are counts of rows and never figures.
 PAGING = frozenset({"total", "offset", "next_offset", "limit"})
