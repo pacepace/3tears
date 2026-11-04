@@ -156,13 +156,14 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
+#: ``allowed_modes`` and ``report_kind`` left ``__all__`` with the plan checks, their last caller outside this module
+#: (P4-6); they stay as this module's own steps.
 __all__ = [
     "AskedStanding",
     "Caveat",
     "DecisionAt",
     "ImpliedCaveat",
     "Materiality",
-    "allowed_modes",
     "asked_standing",
     "caveat_materiality",
     "control_arm",
@@ -173,8 +174,6 @@ __all__ = [
     "floors_not_held",
     "late_subject",
     "report_caveats",
-    "report_kind",
-    "separated_by",
     "separating_contrasts",
     "shown_better",
     "StandingWord",
@@ -809,25 +808,6 @@ def _reading_separates(report_input: ReportInput, arm: str, overrides: _Override
             if low > 0 or high < 0 or _within(aspect, reading, overrides):
                 return True
     return False if seen else None
-
-
-def separated_by(report_input: ReportInput, arm: str) -> frozenset[str]:
-    """What separates a candidate from the control on the asked aspects, as declared: ``reading`` where an asked
-    reading does (its interval clear of zero, or within the margin), ``contrast`` where a contrast on an asked aspect
-    does (:func:`separating_contrasts`). Empty where nothing does. The one test :func:`allowed_modes` reads a change's
-    separation by, and the report plan's spine too.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param arm: The candidate's id.
-    :ptype arm: str
-    :return: ``reading``, ``contrast``, both or neither.
-    :rtype: frozenset[str]
-    """
-    found = {"contrast"} if separating_contrasts(report_input, arm) else set()
-    if _reading_separates(report_input, arm, _Overrides()):
-        found.add("reading")
-    return frozenset(found)
 
 
 def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
