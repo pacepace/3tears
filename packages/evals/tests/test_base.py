@@ -10,7 +10,7 @@ tests here assert that through real storage.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,14 @@ from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.schema_pin_support import ADDED_AT_MAJOR
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, sampled_model_names, stored_models, stored_sample
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 class _Sample(EvalBaseModel):

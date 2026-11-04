@@ -245,34 +245,57 @@ class TestSubjectSnapshotShape:
 
 _NO_CLOCK_AT_IMPORT = textwrap.dedent(
     """
+    import datetime
     import importlib
-    import uuid
-
-    from threetears.evals.schema import models, subject
-
-
-    def refuse(*_args, **_kwargs):
-        raise AssertionError("the clock or entropy was read while importing")
-
-
-    # A model field keeps the factory it was declared with, so each is re-pointed at the refusing one.
-    for module in (models, subject):
-        for name in dir(module):
-            cls = getattr(module, name)
-            if isinstance(cls, type) and hasattr(cls, "model_fields") and cls.__module__ == module.__name__:
-                for field in cls.model_fields.values():
-                    if field.default_factory in (subject._now_iso, models.utc_now_iso, uuid.uuid7):
-                        field.default_factory = refuse
-                cls.model_rebuild(force=True)
-    uuid.uuid7 = refuse
-
-    for name in ("tests.factories", "tests.fixtures.toyhost", "tests.fixtures.courierhost"):
-        importlib.import_module("packages.evals." + name)
+    import sys
+    import sysconfig
+    import time
     from pathlib import Path
 
-    here = Path("packages/evals/tests")
-    for path in sorted(here.glob("test_*.py")):
+    # Every clock read the project's own code makes, wherever it is: a stored model's timestamp factory in any module,
+    # a uuid7 id (which reads time.time_ns inside the stdlib), or a bare datetime.now. A read inside the stdlib is
+    # charged to the first frame above it outside the stdlib, as the test pool charges it, unless it was the stdlib
+    # importing itself (logging stamps its start time), which the pool charges to no test.
+    TREE = str(Path.cwd() / "packages") + "/"
+    STDLIB = (sysconfig.get_paths()["stdlib"], "<frozen")
+    CLOCKS = (time.time, time.time_ns)
+    STAMPS = ("now", "utcnow", "today")
+    reads = []
+
+
+    def is_clock(called):
+        if any(called is clock for clock in CLOCKS):
+            return True
+        owner = getattr(called, "__self__", None)
+        return getattr(called, "__name__", "") in STAMPS and isinstance(owner, type) and issubclass(owner, datetime.date)
+
+
+    def watch(code, offset, called, arg0):
+        if not is_clock(called):
+            # A call site names one callee, so one that called no clock never will: it stops being watched.
+            return sys.monitoring.DISABLE
+        frame = sys._getframe(1)
+        while frame is not None and frame.f_code.co_filename.startswith(STDLIB):
+            if frame.f_code.co_name == "<module>":
+                return
+            frame = frame.f_back
+        if frame is not None and frame.f_code.co_filename.startswith(TREE):
+            where = frame.f_code.co_filename.removeprefix(TREE)
+            reads.append(f"{where}:{frame.f_lineno} {frame.f_code.co_qualname}")
+
+
+    TOOL = sys.monitoring.DEBUGGER_ID
+    sys.monitoring.use_tool_id(TOOL, "no clock at import")
+    sys.monitoring.register_callback(TOOL, sys.monitoring.events.CALL, watch)
+    sys.monitoring.set_events(TOOL, sys.monitoring.events.CALL)
+    for name in ("tests.factories", "tests.fixtures.toyhost", "tests.fixtures.courierhost"):
+        importlib.import_module("packages.evals." + name)
+    for path in sorted(Path("packages/evals/tests").glob("test_*.py")):
         importlib.import_module("packages.evals.tests." + path.stem)
+    sys.monitoring.set_events(TOOL, sys.monitoring.events.NO_EVENTS)
+
+    if reads:
+        sys.exit("the clock was read while importing:\\n" + "\\n".join(sorted(set(reads))))
     """
 )
 

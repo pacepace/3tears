@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
@@ -38,6 +38,15 @@ from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Fifty cases: an arm alike with the control on every one is shown within 0.1 of it (the bounded test's interval
 #: at n=50 is ±0.081; at 40 it is ±0.1002, which does not), and twenty leaks in fifty are shown worse by more.

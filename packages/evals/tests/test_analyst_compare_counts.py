@@ -32,6 +32,15 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import on_lead_aspect, resolve
 from threetears.evals.analysis.report_input import Contrast, ReportInput
 from threetears.evals.kernel.errors import RefusedInput
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Every row a test reads.
 WHOLE = 200

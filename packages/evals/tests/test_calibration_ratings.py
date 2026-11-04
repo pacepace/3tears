@@ -18,6 +18,8 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from typing import Any
 
 import pytest
@@ -42,6 +44,15 @@ from packages.evals.tests.stored_models import stored_sample
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 TONE = "conversation.tone"
 HELPED = "conversation.helped"

@@ -14,7 +14,7 @@ what a later lane reads back through the real cassette queries.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 import pytest
@@ -50,6 +50,15 @@ from threetears.evals.run.cassette_proxy import (
     params_hash,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 _SCOPE = "table-1"
 _TEMPLATE = "tpl-goblin-ambush"

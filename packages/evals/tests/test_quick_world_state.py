@@ -9,7 +9,7 @@ was.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
 import pytest
@@ -21,6 +21,15 @@ from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import RecordedCall
 from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "quick-world-state-tests"
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -38,6 +38,16 @@ from threetears.evals.run import (
     update_template,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Every stamp reads a frozen clock, not the wall's, that steps on with each read: a template edited after its run
+    is stamped after it."""
+    with frozen_clock(step_seconds=0.001):
+        yield
+
 
 SCOPE = "eval-judged-tests"
 CASES = [{"question": "What is two plus two?"}, {"question": "What is the capital of France?"}]
