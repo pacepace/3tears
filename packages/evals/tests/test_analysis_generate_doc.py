@@ -301,6 +301,18 @@ def test_a_rows_raised_turns_are_counted_raised_apart_from_its_unpriced_replies(
     assert (totals.n_calls, totals.n_raised, totals.n_unpriced) == (4, 2, 1)
 
 
+def test_a_one_call_row_that_raised_is_counted_raised_and_never_unpriced() -> None:
+    """A case generation's call that raised reported no usage: raised, adding nothing, as a report's raised turn."""
+    raised = OutOfRunSpend(
+        scope_id=TOYHOST_SCOPE, purpose="variation", model=ANALYST_MODEL, outcome="raised", failure="TimeoutError"
+    )
+    returned = OutOfRunSpend(scope_id=TOYHOST_SCOPE, purpose="variation", model=ANALYST_MODEL, outcome="completed")
+    totals = OutOfRunSpendTotals.of([raised, returned])
+    assert (totals.n_calls, totals.n_raised, totals.n_unpriced, totals.priced_usd) == (2, 1, 1, 0.0), (
+        "the raised call is raised alone; the one that returned with no cost is the unpriced one"
+    )
+
+
 def test_a_host_row_whose_total_and_share_differ_in_the_last_place_reads_and_one_a_cent_apart_is_refused() -> None:
     fields: dict[str, Any] = {
         "scope_id": "s",
@@ -611,8 +623,9 @@ async def test_a_failed_report_fails_the_job_with_its_ending_and_reason() -> Non
     assert (status.state, attempt.outcome) == ("failed", "failed")
     assert attempt.error is not None and attempt.error.startswith("the report writer ended failed: RuntimeError")
     assert "provider down" not in attempt.error, "the client's text is kept only as the host's describer allows"
-    assert (attempt.calls, attempt.unpriced_calls) == (2, 1), "the turn that came back, and the one that raised"
-    assert attempt.token_cost == pytest.approx(0.01), "the priced share, a floor beside the unpriced turn"
+    # Ruling of 2026-11-04: the attempt counts the raised turn as the ledger and the result do, adding nothing.
+    assert (attempt.calls, attempt.unpriced_calls) == (2, 0), "the turn that came back, and the one that raised"
+    assert attempt.token_cost == pytest.approx(0.01), "priced at the turn that came back"
     (row,) = _ledger(fixture)
     # Ruling of 2026-11-04: a turn whose reply never came adds nothing and is no unpriced spend, as on the result.
     assert (row.calls, row.unpriced_calls, row.raised_calls) == (2, 0, 1), "the turn that raised is counted raised"
@@ -680,7 +693,7 @@ async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_s
     status = await settled(host, job.job_id)
     attempt = _attempt(fixture, status)
     assert attempt.outcome == "timed_out"
-    assert (attempt.calls, attempt.unpriced_calls, attempt.token_cost) == (1, 1, 0.0)
+    assert (attempt.calls, attempt.unpriced_calls, attempt.token_cost) == (1, 0, 0.0), "raised: adds nothing"
     (row,) = _ledger(fixture)
     # Rulings of 2026-11-04: a turn cut in flight is an unanswered call, which adds nothing and is no unpriced spend.
     assert (row.calls, row.unpriced_calls, row.raised_calls, row.cost_usd) == (1, 0, 1, 0.0)
@@ -697,7 +710,7 @@ async def test_a_value_error_after_turns_were_sent_is_no_refusal_of_the_start() 
     status = await settled(fixture.host, job.job_id)
     attempt = _attempt(fixture, status)
     assert attempt.error == "the report writer failed after 1 turn(s) (ValueError)"
-    assert attempt.calls == 1 and attempt.unpriced_calls == 1
+    assert attempt.calls == 1 and attempt.unpriced_calls == 0, "the turn in flight adds nothing (ruling 2026-11-04)"
 
 
 async def test_a_value_error_before_any_turn_is_a_refusal_before_any_call() -> None:

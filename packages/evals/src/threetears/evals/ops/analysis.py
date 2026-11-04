@@ -1859,9 +1859,9 @@ async def analysis_generate(
 
 
 def _attempt_tally(tally: Tally, *, prompt_version: str, refusals: Sequence[str] = ()) -> GenerationTally:
-    """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each turn whose reply
-    never came or reported no cost an unpriced call; the priced turns' cost (a floor whenever a turn is unpriced);
-    and the model each reply named."""
+    """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each reply that
+    reported no cost an unpriced call (a turn whose reply never came adds nothing and is not one); the priced turns'
+    cost (a floor whenever a reply is unpriced); and the model each reply named."""
     turns = tally.turns
     return GenerationTally(
         calls=tally.sent,

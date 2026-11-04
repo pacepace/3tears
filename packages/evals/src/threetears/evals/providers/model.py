@@ -85,6 +85,11 @@ log = get_logger(__name__)
 #: The output cap a :class:`Model` sends when given none: Anthropic requires one, and a price ceiling needs one.
 DEFAULT_MAX_TOKENS: Final = 8192
 
+#: The statuses by which a gateway says it gave up waiting on the provider (504, and Cloudflare's 524): the provider
+#: may still have served the request and billed it, so a tool turn answered with one is never sent again, as a turn cut
+#: in flight is not.
+_GATEWAY_TIMEOUTS: Final = frozenset({504, 524})
+
 #: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
 #: otherwise. A call the provider declined is sent again within it (:class:`DeclinedRetry`); nothing else is.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
@@ -459,7 +464,8 @@ class _Live:
         code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`).
         With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
         failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
-        many attempts in all: nothing came back, so nothing was billed. Every wait and resend ends within one
+        many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
+        provider may still have served it. Every wait and resend ends within one
         request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
         came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
@@ -525,7 +531,7 @@ class _Live:
                     if declined >= self._retry.attempts:
                         raise error
                     tried = declined
-                elif response.status_code >= 500:
+                elif response.status_code >= 500 and response.status_code not in _GATEWAY_TIMEOUTS:
                     failed += 1
                     if failed >= failure_attempts:
                         raise error
@@ -804,8 +810,9 @@ class Model:
     did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
     first (``retry=``, :class:`~threetears.evals.providers.DeclinedRetry`), each resend logged at WARNING; a provider
     that asks to wait longer than the policy's longest wait is not sent it again. The answer that stands names how
-    many attempts it took. A tool turn (:meth:`turn`) the provider failed with a 5xx that is no decline (a 500, a
-    502, a 520 from its edge), or whose connection was never made, is sent again too, two attempts in all by default
+    many attempts it took. A tool turn (:meth:`turn`) the provider failed with a 5xx that is no decline and no gateway
+    timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
+    connection was never made, is sent again too, two attempts in all by default
     (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
     and the reply names what each resend followed (``TurnReply.resent_after``).
 

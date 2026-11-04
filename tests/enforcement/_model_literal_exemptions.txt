@@ -61,7 +61,6 @@ packages/evals/src/threetears/evals/providers/pricing.py::the default pricer's t
 # provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
 packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
 packages/evals/tests/test_providers_turns.py::tool-turn wire tests naming the Claude id whose request body and catalogue price are the subject under test; the client is handed the id, and picks no default
-packages/evals/tests/test_writer_failed_turn_cost.py::the 2026-11-04 incident's writer (claude-sonnet-5-5) over a scripted transport, priced at its published rates by hand; the id is the subject under test, not a default
 packages/evals/tests/test_recorded_turns.py::tool-turn recording tests naming the Claude id the recorded replies were sent to as the subject under test; the client is handed the id, and picks no default
 packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pricing tests keyed by catalogue rows for real claude ids; the model id is the row under test, not a default
 

@@ -1369,8 +1369,9 @@ class EvalAnalysisAttempt(CoreDocumentModel):
         default=0,
         ge=0,
         description=(
-            "Calls whose cost was never observed: cancelled or raised before a result came back, or returned with "
-            "no reported cost. Each may still have been billed, so `token_cost` is a floor whenever this is non-zero."
+            "Calls that returned with no reported cost, so `token_cost` is a floor whenever this is non-zero. A call "
+            "cancelled or raised before a result came back is not one: no reply reported its usage, so it adds "
+            "nothing to `token_cost` (counted in `calls` alone)."
         ),
     )
     token_cost: float = Field(

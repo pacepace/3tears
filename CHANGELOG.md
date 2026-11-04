@@ -15,16 +15,19 @@ provider failing it with a 5xx bills none. It is now counted as an unanswered ca
 result's cost is the sum of the priced turns before it, and the run goes on to its next cell. A reply whose usage
 nothing could price is still unpriced spend, and still stops a capped run.
 
-**Changed:** a tool turn the provider fails with a 5xx that is no decline, or whose connection was never made, is
-sent again once after a wait, within the request's time bound (`DeclinedRetry.turn_failure_attempts`, default 2). A
-turn cut in flight is not sent again, since it may have been served. The reply names what each resend followed
+**Changed:** a tool turn the provider fails with a 5xx that is no decline or gateway timeout, or whose connection
+was never made, is sent again once after a wait, within the request's time bound
+(`DeclinedRetry.turn_failure_attempts`, default 2). A turn cut in flight is not sent again, since it may have been
+served. The reply names what each resend followed
 (`TurnReply.resent_after`), and a turn recording keeps it, so a replay shows the turn was sent twice. A completion's
 failure is still never sent again. `report_writer.unpriced_turns` now counts only replies nothing priced. A
 report's generation record does not carry the resend, so a live run with no recording shows it only in the WARNING
 log.
 
 The out-of-run ledger agrees with the result: a report row's `unpriced_calls` no longer counts a turn whose reply
-never came. `raised_calls` counts that turn alone, and it adds nothing to the row's `cost_usd` or tokens.
+never came. `raised_calls` counts that turn alone, and it adds nothing to the row's `cost_usd` or tokens. A one-call
+row that raised, and a generation attempt's `unpriced_calls`, follow the same rule. A gateway's timeout (504, 524) is
+not resent, since the provider may have served the turn.
 
 ### evals: the report writer's skills and settings as objects under test (#1009, wave 1)
 

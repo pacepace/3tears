@@ -24,8 +24,8 @@ What a completion carries, member by member:
 * ``temperature`` and ``sent_settings`` are what the served request carried: the closest settings the model takes
   (:mod:`threetears.evals.negotiation` chooses them, reads a refusal and resends). A call the provider declined (a
   429 that is no spent quota, a 529, a 503, as a status or in a 200's body) is sent again after a wait, at most three
-  attempts in all within one request's timeout (:class:`DeclinedRetry`); a tool turn the provider failed with a 5xx,
-  or whose connection was never made, is sent again once, and nothing else is retried.
+  attempts in all within one request's timeout (:class:`DeclinedRetry`); a tool turn the provider failed with a 5xx
+  other than a gateway timeout (504, 524), or whose connection was never made, is sent again once, and nothing else is retried.
 * ``cost_usd``: on OpenRouter its own reported figure, and under bring-your-own-key that figure plus
   ``cost_details.upstream_inference_cost`` (a BYOK reply without it is unpriced, as is a reply carrying no
   ``is_byok``); on Anthropic and OpenAI, the reply's tokens priced by OpenRouter's catalogue row for the matching

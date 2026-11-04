@@ -1,6 +1,6 @@
 """A writer turn the provider failed: priced at what the turns before it cost, sent again once, and no stop of the run.
 
-The incident (2026-11-04, a writer campaign on ``claude-sonnet-5-5``): one turn in each arm was answered ``anthropic
+The incident (2026-11-04, a writer campaign on Sonnet 5.5): one turn in each arm was answered ``anthropic
 520: the response body is not JSON``. The writer kind booked the turn as spend nothing could price, so each result
 was stored with ``cost_usd`` null, and the capped run stopped after one result ("1 result(s) spent what could not be
 priced"), leaving the pairwise pass no common cases. A 5xx carries no completion and no usage, and is not billed: the
@@ -9,8 +9,9 @@ client now sends such a turn again once (a 5xx, or a connection never made), and
 followed, so a recording, and a replay of it, says the turn was sent twice.
 
 Every request goes through ``httpx.MockTransport`` and every wait is a test's that waits for nothing; nothing here
-reaches a live API. The prices are Anthropic's published Sonnet 5.5 rates as the package ships them ($2 and $10 a
-million input and output tokens), so each expected cost is computed here by hand.
+reaches a live API. The writer is a placeholder model priced by a test pricer at fixed rates ($2 and $10 a million
+input and output tokens, the incident model's), so each expected cost is computed here by hand and no shipped rate
+table moves it.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final
 
@@ -50,6 +52,9 @@ from threetears.evals.ops.report_writer.writer_contract import (
 )
 from threetears.evals.ops.report_writer.writer_kind import WriterCase, writer_case_payload, writer_subject_components
 from threetears.evals.providers import DeclinedRetry, Model, ProviderError, describe_failure
+from threetears.evals.providers.failures import Provider
+from threetears.evals.providers.pricing import CallPrice, HostRates, ModelRates
+from threetears.evals.providers.wire import usage_counts
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate, EvalTestCase
@@ -58,11 +63,40 @@ from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.turns import TurnMessage, TurnReply
 from threetears.evals.testing import RecordedTurns
 
-MODEL: Final = "claude-sonnet-5-5"
+#: The writer: a placeholder id, which only the test pricer prices.
+MODEL: Final = "writer-under-test"
 
-#: Sonnet 5.5's published rates, dollars a million tokens: input, output.
+#: The writer's rates, dollars a million tokens: input, output (Sonnet 5.5's published ones, the incident's model).
 INPUT_RATE: Final = 2.0
 OUTPUT_RATE: Final = 10.0
+
+#: The rates the test pricer answers: input and output as above, no cache in any reply here.
+RATES: Final = ModelRates(
+    base_input=Decimal(2),
+    cache_write_5m=Decimal("2.5"),
+    cache_write_1h=Decimal(4),
+    cache_read=Decimal("0.2"),
+    output=Decimal(10),
+)
+
+
+# parity-with: threetears.evals.providers.Pricer
+class FakeFixedPricer:
+    """The host's port at fixed, guaranteed rates for any model; a reply that reported no usage is unpriced."""
+
+    def rates_for(self, model: str, *, provider: Provider) -> HostRates | None:
+        return HostRates(RATES, guaranteed=True)
+
+    def price(
+        self, model: str, *, provider: Provider, usage: Mapping[str, Any], served_provider: str | None
+    ) -> CallPrice:
+        counts = usage_counts(provider, usage)
+        if counts.input_tokens is None or counts.output_tokens is None:
+            return CallPrice(usd=None, source=None, unpriced_reason="the reply reported no usage")
+        dollars, why = RATES.cost(input_tokens=counts.input_tokens, output_tokens=counts.output_tokens)
+        assert dollars is not None, why
+        return CallPrice(usd=float(dollars), source="test-rates")
+
 
 #: What Anthropic's edge answers when the origin failed: a Cloudflare page, not JSON.
 EDGE_520: Final = b"<html><head><title>520: Web server is returning an unknown error</title></head></html>"
@@ -133,11 +167,13 @@ class Waits:
 
 
 def sonnet(messages: Messages, waits: Waits, **options: Any) -> Model:
-    """Sonnet 5.5 on Anthropic, priced by the published rates (no pricer, no catalogue), sending through
-    ``messages`` and waiting through ``waits``."""
+    """The writer on Anthropic's route, priced by :class:`FakeFixedPricer`, sending through ``messages`` and waiting
+    through ``waits``."""
     retry = DeclinedRetry(sleep=waits, **options.pop("retry", {}))
-    http = httpx.AsyncClient(transport=httpx.MockTransport(messages))
-    return Model(MODEL, provider="anthropic", api_key="test-key", http=http, retry=retry, **options)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(messages), timeout=options.pop("timeout", 600.0))
+    return Model(
+        MODEL, provider="anthropic", api_key="test-key", http=http, retry=retry, pricer=FakeFixedPricer(), **options
+    )
 
 
 async def _turn(model: Any) -> TurnReply:
@@ -186,6 +222,18 @@ async def test_a_turn_whose_connection_was_never_made_is_sent_again(never: Excep
     assert answered.resent_after == (f"the connection was never made ({type(never).__name__})",)
 
 
+@pytest.mark.parametrize("status", [504, 524], ids=["a 504", "Cloudflare's 524"])
+async def test_a_turn_a_gateway_timed_out_is_never_sent_again_since_it_may_have_been_served(status: int) -> None:
+    """The gateway gave up waiting; the provider may still have served and billed the turn, as a turn cut in flight."""
+    messages, waits = Messages((status, EDGE_520), (200, ANSWERS)), Waits()
+
+    with pytest.raises(ProviderError) as raised:
+        await _turn(sonnet(messages, waits))
+
+    assert messages.sent == 1 and waits.asked == []
+    assert (raised.value.status, raised.value.attempts, raised.value.owner) == (status, 1, "candidate")
+
+
 async def test_a_turn_cut_in_flight_is_never_sent_again_since_it_may_have_been_served() -> None:
     cut = httpx.ReadTimeout("read timed out")
     messages, waits = Messages(cut, (200, ANSWERS)), Waits()
@@ -194,6 +242,27 @@ async def test_a_turn_cut_in_flight_is_never_sent_again_since_it_may_have_been_s
         await _turn(sonnet(messages, waits))
 
     assert messages.sent == 1 and waits.asked == []
+
+
+async def test_a_connection_never_made_twice_raises_the_first_from_the_second() -> None:
+    first, second = httpx.ConnectError("connection refused"), httpx.ConnectError("connection refused again")
+    messages, waits = Messages(first, second), Waits()
+
+    with pytest.raises(httpx.ConnectError) as raised:
+        await _turn(sonnet(messages, waits))
+
+    assert messages.sent == 2 and waits.asked == [1.0]
+    assert raised.value is first and raised.value.__cause__ is second
+
+
+async def test_a_520_whose_resend_would_wait_past_the_requests_timeout_is_raised_unresent() -> None:
+    """The first backoff wait (1 s) would end past a 0.5 s request timeout counted from the first attempt."""
+    messages, waits = Messages((520, EDGE_520), (200, ANSWERS)), Waits()
+
+    with pytest.raises(ProviderError) as raised:
+        await _turn(sonnet(messages, waits, timeout=0.5))
+
+    assert messages.sent == 1 and waits.asked == [] and raised.value.attempts == 1
 
 
 async def test_one_turn_failure_attempt_raises_the_first_520() -> None:
@@ -426,7 +495,7 @@ async def test_a_reply_nothing_could_price_still_stops_the_capped_run_after_its_
 
 
 def _scripted(*replies: TurnReply | Exception) -> FakeTurnModel:
-    """A scripted Sonnet 5.5 whose analyst answers ``replies`` in turn."""
+    """A scripted writer whose analyst answers ``replies`` in turn."""
     model = FakeTurnModel(analyst=FakeToolTurnClient(*replies))
     model.model_name = MODEL
     return model

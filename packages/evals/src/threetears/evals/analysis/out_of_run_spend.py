@@ -25,16 +25,15 @@ from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOf
 class OutOfRunSpendTotals(EvalBaseModel):
     """What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 
-    **Missing is not zero.** A call that reported no cost, and a one-call row that raised (which reports
-    nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
-    so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0. A row that ledgers several calls (a report's
-    turns, ``OutOfRunSpend.calls``) counts each of them, its priced share in ``priced_usd`` and its unpriced replies in
-    ``n_unpriced``; its turns whose reply never came are counted in ``n_raised`` alone, since they reported no usage
-    and add nothing (``OutOfRunSpend.raised_calls``).
+    **Missing is not zero.** A call that returned and reported no cost is counted in ``n_unpriced`` and left out of
+    ``priced_usd``, so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0. A call that raised (a one-call row
+    whose ``outcome`` is ``raised``, or a report's turn whose reply never came, ``OutOfRunSpend.raised_calls``) is
+    counted in ``n_raised`` alone: it reported no usage and adds nothing (owner, 2026-10-27). A row that ledgers
+    several calls (a report's turns, ``OutOfRunSpend.calls``) counts each of them.
 
     :ivar n_calls: The calls.
     :ivar n_raised: Those that raised rather than returning.
-    :ivar n_unpriced: Those whose cost is unknown — a completed call that reported none, or a one-call row that raised.
+    :ivar n_unpriced: Those that returned and reported no cost; a raised call is never one.
     :ivar priced_usd: The reported cost of the priced calls, summed.
     :ivar ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
     :ivar n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).
@@ -83,10 +82,10 @@ def _raised(row: OutOfRunSpend) -> int:
 
 
 def _unpriced(row: OutOfRunSpend) -> int:
-    """The unpriced calls of one row: its ``unpriced_calls``, or one when its one call has no cost."""
+    """The unpriced calls of one row: its ``unpriced_calls``, or one when its one call returned with no cost."""
     if row.unpriced_calls is not None:
         return row.unpriced_calls
-    return 1 if row.cost_usd is None else 0
+    return 1 if row.outcome == "completed" and row.cost_usd is None else 0
 
 
 def _priced(row: OutOfRunSpend) -> float:

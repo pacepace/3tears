@@ -7,7 +7,8 @@ spent quota, a refused key) or a bad request would meet the same answer, and is 
 
 **A tool turn the provider failed is sent again once.** A turn answered with a 5xx status (a 500, a 502, a 520 from
 the provider's edge whose body is not even JSON), or whose connection was never made, came back with no completion:
-nothing was billed, and nothing of the model's is in the answer. A tool turn is one of the many a report's sessions
+nothing was billed, and nothing of the model's is in the answer. A gateway's timeout (a 504, Cloudflare's 524) is
+not sent again: the provider may still have served the turn and billed it, as a turn cut in flight may have been. A tool turn is one of the many a report's sessions
 send, and its failure ends the whole report, so one transient fault would cost every turn before it; the turn is
 sent again after a wait, up to ``turn_failure_attempts`` attempts in all, within the same time bound as a decline's
 resends. A completion is not: its failure stays the call's outcome, as before. When the last attempt fails too, its
