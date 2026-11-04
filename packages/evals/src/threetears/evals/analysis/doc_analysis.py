@@ -25,17 +25,26 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 from threetears.evals.analysis.bundle.insights import insight_restatement_key
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, LeverCoverageInput, RunSummary
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.generator import aspect_analysis
 from threetears.evals.analysis.report.figure_keys import KeySubjects, key_subjects, keys_in, render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.authored import Confidence
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight, GenerationProvenance
+from threetears.evals.kernel.campaign import (
+    AspectAnalysis,
+    CoverageLens,
+    EvalAnalysis,
+    EvalInsight,
+    GenerationProvenance,
+    LeverCoverage,
+    RunIndexEntry,
+)
 from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
 from threetears.evals.kernel.report_doc import Claim, ConfidenceForm, EvalReportDoc, ReportDoc
+from threetears.evals.kernel.surface import DecisionSurface
 
 #: ``DocAnalysis`` is the return type alone; nothing outside binds it by name.
 __all__ = ["doc_analysis"]
@@ -241,3 +250,202 @@ def _claim_runs(claim: Claim, bundle: CampaignBundle, report_input: ReportInput)
             for arm in arms:
                 runs |= runs_by.get((aspect, variant_of.get(arm, "")), set())
     return runs
+
+
+# =============================================================================
+# What a stored analysis keeps of each aspect
+# =============================================================================
+
+# How many measure columns the run-index table may carry. The measure name space is open
+# by construction — phase timings are `<tool>_<phase>_ms`, one per tool per phase — so
+# without a ceiling the table widens with the system forever. Twelve is a scan-width
+# judgement, not a computed limit; what makes it safe is that every measure it drops is
+# named in `measures_omitted`, and the full distribution for all of them stays on the
+# bundle, which is what the report writer reads.
+_MAX_RUN_INDEX_MEASURES = 12
+
+
+def aspect_analysis(bundle: AnalysisContextBundle, surface: DecisionSurface) -> AspectAnalysis:
+    """What a stored analysis keeps of one aspect: its frozen bundle, and what code read off it.
+
+    :param bundle: The aspect's bundle.
+    :ptype bundle: AnalysisContextBundle
+    :param surface: The surface every reading on it was resolved against — the same object, so the stored numbers and
+        the stored facts cannot describe two different bundles.
+    :ptype surface: DecisionSurface
+    :return: The aspect's part of the analysis.
+    :rtype: AspectAnalysis
+    """
+    reported = _comparable_measures(bundle.run_summaries)
+    all_names = {m.name for summary in bundle.run_summaries for m in summary.measures.measures}
+    return AspectAnalysis(
+        label=bundle.aspect,
+        bundle=bundle.to_dict(),
+        bundle_fingerprint=bundle.fingerprint(),
+        decision_surface=surface,
+        # Frozen from the bundle, never resolved at read: an analysis must keep saying what its
+        # arms WERE, whatever anyone archives or curates afterwards.
+        variant_index=bundle.variant_index,
+        run_index=[
+            _run_index_entry(summary, reported=reported, omitted=sorted(all_names - reported))
+            for summary in bundle.run_summaries
+        ],
+        coverage=CoverageLens(levers=[_lever_from_bundle(lever) for lever in bundle.coverage]),
+    )
+
+
+def _lever_from_bundle(lever: LeverCoverageInput) -> LeverCoverage:
+    """Promote a bundle coverage lever to an analysis lever — facts from the bundle.
+
+    Every field comes verbatim from the bundle (never the writer), so a point estimate always carries its
+    sample size and spread. Nothing is added: a lever's coverage is how finely it was swept, and a
+    tier looked up from ``status`` would restate ``status`` while reading as a confidence.
+    """
+    return LeverCoverage(
+        name=lever.name,
+        cells=lever.cells,
+        k=lever.k,
+        n=lever.n,
+        dispersion=lever.dispersion,
+        status=lever.status,
+    )
+
+
+def _comparable_measures(summaries: list[RunSummary]) -> set[str]:
+    """Measure names worth a run-index column — those whose value actually differs by run.
+
+    The run index is a COMPARISON table: one row per run, one column per key, and the
+    reader scans down a column to see what the config change did. A measure identical in
+    every run costs a column and answers nothing there, while the key space itself is
+    open — phase timings are ``<tool>_<phase>_ms``, one per tool per phase, growing with
+    the system — so without a rule the table widens indefinitely.
+
+    Selecting on variation matches the surface's job, but on its own it does NOT bound the
+    table: a phase timing is a continuous float that differs between runs essentially
+    always, so variation alone removes none of the growth. A hard cap does the bounding,
+    and the two compose — variation decides *which* measures are worth a column, the cap
+    decides *how many* a reader can actually scan. Both are disclosed by the caller.
+
+    Ordering under the cap is by **relative spread** (range over typical value), so the
+    measures kept are the ones that moved most across the campaign — the ones a reader
+    opened the table to find. Ties break on name, so the choice is deterministic and the
+    bundle fingerprint stays stable.
+
+    It degenerates correctly: a single-run campaign has nothing to compare, so nothing
+    varies and every measure becomes a candidate — ranked and capped by the same rule, here
+    rather than in the caller, so the ceiling cannot be routed around by the fallback.
+
+    :param summaries: Every run summary in the campaign.
+    :ptype summaries: list[RunSummary]
+    :return: The names worth a column, at most ``_MAX_RUN_INDEX_MEASURES`` of them.
+    :rtype: set[str]
+    """
+    seen: dict[str, set[str]] = {}
+    numeric: dict[str, list[float]] = {}
+    for summary in summaries:
+        for measure in summary.measures.measures:
+            # Compare on the rendered value so a float and its repr agree, and so a
+            # category-count dict compares by content rather than identity.
+            rendered = repr(measure.categories) if measure.categories else repr(measure.bad_tail())
+            seen.setdefault(measure.name, set()).add(rendered)
+            tail = measure.bad_tail()
+            if tail is not None:
+                numeric.setdefault(measure.name, []).append(tail)
+
+    varying = {name for name, values in seen.items() if len(values) > 1}
+    # Nothing varying means nothing to compare — a single-run campaign, or a campaign whose
+    # measures all render identically. Reporting every measure is the right answer there, but
+    # it must still go through the cap: the fallback set is the WIDEST one, and phase timings
+    # are an open `<tool>_<phase>_ms` name space, so exempting it would let the persisted
+    # key_metrics grow without bound on exactly the shape that selects nothing.
+    candidates = varying or set(seen)
+    if len(candidates) <= _MAX_RUN_INDEX_MEASURES:
+        return candidates
+
+    def spread(name: str) -> float:
+        values = numeric.get(name) or []
+        if not values:
+            return 0.0
+        typical = max(abs(sum(values) / len(values)), 1e-9)
+        return (max(values) - min(values)) / typical
+
+    ranked = sorted(candidates, key=lambda name: (-spread(name), name))
+    return set(ranked[:_MAX_RUN_INDEX_MEASURES])
+
+
+def _run_index_entry(summary: RunSummary, *, reported: set[str], omitted: list[str]) -> RunIndexEntry:
+    """Build one run-index row from a bundle run summary (factual, not the writer's).
+
+    A numeric measure contributes the tail at its *worse* end — p95 where lower is better,
+    p05 where higher is — under a key naming which (the maximum, as ``<name>_max``, where lower is
+    better and too few observations give a p95), so a reader is never invited to compare
+    a measure's best outcome against another's worst as though both moved the same way. A
+    categorical measure contributes its counts.
+
+    Measures identical across every run are left out and **named in ``measures_omitted``**
+    rather than silently dropped: a truncated table that does not say what it truncated
+    reads as though it covered everything. The full distribution for every measure, omitted
+    or not, stays on the bundle, which is what the report writer reads.
+
+    One degenerate case inverts the first sentence: when *nothing* varies there is no
+    comparison to make, so identical measures are precisely what gets reported — trimmed to
+    the ceiling by relative spread, with whatever the ceiling dropped named in
+    ``measures_omitted`` exactly as on the ordinary path.
+    """
+    # Both cost sides, never one. ``program_cost_usd_floor`` is the blended program total —
+    # it includes the judge and simulator scaffolding that exists only to measure the
+    # candidate, and it is a floor besides — while the production-replicating figures below
+    # describe what the configuration itself spent. Publishing only the first invites a
+    # comparison no deployment would pay; publishing only the second hides what the campaign
+    # cost to run.
+    key_metrics: dict[str, Any] = {
+        "n_results": summary.n_results,
+        "n_errors": summary.n_errors,
+        "program_cost_usd_floor": summary.cost_usd,
+    }
+    if summary.n_cost_unpriced:
+        # The floor leaves these out, so it travels with how many: a run whose candidate ran on an
+        # unpriced model is not cheap, its cost is partly unknown.
+        key_metrics["n_cost_unpriced"] = summary.n_cost_unpriced
+    if summary.prod_cost_usd is not None:
+        # The MEAN leads, because it is the figure two runs can be compared on — a total
+        # scales with how many results a run produced, so ranking on it ranks run size.
+        key_metrics["mean_prod_cost_usd"] = summary.mean_prod_cost_usd
+        key_metrics["total_prod_cost_usd"] = summary.prod_cost_usd
+        # The denominator travels with the figure: a reader comparing two runs has to be
+        # able to see that one of them measured far fewer results than it produced.
+        key_metrics["n_prod_cost_usd"] = summary.n_prod_cost_usd
+        key_metrics["n_prod_cost_unmeasured"] = summary.n_results - summary.n_prod_cost_usd
+        # What the run set away from the subject's production configuration travels with the figure
+        # (#571): it is production's cost only for a run that moved nothing, and a caveat printed on
+        # every run alike is one a reader stops reading.
+        footing = summary.production_footing
+        key_metrics["prod_cost_footing"] = (
+            "nobody checked which inputs this run moved off the subject's production configuration"
+            if footing is None
+            else footing.sentence()
+        )
+        if footing is not None and footing.moved:
+            key_metrics["prod_cost_moved_off_production"] = dict(sorted(footing.moved.items()))
+        if footing is not None and footing.unchecked:
+            key_metrics["prod_cost_unchecked_against_production"] = dict(sorted(footing.unchecked.items()))
+    for measure in summary.measures.measures:
+        if measure.name not in reported:
+            continue
+        if measure.categories:
+            key_metrics[measure.name] = measure.categories
+            continue
+        tail = measure.bad_tail()
+        if tail is not None:
+            key_metrics[f"{measure.name}_p05" if measure.higher_is_better else f"{measure.name}_p95"] = tail
+        elif measure.higher_is_better is False and measure.max is not None:
+            # Too few observations for a 95th percentile: the slowest seen, named as what it is.
+            key_metrics[f"{measure.name}_max"] = measure.max
+    if omitted:
+        key_metrics["measures_omitted"] = ", ".join(omitted)
+    return RunIndexEntry(
+        run_id=summary.run_id,
+        config=summary.config,
+        config_provenance=summary.config_provenance,
+        key_metrics=key_metrics,
+    )

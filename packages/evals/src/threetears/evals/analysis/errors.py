@@ -1,11 +1,9 @@
 """The analysis engine's generation-contract exceptions.
 
 This module is their one import path: callers (the eval service, the REST and MCP layers, tests)
-name them from here without importing the generator.
-:mod:`threetears.evals.analysis.generator` owns the generation round-trip and its structural
-validators and raises them; :mod:`threetears.evals.analysis.references`, which resolves the model's
-references against the decision surface on the generator's behalf, raises
-:class:`UnresolvableReference`.
+name them from here. :mod:`threetears.evals.analysis.references`, which resolves a reference against the decision
+surface, raises :class:`UnresolvableReference`. The memo writer that raised the other two is retired; the report
+planner's completion (:mod:`threetears.evals.analysis.report_plan_facts`) still names them until it leaves.
 """
 
 from __future__ import annotations
@@ -28,8 +26,7 @@ class SoundnessRefusal(GenerationError):
     """A finished generator call whose OUTPUT was refused — the repairable half.
 
     The distinction from a bare :class:`GenerationError` is what bounds the repair
-    round-trip in :func:`~threetears.evals.analysis.generator.generate_analysis`, so it is a
-    contract and not a label.
+    round-trip a one-shot generation was allowed, so it is a contract and not a label.
 
     **The boundary is "did the call finish?", not "which step complained".** A
     ``SoundnessRefusal`` means the provider ran to completion and returned something the
@@ -60,8 +57,8 @@ class SoundnessRefusal(GenerationError):
     a writer model the host's ``analysis_writer_models`` does not list (#644) is something the
     generator said, so there is no claim to correct and a second call reaches the identical place at
     a second full charge. Each is decidable for free before the first call, and each is refused there
-    (:func:`~threetears.evals.analysis.generator.refuse_an_unlisted_writer` is the third, argued
-    here: the request names a writer the host refuses, so no call is made and none could succeed).
+    (the host's writer list, :meth:`~threetears.evals.kernel.host.profile.HostProfile.analysis_writer_refusal`, is the
+    third, argued here: the request names a writer the host refuses, so no call is made and none could succeed).
     Adding another such case means arguing it here.
 
     **The boundary used to sit one step further out, and drawing it by exception class made
@@ -83,8 +80,8 @@ class SoundnessRefusal(GenerationError):
     them recovers reaches the soundness chain looking complete. It is then a strong candidate
     for any ``_reject_*`` validator — and a refusal there would buy exactly the second full
     generation a truncation must never buy.
-    :func:`~threetears.evals.analysis.generation_round.reject_incomplete_generation` therefore runs
-    before anything parses, so no cut-short result can reach a ``_reject_*`` validator at
+    The retired memo writer's round therefore refused an incomplete generation
+    before anything parsed, so no cut-short result can reach a ``_reject_*`` validator at
     all. That ordering is now the only thing holding the boundary, which is why it is a
     chokepoint rather than a check at each call site.
 

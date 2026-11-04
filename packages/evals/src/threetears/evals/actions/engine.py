@@ -2493,9 +2493,9 @@ def engine_actions() -> tuple[Action, ...]:
             example={"campaign_id": campaign_id},
             detail=(
                 "Each analysis says what wrote it (basis): doc, for one the report writer wrote, with its report "
-                "document's id (report_read reads it, any version by report_doc_id); memo, for one stored before the "
-                "report planner; or plan, for one the planner wrote, which report_read renders code-only with one line "
-                "to regenerate it. needs_regeneration says when an analysis no longer reads, and why."
+                "document's id (report_read reads it, any version by report_doc_id); or memo or plan, for one a retired "
+                "writer wrote (the memo writer or the report planner), which report_read renders code-only with one "
+                "line to regenerate it. needs_regeneration says when an analysis no longer reads, and why."
             ),
         ),
         Action(
@@ -2558,10 +2558,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "record (what it asked, what the judge saw and said, and why): most of a large campaign's page, so "
                 "read it when you need the records, or read one trial with result_get. analysis_basis says what wrote "
                 "the analysis: doc (the report writer, which analysis_generate runs), whose page is the one its stored "
-                "report document draws and whose document is doc (report-doc/1 JSON, figures by key); memo (an older "
-                "analysis), laid out as written; or plan (an older analysis written as a report plan), read "
-                "code-only. A plan, or a document this version no longer reads, is never refused: the page is the "
-                "code-only page with one line to regenerate it, which needs_regeneration repeats. report_doc_id reads "
+                "report document draws and whose document is doc (report-doc/1 JSON, figures by key); or memo or plan "
+                "(an older analysis a retired writer wrote), read code-only. A retired writer's analysis, or a "
+                "document this version no longer reads, is never refused: the page is the code-only page with one line "
+                "to regenerate it, which needs_regeneration repeats. report_doc_id reads "
                 "one stored report "
                 "document, any version; include_sessions=true with format json adds its transcripts "
                 "(report_doc.sessions), for an audit. static=true makes the html page one a host can serve "

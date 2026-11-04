@@ -90,7 +90,7 @@ _RETIRED_GENERATION = (
 )
 
 #: Each retired writer, by what it stored (``EvalAnalysis.basis``), as :func:`retired_generation` names it.
-_RETIRED_WRITERS: dict[str, str] = {"plan": "the report planner"}
+_RETIRED_WRITERS: dict[str, str] = {"memo": "the memo writer", "plan": "the report planner"}
 
 #: The first screen's line on the code-only page that stands in for an analysis this version no longer reads, in place
 #: of "no analysis has been generated"; ``{line}`` is :data:`NO_LONGER_READS` or the retired writer's line.
