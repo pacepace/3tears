@@ -14,7 +14,7 @@ later. This module is the dataset's one reader:
 - **Plans.** ``rN/anchor.plan.json`` is a hand-written plan for that input; ``anchors/weak/*.plan.json`` are copies
   weakened on one plan-check rule or one rubric item (``weaken_anchors.py`` writes them). ``anchors/LABELS.json`` says
   what each anchor is expected to be and who labeled it: every anchor starts ``pending_owner`` and counts as a label
-  only once the owner approves it. ``rN/runs/<run_id>.plan.json`` are the planner's plans (``plan_eval.py``), each
+  only once the owner approves it. ``rN/runs/<run_id>.plan.json`` are the planner's plans (the retired planner eval's), each
   beside ``<run_id>.planner.json``, what wrote it (:class:`PlannerInfo`: the model, its settings, the digests of the
   prompt and contracts it was asked under), written when it was recorded.
 - **Runs are kept.** A re-record adds a run and never deletes one or its score (owner, 2026-10-25: every plan and every
@@ -70,7 +70,6 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.errors import PlanRefusal
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import planner_view
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan, prose_response_format, structure_response_format
@@ -518,7 +517,7 @@ def planner_of(plan_path: Path) -> PlannerInfo:
 def recorded_planner(name: str) -> PlannerInfo:
     """What the current recording of one input was made with: its model and settings, read off the recording, and
     the digests of the recorded prompt and of today's contracts. True only while recording, which is when
-    ``plan_eval.py`` writes it beside the new run."""
+    the retired planner eval wrote it beside the new run."""
     first = json.loads((RECORDINGS / f"{name}.jsonl").read_text(encoding="utf-8").splitlines()[0])
     model = str(first["result"].get("model") or "")
     return PlannerInfo(
@@ -688,8 +687,8 @@ def scoring_brief(plan_path: Path, *, version: str | None = None) -> str:
         "\n".join(_page(plan, report_input)),
         "## What code decided about the input (facts the planner was handed)",
         json.dumps(facts, ensure_ascii=False),
-        "## The report input, as the planner read it",
-        planner_view(report_input),
+        "## The report input",
+        json.dumps(report_input.model_dump(mode="json", by_alias=True, exclude_none=True), separators=(",", ":")),
         "## The reply",
         json.dumps(reply, indent=2),
     ]

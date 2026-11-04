@@ -26,7 +26,8 @@ from packages.evals.tests.fixtured_client import (
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, TOYHOST_WIDE
 from packages.evals.tests.toyhost_cells import alias_at, arm_at, cell_at
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis import EVAL_ANALYSIS_GEN_DEFAULT, AnalysisContextBundle, CampaignBundle
+from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle
+from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 
 __all__ = [

@@ -63,7 +63,7 @@ from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input, report_snapshot
-from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
+from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count
 from threetears.evals.analysis.report.figure_keys import (

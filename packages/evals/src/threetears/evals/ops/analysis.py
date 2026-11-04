@@ -36,7 +36,6 @@ from threetears.evals.analysis.campaigns import (
 )
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.phase_log import charged, phase_logged
-from threetears.evals.analysis.planned_analysis import report_plan_of
 from threetears.evals.analysis.report import ReportBasis, TrialDetail, analysis_verdict
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
@@ -56,6 +55,7 @@ from threetears.evals.analysis.service import (
     record_campaign_call,
     record_written_generation,
     report_doc_report,
+    report_plan_of,
     running_analysis_attempt,
 )
 from threetears.evals.analysis.campaign_title import (

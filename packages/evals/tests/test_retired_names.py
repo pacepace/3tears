@@ -12,6 +12,17 @@ The analysis reporter kind is retired with the memo writer and the report planne
   passes; the template check, the three launch operations and building either reporter kind refuse, naming
   ``writer_template_create``. ``REPORTER_KIND`` still names the kind a stored template declares, and the cell ceiling
   keeps its answer (``test_wall_clock_ceilings``).
+
+The report planner's generation path is retired too, and the memo writer's prompt and client settings with it:
+
+- **The planner's generation names are gone** (``prepare_analysis_generation``, ``run_analysis_generation``,
+  ``estimate_analysis_generation``, ``PreparedGeneration``, ``BudgetedGenerator``).
+- **The two prompt constants a host seeds a slot from by name still resolve**, through ``importlib`` as a host's
+  registry reads them, each to one line saying the generation it steered is retired and never to its old prompt, and
+  each read warns naming the slot to drop. ``EVAL_REPORT_PLAN_DEFAULT``, which no final release exported, is served
+  but not in ``__all__``.
+- **The memo writer's client settings** still answer what they did, warning that the report writer runs on the host's
+  analyst client under ``AnalysisGeneration.limits``.
 """
 
 from __future__ import annotations
@@ -53,13 +64,18 @@ REMOVED = {
         "ReporterCaseBank",
         "ReporterCaseStore",
         "ReporterLabel",
+        "BudgetedGenerator",
+        "PreparedGeneration",
         "WriterMessageCheck",
+        "estimate_analysis_generation",
         "freeze_reporter_case",
         "frozen_case_receipt",
         "live_reporter_cases",
+        "prepare_analysis_generation",
         "render_memo_as_written",
         "reporter_calibration",
         "reporter_case_bank",
+        "run_analysis_generation",
         "set_reporter_case_archived",
     ],
     "threetears.evals.ops": [
@@ -229,3 +245,52 @@ def test_a_name_neither_kept_nor_exported_is_unknown_as_on_any_module() -> None:
     for root in SHIMMED:
         with pytest.raises(AttributeError, match="has no attribute 'no_such_name'"):
             getattr(importlib.import_module(root), "no_such_name")
+
+
+# --- the report planner and the memo writer ------------------------------------------------------------------------
+
+#: The analysis root's names the two retired generations left a host, each with the replacement its warning names.
+GENERATION_SHIMS = {
+    "EVAL_ANALYSIS_GEN_DEFAULT": "drop the eval_analysis_gen slot",
+    "EVAL_REPORT_PLAN_DEFAULT": "drop the eval_report_plan slot",
+    "analysis_gen_request_settings_for": "AnalysisGeneration.limits (WriterLimits)",
+}
+
+
+@pytest.mark.parametrize("name", sorted(GENERATION_SHIMS))
+def test_a_retired_generation_s_name_warns_naming_its_replacement(name: str) -> None:
+    with pytest.warns(DeprecationWarning) as caught:
+        getattr(importlib.import_module("threetears.evals.analysis"), name)
+    (warning,) = caught
+    message = str(warning.message)
+    assert message.startswith(f"threetears.evals.analysis.{name} is retired and leaves in the next minor: ")
+    assert GENERATION_SHIMS[name] in message
+
+
+def test_the_planner_s_prompt_constant_is_served_but_not_exported_and_the_memo_writer_s_stays_exported() -> None:
+    root = importlib.import_module("threetears.evals.analysis")
+    assert "EVAL_REPORT_PLAN_DEFAULT" not in root.__all__, "no final release exported it"
+    assert {"EVAL_ANALYSIS_GEN_DEFAULT", "analysis_gen_request_settings_for"} <= set(root.__all__)
+
+
+@pytest.mark.parametrize(("name", "slot"), [("EVAL_REPORT_PLAN_DEFAULT", "eval_report_plan"),
+                                            ("EVAL_ANALYSIS_GEN_DEFAULT", "eval_analysis_gen")])  # fmt: skip
+def test_a_prompt_constant_a_host_seeds_by_name_is_one_retired_line(name: str, slot: str) -> None:
+    """As a host's registry reads a seed (``importlib`` and ``getattr``): a string a slot can hold, one line saying
+    the generation is retired, never the prompt it was."""
+    seed = _read("threetears.evals.analysis", name)
+    assert isinstance(seed, str) and seed.startswith("Retired: ") and "\n" not in seed
+    assert slot in seed and len(seed) < 200
+
+
+def test_an_import_of_the_planner_s_prompt_constant_warns_at_the_importing_line() -> None:
+    with pytest.warns(DeprecationWarning, match="EVAL_REPORT_PLAN_DEFAULT is retired") as caught:
+        from threetears.evals.analysis import EVAL_REPORT_PLAN_DEFAULT
+    assert EVAL_REPORT_PLAN_DEFAULT.startswith("Retired: ")
+    assert caught[0].filename == __file__
+
+
+def test_the_memo_writer_s_settings_still_answer_what_they_did() -> None:
+    settings = _read("threetears.evals.analysis", "analysis_gen_request_settings_for")
+    built = settings(answer_budget_tokens=4000, reasoning_headroom_tokens=2000)
+    assert (built.max_tokens, built.reasoning_effort, built.strict_output) == (6000, "medium", True)

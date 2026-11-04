@@ -1,8 +1,7 @@
 """A generation's spend is admitted, ledgered and read like every other call the engine makes outside a run.
 
 ``analysis_generate`` is a ``spend`` action. It runs the report writer, every turn admitted against the host's report
-budget (``AnalysisGeneration.report_budget``), the only admission: the out-of-run cap is not read. The report planner's
-spend, held to the host's out-of-run cap, is pinned beside the planner (``test_planner.py``). Pinned here:
+budget (``AnalysisGeneration.report_budget``), the only admission: the out-of-run cap is not read. Pinned here:
 
 - **The report writer's spend is ledgered once**, when the writing ends, under purpose ``analysis`` and the campaign,
   so ``scope_out_of_run_spend`` (operation and action) reads it; its preparation refusals end the job before any

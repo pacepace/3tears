@@ -1626,15 +1626,18 @@ editor from the skill the package ships as data (principles, story forms, charts
 notes, and the editor's rubric). It is not overridable today: an improvement lands as a change to the package, checked
 against the acceptance campaigns and the editor's scores. Each report records the skill's digest as its provenance.
 
-The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`), the boundary
-proposer (`BOUNDARY_GEN_PROMPT`), and the memo writer the analysis reporter's candidates run (the planner's prompt is
-kept for the plan cases it recorded, and makes no call). **A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
+The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`) and the boundary
+proposer (`BOUNDARY_GEN_PROMPT`). The memo writer's slot (`eval_analysis_gen`) is still listed until the memo writer
+leaves, and no call reads it. The report planner's slot (`eval_report_plan`) is retired: nothing seeds or reads it,
+and `EVAL_REPORT_PLAN_DEFAULT` and `EVAL_ANALYSIS_GEN_DEFAULT` are each one line saying so, kept for one minor so a
+host seeding a slot by name still starts. Drop both slot declarations; a stored override of either is inert.
+**A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
 `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
 subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
 
 **An override is yours to keep.** If an operator tunes a prompt without a deploy, keep the copy in your own
 registry and hand it in: `plan_draft(..., system_prompt=..., reset=...)`. `SEED_PROMPTS` (from
-`threetears.evals.kernel`) lists them (the planner's, the memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
+`threetears.evals.kernel`) lists them (the memo writer's and the two proposers'), one `SeedPrompt` each: its id (`prompt_type`), its registry kind
 (`template` or `text`) and `seed_ref`, the `(module, constant)` its default is imported from. Seed an empty slot
 from each and never overwrite a stored one. The engine's ids start with `eval_`, so your own prompts can use any
 other name.

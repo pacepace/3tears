@@ -66,10 +66,9 @@ class _WriterCaps(Protocol):
 #: reasoning budget plus its answer budget.
 PROPOSER_MAX_TOKENS = 16384
 
-#: Provider requests one analysis generation can send. A generation is written by the report planner
-#: (:func:`~threetears.evals.analysis.planner.generate_report_plan`) in two calls, a structure and then its prose, so
-#: neither contract grows with the page; a refused reply of either buys that call one repair round-trip. So: the
-#: structure, its repair, the prose, its repair. The planner bounds it structurally; a test pins the four.
+#: Provider requests one generation by the retired report planner could send: a structure, its repair, its prose and
+#: the prose's repair. No generation runs the planner now; the report writer's turns are bounded by its own limits
+#: (:func:`writer_turns`).
 MAX_GENERATION_CALLS = 4
 
 

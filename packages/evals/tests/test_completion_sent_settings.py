@@ -22,11 +22,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis import analysis_gen_request_settings_for
 from threetears.evals.analysis.generator import (
     DEFAULT_ANALYSIS_GEN_REASONING_EFFORT,
     DEFAULT_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
     MIN_ANALYSIS_GEN_REASONING_HEADROOM_TOKENS,
+    analysis_gen_request_settings_for,
 )
 from threetears.evals.kernel.judge_cases import JudgeCase, JudgeCaseSource
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger

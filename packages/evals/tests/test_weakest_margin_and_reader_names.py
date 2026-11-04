@@ -28,16 +28,12 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.analysis.planner import first_plan_request
 from threetears.evals.analysis.report.figure_keys import reader_name, reader_names, render, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_margins import criterion_figures, margins, weakest_margin
 from threetears.evals.analysis.report_plan_checks import validate_plan
 from threetears.evals.analysis.report_plan_facts import plan_facts
-from threetears.evals.kernel.host.measures import MeasureRegistry
-from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.host.sweepables import SHARED_CORE
 from threetears.evals.kernel.report_plan import ReportPlan
 
 HERE = dataset.HERE
@@ -185,7 +181,7 @@ def test_each_id_has_one_reader_name_its_keys_print() -> None:
     assert reader_name("measure", "cost_per_1k", r1) == "Cost per 1k conversations"
 
 
-def test_the_facts_and_the_planners_message_carry_the_weakest_margin_and_the_reader_names() -> None:
+def test_the_facts_carry_the_weakest_margin_and_the_reader_names() -> None:
     facts = plan_facts(_input("r5"))
     assert facts.weakest is not None
     # Re-pinned from -10.8: the worst case is read on the corrected interval, which the facts' line names.
@@ -193,10 +189,6 @@ def test_the_facts_and_the_planners_message_carry_the_weakest_margin_and_the_rea
     assert facts.weakest.said.endswith("read on the multiplicity-corrected 99.69% interval")
     assert "weakest.margin" in facts.weakest.keys
     assert facts.names["stratum"]["off_lane"] == "off lane"
-    profile = HostProfile(host_id="names", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
-    _, user, _ = first_plan_request(_input("r5"), "prompt", profile)
-    assert '"weakest_margin":{"said":"qwen3.8-flash (A)' in user
-    assert '"off_lane":"off lane"' in user
 
 
 def test_an_id_shaped_id_above_full_results_is_refused_with_its_reader_name() -> None:

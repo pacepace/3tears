@@ -41,10 +41,10 @@ from threetears.evals.analysis.analyst.keys import figure_keys_check
 from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.planned_analysis import report_input_digest, report_input_document_digest
+from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
 from threetears.evals.analysis.report.figure_keys import OVERLAP_WORDS, reader_name, resolve
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, planner_view, report_input
+from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.kernel.report_plan import ChartQuery
 
 
@@ -224,11 +224,12 @@ def test_each_example_carries_the_start_of_what_its_case_asked() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(BUNDLES))
-def test_a_planners_input_counts_nothing_and_its_view_is_unchanged(name: str) -> None:
+def test_an_uncounted_input_counts_nothing(name: str) -> None:
     built = report_input(BUNDLES[name])
     assert built.failed_trials is None and built.case_overlap is None
     assert all(example.input is None for example in built.examples)
-    assert "failed_trials" not in planner_view(built) and "case_overlap" not in planner_view(built)
+    dumped = built.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert "failed_trials" not in dumped and "case_overlap" not in dumped
 
 
 @pytest.mark.parametrize("name", sorted(BUNDLES))

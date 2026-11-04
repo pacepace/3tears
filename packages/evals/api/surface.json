@@ -5086,11 +5086,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.BudgetedGenerator": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.build_campaign_report": {
       "kind": "function",
       "signature": "",
@@ -5591,17 +5586,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.estimate_analysis_generation": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "host-contract"
-    },
-    "threetears.evals.analysis.EVAL_REPORT_PLAN_DEFAULT": {
       "kind": "constant (str)",
       "signature": "",
       "tier": "host-contract"
@@ -6486,16 +6471,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.prepare_analysis_generation": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PreparedGeneration": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PriceLine": {
       "kind": "model",
       "signature": "",
@@ -6703,11 +6678,6 @@
     },
     "threetears.evals.analysis.RowColumns": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.run_analysis_generation": {
-      "kind": "async function",
       "signature": "",
       "tier": "provisional"
     },

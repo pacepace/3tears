@@ -34,11 +34,9 @@ from threetears.evals.analysis import (
     create_campaign,
     get_campaign,
     list_analyses,
-    prepare_analysis_generation,
 )
 from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
@@ -594,13 +592,7 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert rows(held, two) == rows(timely_store, timely) and len(rows(held, two)) == 2
     assert all(confirmatory for *_, confirmatory in rows(held, two))
 
-    async def prompt() -> str:
-        return EVAL_REPORT_PLAN_DEFAULT
-
-    prepared = await prepare_analysis_generation(
-        held.host, two.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
-    )
-    view = writer_view(prepared.bundle)
+    view = writer_view(off_loop(assemble_campaign_bundle, held.host, two.id, SCOPE))
     # Handed once, for the whole report, each criterion naming the aspects it was set late on, never in an aspect's
     # part. Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not
     # named.
@@ -689,14 +681,8 @@ async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declare
     assert adopting.created_at > first_result, "created after the readings were visible"
     assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
 
-    async def prompt() -> str:
-        return EVAL_REPORT_PLAN_DEFAULT
-
     async def told(campaign: EvalCampaign) -> tuple[str, str]:
-        prepared = await prepare_analysis_generation(
-            host, campaign.id, SCOPE, model=None, resolve_prompt=prompt, out_of_run_cap_usd=None
-        )
-        view = json.dumps(writer_view(prepared.bundle), sort_keys=True)
+        view = json.dumps(writer_view(off_loop(assemble_campaign_bundle, host, campaign.id, SCOPE)), sort_keys=True)
         page = campaign_report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
         return _undated(view, campaign.id), _undated(page, campaign.id)
 

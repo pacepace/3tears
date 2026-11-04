@@ -1,9 +1,9 @@
-"""The report input: one campaign's results, normalized for the report planner (``report-input/1``).
+"""The report input: one campaign's results, normalized for the report writer (``report-input/1``).
 
-The input sits between the pipeline and the planner (``docs/eval-report-kit/GENERATOR.md``): an adapter builds it
-from the campaign bundle, the planner reads it to write a report plan, and code reads it to classify the eval
-(candidate structure, baseline, score type, strata, criteria, cross-cutting aspects, spread) before the planner
-chooses anything. Its documentation copy is ``docs/eval-report-kit/schema/report-input.schema.json``, which states
+The input sits between the pipeline and the writer: an adapter builds it from the campaign bundle, the analyst reads
+it through its snapshot, and code reads it to classify the eval (candidate structure, baseline, score type, strata,
+criteria, cross-cutting aspects, spread). :func:`report_input_digest` is what a frozen input is held to. Its
+documentation copy is ``docs/eval-report-kit/schema/report-input.schema.json``, which states
 the same fields, required sets and enums as these models.
 
 **Statistics are copied through, never recomputed.** Every reading, interval, contrast, judge tier and floor status
@@ -53,13 +53,22 @@ tracked each other across them (``pairing_r``), each left out of the document wh
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.kernel.host.bars import PassCriterion
+from threetears.evals.schema.hashing import bytes_digest
 
-__all__ = ["ANALYST_ASPECT_FIELDS", "ANALYST_CONTRAST_FIELDS", "ReportInput"]
+__all__ = [
+    "ANALYST_ASPECT_FIELDS",
+    "ANALYST_CONTRAST_FIELDS",
+    "ReportInput",
+    "report_input_digest",
+    "report_input_document_digest",
+]
 
 
 class _Part(BaseModel):
@@ -840,3 +849,29 @@ class ReportInput(_Part):
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
         "declaring nothing; none where no run did, or the bundle carried none.",
     )
+
+
+def report_input_digest(report_input: ReportInput) -> str:
+    """The digest of a report input: sha256 of its canonical JSON (keys sorted, by alias).
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
+    """
+    return report_input_document_digest(report_input.model_dump(mode="json", by_alias=True))
+
+
+def report_input_document_digest(document: Mapping[str, Any]) -> str:
+    """The digest of a report input already dumped to JSON (by alias), as :func:`report_input_digest` takes it.
+
+    What lets a frozen report input be checked against the digest stored beside it without being validated by the
+    model the running build holds, which may have moved since the freeze.
+
+    :param document: ``ReportInput.model_dump(mode="json", by_alias=True)``, or a document read back from one.
+    :ptype document: Mapping[str, Any]
+    :return: A 64-character lowercase hex digest.
+    :rtype: str
+    """
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return bytes_digest(canonical.encode("utf-8"))

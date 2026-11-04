@@ -11,8 +11,8 @@ defect to the host (a 500 over MCP or REST), so a refusal of what the caller ask
   reads refuses 422 before any result is read and before any aspect's bundle is put back together; ``report_read``
   over one reads code-only, the shape checked before the evidence is assembled; a memo's page that refuses what it is
   laid out over is a 422. None of them logs the backstop's WARNING.
-- **The estimate's view.** ``analysis_estimate`` reads no run and no result, so the view's budget refusal cannot
-  arise there. (The planner's preparation, which can meet it, is pinned beside the planner, ``test_planner.py``.)
+- **The estimate's view.** ``analysis_estimate`` reads no run and no result, so no refusal over the evidence can
+  arise there.
 """
 
 from __future__ import annotations
@@ -365,4 +365,4 @@ async def test_the_generation_estimate_reads_no_run_and_no_result(evals: Mounted
     )
 
     assert not outcome.is_error, outcome.text
-    assert store.evidence_reads() == [], "no evidence is read, so the planner's view is never built here"
+    assert store.evidence_reads() == [], "no evidence is read by the estimate"
