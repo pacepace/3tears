@@ -7,8 +7,7 @@ person-rated pairs (held here as 20 distinct results, which a pile of pairs abou
 a tier quietly filled in.
 
 Each threshold is driven on both sides of its boundary, through the pure derivation and through the
-assembled bundle, the code-only report and the generator's resolution of a finding, since a tier shown
-anywhere must be the one the evidence decides there.
+assembled bundle and the code-only report, since a tier shown anywhere must be the one the evidence decides there.
 
 Mutations that turn this file red (each made in a scratch copy and the file restored from it, 2026-10-06):
 
@@ -21,7 +20,6 @@ Mutations that turn this file red (each made in a scratch copy and the file rest
 - ``judge_self_agreement``: pairing a repeat served by another model;
 - ``judge_evidence_tiers``: dropping the ``judged`` keys (an unmeasured judge is then absent);
 - the bundle: stamping every arm ``undetermined``; not copying the arm's tier onto the cell's reading;
-- the generator: not carrying the resolved tier onto the evidence row;
 - the code-only report: dropping the tier sentences.
 
 And, for the review fixes (each applied to a scratch-backed copy and restored from it, 2026-10-06):
@@ -38,7 +36,6 @@ And, for the review fixes (each applied to a scratch-backed copy and restored fr
 
 from __future__ import annotations
 
-import json
 import typing
 from typing import Any
 
@@ -54,8 +51,6 @@ from threetears.evals.analysis import (
     tier_for_judges,
     tier_sentence,
 )
-from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel.evidence_tiers import (
@@ -73,14 +68,14 @@ from threetears.evals.kernel.evidence_tiers import (
     separation_criterion,
     tier_of,
 )
-from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore, utc_now_iso
+from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore
 from threetears.evals.run import rate_result
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, alias_at, memo_payload
+from packages.evals.tests.writer_host_support import doc_analysis_over
 
 TONE = "conversation.tone"
 
@@ -968,55 +963,9 @@ def _schema_version_doc() -> str:
     return source[start : source.index('"""', source.index('"""', start) + 3)]
 
 
-class TestThePromptPointsAtTheTiers:
-    def test_the_generator_is_told_where_the_tiers_are_and_what_each_bears(self) -> None:
-        for name in ("judge_evidence_tiers", "tier"):
-            assert f"`{name}`" in EVAL_ANALYSIS_GEN_DEFAULT
-        for tier in typing.get_args(JudgedEvidenceTier):
-            assert f"`{tier}`" in EVAL_ANALYSIS_GEN_DEFAULT
-        assert "stands only on a `calibrated` reading" in EVAL_ANALYSIS_GEN_DEFAULT
-
-
-class TestAFindingStandsOnTheTierItsCellsCarry:
-    @staticmethod
-    async def _generated(bundle: Any):
-        payload = memo_payload(bundle)
-        payload["findings"][0]["evidence"].append(
-            {"cell": alias_at(bundle, TOYHOST_NARROW), "measure_id": TOYHOST_JUDGED_DIMENSION, "reading": "judged"}
-        )
-        analysis, _ = await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(payload)),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=toyhost_profile(),
-        )
-        return analysis.resolutions[0]
-
-    async def test_a_finding_citing_a_calibrated_judge_stands_on_calibrated(self) -> None:
-        resolution = await self._generated(_bundle(rated=CALIBRATING_RESULTS))
-        assert [row.judged_tier for row in resolution.evidence] == [None, None, "calibrated"]
-        assert resolution.evidence_tier == "calibrated"
-
-    async def test_the_same_finding_over_an_unmeasured_judge_is_undetermined(self) -> None:
-        resolution = await self._generated(_bundle())
-        assert resolution.evidence_tier == "undetermined"
-
-
 class TestAStoredTierSaysWhichRuleDecidedIt:
     """A generated analysis records the rule its judged tiers were decided by."""
 
-    async def test_a_generated_analysis_records_the_interval_rule(self) -> None:
-        bundle = _bundle()
-        analysis, _ = await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(memo_payload(bundle))),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=toyhost_profile(),
-        )
+    def test_a_generated_analysis_records_the_interval_rule(self) -> None:
+        analysis, _ = doc_analysis_over(campaign_bundle(_bundle()))
         assert analysis.judged_tier_rule == JUDGED_TIER_RULE == "interval_lower_bound"

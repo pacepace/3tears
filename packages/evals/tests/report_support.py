@@ -1,35 +1,35 @@
-"""Reports to test against: the toy host's, generated through the host, and a minimal one that passes.
+"""Reports to test against: the toy host's, and the analyses its retired writers stored over its corpus campaign.
 
 Shared by ``test_report.py`` and ``test_report_html_no_script.py`` — harness support, not part of the
 toy host, which reaches the engine only through its public roots.
+
+**The retired writers' analyses are stored records, never generated.** The memo writer and the report planner wrote
+the two records under ``fixtures/retired_writers/`` over the toy corpus campaign (at ``52bf24449``): each holds the
+analysis as its writer stored it, with its insights, and the planner's its report plan. A host holds analyses like
+these, which every read keeps serving, so a test stores the record as it was written and reads it back; nothing here
+calls either writer.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Final
 
-from threetears.evals.analysis import (
-    Report,
-    TableBlock,
-    assemble_campaign_bundle,
-    build_report,
-    report_markdown,
-)
-from threetears.evals.analysis.generator import generate_analysis
-from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.analysis import Report, TableBlock, build_report, report_markdown
 from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight, EvalReportPlan
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.storage import EvalStorage
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
 
 __all__ = [
     "page_violations",
     "stored_memo_analysis",
+    "stored_plan_analysis",
     "toy_campaign_host",
     "toy_report",
 ]
@@ -64,36 +64,56 @@ def toy_campaign_host(clients: Any = None) -> tuple[EvalHost, EvalCampaign]:
     return host, campaign
 
 
-async def stored_memo_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[EvalAnalysis, list[EvalInsight]]:
-    """An analysis the memo writer wrote over the campaign, stored with its insights: the shape of every analysis
-    stored before the report planner wrote new ones, which still lists, reads and renders.
+#: The records the retired writers stored over the toy corpus campaign.
+_RETIRED: Final = Path(__file__).parent / "fixtures" / "retired_writers"
 
-    The memo writer is called directly (``generate_analysis``), since a generation through the host is the planner's.
+
+def _record(name: str, campaign: EvalCampaign) -> dict[str, Any]:
+    """One retired writer's stored record, refused over any campaign but the toy corpus campaign it was written over."""
+    record: dict[str, Any] = json.loads((_RETIRED / f"{name}_analysis.json").read_text(encoding="utf-8"))
+    written_over = (record["analysis"]["campaign_id"], record["analysis"]["scope_id"])
+    if written_over != (campaign.id, campaign.scope_id):
+        raise AssertionError(f"the {name} record was written over campaign {written_over}, not {campaign.id!r}")
+    return record
+
+
+def _stored(storage: EvalStorage, record: dict[str, Any]) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """Store a record's analysis and insights as its writer stored them, and return them."""
+    analysis = EvalAnalysis.model_validate(record["analysis"])
+    insights = [EvalInsight.model_validate(insight) for insight in record["insights"]]
+    storage.save_analysis(analysis)
+    for insight in insights:
+        storage.save_insight(insight)
+    return analysis, insights
+
+
+async def stored_memo_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """The analysis the memo writer stored over the toy corpus campaign, stored again with its insights: the shape of
+    every analysis stored before the report planner wrote new ones, which still lists, reads and renders.
 
     :param host: The host holding the campaign's runs and results.
-    :param campaign: The campaign.
+    :param campaign: The toy corpus campaign.
     :return: The stored analysis and its insights.
     """
-    assembled_at = utc_now_iso()
-    bundle = off_loop(assemble_campaign_bundle, host, campaign.id, campaign.scope_id)
-    client = FixturedClient(json.dumps(memo_payload(bundle)))
-    analysis, insights = await generate_analysis(
-        bundle,
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=assembled_at,
-        profile=host.profile,
-    )
+    record = _record("memo", campaign)
+    return off_loop(_stored, host.storage, record)
 
-    def store() -> None:
-        host.storage.save_analysis(analysis)
-        for insight in insights:
-            host.storage.save_insight(insight)
 
-    off_loop(store)
-    return analysis, insights
+async def stored_plan_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """The analysis the report planner stored over the toy corpus campaign, stored again with its plan and insights:
+    the shape of every analysis the planner wrote, which reads as the code-only page with the regenerate line.
+
+    :param host: The host holding the campaign's runs and results.
+    :param campaign: The toy corpus campaign.
+    :return: The stored analysis and its insights; its plan reads with ``get_report_plan``.
+    """
+    record = _record("plan", campaign)
+
+    def store() -> tuple[EvalAnalysis, list[EvalInsight]]:
+        host.storage.save_report_plan(EvalReportPlan.model_validate(record["plan"]))
+        return _stored(host.storage, record)
+
+    return off_loop(store)
 
 
 async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:

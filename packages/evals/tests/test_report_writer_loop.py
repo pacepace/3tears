@@ -35,7 +35,8 @@ import pytest
 
 from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, ops_fixture, OpsFixture, planned_generation
+from packages.evals.tests.ops_support import CALLER, ops_fixture, OpsFixture
+from packages.evals.tests.report_support import stored_plan_analysis
 from packages.evals.tests.report_doc_support import snapshot_of
 from packages.evals.tests.report_writer_support import (
     DOC,
@@ -1043,10 +1044,8 @@ async def test_a_report_written_from_a_campaign_freezes_it_first_and_mounts_no_w
 
 async def test_a_report_written_from_an_analysis_freezes_its_bundle_first_and_mounts_no_write() -> None:
     fixture = off_loop(ops_fixture)
-    await planned_generation(fixture)
-    (analysis,) = off_loop(
-        fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, CALLER.scope_id
-    )
+    # An analysis stored with no snapshot beside it (the planner's), so the write freezes one from its bundle.
+    analysis, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
     client = _unsubmitted()
     model = FakeTurnModel(analyst=client)
 

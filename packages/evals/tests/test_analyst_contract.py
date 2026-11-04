@@ -42,7 +42,8 @@ from packages.evals.tests.analyst_support import (
     read_actions,
 )
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, OpsFixture
+from packages.evals.tests.report_support import stored_plan_analysis
 from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
@@ -152,9 +153,8 @@ def _seeded(store: InMemoryDocumentStore | None = None) -> tuple[OpsFixture, dic
 
 
 async def _generated(fixture: OpsFixture) -> EvalAnalysis:
-    """The one analysis generated of the toy campaign."""
-    await planned_generation(fixture)
-    (analysis,) = off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
+    """The one analysis stored of the toy campaign: the planner's, so no snapshot was frozen beside it."""
+    analysis, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
     return analysis
 
 

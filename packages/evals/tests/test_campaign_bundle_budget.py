@@ -1,6 +1,6 @@
 """The campaign bundle: one naming across aspects, and each aspect's part of the writer's message held to a budget.
 
-The writer of a campaign's one memo reads every aspect at once, so a cell, a trial and an arm must each be named one
+The writer of a campaign's one report reads every aspect at once, so a cell, a trial and an arm must each be named one
 way across them: a cell alias (``c1`` … ``cN``) and a trial id (``T1`` … ``TN``) are unique across the campaign and
 resolve back to the aspect they came from, since one arm under one rig is the same ``cell_ref`` in every aspect.
 
@@ -22,20 +22,18 @@ from packages.evals.tests.aspect_support import with_control
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, cell_at, memo_payload
+from packages.evals.tests.toyhost_cells import cell_at
 from threetears.evals.analysis import (
     CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
     AnalysisContextBundle,
     CampaignBundle,
     assemble_context_bundle,
     build_campaign_user_message,
-    generate_analysis,
 )
 from threetears.evals.analysis.campaign_bundle import aspect_view, writer_view
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_aliases
-from threetears.evals.schema.models import utc_now_iso
 
 
 def _aspect() -> AnalysisContextBundle:
@@ -116,25 +114,6 @@ class TestOneNamingAcrossAspects:
         named = [[cell["cell"] for cell in aspect["cells"]] for aspect in view["aspects"]]
         assert named == [["c1", "c2"], ["c3", "c4"]]
         assert "variant_key" not in build_campaign_user_message(bundle)
-
-    async def test_a_memo_citing_the_second_aspect_resolves_its_reading_there(self) -> None:
-        bundle = _two_aspects()
-        payload = memo_payload(campaign_bundle(bundle.aspects[0]))
-        for row in payload["findings"][0]["evidence"]:
-            row["cell"] = f"c{int(row['cell'][1:]) + 2}"
-        payload["aspect_summaries"].append({**payload["aspect_summaries"][0], "aspect": "second"})
-        analysis, _ = await generate_analysis(
-            bundle,
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(payload)),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=toyhost_profile(),
-        )
-        assert [row.aspect for row in analysis.resolutions[0].evidence] == ["second", "second"]
-        assert [aspect.label for aspect in analysis.aspects] == bundle.labels
-        assert analysis.generation.bundle_fingerprint == bundle.fingerprint()
 
 
 class TestEachAspectIsHeldToItsBudget:

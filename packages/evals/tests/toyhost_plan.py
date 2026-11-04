@@ -8,10 +8,17 @@ option recommended, each open caveat landed once, one section drawing the spine 
 writes every prose key that structure creates, with no digit outside a figure key and, in Watch, the weakest margin
 by its keys (money per 1,000 replies, the basis a page states its costs in). :class:`PlanReplies` answers each
 call of a generation by the contract it was sent.
+
+**The planner on the operations host.** :func:`planner_fixture` is the toy operations host
+(:func:`~packages.evals.tests.ops_support.ops_fixture`) with a client for the planner's role, the ``analysis`` role:
+:class:`MemoWriter`, which writes the plan over the campaign's bundle as the generation assembled it (or, sent the
+memo writer's contract, the toy memo). :func:`planned_generation` runs the planner's path (``prepare_analysis_generation``
+and ``run_analysis_generation``) on it, which the reporter kind still runs, and stores a real planned analysis.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any
@@ -22,14 +29,30 @@ from threetears.evals.analysis.report_decision import dominant_options, survivin
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.kernel.report_plan import PlanStructure, prose_response_format, structure_response_format
-from packages.evals.tests.toyhost_memo import FixturedClient, FixturedCompletion
+from threetears.evals.analysis import assemble_campaign_bundle, prepare_analysis_generation, run_analysis_generation
+from threetears.evals.analysis.plan_prompt import EVAL_REPORT_PLAN_DEFAULT
+from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
+from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import OpsFixture, ops_fixture
+from packages.evals.tests.toyhost_memo import (
+    FIXTURED_CALL_CEILING_USD,
+    FixturedClient,
+    FixturedCompletion,
+    memo_payload,
+)
 
 __all__ = [
     "PLAN_CALLS",
     "PROSE_CONTRACT",
     "STRUCTURE_CONTRACT",
+    "MemoWriter",
     "PlanWriter",
     "contract_name",
+    "planned_generation",
+    "planner_fixture",
     "prose_reply",
     "replies_for",
     "structure_reply",
@@ -225,3 +248,114 @@ class PlanWriter(FixturedClient):
         assert built is not None, "set the prepared generation's report input before it runs"
         self.completion.content = replies_for(lambda: built)(response_format)
         return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+
+
+class MemoWriter(FixturedClient):
+    """The fixtured generator, writing the toy plan's structure and prose (or, sent the memo writer's contract, the toy
+    memo) over the bundle the generation is about to send."""
+
+    def __init__(self, host: EvalHost, campaign: EvalCampaign) -> None:
+        """Bind the writer to the campaign it analyses.
+
+        :param host: Where the campaign's runs are read.
+        :ptype host: EvalHost
+        :param campaign: The campaign the generation is over.
+        :ptype campaign: EvalCampaign
+        """
+        super().__init__("")
+        self._host = host
+        self._campaign = campaign
+        #: Set to hold the generation open until the test releases it.
+        self.gate: asyncio.Event | None = None
+        #: When set, what the FIRST call returns in place of the memo — an output the generator refuses,
+        #: so the generation buys its repair round-trip.
+        self.first_output: str | None = None
+        #: When set, what every call raises once the gate opens — a provider's failure, as its SDK raises one.
+        self.raises: Exception | None = None
+
+    async def generate(self, *, system: str, user: str, response_format: Any = None, tools: Any = None) -> Any:
+        """Write the memo over the campaign's bundle, then hand it back as the completion."""
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.raises is not None:
+            raise self.raises
+        if self.first_output is not None and not self.calls:
+            self.completion.content = self.first_output
+            return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+        bundle = off_loop(assemble_campaign_bundle, self._host, self._campaign.id, self._campaign.scope_id)
+        if contract_name(response_format) in (STRUCTURE_CONTRACT, PROSE_CONTRACT):
+            self.completion.content = replies_for(lambda: report_input(bundle))(response_format)
+        else:
+            self.completion.content = json.dumps(memo_payload(bundle))
+        return await super().generate(system=system, user=user, response_format=response_format, tools=tools)
+
+
+def planner_fixture(
+    *,
+    gate: asyncio.Event | None = None,
+    ceiling_usd: float | None = FIXTURED_CALL_CEILING_USD,
+    first_output: str | None = None,
+    **given: Any,
+) -> OpsFixture:
+    """The toy operations host with the planner's client: every role but the analyst's is a :class:`MemoWriter`.
+
+    :param gate: Holds every generation, the planner's and the analyst's, open until set.
+    :ptype gate: asyncio.Event | None
+    :param ceiling_usd: What each planner call (and each ``analyst`` turn) is priced at, at most; ``None`` for a
+        writer that cannot price.
+    :ptype ceiling_usd: float | None
+    :param first_output: What each planner client's first call returns in place of its reply, when set.
+    :ptype first_output: str | None
+    :param given: The rest of :func:`~packages.evals.tests.ops_support.ops_fixture`'s parameters.
+    :return: The fixture; each planner client built is added to its ``writers``.
+    :rtype: OpsFixture
+    """
+    fixture = ops_fixture(gate=gate, ceiling_usd=ceiling_usd, **given)
+    eval_host = fixture.host.eval_host
+    analyst = eval_host.clients
+    assert analyst is not None
+
+    def clients(role: str, model: str | None, *, temperature: float | None = None) -> Any:
+        if role == "analyst":
+            return analyst(role, model, temperature=temperature)
+        writer = MemoWriter(eval_host, fixture.campaign)
+        writer.gate = gate
+        writer.ceiling_usd = ceiling_usd
+        writer.first_output = first_output
+        fixture.writers.append(writer)
+        return writer
+
+    object.__setattr__(eval_host, "clients", clients)
+    return fixture
+
+
+async def _planner_prompt() -> str:
+    # The planner's prompt, as a host registers it.
+    return EVAL_REPORT_PLAN_DEFAULT
+
+
+async def planned_generation(
+    fixture: OpsFixture, campaign_id: str | None = None, *, model: str | None = None
+) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """A planned analysis of the corpus campaign, by the report planner's path (which the reporter kind runs), inline.
+
+    :param fixture: The toy host, as :func:`planner_fixture` builds it.
+    :ptype fixture: OpsFixture
+    :param campaign_id: The campaign; the corpus campaign when ``None``.
+    :ptype campaign_id: str | None
+    :param model: The planner model, or ``None`` for the host's default.
+    :ptype model: str | None
+    :return: The stored analysis and its insights; its plan reads with ``get_report_plan``.
+    :rtype: tuple[EvalAnalysis, list[EvalInsight]]
+    """
+    eval_host = fixture.host.eval_host
+    target = campaign_id or fixture.campaign.id
+    prepared = await prepare_analysis_generation(
+        eval_host,
+        target,
+        fixture.campaign.scope_id,
+        model=model,
+        resolve_prompt=_planner_prompt,
+        out_of_run_cap_usd=fixture.host.out_of_run_cap(),
+    )
+    return await run_analysis_generation(eval_host, prepared, prompt_id=REPORT_PLAN_PROMPT, max_output_tokens=4000)

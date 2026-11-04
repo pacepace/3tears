@@ -80,7 +80,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHO
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, planned_generation
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
+from packages.evals.tests.toyhost_plan import PlanWriter, planned_generation
 from packages.evals.tests.report_plan_support import r5_input, r5_plan
 from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
@@ -93,7 +94,6 @@ from packages.evals.tests.reporter_case_support import (
     reporter_template,
 )
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID
-from packages.evals.tests.toyhost_plan import PlanWriter
 
 _ORDINAL = LabelCriterion(description="Every claim traces to the evidence.", scale="ordinal")
 

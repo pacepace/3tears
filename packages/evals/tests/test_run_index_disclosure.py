@@ -2,22 +2,18 @@
 
 The index reports at most a handful of measures per run, chosen by which ones moved, and names every
 measure it left out in each entry's ``key_metrics["measures_omitted"]`` — the disclosure that stops a
-narrow table being read as complete. These drive the real build path: a generation over a toy bundle
-whose run summaries a test has shaped, read back off the stored analysis.
+narrow table being read as complete. These drive the real build path: the analysis a generation stores over a toy
+bundle whose run summaries a test has shaped (``doc_analysis_over``), its run index read back off it.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.schema.models import utc_now_iso
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.writer_host_support import doc_analysis_over
 
 #: Comfortably past any reasonable column cap, so the capped path is reached whatever the cap is tuned to.
 _MANY = 30
@@ -41,15 +37,7 @@ def _measure(bundle: Any, name: str, *, run: int = 0) -> MeasureSummary:
 
 
 async def _run_index(bundle: Any) -> list[Any]:
-    analysis, _insights = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo_payload(bundle))),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=toyhost_profile(),
-    )
+    analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
     return analysis.aspects[0].run_index
 
 
