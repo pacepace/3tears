@@ -647,12 +647,12 @@ A place the engine calls code your host supplies, through a protocol the engine 
 (`prepare` and `invoke`, under a `KindContract`), the cassette seams a kind wires (`CassetteSeams`). See [the kind](adopting-a-host.md#the-kind-what-you-are-evaluating) and
 [cassettes](adopting-a-host.md#cassettes-recording-and-replaying-tools).
 
-#### Sink and reservation
+#### Sink
 A **sink** is what code reports into rather than returns: a cell's `CellSink` keeps its spend by source,
-`TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A **reservation**
-is the handle of a paid call a cell is making (`sink.reserve(source, ceiling)`, then `settle(cost)` or
-`release()`), which lands the call's cost on the cell's spend; it holds nothing back, because the run's cost cap is
-read between cells and refuses no call inside one. `CappedCompletion` does it for every call. See [Caps](cost-and-budgets.md#caps).
+`TraceSink` is your tracing, and a `RegressionWatch` awaits a sink of yours with each alert. A cell adds a paid
+call's cost to its sink once the call returns (`sink.add_spend(source, cost)`); nothing inside a cell is refused,
+because the run's cost cap is read between cells. `CappedCompletion` does it for every call. See
+[Caps](cost-and-budgets.md#caps).
 
 #### Store, `DocumentStore` and port
 A **port** is a protocol the engine declares and your host implements: `DocumentStore`, `CompletionClient`,

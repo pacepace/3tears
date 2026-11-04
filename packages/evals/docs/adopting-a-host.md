@@ -1286,12 +1286,11 @@ anything is spent.
 sink keeps the cell's spend by source, and the cap is read between cells, against the cells already recorded: a
 cell running when the cap is reached finishes whole, and a run may land past it by up to the width's worth of cells
 ([Cost and budgets: caps](cost-and-budgets.md#caps)). Report each paid call's cost as it lands: wrap the client in
-`CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or take a handle,
-`held = sink.reserve("candidate", ceiling)`, then `held.settle(cost)` when it returns and `held.release()` if it
-raises. Spend you learn of any other way, report as it lands (`sink.add_spend(source, cost)`); it adds, and never
+`CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
+`sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
-`sink.reserve` never refuses, `sink.cost_cap_reached()` is always `False`, and `CostCapReached` is no longer raised
-by the engine: they stay so a host that imports them keeps importing, and a kind has nothing to catch.
+`sink.reserve`, `sink.cost_cap_reached()` and `CostCapReached` are deprecated and leave in the next minor
+([Cost and budgets: caps](cost-and-budgets.md#caps)).
 
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
@@ -1435,13 +1434,13 @@ async def test_no_call_waits_on_a_model(case: JobsConformanceCase) -> None:
 
 The engine holds some of its own work to inner ceilings, and every outer budget you set around that work (an action
 job's `budget_s`, the output cap of the client you build for the simulator or the proposer, a retry budget around a
-scheduling call, a deadline over a generation or a cell's judge phase) must sit at or above the ceiling inside it, or
+scheduling call, a deadline over a report or a cell's judge phase) must sit at or above the ceiling inside it, or
 you cancel work the engine would still finish inside its own bound, after it was billed. `Ceilings` (host contract,
 in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `scheduler_call_attempts`,
 `simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
-`generation_ceiling_s`, `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request
-into the ceiling of a generation, a judge phase, or the writing of a report (every analyst round, revision, bounce
-and editor review its limits allow). `writer_ceiling_s` also takes the writer's limits, the same ones the report is
+`judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
+judge phase or of the writing of a report (every analyst round, revision, bounce and editor review its limits allow).
+`generation_ceiling_s`, the retired report planner's, is deprecated and leaves in the next minor. `writer_ceiling_s` also takes the writer's limits, the same ones the report is
 written under, and the turn cap of your report budget (`turns=`, `ReportBudget.turns`). A report's job budget is
 `writer_ceiling_s` plus your headroom. Declare a turn cap even on a dollar budget (`ReportBudget(usd=10.0,
 turns=60)`): dollars bound what a report spends, never how many turns it sends, so without one the ceiling is every
