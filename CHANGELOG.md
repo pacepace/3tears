@@ -15,8 +15,9 @@ minor removes them, and `CellReservation` with `reserve`. The run's cost cap is 
 the retired report planner.
 
 **Changed:** no engine path calls `reserve`: `CappedCompletion`, the judge phase, the judge kind and the quick path's
-kind count each call's cost with `add_spend` when it returns, and `CappedCompletion` no longer prices a call before it
-is made. `Ceilings.generation_ceiling_s` is a property, so `dataclasses.fields(Ceilings)` no longer lists it. Nothing
+kind count each call's cost with `add_spend` when it returns, so no call in a cell is priced before it is made; a
+client's unusable `price_ceiling` no longer fails a call there, and launch pricing still refuses it.
+`MAX_GENERATION_CALLS` is private. `Ceilings.generation_ceiling_s` is a property, so `dataclasses.fields(Ceilings)` no longer lists it. Nothing
 stored changes shape or version.
 
 **Hosts:** count a call's cost with `sink.add_spend(source, cost)` once it returns, drop any `cost_cap_reached()` check

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -250,10 +251,11 @@ async def test_a_declaration_no_run_can_execute_at_is_refused_naming_the_kind() 
 class _PricedClient:
     """A completion client whose every call costs ``cost_usd``, and which can say beforehand it costs at most ``ceiling_usd``.
 
-    ``ceiling_usd=None`` is a client that cannot price a call before making it.
+    ``ceiling_usd=None`` is a client that cannot price a call before making it; ``cost_usd=None`` is a call the
+    provider priced nothing for.
     """
 
-    cost_usd: float
+    cost_usd: float | None
     ceiling_usd: float | None
     calls: int = 0
     running: int = 0
@@ -692,6 +694,24 @@ async def test_a_capped_client_makes_every_priced_call_and_counts_each_at_what_i
     assert sink.reservations_opened == 0, "each cost is added as it lands; the retired reservation is never opened"
 
 
+@pytest.mark.parametrize("cost_usd", [None, 0.004])
+async def test_a_capped_client_makes_a_call_its_client_prices_at_nan_and_counts_what_it_cost(
+    cost_usd: float | None,
+) -> None:
+    """A cell prices no call before making it: a ceiling no cap could read (NaN) neither refuses the call nor raises,
+    and the call lands at what it cost, unpriced when the provider priced nothing. Launch pricing still refuses an
+    unusable ceiling (``call_ceiling``, below)."""
+    paid = _PricedClient(cost_usd=cost_usd, ceiling_usd=math.nan)
+    sink = FakeCellSink()
+    client = CappedCompletion(paid, sink=sink, source="candidate")
+
+    await client.generate(system="s", user="u")
+
+    assert paid.calls == 1, "the call was made"
+    assert sink.spent == {"candidate": None if cost_usd is None else pytest.approx(cost_usd)}
+    assert sink.reservations_opened == 0
+
+
 async def test_a_capped_client_counts_nothing_when_the_call_raises() -> None:
     class _Broken(_PricedClient):
         async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
@@ -768,3 +788,5 @@ def test_a_ceiling_is_the_clients_own_times_the_attempts_and_unpriced_without_on
     assert call_ceiling(object(), system="s", user="u") is None, "a client with no price_ceiling cannot say"
     with pytest.raises(ValueError, match="a ceiling is a finite amount"):
         call_ceiling(_PricedClient(cost_usd=0.0, ceiling_usd=-1.0), system="s", user="u")
+    with pytest.raises(ValueError, match="a ceiling is a finite amount"):
+        call_ceiling(_PricedClient(cost_usd=0.0, ceiling_usd=math.nan), system="s", user="u")
