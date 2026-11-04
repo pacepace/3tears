@@ -292,6 +292,48 @@ def _decimal_code_scale(code: str) -> int | None:
     return int(code[len("DECIMAL(") : -1].split(",")[1]) if is_decimal else None
 
 
+def stored_value(value: Any, col_type: str) -> Any:
+    """a Python value as a DuckDB L1 stores it in a column of ``col_type`` (:meth:`DuckDBBackend.serialize_value`).
+
+    The one conversion the L1 writes every value through, so a value compared with what it holds (a scoped
+    snapshot's diff, matching L3's answer to its copy's rows) is compared as it is stored: a UUID as its text, an
+    instant as its ISO text, a decimal at its column's scale, a JSON value as its text.
+
+    :param value: the value
+    :ptype value: Any
+    :param col_type: the column's type code (:meth:`DuckDBBackend.column_types`)
+    :ptype col_type: str
+    :return: the value as stored
+    :rtype: Any
+    """
+    if value is None:
+        return None
+
+    result: Any = value
+    scale = _decimal_code_scale(col_type)
+
+    if scale is not None and not isinstance(value, bool):
+        result = stored_decimal(value, scale)
+    elif isinstance(value, enum.Enum):
+        result = value.value
+    elif isinstance(value, dict):
+        result = json.dumps(value, default=json_default)
+    elif isinstance(value, _UUID_TYPES):
+        result = str(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, bool):
+        result = value  # DuckDB has native BOOLEAN
+    elif isinstance(value, Decimal):
+        result = float(value)
+    elif isinstance(value, (tuple, list)):
+        result = json.dumps(list(value), default=json_default)
+    elif isinstance(value, bytes):
+        result = value.hex()
+
+    return result
+
+
 def _ddl_type(code: str) -> str:
     """the SQL type of a column's type code: ``VARCHAR_UUID`` is a VARCHAR column, for one.
 
@@ -476,6 +518,8 @@ class DuckDBBackend:
         self._keyless_names: frozenset[str] = frozenset(keyless)
         #: every key-less table created, with the key this backend keeps for it
         self._keyless: dict[str, tuple[str, ...]] = {}
+        #: every table created, with the columns it holds NOT NULL (its primary key's)
+        self._not_null: dict[str, frozenset[str]] = {}
         self._db: Any = None  # duckdb.DuckDBPyConnection
         self._initialized: bool = False
         self._schema_info: dict[str, dict[str, str]] = {}
@@ -630,6 +674,7 @@ class DuckDBBackend:
                     continue
                 self._db.execute(self._generate_create_table(table))
                 self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
+                self._not_null[table.name] = frozenset(col.name for col in table.columns if col.primary_key)
                 if table.name in self._keyless_names:
                     self._keyless[table.name] = tuple(col.name for col in table.columns if col.primary_key)
                 new_tables += 1
@@ -1123,7 +1168,8 @@ class DuckDBBackend:
         :rtype: pyarrow.Table
         :raises ValueError: when the table or column is unknown
         :raises KeyError: when an Arrow table lacks a key column
-        :raises duckdb.ConstraintException: when a row's key column is null, as the table refuses it
+        :raises duckdb.ConstraintException: when a row's key column is null where the table holds it NOT NULL, as the
+            table refuses it
         """
         condition, params = self._partition_filter(table, column, value)
         schema = self._schema_info[table]
@@ -1137,8 +1183,11 @@ class DuckDBBackend:
             columns, lists = self._serialized(table, rows, primary_key)
             nulls = {name: None in lists[index] for index, name in enumerate(columns)}
             arrow = _as_arrow(f"an export of {table}", lists) if rows else None
+        # the table refuses a NULL only in a column it holds NOT NULL (its own key's): a key given here may name a
+        # column it holds nullable (a scoped snapshot's key, a NULL in it read as its own group)
+        refused = self._not_null.get(table, frozenset(self._pk_columns(primary_key)))
         for key in self._pk_columns(primary_key):
-            if nulls.get(key):
+            if nulls.get(key) and key in refused:
                 raise duckdb.ConstraintException(f"NOT NULL constraint failed: {table}.{key}")
         order = ", ".join(quote_identifier(c) for c in order_by)
         given = {name: f"c{index}" for index, name in enumerate(columns)}
@@ -1473,39 +1522,14 @@ class DuckDBBackend:
         return [dict(zip(columns, row)) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for DuckDB storage based on column type.
+        """Serialize a Python value for DuckDB storage based on column type (:func:`stored_value`).
 
         JSON values encode with the storage handler every tier shares
         (:func:`~threetears.core.backends.schema_sql.json_default`), as the SQLite L1 does: a
         nested UUID, Decimal or datetime is cached as the string the other tiers store, where a
         bare ``json.dumps`` raised on it.
         """
-        if value is None:
-            return None
-
-        result: Any = value
-        scale = _decimal_code_scale(col_type)
-
-        if scale is not None and not isinstance(value, bool):
-            result = stored_decimal(value, scale)
-        elif isinstance(value, enum.Enum):
-            result = value.value
-        elif isinstance(value, dict):
-            result = json.dumps(value, default=json_default)
-        elif isinstance(value, _UUID_TYPES):
-            result = str(value)
-        elif isinstance(value, datetime):
-            result = value.isoformat()
-        elif isinstance(value, bool):
-            result = value  # DuckDB has native BOOLEAN
-        elif isinstance(value, Decimal):
-            result = float(value)
-        elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value), default=json_default)
-        elif isinstance(value, bytes):
-            result = value.hex()
-
-        return result
+        return stored_value(value, col_type)
 
     def deserialize_field(self, value: Any, col_type: str) -> Any:
         """Deserialize a single DuckDB value back to the correct Python type."""
@@ -1583,6 +1607,16 @@ class DuckDBBackend:
     def is_initialized(self) -> bool:
         """Return True if the backend has been initialized."""
         return self._initialized
+
+    def not_null_columns(self, table: str) -> frozenset[str]:
+        """the columns of a table this backend holds NOT NULL: its primary key's; every other may hold NULL.
+
+        :param table: the table
+        :ptype table: str
+        :return: the columns (empty for a table it does not know)
+        :rtype: frozenset[str]
+        """
+        return self._not_null.get(table, frozenset())
 
     def has_table(self, table: str) -> bool:
         """Return True if ``table`` was registered via ``initialize()`` (see

@@ -59,9 +59,10 @@ class _Catalog:
                 self.entries.setdefault(key, value)
 
     async def write_back(self, bucket: Any) -> None:
-        self.write_backs += 1
+        # counted once every put has landed: a test waiting on the count then reads a finished write-back
         for key, value in self.entries.items():
             await bucket.put(key=key, value=value)
+        self.write_backs += 1
 
 
 async def _until(condition: Any) -> None:
