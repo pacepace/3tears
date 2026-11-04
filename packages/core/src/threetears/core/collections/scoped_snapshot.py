@@ -5221,8 +5221,11 @@ class ScopedSnapshot:
         seen = self._seen.get(scope)
         if seen is not None and seen.epoch >= epoch and self._loadable(seen):
             return None
-        self._keep_reads(scope, passed)
         pointer = await self._publish_rows(scope, epoch, composed)
+        # counted only once the rows are published: a publish that raised (a lost claim, a full store) or did not
+        # move the pointer put nothing in the copy, so its reads are no evidence the L1 failed to keep them
+        if pointer is not None:
+            self._keep_reads(scope, passed)
         log.info(
             "scoped snapshot %s: scope %r brought forward from the diff, epoch %d to %d",
             self._name,

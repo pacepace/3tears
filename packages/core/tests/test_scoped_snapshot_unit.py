@@ -6317,6 +6317,58 @@ async def test_a_group_read_by_diffs_that_failed_is_still_read_once_one_can_publ
     await snapshot.stop()
 
 
+class _FailingPuts(_Store):
+    """the chunk store, refusing the next ``failures[0]`` puts as a full or unreachable store does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = [0]
+
+    async def put(self, name: str, data: bytes) -> None:
+        if self.failures[0]:
+            self.failures[0] -= 1
+            raise OSError("the store is full")
+        await super().put(name, data)
+
+
+async def test_a_group_read_by_diffs_whose_publish_failed_is_still_read_once_one_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the breaker counted a diff's reads before its publish: a run a write changed in place, read by two diffs whose
+    publish then raised (a full store), was skipped by the third, which published it stale. Reads count only once the
+    publish moved the pointer."""
+    l3 = _thinned_l3()
+
+    async def runs(l3: Any, scope: str) -> list[str]:
+        return ["r1"]
+
+    metadata = MetaData()
+    _thin_schema().to_sqlalchemy_table(metadata)
+    backend = _HistoryOnly()
+    backend.initialize(metadata)
+    store = _FailingPuts()
+    snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(_partial_table("runs", runs),), backend=backend, store=store)
+    l3.epochs = {"TX": 1}
+    await _started(snapshot, pointers)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    # write 2 changes a kept run's row in place: stamped, its count the same
+    _set(l3, "r1.h0", 10)
+    l3.epochs["TX"] = 2
+    failures = store.failures = [2]
+    for _ in range(2):
+        with contextlib.suppress(OSError):
+            await snapshot.catch_up()
+        # past the retry's wait, however long the backoff of a failure that repeats has grown
+        clock.ahead += 901
+    assert failures == [0], "the publish was not reached twice"
+
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert ("r1", "r1.h0", 10) in _thinned_held(backend), "the changed run was published stale"
+    await snapshot.stop()
+
+
 class _PhantomL3(_SqlL3):
     """the SQLite L3 a racing write runs beside: while ``phantoms``, each read of TX's rows sees a row the write
     added and took back (a count before it never saw it, a count after it never sees it)."""
