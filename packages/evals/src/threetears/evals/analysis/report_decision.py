@@ -1,10 +1,10 @@
-"""What code decides before the planner writes: the caveats a report input carries, which of them are immaterial, the
-options that survive, which one dominates, and so the modes a plan may take.
+"""What code decides about a report input: the caveats it carries, which of them are immaterial, the options that
+survive, which one dominates, and so the modes a report may take (:func:`decision_at`).
 
-The planner chooses the mode only from :func:`allowed_modes`, states its confidence against the caveats
-:func:`report_caveats` lists, and never mentions a caveat :func:`caveat_materiality` proved immaterial; code renders
-that one's checked line. :mod:`threetears.evals.analysis.report_plan_checks` refuses a plan that departs from any of
-it.
+A report states its confidence against the caveats :func:`report_caveats` lists, and never mentions a caveat
+:func:`caveat_materiality` proved immaterial; code renders that one's checked line. The report document's invariants
+and the editor's facts
+(:mod:`~threetears.evals.analysis.report_doc_facts`) read the same decisions.
 
 **Caveat ids.** Every entry of the report input's ``caveats`` gets one stable id, the same vocabulary the plan's flag,
 confidence clauses and landing lists use:
@@ -61,8 +61,8 @@ it), and an unsettled aspect whose unsettled candidates include the option code'
 one option dominating, which the plan must recommend). Report-wide caveats are what the decision's confidence is
 conditional on. *Scoped*: a confound or short run touching only some comparisons, and an unsettled aspect on no
 option code's decision names, said beside the claim it qualifies; where the plan itself recommends an unsettled
-candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too
-(:mod:`~threetears.evals.analysis.report_plan_checks`). *Method-level*: latency, an unreported observation, and an
+candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too.
+*Method-level*: latency, an unreported observation, and an
 apparatus confound that is not report-wide.
 
 **Unsettled past the margin.** A reading is left unsettled past its margin when it is not within the margin (the one
@@ -116,7 +116,7 @@ survivor on every axis that matters:
   arm is at least as good as another unless a pair reading on an asked aspect shows the other ahead of it. With no
   asked reading, pair or floor, the aspect ties.
 
-**Modes** (:func:`allowed_modes`, GENERATOR §1.1), read in this order:
+**Modes** (:func:`decision_at`'s ``modes``, GENERATOR §1.1), read in this order:
 
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
    when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
@@ -156,13 +156,13 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
+#: ``report_kind`` is this module's own step: nothing outside it reads it.
 __all__ = [
     "AskedStanding",
     "Caveat",
     "DecisionAt",
     "ImpliedCaveat",
     "Materiality",
-    "allowed_modes",
     "asked_standing",
     "caveat_materiality",
     "control_arm",
@@ -173,8 +173,6 @@ __all__ = [
     "floors_not_held",
     "late_subject",
     "report_caveats",
-    "report_kind",
-    "separated_by",
     "separating_contrasts",
     "shown_better",
     "StandingWord",
@@ -811,25 +809,6 @@ def _reading_separates(report_input: ReportInput, arm: str, overrides: _Override
     return False if seen else None
 
 
-def separated_by(report_input: ReportInput, arm: str) -> frozenset[str]:
-    """What separates a candidate from the control on the asked aspects, as declared: ``reading`` where an asked
-    reading does (its interval clear of zero, or within the margin), ``contrast`` where a contrast on an asked aspect
-    does (:func:`separating_contrasts`). Empty where nothing does. The one test :func:`allowed_modes` reads a change's
-    separation by, and the report plan's spine too.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param arm: The candidate's id.
-    :ptype arm: str
-    :return: ``reading``, ``contrast``, both or neither.
-    :rtype: frozenset[str]
-    """
-    found = {"contrast"} if separating_contrasts(report_input, arm) else set()
-    if _reading_separates(report_input, arm, _Overrides()):
-        found.add("reading")
-    return frozenset(found)
-
-
 def _separable(report_input: ReportInput, arm: str, overrides: _Overrides) -> bool | None:
     """Whether a candidate's asked evidence separates it: a separating contrast on an asked aspect
     (:func:`separating_contrasts`), or its asked readings (at the margins ``overrides`` sets). None where it has
@@ -926,17 +905,6 @@ def _outcome(report_input: ReportInput, overrides: _Overrides) -> _Outcome:
     return frozenset({"tradeoff"}), ()
 
 
-def allowed_modes(report_input: ReportInput) -> frozenset[str]:
-    """The modes a plan for this input may take (this module's Modes).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :return: The allowed modes, of ``decide``, ``tradeoff`` and ``no_call``.
-    :rtype: frozenset[str]
-    """
-    return _outcome(report_input, _Overrides())[0]
-
-
 #: An axis code's decision weighs, as the snapshot declares it (:func:`weighed_axes`).
 DecisionAxis = Literal["gates", "control", "asked", "ranking", "cost"]
 
@@ -950,7 +918,7 @@ def weighed_axes(report_input: ReportInput) -> tuple[DecisionAxis, ...]:
     Where nothing but cost is declared, this module's dominance rule reduces to a cost ranking: every survivor ties
     on the other axes, so the cheapest dominates. The analyst's analyses read that as no dominance call
     (:mod:`~threetears.evals.analysis.analyst.analyses`), since nothing declared says the cheapest is good enough; the
-    planner's :func:`allowed_modes` reads the rule as it stands.
+    modes :func:`decision_at` reads apply the rule as it stands.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -976,7 +944,7 @@ class DecisionAt:
     """The decision code makes at given values of the late criteria it can sweep: the allowed modes, and the one option
     that dominates.
 
-    :ivar modes: The allowed modes, as :func:`allowed_modes` reads them at those values.
+    :ivar modes: The allowed modes at those values (this module's Modes).
     :ivar dominant: The one option that dominates there; empty when none does alone.
     """
 

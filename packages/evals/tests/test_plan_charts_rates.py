@@ -6,13 +6,14 @@ stored plan draws are held on charts of the same inputs. The expected side is al
 rows a query selects, :func:`~threetears.evals.analysis.report_rows.query_rows`, the criteria, the target matrix,
 the gate check), never typed in.
 
-- **The pin.** Every (kind, source) pair the plan checks accept (read through ``validate_plan``, which refuses a kind
+- **The pin.** Every (kind, source) pair the chart checks accept (read through ``chart_faults``, which refuses a kind
   over a source it cannot draw) resolves on some r1–r5 input: a chart of that kind over that source draws.
 - **Each kind** draws what its query selects, every value the input's, validated as its kit chart model; small
   multiples a panel per arm, per axis or per slice; every line the stored one, else its criterion's; a dot strip's
   intervals its figures' own, else, where its stored level says ``computed``, the binomial one their ``spread`` key
   reads, named as code's.
-- **Checks and renderer agree** on a chart drawn as each arm less the control: both refuse it on an input with no
+- **Checks and renderer agree** on a chart drawn as each arm less the control: the chart checks (those
+  ``block_render`` holds a block to) and the resolver both refuse it on an input with no
   control, and both take it on one with a control, or a difference heatmap naming its two arms.
 - **Markup** in input names is text on the page.
 """
@@ -22,7 +23,7 @@ from __future__ import annotations
 import functools
 import itertools
 import math
-from pathlib import Path
+from dataclasses import replace
 from typing import Any, Literal, get_args
 
 import pytest
@@ -30,12 +31,17 @@ import pytest
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
-from packages.evals.tests.plan_charts_support import anchor_look, charts_html, charts_markdown, drawn_charts
-from packages.evals.tests.report_kit_support import KIT
+from packages.evals.tests.plan_charts_support import (
+    StoredCharts,
+    anchor_look,
+    charts_html,
+    charts_markdown,
+    drawn_charts,
+    stored_charts,
+)
 from packages.evals.tests.static_page_support import assert_static
 from threetears.evals.analysis import ChartBlock, TableBlock
-from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
-from threetears.evals.kernel.report_plan import plan_recommended_arm
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import (
     KIT_CHARTS,
     ChartReference,
@@ -55,16 +61,14 @@ from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
-from threetears.evals.analysis.report_plan_checks import validate_plan
-from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report.block_spec import block_look, chart_faults, small_multiple_faults
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, ReportPlan
+from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
-REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
 
 #: This module's kinds.
 _MINE = frozenset({"dot_interval", "range_bars", "scatter_frontier", "heatmap", "diff_heatmap", "confusion", "table"})
@@ -76,12 +80,13 @@ def _input(name: str) -> ReportInput:
 
 
 @functools.cache
-def _plan(path: Path) -> ReportPlan:
-    return dataset.load_plan(path)
+def _plan(name: str) -> StoredCharts:
+    """A stored plan's charts by fixture name (``r1-anchor``, ``r5-run``, ``r5-reference``)."""
+    return stored_charts(name)
 
 
-def _anchor(name: str) -> ReportPlan:
-    return _plan(dataset.HERE / name / "anchor.plan.json")
+def _anchor(name: str) -> StoredCharts:
+    return _plan(f"{name}-anchor")
 
 
 def _query(source: str, **fields: Any) -> ChartQuery:
@@ -160,11 +165,6 @@ def _draw(name: str, spec: ChartSpec) -> PageChart:
     return resolve_chart(spec, _variant(name), _look(name), title="chart")
 
 
-def _one_section(plan: ReportPlan, spec: ChartSpec) -> ReportPlan:
-    section = plan.sections[0].model_copy(update={"chart": spec})
-    return plan.model_copy(update={"summary": [], "sections": [section]})
-
-
 def _data(drawn: PageChart) -> Any:
     block = drawn.chart
     assert isinstance(block, ChartBlock) and block.data is not None
@@ -182,20 +182,23 @@ _KINDS: tuple[str, ...] = get_args(ChartSpec.model_fields["kind"].annotation)
 _SOURCES: tuple[str, ...] = get_args(ChartQuery.model_fields["source"].annotation)
 
 
+def _chart_checks(spec: ChartSpec, report_input: ReportInput) -> list[tuple[str, str]]:
+    """What the chart checks refuse ``spec`` for on ``report_input`` (the ones ``block_render`` holds a block to), each
+    at its field path under ``chart``."""
+    return [*chart_faults("chart", spec, report_input), *small_multiple_faults("chart", spec)]
+
+
 def _accepted_pairs() -> list[tuple[str, str]]:
-    """Every (kind, source) pair the plan checks accept: those for which ``validate_plan`` names no kind fault."""
-    plan, report_input = _anchor("r5"), _input("r5")
-    index = len(plan.sections)
-    accepted = []
-    for kind, source in itertools.product(_KINDS, _SOURCES):
-        section = plan.sections[-1].model_copy(update={"id": "pin", "chart": _spec(kind, _query(source))})
-        try:
-            validate_plan(plan.model_copy(update={"sections": [*plan.sections, section]}), report_input)
-        except PlanRefusal as refused:
-            if any(path == f"sections[{index}].chart.kind" and "cannot draw" in why for path, why in refused.faults):
-                continue
-        accepted.append((kind, source))
-    return accepted
+    """Every (kind, source) pair the chart checks accept: those for which ``chart_faults`` names no kind fault."""
+    report_input = _input("r5")
+    return [
+        (kind, source)
+        for kind, source in itertools.product(_KINDS, _SOURCES)
+        if not any(
+            path == "chart.kind" and "cannot draw" in why
+            for path, why in _chart_checks(_spec(kind, _query(source)), report_input)
+        )
+    ]
 
 
 _PAIRS = _accepted_pairs()
@@ -273,12 +276,10 @@ def test_the_pin_reads_every_kind_and_the_table_draws_every_source() -> None:
 def _stored() -> list[Any]:
     found = []
     for name in INPUTS:
-        paths = [("anchor", dataset.HERE / name / "anchor.plan.json"), ("run", dataset.current_run(name))]
-        if name == "r5":
-            paths.append(("reference", REFERENCE_PLAN))
-        for label, path in paths:
-            plan = _plan(path)
-            for spec in [*plan.summary, *(section.chart for section in plan.sections)]:
+        labels = ["anchor", "run", *(["reference"] if name == "r5" else [])]
+        for label in labels:
+            path = f"{name}-{label}"
+            for spec in _plan(path).charts():
                 if spec.kind in _MINE:
                     found.append(pytest.param(name, path, spec, id=f"{name}-{label}-{spec.kind}-{spec.query.source}"))
     return found
@@ -296,8 +297,8 @@ def test_the_stored_plans_draw_each_of_this_modules_kinds_they_use() -> None:
 
 
 @pytest.mark.parametrize(("name", "path", "spec"), _STORED)
-def test_every_stored_chart_of_this_modules_kinds_resolves_on_its_input(name: str, path: Path, spec: ChartSpec) -> None:
-    ((_, drawn),) = drawn_charts(_one_section(_plan(path), spec), _input(name))
+def test_every_stored_chart_of_this_modules_kinds_resolves_on_its_input(name: str, path: str, spec: ChartSpec) -> None:
+    ((_, drawn),) = drawn_charts(_plan(path).with_one_section(spec), _input(name))
     data = _data(drawn)
     assert drawn.chart.chart == spec.kind  # type: ignore[union-attr]
     assert isinstance(data, KIT_CHARTS[spec.kind])
@@ -326,7 +327,7 @@ def _stored_of(kind: str) -> list[Any]:
 
 @pytest.mark.parametrize(("name", "path", "spec"), _stored_of("heatmap"))
 def test_a_heatmap_of_cells_draws_the_target_matrix_its_counts_and_the_cell_floor(
-    name: str, path: Path, spec: ChartSpec
+    name: str, path: str, spec: ChartSpec
 ) -> None:
     report_input = _input(name)
     matrix = report_input.target_matrix
@@ -356,7 +357,7 @@ def test_a_heatmap_of_cells_draws_the_target_matrix_its_counts_and_the_cell_floo
 
 @pytest.mark.parametrize(("name", "path", "spec"), _stored_of("confusion"))
 def test_a_confusion_matrix_is_the_axis_table_of_each_arm_labelled_by_level_names(
-    name: str, path: Path, spec: ChartSpec
+    name: str, path: str, spec: ChartSpec
 ) -> None:
     report_input = _input(name)
     data = _data(_draw(name, spec))
@@ -379,7 +380,7 @@ def test_a_confusion_matrix_is_the_axis_table_of_each_arm_labelled_by_level_name
 
 @pytest.mark.parametrize(("name", "path", "spec"), _stored_of("dot_interval"))
 def test_a_dot_strip_marks_each_figure_against_its_criterions_line_hollow_where_it_misses(
-    name: str, path: Path, spec: ChartSpec
+    name: str, path: str, spec: ChartSpec
 ) -> None:
     """A strip per task the query selects (one strip drawn alone, several as panels titled by task), or one strip of
     the arms' overall figures; each figure's interval is its own, else, where the stored level says ``computed``, the
@@ -757,14 +758,7 @@ def _assert_a_row_per_slice_and_arm(name: str, source: str, block: TableBlock, s
 
 
 def _section_faults(name: str, spec: ChartSpec) -> list[tuple[str, str]]:
-    plan = _anchor(name.partition("+")[0].partition("-")[0])
-    section = plan.sections[-1].model_copy(update={"id": "probe", "chart": spec})
-    index = len(plan.sections)
-    try:
-        validate_plan(plan.model_copy(update={"sections": [*plan.sections, section]}), _variant(name))
-    except PlanRefusal as refused:
-        return [(path, why) for path, why in refused.faults if path.startswith(f"sections[{index}].chart")]
-    return []
+    return _chart_checks(spec, _variant(name))
 
 
 @pytest.mark.parametrize("source", ["measures", "judged", "strata", "tasks"])
@@ -826,12 +820,8 @@ def test_markup_in_input_names_is_text_where_a_page_lays_out_this_modules_kinds(
         _spec("dot_interval", _query("measures", measures=["balanced_accuracy"])),
         _spec("table", _query("cells", arms=arms)),
     ]
-    sections = [
-        plan.sections[0].model_copy(update={"id": f"s{index}", "chart": spec}) for index, spec in enumerate(specs)
-    ]
-    charts = [
-        drawn for _, drawn in drawn_charts(plan.model_copy(update={"summary": [], "sections": sections}), report_input)
-    ]
+    sections = [replace(plan.sections[0], id=f"s{index}", chart=spec) for index, spec in enumerate(specs)]
+    charts = [drawn for _, drawn in drawn_charts(replace(plan, summary=[], sections=sections), report_input)]
     html = charts_html(charts)
     assert what_runs(html) == []
     assert HOSTILE_LINE not in html, "no name is written into the page as markup"
@@ -904,7 +894,7 @@ def test_a_frontier_labels_every_point_up_to_eight_else_only_the_stressed_and_re
         )
     )
     assert isinstance(data, ScatterChart) and data.points
-    stressed = {data.emphasis, plan_recommended_arm(plan)} - {None, ""}
+    stressed = {data.emphasis, plan.recommended} - {None, ""}
     labelled = {point.id for point in data.points if point.label}
     if len(data.points) <= 8:
         assert labelled == {point.id for point in data.points}

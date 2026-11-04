@@ -8,8 +8,8 @@ and the data into the built page committed beside them. Two contracts hold for e
 - ``scripts/check.py`` passes on the built page at 1200 and 390 px, light and dark: no console errors, no
   sideways scroll, nothing past the right edge, no overlapping chart labels (GENERATOR.md §8, items 1-3).
 
-- the Kairo page says what its plan says (``references/r5-kairo-round2.plan.json``), so the two cannot drift apart
-  silently: each evidence section's eyebrow, and its headline and takeaway where the page source writes them as
+- the Kairo page says what the plan it was written from says (the retired report planner's reference plan, kept as
+  ``fixtures/plan_charts/r5-reference.json``), so the two cannot drift apart silently: each evidence section's eyebrow, and its headline and takeaway where the page source writes them as
   text, are the plan's, read off the source with no browser; and its headline, lede, four decision slots, every
   Method pair and the example cards it draws (the rows the plan's examples query selects), as the browser draws
   them.
@@ -23,18 +23,24 @@ cannot launch either skips and says why; a skip there is a missing browser, neve
 
 from __future__ import annotations
 
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from packages.evals.tests.report_kit_support import KIT, chromium_unavailable, render_checked, rendered, run_script
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ReportPlan
+from threetears.evals.kernel.report_plan import ChartQuery
+
+#: The plan the Kairo page was written from, as the retired report planner's reference plan stored it.
+KAIRO_PLAN = PLAN_CHARTS / "r5-reference.json"
 
 REFERENCES = sorted(p.name.removesuffix(".src.html") for p in (KIT / "references").glob("*.src.html"))
 
@@ -102,18 +108,18 @@ def test_the_kairo_page_says_what_its_plan_says(tmp_path: Path) -> None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     page, errors = rendered(_build("r5-kairo-round2", tmp_path), _KAIRO_PROSE_PROBE)
     assert errors == []
-    plan = dataset.load_plan(KIT / "references" / "r5-kairo-round2.plan.json")
+    plan = _kairo_plan()
     report_input = dataset.report_input_of("r5")
 
     def written(text: str) -> str:
         return _said(re.sub(r" \([A-Z]\)", "", render(text, report_input, {})))
 
-    slots = {slot.key: slot.text for slot in plan.decision.slots}
+    slots = {slot["key"]: slot["text"] for slot in plan["decision"]["slots"]}
     wanted = {
-        "headline": written(plan.headline),
-        "lede": written(plan.lede),
+        "headline": written(plan["headline"]),
+        "lede": written(plan["lede"]),
         **{key: written(slots[key]) for key in ("recommendation", "why_not", "watch", "next")},
-        "method": [[written(item.term), written(item.text)] for item in plan.method],
+        "method": [[written(item["term"]), written(item["text"])] for item in plan["method"]],
     }
     cards = page.pop("cards")
     drawn = {
@@ -124,11 +130,16 @@ def test_the_kairo_page_says_what_its_plan_says(tmp_path: Path) -> None:
     assert cards == _example_rows(plan, report_input), "the cards are the rows the plan's examples query selects"
 
 
-def _example_rows(plan: ReportPlan, report_input: ReportInput) -> list[str]:
-    """The trials the plan's examples section selects, as the plan checks and a page read its query
+def _kairo_plan() -> dict[str, Any]:
+    loaded: dict[str, Any] = json.loads(KAIRO_PLAN.read_text(encoding="utf-8"))
+    return loaded
+
+
+def _example_rows(plan: dict[str, Any], report_input: ReportInput) -> list[str]:
+    """The trials the plan's examples section selects, as a page reads its query
     (:func:`~threetears.evals.analysis.report_rows.query_rows`)."""
-    (section,) = [section for section in plan.sections if section.chart.query.source == "examples"]
-    return [row.label for row in query_rows(section.chart.query, report_input)]
+    (query,) = [s["chart"]["query"] for s in plan["sections"] if s["chart"]["query"]["source"] == "examples"]
+    return [row.label for row in query_rows(ChartQuery.model_validate(query), report_input)]
 
 
 class _SectionHeaders(HTMLParser):
@@ -171,16 +182,16 @@ def test_the_kairo_sources_section_headers_are_its_plans() -> None:
     parsed = _SectionHeaders()
     parsed.feed((KIT / "references" / "r5-kairo-round2.src.html").read_text(encoding="utf-8"))
     by_eyebrow = {_said(header["eyebrow"]): header for header in parsed.headers if header["eyebrow"]}
-    plan = dataset.load_plan(KIT / "references" / "r5-kairo-round2.plan.json")
+    plan = _kairo_plan()
     report_input = dataset.report_input_of("r5")
     compared = 0
-    for section in plan.sections:
-        eyebrow = _said(render(section.eyebrow, report_input, {}))
+    for section in plan["sections"]:
+        eyebrow = _said(render(section["eyebrow"], report_input, {}))
         assert eyebrow in by_eyebrow, f"the page has no section headed {eyebrow!r}"
         header = by_eyebrow[eyebrow]
         for field in ("headline", "takeaway"):
             written = header[field]
             if written is not None:
-                assert _said(written) == _said(render(getattr(section, field), report_input, {})), (eyebrow, field)
+                assert _said(written) == _said(render(section[field], report_input, {})), (eyebrow, field)
                 compared += 1
     assert compared >= 3, "the source writes at least the examples' headline and two takeaways as text"

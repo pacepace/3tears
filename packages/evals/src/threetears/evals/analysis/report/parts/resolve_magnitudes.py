@@ -18,8 +18,8 @@ than ten times, by the page's one log rule, which a caption says):
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
-(:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`). A summary chart's rows follow the options
-table, fade an arm that does not survive the gates and bold the recommended one (GENERATOR §5.3). A figure without a mean is drawn at the statistic a criterion on it reads, else its
+(:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`). A figure without a mean is drawn at the
+statistic a criterion on it reads, else its
 p95, which a caption says. A floor or budget line sits at its criterion's threshold.
 
 **lines** draw a value over an ordered x, a line per arm:
@@ -453,10 +453,6 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
     note = figure_text(bar.value, drawn) + (f" ({share})" if share is not None else "")
     if share is not None:
         tip[1] += f" ({share})"
-    strong = muted = None
-    if context.summary and bar.arm:
-        strong = True if bar.arm == context.look.recommended else None
-        muted = True if bar.arm not in context.look.survivors else None
     return BarRow(
         id=bar.id,
         label=bar.label,
@@ -466,8 +462,6 @@ def _bar_row(context: ChartContext, bar: _Bar, drawn: Quantity) -> BarRow:
         lo=interval[0] if interval is not None else open_from,
         hi=interval[1] if interval is not None else None,
         color=bar.color,
-        strong=strong,
-        muted=muted,
         note=note,
         tip=tip,
         group=bar.group or None,
@@ -734,9 +728,7 @@ def _lines(context: ChartContext) -> Drawn:
                 color=arm.token if arm is not None else None,
                 lo=[low for low, _ in bands] if bands else None,
                 hi=[high for _, high in bands] if bands else None,
-                strong=True
-                if line.arm == context.emphasis or (context.summary and line.arm == context.look.recommended)
-                else None,
+                strong=True if line.arm == context.emphasis else None,
             )
         )
     domain = context.spec.domain or band_domain(ends, drawn)

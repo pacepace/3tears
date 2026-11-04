@@ -9,7 +9,7 @@ committed plan draws yet. The expected side is always computed from the input, n
 (:func:`~threetears.evals.analysis.report_rows.query_rows`) and the factors and configs.
 
 - **Every chart of these kinds resolves** to its own kind, the kit's model validates it, and its values table holds
-  every row; every (kind, source) pair the plan checks accept for these kinds draws on some input.
+  every row; every (kind, source) pair the chart checks accept for these kinds draws on some input.
 - **Gate matrix over tasks** (r1): a cell per task and arm, its pill GENERATOR §3's colour for the task-narrowed
   check and its word, its reasons the failures else the borderline, its cost the task's own per 1,000 replies, the
   routing pick marked; a cross-cutting task flagged. A task no gate is read in states no status (drawn
@@ -29,7 +29,6 @@ from __future__ import annotations
 import functools
 import math
 from itertools import product
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,7 +36,14 @@ import pytest
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
-from packages.evals.tests.plan_charts_support import anchor_look, charts_html, charts_markdown, drawn_charts
+from packages.evals.tests.plan_charts_support import (
+    StoredCharts,
+    anchor_look,
+    charts_html,
+    charts_markdown,
+    drawn_charts,
+    stored_charts,
+)
 from threetears.evals.analysis import (
     ChartBlock,
     GateMatrixChart,
@@ -54,7 +60,7 @@ from threetears.evals.analysis.report_gates import gate_check, routing_picks, ta
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan
+from threetears.evals.kernel.report_plan import ChartSpec
 
 #: The kinds this file holds.
 _KINDS = frozenset({"gate_matrix", "gate_scatter", "lattice"})
@@ -63,14 +69,7 @@ _KINDS = frozenset({"gate_matrix", "gate_scatter", "lattice"})
 _STATUS_COLOUR = {"pass": "good", "borderline": "warn", "fail": "bad"}
 
 
-def _plan_paths() -> list[tuple[str, str, Path]]:
-    found = []
-    for name in ("r1", "r2", "r3", "r4", "r5"):
-        found += [(name, "anchor", dataset.HERE / name / "anchor.plan.json"), (name, "run", dataset.current_run(name))]
-    return found
-
-
-_PLANS = _plan_paths()
+_PLANS = [(name, label) for name in ("r1", "r2", "r3", "r4", "r5") for label in ("anchor", "run")]
 
 
 @functools.cache
@@ -79,21 +78,21 @@ def _input(name: str) -> ReportInput:
 
 
 @functools.cache
-def _plan(path: Path) -> ReportPlan:
-    return dataset.load_plan(path)
+def _plan(name: str, label: str = "anchor") -> StoredCharts:
+    return stored_charts(f"{name}-{label}")
 
 
 @functools.cache
-def _drawn(name: str, path: Path) -> list[tuple[ChartSpec, PageChart]]:
-    return drawn_charts(_plan(path), _input(name))
+def _drawn(name: str, label: str) -> list[tuple[ChartSpec, PageChart]]:
+    return drawn_charts(_plan(name, label), _input(name))
 
 
 def _stored_charts() -> list[Any]:
     """Every chart of these kinds a committed plan draws, beside its input, as parameters."""
     found = []
-    for name, label, path in _PLANS:
-        summaries = len(_plan(path).summary)
-        for index, (spec, drawn) in enumerate(_drawn(name, path)):
+    for name, label in _PLANS:
+        summaries = len(_plan(name, label).summary)
+        for index, (spec, drawn) in enumerate(_drawn(name, label)):
             block, summary = drawn.chart, index < summaries
             if spec.kind in _KINDS:
                 assert isinstance(block, ChartBlock)
@@ -143,9 +142,7 @@ def _spec(kind: str, source: str, **query: Any) -> ChartSpec:
 
 def _draw(name: str, spec: ChartSpec) -> tuple[ChartBlock, list[str]]:
     """The chart as the input's own anchor plan draws it in its first section."""
-    plan = _plan(dataset.HERE / name / "anchor.plan.json")
-    section = plan.sections[0].model_copy(update={"chart": spec})
-    ((_, drawn),) = drawn_charts(plan.model_copy(update={"summary": [], "sections": [section]}), _input(name))
+    ((_, drawn),) = drawn_charts(_plan(name).with_one_section(spec), _input(name))
     block = drawn.chart
     assert isinstance(block, ChartBlock)
     return block, drawn.notes
@@ -163,7 +160,7 @@ def _threshold(report_input: ReportInput, criterion: Criterion) -> float:
 
 # --- every chart --------------------------------------------------------------------------------------------------
 
-#: Every (kind, source) pair the plan checks accept for these kinds, each drawn on an input that holds it.
+#: Every (kind, source) pair the chart checks accept for these kinds, each drawn on an input that holds it.
 _PAIRS = [
     ("gate_matrix", "tasks", "r1", {}),
     ("gate_matrix", "readings", "r5", {}),
@@ -258,9 +255,7 @@ def test_a_task_matrix_prices_its_costs_per_what_the_task_cost_measure_counts() 
     costed = [task.id for task in held.tasks if task_costs(held, task.id)]
     assert costed, "the control: some task states a cost"
     assert all(task_costs(held, task).measure == key for task in costed)
-    plan = _plan(dataset.HERE / "r1" / "anchor.plan.json")
-    section = plan.sections[0].model_copy(update={"chart": _spec("gate_matrix", "tasks")})
-    ((_, drawn),) = drawn_charts(plan.model_copy(update={"summary": [], "sections": [section]}), held)
+    ((_, drawn),) = drawn_charts(_plan("r1").with_one_section(_spec("gate_matrix", "tasks")), held)
     block = drawn.chart
     assert isinstance(block, ChartBlock) and isinstance(block.data, GateMatrixChart)
     assert block.data.cost_unit == per_count(noun)
@@ -568,8 +563,7 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
 
 def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
     """The chart as the resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
-    plan = _plan(dataset.HERE / anchor / "anchor.plan.json")
-    drawn = resolve_chart(spec, report_input, anchor_look(plan, report_input), title="")
+    drawn = resolve_chart(spec, report_input, anchor_look(_plan(anchor), report_input), title="")
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart
 
@@ -634,8 +628,7 @@ def _hostile(report_input: ReportInput) -> ReportInput:
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r3"])
 def test_markup_in_the_names_these_charts_print_is_text_on_the_page(name: str) -> None:
-    plan = _plan(dataset.HERE / name / "anchor.plan.json")
-    charts = [drawn for _, drawn in drawn_charts(plan, _hostile(_input(name)))]
+    charts = [drawn for _, drawn in drawn_charts(_plan(name), _hostile(_input(name)))]
     assert {chart.chart.chart for chart in charts} & _KINDS
     html = charts_html(charts)
     assert what_runs(html) == []

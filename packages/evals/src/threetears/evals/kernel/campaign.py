@@ -32,7 +32,6 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.kernel.report_plan import ReportPlan
 from threetears.evals.schema.base import (
     CoreDocumentModel,
     CoreShapeModel,
@@ -1138,13 +1137,12 @@ class EvalReportPlan(EvalDocumentModel):
     Stored beside its :class:`EvalAnalysis`, under the id :func:`report_plan_id` derives from the analysis's, so the
     analysis names it (``EvalAnalysis.report_plan_id``) and it names the analysis back. Derived and regenerable, like
     the analysis: generating the campaign again writes a new analysis and a new plan, and
-    ``EvalStorage.drop_derived`` deletes it with the analyses. ``plan`` is the completed, checked
-    :class:`~threetears.evals.kernel.report_plan.ReportPlan`; its prose names figures by key, resolved against the
-    report input built from the analysis's frozen bundle, whose digest at generation is ``report_input_digest``.
+    ``EvalStorage.drop_derived`` deletes it with the analyses. ``plan`` is the plan as the report planner stored it,
+    as its ``report-plan/1`` JSON; its prose names figures by key, resolved against the report input built from the
+    analysis's frozen bundle, whose digest at generation is ``report_input_digest``.
 
-    ``plan`` is held as its ``report-plan/1`` JSON (``docs/eval-report-kit/schema/report-plan.schema.json``), checked
-    against the plan model on every construction and read, so a stored plan is always one the model accepts and one
-    whose shape moved is refused on read like every regenerable document.
+    The report planner is retired, and so is its plan model: ``plan`` is held verbatim and never validated or rendered,
+    so a stored plan still reads, and the regenerable sweep (``drop_derived``, ``analysis_delete``) still clears it.
     """
 
     id: str = Field(min_length=1, description="`report_plan_id(analysis_id)`.")
@@ -1171,16 +1169,6 @@ class EvalReportPlan(EvalDocumentModel):
         if v != "eval_report_plan":
             raise ValueError(f"doc_type must be 'eval_report_plan', got '{v}'")
         return v
-
-    @field_validator("plan")
-    @classmethod
-    def check_plan(cls, v: dict[str, Any]) -> dict[str, Any]:
-        """Refuse a plan the plan model does not accept, and keep it in the model's canonical JSON.
-
-        :raises ValueError: The plan does not validate as a ``ReportPlan``.
-        """
-        canonical: dict[str, Any] = ReportPlan.model_validate(v).model_dump(mode="json", by_alias=True)
-        return canonical
 
     @model_validator(mode="after")
     def check_id(self) -> EvalReportPlan:

@@ -5,16 +5,17 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
 
 - **every kind and source the catalog accepts**, on r1 to r5, the misfit inputs and Kairo round 2, renders or is
   refused, and never raises anything else; a line drawn on any block that renders does the same;
-- **each anchor plan's charts**, completed by today's code (a stored plan keeps the level code filled when it was
+- **each anchor plan's charts** (as the retired report planner's anchors stored them, ``fixtures/plan_charts/``),
+  completed by today's code (a stored plan keeps the level code filled when it was
   stored; only that may move), read the same values table, level, unit, axis and reference line through
   ``block_render`` as through the chart resolver under the plan's look;
 - **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
   per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
   every point by its reader name, never by an id the input names otherwise;
 - **block_render echoes** the reference line and emphasis it drew;
-- **one rule**: a chart the planner's completion refuses, by its checks or by the page, is refused by
-  ``block_render`` with the same reasons, each named by the parameter it sits at, every fault together;
-- **the catalog** lists every kind and source a page's chart takes, each kind's sources as the plan checks hold them,
+- **one rule**: a chart refused by the chart checks, the completion, the panels or the page is refused by
+  ``block_render`` with that layer's reasons, each named by the parameter it sits at, every fault together;
+- **the catalog** lists every kind and source a page's chart takes, each kind's sources as the chart checks hold them,
   the same on every input (no kind, shape or spine chosen for the analyst); what each source's rows are and the query
   fields that narrow them are the selection's own (a field it does not list never narrows a row, a field it lists
   narrows one somewhere); whether the snapshot holds rows is read off the data; the figure key forms are the
@@ -28,21 +29,19 @@ from collections import Counter
 import functools
 import json
 import re
-from copy import deepcopy
+from dataclasses import replace
 from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import anchor_look
+from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.blocks import RenderedBlock, block_catalog, block_render
 from threetears.evals.analysis.analyst.snapshot import frozen_input
-from threetears.evals.analysis.errors import PlanRefusal
 from threetears.evals.kernel.numbers import WHOLE_FROM, format_number
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
@@ -53,11 +52,9 @@ from threetears.evals.analysis.report.parts.look import quantity_of
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
-from threetears.evals.analysis.report_plan_checks import raised_warnings
-from threetears.evals.analysis.report_plan_facts import complete_plan
 from threetears.evals.analysis.report_rows import SourceRow, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart, PlannedReport
+from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
 ANCHORS = ("r1", "r2", "r3", "r4", "r5")
 
@@ -171,18 +168,15 @@ def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
 
 @pytest.mark.parametrize("name", ANCHORS)
 def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_the_resolver(name: str) -> None:
-    stored = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
+    stored = stored_charts(f"{name}-anchor")
     held = dataset.report_input_of(name)
-    plan = stored.model_copy(
-        update={
-            "summary": [_completed_now(spec, held) for spec in stored.summary],
-            "sections": [
-                section.model_copy(update={"chart": _completed_now(section.chart, held)}) for section in stored.sections
-            ],
-        }
+    plan = replace(
+        stored,
+        summary=[_completed_now(spec, held) for spec in stored.summary],
+        sections=[replace(section, chart=_completed_now(section.chart, held)) for section in stored.sections],
     )
     look = anchor_look(plan, held)
-    charts = [(spec, resolve_chart(spec, held, look, title=spec.title, summary=True)) for spec in plan.summary]
+    charts = [(spec, resolve_chart(spec, held, look, title=spec.title)) for spec in plan.summary]
     charts += [
         (section.chart, resolve_chart(section.chart, held, look, title=section.chart.title))
         for section in plan.sections
@@ -209,72 +203,14 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_
 
 def test_an_anchor_draws_a_forest_with_a_margin_line_and_an_axis_code_fixed() -> None:
     """The control for the comparison above: r5's forest of readings carries a level, an axis and its margin line."""
-    plan = dataset.load_plan(dataset.HERE / "r5" / "anchor.plan.json")
+    plan = stored_charts("r5-anchor")
     forests = [s.chart for s in plan.sections if s.chart.kind == "forest" and s.chart.query.source == "readings"]
     assert forests and forests[0].domain and forests[0].reference and forests[0].level
 
 
 # =============================================================================
-# One rule: what the planner's completion refuses, block_render refuses
+# One rule: each layer's refusal, by the parameter it sits at
 # =============================================================================
-
-
-def _probe_reply(name: str, chart: dict[str, Any]) -> tuple[dict[str, Any], int]:
-    """The anchor's reply with one probe section after its own, drawing ``chart``."""
-    plan: dict[str, Any] = json.loads((dataset.HERE / name / "anchor.plan.json").read_text(encoding="utf-8"))
-    rows = plan["options"]["rows"]
-    recommended = next((row["option"] for row in rows if row["role"] == "recommended"), None)
-    raised = raised_warnings(dataset.report_input_of(name), recommended) if recommended is not None else []
-    reply = planned_reply(plan, [warning.model_dump() for warning in raised])
-    probe = deepcopy(reply["sections"][-1])
-    probe.update(id="probe", eyebrow="Probe", headline="A probe chart", takeaway="", caption="", caveats=[])
-    reply["sections"].append(probe | {"chart": chart})
-    return reply, len(reply["sections"]) - 1
-
-
-#: Charts r2's planner completion refuses, each at another layer: the checks, the completion, the panels, the page.
-_REFUSED = {
-    "a kind that cannot draw its source, naming an arm the input lacks": {
-        "kind": "lattice",
-        "query": {"source": "readings", "arms": ["no-such-arm"]},
-        "reference": [],
-    },
-    "a line no figure sits at": {"kind": "bars", "query": {"source": "measures"}, "reference": ["no_preference"]},
-    "panels on a kind the kit does not panel": {
-        "kind": "gate_matrix",
-        "query": {"source": "tasks", "small_multiples_by": "arm"},
-        "reference": [],
-    },
-    "a chart the page cannot draw": {"kind": "bars", "query": {"source": "scoreboard"}, "reference": []},
-}
-
-
-@pytest.mark.parametrize("probe", list(_REFUSED))
-def test_a_chart_the_planner_completion_refuses_is_refused_by_block_render_for_the_same_reasons(probe: str) -> None:
-    chart = _REFUSED[probe]
-    written = {
-        "kind": chart["kind"],
-        "title": "",
-        "query": {**_EMPTY, **chart["query"]},
-        "reference": [{"kind": kind} for kind in chart["reference"]],
-        "emphasis": "",
-    }
-    reply, index = _probe_reply("r2", written)
-    with pytest.raises(PlanRefusal) as planned:
-        complete_plan(PlannedReport.model_validate(reply), dataset.report_input_of("r2"))
-    at = f"sections[{index}].chart"
-    whys = [why for path, why in planned.value.faults if path == at or path.startswith((f"{at}.", f"{at}["))]
-    assert whys, f"the probe is not refused by the planner: {planned.value.faults}"
-
-    with pytest.raises(RefusedInput) as refused:
-        block_render(
-            dataset.report_input_of("r2"),
-            block_kind=chart["kind"],
-            query=_query(**chart["query"]),
-            reference=chart["reference"][0] if chart["reference"] else None,
-        )
-    for why in whys:
-        assert why in refused.value.fault, f"{probe}: {why!r} is not in {refused.value.fault!r}"
 
 
 @pytest.mark.parametrize(

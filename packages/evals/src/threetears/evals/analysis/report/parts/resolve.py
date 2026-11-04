@@ -75,7 +75,6 @@ def resolve_chart(
     *,
     title: str,
     fallback_title: str = "",
-    summary: bool = False,
 ) -> PageChart:
     """Draw one stored chart: its kind's resolver reads its query off the input.
 
@@ -89,8 +88,6 @@ def resolve_chart(
     :ptype title: str
     :param fallback_title: What the chart's block is titled where the plan's title is empty: the section's headline.
     :ptype fallback_title: str
-    :param summary: Whether it is a summary chart, whose rows follow the options table.
-    :ptype summary: bool
     :return: The chart as the page draws it.
     :rtype: PageChart
     :raises UnresolvableReference: No resolver draws the chart's kind, or its resolver cannot draw it from the input.
@@ -103,8 +100,6 @@ def resolve_chart(
     if spec.query.source == "configs":
         # A configs chart reads the grid the input's configs make, or, where it holds none, its arms' settings.
         report_input = config_grid(report_input)
-    context = ChartContext(
-        spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind, summary=summary
-    )
+    context = ChartContext(spec=spec, report_input=report_input, look=look, title=title or fallback_title or spec.kind)
     drawn = resolver(context)
     return PageChart(title=title, chart=drawn.block, notes=list(drawn.notes))

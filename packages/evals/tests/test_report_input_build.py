@@ -4,6 +4,9 @@
 kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
 
 - the input validates, as the model and against the docs schema, for a change, a choice and a measurement;
+- the committed Kairo round 2 bundle is under two megabytes, and ``report_input(bundle)`` on it matches the r5 report
+  input on every field r5 carries a value for, each number at the precision r5 writes it; r5's contrasts are matched
+  by arm, measure and kind, since the bundle carries every contrast and r5 a subset;
 - nothing the bundle holds is silently dropped: every arm, reading, pair reading, contrast (one with no interval, or
   untested, with its reason), contrast family, floor, bar, measured figure and caveat reaches the input, counted against the bundle;
 - figures are copied, never recomputed: a reading's change and interval, a contrast's delta, a pair's change;
@@ -612,3 +615,74 @@ def test_an_input_frozen_before_the_contrast_counts_carries_no_key_for_them() ->
         {"n_cases", "control_n_cases", "paired", "pairing_r"}.isdisjoint(contrast) for contrast in dumped["contrasts"]
     )
     assert report_input_digest(ReportInput.model_validate(dumped)) == report_input_digest(held)
+
+
+# --- the Kairo bundle against r5 ---------------------------------------------------------------------------------
+
+
+def _significant(value: float) -> int:
+    digits = re.sub(r"e.*$", "", repr(abs(value))).replace(".", "").lstrip("0")
+    return max(1, len(digits))
+
+
+def _differences(carried: Any, built: Any, path: str = "") -> list[str]:
+    """Where ``built`` differs from ``carried`` on a value ``carried`` holds, numbers at ``carried``'s precision."""
+    if carried is None:
+        return []
+    if isinstance(carried, dict):
+        if not isinstance(built, dict):
+            return [f"{path}: {built!r} is not an object"]
+        return [
+            found for key, value in carried.items() for found in _differences(value, built.get(key), f"{path}.{key}")
+        ]
+    if isinstance(carried, list):
+        if not isinstance(built, list):
+            return [f"{path}: {built!r} is not a list"]
+        if path == ".contrasts":
+            found: list[str] = []
+            for entry in carried:
+                same = [
+                    b
+                    for b in built
+                    if (b["arm"], b["measure"], b["kind"]) == (entry["arm"], entry["measure"], entry["kind"])
+                ]
+                if len(same) != 1:
+                    found.append(f"{path}: {len(same)} built contrasts for {entry['arm']}/{entry['measure']}")
+                    continue
+                found += _differences(entry, same[0], f"{path}[{entry['arm']}/{entry['measure']}]")
+            return found
+        if len(carried) != len(built):
+            return [f"{path}: {len(built)} entries, r5 holds {len(carried)}"]
+        return [
+            f
+            for index, (c, b) in enumerate(zip(carried, built, strict=True))
+            for f in _differences(c, b, f"{path}[{index}]")
+        ]
+    if isinstance(carried, float) and isinstance(built, int | float) and not isinstance(built, bool):
+        if carried == built or carried == float(f"{built:.{_significant(carried)}g}"):
+            return []
+    elif carried == built:
+        return []
+    return [f"{path}: built {built!r}, r5 holds {carried!r}"]
+
+
+def test_the_kairo_bundle_is_committed_under_two_megabytes() -> None:
+    assert KAIRO_BUNDLE.stat().st_size < 2_000_000
+
+
+def test_the_kairo_bundles_report_input_matches_r5_on_every_field_r5_carries() -> None:
+    r5: dict[str, Any] = json.loads((FIXTURES / "r5" / "input.json").read_text(encoding="utf-8"))
+    built = report_input(kairo_bundle(), provenance=r5["meta"]["provenance"])
+    assert _differences(r5, built.model_dump(mode="json", by_alias=True)) == []
+
+
+def test_the_comparison_sees_a_difference() -> None:
+    r5: dict[str, Any] = json.loads((FIXTURES / "r5" / "input.json").read_text(encoding="utf-8"))
+    built = report_input(kairo_bundle(), provenance=r5["meta"]["provenance"]).model_dump(mode="json", by_alias=True)
+    built["arms"][1]["served_model"] = "something else"
+    built["aspects"][0]["readings"][0]["change"] += 0.01
+    built["contrasts"] = built["contrasts"][1:]
+    found = _differences(r5, built)
+    assert any(".arms[1].served_model" in line for line in found)
+    assert any(".aspects[0].readings[0].change" in line for line in found)
+    assert any(line.startswith(".contrasts: 0 built contrasts") for line in found)

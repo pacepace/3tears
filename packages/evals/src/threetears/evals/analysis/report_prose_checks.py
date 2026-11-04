@@ -2,7 +2,6 @@
 key already prints, and internal ids a reader should not see.
 
 Each check reads prose as ``(field path, text)`` pairs, so it holds for whatever names its fields:
-:mod:`~threetears.evals.analysis.report_plan_checks` walks a plan's ``ModelProse`` fields and option labels,
 :mod:`~threetears.evals.analysis.report_doc_checks` walks a document's prose through
 :func:`~threetears.evals.kernel.report_doc.report_doc_prose`. A fault is ``(field path, why)``.
 

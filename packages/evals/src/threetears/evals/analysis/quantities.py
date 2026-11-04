@@ -46,7 +46,7 @@ MONEY = "usd"
 #: The package's own units, each with the names a sentence spells it by: its symbol, its abbreviations and its words.
 #: A closed vocabulary, the package's and never read from an input, so that prose writing a unit right after a figure
 #: that already prints it (``513 ms milliseconds``, ``3 s seconds``, ``45%%``) can be refused
-#: (:mod:`threetears.evals.analysis.report_plan_checks`). Matched in any case.
+#: (:func:`threetears.evals.analysis.report_prose_checks.unit_faults`). Matched in any case.
 UNIT_NAMES: dict[str, tuple[str, ...]] = {
     "ms": ("ms", "msec", "msecs", "millisecond", "milliseconds"),
     "s": ("s", "sec", "secs", "second", "seconds"),

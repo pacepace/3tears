@@ -1,8 +1,8 @@
 """The chart resolvers the report document's page and the analyst's blocks draw with, held on every chart a plan
 stores and on charts redrawn from them, each against its own input.
 
-Held over every r1–r5 anchor and current run, and the Kairo reference plan (``references/r5-kairo-round2.plan.json``),
-each drawn through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under the plan's look
+Held over every r1–r5 anchor and current run, and the Kairo reference plan, as the retired report planner stored them
+(``fixtures/plan_charts/``), each drawn through :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under the plan's look
 (``plan_charts_support.drawn_charts``). The expected side is always read from somewhere else than the resolver: the
 figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the rows a query selects
 (:func:`~threetears.evals.analysis.report_rows.query_rows`) and code's facts, never typed in.
@@ -30,14 +30,13 @@ from __future__ import annotations
 import functools
 import math
 import re
-from pathlib import Path
+from dataclasses import replace
 from typing import Any, get_args
 
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
-from packages.evals.tests.plan_charts_support import anchor_look, drawn_charts
-from packages.evals.tests.report_kit_support import KIT
+from packages.evals.tests.plan_charts_support import StoredCharts, anchor_look, drawn_charts, stored_charts
 from threetears.evals.analysis import (
     BarsChart,
     ChartBlock,
@@ -63,21 +62,21 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Task,
 )
-from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartSpec, ReportPlan
+from threetears.evals.kernel.report_plan import ChartSpec
 
 #: The Kairo reference plan.
-REFERENCE_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
+REFERENCE_PLAN = "r5-reference"
 
 #: A signed zero, which the package's number rule never writes for a change it holds digits of.
 _SIGNED_ZERO = re.compile(r"(?<![\d.])[+-]0(?![\d.])")
 
 
-def _plan_paths() -> list[tuple[str, str, Path]]:
+def _plan_paths() -> list[tuple[str, str, str]]:
     found = []
     for name in ("r1", "r2", "r3", "r4", "r5"):
-        found += [(name, "anchor", dataset.HERE / name / "anchor.plan.json"), (name, "run", dataset.current_run(name))]
+        found += [(name, "anchor", f"{name}-anchor"), (name, "run", f"{name}-run")]
     return [*found, ("r5", "reference", REFERENCE_PLAN)]
 
 
@@ -91,12 +90,12 @@ def _input(name: str) -> ReportInput:
 
 
 @functools.cache
-def _plan(path: Path) -> ReportPlan:
-    return dataset.load_plan(path)
+def _plan(path: str) -> StoredCharts:
+    return stored_charts(path)
 
 
 @functools.cache
-def _charts(name: str, path: Path) -> list[tuple[ChartSpec, ChartBlock, list[str], bool]]:
+def _charts(name: str, path: str) -> list[tuple[ChartSpec, ChartBlock, list[str], bool]]:
     """Each chart the plan stores, drawn on its input, beside the stored chart, its notes, and whether it is a summary
     chart."""
     plan = _plan(path)
@@ -130,7 +129,7 @@ def _scale_factor(key: str, report_input: ReportInput) -> float:
 
 @pytest.mark.parametrize(("name", "label", "path"), _PLANS, ids=_IDS)
 def test_every_chart_a_plan_stores_resolves_to_its_own_kind_with_values_to_read(
-    name: str, label: str, path: Path
+    name: str, label: str, path: str
 ) -> None:
     for spec, block, _, _ in _charts(name, path):
         assert block.chart == spec.kind
@@ -156,11 +155,11 @@ def test_a_chart_its_kind_cannot_draw_is_refused_naming_its_kind_and_source(kind
     typed refusal naming both, never a chart drawn empty or a crash. r3 holds confusion axes and cells, so the source
     has rows to draw."""
     source = _undrawable_source(kind)
-    plan = _plan(dataset.HERE / "r3" / "anchor.plan.json")
+    plan = _plan("r3-anchor")
     section = plan.sections[0]
     query = section.chart.query.model_copy(update={"source": source})
     chart = section.chart.model_copy(update={"kind": kind, "query": query})
-    refused_plan = plan.model_copy(update={"summary": [], "sections": [section.model_copy(update={"chart": chart})]})
+    refused_plan = replace(plan, summary=[], sections=[replace(section, chart=chart)])
     with pytest.raises(UnresolvableReference) as refused:
         drawn_charts(refused_plan, _input("r3"))
     assert repr(kind) in str(refused.value) and repr(source) in str(refused.value)
@@ -168,7 +167,7 @@ def test_a_chart_its_kind_cannot_draw_is_refused_naming_its_kind_and_source(kind
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("forest", "readings"))
 def test_a_forest_of_readings_draws_each_reading_its_interval_and_the_margin_line(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -192,7 +191,7 @@ def test_a_forest_of_readings_draws_each_reading_its_interval_and_the_margin_lin
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("forest", "contrasts"))
 def test_a_forest_of_contrasts_draws_each_delta_on_its_scale_and_names_what_is_not_in_the_evidence(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -216,14 +215,14 @@ def test_a_forest_of_contrasts_draws_each_delta_on_its_scale_and_names_what_is_n
     ]
     caption = [note for note in notes if note.startswith("Not in the evidence")]
     assert len(caption) == (1 if missing else 0)
-    names = {fact.id: fact.name for fact in plan_facts(report_input).arms}
+    names = {fact.id: fact.name for fact in fact_arms(report_input)}
     for arm, _ in missing:
         assert names[arm] in caption[0]
 
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("bars"))
 def test_bars_draw_each_figure_from_zero_or_a_log_axis(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -251,7 +250,7 @@ def _slice_value(stat: Stat) -> float | None:
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("diverging_bars", "strata"))
 def test_diverging_bars_of_strata_draw_each_arm_less_the_control_bold_by_the_descriptive_rule(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -290,7 +289,7 @@ def test_diverging_bars_of_strata_draw_each_arm_less_the_control_bold_by_the_des
     ("name", "plan", "spec", "block", "notes", "summary"), _charts_of("diverging_bars", "human_pref")
 )
 def test_diverging_bars_of_human_preference_sit_about_the_no_preference_point(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -302,7 +301,7 @@ def test_diverging_bars_of_human_preference_sit_about_the_no_preference_point(
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("lines"))
 def test_lines_draw_a_line_per_arm_over_the_slices_in_their_order(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -312,7 +311,7 @@ def test_lines_draw_a_line_per_arm_over_the_slices_in_their_order(
     key = spec.query.measures[0]
     arms = spec.query.arms or [arm.id for arm in report_input.arms]
     assert len(data.series) == len(arms)
-    ids = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    ids = {fact.name: fact.id for fact in fact_arms(report_input)}
     for series in data.series:
         arm = ids[series.end_label or ""]
         assert series.values == [float(item.per_arm[arm][key].mean or 0.0) for item in slices]
@@ -320,7 +319,7 @@ def test_lines_draw_a_line_per_arm_over_the_slices_in_their_order(
 
 @pytest.mark.parametrize(("name", "plan", "spec", "block", "notes", "summary"), _charts_of("examples"))
 def test_example_cards_are_the_examples_the_query_selects_in_its_order(
-    name: str, plan: ReportPlan, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
+    name: str, plan: StoredCharts, spec: ChartSpec, block: ChartBlock, notes: list[str], summary: bool
 ) -> None:
     report_input = _input(name)
     data = block.data
@@ -340,7 +339,7 @@ def test_example_cards_are_the_examples_the_query_selects_in_its_order(
 
 
 @pytest.mark.parametrize(("name", "label", "path"), _PLANS, ids=_IDS)
-def test_no_chart_note_or_tooltip_prints_a_signed_zero(name: str, label: str, path: Path) -> None:
+def test_no_chart_note_or_tooltip_prints_a_signed_zero(name: str, label: str, path: str) -> None:
     for _, block, notes, _ in _charts(name, path):
         texts = [*notes, *_strings(block.kit_chart())]
         assert not [text for text in texts if _SIGNED_ZERO.search(text)]
@@ -361,12 +360,12 @@ def _strings(value: Any) -> list[str]:
 # --- small multiples ----------------------------------------------------------------------------------------------
 
 
-def _section_with(plan: ReportPlan, section_id: str, by: str) -> ReportPlan:
+def _section_with(plan: StoredCharts, section_id: str, by: str) -> StoredCharts:
     """The plan with one section's chart in small multiples by ``by``, and no other chart."""
     section = next(section for section in plan.sections if section.id == section_id)
     query = section.chart.query.model_copy(update={"small_multiples_by": by})
     chart = section.chart.model_copy(update={"query": query})
-    return plan.model_copy(update={"summary": [], "sections": [section.model_copy(update={"chart": chart})]})
+    return replace(plan, summary=[], sections=[replace(section, chart=chart)])
 
 
 @pytest.mark.parametrize(
@@ -374,13 +373,13 @@ def _section_with(plan: ReportPlan, section_id: str, by: str) -> ReportPlan:
     [
         ("r5", REFERENCE_PLAN, "strata", "task"),
         ("r5", REFERENCE_PLAN, "strata", "arm"),
-        ("r2", dataset.HERE / "r2" / "anchor.plan.json", "tasks", "arm"),
-        ("r2", dataset.HERE / "r2" / "anchor.plan.json", "tasks", "task"),
+        ("r2", "r2-anchor", "tasks", "arm"),
+        ("r2", "r2-anchor", "tasks", "task"),
     ],
     ids=["diverging-by-slice", "diverging-by-arm", "bars-by-arm", "bars-by-task"],
 )
 def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
-    name: str, path: Path, section_id: str, by: str
+    name: str, path: str, section_id: str, by: str
 ) -> None:
     report_input = _input(name)
     plan = _section_with(_plan(path), section_id, by)
@@ -389,7 +388,7 @@ def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
     assert isinstance(data, BarsChart) and data.panels is not None and data.rows is None
     spec = plan.sections[0].chart
     slices = [row.item for row in query_rows(spec.query, report_input) if isinstance(row.item, Stratum | Task)]
-    names = {fact.id: fact.name for fact in plan_facts(report_input).arms}
+    names = {fact.id: fact.name for fact in fact_arms(report_input)}
     drawn = {row.id for panel in data.panels for row in panel.rows or []}
     if by == "arm":
         order = spec.query.arms or list(names)
@@ -406,7 +405,7 @@ def test_small_multiples_are_a_panel_per_arm_or_per_slice_as_the_plan_asks(
 # directly: never typed in, never through the resolver's own helpers.
 
 
-def _redrawn(plan: ReportPlan, chart: ChartSpec, *, kind: str, level: str = "", **query: Any) -> ReportPlan:
+def _redrawn(plan: StoredCharts, chart: ChartSpec, *, kind: str, level: str = "", **query: Any) -> StoredCharts:
     """The plan with one section only, drawing ``chart`` as ``kind`` with its query updated, its level set and its
     stored axis and reference line cleared (they were the old kind's)."""
     spec = chart.model_copy(
@@ -418,11 +417,11 @@ def _redrawn(plan: ReportPlan, chart: ChartSpec, *, kind: str, level: str = "", 
             "reference": [],
         }
     )
-    shell = plan.sections[0].model_copy(update={"id": "redrawn", "chart": spec})
-    return plan.model_copy(update={"summary": [], "sections": [shell]})
+    shell = replace(plan.sections[0], id="redrawn", chart=spec)
+    return replace(plan, summary=[], sections=[shell])
 
 
-def _drawn(plan: ReportPlan, report_input: ReportInput) -> tuple[Any, list[str]]:
+def _drawn(plan: StoredCharts, report_input: ReportInput) -> tuple[Any, list[str]]:
     ((_, drawn),) = drawn_charts(plan, report_input)
     block = drawn.chart
     assert isinstance(block, ChartBlock)
@@ -434,7 +433,7 @@ def _bars_of(data: Any) -> list[Any]:
     return [row for panel in data.panels or [] for row in panel.rows or []] + list(data.rows or [])
 
 
-def _section(plan: ReportPlan, section_id: str) -> ChartSpec:
+def _section(plan: StoredCharts, section_id: str) -> ChartSpec:
     return next(section.chart for section in plan.sections if section.id == section_id)
 
 
@@ -449,7 +448,7 @@ def _with_control(report_input: ReportInput, arm: str) -> ReportInput:
 
 def test_diverging_bars_over_configs_draw_each_levers_effect_averaged_over_the_other_factors() -> None:
     report_input = _input("r2")
-    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    plan = _plan("r2-anchor")
     chart = _section(plan, "levers")
     (key,) = chart.query.measures
     data, notes = _drawn(_redrawn(plan, chart, kind="diverging_bars"), report_input)
@@ -483,12 +482,12 @@ def test_diverging_bars_over_configs_draw_each_levers_effect_averaged_over_the_o
     ("name", "path", "where", "source", "measures"),
     [
         ("r5", REFERENCE_PLAN, "summary", "measures", None),
-        ("r4", dataset.HERE / "r4" / "anchor.plan.json", "summary", "judged", ["persona"]),
+        ("r4", "r4-anchor", "summary", "judged", ["persona"]),
     ],
     ids=["measures", "judged"],
 )
 def test_diverging_bars_over_measures_and_judged_draw_each_candidate_less_the_control(
-    name: str, path: Path, where: str, source: str, measures: list[str] | None
+    name: str, path: str, where: str, source: str, measures: list[str] | None
 ) -> None:
     report_input = _input(name)
     plan = _plan(path)
@@ -517,7 +516,7 @@ def test_diverging_bars_over_measures_and_judged_draw_each_candidate_less_the_co
 
 
 def test_diverging_bars_over_tasks_draw_each_arm_less_the_control_in_each_task() -> None:
-    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    plan = _plan("r2-anchor")
     chart = _section(plan, "tasks")
     control = chart.query.arms[0]
     report_input = _with_control(_input("r2"), control)
@@ -539,7 +538,7 @@ def test_a_chart_of_each_arm_less_the_control_is_refused_where_the_input_names_n
 ) -> None:
     report_input = _input("r2")
     assert not [arm for arm in report_input.arms if arm.role == "control"]
-    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    plan = _plan("r2-anchor")
     redrawn = _redrawn(plan, _section(plan, section_id), kind="diverging_bars", source=source)
     with pytest.raises(UnresolvableReference, match="no control") as refused:
         drawn_charts(redrawn, report_input)
@@ -581,7 +580,7 @@ def test_diverging_bars_over_contrasts_bold_the_directed_verdicts_and_mute_the_r
 
 def test_bars_over_a_judged_dimension_draw_each_arms_figure_from_zero() -> None:
     report_input = _input("r4")
-    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    plan = _plan("r4-anchor")
     chart = next(spec for spec in plan.summary if spec.kind == "bars")
     data, _ = _drawn(_redrawn(plan, chart, kind="bars", source="judged", measures=["persona"]), report_input)
     factor = _scale_factor(f"judged.persona.{report_input.arms[0].id}", report_input)
@@ -623,7 +622,7 @@ def test_bars_over_strata_draw_each_arms_figure_in_each_stratum_grouped_by_strat
 
 def test_bars_over_human_preference_draw_the_share_preferring_the_control_in_each_slice() -> None:
     report_input = _input("r4")
-    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    plan = _plan("r4-anchor")
     data, _ = _drawn(_redrawn(plan, _section(plan, "users"), kind="bars"), report_input)
     assert report_input.human_pref is not None
     assert [(row.id, row.value) for row in _bars_of(data)] == [
@@ -633,13 +632,13 @@ def test_bars_over_human_preference_draw_the_share_preferring_the_control_in_eac
 
 def test_lines_over_tasks_draw_a_line_per_arm_over_the_tasks_in_their_order() -> None:
     report_input = _input("r2")
-    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    plan = _plan("r2-anchor")
     chart = _section(plan, "tasks")
     data, _ = _drawn(_redrawn(plan, chart, kind="lines", small_multiples_by="none"), report_input)
     assert isinstance(data, LinesChart)
     (key,) = chart.query.measures
     assert data.categories == [task.name or task.id for task in report_input.tasks]
-    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    names = {fact.name: fact.id for fact in fact_arms(report_input)}
     assert [names[series.end_label or ""] for series in data.series] == list(chart.query.arms)
     for series in data.series:
         arm = names[series.end_label or ""]
@@ -648,14 +647,14 @@ def test_lines_over_tasks_draw_a_line_per_arm_over_the_tasks_in_their_order() ->
 
 def test_lines_over_a_measure_with_bins_draw_each_arms_share_in_each_bin() -> None:
     report_input = _input("r2")
-    plan = _plan(dataset.HERE / "r2" / "anchor.plan.json")
+    plan = _plan("r2-anchor")
     key = next(key for key, measure in report_input.measures.items() if measure.bins)
     chart = next(spec for spec in plan.summary if spec.kind == "bars")
     data, _ = _drawn(_redrawn(plan, chart, kind="lines", measures=[key]), report_input)
     assert isinstance(data, LinesChart)
     bins = report_input.measures[key].bins or []
     assert data.categories == [level.name or level.id for level in bins]
-    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    names = {fact.name: fact.id for fact in fact_arms(report_input)}
     for series in data.series:
         assert series.values == report_input.measures[key].per_arm[names[series.end_label or ""]].shares
     assert len(data.series) == len(chart.query.arms)
@@ -669,12 +668,12 @@ def test_lines_over_a_judged_dimension_draw_the_lead_aspect_then_each_aspect_it_
     persona = data_in["judged"]["persona"]
     persona["by_aspect"] = {other.id: {arm: {"mean": stat["mean"] - 5} for arm, stat in persona["per_arm"].items()}}
     report_input = ReportInput.model_validate(data_in)
-    plan = _plan(dataset.HERE / "r4" / "anchor.plan.json")
+    plan = _plan("r4-anchor")
     chart = next(spec for spec in plan.summary if spec.kind == "bars")
     data, _ = _drawn(_redrawn(plan, chart, kind="lines", source="judged", measures=["persona"]), report_input)
     assert isinstance(data, LinesChart)
     assert data.categories == [lead.name or lead.id, other.name or other.id], "only aspects the figures sit on"
-    names = {fact.name: fact.id for fact in plan_facts(report_input).arms}
+    names = {fact.name: fact.id for fact in fact_arms(report_input)}
     for series in data.series:
         mean = base.judged["persona"].per_arm[names[series.end_label or ""]].mean
         assert mean is not None and series.values == pytest.approx([mean, mean - 5])
@@ -684,7 +683,7 @@ def test_lines_over_a_judged_dimension_draw_the_lead_aspect_then_each_aspect_it_
 
 #: Each input beside the plan whose look its tables are drawn under: the r1–r5 anchors and the Kairo reference.
 _TABLED = [
-    *((name, dataset.HERE / name / "anchor.plan.json") for name in ("r1", "r2", "r3", "r4", "r5")),
+    *((name, f"{name}-anchor") for name in ("r1", "r2", "r3", "r4", "r5")),
     ("r5", REFERENCE_PLAN),
 ]
 _TABLED_IDS = ["r1", "r2", "r3", "r4", "r5", "r5-reference"]
@@ -694,16 +693,16 @@ _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 
 @functools.cache
-def _tables(name: str, path: Path) -> tuple[TableBlock, ...]:
+def _tables(name: str, path: str) -> tuple[TableBlock, ...]:
     report_input = _input(name)
     return tuple(every_table(report_input, anchor_look(_plan(path), report_input)))
 
 
-def _full(name: str, path: Path, table: str) -> TableBlock:
+def _full(name: str, path: str, table: str) -> TableBlock:
     return next(one for one in _tables(name, path) if one.name == table)
 
 
-def _holding(table: str) -> list[tuple[str, Path]]:
+def _holding(table: str) -> list[tuple[str, str]]:
     return [(name, path) for name, path in _TABLED if any(one.name == table for one in _tables(name, path))]
 
 
@@ -714,7 +713,7 @@ def _number(text: Any) -> float:
 
 
 @pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_every_pill_in_the_full_results_tables_says_its_status_in_words(name: str, path: Path) -> None:
+def test_every_pill_in_the_full_results_tables_says_its_status_in_words(name: str, path: str) -> None:
     pills = [cell for table in _tables(name, path) for row in table.rows for cell in row.values() if cell.status]
     for cell in pills:
         assert cell.value is not None and re.search(r"[A-Za-z]{3}", cell.text), (
@@ -723,7 +722,7 @@ def test_every_pill_in_the_full_results_tables_says_its_status_in_words(name: st
 
 
 @pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: Path) -> None:
+def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: str) -> None:
     report_input = _input(name)
     table = _full(name, path, "arms_by_measure")
     names = {arm.id: (arm.short_name or arm.name or arm.id) for arm in report_input.arms}
@@ -737,19 +736,19 @@ def test_arms_by_measure_is_every_arm_and_each_figure_it_holds(name: str, path: 
 
 
 @pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_arms_by_measure_states_each_figure_in_one_column(name: str, path: Path) -> None:
+def test_arms_by_measure_states_each_figure_in_one_column(name: str, path: str) -> None:
     headers = [column.header for column in _full(name, path, "arms_by_measure").columns]
     assert len(headers) == len(set(headers)), headers
 
 
 def test_r2_arms_by_measure_reads_its_pass_rate_off_its_measure_once() -> None:
     """r2's arms count no passes and its input holds a ``pass_rate`` measure: the measure's column is the one."""
-    keys = [column.key for column in _full("r2", dataset.HERE / "r2" / "anchor.plan.json", "arms_by_measure").columns]
+    keys = [column.key for column in _full("r2", "r2-anchor", "arms_by_measure").columns]
     assert "pass_rate" not in keys and keys.count("measure:pass_rate") == 1, keys
 
 
 @pytest.mark.parametrize(("name", "path"), _holding("contrasts"))
-def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str, path: Path) -> None:
+def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale(name: str, path: str) -> None:
     report_input = _input(name)
     table = _full(name, path, "contrasts")
     assert len(table.rows) == len(report_input.contrasts)
@@ -766,7 +765,7 @@ def test_every_corrected_comparison_is_a_row_its_change_the_input_s_on_its_scale
 
 
 @pytest.mark.parametrize(("name", "path"), _holding("gate_matrix_full"))
-def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fails_it(name: str, path: Path) -> None:
+def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fails_it(name: str, path: str) -> None:
     report_input = _input(name)
     table = _full(name, path, "gate_matrix_full")
     worst = {"good": 0, "warn": 1, "bad": 2}
@@ -779,7 +778,7 @@ def test_the_gate_matrix_fails_an_arm_on_a_row_exactly_where_the_gate_check_fail
 
 
 @pytest.mark.parametrize(("name", "path"), _TABLED, ids=_TABLED_IDS)
-def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str, path: Path) -> None:
+def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str, path: str) -> None:
     report_input = _input(name)
     held = {
         "strata": report_input.strata,
@@ -797,7 +796,7 @@ def test_each_slice_table_is_a_row_per_slice_and_measure_it_holds(name: str, pat
 
 
 @pytest.mark.parametrize(("name", "path"), _holding("configs"))
-def test_every_configuration_is_its_arm_s_level_of_each_factor(name: str, path: Path) -> None:
+def test_every_configuration_is_its_arm_s_level_of_each_factor(name: str, path: str) -> None:
     report_input = _input(name)
     table = _full(name, path, "configs")
     assert len(table.rows) == len(report_input.configs)

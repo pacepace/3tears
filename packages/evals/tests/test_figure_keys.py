@@ -2,7 +2,8 @@
 
 Contracts held here (``threetears.evals.analysis.report.figure_keys``, GENERATOR.md §6.2):
 
-- every key in the kit's Kairo round 2 plan resolves against r5's input, and renders the figures the reference page
+- every key in the kit's Kairo round 2 plan (the retired report planner's reference plan, kept as
+  ``fixtures/plan_charts/r5-reference.json``) resolves against r5's input, and renders the figures the reference page
   prints;
 - a path is matched against the input's ids, never split at dots, so a dotted arm id or measure key resolves, a path
   that reads two ways is refused naming both, and one that names nothing is refused naming what could come next;
@@ -38,7 +39,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report_input import ReportInput
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
-R5_PLAN = KIT / "references" / "r5-kairo-round2.plan.json"
+R5_PLAN = Path(__file__).resolve().parent / "fixtures" / "plan_charts" / "r5-reference.json"
 R5_PAGE = KIT / "references" / "r5-kairo-round2.html"
 
 

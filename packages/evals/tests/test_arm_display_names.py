@@ -61,7 +61,7 @@ from threetears.evals.analysis.style import arm_display_name, arm_name, lever_re
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.parts.tables import arms_key
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.declaration import OverriddenBar
 from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.kernel.campaign import EvalCampaign

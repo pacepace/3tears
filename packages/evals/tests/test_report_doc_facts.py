@@ -101,6 +101,53 @@ def test_a_warning_whose_figure_the_document_cites_is_no_fact() -> None:
     assert ["tone/rate_drop/reply.cites_policy" in fact.fact for fact in facts] == [True]
 
 
+_KAIRO_ASPECT = "character adherence (v2)"
+_KAIRO_FLOOR = "character adherence (v2)/rate_drop/*"
+
+
+def _floor_status(arm: str, status: str) -> Callable[[dict[str, Any]], None]:
+    def change(data: dict[str, Any]) -> None:
+        for floor in data["floors"]:
+            if floor["arm"] == arm:
+                floor["status"] = status
+
+    return change
+
+
+def _pair_ahead(data: dict[str, Any]) -> None:
+    data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": -3.0, "ahead": "1017"}]
+
+
+def _warnings(facts: list[EditorFact]) -> list[str]:
+    """The warning each ``warning_unanswered`` fact names, by the kind its sentence leads with."""
+    return [fact.fact.split("Code raises ", 1)[1].split(" ", 1)[0] for fact in _of(facts, "warning_unanswered")]
+
+
+# Each warning code raises on an arm, read through the editor's fact on the arm a document recommends.
+
+
+@pytest.mark.parametrize(("status", "kind"), [("broken", "floor_broken"), ("unclear", "floor_unclear")])
+def test_a_floor_not_held_on_the_recommended_arm_is_a_warning(status: str, kind: str) -> None:
+    facts = _facts(_KAIRO, recommends=["qwen3.8-flash"], input_change=_floor_status("qwen3.8-flash", status))
+
+    assert _warnings(facts) == [kind]
+    (fact,) = _of(facts, "warning_unanswered")
+    assert f"floor {_KAIRO_FLOOR} on {_KAIRO_ASPECT} reads {status}" in fact.fact
+
+
+def test_a_held_floor_on_the_recommended_arm_is_no_warning() -> None:
+    assert _warnings(_facts(_KAIRO, recommends=["qwen3.8-flash"])) == []
+
+
+def test_another_arm_ahead_on_a_pair_reading_is_a_behind_on_warning_and_the_arm_ahead_has_none() -> None:
+    behind = _of(_facts(_KAIRO, recommends=["September"], input_change=_pair_ahead), "warning_unanswered")
+
+    assert _warnings(behind) == ["behind_on"]
+    assert f"a pair reading on {_KAIRO_ASPECT} shows " in behind[0].fact and " ahead of it" in behind[0].fact
+    assert "1017" in behind[0].fact
+    assert _warnings(_facts(_KAIRO, recommends=["1017"], input_change=_pair_ahead)) == []
+
+
 def test_a_call_other_than_the_one_dominant_option_is_a_fact() -> None:
     """Kairo recommending nothing, where September dominates."""
     facts = _of(_facts(_KAIRO, recommends=[]), "call_vs_dominance")
