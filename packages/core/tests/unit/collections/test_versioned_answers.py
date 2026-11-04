@@ -667,6 +667,47 @@ class TestForgettingAScopeNoAnnounceLoses:
         await announcing.answer("v5", "b", compute, order=5, scope="r1")
         assert len(_entry_keys(bucket, "v5")) == 2, "the floor the forget raised still refuses the announced version"
 
+    @pytest.mark.parametrize("recorded", [False, True], ids=["no_record", "record"])
+    async def test_an_announce_landing_after_the_answers_went_keeps_the_scope(self, recorded: bool) -> None:
+        """the last window: another replica announces after the forget's answers are gone, just before its last
+        change to the record's key. The announce still wins: the forget says it left the scope and puts the floor
+        back, so the announced version's answers are stored again."""
+        nats = FakeNatsClient()
+        forgetting, announcing = _replica(nats), _replica(nats)
+        await announcing.answer("v5", "a", _Computer("v5"), order=5, scope="r1")
+        if recorded:
+            await announcing.announce("v5", 5, scope="r1")
+        bucket = await _bucket(nats)
+        record_key, versions_key = _index_key("announced_r1"), _index_key("versions_r1")
+        get_latest, update = bucket.get_latest, bucket.update
+        versions_writes: list[str] = []
+        announced: list[str] = []
+
+        async def counted_update(*args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("key") == versions_key:
+                versions_writes.append("w")
+            return await update(*args, **kwargs)
+
+        async def announce_after_the_look_past_the_answers(*args: Any, **kwargs: Any) -> Any:
+            # the floor rose (the versions row's first write) and the answers went (its second): the next look at
+            # the record's key finds the gate still the forget's, and the announce lands just after it
+            latest = await get_latest(*args, **kwargs)
+            if kwargs.get("key") == record_key and len(versions_writes) >= 2 and not announced:
+                announced.append("v6")
+                await announcing.announce("v6", 6, scope="r1")
+            return latest
+
+        bucket.update = counted_update  # type: ignore[method-assign]
+        bucket.get_latest = announce_after_the_look_past_the_answers  # type: ignore[method-assign]
+        result = await asyncio.wait_for(forgetting.forget("r1"), timeout=2)
+
+        recorded_now = await announcing.announced("r1")
+        assert announced, "the forget never looked at the gate after its answers went"
+        assert recorded_now is not None and recorded_now.latest.version == "v6", "the announce was erased"
+        assert result is False, "the forget said it retired a scope an announce kept"
+        await announcing.answer("v6", "b", _Computer("v6b"), order=6, scope="r1")
+        assert len(_entry_keys(bucket, "v6")) == 1, "the floor the forget raised still refuses the announced version"
+
     async def test_a_replica_still_reading_a_forgotten_version_never_writes_it_back(self) -> None:
         """a pod still serving the release before is answered at its version, and stores nothing: the floor the
         forget keeps refuses it. With the row gone, it wrote the row and its answers back, never retired again."""

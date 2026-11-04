@@ -79,8 +79,9 @@ The floor is what keeps it so: a replica still reading at a retired version is a
 with no floor it wrote the row and its answers back. Every change is a compare-and-set through the index, and the
 record's key is the call's gate: the record is deleted only as the call read it, or, with none, the key taken with
 a marker of the call's own. An `announce` landing before the call is done replaces either and wins: the call puts
-the floor back where it found it and answers `False`, and since the gate is looked at again after the floor rises
-and before any answer is deleted, an announce before then loses no answer. Answers are retired below the order the
+the floor back where it found it and answers `False`. The gate is looked at again after the floor rises, before
+any answer is deleted, and last of all, so an announce before the answers go loses no answer and one after them is
+stored again once the floor is back. Answers are retired below the order the
 forgotten record held (with no record, the row's newest). Forgetting a retired scope answers `True`, as many times
 as it is called; deleted keys are purged as a retirement's are.
 

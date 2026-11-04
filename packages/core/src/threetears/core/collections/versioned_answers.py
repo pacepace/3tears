@@ -1314,9 +1314,9 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         The record's key is the call's gate. A record is deleted only as this call read it; with none, the call
         takes the key with a marker of its own (create-if-absent). An :meth:`announce` that lands at any point
         before the call is done replaces either and is newer than the call: the call then lets the scope be, puts
-        the floor back where it found it, and answers ``False``. The gate is looked at again after the floor rises
-        and before any answer is deleted, so an announce before that point loses no answer; one after it is
-        answered and stored again once the floor is put back. The answers are retired below the order the record
+        the floor back where it found it, and answers ``False``. The gate is looked at again after the floor rises,
+        before any answer is deleted, and last of all, so an announce before the answers go loses no answer and one
+        after them is answered and stored again once the floor is put back. The answers are retired below the order the record
         held (with no record, the versions row's newest), so a version answered past it is kept.
 
         The versions row stays, naming no version and holding the floor: a replica still reading at a retired
@@ -1374,12 +1374,14 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 return False
 
         retired = True
+        raised: tuple[int | None, int | None] | None = None
         versions = await self._index.read_l2(row_name)
         if versions is not None:
             members: dict[str, int] = dict(versions["members"])
             bound = record.latest.order if record is not None else max(members.values(), default=None)
             if bound is not None:
                 taken, before, after = await self._raise_floor(bound + 1, row_name)
+                raised = (after, before)
                 if await overtaken():
                     await self._lower_floor(row_name, after, before)
                     return False
@@ -1400,7 +1402,16 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
 
             if (await self._index.l2_cas_mutate(name, drop_marker)).action == "deleted":
                 touched.append(self._relative(self._index.l2_key(name)))
+            else:
+                # an announce replaced the marker after the last look: it is newer than this call
+                marker = None
         await self._purge(touched)
+        # the last look: an announce that landed after the answers went holds the gate, so the floor goes back and
+        # the versions it answers are stored again
+        if (marker is None and record is None) or await overtaken():
+            if raised is not None:
+                await self._lower_floor(row_name, *raised)
+            retired = False
         log.info("forgot a scope: table=%s scope=%s retired=%s", self.table_name, scope, retired)
         return retired
 
