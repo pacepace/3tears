@@ -123,7 +123,8 @@ from contextlib import (
     suppress,
 )
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from itertools import islice, product
 from types import MappingProxyType
@@ -430,8 +431,8 @@ class SnapshotTable:
         (``(l3, scope) -> values``): a table whose copy keeps only some partitions (reports' LSF county
         projections keep each race's newest run of each model, of a night's hundreds) reads only those. None reads
         every value L3 holds; so does a rebuild whose ask fails, which costs time and never rows. A diff whose ask
-        fails reads no value the copy does not hold: a ``retained`` table is judged as one the copy keeps part of,
-        any other leaves the scope behind until an ask answers
+        fails judges a ``retained`` table as one the copy keeps part of (a value the copy does not hold is read only
+        when a write stamped it); any other table, and a ``partial_groups`` one, is left behind until an ask answers
     :ivar version_column: the L3 column holding the version of the write that last changed a row (the write's epoch,
         :mod:`~threetears.core.collections.scope_epochs`; NULL for a row no versioned write has changed). With it a
         scope behind L3 is brought forward from the DIFF (:meth:`ScopedSnapshot.catch_up`): the rows changed since
@@ -443,15 +444,19 @@ class SnapshotTable:
         diff that finds rows the copy kept gone from L3 (rows it let go might count again) cannot bring it forward
     :ivar partial_groups: with ``retained`` and ``partition_values``, the copy keeps only the partitions the ask names
         and, of each, only some rows (reports' LSF county projections: a thinned set of a night's runs, and of each
-        kept run its history rows, not all 58k). A diff then counts and reads only the named partitions, so its
-        per-group count does not grow with every run L3 holds: one it holds no rows of is read whole, one a write
-        stamped since the copy's epoch has only its stamped rows read and laid over the copy's (each replacing the
-        copy's row of its key), and one whose copy holds fewer rows than L3 is not a difference. A named partition L3
-        no longer holds is dropped from the copy, as is one the ask no longer names, and neither is read. The rows
-        then pass this L1's retention whole, which keeps of them what it keeps. A named partition whose copy holds
-        more rows than L3 holds unchanged since the copy's epoch lost rows the copy holds, and is read whole. A diff
-        whose ask fails falls back to ``retained``'s judgement. A rebuild already reads only the named partitions,
-        each handed to this L1 a page at a time
+        kept run its history rows). A diff then counts and reads only the named partitions, so its per-group count
+        does not grow with every partition L3 holds. A named partition is read whole when the copy holds none of it,
+        when a write stamped its every row, when the copy holds more of its rows than L3 holds unchanged since the
+        copy's epoch, or when this L1's retention lets go of a row a write stamped in it; one a write stamped
+        otherwise has only its stamped rows read, each replacing the copy's row of its key; one whose copy holds
+        fewer rows than L3 is no difference and is not read. A named partition L3 no longer holds, and one the ask no
+        longer names, is dropped from the copy, and neither is read. The rows then pass this L1's retention whole. A
+        diff whose ask fails, or answers none for a scope the copy holds rows of (said at WARNING), reads nothing and
+        leaves the scope behind until an ask answers. What a diff dropped and read is said at INFO.
+        **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows
+        of it as the copy holds is not seen, so a table set so adds and deletes whole partitions (reports'
+        ``lsf_projections`` writes and deletes whole runs). A rebuild already reads only the named partitions, each
+        handed to this L1 a page at a time
     """
 
     name: str
@@ -1245,30 +1250,49 @@ _NO_COPY: Final = object()
 
 
 def _group_key(value: Any) -> Any:
-    """a group's value as a diff compares it, alike from L3's answer and from the copy's rows.
+    """a group's value as a diff compares it, alike from L3's answer and from the copy's rows: in the form the L1
+    stores it (:meth:`~threetears.core.cache.duckdb.DuckDBBackend.serialize_value`), so a value L3 answers as one
+    Python type and the copy holds as another is one group, never two.
 
     :param value: the value
     :ptype value: Any
-    :return: what it is compared as: an instant or a date as its ISO text, any other value itself
+    :return: what it is compared as: a UUID as its text; an instant as its ISO text, in UTC when it has a zone; a date
+        as its ISO text; a decimal at its least scale; any other value itself
     :rtype: Any
     """
-    return value.isoformat() if isinstance(value, datetime) else value
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return (value.astimezone(UTC) if value.tzinfo is not None else value).isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return value.normalize()
+    return value
 
 
-def _key_tuples(rows: Sequence[Mapping[str, Any]] | Any, key: Sequence[str]) -> list[tuple[Any, ...]]:
-    """each row's key, in order, its every value as a diff compares it (:func:`_group_key`).
+def _key_tuples(rows: Any, key: Sequence[str]) -> list[tuple[Any, ...]]:
+    """each row's key, in order, of rows this L1 typed (:meth:`_export`), its every value as a diff compares it.
 
-    :param rows: dict rows, or an Arrow table
-    :ptype rows: Sequence[Mapping[str, Any]] | pyarrow.Table
+    :param rows: the rows
+    :ptype rows: pyarrow.Table
     :param key: the key's columns
     :ptype key: Sequence[str]
     :return: one tuple a row
     :rtype: list[tuple[Any, ...]]
     """
-    if isinstance(rows, pa.Table):
-        columns = [rows.column(column).to_pylist() for column in key]
-        return [tuple(_group_key(value) for value in values) for values in zip(*columns, strict=True)]
-    return [tuple(_group_key(row[column]) for column in key) for row in rows]
+    columns = [rows.column(column).to_pylist() for column in key]
+    return [tuple(_group_key(value) for value in values) for values in zip(*columns, strict=True)]
+
+
+@dataclass
+class _Tally:
+    """the rows a read took from L3, before this L1's retention judged them.
+
+    :ivar rows: how many
+    """
+
+    rows: int = 0
 
 
 class _WriteBegan(Exception):
@@ -5158,35 +5182,45 @@ class ScopedSnapshot:
             held_counts[key] = held_counts.get(key, 0) + 1
         named: list[Any] | None = None
         if table.partition_values is not None:
+            # a partial_groups table, and any table not retained, waits for an ask that answers: without the values,
+            # the one would count and read every group L3 holds (each of a night's hundreds of runs), and the other's
+            # count proves nothing
+            waits = table.partial_groups or not table.retained
             try:
                 named = list(await table.partition_values(self._l3, scope))
-            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed ask never reads the values the copy never kept: a retained table is judged as one the copy keeps part of, any other leaves the scope behind for the next try; never fewer rows; recorded
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed ask leaves a partial_groups table, or one not retained, behind for the next try, reading nothing; a retained one is judged as one the copy keeps part of; never fewer rows; recorded
                 contain(
                     exc,
                     log=log,
                     what=(
                         f"scoped snapshot {self._name}: the partition values of {table.name} in scope {scope!r} "
-                        "could not be asked; the diff reads none of the values the copy does not hold"
+                        "could not be asked; "
+                        + (
+                            "the scope stays behind until an ask answers, and nothing is read"
+                            if waits
+                            else "the copy is judged as one keeping part of the table"
+                        )
                     ),
                 )
-                if not table.retained:
-                    # every value the copy does not hold would be read (each of a night's hundreds of runs), and
-                    # without the values the copy's count proves nothing: the scope waits for an ask that answers
+                if waits:
                     return f"the partition values of {table.partition_by} could not be asked: {type(exc).__name__}"
-        wanted = None if named is None else {_group_key(value) for value in named}
+            if table.partial_groups and named is not None and not named and held.num_rows:
+                # an ask answering no value for a scope the copy holds rows of would thin the copy to nothing: taken
+                # as one that failed, said, and the scope left behind for the next try
+                log.warning(
+                    "scoped snapshot %s: the partition values of %s in scope %r named none while the copy holds %d "
+                    "rows; the scope stays behind until an ask names them",
+                    self._name,
+                    table.name,
+                    scope,
+                    held.num_rows,
+                    extra={"extra_data": {"table": table.name, "scope": scope, "held": held.num_rows}},
+                )
+                return f"the partition values of {table.partition_by} named none while the copy holds rows of it"
         if table.partial_groups and named is not None and group is not None:
             return await self._partly_diffed(table, scope, held_at, held, group, named, keys, held_counts)
-        source, scope_column = quote_identifier(table.name), quote_identifier(table.scope_column)
-        counts = (
-            f"count(*) AS total, count(*) FILTER (WHERE {quote_identifier(version)} > $2) AS changed "
-            f"FROM {source} WHERE {scope_column} = $1"
-        )
-        if group is None:
-            rows = await self._l3.fetch(f"SELECT NULL AS value, {counts}", scope, held_at)  # noqa: S608
-        else:
-            column = quote_identifier(group)
-            rows = await self._l3.fetch(f"SELECT {column} AS value, {counts} GROUP BY {column}", scope, held_at)  # noqa: S608
-        in_l3 = {_group_key(row["value"]): (row["value"], int(row["total"]), int(row["changed"])) for row in rows}
+        wanted = None if named is None else {_group_key(value) for value in named}
+        in_l3 = await self._group_counts(table, scope, held_at, group)
         # the copy keeps only some of the table's groups, and which is unknown: a retained table with no values named
         some = table.retained and wanted is None
         reread: list[Any] = []
@@ -5221,6 +5255,47 @@ class ScopedSnapshot:
             return f"L3 holds {total} rows of it, the diff makes {rows_now.num_rows}"
         return rows_now, read
 
+    async def _group_counts(
+        self, table: SnapshotTable, scope: str, held_at: int, group: str | None, named: Sequence[Any] | None = None
+    ) -> dict[Any, tuple[Any, int, int]]:
+        """each group's rows of a scope in L3 and those a write after ``held_at`` stamped, in one statement.
+
+        :param group: the group column; ``None`` for the table as one group
+        :ptype group: str | None
+        :param named: count only these groups (``IN`` their values, ``IS NULL`` for a NULL one); every group when
+            ``None``, none when empty
+        :ptype named: Sequence[Any] | None
+        :return: each group as a diff compares it (:func:`_group_key`) -> its value as L3 answers it, its rows and
+            its stamped rows
+        :rtype: dict[Any, tuple[Any, int, int]]
+        """
+        assert table.version_column is not None  # noqa: S101 -- _diffed_table returns before here for a table naming none
+        counts = (
+            f"count(*) AS total, count(*) FILTER (WHERE {quote_identifier(table.version_column)} > $2) AS changed "
+            f"FROM {quote_identifier(table.name)} WHERE {quote_identifier(table.scope_column)} = $1"
+        )
+        members: list[Any] = []
+        if group is None:
+            rows = await self._l3.fetch(f"SELECT NULL AS value, {counts}", scope, held_at)  # noqa: S608
+        else:
+            column = quote_identifier(group)
+            among = ""
+            if named is not None:
+                members = list({_group_key(value): value for value in named if value is not None}.values())
+                listed = [f"{column} IN ({', '.join(f'${3 + i}' for i in range(len(members)))})"] if members else []
+                if any(value is None for value in named):
+                    listed.append(f"{column} IS NULL")
+                if not listed:
+                    return {}
+                among = f" AND ({' OR '.join(listed)})"
+            rows = await self._l3.fetch(
+                f"SELECT {column} AS value, {counts}{among} GROUP BY {column}",  # noqa: S608
+                scope,
+                held_at,
+                *members,
+            )
+        return {_group_key(row["value"]): (row["value"], int(row["total"]), int(row["changed"])) for row in rows}
+
     async def _partly_diffed(
         self,
         table: SnapshotTable,
@@ -5236,11 +5311,14 @@ class ScopedSnapshot:
         (:attr:`SnapshotTable.partial_groups`; :meth:`_diffed_table`).
 
         One statement counts each named group's rows in L3 and those stamped after ``held_at``, and no other group's:
-        the count follows the groups the copy keeps, never every one L3 holds. A named group the copy holds no row of
-        is read whole; one a write stamped has its stamped rows read, each replacing the copy's row of its key; one
-        whose copy holds more rows than L3 holds unchanged since ``held_at`` lost rows the copy holds, and is read
-        whole. A group the copy holds fewer rows of than L3 is the copy's. A named group L3 holds no more, and every
-        group the ask no longer names, is dropped. The rows are then this L1's retention's (:meth:`_export`).
+        the count follows the groups the copy keeps, never every one L3 holds. A named group is read whole when the
+        copy holds none of its rows, when a write stamped every row of it (one read, not its stamped rows and then
+        the rest), when the copy holds more of its rows than L3 holds unchanged since ``held_at`` (rows the copy holds
+        went from L3), or when this L1's retention lets go of a row a write stamped in it (the copy's row of that key,
+        which it no longer keeps, cannot be told). One a write stamped otherwise has its stamped rows read, each
+        replacing the copy's row of its key, both as this L1 types them. A group the copy holds fewer rows of than L3
+        is the copy's. A named group L3 holds no more, and every group the ask no longer names, is dropped. The rows
+        are then this L1's retention's (:meth:`_export`). What it dropped and read is said at INFO.
 
         :param group: the partition column, :attr:`SnapshotTable.partition_by`
         :ptype group: str
@@ -5253,69 +5331,81 @@ class ScopedSnapshot:
         :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
         :rtype: tuple[pyarrow.Table, int] | str
         """
-        version = table.version_column
-        assert version is not None  # noqa: S101 -- _diffed_table returns before here for a table naming none
         wanted = {_group_key(value) for value in named}
-        members = list({_group_key(value): value for value in named if value is not None}.values())
-        column = quote_identifier(group)
-        among = [f"{column} IN ({', '.join(f'${3 + index}' for index in range(len(members)))})"] if members else []
-        if None in wanted:
-            among.append(f"{column} IS NULL")
-        rows: list[Any] = []
-        if among:
-            rows = await self._l3.fetch(
-                f"SELECT {column} AS value, count(*) AS total, "  # noqa: S608
-                f"count(*) FILTER (WHERE {quote_identifier(version)} > $2) AS changed "
-                f"FROM {quote_identifier(table.name)} WHERE {quote_identifier(table.scope_column)} = $1 "
-                f"AND ({' OR '.join(among)}) GROUP BY {column}",
-                scope,
-                held_at,
-                *members,
-            )
-        in_l3 = {_group_key(row["value"]): (row["value"], int(row["total"]), int(row["changed"])) for row in rows}
+        in_l3 = await self._group_counts(table, scope, held_at, group, named)
         # every held group the ask no longer names, and every named one L3 holds no more
-        drop = {key for key in held_counts if key not in wanted or key not in in_l3}
-        reread: list[Any] = []
-        stamped_groups: list[tuple[Any, Any, int, int]] = []
+        dropped = {key for key in held_counts if key not in wanted or key not in in_l3}
+        drop = set(dropped)
+        whole: list[Any] = []
+        stamped_only: list[tuple[Any, Any, int]] = []
         for key, (value, rows_now, stamped) in in_l3.items():
             had = held_counts.get(key)
             if key not in wanted:
                 continue
             if had is None:
                 if rows_now:
-                    reread.append(value)
-            elif stamped:
-                stamped_groups.append((key, value, had, rows_now - stamped))
-            elif had > rows_now:
-                reread.append(value)
+                    whole.append(value)
+            elif stamped == rows_now or (not stamped and had > rows_now):
+                # rewritten whole: its stamped rows are its every row, read once; or rows it holds went from L3
+                whole.append(value)
                 drop.add(key)
+            elif stamped:
+                stamped_only.append((key, value, rows_now - stamped))
         parts: list[Any] = []
         replaced: set[tuple[Any, ...]] = set()
         held_rows: list[tuple[Any, ...]] | None = None
+        overlaid: list[Any] = []
         read = 0
-        for key, value, had, unchanged in stamped_groups:
-            seen: set[tuple[Any, ...]] = set()
-            pages = await self._read_group(table, scope, group, value, after=held_at, seen=seen)
+        for key, value, unchanged in stamped_only:
+            tally = _Tally()
+            pages = await self._read_group(table, scope, group, value, after=held_at, tally=tally)
             if isinstance(pages, str):
                 return pages
-            read += sum(page.num_rows for page in pages)
+            read += tally.rows
+            # the stamped rows as this L1 types them, keyed as the copy's rows are
+            seen = {row for page in pages for row in _key_tuples(page, table.key)}
             if held_rows is None:
                 held_rows = _key_tuples(held, table.key)
             kept = sum(1 for at, row in zip(keys, held_rows, strict=True) if at == key and row not in seen)
-            if kept > unchanged:
-                # the copy holds more of the group's rows than L3 holds unchanged: rows it holds went from L3
-                reread.append(value)
+            if sum(page.num_rows for page in pages) != tally.rows or kept > unchanged:
+                # the retention let a stamped row go (the copy's row of its key cannot be told), or the copy holds
+                # more of the group than L3 holds unchanged (rows it holds went from L3): read whole
+                whole.append(value)
                 drop.add(key)
                 continue
             parts += pages
             replaced |= seen
-        for value in reread:
+            overlaid.append(value)
+        for value in whole:
             pages = await self._read_group(table, scope, group, value)
             if isinstance(pages, str):
                 return pages
             read += sum(page.num_rows for page in pages)
             parts += pages
-        if not (parts or drop or replaced):
+        if dropped or whole or overlaid:
+            gone = sorted((repr(key) for key in dropped), key=str)
+            log.info(
+                "scoped snapshot %s: %s of scope %r diffed over %d of its %s: %d dropped, %d read whole, %d read "
+                "stamped only",
+                self._name,
+                table.name,
+                scope,
+                len(wanted),
+                group,
+                len(dropped),
+                len(whole),
+                len(overlaid),
+                extra={
+                    "extra_data": {
+                        "table": table.name,
+                        "scope": scope,
+                        "dropped": gone[:50],
+                        "read_whole": [repr(value) for value in whole[:50]],
+                        "read_stamped": [repr(value) for value in overlaid[:50]],
+                    }
+                },
+            )
+        if not (parts or drop):
             return held, read
         if replaced and held_rows is not None:
             mask = pa.array(
@@ -5334,7 +5424,7 @@ class ScopedSnapshot:
         value: Any,
         *,
         after: int | None = None,
-        seen: set[tuple[Any, ...]] | None = None,
+        tally: _Tally | None = None,
     ) -> list[Any] | str:
         """one group's rows of a table from L3, pinned to its value, as this L1 types them (:meth:`_diffed_table`).
 
@@ -5347,9 +5437,8 @@ class ScopedSnapshot:
         :param after: read only the rows a write after this epoch stamped (:attr:`SnapshotTable.version_column`);
             every row when ``None``
         :ptype after: int | None
-        :param seen: where each row read goes by its key (:func:`_key_tuples`), as L3 answers it, before this L1's
-            retention judges it
-        :ptype seen: set[tuple[Any, ...]] | None
+        :param tally: counts the rows read from L3, before this L1's retention judges them
+        :ptype tally: _Tally | None
         :return: the pages read; or why the group cannot be read
         :rtype: list[pyarrow.Table] | str
         """
@@ -5374,13 +5463,13 @@ class ScopedSnapshot:
         )
         pages: list[Any] = []
         try:
-            await self._read_pages(table, scope, columns, types, where, paged, None, pages, derived, seen=seen)
+            await self._read_pages(table, scope, columns, types, where, paged, None, pages, derived, tally=tally)
         except ReplyNotArrowError:
             # NOSILENT: as a whole read does, a value the rail answers otherwise than its Arrow type: dict rows
             pages = []
-            if seen is not None:
-                seen.clear()
-            await self._read_pages(table, scope, columns, None, where, paged, None, pages, derived, seen=seen)
+            if tally is not None:
+                tally.rows = 0
+            await self._read_pages(table, scope, columns, None, where, paged, None, pages, derived, tally=tally)
         return pages
 
     async def _publish_rows(self, scope: str, epoch: int, rows: Mapping[str, Any]) -> _Pointer | None:
@@ -5739,7 +5828,7 @@ class ScopedSnapshot:
         parts: list[Any],
         source: str | None = None,
         *,
-        seen: set[tuple[Any, ...]] | None = None,
+        tally: _Tally | None = None,
     ) -> None:
         """the rows ``where`` names of one table, NULL-safe: a keyset read of each pattern of NULLs the paged columns
         may hold (:meth:`_read_keyset`).
@@ -5753,8 +5842,8 @@ class ScopedSnapshot:
 
         :param source: what the rows are read FROM in place of the table, as :meth:`_read_keyset` takes it
         :ptype source: str | None
-        :param seen: where each row read goes by its key as L3 answers it, as :meth:`_read_keyset` takes it
-        :ptype seen: set[tuple[Any, ...]] | None
+        :param tally: counts the rows read, as :meth:`_read_keyset` takes it
+        :ptype tally: _Tally | None
         :return: nothing
         :rtype: None
         :raises ValueError: when more than a page of rows is NULL in every column that pages them
@@ -5774,9 +5863,9 @@ class ScopedSnapshot:
             # a pattern whose every column left is pinned (or NULL) has nothing to page by; with no NULL, the read is
             # the keyset read it always was
             if not nulls or any(column not in where for column in rest):
-                await self._read_keyset(table, scope, columns, types, where, rest, moved, parts, derived, seen=seen)
+                await self._read_keyset(table, scope, columns, types, where, rest, moved, parts, derived, tally=tally)
             else:
-                await self._read_unpaged(table, scope, columns, where, moved, parts, derived, seen=seen)
+                await self._read_unpaged(table, scope, columns, where, moved, parts, derived, tally=tally)
 
     async def _read_unpaged(
         self,
@@ -5788,7 +5877,7 @@ class ScopedSnapshot:
         parts: list[Any],
         source: str | None,
         *,
-        seen: set[tuple[Any, ...]] | None = None,
+        tally: _Tally | None = None,
     ) -> None:
         """the rows ``where`` names that no column is left to page by (each NULL, or pinned): one statement, which
         must hold them all.
@@ -5796,8 +5885,8 @@ class ScopedSnapshot:
         :param moved: asked once the statement answers, as between keyset pages: whether a write has begun since the
             read started, which stops it
         :ptype moved: Callable[[], Awaitable[bool]] | None
-        :param seen: where each row read goes by its key as L3 answers it, as :meth:`_read_keyset` takes it
-        :ptype seen: set[tuple[Any, ...]] | None
+        :param tally: counts the rows read, as :meth:`_read_keyset` takes it
+        :ptype tally: _Tally | None
         :return: nothing
         :rtype: None
         :raises ValueError: when they are more than a page
@@ -5810,6 +5899,8 @@ class ScopedSnapshot:
             f"{f' WHERE {conditions}' if conditions else ''} LIMIT {DEFAULT_PAGE_SIZE + 1}"
         )
         rows = [dict(row) for row in await self._l3.fetch(select, *values)]
+        if tally is not None:
+            tally.rows += len(rows)
         if moved is not None and await moved():
             raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
         if len(rows) > DEFAULT_PAGE_SIZE:
@@ -5818,8 +5909,6 @@ class ScopedSnapshot:
                 f"rows with no column left to page them by ({source or 'the table'}); none can be read a page at a time"
             )
         if rows:
-            if seen is not None:
-                seen.update(_key_tuples(rows, table.key))
             parts.append(await self._export(table, scope, rows))
         _headway(
             f"read {len(rows)} rows of {table.name} in scope {scope!r} from L3", landed=_WHOLE_READ.get() is not None
@@ -5837,7 +5926,7 @@ class ScopedSnapshot:
         parts: list[Any],
         source: str | None = None,
         *,
-        seen: set[tuple[Any, ...]] | None = None,
+        tally: _Tally | None = None,
     ) -> None:
         """the rows ``where`` names of one table, a page at a time, typed by this L1 and added to ``parts``
         (:meth:`_read_pages`, which keeps a NULL out of every column it pages by).
@@ -5861,9 +5950,9 @@ class ScopedSnapshot:
         :param source: what the rows are read FROM in place of the table (a derived table naming rows no equality
             can, a group whose value is NULL); the table when ``None``
         :ptype source: str | None
-        :param seen: where each row read goes by its key (:func:`_key_tuples`), as L3 answers it, before this L1's
-            retention judges it; kept nowhere when ``None``
-        :ptype seen: set[tuple[Any, ...]] | None
+        :param tally: counts the rows read from L3, before this L1's retention judges them; counted nowhere when
+            ``None``
+        :ptype tally: _Tally | None
         :return: nothing
         :rtype: None
         :raises _WriteBegan: when ``moved`` says a write began
@@ -5888,9 +5977,9 @@ class ScopedSnapshot:
             try:
                 while (page := await ahead) is not _NO_PAGE:
                     ahead = asyncio.ensure_future(_next_page(pages))
+                    if tally is not None:
+                        tally.rows += len(page)
                     if len(page):
-                        if seen is not None:
-                            seen.update(_key_tuples(page, table.key))
                         parts.append(await self._export(table, scope, page))
                     read, rows = read + 1, rows + len(page)
                     # a page of a whole read (the rebuild of what L2 holds no copy of) is the read's progress, landed:

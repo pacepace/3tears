@@ -167,21 +167,11 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
   value is NULL from the rows where it is NULL, paged by the other key columns: a keyset page compares
   every paged column, and a NULL makes that comparison NULL); a group gone is dropped. A table the copy
   keeps all of must then number L3's rows. A table naming `partition_values` reads only the groups the
-  ask names; when the ask fails, no group the copy does not hold is read (each of a night's hundreds of
-  runs): a `retained` table is judged as one the copy keeps part of, any other stays behind until an ask
-  answers. A `retained` table (a retention
+  ask names; when the ask fails, a `retained` table is judged as one the copy keeps part of (a group the
+  copy does not hold is read only when a write stamped it, never each of a night's hundreds of runs), and
+  any other, a `partial_groups` one included, stays behind until an ask answers. A `retained` table (a retention
   keeps some rows) cannot be diffed when rows it kept went from L3 (rows it let go may count again):
   the scope stays behind, said at ERROR, never guessed at and never read whole.
-  A `partial_groups` table (with `retained` and `partition_values`: reports' `lsf_projections`, a
-  thinned set of runs and of each its history rows) is diffed over the named partitions alone: the
-  count statement names them (`AND run IN (...)`), so it does not grow with every run L3 holds; a
-  stamped partition has only its rows stamped after the copy's epoch read, each replacing the copy's
-  row of its key (by the key as L3 answered it, before the L1's retention judges it); a partition the
-  copy holds none of is read whole; one the copy holds fewer rows of than L3 is no difference. A named
-  partition L3 holds no more, and one the ask no longer names, is dropped and never read. A partition
-  whose copy holds more rows than L3 holds unchanged since the copy's epoch has lost rows and is read
-  whole; a delete that leaves L3 at least as many unchanged rows as the copy holds is not seen, so such
-  a table's writes add and delete whole partitions. The composed rows pass the L1's retention whole.
   The contract it rests on: every write stamps every row it inserts or updates. A delete is seen by the
   counts; an update that stamps nothing is not seen at all.
 - **Each scope on its own,** before its first read and after its last: unchanged in L3 and untouched by
@@ -195,6 +185,38 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
 - **The stall breaker** watches a catch-up by what it lands (a scope committed or judged, a pointer
   moved), not by pages read; a page of a whole read (a scope with no copy, rebuilt inside a catch-up)
   counts as landed, since that read is long and correct.
+
+### A copy that keeps some rows of some partitions
+
+Reports' `lsf_projections` (keyed by run) is copied thinned: a set of a night's runs (every run of the last
+two hours, one a bucket before that, each model's first and the newest), and of each kept run its history rows.
+As a plain `retained` table its diff counted every run L3 holds, a `GROUP BY` growing with the night, and read
+every kept run again whole, since the copy holds part of its rows and so is of another count. `partial_groups`
+(with `retained` and `partition_values`) diffs over the named runs alone:
+
+- The count statement names them (`AND run IN (...)`, `IS NULL` for a NULL one): its cost follows the runs
+  the copy keeps, not the ones L3 holds.
+- A stamped run has only its rows stamped after the copy's epoch read, each replacing the copy's row of its key,
+  both keyed as the L1 types them. It is read whole instead when every row of it is stamped (rewritten whole,
+  one read), when the copy holds more of its rows than L3 holds unchanged (rows it holds went), or when the
+  L1's retention lets go of a stamped row (the copy's row of that key cannot be told from what was kept). A run
+  the copy holds none of is read whole; one it holds fewer rows of than L3 is no difference.
+- A named run L3 holds no more, and one the ask no longer names, is dropped and never read. The composed rows
+  pass the L1's retention whole.
+- An ask that fails, or names no run while the copy holds rows (said at WARNING), reads nothing: the scope
+  stays behind for the next try. Diffed as a plain `retained` table instead, it would count and read every
+  run a write stamped, kept or not, the cost this exists to remove; thinned to nothing, it would drop the copy
+  with no record. What each diff dropped and read is said at INFO, so a thinning that goes wrong is visible.
+
+**What it cannot see.** A delete inside a kept run that leaves L3 at least as many unchanged rows of it as the
+copy holds: the counts are the only evidence of a delete, and a copy holding part of a run cannot match its rows
+to L3's without reading them. So a table set so must add and delete whole runs; that obligation is the writer's,
+stated on `SnapshotTable.partial_groups`, and `lsf_projections` meets it.
+
+**Why a flag on the table, not a second table.** A separate table holding only the kept runs would make the
+writer write each run twice and L3 hold it twice, and moving a run out of the kept set would be a delete in L3
+the diff would then have to see. The flag keeps L3's one table as the record and the thinning in the copy,
+where the retention already lives; the snapshot only has to stop counting what the copy never meant to hold.
 
 ## Append-only tables: a base and its pieces
 
