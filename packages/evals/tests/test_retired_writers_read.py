@@ -11,6 +11,9 @@ campaign (``report_support.stored_plan_analysis``), its plan written beside it a
   analysis (``unread_analysis_id``), with the retired writer's line (``retired_generation``, naming the report planner)
   on its first screen and as ``needs_regeneration``; the listing counts no findings. ``analysis_report`` lays the page
   over the bundles frozen with the analysis, every aspect's fold kept;
+- **its frozen bundle is still read**: by its id, a planned analysis frozen over a bundle of a shape this build no
+  longer reads is refused with the stated refusal (``RefusedInput``, naming the shape and ``analysis_generate``), as
+  any analysis is, while the campaign's page and the listing still read it;
 - **the plan is never read**: the reads are the same whether the plan stored beside it is the planner's own, a host's
   plan the planned page could not draw, a plan no model reads, or no plan at all;
 - **the plan is still swept**: ``drop_derived`` deletes it, and deleting its analysis deletes it (its insights stay);
@@ -41,6 +44,7 @@ from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.ops import analyses_list, analysis_delete, report_read
+from packages.evals.tests.factories import empty_bundle
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: A host's planned analysis of Kairo round 2, its plan as the host stored it: one chart of it the planned page
@@ -173,6 +177,26 @@ def _without_instants(body: str) -> str:
 def test_the_line_is_worded_once_and_names_only_a_retired_writer() -> None:
     assert retired_generation("plan") == _LINE
     assert retired_generation("memo") is None and retired_generation("doc") is None, "a writer this version reads"
+
+
+async def test_by_its_id_a_planned_analysis_frozen_over_a_bundle_shape_no_longer_read_is_the_stated_refusal() -> None:
+    fixture, _, analysis = await _planned()
+    host = fixture.host.eval_host
+    shape = 60
+    moved = {**empty_bundle(campaign_id=analysis.campaign_id).to_dict(), "schema_version": shape}
+    frozen = analysis.model_copy(
+        update={"aspects": [aspect.model_copy(update={"bundle": moved}) for aspect in analysis.aspects]}
+    )
+    off_loop(host.storage.save_analysis, frozen)
+
+    with pytest.raises(RefusedInput) as refused:
+        off_loop(analysis_report, host.storage, analysis.id, TOYHOST_SCOPE)
+
+    assert f"shape {shape}" in refused.value.fault and "analysis_generate" in (refused.value.remedy or "")
+    page = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+    assert page.unread_analysis_id == analysis.id and page.needs_regeneration is not None, "the campaign's page reads"
+    (line,) = off_loop(analyses_list, host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert line.needs_regeneration is not None and line.needs_regeneration.startswith(_LINE), "the listing reads"
 
 
 # -- the plan is still swept --------------------------------------------------------------------------------------
