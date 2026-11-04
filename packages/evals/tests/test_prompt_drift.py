@@ -19,7 +19,15 @@ import importlib
 
 import pytest
 
-from threetears.evals.kernel import KIND_TEXT, SEED_PROMPTS, PromptDrift, SeedPrompt, SeedTemplate, prompt_drift, seed_digest
+from threetears.evals.kernel import (
+    KIND_TEXT,
+    SEED_PROMPTS,
+    PromptDrift,
+    SeedPrompt,
+    SeedTemplate,
+    prompt_drift,
+    seed_digest,
+)
 
 _RESET = "call prompt_reset for the slot"
 
