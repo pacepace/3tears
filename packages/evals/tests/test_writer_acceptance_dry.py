@@ -6,7 +6,10 @@ writer turn replayed from a scripted recording and a judge that sends nothing. E
 provider fails. The criterion's two answers are each checked on a read of the right shape.
 
 Mutations that turn this file red: the hollow variant changing ``editor.md`` or a third file, or leaving a hollowed
-file longer than one line; the pass asking one order; the read made without the pass; the criterion passing on
+file longer than one line; any variant changing ``editor.md``, a file it does not name, or nothing that tells its arm
+from the control's; the minimal variant keeping a module, a note or the index's prose, or losing a note a case may
+withhold; the no-editor arm given a revision; ``--variant`` ignored, or a variant's readout not naming it; the pass
+asking one order; the read made without the pass; the criterion passing on
 ``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
 short; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
 directory; the doc's commands drifting from the script's.
@@ -28,18 +31,27 @@ from packages.evals.tests.fixtures.report_plans import writer_acceptance
 from packages.evals.tests.fixtures.report_plans.writer_acceptance import (
     HOLLOW,
     HOLLOWED,
+    INDEX,
+    MINIMAL,
+    MINIMAL_KEPT,
+    NO_EDITOR,
+    ONE_PARAGRAPH,
+    ONE_PARAGRAPH_SKILL,
     SHIPPED,
     STUB,
+    VARIANTS,
     Acceptance,
     acceptance,
     files_differing,
     hollow_variant,
+    minimal_variant,
     pass_criterion,
     refuse_unlike_editors,
 )
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import WriterCaseFile
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
@@ -96,6 +108,87 @@ def test_a_variant_whose_editor_or_a_third_file_differs_is_refused() -> None:
         refuse_unlike_editors(shipped, hollow.with_file("editor.md", shipped.files["editor.md"] + "\nOne more rule.\n"))
     with pytest.raises(SystemExit, match=r"differs in \['principles\.md', 'statistics\.md', 'writing\.md'\]"):
         refuse_unlike_editors(shipped, hollow.with_file("writing.md", STUB))
+
+
+def test_every_variant_keeps_the_editor_changes_only_its_files_and_differs_from_the_control() -> None:
+    shipped = load_skill()
+    assert list(VARIANTS) == [HOLLOW, MINIMAL, NO_EDITOR, ONE_PARAGRAPH]
+    for name, variant in VARIANTS.items():
+        candidate = variant.build(shipped)
+        assert candidate.files["editor.md"] == shipped.files["editor.md"], name
+        assert candidate.editor().digest == shipped.editor().digest, name
+        assert files_differing(shipped, candidate) == variant.changes(shipped), name
+        refuse_unlike_editors(shipped, candidate, variant)
+        # What the arm runs differs from the control's: its skill, or (no-editor) its revisions alone.
+        assert (candidate.digest, variant.revisions) != (shipped.digest, MOST_REVISIONS), name
+        if name == NO_EDITOR:
+            assert candidate.digest == shipped.digest and variant.revisions == 0
+        else:
+            assert candidate.digest != shipped.digest and variant.revisions == MOST_REVISIONS, name
+    assert VARIANTS[ONE_PARAGRAPH].build(shipped).files["SKILL.md"] == ONE_PARAGRAPH_SKILL
+    with pytest.raises(SystemExit, match=r"the minimal variant differs in"):
+        refuse_unlike_editors(shipped, minimal_variant(shipped).with_file("SKILL.md", STUB), VARIANTS[MINIMAL])
+
+
+def test_the_minimal_variant_keeps_the_role_file_and_the_editor_and_a_bare_row_per_note() -> None:
+    shipped, minimal = load_skill(), minimal_variant()
+    notes = sorted(name for name in shipped.files if name.startswith("exemplars/") and name != INDEX)
+    assert len(notes) == 5
+    for name in shipped.files:
+        if name in MINIMAL_KEPT:
+            assert minimal.files[name] == shipped.files[name], name
+        elif name != INDEX:
+            assert minimal.files[name] == STUB, name
+    index = minimal.files[INDEX]
+    assert index.startswith(STUB)
+    assert [line for line in index.splitlines() if line.startswith("| `")] == [
+        f"| `{name.removeprefix('exemplars/')}` |" for name in notes
+    ]
+    # A case still withholds a note by name, and the analyst's text is the role file and stubs.
+    text = minimal.analyst(withhold=["kairo-round2.md"])
+    assert "kairo-round2.md" not in text.text
+    assert len(text.text) < len(shipped.files["SKILL.md"]) + 1000
+
+
+@pytest.mark.parametrize("variant", [MINIMAL, NO_EDITOR, ONE_PARAGRAPH])
+def test_each_variant_runs_dry_offline_and_its_readout_names_it(variant: str) -> None:
+    chosen = VARIANTS[variant]
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        attempts = _offline(monkeypatch)
+        found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, variant=variant))
+    assert attempts == []
+    assert list(found.result.arms) == [SHIPPED, variant]
+    assert all(summary.status == "completed" for summary in found.result.arms.values())
+    assert found.report.candidate == variant
+    assert found.read.changed == (["report_writer.revisions"] if variant == NO_EDITOR else ["report_writer.skill"])
+    text = "\n".join(found.readout())
+    assert chosen.question in text
+    files = ", ".join(chosen.changes(found.shipped)) or "none"
+    assert f"| {variant} | candidate | {found.candidate.digest[:12]} | {files} | " in text
+    assert ("0 revisions and the control 2" in text) is (variant == NO_EDITOR)
+    assert found.summary()["variant"] == variant
+    assert found.summary()["skills"] == {SHIPPED: found.shipped.digest, variant: found.candidate.digest}
+    campaign = found.result.host.storage.load_campaign(found.result.campaign_id, found.result.scope_id)
+    assert campaign is not None and campaign.question == chosen.question
+    passed = pass_criterion(
+        _shaped(found.read, decision="keep", outcome="regressed", reason="separated", high=-0.1),
+        found.result.arms,
+        variant=chosen,
+    )
+    assert passed.verdict() == f"PASS: the gate reads {chosen.noun} as writing worse reports, on the primary reading."
+
+
+def test_main_takes_a_variant_by_name_and_refuses_an_unknown_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    attempts = _offline(monkeypatch)
+    assert writer_acceptance.main(["--dry", "--variant", ONE_PARAGRAPH]) == 0
+    printed = capsys.readouterr().out
+    assert attempts == []
+    assert VARIANTS[ONE_PARAGRAPH].question in printed
+    assert f"| {ONE_PARAGRAPH} | candidate | " in printed
+    with pytest.raises(SystemExit):
+        writer_acceptance.main(["--dry", "--variant", "nonesuch"])
 
 
 def test_the_dry_run_makes_no_network_call_over_two_arms_and_every_held_out_case(
@@ -204,7 +297,7 @@ def test_the_criterion_passes_only_on_keep_with_a_separated_regressed_primary(
     read, runs = dry[0].read, dry[0].result.arms
     passed = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), runs)
     assert passed.passed
-    assert passed.verdict().startswith("PASS: ")
+    assert passed.verdict() == "PASS: the gate reads the hollow skill as writing worse reports, on the primary reading."
     # A keep reached through a gated reading, beside a primary that did not separate, fails.
     gated = pass_criterion(_shaped(read, decision="keep", outcome="not_separated", reason="no_margin", high=0.2), runs)
     assert not gated.passed

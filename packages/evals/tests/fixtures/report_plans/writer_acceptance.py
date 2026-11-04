@@ -1,9 +1,18 @@
-"""The reset's P2 acceptance: does the writer gate read a hollowed skill as writing worse reports?
+"""The reset's P2 acceptance: does the writer gate read a worse writer as writing worse reports?
 
-Two arms of one writer over the held-out writer cases: the shipped skill (the control) and the **hollow** variant,
-the shipped skill with ``principles.md`` and ``statistics.md`` each left as one stub line. The loader requires every
-module, so the files stay; every other file is byte-identical, ``editor.md`` included, so the in-loop editor is the
-same instrument for both arms and the code measures stay comparable. Then:
+Two arms of one writer over the held-out writer cases: the shipped skill (the control) and one candidate variant,
+chosen by ``--variant``, each a function of the shipped skill:
+
+- ``hollow`` (the default): ``principles.md`` and ``statistics.md`` each left as one stub line;
+- ``minimal``: ``SKILL.md`` and ``editor.md`` kept, every other module, the exemplars' index and every note left as a
+  stub (the index keeps one bare row per note, so the loader still finds each note and a case may still withhold one);
+- ``no-editor``: the shipped skill, its arm given 0 revisions, so the editor reviews each report once and never sends
+  it back (the loop has no lever below one review);
+- ``one-paragraph``: ``SKILL.md`` replaced by a short instruction to write one paragraph with no tables.
+
+The loader requires every module, so blanked files stay as stubs; ``README.md`` is in no session's text and stays as
+shipped. ``editor.md`` is byte-identical in every variant, so the in-loop editor is the same instrument for both arms
+and the code measures stay comparable. Then:
 
 1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
    the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
@@ -18,6 +27,7 @@ Commands::
 
     uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry
     uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
+    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry --variant minimal
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
@@ -49,7 +59,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, get_args
@@ -112,10 +122,28 @@ HOLLOWED: Final = ("principles.md", "statistics.md")
 #: The stub line each hollowed file holds.
 STUB: Final = "This module is intentionally empty.\n"
 
-#: The question the acceptance asks.
+#: The question the acceptance asks of the hollow variant.
 QUESTION: Final = (
     "Does the gate read the hollow skill (principles.md and statistics.md left blank) as writing worse reports than "
     "the shipped skill?"
+)
+
+#: The other variants' arm names.
+MINIMAL: Final = "minimal"
+NO_EDITOR: Final = "no-editor"
+ONE_PARAGRAPH: Final = "one-paragraph"
+
+#: The files the minimal variant keeps as shipped: the role file, the editor's text, and the README no session reads.
+MINIMAL_KEPT: Final = ("SKILL.md", "editor.md", "README.md")
+
+#: The exemplars' index, which the minimal variant leaves as a stub with one bare row per note.
+INDEX: Final = "exemplars/INDEX.md"
+
+#: The one-paragraph variant's whole ``SKILL.md``: a deliberately bad writer.
+ONE_PARAGRAPH_SKILL: Final = (
+    "# Report writer\n\n"
+    "Write the whole report as one paragraph of plain prose. Use no tables, no charts, no headings and no lists. "
+    "Submit it with the tools you are given.\n"
 )
 
 #: The eval's name, its scope's and its campaign's.
@@ -146,19 +174,105 @@ def hollow_variant(shipped: AnalystSkill | None = None) -> AnalystSkill:
     return skill
 
 
+def minimal_variant(shipped: AnalystSkill | None = None) -> AnalystSkill:
+    """The shipped skill with every file but :data:`MINIMAL_KEPT` left as :data:`STUB`, and the exemplars' index as
+    the stub and one bare row per note, since the loader refuses a note the index does not row and a case withholds
+    notes by name.
+
+    :param shipped: The skill to cut down; ``None`` for the one this build ships.
+    :return: The variant, checked whole.
+    """
+    skill = load_skill() if shipped is None else shipped
+    notes = sorted(name for name in skill.files if name.startswith("exemplars/") and name != INDEX)
+    for name in sorted(skill.files):
+        if name not in MINIMAL_KEPT and name != INDEX:
+            skill = skill.with_file(name, STUB)
+    rows = "".join(f"| `{name.removeprefix('exemplars/')}` |\n" for name in notes)
+    return skill.with_file(INDEX, f"{STUB}\n| Note |\n|---|\n{rows}")
+
+
+def one_paragraph_variant(shipped: AnalystSkill | None = None) -> AnalystSkill:
+    """The shipped skill with ``SKILL.md`` replaced by :data:`ONE_PARAGRAPH_SKILL`; every other file byte-identical.
+
+    :param shipped: The skill to change; ``None`` for the one this build ships.
+    :return: The variant, checked whole.
+    """
+    skill = load_skill() if shipped is None else shipped
+    return skill.with_file("SKILL.md", ONE_PARAGRAPH_SKILL)
+
+
+def _shipped(shipped: AnalystSkill | None = None) -> AnalystSkill:
+    """The shipped skill unchanged: the no-editor variant changes the arm's revisions, not its skill."""
+    return load_skill() if shipped is None else shipped
+
+
 def files_differing(a: AnalystSkill, b: AnalystSkill) -> list[str]:
     """The files whose text differs between two skills, or that one holds and the other does not, by name."""
     return sorted(name for name in a.files.keys() | b.files.keys() if a.files.get(name) != b.files.get(name))
 
 
-def refuse_unlike_editors(shipped: AnalystSkill, hollow: AnalystSkill) -> None:
-    """Refuse a variant whose editor text is not the control's, or that differs anywhere but :data:`HOLLOWED`."""
-    if hollow.editor().digest != shipped.editor().digest:
+@dataclass(frozen=True)
+class Variant:
+    """One candidate the acceptance runs against the shipped skill.
+
+    :ivar name: Its arm's name, the one ``--variant`` takes.
+    :ivar noun: How the verdict names it.
+    :ivar question: The question the acceptance asks of it, which its campaign is filed under.
+    :ivar build: The variant's skill, made from the shipped one.
+    :ivar changes: The files it is allowed to change, given the shipped skill.
+    :ivar revisions: The revisions its arm is given; the control's are :data:`MOST_REVISIONS`.
+    """
+
+    name: str
+    noun: str
+    question: str
+    build: Callable[[AnalystSkill | None], AnalystSkill]
+    changes: Callable[[AnalystSkill], list[str]]
+    revisions: int = MOST_REVISIONS
+
+
+#: Every variant, by the name ``--variant`` takes; the hollow variant first, the default.
+VARIANTS: Final[Mapping[str, Variant]] = {
+    variant.name: variant
+    for variant in (
+        Variant(HOLLOW, "the hollow skill", QUESTION, hollow_variant, lambda _skill: sorted(HOLLOWED)),
+        Variant(
+            MINIMAL,
+            "the minimal skill",
+            "Does the gate read the minimal skill (SKILL.md and editor.md alone, every other module, the index and "
+            "every note left blank) as writing worse reports than the shipped skill?",
+            minimal_variant,
+            lambda shipped: sorted(name for name in shipped.files if name not in MINIMAL_KEPT),
+        ),
+        Variant(
+            NO_EDITOR,
+            "the shipped skill with no editor revisions",
+            "Does the gate read the shipped skill with no editor revisions (one review, never sent back) as writing "
+            f"worse reports than the shipped skill with {MOST_REVISIONS}?",
+            _shipped,
+            lambda _skill: [],
+            revisions=0,
+        ),
+        Variant(
+            ONE_PARAGRAPH,
+            "the one-paragraph skill",
+            "Does the gate read the one-paragraph skill (SKILL.md asking for one paragraph and no tables) as writing "
+            "worse reports than the shipped skill?",
+            one_paragraph_variant,
+            lambda _skill: ["SKILL.md"],
+        ),
+    )
+}
+
+
+def refuse_unlike_editors(shipped: AnalystSkill, candidate: AnalystSkill, variant: Variant = VARIANTS[HOLLOW]) -> None:
+    """Refuse a variant whose editor text is not the control's, or that differs anywhere but the files it changes."""
+    if candidate.editor().digest != shipped.editor().digest:
         raise SystemExit(
-            "writer_acceptance.py: the hollow variant's editor.md differs, so the editor is not one instrument"
+            f"writer_acceptance.py: the {variant.name} variant's editor.md differs, so the editor is not one instrument"
         )
-    if (differing := files_differing(shipped, hollow)) != sorted(HOLLOWED):
-        raise SystemExit(f"writer_acceptance.py: the hollow variant differs in {differing}, not {sorted(HOLLOWED)}")
+    if (differing := files_differing(shipped, candidate)) != (allowed := variant.changes(shipped)):
+        raise SystemExit(f"writer_acceptance.py: the {variant.name} variant differs in {differing}, not {allowed}")
 
 
 # --- the cases -------------------------------------------------------------------------------------------------
@@ -323,6 +437,7 @@ class Criterion:
 
     requirements: tuple[Requirement, ...]
     cases_to_settle: int | None
+    noun: str = VARIANTS[HOLLOW].noun
 
     @property
     def passed(self) -> bool:
@@ -332,7 +447,7 @@ class Criterion:
     def verdict(self) -> str:
         """The criterion's one line: PASS, or FAIL naming what did not hold."""
         if self.passed:
-            return "PASS: the gate reads the hollow skill as writing worse reports, on the primary reading."
+            return f"PASS: the gate reads {self.noun} as writing worse reports, on the primary reading."
         failed = "; ".join(requirement.asks for requirement in self.requirements if not requirement.holds)
         settle = (
             ""
@@ -358,15 +473,18 @@ _REASON_WORDS: Final = {
 }
 
 
-def pass_criterion(read: WriterPromotion, runs: Mapping[str, EvalSummary]) -> Criterion:
+def pass_criterion(
+    read: WriterPromotion, runs: Mapping[str, EvalSummary], *, variant: Variant = VARIANTS[HOLLOW]
+) -> Criterion:
     """Decide the pass criterion on a promotion read (reset P2 §4).
 
     Both arms' runs must have completed with a result for every case; the read must answer ``keep``; its primary
     reading must read ``regressed``, separated, with its interval below 0; the judge's order check must not void it;
     and bounces must not separate, since a variant that changes bounces broke the format rather than the writing.
 
-    :param read: The promotion read of the hollow arm, made with the pass as its ``pairwise_job``.
+    :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
     :param runs: Each arm's run summary, by arm.
+    :param variant: The candidate the verdict names.
     :return: The criterion, each requirement decided.
     """
     primary = read.primary
@@ -412,7 +530,7 @@ def pass_criterion(read: WriterPromotion, runs: Mapping[str, EvalSummary]) -> Cr
             bounces is None or bounces.outcome not in ("improved", "regressed"),
         ),
     )
-    return Criterion(requirements, read.cases_to_settle)
+    return Criterion(requirements, read.cases_to_settle, variant.noun)
 
 
 # --- the run -----------------------------------------------------------------------------------------------------
@@ -424,7 +542,7 @@ class Acceptance:
 
     dry: bool
     shipped: AnalystSkill
-    hollow: AnalystSkill
+    candidate: AnalystSkill
     result: WriterResult
     with_documents: int | None
     report: WriterPairwiseReport
@@ -432,17 +550,18 @@ class Acceptance:
     criterion: Criterion
     cap_usd: float
     editor_model: str | None = None
+    variant: Variant = VARIANTS[HOLLOW]
 
     def readout(self) -> Iterator[str]:
         """The printed readout: the question, the arms, the caps and spend, the read's tables, then the verdict."""
         result = self.result
         yield f"P2 acceptance{' (dry: scripted models, nothing sent, no signal)' if self.dry else ''}"
         yield ""
-        yield QUESTION
+        yield self.variant.question
         yield ""
         yield "| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |"
         yield "|---|---|---|---|---|---|---|"
-        for arm, skill in ((SHIPPED, self.shipped), (HOLLOW, self.hollow)):
+        for arm, skill in ((SHIPPED, self.shipped), (self.variant.name, self.candidate)):
             summary = result.arms[arm]
             yield (
                 f"| {arm} | {'control' if arm == result.control else 'candidate'} | {skill.digest[:12]} | "
@@ -453,6 +572,11 @@ class Acceptance:
         writer = next(iter(result.arms.values())).candidate_model
         editor = "" if self.editor_model is None else f", its editor on {self.editor_model}"
         yield f"Both arms write on {writer}{editor}; the scoring judge is {result.judge}."
+        if self.variant.revisions != MOST_REVISIONS:
+            yield (
+                f"The {self.variant.name} arm is given {self.variant.revisions} revisions and the control "
+                f"{MOST_REVISIONS}, so its editor reviews each report once and never sends it back."
+            )
         if self.with_documents is not None:
             cases = next(iter(result.arms.values())).n_cases
             blank = cases - self.with_documents
@@ -488,10 +612,12 @@ class Acceptance:
         """What the run found, as JSON: the read, the pass's report, the criterion and the readout."""
         return {
             "dry": self.dry,
-            "question": QUESTION,
+            "variant": self.variant.name,
+            "question": self.variant.question,
             "campaign": self.result.campaign_id,
             "scope": self.result.scope_id,
-            "skills": {SHIPPED: self.shipped.digest, HOLLOW: self.hollow.digest},
+            "skills": {SHIPPED: self.shipped.digest, self.variant.name: self.candidate.digest},
+            "revisions": {SHIPPED: MOST_REVISIONS, self.variant.name: self.variant.revisions},
             "pass_job": self.read.pairwise_job,
             "pairwise": self.report.model_dump(mode="json"),
             "promotion": self.read.model_dump(mode="json"),
@@ -581,6 +707,7 @@ async def _measured(
     request_s: float,
     held_out_fraction: float,
     cap_usd: float,
+    variant: Variant,
 ) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
     """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
@@ -593,19 +720,24 @@ async def _measured(
         max_cost_usd=cap_usd,
         held_out_fraction=held_out_fraction,
         name=NAME,
-        question=QUESTION,
+        question=variant.question,
         turns=budget.turns,
         request_s=request_s,
         writer_provider=WRITER_PROVIDER,
         store=":memory:" if store_at is None else store_at,
     ).run()
-    if HOLLOW in result.pairwise_unread:
-        raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[HOLLOW]}")
+    if variant.name in result.pairwise_unread:
+        raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[variant.name]}")
     # The eval read the promotion on its pass; the criterion reads the whole of both, off the pass's stored job.
-    job = result.pairwise[HOLLOW].job_id
+    job = result.pairwise[variant.name].job_id
     status = await job_poll(OpsHost.reading(result.host), job, result.scope_id)
     read = await asyncio.to_thread(
-        writer_promotion, result.host, result.campaign_id, result.scope_id, candidate=HOLLOW, pairwise_job=status
+        writer_promotion,
+        result.host,
+        result.campaign_id,
+        result.scope_id,
+        candidate=variant.name,
+        pairwise_job=status,
     )
     return result, WriterPairwiseReport.model_validate(status.result), read
 
@@ -624,6 +756,7 @@ async def acceptance(
     turns: int = TURNS,
     request_s: float = REQUEST_S,
     held_out_fraction: float = HELD_OUT_FRACTION,
+    variant: str = HOLLOW,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -631,13 +764,19 @@ async def acceptance(
     :param cases_dir: The writer case files; ``None`` for the default cases, written into a scratch directory.
     :param cap_usd: The whole run's cap, split by the writer eval's rule (the module docstring).
     :param out: Where a live run's recordings, store and result go.
+    :param variant: The candidate, by its name in :data:`VARIANTS`.
     :return: What it found.
     """
-    shipped, hollow = load_skill(), hollow_variant()
-    refuse_unlike_editors(shipped, hollow)
+    chosen = VARIANTS[variant]
+    shipped = load_skill()
+    candidate = chosen.build(shipped)
+    refuse_unlike_editors(shipped, candidate, chosen)
     arms = {
-        name: Writer(writer, skill=skill, effort=effort, revisions=MOST_REVISIONS, editor_model=editor_model)
-        for name, skill in ((SHIPPED, shipped), (HOLLOW, hollow))
+        name: Writer(writer, skill=skill, effort=effort, revisions=revisions, editor_model=editor_model)
+        for name, skill, revisions in (
+            (SHIPPED, shipped, MOST_REVISIONS),
+            (chosen.name, candidate, chosen.revisions),
+        )
     }
     with tempfile.TemporaryDirectory(prefix="writer-acceptance-") as scratch:
         root = Path(scratch) if out is None else out
@@ -661,20 +800,22 @@ async def acceptance(
                 request_s=request_s,
                 held_out_fraction=held_out_fraction,
                 cap_usd=cap_usd,
+                variant=chosen,
             )
         finally:
             await scoring.aclose()
     return Acceptance(
         dry=dry,
         shipped=shipped,
-        hollow=hollow,
+        candidate=candidate,
         result=result,
         with_documents=with_documents,
         report=report,
         read=read,
-        criterion=pass_criterion(read, result.arms),
+        criterion=pass_criterion(read, result.arms, variant=chosen),
         cap_usd=cap_usd,
         editor_model=editor_model,
+        variant=chosen,
     )
 
 
@@ -688,6 +829,9 @@ def _amount(text: str) -> float:
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="writer_acceptance.py", description=__doc__.splitlines()[0])
     parser.add_argument("--dry", action="store_true", help="scripted models, nothing sent")
+    parser.add_argument(
+        "--variant", choices=list(VARIANTS), default=HOLLOW, help="the candidate run against the shipped skill"
+    )
     parser.add_argument("--cases", type=Path, help="a directory of writer case files; default: prototype 5's seven")
     parser.add_argument("--cap-usd", type=_amount, help="the owner's cap for the whole run; a live run names it")
     parser.add_argument("--writer", default=WRITER, help="the model both arms write on, on Anthropic's API")
@@ -721,6 +865,7 @@ def main(argv: Sequence[str]) -> int:
             turns=options.turns,
             request_s=options.request_s,
             held_out_fraction=options.held_out_fraction,
+            variant=options.variant,
         )
     )
     summary = found.summary()
