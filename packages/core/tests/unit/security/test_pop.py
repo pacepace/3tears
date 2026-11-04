@@ -15,8 +15,9 @@ from threetears.core.security import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TO
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
 from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 
-# a fixed verifier clock for the tests whose subject is an exact edge of the freshness window.
-_FROZEN = "2026-10-02T12:00:00+00:00"
+# a fixed verifier clock for the tests whose subject is an exact edge of the freshness window. A datetime, not an
+# ISO string: freezegun parses a string with dateutil at decoration time (import), and that parse reads the wall clock.
+_FROZEN = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 
 
 def _proof(
@@ -251,3 +252,16 @@ class TestAccessTokenHash:
                 access_token_hash=access_token_hash("other-token"),
                 body_hash="bh-1",
             )
+
+
+def test_freezing_the_verifier_clock_parses_nothing_and_reads_no_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The frozen clock is built at import (a decorator argument), so building it must read no clock."""
+    import dateutil.parser as dateutil_parser  # noqa: PLC0415
+
+    def refuse(*_a: object, **_k: object) -> None:
+        raise AssertionError("freezing the clock parsed a string, which reads the wall clock")
+
+    monkeypatch.setattr(dateutil_parser, "parse", refuse)
+    monkeypatch.setattr(time, "time", refuse)
+    with freeze_time(_FROZEN):
+        assert datetime.now(UTC) == _FROZEN
