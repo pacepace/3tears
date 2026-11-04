@@ -291,14 +291,14 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CandidateOutput`** · *host contract* · model · What one candidate produced, as everything below the dispatch sees it.
 - **`CandidatePreparationFailed`** · *host contract* · exception · A candidate could not be built, and the cell is cleanly excluded rather than scored.
 - **`CandidateTelemetry`** · *host contract* · model · What one candidate's execution cost, and the windows nothing else timed.
-- **`CappedCompletion`** · *host contract* · class · One cell's view of a completion client: every call reserved against the run's cap, and settled to its cost.
+- **`CappedCompletion`** · *host contract* · class · One cell's view of a completion client: every call's cost counted in the cell's spend as it returns.
 - **`CassetteStore`** · *host contract* · protocol · The recordings a capture run made and a replay run is served.
 - **`CellCassettes`** · *host contract* · protocol · One cell's handle on its run's cassette lane, as the kind driving that cell sees it.
 - **`CellSink`** · *host contract* · protocol · One cell's record of where it stands, as the kind driving that cell reports into it.
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
-- **`CostCapReached`** · *host contract* · exception · Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
+- **`CostCapReached`** · *host contract* · exception · Retired: the engine no longer raises it, because no ceiling is asked inside a cell.
 - **`CostLower`** · *host contract* · model · A clause of a floor: the arm must cost less per reply than the control.
 - **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.

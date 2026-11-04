@@ -1,20 +1,18 @@
-"""A completion client held to the run's cost cap, one call at a time, through one cell's sink.
+"""A completion client whose calls count in the run's cost cap, one call at a time, through one cell's sink.
 
 A cell's paid calls are what a run's cost cap counts, once the cell's result is recorded; the cap is read
 between cells and refuses no call inside one. :class:`CappedCompletion` reports a cell's spend as it goes,
-for a completion client, written once: before each call it opens a reservation on the cell's sink
-(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`), and when the call returns it settles the
-reservation to what the call cost.
+for a completion client, written once: when each call returns it adds what the call cost to the cell's sink
+(:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`).
 
 The engine wraps its own cell-side clients in it — the simulated user's
-(:func:`~threetears.evals.run.conversation.drive_conversation`) and the reporter kind's generator — and a
-host's kind wraps its candidate's client the same way. :func:`call_ceiling` is the pricing it does,
-for a caller that reserves a call it makes through something other than ``generate`` (a judge request,
-whose service sends it).
+(:func:`~threetears.evals.run.conversation.drive_conversation`) — and a host's kind wraps its candidate's client
+the same way. :func:`call_ceiling` is the pricing a launch does before anything is spent, for a call made through
+``generate`` or through something else (a judge request, whose service sends it).
 
 **What a ceiling is comes from the client** (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`):
 the engine knows neither a model's rates nor the output cap the client was built with. A client with no
-``price_ceiling``, or one answering ``None``, is unpriced: its calls open a reservation with no ceiling.
+``price_ceiling``, or one answering ``None``, is unpriced.
 
 **A client may refresh its prices before they are read.** ``price_ceiling`` is synchronous, so a client whose rates
 come from somewhere that goes stale (the shipped client's catalogue) offers ``async refresh_prices()``, and the engine
@@ -194,7 +192,7 @@ def call_ceiling(
 
 
 class CappedCompletion:
-    """One cell's view of a completion client: every call reserved against the run's cap, and settled to its cost.
+    """One cell's view of a completion client: every call's cost counted in the cell's spend as it returns.
 
     Per cell, since the sink is. It owns nothing — the client it forwards to is whoever built it — so it has no
     lifecycle of its own. What a call returns is handed back unchanged, so a caller reading its usage reads it
@@ -206,7 +204,7 @@ class CappedCompletion:
 
         :param inner: The client every call is forwarded to.
         :ptype inner: CompletionGenerator
-        :param sink: The cell's sink, which holds each call against the cap.
+        :param sink: The cell's sink, which counts each call's cost.
         :ptype sink: CellSink
         :param source: Whose spend the calls are — ``simulator`` for the simulated user's, ``candidate`` for a
             candidate's own.
@@ -217,7 +215,7 @@ class CappedCompletion:
         self._source: CellPending = source
 
     async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
-        """Open the call's reservation, make the call, and settle the reservation to what it cost.
+        """Make the call, and count what it cost in the cell's spend.
 
         :param system: The system prompt.
         :ptype system: str
@@ -229,18 +227,11 @@ class CappedCompletion:
         :rtype: Any
         """
         await refresh_prices(self._inner)
-        held = self._sink.reserve(
-            self._source, call_ceiling(self._inner, system=system, user=user, response_format=response_format)
-        )
-        try:
-            result = await self._inner.generate(system=system, user=user, response_format=response_format)
-        except BaseException:
-            # A call that raised — or was cancelled — returned no cost to settle to; whatever it was billed is
-            # unknown here, and the cell's own record reports what its caller learned of it.
-            held.release()
-            raise
-        # The spend alone: the reservation is settled to what the call cost whatever else the completion holds, and a
-        # cap reads nothing a candidate's call was sent with. The simulator's sent settings are read by its own caller,
-        # after this has settled the call, so a refused ``sent_settings`` never leaves a paid call's ceiling held.
-        held.settle(CallUsage.billed(result).cost_usd)
+        # A call that raises — or is cancelled — returns no cost to count; whatever it was billed is unknown here, and
+        # the cell's own record reports what its caller learned of it.
+        result = await self._inner.generate(system=system, user=user, response_format=response_format)
+        # The spend alone: what the call cost is counted whatever else the completion holds, and a cap reads nothing a
+        # candidate's call was sent with. The simulator's sent settings are read by its own caller, after this has
+        # counted the call, so a refused ``sent_settings`` never leaves a paid call uncounted.
+        self._sink.add_spend(self._source, CallUsage.billed(result).cost_usd)
         return result

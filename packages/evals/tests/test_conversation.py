@@ -234,12 +234,15 @@ async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_con
 
 
 async def test_the_sink_never_reports_the_cap_reached_and_never_refuses_a_reservation():
+    """The two retired members still answer as the engine's do, and warn as they do."""
     sink = FakeCellSink()
 
-    held = sink.reserve("candidate", 1_000_000.0)
+    with pytest.warns(DeprecationWarning, match="CellSink.reserve is retired"):
+        held = sink.reserve("candidate", 1_000_000.0)
     held.settle(1_000_000.0)
 
-    assert sink.cost_cap_reached() is False
+    with pytest.warns(DeprecationWarning, match="CellSink.cost_cap_reached is retired"):
+        assert sink.cost_cap_reached() is False
     assert sink.spent == {"candidate": 1_000_000.0}
 
 

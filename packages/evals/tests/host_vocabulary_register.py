@@ -238,6 +238,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/refusals.py": {},
     "kernel/remedies.py": {},
     "kernel/retired.py": {},
+    "kernel/_retired.py": {},
     "schema/hashing.py": {},
     "schema/logs.py": {},
     "kernel/host/__init__.py": {},

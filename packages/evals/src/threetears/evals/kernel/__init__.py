@@ -13,9 +13,16 @@ it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds th
 ``tests/test_public_surface_is_closed.py`` holds every engine type a public signature hands a host to
 being exported from a public root. A ``# debt:`` comment on an export names what retires it. Code
 inside the package imports its own modules directly.
+
+**A name a retired mechanism left** stays in ``__all__`` for one minor, served by the module's ``__getattr__``
+from ``_retired`` with a ``DeprecationWarning`` naming its replacement
+(:func:`~threetears.evals.kernel.retired.served_retired`): :class:`CostCapReached`, which the run's cost cap raised
+inside a cell before the cap was read between cells.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.analysis_measures import (
     BarAdjudication,
@@ -76,7 +83,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateKindDefect,
     CellPending,
     CellReservation,
-    CostCapReached,
     UnknownCandidateKind,
 )
 from threetears.evals.kernel.capped_completion import (
@@ -862,3 +868,14 @@ __all__ = [
     "tier_of",
     "weakest_judged_tier",
 ]
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel._retired import CostCapReached
+else:
+    # Imported last, beside the module __getattr__ that serves it.
+    from threetears.evals.kernel import _retired
+    from threetears.evals.kernel.retired import served_retired
+
+    def __getattr__(name: str) -> object:
+        """Serve a name a retired mechanism left, warning that it leaves in the next minor."""
+        return served_retired(__name__, name, _retired.RETIRED)

@@ -897,7 +897,7 @@ class JudgeKind:
         return PreparedJudge(model=self._model, span_window=span_window)
 
     def price_case(self, test_case: EvalTestCase) -> float | None:
-        """The ceiling :meth:`invoke` reserves for ``test_case``'s call, built and priced as it builds and prices it.
+        """The ceiling of the call :meth:`invoke` makes for ``test_case``, built as it builds it.
 
         What a launch prices an arm's largest call by before anything is spent
         (:attr:`~threetears.evals.run.LaunchableKind.price_largest_call`): a call whose ceiling is above the run's
@@ -909,7 +909,7 @@ class JudgeKind:
         :rtype: float | None
         :raises ValueError: The case carries no readable judge case, or its criterion cannot be asked — the plan refuses
             every such case before this is asked (:func:`launchable_judge_kind`), so reaching one is a defect —
-            or the client priced the call at an amount no reservation could hold.
+            or the client priced the call at an amount no ceiling can be (negative, or not finite).
         """
         case = judge_case_of(test_case)
         if case is None:
@@ -946,8 +946,8 @@ class JudgeKind:
         :ptype instance: PreparedJudge
         :param test_case: The cell's case, carrying the judge case in its ``host_payload``.
         :ptype test_case: EvalTestCase
-        :param sink: This cell's sink, which keeps the one call in the cell's spend: reserved at its ceiling
-            before it is sent, settled to what it cost when it returns. It refuses nothing.
+        :param sink: This cell's sink, which keeps the one call in the cell's spend: what it cost is added when it
+            returns. It refuses nothing.
         :ptype sink: CellSink
         :return: The answer, its code grade on ``host_measures``, the trial on ``kind_payload``, and the call's spend as
             the ``judge`` role's usage.
@@ -979,18 +979,15 @@ class JudgeKind:
             except ValueError as exc:
                 return CandidateOutput(infra_errors=[f"apparatus: test case {test_case.id}'s judge case: {exc}"])
             await refresh_prices(service.client_for(request))
-            held = sink.reserve("candidate", service.price_ceiling(request))
             try:
                 with scopes.collecting():
                     outcome = await service.score_request(request, case_id=test_case.id)
             except CompletionProtocolDefect as defect:
                 # The host's completion type fails the run (raised through ``invoke``), but its billed calls are
-                # settled and reported as this cell's spend, so the runner records them.
+                # added and reported as this cell's spend, so the runner records them.
                 billed = defect_usage(defect)
-                if billed is None:
-                    held.release()
-                else:
-                    held.settle(billed.cost_usd)
+                if billed is not None:
+                    sink.add_spend("candidate", billed.cost_usd)
                     ledger = RoleUsageLedger(role=JUDGE_KIND_ROLE)
                     ledger.add_llm_result(replace(billed, model=billed.model or self._model))
                     rows = ledger.rows()
@@ -999,10 +996,7 @@ class JudgeKind:
                         lambda: CandidateOutput(telemetry=CandidateTelemetry(usage=rows, turns_delivered=turns))
                     )
                 raise
-            except BaseException:
-                held.release()
-                raise
-            held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
+            sink.add_spend("candidate", outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         return self._graded(case, test_case, request, outcome, cell)
 
     def _graded(
@@ -1255,7 +1249,7 @@ def launchable_judge_kind(launch_host: Callable[[], LaunchHost]) -> LaunchableKi
         return kind, request.cases_or(_template_cases(host.storage, request.template, request.scope_id))
 
     async def price_largest_call(request: LaunchRequest) -> CallCeiling | None:
-        # Every case's call is priced as invoke reserves it — the prompt is the case's frozen evidence, so the
+        # Every case's call is priced as invoke builds it — the prompt is the case's frozen evidence, so the
         # largest call is the case with the most of it — on the clients the run's cells would call through.
         kind, cases = await run_blocking(launch_host().eval_host.blocking_executor, built, request)
         try:

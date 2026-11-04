@@ -896,18 +896,14 @@ class CallableKind:
         :ptype instance: _Prepared
         :param test_case: The cell's case; the caller's case rides on its ``host_payload``.
         :ptype test_case: EvalTestCase
-        :param sink: The cell's sink. The candidate's call cannot be priced before it is made, so the run's cost
-            cap is asked first — a cell the cap has already been reached for calls nothing and returns
-            empty, which the runner excludes for the cap — and what an
-            :class:`~threetears.evals.quick.answer.Answer` reports it cost is counted the moment it returns.
+        :param sink: The cell's sink. What an :class:`~threetears.evals.quick.answer.Answer` reports it cost is
+            counted the moment it returns; the run's cost cap is read between cells, so the call is never refused.
         :ptype sink: CellSink
         :return: The answer as the stored trace, and each scorer's grade as a host measure, beside a
             classifier's ``match`` and ``confusion_cell``, and a judged kind's evidence.
         :rtype: CandidateOutput
         """
         case = test_case.host_payload[_CASE_KEY]
-        # Unpriceable: the handle that lands its cost when the answer returns.
-        held = sink.reserve("candidate", None)
         if instance.tools is not None:
             instance.tools.bind_case(case)
         try:
@@ -941,12 +937,9 @@ class CallableKind:
                 telemetry=CandidateTelemetry(turns_delivered=0),
             )
         else:
-            # What the answer says it cost, counted for every cell's question of the cap now rather than when the
-            # result lands — the judge phase still to come is paid for beside it. A plain answer reports nothing.
-            held.settle(blended_cost(telemetry.usage, _CANDIDATE_ROLE) if telemetry.usage else 0.0)
-        finally:
-            # A call that raised, or was cancelled, settled nothing; a settled reservation ignores this.
-            held.release()
+            # What the answer says it cost, counted in the cell's spend as it lands; the judge phase still to come is
+            # counted beside it. A plain answer reports nothing. A call that raised, or was cancelled, counts nothing.
+            sink.add_spend("candidate", blended_cost(telemetry.usage, _CANDIDATE_ROLE) if telemetry.usage else 0.0)
         # One call, answered: the kind's whole turn.
         telemetry = telemetry.model_copy(update={"turns_delivered": 1})
         evidence: JudgeEvidence | None = None

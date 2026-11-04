@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the in-cell cost cap's names and the report planner's ceiling are deprecated
+
+**Deprecated:** `CostCapReached` (`threetears.evals.kernel`), `CellSink.reserve`, `CellSink.cost_cap_reached` and
+`Ceilings.generation_ceiling_s` (`threetears.evals.run`) each warn when used and keep answering as they did; the next
+minor removes them, and `CellReservation` with `reserve`. The run's cost cap is read between cells, so nothing raises
+`CostCapReached`, `reserve` never refuses and `cost_cap_reached` is always `False`. `generation_ceiling_s` bounded only
+the retired report planner.
+
+**Changed:** no engine path calls `reserve`: `CappedCompletion`, the judge phase, the judge kind and the quick path's
+kind count each call's cost with `add_spend` when it returns, so no call in a cell is priced before it is made; a
+client's unusable `price_ceiling` no longer fails a call there, and launch pricing still refuses it.
+`MAX_GENERATION_CALLS` is private. `Ceilings.generation_ceiling_s` is a property, so `dataclasses.fields(Ceilings)` no longer lists it. Nothing
+stored changes shape or version.
+
+**Hosts:** count a call's cost with `sink.add_spend(source, cost)` once it returns, drop any `cost_cap_reached()` check
+and `except CostCapReached` clause, and derive a report's `budget_s` from `Ceilings().writer_ceiling_s`.
+
 ### evals: the memo page is retired; a stored memo is held as JSON, and the host's style fields are deprecated
 
 **Removed:** the memo page: `build_report` (one aspect's memo page), the memo blocks of the campaign page (the writer's

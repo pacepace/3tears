@@ -1,7 +1,8 @@
 """The package's inner ceilings a host derives its outer budgets from, defined once below every package using them.
 
-Each is a bound the engine itself holds a call or a phase to: the proposer's output cap, the requests one generation
-may send and the wall-clock ceilings of a generation, of a report the writer writes and of a cell's judge phase. They live in ``kernel`` so that
+Each is a bound the engine itself holds a call or a phase to: the proposer's output cap and the wall-clock ceilings of
+a report the writer writes and of a cell's judge phase (and, retired, of a report planner's generation). They live in
+``kernel`` so that
 :class:`threetears.evals.run.Ceilings` can carry them beside the simulator's caps without ``run`` importing ``gen``
 or ``analysis``; ``gen`` and ``analysis`` export them from their roots as before, from here.
 """
@@ -69,13 +70,16 @@ PROPOSER_MAX_TOKENS = 16384
 #: Provider requests one generation by the retired report planner could send: a structure, its repair, its prose and
 #: the prose's repair. No generation runs the planner now; the report writer's turns are bounded by its own limits
 #: (:func:`writer_turns`).
-MAX_GENERATION_CALLS = 4
+_PLANNER_CALLS = 4
 
 
 def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int) -> float:
-    """The wall-clock ceiling of one analysis generation, derived from the ceilings it wraps.
+    """Retired: the wall-clock ceiling of one report planner's generation, derived from the ceilings it wraps.
 
-    Up to :data:`MAX_GENERATION_CALLS` requests (the planner's) run back to back, each capped at ``generator_max_tokens``
+    Read only through the retired :attr:`~threetears.evals.run.Ceilings.generation_ceiling_s`, which warns; the next
+    minor removes both. A report's ceiling is :func:`writer_ceiling_s`.
+
+    Up to four requests (the planner's) run back to back, each capped at ``generator_max_tokens``
     and each bounded by the host's own answer for one such request (``request_s``), which counts every
     provider call and retry wait the host's client spends on it. A budget over a generation must sit
     ABOVE this: one below it cancels a repair round-trip that is still writing inside its cap, after
@@ -88,10 +92,10 @@ def generation_ceiling_s(*, request_s: RequestCeiling, generator_max_tokens: int
     :ptype request_s: RequestCeiling
     :param generator_max_tokens: The generator's output cap, as its clients are built with.
     :ptype generator_max_tokens: int
-    :return: The ceiling in seconds: ``MAX_GENERATION_CALLS * request_s(generator_max_tokens)``.
+    :return: The ceiling in seconds: four times ``request_s(generator_max_tokens)``.
     :rtype: float
     """
-    return MAX_GENERATION_CALLS * request_s(generator_max_tokens)
+    return _PLANNER_CALLS * request_s(generator_max_tokens)
 
 
 #: The editor's answers one review reads: its first, and the one it is asked for again when the first cannot be read
@@ -203,7 +207,6 @@ def judge_phase_ceiling_s(
 
 __all__ = [
     "EDITOR_ANSWERS",
-    "MAX_GENERATION_CALLS",
     "PROPOSER_MAX_TOKENS",
     "generation_ceiling_s",
     "judge_phase_ceiling_s",

@@ -102,10 +102,12 @@ the unit of measurement, and it is measured whole or never begun.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
   An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
   be priced, because the cap cannot be read against what it cannot count.
-- **A kind reports its spend as it lands** (`CellSink.add_spend`, or settling a `CellSink.reserve` handle, or by
-  wrapping its client in `CappedCompletion`), and returns it on its output, which is what the cap counts once the
-  cell's result is recorded. `CellSink.reserve` never refuses and `CellSink.cost_cap_reached` is always `False`;
-  `CostCapReached` is no longer raised by the engine. They remain so a host that imports them keeps importing.
+- **A kind reports its spend as it lands** (`CellSink.add_spend`, or by wrapping its client in `CappedCompletion`),
+  and returns it on its output, which is what the cap counts once the cell's result is recorded.
+- **Three names from the in-cell cap are deprecated, and the next minor removes them.** Each still works for this
+  minor and raises a `DeprecationWarning` when used. `CellSink.reserve` never refuses; count a call's cost with
+  `add_spend` once it returns. `CellSink.cost_cap_reached` is always `False`; drop the check. The engine no longer
+  raises `CostCapReached`; drop the `except` clause.
   The shipped adapter's resend of a request a provider refused for a setting it carried is not another attempt:
   the refused request generated nothing and is taken to be unbilled (an assumption no provider documents), so its
   `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to
@@ -223,10 +225,10 @@ declaration, so it stays, and no between-cells stop is read from it.
    changed, as does an earlier revision priced only under another judge, simulator, rig or model. The case
    count is not compared: the price scales per-observation cost to the arm's own cases. This is pricing only;
    analysis never pools two revisions.
-3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
+3. **Refuse.** First, it refuses an arm whose largest call is priced above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, exactly as a cell reserves it:
+   cells will call through, built as a cell builds it:
    - **The judge kind** prices each case's judge call exactly and keeps the largest. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
    - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
@@ -246,8 +248,9 @@ declaration, so it stays, and no between-cells stop is read from it.
      The floor is sound on a client whose `price_ceiling` does not fall as a prompt grows, which holds for
      any ceiling priced from a bound on the prompt's length and a fixed output cap. It catches the ceilings the
      output cap and the retry multiplier dominate, whatever the transcript. A ceiling
-     a long transcript dominates it cannot see: a floor under the cap admits the arm, and that call is held to
-     the cap as the run reserves it. A candidate's own calls are the kind's and are not priced. Wire it as
+     a long transcript dominates it cannot see: a floor under the cap admits the arm, and the cell makes that
+     call anyway. Its spend lands when it returns, and the cap is read before the next cell starts, so the run
+     can land past the cap by the calls in flight. A candidate's own calls are the kind's and are not priced. Wire it as
      `price_largest_call=lambda request: price_subject_call_floor(eval_host, request, judged_artifact=...)`,
      with the `eval_host` your launcher builds its judge and simulator clients on and the declaration it hands
      `build_judge_service`. The simulator client comes from the host's factory in the `simulator` role, for
@@ -256,9 +259,10 @@ declaration, so it stays, and no between-cells stop is read from it.
    The refusal names the call, its ceiling and the cap one such call needs (rounded up to the cent, plus the
    arm's predicted spend for room around it, or the host's operator when that is above the host's ceiling),
    and what lowers the ceiling. A floor's refusal says "even the smallest such call this arm could make" is
-   reserved above the cap, and its remedy names the floor as a cap to exceed, not one that would be enough,
+   priced above the cap, and its remedy names the floor as a cap to exceed, not one that would be enough,
    since the real call adds its transcript on top. A kind that does not price its calls before launch
-   (`price_largest_call=None`) is not checked here: such a call is refused only when the run reaches it. Then
+   (`price_largest_call=None`) is not checked here: a cell makes such a call when it reaches it, and the run
+   stops before its next cell once the cap is spent. Then
    it refuses an arm predicted above its run's cap, or one
    nothing can predict — no pricer, no plan, or no history to bound — whose cap the run would merely inherit.
    An unpriceable arm under a cap the launch named runs under it. The estimate reports each arm's largest

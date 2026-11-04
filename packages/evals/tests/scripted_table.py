@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -100,13 +101,17 @@ class FakeCellSink:
     """One cell alone, keeping its spend as the engine's sink does.
 
     The engine's rule: a running total per source, only ever added to. It asks no ceiling: the cost cap is read
-    between cells, so a reservation is never refused and the cap is never reported reached.
+    between cells, so a reservation is never refused and the cap is never reported reached. Like the engine's, its
+    two retired members warn, and it counts the reservations opened, so a test can hold that the engine's own spend
+    paths open none.
     """
 
     #: Each source's running total.
     spent: dict[CellPending, float | None] = field(default_factory=dict)
     #: The reservations of the calls in flight.
     held: list[_HeldOnFakeSink] = field(default_factory=list)
+    #: How many reservations were ever opened, through the retired :meth:`reserve`.
+    reservations_opened: int = 0
     pending: list[CellPending] = field(default_factory=list)
     #: The kind's last reading of its candidate side (``report_progress``), or ``None`` when it registered none.
     progress: Callable[[], CandidateOutput] | None = None
@@ -123,11 +128,22 @@ class FakeCellSink:
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
 
     def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldOnFakeSink:
+        warnings.warn(
+            "threetears.evals.kernel.CellSink.reserve is retired and leaves in the next minor: use add_spend",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.reservations_opened += 1
         hold = _HeldOnFakeSink(sink=self, source=source, ceiling_usd=ceiling_usd or 0.0)
         self.held.append(hold)
         return hold
 
     def cost_cap_reached(self) -> bool:
+        warnings.warn(
+            "threetears.evals.kernel.CellSink.cost_cap_reached is retired and leaves in the next minor: drop the check",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return False
 
 
