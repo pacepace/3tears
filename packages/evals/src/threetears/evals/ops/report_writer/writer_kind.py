@@ -680,8 +680,7 @@ def _measures(outcome: WritingOutcome, tally: Tally) -> dict[str, bool | float |
         ANALYST_ROUNDS_MEASURE: float(outcome.analyst_rounds),
         EDITOR_ROUNDS_MEASURE: float(outcome.editor_rounds),
         TURNS_MEASURE: float(tally.sent),
-        # The replies nothing priced: a turn whose reply never came reported no usage, so it is no unpriced spend.
-        UNPRICED_TURNS_MEASURE: float(tally.unpriced_turns() - tally.unreturned_turns()),
+        UNPRICED_TURNS_MEASURE: float(tally.unpriced_turns()),
     }
     if outcome.doc is not None:
         measures[MUST_FIX_OPEN_MEASURE] = float(sum(1 for f in outcome.findings if f.severity == "must_fix"))

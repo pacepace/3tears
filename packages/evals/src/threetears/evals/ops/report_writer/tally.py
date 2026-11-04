@@ -9,7 +9,8 @@ role, by round and in all.
 
 **Unknown is not zero.** A turn nothing priced has ``cost_usd`` ``None`` and says why (``pricing_failure``); a count
 the provider did not report is ``None``. A sum over turns any of which is ``None`` is ``None`` too, beside how many
-turns were unpriced, so a total never reads lower than what was spent.
+turns were unpriced, so a total never reads lower than what was spent. A turn whose reply never came is neither: it
+reported no usage, so it adds nothing to a sum and never unprices one (:meth:`Tally.unreturned_turns` counts it).
 
 **A paid reply is counted even when it is refused.** A client may refuse a reply it was sent and paid for (a
 recording refuses one holding the literal ``{snapshot}``); the turn is still tallied, with why it was refused, before
@@ -274,8 +275,8 @@ class Tally:
         self._transcripts[session] = digest
 
     def spent_usd(self) -> float | None:
-        """What every turn cost together, or ``None`` when any turn was unpriced, a turn sent whose reply never came
-        included.
+        """What every turn cost together, or ``None`` when a reply was unpriced. A turn whose reply never came adds
+        nothing and never makes the sum ``None`` (:meth:`unpriced_turns`).
 
         :return: The sum, or ``None``.
         :rtype: float | None
@@ -287,8 +288,8 @@ class Tally:
         return self.priced_usd()
 
     def priced_usd(self) -> float:
-        """What the turns that reported a cost cost together: the priced share, a floor whenever a sent turn is
-        unpriced (:meth:`unpriced_turns`).
+        """What the turns that reported a cost cost together: the priced share, a floor whenever a reply is unpriced
+        (:meth:`unpriced_turns`).
 
         :return: The sum.
         :rtype: float
@@ -297,7 +298,9 @@ class Tally:
 
     def unreturned_turns(self) -> int:
         """The turns sent whose reply never came: the client raised, or the writing was cancelled or ran out of time
-        while they were in flight. Each is unpriced (:meth:`unpriced_turns` counts it too).
+        while they were in flight. None is unpriced: no reply reported usage, and a provider that failed the request
+        before any completion billed none, so each adds nothing to what was spent (owner, 2026-10-27; a request cut in
+        flight may have been served, and no reply carries what it cost).
 
         :return: The count.
         :rtype: int
@@ -305,12 +308,13 @@ class Tally:
         return self.sent - len(self._turns)
 
     def unpriced_turns(self) -> int:
-        """The turns sent whose cost nothing reported: replies with no cost, and turns whose reply never came.
+        """The replies nothing priced: each reported usage, and no price for it. A turn whose reply never came is not
+        one (:meth:`unreturned_turns`).
 
         :return: The count.
         :rtype: int
         """
-        return self.sent - len(self._turns) + sum(1 for turn in self._turns if turn.cost_usd is None)
+        return sum(1 for turn in self._turns if turn.cost_usd is None)
 
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The tally as the stored report's ``generation``: the turns, then the sums by role, by round and in all.

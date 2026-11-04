@@ -292,12 +292,13 @@ def test_every_fully_priced_tally_gives_one_figure_for_its_total_and_its_share()
         assert row.cost_usd == row.priced_usd
 
 
-def test_a_rows_raised_turns_are_counted_raised_and_unpriced() -> None:
+def test_a_rows_raised_turns_are_counted_raised_apart_from_its_unpriced_replies() -> None:
+    """A turn whose reply never came reported no usage: it is raised, never unpriced (ruling of 2026-11-04)."""
     row = _row_like_the_jobs(_tally_of([0.1, None], unreturned=2))
-    assert (row.calls, row.unpriced_calls, row.raised_calls, row.cost_usd) == (4, 3, 2, None)
+    assert (row.calls, row.unpriced_calls, row.raised_calls, row.cost_usd) == (4, 1, 2, None), "the None reply"
     assert row.priced_usd == pytest.approx(0.1)
     totals = OutOfRunSpendTotals.of([row])
-    assert (totals.n_calls, totals.n_raised, totals.n_unpriced) == (4, 2, 3)
+    assert (totals.n_calls, totals.n_raised, totals.n_unpriced) == (4, 2, 1)
 
 
 def test_a_host_row_whose_total_and_share_differ_in_the_last_place_reads_and_one_a_cent_apart_is_refused() -> None:
@@ -613,9 +614,10 @@ async def test_a_failed_report_fails_the_job_with_its_ending_and_reason() -> Non
     assert (attempt.calls, attempt.unpriced_calls) == (2, 1), "the turn that came back, and the one that raised"
     assert attempt.token_cost == pytest.approx(0.01), "the priced share, a floor beside the unpriced turn"
     (row,) = _ledger(fixture)
-    assert (row.calls, row.unpriced_calls, row.priced_usd, row.cost_usd) == (2, 1, pytest.approx(0.01), None)
-    assert row.raised_calls == 1, "the turn that raised is counted raised"
-    assert row.prompt_tokens is None, "nothing reported the raised turn's tokens"
+    # Ruling of 2026-11-04: a turn whose reply never came adds nothing and is no unpriced spend, as on the result.
+    assert (row.calls, row.unpriced_calls, row.raised_calls) == (2, 0, 1), "the turn that raised is counted raised"
+    assert row.cost_usd == row.priced_usd == pytest.approx(0.01), "priced at the turn that came back"
+    assert row.prompt_tokens == 1000, "the tokens the turn that came back reported, and none for the raised one"
 
 
 class _TurnWaits(asyncio.Event):
@@ -668,7 +670,7 @@ def _expires_once_a_turn_waits(gate: _TurnWaits) -> JobTimeoutFactory:
     return deadline
 
 
-async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_sent_and_unpriced() -> None:
+async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_sent_and_raised() -> None:
     gate = _TurnWaits()  # never set: the first turn is in flight when time runs out
     fixture = off_loop(ops_fixture, gate=gate)
     assert fixture.host.generation is not None
@@ -680,7 +682,8 @@ async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_s
     assert attempt.outcome == "timed_out"
     assert (attempt.calls, attempt.unpriced_calls, attempt.token_cost) == (1, 1, 0.0)
     (row,) = _ledger(fixture)
-    assert (row.calls, row.unpriced_calls, row.cost_usd) == (1, 1, None), "unpriced, never $0"
+    # Rulings of 2026-11-04: a turn cut in flight is an unanswered call, which adds nothing and is no unpriced spend.
+    assert (row.calls, row.unpriced_calls, row.raised_calls, row.cost_usd) == (1, 0, 1, 0.0)
 
 
 async def test_a_value_error_after_turns_were_sent_is_no_refusal_of_the_start() -> None:

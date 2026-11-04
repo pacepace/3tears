@@ -25,15 +25,16 @@ from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose, OutOf
 class OutOfRunSpendTotals(EvalBaseModel):
     """What a set of out-of-run calls spent, summed — with what could not be summed counted beside it.
 
-    **Missing is not zero.** A call that reported no cost, and every call that raised (which reports
+    **Missing is not zero.** A call that reported no cost, and a one-call row that raised (which reports
     nothing, and may have been billed), are counted in ``n_unpriced`` and left out of ``priced_usd``,
     so ``priced_usd`` is a floor whenever ``n_unpriced`` is not 0. A row that ledgers several calls (a report's
-    turns, ``OutOfRunSpend.calls``) counts each of them, its priced share in ``priced_usd`` and its unpriced calls in
-    ``n_unpriced``.
+    turns, ``OutOfRunSpend.calls``) counts each of them, its priced share in ``priced_usd`` and its unpriced replies in
+    ``n_unpriced``; its turns whose reply never came are counted in ``n_raised`` alone, since they reported no usage
+    and add nothing (``OutOfRunSpend.raised_calls``).
 
     :ivar n_calls: The calls.
     :ivar n_raised: Those that raised rather than returning.
-    :ivar n_unpriced: Those whose cost is unknown — a completed call that reported none, or a raised call.
+    :ivar n_unpriced: Those whose cost is unknown — a completed call that reported none, or a one-call row that raised.
     :ivar priced_usd: The reported cost of the priced calls, summed.
     :ivar ceiling_usd: The ceilings the calls were admitted at, summed over those the client could price.
     :ivar n_unbounded: Those admitted with no ceiling (the client could not price them and no cap was enforced).

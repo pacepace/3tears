@@ -19,7 +19,12 @@ nothing could price is still unpriced spend, and still stops a capped run.
 sent again once after a wait, within the request's time bound (`DeclinedRetry.turn_failure_attempts`, default 2). A
 turn cut in flight is not sent again, since it may have been served. The reply names what each resend followed
 (`TurnReply.resent_after`), and a turn recording keeps it, so a replay shows the turn was sent twice. A completion's
-failure is still never sent again. `report_writer.unpriced_turns` now counts only replies nothing priced.
+failure is still never sent again. `report_writer.unpriced_turns` now counts only replies nothing priced. A
+report's generation record does not carry the resend, so a live run with no recording shows it only in the WARNING
+log.
+
+The out-of-run ledger agrees with the result: a report row's `unpriced_calls` no longer counts a turn whose reply
+never came. `raised_calls` counts that turn alone, and it adds nothing to the row's `cost_usd` or tokens.
 
 ### evals: the report writer's skills and settings as objects under test (#1009, wave 1)
 

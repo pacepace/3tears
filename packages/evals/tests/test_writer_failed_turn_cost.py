@@ -31,6 +31,7 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.report_writer_support import FakeToolTurnClient, FakeTurnModel, call, reply
 from threetears.evals.actions.report_writing import report_writer_kind
+from threetears.evals.analysis.out_of_run_spend import OutOfRunSpendTotals
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -52,6 +53,7 @@ from threetears.evals.providers import DeclinedRetry, Model, ProviderError, desc
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate, EvalTestCase
+from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.schema.turns import TurnMessage, TurnReply
 from threetears.evals.testing import RecordedTurns
@@ -443,3 +445,29 @@ async def test_a_scripted_unpriced_reply_is_unpriced_spend_and_a_failed_turn_is_
 
     results, stopped = await _capped_run(failed)
     assert stopped is None and [result.cost_usd for result in results] == [0.25, 0.25]
+
+
+# =============================================================================
+# The out-of-run ledger agrees with the result: a raised turn is no unpriced spend there either
+# =============================================================================
+
+
+def test_a_ledger_row_counts_a_raised_turn_apart_from_its_unpriced_replies_and_prices_the_rest() -> None:
+    """A report of three turns, two priced at $0.004 and one whose reply never came: the row's total is $0.008."""
+    fields: dict[str, Any] = {
+        "scope_id": "s",
+        "purpose": "analysis",
+        "model": MODEL,
+        "outcome": "completed",
+        "calls": 3,
+    }
+
+    row = OutOfRunSpend(**fields, unpriced_calls=0, raised_calls=1, priced_usd=2 * READS_USD, cost_usd=2 * READS_USD)
+    assert OutOfRunSpendTotals.of([row]).model_dump(include={"n_calls", "n_raised", "n_unpriced", "priced_usd"}) == {
+        "n_calls": 3,
+        "n_raised": 1,
+        "n_unpriced": 0,
+        "priced_usd": pytest.approx(2 * READS_USD),
+    }
+    with pytest.raises(ValueError, match="unpriced replies and raised turns are calls apart"):
+        OutOfRunSpend(**fields, unpriced_calls=2, raised_calls=2, priced_usd=0.0, cost_usd=None)
