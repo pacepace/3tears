@@ -6,7 +6,7 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 
 1. **[`ANALYST.md`](ANALYST.md)** is how a report is written: an analyst model investigates a frozen snapshot of the campaign with tools and a skill, writes a report document, and code verifies it before an editor reviews it. Code computes and verifies; it never chooses structure.
 2. **`references/`** holds five finished pages. Open the `.html` files in a browser.
-3. **[`GENERATOR.md`](GENERATOR.md)** was the spec of the planned report, whose planner is retired. Its gate logic, chart choice, words and visual system still describe the kit the report document's page draws with, and the code cites its sections.
+3. **[`GENERATOR.md`](GENERATOR.md)** holds the page rules: gate logic, the call's modes, the page's parts, chart choice, words and the visual system. Code cites its sections by number, so it keeps its old name.
 4. **[`UPSTREAM.md`](UPSTREAM.md)** lists what the campaign bundle should carry so the report input stops working around gaps (tracked in #962).
 
 ## Files
@@ -15,7 +15,7 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 |---|---|
 | `ANALYST.md` | The analyst: roles, workflow, the report document, tools, invariants, the editor's rubric |
 | `analyst/README.md` | Where the analyst skill lives: in the evals package, as data the wheel ships |
-| `GENERATOR.md` | The retired planned report's procedure and rules, and the guidance on gates, charts, words and visuals the page still uses |
+| `GENERATOR.md` | The page rules: gates, modes, the page's parts, charts, words and visuals |
 | `UPSTREAM.md` | Bundle requirements U1–U15, each with evidence from Kairo round 2 |
 | `BLIND-TEST.md` | A dated record (2026-10-25): what a fresh agent found with only this kit, and how each gap was closed |
 | `schema/report-input.schema.json` | The normalized input the analyst's tools read, frozen in each snapshot |

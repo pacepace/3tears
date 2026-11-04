@@ -140,9 +140,9 @@ block draws, every caveat that bears on the call is shown, the confidence form f
 internal id reaches the reader above the appendix
 ([the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence)). Whether the story is
 sound is judged, not checked: an editor in a fresh context reviews the page before it is stored, and acceptance campaigns
-are re-run whenever the skill changes. Grading the analyst as a subject of its own eval is open
-([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)). "We could not answer this, because X, and fixing X costs Y" is a legitimate bottom
-line.
+are re-run whenever the skill changes. The writer (the analyst and its editor) is also a subject of its own eval,
+read pairwise against a control arm ([writer campaigns](serving.md#writer-campaigns-evaluating-the-report-writer)).
+"We could not answer this, because X, and fixing X costs Y" is a legitimate bottom line.
 
 **Confidence rests on the method and the variance, never on the result alone.**
 A report's confidence is one of three closed forms, so no field holds a probability a model made up: high; high if
@@ -193,7 +193,7 @@ would govern users that do not exist.
 
 **The eval system is meant to evaluate itself.**
 Its model-driven parts are subjects, and every chain of evaluation should end in a code check or a human
-label. The analysis writer has a kind, and a judge's self-agreement is measured by repeating its scores. The statistics
+label. The report writer has a kind (`report_writer`), and a judge's self-agreement is measured by repeating its scores. The statistics
 are tested against seeded data with a known truth at the sample sizes the engine sees (2–15 cases, 1–5 repeats):
 the `test_simulated_*` and `test_sim_*` files in `tests/`, on the generators and reference answers in
 `tests/simulation_support.py`. They check interval coverage, false-positive rates, power, family-wise error and
@@ -383,9 +383,9 @@ every guardrail is undecided.
 ### One question over aspects, and floors that warn
 
 **Problem.** A campaign held one template, so a decision that rested on several behaviours (a model change judged
-on routing, on replies and on cost) was several campaigns, each with its own question, rule and memo, and nothing
-read them together. Each campaign's decision rule settled `keep` or `switch` by itself and wrote the verdict line:
-a memo headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not separated (#845),
+on routing, on replies and on cost) was several campaigns, each with its own question, rule and analysis, and
+nothing read them together. Each campaign's decision rule settled `keep` or `switch` by itself and wrote the verdict
+line: an analysis headlined Keep on 6 of 21 trials to 12 while its own contrasts read the pass rate as not separated (#845),
 and at the few cases a campaign runs most rules read `unsettled` anyway.
 
 **Choice.** A campaign asks one question of its arms and measures it on aspects (campaign → aspect → run →
@@ -432,7 +432,7 @@ Six steps, each fixing the last:
 6. A provider rationing a call (a 429 that is not a spent quota) was charged to the candidate, so the model
    the provider throttled first read as the worse one. One field now says whose failure a call was
    (`ProviderFailure.owner`: `account`, `provider` or `candidate`): a call the provider declined is excluded and
-   the run goes on, on every path the package runs (a quick run, the reporter, the judge kind), and only the
+   the run goes on, on every path the package runs (a quick run, a launched run, the judge kind), and only the
    account's refusal stops a run. Declined means a 429 that is not a spent quota, or the provider overloaded (529)
    or unavailable (503); a 500 or 502 is an error, not a refusal, so it stays the candidate's. The package's client
    sends a declined call again before it is excluded (at most three attempts, waiting the provider's `retry-after`
@@ -477,25 +477,19 @@ production path, and a decision logged where nothing ingested it.
 
 ### The report: from gated prose to an analyst
 
-**Prose gates did not converge.** A deterministic gate checking the numbers in the
-[analysis](concepts.md#analysis)'s sentences grew to 4,099 lines in 33 days and was deleted, because every real
-generation found a claim shape it could not parse. The writer's prompt grew 12× in 23 days, mostly defence
-against past incidents, and a test asserting prompt text passed while the writer did what the text forbade.
-
-**Code renders the numbers.** The writer cites every figure by a key, and code substitutes the value from the
-frozen evidence. A key that does not resolve is refused, naming what exists. This one rule survived every version of
-the writer, and in the report document it is complete: a digit typed outside a key is refused too.
-
-**The first screen was code's, not the memo's** (2026-10). A headline said halving a token budget "does not change"
-latency, cost or delivery, over a contrast that did not separate at five cases; another memo headlined "keep the
-current model — adopted" over a run whose judge had been cut off at its output cap on ten of the challenger's twelve
-trials, while the word "truncated" appeared nowhere a reader would look. So the census, the verdict and every count
-moved to code, and the memo authored findings and a recommendation only. That is still the code-only page's shape.
-
-**A planner from a fixed vocabulary still overfit** (2026-10). The next writer planned the page: code classified the
-campaign into a shape, fixed the first chart (the spine) and the modes it allowed, and one model call filled the
-sections. Each campaign nobody had anticipated needed a new shape, spine or rule, and each rule was a branch on what
+**Two writers came before the analyst, and both are retired** (2026-07 to 2026-10). The memo writer read one
+closed bundle in one call and wrote a summary, findings and a recommendation. A deterministic gate on the numbers in
+its sentences grew to 4,099 lines in 33 days and was deleted, because every real memo found a claim shape it could
+not parse; its prompt grew 12× in 23 days, mostly defence against past incidents. One of its headlines read a
+contrast that did not separate as "does not change"; another kept a model over a judge cut off on ten of twelve
+trials. So the census, the verdict and every count moved to code: that is still the code-only page's shape. The report
+planner that followed chose a page from a fixed vocabulary, after code classified the campaign into a shape and fixed
+its first chart, and each campaign nobody had anticipated needed a new shape, chart or rule, each a branch on what
 kind of eval it was.
+
+**Code renders the numbers.** The analyst cites every figure by a key, and code substitutes the value from the
+frozen evidence. A key that does not resolve is refused, naming what exists. This one rule survived every writer,
+and in the report document it is complete: a digit typed outside a key is refused too.
 
 **An analyst with tools, over evidence that holds still** (2026-10-26). A report is now written as an expert writes
 one: the analyst investigates (where a call flips, where a loss sits, which options dominate, what the failures look
@@ -510,14 +504,14 @@ guidance lives in a skill of principles, story forms, chart and statistics notes
 from lookups into judgment, and the reasoning notes carry the most: a finished page shows what good looks like, a
 note shows how it was reached.
 
-**The writer is graded by its own eval.** The reporter is a candidate kind: a case is a frozen campaign, and the
-judge reads what the writer read and what it wrote. Its cases still judge memos and planned reports; the analyst's
-report has the editor's rubric instead, whose thresholds stay starting points until stored reports scored against
-people's labels set them.
+**The writer is graded by its own eval.** The `report_writer` kind makes the writer a subject: a case is a frozen
+campaign, and its arms differ in the skill, the effort, the revisions or the model. Each candidate's report is judged
+against the control's on the same case, in both orders, on one ordinal criterion. The editor's thresholds stay
+starting points until stored reports scored against people's labels set them.
 
 The judge's noise exceeds the effects being ranked, so rubric criteria are removed before any are added.
 
-*Evidence:* analysis writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.
+*Evidence:* the memo writer, 2026-09, a prompt-latitude A/B (5 cases, k=3) and a 4-condition form × input study (4 cases, k=2): effects of −0.27 and −0.8 against within-cell SD 0.33–0.68 in the first (variant not adopted), and every gap in the second (≤ 0.33) inside the judge's re-score noise (62% exact, 0.46 mean absolute difference); single campaign each.
 
 ## Prior art
 
