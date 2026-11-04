@@ -40,9 +40,7 @@ from packages.evals.tests.campaign_support import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    SUMMARY,
     campaign_fixture,
-    choice_memo,
     first_screen_markdown,
     kind_fixture,
     kind_page_of,
@@ -219,7 +217,7 @@ async def test_with_no_question_every_reading_is_a_lead() -> None:
 
 
 async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_another() -> None:
-    page = await kind_page_of("tone", "billing", memo=choice_memo())
+    page = await kind_page_of("tone", "billing")
     assert page.readings.kind == "choice"
     table = _table(page, "pairs")
     assert table.details
@@ -238,10 +236,8 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     }
     said = _scorecard(page)
     assert CHOICE_NOTE in said
-    # The writer's summary and recommendation, then the scorecard; no control-based table.
+    # The scorecard after the first screen; no control-based table.
     markdown = campaign_report_markdown(page)
-    assert markdown.index(SUMMARY) < markdown.index("**Recommended:** beta (high confidence)")
-    assert markdown.index("**Recommended:** beta (high confidence)") < markdown.index("## Scorecard")
     assert "<summary>By aspect, pair by pair</summary>" in said and "▸" not in said
     assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
 
@@ -346,7 +342,7 @@ async def test_a_change_whose_control_alone_ran_says_its_margin_and_floors_wait_
     read = campaign_readings(campaign, {"billing": billing.bundle}, arms=[control])
     assert read.kind == "measurement"
     report = build_code_only_report(billing.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support")
-    page = build_campaign_report(campaign, read, {"billing": report}, None)
+    page = build_campaign_report(campaign, read, {"billing": report})
     said = f"Only the control, {CONTROL_LABEL}, has run, so the margin on billing and 1 floor are read once a candidate runs."
     assert said in _scorecard(page)
 
@@ -542,7 +538,7 @@ def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_
         update={"multiple_comparisons": bundle.multiple_comparisons.model_copy(update={"families": families})}
     )
     reports = {**shape.reports, "billing": shape.reports["billing"].model_copy(update={"bundle": changed})}
-    page = build_campaign_report(shape.campaign, shape.readings, reports, None)
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
     rows = {(row["aspect"].text, row["arm"].text, row["shows"].text): row for row in _table(page, "to_settle").rows}
     floor = rows[("billing", "v4", "the 10-point floor holds")]
     assert (floor["decided_by"].value, floor["none"].value, floor["observed"].value) == (None, None, None)
@@ -682,7 +678,7 @@ def test_a_contrast_showing_a_drop_the_row_does_not_say_the_row_counts_one_only_
     shape = s1_change()
     assert _on(_lines(shape.page()), "On refunds") == []
     reports = _with_trial_contrast(shape, "refunds", "v2", lambda c: c.model_copy(update={"verdict": "regressed"}))
-    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports, None)), "On refunds")
+    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")
     assert line.startswith(
         "On refunds, v2's row reads no worse than the margin and its contrast on the pass rate reads regressed"
     )
@@ -701,7 +697,7 @@ def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -
     shape = s1_change()
     assert len(_on(_lines(shape.page()), _TONE_PASS_RATE)) == 1
     reports = _with_trial_contrast(shape, "tone", "v2", elsewhere)
-    assert _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports, None)), _TONE_PASS_RATE) == []
+    assert _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), _TONE_PASS_RATE) == []
 
 
 # =============================================================================

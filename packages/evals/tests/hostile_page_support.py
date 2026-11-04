@@ -5,7 +5,7 @@ The markup is a script, a handler, a ``javascript:`` link, a frame, a stylesheet
 package's own font links; a line adds an attribute that tries to break out of its quotes and an element claiming one
 of the page's own ids. :func:`hostile_report` is one aspect's page with it in every field and every string a chart
 of each of the kit's kinds draws; :func:`hostile_campaign_page` is a campaign's page of two real aspects with it in
-the campaign's name, its arm and aspect labels, its memo, its fold lines and its second folded page.
+the campaign's name, its arm and aspect labels, its fold lines and its second folded page.
 """
 
 from __future__ import annotations
@@ -19,9 +19,8 @@ from threetears.evals.analysis import (
     campaign_readings,
 )
 from threetears.evals.analysis.report import Report
-from threetears.evals.kernel.authored import AspectSummary, AuthoredCampaignAnalysis, NextStep
 from threetears.evals.kernel.declaration import CampaignArm
-from packages.evals.tests.campaign_page_support import campaign_fixture, two_aspect_memo
+from packages.evals.tests.campaign_page_support import campaign_fixture
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.page_contract_support import FONT_LINK_MARKUP
@@ -32,7 +31,6 @@ __all__ = [
     "HOSTILE_LINE",
     "hostile_campaign_page",
     "hostile_kit_charts",
-    "hostile_memo",
     "hostile_report",
 ]
 
@@ -366,29 +364,9 @@ HOSTILE_LINE = (
 HOSTILE_ASPECT = '<img src=x onerror="alert(6)"><svg onload="alert(7)"><a id="glossary" href="javascript:alert(8)">'
 
 
-def hostile_memo(control: str) -> AuthoredCampaignAnalysis:
-    """The two-aspect memo with markup in every field its writer fills, recommending ``control``."""
-    memo = two_aspect_memo()
-    finding = memo.findings[0].model_copy(update={"title": HOSTILE_LINE, "body": f"- {HOSTILE_LINE}\n- **bold**"})
-    recommended = memo.recommended()
-    assert recommended is not None
-    return memo.model_copy(
-        update={
-            "findings": [finding],
-            "recommendation": [recommended.model_copy(update={"arm": control, "reasons": [HOSTILE_LINE]})],
-            "aspect_summaries": [
-                AspectSummary(aspect=aspect, what_changed=HOSTILE_LINE, how_sure=HOSTILE_LINE, means=HOSTILE_LINE)
-                for aspect in ("billing", HOSTILE_ASPECT)
-            ],
-            "summary": HOSTILE_LINE,
-            "next": [NextStep(title=HOSTILE_LINE, why=HOSTILE_LINE, leverage="high", lever="")],
-        }
-    )
-
-
 async def hostile_campaign_page() -> CampaignReport:
-    """A campaign page of two real aspects, one of them labelled with markup, whose campaign name, arm labels, memo,
-    fold lines and second folded page carry markup too: everything on it a host or a model supplies."""
+    """A campaign page of two real aspects, one of them labelled with markup, whose campaign name, arm labels, fold
+    lines and second folded page carry markup too: everything on it a host supplies."""
     control_label, candidate_label = f"{HOSTILE_LINE} A", f"{HOSTILE_LINE} B"
     campaign, measured = await campaign_fixture("billing", HOSTILE_ASPECT, name=HOSTILE_LINE)
     control = campaign.control
@@ -405,8 +383,7 @@ async def hostile_campaign_page() -> CampaignReport:
         )
         for label, evidence in bundles.items()
     }
-    memo = hostile_memo(control_label)
-    page = build_campaign_report(campaign, read, reports, memo, recommended_variant_key=control.variant_key)
+    page = build_campaign_report(campaign, read, reports)
     first, second = page.aspects
     folds = [
         first.model_copy(update={"shows": HOSTILE_LINE}),

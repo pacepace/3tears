@@ -8,14 +8,10 @@ because pass^k never reads them; a judged arm beside it keeps the pass^k it alwa
 
 from __future__ import annotations
 
-from typing import Any
 
-import json
 import random
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.schema import RubricScore
 from threetears.evals.schema.models import GoalStateOutcome, RoleUsage
@@ -121,7 +117,7 @@ def test_the_frontier_point_has_no_pass_k_and_no_cost_per_acceptable_outcome() -
     assert judged_point.cost_per_acceptable_outcome is not None
 
 
-def test_the_bundle_the_writer_reads_carries_the_reason() -> None:
+def test_the_campaign_s_bundle_carries_the_reason() -> None:
     classifier, judged, results = _arms(2688)
     campaign = make_campaign(
         scope_id=classifier.scope_id,
@@ -139,7 +135,7 @@ def test_the_bundle_the_writer_reads_carries_the_reason() -> None:
 
     points = {p.model: p for subject in bundle.frontier.subjects for p in subject.points}
     assert points["classifier-model"].pass_hat_k is None
-    assert json.dumps(NO_PASS_CRITERION_REASON, ensure_ascii=False) in _writer_message(bundle)
+    assert points["classifier-model"].pass_hat_k_unmeasured_reason == NO_PASS_CRITERION_REASON
 
 
 def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:
@@ -186,8 +182,3 @@ def test_the_rendered_comparison_says_the_classifier_has_no_pass_k() -> None:
         )
     )
     assert f"pass^k of run {classifier.id} is unmeasured: {NO_PASS_CRITERION_REASON}" in text
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

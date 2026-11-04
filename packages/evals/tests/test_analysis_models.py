@@ -1,11 +1,10 @@
 """EvalAnalysis / EvalInsight — model shape, validation, and storage round-trips.
 
 The generated, stored analysis of a campaign plus the durable insights it mints. These tests pin
-the stored shape — the authored document kept verbatim beside the per-finding resolutions code
-filled — every confidence a tier, never a typed probability, the
-"no point estimate without n + dispersion" rule, the doc_type discriminators, the
-WITHIN-doc position checks (every link names a real finding, nothing invalidates itself or cycles,
-one resolution per finding), and campaign-scoped / subject-scoped retrieval.
+the stored shape — a retired memo held as the JSON it was stored as, beside the per-finding resolutions code
+filled, never validated as a memo — every confidence a tier, never a typed probability, the
+"no point estimate without n + dispersion" rule, the doc_type discriminators, one entry per aspect, and
+campaign-scoped / subject-scoped retrieval.
 
 Storage is exercised through a real :class:`~threetears.evals.kernel.storage.EvalStorage`
 over the same in-memory evals-repo stand-in the campaign tests use.
@@ -18,16 +17,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel.authored import (
-    AspectSummary,
-    AuthoredCampaignAnalysis,
-    Caveat,
-    EvidenceRef,
-    Finding,
-    FloorOverride,
-    NextStep,
-    Recommendation,
-)
+from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.campaign import (
     CampaignDeclaration,
     CoverageLens,
@@ -56,8 +46,8 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.report_plans.misfits import reference_data
 
 
-def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> Finding:
-    """An authored finding with every list empty unless a caller fills it."""
+def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> dict[str, Any]:
+    """A finding as the retired memo writer stored one, every list empty unless a caller fills it."""
     fields: dict[str, Any] = dict(
         title=title,
         body="",
@@ -70,11 +60,11 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
         durable="",
     )
     fields.update(overrides)
-    return Finding(**fields)
+    return fields
 
 
 def _recommendation(**overrides: Any) -> Recommendation:
-    """An authored recommendation of the control, resting on nothing unless a caller says otherwise."""
+    """A recommendation of the control, resting on nothing unless a caller says otherwise."""
     fields: dict[str, Any] = dict(
         arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[]
     )
@@ -82,15 +72,16 @@ def _recommendation(**overrides: Any) -> Recommendation:
     return Recommendation(**fields)
 
 
-def _summary(aspect: str = "planning", **overrides: Any) -> AspectSummary:
-    """One aspect's summary."""
+def _summary(aspect: str = "planning", **overrides: Any) -> dict[str, Any]:
+    """One aspect's summary, as the retired memo writer stored it."""
     fields: dict[str, Any] = dict(aspect=aspect, what_changed="It got faster.", how_sure="Sure.", means="Switch.")
     fields.update(overrides)
-    return AspectSummary(**fields)
+    return fields
 
 
 def _make_analysis(**overrides: Any) -> EvalAnalysis:
-    """Build an ``EvalAnalysis`` with EVERY nested object populated.
+    """Build an ``EvalAnalysis`` with EVERY nested object populated, its memo stored as JSON as the retired memo
+    writer stored one.
 
     Two findings (the second invalidating the first, with evidence, the trials it is drawn from, a caveat and a
     durable claim), a recommendation resting on a real position and made over a broken floor, an aspect summary, a
@@ -108,35 +99,32 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             body="The tail shortens with no loss on the judged dimensions.",
             confidence="high",
             axes=["planner.model"],
-            evidence=[EvidenceRef(cell="vk-alpha:ac-1", measure_id="elapsed_ms", reading="measure")],
+            evidence=[{"cell": "vk-alpha:ac-1", "measure_id": "elapsed_ms", "reading": "measure"}],
             trials=["T1", "T4"],
-            caveats=[Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")],
+            caveats=[{"kind": "sampling", "text": "k=1 on this template is noise-dominated."}],
             durable="Alpha-2 is the planner model of record for Maple.",
         ),
         _finding("Latency is output-bound, not input-bound.", axes=["output_max_tokens"], invalidates=[0]),
     ]
     authored_findings = overrides.pop("findings", None)
     findings = list(authored_findings or default_findings)
-    document = AuthoredCampaignAnalysis(
+    recommendation: Recommendation = overrides.pop(
+        "recommendation",
+        _recommendation(
+            arm="alpha-2",
+            reasons=["Much faster at equal quality."],
+            rests_on=[0],
+            floors_overridden=[{"floor": "planning/cost_lower/*", "why": "Cost is not this team's concern."}],
+        ),
+    )
+    document: dict[str, Any] = dict(
         findings=findings,
-        recommendation=[
-            overrides.pop(
-                "recommendation",
-                _recommendation(
-                    arm="alpha-2",
-                    reasons=["Much faster at equal quality."],
-                    rests_on=[0],
-                    floors_overridden=[
-                        FloorOverride(floor="planning/cost_lower/*", why="Cost is not this team's concern.")
-                    ],
-                ),
-            )
-        ],
+        recommendation=[recommendation.model_dump(mode="json")],
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
         summary=overrides.pop("summary", "Alpha-2 is much faster at equal quality, so it is the planner to run."),
         next=overrides.pop(
             "next",
-            [NextStep(title="Confirm finalists at k=5.", why="k=1 is noise-dominated.", leverage="high", lever="")],
+            [{"title": "Confirm finalists at k=5.", "why": "k=1 is noise-dominated.", "leverage": "high", "lever": ""}],
         ),
     )
     if not authored_findings:
@@ -198,9 +186,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             aspects=[Aspect(label="planning")],
             floors=[],
         ),
-        recommended_variant_key=(
-            None if document.recommended() is None else f"variant-of-{document.recommendation[0].arm}"
-        ),
+        recommended_variant_key=f"variant-of-{recommendation.arm}",
         aspects=[aspect],
         campaign_bundle={
             "schema_version": 1,
@@ -242,19 +228,21 @@ def test_analysis_model_round_trip_preserves_every_field():
 
     assert reloaded == analysis
     # The nested objects most easily dropped by a shape change survive intact.
-    assert len(reloaded.document.findings) == 2
+    document = reloaded.document
+    assert document is not None
+    assert len(document["findings"]) == 2
     assert reloaded.resolutions[0].evidence[0].value == 41000.0
-    assert reloaded.document.findings[0].trials == ["T1", "T4"]
+    assert document["findings"][0]["trials"] == ["T1", "T4"]
     assert reloaded.aspects[0].bundle == analysis.aspects[0].bundle
     assert reloaded.aspects[0].bundle["campaign_id"] == "camp-1"
-    assert reloaded.document.findings[0].caveats == [
-        Caveat(kind="sampling", text="k=1 on this template is noise-dominated.")
+    assert document["findings"][0]["caveats"] == [
+        {"kind": "sampling", "text": "k=1 on this template is noise-dominated."}
     ]
-    assert reloaded.document.findings[1].invalidates == [0]
-    assert reloaded.document.recommendation[0].rests_on == [0]
-    assert reloaded.document.recommendation[0].floors_overridden[0].floor == "planning/cost_lower/*"
-    assert reloaded.document.aspect_summaries[0].aspect == "planning"
-    assert reloaded.document.next[0].leverage == "high"
+    assert document["findings"][1]["invalidates"] == [0]
+    assert document["recommendation"][0]["rests_on"] == [0]
+    assert document["recommendation"][0]["floors_overridden"][0]["floor"] == "planning/cost_lower/*"
+    assert document["aspect_summaries"][0]["aspect"] == "planning"
+    assert document["next"][0]["leverage"] == "high"
     assert reloaded.resolutions[0].evidence[0].aspect == "planning"
     assert reloaded.aspects[0].coverage.levers[0].n == 15
     assert reloaded.aspects[0].coverage.levers[0].dispersion == "±0.10"
@@ -321,7 +309,6 @@ def test_insight_storage_round_trip_preserves_every_field():
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda c: _finding(confidence=c), id="Finding"),
         pytest.param(lambda c: _recommendation(confidence=c), id="Recommendation"),
         pytest.param(
             lambda c: EvalInsight(
@@ -337,7 +324,7 @@ def test_insight_storage_round_trip_preserves_every_field():
     ],
 )
 def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
-    """What the generator authors is a tier, and so is what an insight stores; a typed probability is refused."""
+    """A recommendation's confidence is a tier, and so is what an insight stores; a typed probability is refused."""
     with pytest.raises(ValidationError):
         build(bad)
 
@@ -414,100 +401,19 @@ def test_insight_check_doc_type_rejects_a_wrong_doc_type():
 # ---------------------------------------------------------------------------
 
 
-class TestPositionsMustResolve:
-    """Links inside the document are finding POSITIONS, and ``check_positions`` refuses a bad one.
-
-    Each refusal is asserted with the message naming what is wrong, beside the legal document it
-    was made from, so a validator that refused everything would fail the acceptance half.
-    """
-
-    def test_a_valid_document_is_accepted(self):
-        analysis = _make_analysis(
-            findings=[_finding("a"), _finding("b", invalidates=[0]), _finding("c", invalidates=[0, 1])],
-            recommendation=_recommendation(rests_on=[0, 2]),
-        )
-        assert [finding.invalidates for finding in analysis.document.findings] == [[], [0], [0, 1]]
-        assert analysis.document.recommendation[0].rests_on == [0, 2]
-
-    @pytest.mark.parametrize("bad", [2, -1], ids=["past-the-end", "negative"])
-    def test_a_recommendation_resting_on_a_missing_position_is_refused(self, bad):
-        with pytest.raises(ValidationError, match=r"recommendation\.rests_on names finding position"):
-            _make_analysis(findings=[_finding("a"), _finding("b")], recommendation=_recommendation(rests_on=[0, bad]))
-
-    def test_a_finding_invalidating_a_missing_position_is_refused(self):
-        with pytest.raises(ValidationError, match=r"findings\[0\]\.invalidates names finding position\(s\) \[3\]"):
-            _make_analysis(findings=[_finding("a", invalidates=[3]), _finding("b")])
-
-    def test_a_finding_invalidating_itself_is_refused(self):
-        with pytest.raises(ValidationError, match=r"findings\[1\] invalidates itself"):
-            _make_analysis(findings=[_finding("a"), _finding("b", invalidates=[1])])
-
-    @pytest.mark.parametrize(
-        "links",
-        [
-            pytest.param([[1], [0]], id="two-cycle"),
-            pytest.param([[1], [2], [0]], id="three-cycle"),
-            pytest.param([[], [2], [1]], id="cycle-off-the-first-finding"),
-        ],
-    )
-    def test_an_invalidates_cycle_is_refused(self, links):
-        findings = [_finding(str(index), invalidates=targets) for index, targets in enumerate(links)]
-        with pytest.raises(ValidationError, match="findings invalidate each other in a cycle"):
-            _make_analysis(findings=findings)
-
-    def test_a_diamond_is_not_a_cycle(self):
-        """Two paths into one finding is ordinary gating; only a path back to its start is a cycle."""
-        findings = [
-            _finding("0", invalidates=[1, 2]),
-            _finding("1", invalidates=[3]),
-            _finding("2", invalidates=[3]),
-            _finding("3"),
-        ]
-        assert len(_make_analysis(findings=findings).document.findings) == 4
-
-    @pytest.mark.parametrize("count", [1, 3])
-    def test_a_resolution_count_that_does_not_match_the_findings_is_refused(self, count):
-        with pytest.raises(ValidationError, match=f"resolutions has {count} entries for 2 findings"):
-            _make_analysis(
-                findings=[_finding("a"), _finding("b")],
-                resolutions=[FindingResolution() for _ in range(count)],
-            )
-
-    def test_no_resolutions_at_all_is_accepted(self):
-        """Empty is the unresolved state, not a mismatch — the count is checked only once there are any."""
-        assert _make_analysis(findings=[_finding("a")], resolutions=[]).resolutions == []
+class TestTheMemoIsHeldAsStored:
+    """A retired memo is JSON the analysis holds: its links survive a stored reload as written."""
 
     def test_the_positions_survive_the_from_dict_reload_path(self):
         analysis = _make_analysis()
         reloaded = EvalAnalysis.from_dict(analysis.to_dict())
-        assert reloaded.document.recommendation[0].rests_on == [0]
-        assert reloaded.document.findings[1].invalidates == [0]
-
-    def test_a_stored_document_with_a_bad_position_is_refused_on_load(self):
-        stored = _make_analysis().to_dict()
-        stored["document"]["recommendation"][0]["rests_on"] = [5]
-        with pytest.raises(ValidationError, match="names finding position"):
-            EvalAnalysis.from_dict(stored)
+        assert reloaded.document is not None
+        assert reloaded.document["recommendation"][0]["rests_on"] == [0]
+        assert reloaded.document["findings"][1]["invalidates"] == [0]
 
 
 class TestAspectsAreOneEach:
-    """An analysis covers its campaign's aspects once each, and every row and summary names one of them."""
-
-    def test_a_resolved_row_on_an_aspect_the_analysis_lacks_is_refused(self):
-        row = EvidenceRow(
-            aspect="routing", cell_ref="vk:ac", measure_id="m", reading="measure", value=1.0, n=1, dispersion="x"
-        )
-        finding = _finding("a", evidence=[EvidenceRef(cell="vk:ac", measure_id="m", reading="measure")])
-        with pytest.raises(ValidationError, match=r"names aspect\(s\) \['routing'\], which this analysis lacks"):
-            _make_analysis(findings=[finding], resolutions=[FindingResolution(evidence=[row])])
-
-    def test_a_summary_of_an_aspect_the_analysis_lacks_is_refused(self):
-        with pytest.raises(ValidationError, match=r"aspect_summaries name \['routing'\]"):
-            _make_analysis(aspect_summaries=[_summary("routing")])
-
-    def test_an_aspect_summarised_twice_is_refused(self):
-        with pytest.raises(ValidationError, match="summarise \\['planning'\\] more than once"):
-            _make_analysis(aspect_summaries=[_summary(), _summary()])
+    """An analysis covers its campaign's aspects once each."""
 
     def test_an_aspect_held_twice_is_refused(self):
         aspect = _make_analysis().aspects[0]
@@ -533,7 +439,6 @@ class TestAspectsAreOneEach:
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda: NextStep(title="e", why="", leverage="huge", lever=""), id="NextStep.leverage"),
         pytest.param(
             lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="guessed"),
             id="LeverCoverage.status",
@@ -559,17 +464,14 @@ def test_literal_fields_reject_out_of_set_values(build):
             ),
             "statement",
         ),
-        (lambda: _finding(title=None), "title"),
-        (lambda: NextStep(title=None, why="", leverage="high", lever=""), "title"),
     ],
-    ids=["EvalInsight.statement", "Finding.title", "NextStep.title"],
+    ids=["EvalInsight.statement"],
 )
 def test_required_prose_still_rejects_null(build, field):
     """A required prose field refuses null.
 
     Where the text is the claim itself, its absence IS the failure and must surface loudly
-    rather than be normalized into an empty string — and the authored contract has no
-    nullable slot at all, so a ``null`` there is off-contract wherever it appears.
+    rather than be normalized into an empty string.
     """
     with pytest.raises(ValidationError, match=field):
         build()
@@ -650,16 +552,12 @@ def test_query_insights_filters_by_source_campaign():
     assert ids == {from_camp_1.id}
 
 
-class TestAResolutionIsTheReadingsItsFindingNames:
-    """The tier is read off a resolution's rows, so the rows must be the finding's readings, one for one.
-
-    Each refusal sits beside the accepted document it was made from, so a check that refused every
-    resolution would fail the acceptance half.
-    """
+class TestAResolutionsTierIsReadOffItsRows:
+    """What a finding's verdict stands on is read off its resolution's rows, never stored as a choice."""
 
     @staticmethod
     def _pair(named: list[tuple[str, str]], resolved: list[tuple[str, str]]) -> EvalAnalysis:
-        refs = [EvidenceRef(cell="v:a", measure_id=measure, reading=kind) for measure, kind in named]
+        refs = [{"cell": "v:a", "measure_id": measure, "reading": kind} for measure, kind in named]
         rows = [
             EvidenceRow(
                 aspect="planning",
@@ -678,19 +576,6 @@ class TestAResolutionIsTheReadingsItsFindingNames:
     def test_the_readings_resolved_as_named_are_accepted(self):
         named = [("latency", "measure"), ("helpful", "judged")]
         assert self._pair(named, named).resolutions[0].evidence_tier == "separation"
-
-    def test_a_judged_reading_resolved_as_a_measure_is_refused(self):
-        # The tier would read mechanical over a finding that leans on a judge.
-        with pytest.raises(ValidationError, match=r"resolutions\[0\]\.evidence resolves"):
-            self._pair([("helpful", "judged")], [("helpful", "measure")])
-
-    def test_a_named_reading_left_unresolved_is_refused(self):
-        with pytest.raises(ValidationError, match=r"resolutions\[0\]\.evidence resolves"):
-            self._pair([("latency", "measure"), ("helpful", "judged")], [("latency", "measure")])
-
-    def test_a_resolved_row_no_reading_names_is_refused(self):
-        with pytest.raises(ValidationError, match=r"resolutions\[0\]\.evidence resolves"):
-            self._pair([], [("latency", "measure")])
 
 
 @pytest.mark.parametrize("level", ["top", "nested"])

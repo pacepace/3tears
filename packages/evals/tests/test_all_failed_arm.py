@@ -53,10 +53,10 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     inspect_campaign_bundle,
 )
 from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.report.build import analysis_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
@@ -546,7 +546,8 @@ class TestAnArmWhereNoResultTookATurn:
         loaded = storage.load_analysis(analysis.id, analysis.scope_id)
         assert loaded is not None
 
-        table = _table(build_report(loaded), "scoreboard")
+        # Its aspect's page is code's, over the bundle frozen with it.
+        table = _table(_code_only(analysis_bundle(loaded)), "scoreboard")
         assert _row(table, _REFUSING)["other"] == 4
         assert _row(table, _REFUSING)["cost"] is None
 

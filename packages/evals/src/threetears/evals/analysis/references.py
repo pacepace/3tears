@@ -462,36 +462,6 @@ def _dispersion(
     return text
 
 
-def restated_dispersion(reading: ResolvedReading, factor: float, *, unit: str = "") -> str:
-    """A reading's spread in words, its standard error and interval restated by ``factor`` onto its measure's ruler.
-
-    The evidence table states a reading's value on the one ruler the report states its measure on, so its spread
-    beside it is restated with it: a value in s beside an interval in ms is the two-ruler defect within one row.
-
-    :param reading: The resolved reading.
-    :ptype reading: ResolvedReading
-    :param factor: Its measure's ruler factor (``1.0`` where the ruler is the measure's own unit).
-    :ptype factor: float
-    :param unit: The ruler's unit, which the restated figures are spelled in; empty for a bare number.
-    :ptype unit: str
-    :return: :attr:`ResolvedReading.dispersion` where nothing is restated; otherwise the same words over restated
-        figures.
-    :rtype: str
-    """
-    if factor == 1.0 or reading.ci_low is None or reading.ci_high is None:
-        return reading.dispersion
-    if (label := classifier_label_of(reading.measure_id)) is not None and label[0] == "f1":
-        return reading.dispersion
-    return _dispersion(
-        None if reading.sem is None else reading.sem * factor,
-        reading.ci_low * factor,
-        reading.ci_high * factor,
-        reading.n,
-        reading.n_cases,
-        unit,
-    )
-
-
 __all__ = [
     "CELL_ALIAS_PREFIX",
     "CellAddress",
@@ -504,5 +474,4 @@ __all__ = [
     "in_writer_terms",
     "require_cell",
     "resolve_reading",
-    "restated_dispersion",
 ]

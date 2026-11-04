@@ -3,7 +3,7 @@
 A trial is passed, failed (the candidate's failure) or lost (the test setup's). The engine's nouns for the same
 things — a cell, an observation, an exclusion, the rig, the harness, the apparatus, a reserved judge axis's stored
 id — never reach the first screen or what-it-means, and no arm is called a winner. Held over three reports: a G2-shaped
-code-only report, a classifier comparison that separated, and the toy host's analysis report.
+code-only report, a classifier comparison that separated, and the page of the toy host's stored analysis.
 """
 
 from __future__ import annotations
@@ -68,12 +68,12 @@ async def test_a_comparison_s_first_two_screens_use_none_of_the_engine_s_nouns()
     assert "careful better than hasty" in text
 
 
-async def test_an_analysis_report_s_first_two_screens_use_none_of_the_engine_s_nouns() -> None:
-    _, analysis, report = await toy_report()
+async def test_an_analysis_s_page_s_first_two_screens_use_none_of_the_engine_s_nouns() -> None:
+    _, _, report = await toy_report()
     text = _screens_one_and_two(report)
     assert _banned(text) == []
-    # The memo's findings are on screen two, each by its headline, unnumbered.
-    assert "Written by" not in text and analysis.document.findings[0].title in text and "F1." not in text
+    # The page never introduces who wrote it.
+    assert "Written by" not in text
 
 
 async def test_no_page_calls_any_arm_a_winner(g2: Report) -> None:

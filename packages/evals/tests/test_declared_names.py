@@ -27,7 +27,6 @@ from threetears.evals.analysis import assemble_context_bundle, build_campaign_re
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
 from threetears.evals.analysis.campaign_bundle import (
     build_campaign_bundle,
-    build_campaign_user_message,
     campaign_evidence_digest,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
@@ -238,11 +237,6 @@ def identities(*, named: bool) -> dict[str, str]:
     return found
 
 
-def writer_message(*, named: bool) -> str:
-    """The digest of what the writer is sent over the fixture: no identity, but what a reporter case renders."""
-    return hashlib.sha256(build_campaign_user_message(_fixture(named=named)["campaign_bundle"]).encode()).hexdigest()
-
-
 #: The durable minor ``00107a5b7`` stamped on what it wrote. The names are durable v16.3, since 0.78.0 shipped v16.2
 #: without them, so a document this build writes carries the minor 3; every other byte of it is as before.
 _MINOR_AT_00107A5B7 = 2
@@ -333,19 +327,6 @@ PINNED: dict[str, str] = {
     "template_digest": "2508d494320bd907e2d0bfeab1a6b53b37ccbcf645462cd754d319b9852f4553",
 }
 
-#: What the writer is sent over the fixture, naming nothing and naming everything. No run, cell, pool, pairing or
-#: fingerprint keys on it, so it is pinned apart from :data:`PINNED`: it moves whenever the writer's view does, and
-#: the names reach it, since the writer names an aspect by its short name and a check by its display name.
-#: Re-pinned in W4 (ENGINE) when the bundle's census began reading each arm's pricing off its production usage rows
-#: (``ArmScoreboard.pricing``): the fixture's runs carry such rows, so the writer is sent each arm's price sources,
-#: providers and priced calls. Nothing a name moves; no fingerprint moves (the owner's ruling keeps pricing out of them).
-#: Re-pinned at bundle shape 65, where the fixture's rate contrasts (its pass rate and its goal checks) are drawn on their
-#: bounded intervals, which the writer is shown.
-PINNED_WRITER_MESSAGES: dict[bool, str] = {
-    False: "a464379ec5aa384f95d5c963135ddb9d3ae1a4ff56a4e904e7f54df16bf9bba7",
-    True: "dd29d6d8e7a2d37b9ed40759d7c286792e9af5545ee6d0dd0b7757d2f422265a",
-}
-
 #: The fixture's stored documents naming nothing, as the tree at ``00107a5b7`` wrote them (:func:`documents`).
 #:
 #: A bundle is pinned in its identity form, every float to twelve figures, as its fingerprint reads it: it stores the
@@ -378,10 +359,6 @@ class TestEveryIdentityIsAsBeforeNamesExisted:
 
     def test_naming_every_aspect_and_check_moves_no_identity(self) -> None:
         assert identities(named=True) == PINNED
-
-    @pytest.mark.parametrize("named", [False, True], ids=["naming nothing", "naming everything"])
-    def test_the_writer_is_sent_what_it_was_pinned_to_names_included(self, named: bool) -> None:
-        assert writer_message(named=named) == PINNED_WRITER_MESSAGES[named]
 
     def test_a_template_campaign_and_bundle_naming_nothing_are_written_as_before(self) -> None:
         assert documents() == PINNED_DOCUMENTS
@@ -576,7 +553,7 @@ def _page(*, named: bool) -> Any:
         )
         for label, bundle in built["bundles"].items()
     }
-    return built, build_campaign_report(built["campaign"], built["readings"], reports, None)
+    return built, build_campaign_report(built["campaign"], built["readings"], reports)
 
 
 def _cells(page: Any) -> list[str]:

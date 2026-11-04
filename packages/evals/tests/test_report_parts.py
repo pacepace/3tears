@@ -3,7 +3,7 @@
 A cell's ``status`` draws its text as the kit's pill (the colour, the icon and the word, never a colour alone); its
 ``tag`` draws its text as an arm's chip (the letter tag on the arm's identity colour, then the name). Both are
 optional and default to nothing, so a cell that sets neither is drawn exactly as before: that half is held by the
-memo pages' own tests, which render byte for byte as they did. Markdown has no colour, so a status reads as its word
+pages' own tests, which render byte for byte as they did. Markdown has no colour, so a status reads as its word
 and a chip as its tag and name.
 """
 

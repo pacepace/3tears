@@ -1,57 +1,22 @@
-"""The authored contract: a small document shape, strictly projected, sized to what every writer accepts."""
+"""The strict projection every package call sends, and the confidence and reading vocabularies the stored analyses
+share: what survives of the authored contract now that the memo writer is retired.
+
+The projection is held over :class:`~threetears.evals.kernel.authored.Recommendation`, the one retired-memo model that
+stays (``CampaignReport.recommendation`` types its field with it), whose nested definitions give it references.
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import BaseModel
 
 from threetears.evals.kernel import authored
-from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS
 
 
-KINDS = ENGINE_CAVEAT_KINDS
-
-
-def _schema(kinds=KINDS) -> dict[str, Any]:
-    return authored.authored_schema(kinds)
-
-
-def _payload(**overrides: Any) -> dict[str, Any]:
-    finding = {
-        "title": "Latency halves",
-        "body": "The fast arm halves p95 at no measured quality cost.",
-        "confidence": "high",
-        "axes": ["lookup.max_rounds"],
-        "evidence": [{"cell": "k1:a1", "measure_id": "total_ms", "reading": "measure"}],
-        "trials": ["T3"],
-        "caveats": [{"kind": "sampling", "text": "Five cases."}],
-        "invalidates": [],
-        "durable": "",
-    }
-    base = {
-        "findings": [finding],
-        "recommendation": [
-            {
-                "arm": "fast",
-                "reasons": ["Three rounds halve the tail."],
-                "confidence": "medium",
-                "rests_on": [0],
-                "floors_overridden": [],
-                "behind_on": [],
-                "bars_missed": [],
-            }
-        ],
-        "aspect_summaries": [
-            {"aspect": "lookup", "what_changed": "The tail halved.", "how_sure": "Sure.", "means": "Switch."}
-        ],
-        "summary": "Three rounds halve the tail, so switch to fast.",
-        "next": [],
-    }
-    base.update(overrides)
-    return base
+def _schema() -> dict[str, Any]:
+    return authored.strict_schema(authored.Recommendation.model_json_schema())
 
 
 def _walk(node: Any):
@@ -81,43 +46,6 @@ def _schema_nodes(node: Any):
             yield from _schema_nodes(value)
 
 
-class TestTheSchemaFitsEveryWriter:
-    def test_the_schema_holds_no_more_slots_than_the_budget(self):
-        slots = authored.count_slots(_schema())
-        assert slots <= authored.SLOT_BUDGET, (
-            f"the authored schema holds {slots} free-text and list slots, over the budget of "
-            f"{authored.SLOT_BUDGET}; re-probe every eligible writer before raising it"
-        )
-
-    def test_a_host_registering_caveat_kinds_stays_inside_the_budget(self):
-        # Kinds are enum values, which the grammar barely pays for; a host adding them adds no slot.
-        with_kinds = _schema(KINDS | {"host_a", "host_b", "host_c"})
-        assert authored.count_slots(with_kinds) == authored.count_slots(_schema())
-
-    def test_nothing_is_a_union(self):
-        schema = json.dumps(_schema())
-        assert '"anyOf"' not in schema and '"oneOf"' not in schema
-        assert '"null"' not in schema, "absence is an empty string or list, never null"
-
-    def test_the_slot_counter_counts_what_the_grammar_pays_for(self):
-        class _Probe(BaseModel):
-            model_config = ConfigDict(extra="forbid")
-            a: str
-            b: list[str]
-            c: int
-
-        # a string, an array, and the array's string items: three slots; the integer is none.
-        assert authored.count_slots(authored.strict_schema(_Probe.model_json_schema())) == 3
-
-    def test_the_budget_guard_fires_on_a_schema_over_it(self):
-        padded = create_model(
-            "Padded",
-            __base__=authored.AuthoredCampaignAnalysis,
-            **{f"pad{i}": (str, ...) for i in range(authored.SLOT_BUDGET)},
-        )
-        assert authored.count_slots(authored.strict_schema(padded.model_json_schema())) > authored.SLOT_BUDGET
-
-
 class TestTheStrictProjection:
     def test_every_object_is_closed_and_fully_required(self):
         for node in _walk(_schema()):
@@ -131,8 +59,8 @@ class TestTheStrictProjection:
         assert all(set(node) == {"$ref"} for node in refs)
 
     def test_nothing_the_providers_refuse_survives(self):
-        # Checked on schema NODES, never on the name maps under `properties` and `$defs`: `title` is
-        # also a finding's property name, and that one must survive.
+        # Checked on schema NODES, never on the name maps under `properties` and `$defs`, where a property may be
+        # named like a keyword and must survive.
         offenders = [
             node for node in _schema_nodes(_schema()) if {"default", "discriminator", "title", "oneOf"} & set(node)
         ]
@@ -152,78 +80,6 @@ class TestTheStrictProjection:
             authored.strict_schema(_Map.model_json_schema())
 
 
-class TestTheCheckOnReturn:
-    def test_a_well_formed_payload_passes(self):
-        authored.validate_authored(_payload(), KINDS)
-
-    def test_an_extra_key_is_refused(self):
-        with pytest.raises(ValidationError):
-            authored.validate_authored(_payload(bluf="the old shape"), KINDS)
-
-    def test_a_missing_key_is_refused(self):
-        payload = _payload()
-        del payload["next"]
-        with pytest.raises(ValidationError):
-            authored.validate_authored(payload, KINDS)
-
-    def test_null_is_refused_where_the_contract_says_empty(self):
-        with pytest.raises(ValidationError):
-            authored.validate_authored(_payload(next=None), KINDS)
-
-    @pytest.mark.parametrize("field", ["headline", "headline_rests_on", "summary_rests_on"])
-    def test_the_memo_authors_no_headline_and_pins_its_summary_to_nothing(self, field: str):
-        """The verdict and the readings are code's: a payload carrying a headline is refused, and so is a summary
-        pinned to findings, which reads across them rather than resting on some."""
-        with pytest.raises(ValidationError, match=field):
-            authored.validate_authored(_payload(**{field: "the old shape"}), KINDS)
-
-    def test_the_memo_reads_across_its_aspects_in_a_summary(self):
-        assert (
-            authored.validate_authored(_payload(), KINDS).summary == "Three rounds halve the tail, so switch to fast."
-        )
-        assert "summary" in _schema()["required"]
-        assert _schema()["properties"]["summary"]["type"] == "string"
-
-    def test_a_memo_with_no_summary_is_refused(self):
-        payload = _payload()
-        del payload["summary"]
-        with pytest.raises(ValidationError, match="summary"):
-            authored.validate_authored(payload, KINDS)
-
-    @pytest.mark.parametrize("written", ["", " \n\t "])
-    def test_an_empty_summary_is_refused_whatever_the_kind(self, written: str):
-        """A measurement's memo and a no-clear-winner choice's recommend nothing, and still say what was found."""
-        with pytest.raises(ValidationError, match="`summary` is empty"):
-            authored.validate_authored(_payload(summary=written, recommendation=[]), KINDS)
-
-    def test_an_unregistered_caveat_kind_is_refused_and_a_registered_one_accepted(self):
-        payload = _payload()
-        payload["findings"][0]["caveats"] = [{"kind": "host_kind", "text": "x"}]
-        with pytest.raises(authored.OffVocabulary):
-            authored.validate_authored(payload, KINDS)
-        authored.validate_authored(payload, KINDS | {"host_kind"})
-
-    def test_a_finding_authors_no_chart(self):
-        payload = _payload()
-        payload["findings"][0]["chart"] = {"type": "none"}
-        with pytest.raises(ValidationError, match="chart"):
-            authored.validate_authored(payload, KINDS)
-
-    def test_a_finding_names_the_trials_it_is_drawn_from(self):
-        assert authored.validate_authored(_payload(), KINDS).findings[0].trials == ["T3"]
-
-    def test_the_directive_sends_the_projected_schema_strictly(self):
-        directive = authored.response_format(KINDS)
-        assert directive["type"] == "json_schema"
-        assert directive["json_schema"]["strict"] is True
-        assert directive["json_schema"]["schema"] == _schema()
-
-    def test_the_host_vocabulary_is_sent_as_an_enum(self):
-        defs = _schema(KINDS | {"host_kind"})["$defs"]
-        assert set(defs["Caveat"]["properties"]["kind"]["enum"]) == KINDS | {"host_kind"}
-        assert "Chart" not in defs, "the writer is offered no chart"
-
-
 class TestOneVocabulary:
     """The contract states its vocabularies standalone, so nothing else must disagree with it."""
 
@@ -240,22 +96,3 @@ class TestOneVocabulary:
         from threetears.evals.kernel.campaign import ReadingKind
 
         assert set(typing.get_args(authored.Reading)) == set(typing.get_args(ReadingKind))
-
-
-class TestTheWriterCannotChooseATier:
-    """What a verdict stands on is read off its evidence by code, so the writer is never offered a tier."""
-
-    def test_the_sent_schema_has_no_tier_field_and_no_tier_word(self):
-        schema = _schema()
-        fields = {name for node in _walk(schema) for name in node.get("properties", {})}
-        assert not {name for name in fields if "tier" in name}, "the sent schema offers the writer a tier"
-        # No enum anywhere in what is sent carries a tier's name, so no field renamed around the check
-        # can still hand the writer "calibrated" to pick.
-        words = {value for node in _walk(schema) for value in node.get("enum", [])}
-        assert not words & {"mechanical", "directional", "separation", "incidental", "calibrated"}
-
-    def test_a_planted_tier_is_refused_on_return(self):
-        payload = _payload()
-        payload["findings"][0]["evidence_tier"] = "calibrated"
-        with pytest.raises(ValidationError, match="evidence_tier"):
-            authored.validate_authored(payload, KINDS)

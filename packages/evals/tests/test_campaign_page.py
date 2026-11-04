@@ -1,9 +1,8 @@
 """A campaign's page: code's readings across its aspects on the first screen, then one fold per aspect.
 
 The fixture (:mod:`~packages.evals.tests.campaign_page_support`) is two real runs read as one campaign of two
-aspects: billing regresses past its floor, tone improves. The broken floor is first of all; the writer's summary
-across the aspects and its recommendation, when there is a memo, come next, then code's table, then the person's
-call. Each aspect's own page sits in its fold. These are the page's order, its folds, its JSON and its invariants.
+aspects: billing regresses past its floor, tone improves. The broken floor is first of all, then code's table, then
+the person's call. Each aspect's own page sits in its fold. These are the page's order, its folds, its JSON and its invariants.
 """
 
 from __future__ import annotations
@@ -34,23 +33,19 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
 from packages.evals.tests.page_contract_support import FONT_LINKS, font_links, what_runs
 from packages.evals.tests.style_support import lint_page
-from threetears.evals.kernel.errors import RefusedInput
 
 from packages.evals.tests.campaign_support import (
     ASSEMBLED_AT,
     CANDIDATE_LABEL,
     CONTROL_LABEL,
     QUESTION,
-    arms_of,
 )
 
 from packages.evals.tests.campaign_page_support import (
     aspect_fixture,
-    campaign_fixture,
     first_screen_markdown,
     kind_fixture,
     page_of,
-    two_aspect_memo,
 )
 
 
@@ -80,7 +75,7 @@ class _Tags(HTMLParser):
 
 
 async def test_the_page_keeps_the_embed_s_invariants() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+    page = await page_of("billing", "tone")
     html = campaign_report_html(page)
     parser = _Tags()
     parser.feed(html)
@@ -96,11 +91,11 @@ async def test_the_page_keeps_the_embed_s_invariants() -> None:
     assert all(href is not None and href.startswith("#") for href in hrefs)
     assert {href[1:] for href in hrefs if href} <= set(ids), "a link lands nowhere"
     assert "<header>" in html and '<section id="aspect-billing">' in html and '<section id="glossary">' in html
-    assert ("article", {"data-basis": "analysis", "data-page": "campaign"}) in tags
+    assert ("article", {"data-basis": "code_only", "data-page": "campaign"}) in tags
 
 
 async def test_the_page_passes_the_style_rules_and_its_first_screen_speaks_a_reader_s_words() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+    page = await page_of("billing", "tone")
     markdown = campaign_report_markdown(page)
     assert lint_page(markdown, question=QUESTION, names=[CONTROL_LABEL, f"▸ {CONTROL_LABEL}", CANDIDATE_LABEL]) == []
     first = first_screen_markdown(page)
@@ -123,32 +118,6 @@ async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint(
     ]
     assert serialize_report(page, "markdown") == campaign_report_markdown(page)
     assert serialize_report(page, "html") == campaign_report_html(page)
-
-
-async def test_with_a_memo_the_json_carries_the_recommendation_its_arm_named_by_label_and_by_key() -> None:
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
-    document = json.loads(serialize_report(page, "json"))
-    control = page.readings.control
-    assert control is not None and page.recommended_variant_key == control
-    assert document["recommendation"] == {"arm": CONTROL_LABEL, "variant_key": control, "confidence": "high"}
-
-
-async def test_a_page_whose_memo_recommends_an_arm_is_refused_without_that_arm_s_key() -> None:
-    campaign, measured = await campaign_fixture("billing", "tone")
-    bundles = {one.bundle.aspect: one.bundle for one in measured}
-    read = campaign_readings(campaign, bundles, arms=arms_of(measured[0]))
-    reports = {
-        label: build_code_only_report(
-            evidence, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
-        )
-        for label, evidence in bundles.items()
-    }
-    with pytest.raises(RefusedInput, match="no variant key for that arm") as refused:
-        build_campaign_report(campaign, read, reports, two_aspect_memo())
-    assert "EvalAnalysis.recommended_variant_key" in refused.value.remedy
-    # A key is the recommendation's: a page with none holds none.
-    page = build_campaign_report(campaign, read, reports, None, recommended_variant_key="a" * 64)
-    assert (page.recommendation, page.recommended_variant_key) == (None, None)
 
 
 async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
@@ -220,7 +189,7 @@ async def test_a_fold_of_a_choice_names_the_arms_by_the_campaign_s_labels() -> N
     report = build_code_only_report(
         tone.bundle, assembled_at=ASSEMBLED_AT, campaign_name="support", arm_labels=read.arm_labels()
     )
-    page = build_campaign_report(tone.campaign, read, {"tone": report}, None)
+    page = build_campaign_report(tone.campaign, read, {"tone": report})
     fold = campaign_report_markdown(page).split("\n## tone", 1)[1]
     assert "| ALPHA |" in fold and "| alpha |" not in fold
 

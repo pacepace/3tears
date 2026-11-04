@@ -21,7 +21,10 @@ document store holds it (``report_support.stored_plan_document``), and the one t
 - **a memo analysis reads the same way through every door**, the line naming the memo writer, its memo never read:
   ``report_read`` in its four forms, ``campaign_report``, ``analysis_report`` by its id and ``analyses_list``, which
   counts no findings;
-- an aspect's page of a planned analysis is refused, as it holds no memo;
+- **a stored memo is held as the JSON it was stored as** (``EvalAnalysis.document``), never validated as a memo: one
+  no memo model would accept (a key the memo never had, its summary gone, a recommendation resting on a finding it
+  does not hold, its resolutions not matching its findings) still loads, round-trips byte for byte, and reads
+  through every door with the memo writer's line;
 - the actions round-trip a generated analysis as a report document, with no plan member.
 """
 
@@ -39,7 +42,7 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture, settled
 from packages.evals.tests.report_support import stored_memo_analysis, stored_plan_analysis, stored_plan_document
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import CampaignReport, build_report
+from threetears.evals.analysis import CampaignReport
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
 from threetears.evals.analysis.report.serialize import serialize_report
@@ -232,16 +235,6 @@ async def test_deleting_the_analysis_deletes_its_plan_and_keeps_its_insights() -
     assert insights and {insight.source_analysis_id for insight in insights} == {analysis.id}
 
 
-# -- the other writers --------------------------------------------------------------------------------------------
-
-
-async def test_an_aspect_page_of_a_planned_analysis_is_refused() -> None:
-    _, _, analysis = await _planned()
-
-    with pytest.raises(RefusedInput, match="written by the report planner"):
-        build_report(analysis)
-
-
 # -- a memo analysis ----------------------------------------------------------------------------------------------
 
 
@@ -249,7 +242,7 @@ async def _memo() -> tuple[OpsFixture, EvalAnalysis]:
     """The toy campaign's host holding the analysis the memo writer stored over it, its memo inside it."""
     fixture = off_loop(ops_fixture)
     memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
-    assert memo.document is not None and memo.document.findings, "the stored record holds a memo with findings"
+    assert memo.document is not None and memo.document["findings"], "the stored record holds a memo with findings"
     return fixture, memo
 
 
@@ -284,7 +277,7 @@ async def test_the_campaign_s_page_and_the_page_by_id_stand_in_for_a_memo_with_i
     for page in (campaigns, by_id):
         markdown = serialize_report(page, "markdown")
         assert markdown.count(_MEMO_LINE) == 1, "said once"
-        assert memo.document is not None and memo.document.summary not in markdown, "the memo is never read"
+        assert memo.document is not None and str(memo.document["summary"]) not in markdown, "the memo is never read"
 
 
 async def test_the_listing_leads_a_memo_s_line_with_the_memo_writer_s_line_and_counts_no_findings() -> None:
@@ -334,3 +327,55 @@ async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document(
     assert "plan" not in read.structured and read.structured["doc"]["schema"] == "report-doc/1"
     body = json.loads(read.structured["body"])
     assert body["analysis_id"] == status.analysis_id and body["report_doc"]["id"] == line["report_doc_id"]
+
+
+# -- a stored memo is held as JSON -------------------------------------------------------------------------------
+
+#: A memo no memo model accepts: a key it never had, no summary, a recommendation resting on a finding it does not
+#: hold, and one finding more than its resolutions cover.
+_UNREADABLE_MEMO: Final = {
+    "findings": [{"title": "One.", "trials": ["T1"]}, {"title": "Two."}],
+    "recommendation": [{"arm": "a label no arm has", "rests_on": [7]}],
+    "aspect_summaries": [{"aspect": "an aspect the campaign lacks"}],
+    "next": [],
+    "written_by": "a memo writer of another build",
+}
+
+
+async def _unreadable_memo() -> tuple[OpsFixture, EvalAnalysis]:
+    """The toy campaign's host holding the memo writer's stored analysis with its memo replaced, in the store, by a
+    memo no memo model accepts."""
+    fixture = off_loop(ops_fixture)
+    stored, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
+    record = stored.model_dump(mode="json")
+    record["document"] = _UNREADABLE_MEMO
+    memo = EvalAnalysis.model_validate(record)
+    off_loop(fixture.host.eval_host.storage.save_analysis, memo)
+    return fixture, memo
+
+
+async def test_a_stored_memo_no_memo_model_accepts_loads_and_round_trips_as_stored() -> None:
+    fixture, memo = await _unreadable_memo()
+
+    loaded = off_loop(fixture.host.eval_host.storage.load_analysis, memo.id, TOYHOST_SCOPE)
+
+    assert loaded is not None and loaded.basis == "memo"
+    assert loaded.document == _UNREADABLE_MEMO
+    assert json.dumps(loaded.model_dump(mode="json")["document"], sort_keys=True) == json.dumps(
+        _UNREADABLE_MEMO, sort_keys=True
+    )
+
+
+async def test_a_stored_memo_no_memo_model_accepts_reads_through_every_door_with_the_memo_writer_s_line() -> None:
+    fixture, memo = await _unreadable_memo()
+    host = fixture.host.eval_host
+
+    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+        assert (read.basis, read.analysis_id, read.analysis_basis) == ("code_only", memo.id, "memo"), form
+        assert _said(memo, form, _MEMO_LINE) in _first_screen(read.body, form), form
+        assert "a memo writer of another build" not in read.body, "the memo is never read"
+    _assert_stands_in(off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE), memo, _MEMO_LINE)
+    _assert_stands_in(off_loop(analysis_report, host.storage, memo.id, TOYHOST_SCOPE), memo, _MEMO_LINE)
+    (line,) = off_loop(analyses_list, host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+    assert (line.id, line.basis, line.findings, line.needs_regeneration) == (memo.id, "memo", 0, _MEMO_LINE)

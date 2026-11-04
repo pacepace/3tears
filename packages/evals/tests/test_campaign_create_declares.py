@@ -9,7 +9,7 @@ Driven over the toy host through :meth:`MountedTool.call`, the path every transp
   exploratory campaign or from a run no aspect holds, a declared aspect with no margin, a design with no axes.
 - **An axis the host does not declare is refused naming what is declarable**, the refusal listing the host's axes.
 - **Without a design the campaign is exploratory** (#685): derived from no aspect declaring one, never stored as a
-  flag, and said once, at the top, by the bundle, the code-only report and the message the writer is sent.
+  flag, and said once, at the top, by the bundle and the code-only report.
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
 )
 from threetears.evals.analysis.campaigns import set_campaign_control
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report.model import DisclosureBlock, Report
 from threetears.evals.ops import CampaignLine
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS
@@ -252,13 +250,6 @@ async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: Moun
     assert _EXPLORATORY_BASIS not in page
 
 
-async def test_the_writer_is_told_once(evals: MountedTool) -> None:
-    _fixture, _campaign_id, bundle = await _exploratory(evals)
-
-    message = _writer_message(bundle)
-    assert message.count(NO_DESIGN_EXPLORATORY) == 1, "the writer's view carries the line once"
-
-
 async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
     outcome = await _create(evals, fixture, aspects=[_aspect(fixture)])
@@ -270,8 +261,3 @@ async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(e
     bundle = off_loop(assemble_context_bundle, stored, storage=eval_host.storage, profile=eval_host.profile)
 
     assert bundle.reading_scope.disclosure == NO_QUESTION_EXPLORATORY, "a declared design is not called undeclared"
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

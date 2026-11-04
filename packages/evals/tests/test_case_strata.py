@@ -10,8 +10,8 @@ assembled through a real store and read back:
   down, and its report has no strata table and no strata disclosure.
 - **The report carries it**: a ``strata`` table, a column per stratum after the pooled one, each
   stratum's case count first, and a disclosure naming every stratum under
-  :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report and in an
-  analysis's, in Markdown and HTML; a rate over fewer cases than a rate is read on is stated as a count.
+  :data:`~threetears.evals.kernel.STRATUM_MIN_CASES` cases — in the code-only report, over the evidence now or the
+  bundle an analysis froze, in Markdown and HTML; a rate over fewer cases than a rate is read on is stated as a count.
 - **The stored shapes refuse what cannot be true**: strata that do not add up to their cell, a stratum
   listed twice, a breakdown made only of undeclared cases, two nominated stratum axes, an ``llm`` one.
 - **Generation stamps it**: a case generated from a template that nominates an axis takes that axis's
@@ -33,13 +33,12 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     report_html,
     report_markdown,
 )
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES, analysis_bundle
 from threetears.evals.analysis.report.figures import SURFACE_ORDER_NO_CONTROL
 from threetears.evals.kernel import (
     STRATUM_MIN_CASES,
@@ -371,7 +370,7 @@ class TestTheReportCarriesStrata:
         html = report_html(report)
         assert "By stratum" in html and 'data-source="strata"' in html
 
-    def test_an_analysis_report_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
+    def test_an_analysis_s_page_lays_out_the_strata_of_the_bundle_it_froze(self) -> None:
         bundle = _bundle(*_mixed())
         analysis = make_analysis(
             aspects=[
@@ -380,7 +379,8 @@ class TestTheReportCarriesStrata:
                 )
             ],
         )
-        report = build_report(analysis)
+        # An analysis's aspect page is code's, over the bundle frozen with it.
+        report = _code_only(analysis_bundle(analysis))
 
         table = _strata_table(report)
         assert [column.header for column in table.columns][2:] == ["All cases", "lookalike", "plain", NO_STRATUM]

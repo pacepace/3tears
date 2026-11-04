@@ -2,7 +2,7 @@
 
 Ten comparisons at α=0.05 find a chance "difference" more often than not, so the bundle tests each
 contrast against the control on every reading a live question asks about, Holm-corrects inside the
-question's family, and reads each verdict off the adjusted p. The writer is shown the adjusted p only.
+question's family, and reads each verdict off the adjusted p.
 
 Mutations that turn this file red (each run against a saved copy and restored from it):
 
@@ -10,7 +10,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
   for every rank (plain Bonferroni); removing the out-of-range refusal.
 - ``_multiple_comparisons``: reading the verdict off ``p_raw`` instead of ``p_adjusted``; correcting
   over each comparison alone (``holm_adjust([p])``); dropping the control-variant filter on pairs.
-- ``build_campaign_user_message``: sending a raw p.
 - ``_compare`` (through the bundle): disabling the paired no-spread branch, so a deterministic gap is named as a
   shortage of cases; reading the gap by the t-test's refusal instead of ``separation_p``, so a constant
   shift over twelve cases reads untested.
@@ -19,7 +18,6 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
 
 import random
 from collections.abc import Sequence
@@ -32,8 +30,6 @@ from threetears.evals.analysis import (
     ComparisonFamily,
     assemble_context_bundle,
 )
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.stats import (
     UNIFORM_MOVE_NEEDS_RANGE,
     bounded_separation_p,
@@ -238,21 +234,6 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         assert family.family_size == 1
         assert alone.p_adjusted == pytest.approx(alone.p_raw)
         assert alone.verdict == "improved"
-
-    def test_the_writer_is_shown_the_adjusted_p_and_never_the_raw_one(self) -> None:
-        bundle = _bundle([BORDERLINE, *[NOISE] * 9])
-        borderline = next(c for c in _family(bundle).comparisons if c.name == "extraction.d0")
-        assert borderline.p_raw is not None and borderline.p_adjusted is not None
-
-        message = _writer_message(bundle)
-
-        assert "p_raw" not in message
-        # The writer's view keeps four significant figures of every figure it shows.
-        assert repr(float(f"{borderline.p_raw:.4g}")) not in message, "the raw figure must not reach the writer"
-        assert repr(float(f"{borderline.p_adjusted:.4g}")) in message
-        assert bundle.multiple_comparisons.families[0].comparisons[0].p_raw is not None, (
-            "the raw p stays on the bundle for audit; only the writer's view drops it"
-        )
 
 
 class TestVerdicts:
@@ -482,8 +463,8 @@ def test_a_separated_comparison_carries_the_materiality_of_its_delta(threshold: 
     assert comparison.materiality == expected
 
 
-def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
-    """Both surfaces that list a comparison's verdict: the report's contrast table and the analysis writer's bundle."""
+def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None:
+    """Both places that hold a comparison's verdict: the report's contrast table and the bundle's comparison."""
     from threetears.evals.analysis.report.build import build_code_only_report
 
     profile = _accuracy_threshold(0.05)
@@ -499,7 +480,8 @@ def test_the_report_and_the_writer_see_an_immaterial_verdict_labelled() -> None:
         in row["verdict"]
     )
     assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
-    assert '"materiality":"immaterial"' in _writer_message(bundle).replace(" ", "")
+    (comparison,) = [c for c in _family(bundle).comparisons if c.name == "field_accuracy"]
+    assert comparison.materiality == "immaterial"
 
 
 def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> None:
@@ -561,9 +543,6 @@ def test_equivalent_is_claimed_only_by_the_equivalence_test_against_a_declared_m
         assert comparison.equivalence_p_adjusted < 0.05
         assert (
             comparison.interval is not None and -threshold < comparison.interval[0] < comparison.interval[1] < threshold
-        )
-        assert "equivalence_p_raw" not in _writer_message(
-            _bundle([], accuracy=_ALIKE, cases=24, profile=_accuracy_threshold(threshold))
         )
     else:
         assert comparison.equivalence_p_raw is None and comparison.equivalence_p_adjusted is None
@@ -723,8 +702,3 @@ class TestPairingCorrelation:
     def test_samples_of_different_lengths_are_refused(self) -> None:
         with pytest.raises(ValueError, match="case by case"):
             pairing_correlation([1.0, 2.0, 3.0], [1.0, 2.0])
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

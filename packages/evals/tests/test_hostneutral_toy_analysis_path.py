@@ -1,9 +1,8 @@
 """The engine's bundle behaviour and what a stored analysis keeps of it, driven over the toy host.
 
 Bundle assembly over a toy bundle is on the toy host's surface, so each engine behaviour there owes a
-toy test. Every test below assembles the toy corpus campaign under the toy host's profile, builds the
-analysis a report document over it is linked by, or validates the memo the retired memo writer stored
-over it (``fixtures/retired_writers/memo_analysis.json``).
+toy test. Every test below assembles the toy corpus campaign under the toy host's profile, or builds the
+analysis a report document over it is linked by.
 
 Pinned here — each class is a property a mutation of the engine turned red:
 
@@ -13,26 +12,20 @@ Pinned here — each class is a property a mutation of the engine turned red:
   lever spread's spelling.
 - ``kernel/declaration.py``: a refused bar quoted as declared.
 - ``analysis/doc_analysis.py``: the surface a stored analysis freezes.
-- ``kernel/authored.py``: one parser for every reading site of a stored memo.
 """
 
 from __future__ import annotations
 
-import copy
-import json
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
 from threetears.evals.analysis.bundle.insights import insight_standing
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.numbers import WRITTEN_FROM, format_number
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
@@ -55,25 +48,10 @@ from packages.evals.tests.toyhost_cells import cell_at
 from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.aspect_support import with_control
 
-#: The analysis the memo writer stored over the toy corpus campaign, as its record holds it.
-_STORED_MEMO: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "memo_analysis.json"
-
 
 def _bundle() -> Any:
     profile = toyhost_profile()
     return toyhost_bundle(profile=profile)
-
-
-def _stored_memo() -> dict[str, Any]:
-    """The memo the memo writer stored over the toy corpus campaign, as a dict a test may change."""
-    record: dict[str, Any] = json.loads(_STORED_MEMO.read_text(encoding="utf-8"))
-    document: dict[str, Any] = copy.deepcopy(record["analysis"]["document"])
-    return document
-
-
-def _finding(payload: dict[str, Any]) -> dict[str, Any]:
-    (finding,) = payload["findings"]
-    return finding
 
 
 # =============================================================================
@@ -357,7 +335,7 @@ class TestARefusedBarIsQuotedAsDeclared:
 
 
 # =============================================================================
-# analysis/doc_analysis.py and kernel/authored.py
+# analysis/doc_analysis.py
 # =============================================================================
 
 
@@ -386,36 +364,3 @@ class TestAStoredAnalysisFreezesTheBundlesSurface:
         analysis, _ = doc_analysis_over(campaign_bundle(controlled))
 
         assert analysis.aspects[0].decision_surface.control_variant_key == narrow_key
-
-
-def _misspelt_reading() -> dict[str, Any]:
-    """The stored memo with each evidence reading spelt ``raeding`` — a key that decides what is read."""
-    payload = _stored_memo()
-    for reading in _finding(payload)["evidence"]:
-        reading["raeding"] = reading.pop("reading")
-    return payload
-
-
-class TestEveryReadingSiteIsParsedByTheOneContract:
-    """A key that is no field is refused, and a writer draws nothing: the report's two charts are code's."""
-
-    def test_a_misspelt_field_is_refused_rather_than_read_as_the_default(self) -> None:
-        with pytest.raises(ValidationError, match=r"raeding\s+Extra inputs are not permitted"):
-            AuthoredCampaignAnalysis.model_validate(_misspelt_reading())
-
-    def test_the_same_memo_spelt_correctly_is_accepted(self) -> None:
-        payload = _misspelt_reading()
-        for reading in _finding(payload)["evidence"]:
-            reading["reading"] = reading.pop("raeding")
-
-        document = AuthoredCampaignAnalysis.model_validate(payload)
-
-        assert [row.reading for row in document.findings[0].evidence] == ["measure", "measure"]
-
-    def test_a_chart_a_writer_adds_to_a_finding_is_refused(self) -> None:
-        """The writer authors findings and recommendations; a chart it types is off-contract, never drawn."""
-        payload = _stored_memo()
-        _finding(payload)["chart"] = {"type": "delta_table", "cells": [_finding(payload)["evidence"][0]["cell"]]}
-
-        with pytest.raises(ValidationError, match=r"chart\s+Extra inputs are not permitted"):
-            AuthoredCampaignAnalysis.model_validate(payload)

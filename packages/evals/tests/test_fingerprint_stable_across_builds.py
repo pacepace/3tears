@@ -1,4 +1,4 @@
-"""A bundle's fingerprint, the page JSON and the writer's message are the same across Python builds.
+"""A bundle's fingerprint and the page JSON are the same across Python builds.
 
 The bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
 whose last bits differ between two builds of one Python: a uv-managed CPython 3.14.6 and Debian's give
@@ -14,10 +14,8 @@ Pinned here:
   page JSON serves, and for a chart's figures, which every form of the page (the kit's ``data-chart`` JSON in the
   HTML, the static page's SVG, Markdown, JSON) serves alike.
 - **A build whose C maths differs fingerprints alike**: a fresh interpreter whose ``math`` and ``NormalDist`` answer
-  one ULP off assembles the toy campaign to the same ``v2:`` fingerprint, serves the same page JSON and sends the
-  writer the same message, while the unrounded digest moves, which is the defect.
-- **Every section the writer reads is served to twelve figures**: a judge tier's calibration bounds, a time axis and
-  a guardrail's interval, each from an existing fixture, reach the message rounded as every other figure does.
+  one ULP off assembles the toy campaign to the same ``v2:`` fingerprint and serves the same page JSON, while the
+  unrounded digest moves, which is the defect.
 - **A real difference still moves it**: a statistic changed in its tenth figure is another fingerprint.
 - **A fingerprint stored before the rounding still matches**: an unprefixed (version 1) fingerprint is compared as it
   was taken, by a bundle, a campaign's frame and an inspection.
@@ -30,29 +28,19 @@ import math
 import os
 import subprocess
 import sys
-from collections.abc import Callable
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import (
     assemble_campaign_bundle,
-    assemble_context_bundle,
     campaign_report,
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
-from threetears.evals.analysis.campaign_bundle import (
-    CAMPAIGN_MESSAGE_HEADING,
-    CampaignBundle,
-    aspect_view,
-    build_campaign_user_message,
-    campaign_evidence_digest,
-    writer_view,
-)
+from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock, TableBlock
-from threetears.evals.run import rate_result
 from threetears.evals.schema.hashing import (
     UnhashableContentError,
     canonical_digest,
@@ -61,16 +49,10 @@ from threetears.evals.schema.hashing import (
     identity_json,
     round_figures,
 )
-from packages.evals.tests.aspect_support import with_aspect
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyhost_campaign
-from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, ToyhostStorage
-from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.report_shapes_support import s1_change
 from packages.evals.tests.report_support import toy_campaign_host
 from packages.evals.tests.test_package_matrix import REPO_ROOT
-from packages.evals.tests.test_viz_timeseries import timeseries_batches
 
 #: What the bundle's fingerprint leaves out, as version 1 did.
 _NOT_EVIDENCE = ("package_version", "first_result_at")
@@ -283,101 +265,13 @@ def test_the_page_json_serves_every_figure_to_twelve_figures_and_a_declared_one_
     ]
 
 
-def test_the_writer_reads_a_bars_figures_and_a_rows_costs_to_its_four_figures() -> None:
-    _, _, bundle = _toy_campaign()
-    view = writer_view(bundle)
-    verdicts = [verdict for aspect in view["aspects"] for bar in aspect["bars"] for verdict in bar["verdicts"]]
-    figures = [verdict[key] for verdict in verdicts for key in ("value", "sem", "ci_low", "ci_high")]
-    figures += [
-        row[key]
-        for aspect in view["aspects"]
-        for row in aspect["scoreboard"]
-        for key in ("test_cost_usd", "reply_cost_usd")
-    ]
-    held = [figure for figure in figures if figure is not None]
-    assert held, "the toy campaign holds a bar and a priced reply"
-    assert all(float(f"{figure:.4g}") == figure for figure in held)
-    assert all(round_figures(value) == value for value in _floats(view)), "nothing the writer reads runs past 12"
-
-
-def _rated_toy_campaign() -> CampaignBundle:
-    """The toy campaign with a person's rating agreeing with every judged result: its judge tier has calibration bounds."""
-    host, campaign = toy_campaign_host()
-    for run_id in campaign.run_ids:
-        for result in host.storage.query_eval_results_by_run(run_id, campaign.scope_id):
-            if (score := result.judge_score(TOYHOST_JUDGED_DIMENSION)) is not None:
-                rate_result(
-                    host.storage,
-                    result_id=result.id,
-                    scope_id=campaign.scope_id,
-                    rubric_dim=TOYHOST_JUDGED_DIMENSION,
-                    rater="reviewer-1",
-                    rater_kind="person",
-                    score=score.score,
-                    reason="read it against the source",
-                )
-    return assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-
-
-def _timed_toy_campaign() -> CampaignBundle:
-    """The toy campaign re-run on two days: its bundle has a time axis."""
-    profile = toyhost_profile()
-    campaign, _ = toyhost_campaign(profile=profile)
-    runs, results = timeseries_batches(
-        [("2026-03-14T09:30:00Z", None), ("2026-03-15T09:30:00Z", None)], profile=profile
-    )
-    timed = with_aspect(campaign, run_ids=[run.id for run in runs])
-    return campaign_bundle(assemble_context_bundle(timed, storage=ToyhostStorage(runs, results), profile=profile))
-
-
-def _guarded_campaign() -> CampaignBundle:
-    """A control and a contrast, the contrast losing a guardrail the control holds: its bundle has a guardrail check."""
-    cases = 15
-    return campaign_bundle(
-        two_arm_bundle(
-            [
-                (CAPABILITY, "capability", ([0] * 10 + [1] * 5, [1] * 14 + [0])),
-                (BOUNDARY, "boundary", ([1] * cases, [0] * cases)),
-            ]
-        )
-    )
-
-
-@pytest.mark.parametrize(
-    ("build", "section"),
-    [
-        (_rated_toy_campaign, "judge_evidence_tiers"),
-        (_timed_toy_campaign, "time_axis"),
-        (_guarded_campaign, "guardrails"),
-    ],
-    ids=["judge-tiers", "time-axis", "guardrails"],
-)
-def test_every_section_of_the_writer_view_is_served_to_twelve_figures(
-    build: Callable[[], CampaignBundle], section: str
-) -> None:
-    bundle = build()
-    walked = aspect_view(bundle, 0)[section]
-    assert [value for value in _floats(walked) if round_figures(value) != value], (
-        f"the fixture's {section}, as the view walks it, carries a figure past the twelfth"
-    )
-    if section == "judge_evidence_tiers":
-        assert [row for row in aspect_view(bundle, 0)["coverage"] if row["mechanism"]["level_means"]], (
-            "the rated toy campaign's coverage carries its levels' means too"
-        )
-
-    view = writer_view(bundle)
-    assert all(round_figures(value) == value for value in _floats(view))
-    message = build_campaign_user_message(bundle)
-    assert json.loads(message.removeprefix(CAMPAIGN_MESSAGE_HEADING)) == view, "the message is the rounded view"
-
-
 # =============================================================================
 # A build whose C maths answers one ULP off
 # =============================================================================
 
 #: Run in a fresh interpreter, since the stats module caches what it computed: ``math``'s transcendental functions
 #: and ``NormalDist``'s two maths methods answer one ULP toward ``argv[1]`` (or as they do, for ``none``), then the
-#: toy campaign, rated, is assembled, its page served and its writer message rendered.
+#: toy campaign, rated, is assembled and its page served.
 _ANOTHER_BUILD = """
 import json, math, sys
 from statistics import NormalDist
@@ -398,7 +292,6 @@ if step != "none":
     NormalDist.cdf = nudged(NormalDist.cdf)
 
 from threetears.evals.analysis import assemble_campaign_bundle, campaign_report
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.run import rate_result
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.report_support import toy_campaign_host
@@ -418,7 +311,6 @@ print(json.dumps({
     "fingerprint": bundle.fingerprint(),
     "document": bundle.to_dict(),
     "page": campaign_report(host, campaign.id, campaign.scope_id).json_document(),
-    "message": build_campaign_user_message(bundle),
 }))
 """
 
@@ -447,7 +339,6 @@ def test_a_build_whose_c_maths_answers_one_ulp_off_fingerprints_and_serves_alike
         )
         assert other["fingerprint"] == this["fingerprint"]
         assert json.dumps(other["page"]) == json.dumps(this["page"])
-        assert other["message"] == this["message"], "the writer is sent the same message"
 
 
 # =============================================================================

@@ -131,6 +131,7 @@ TOYHOST_BARS: tuple[Bar, ...] = (
     ),
 )
 
+
 def toyhost_profile(
     *,
     with_world: bool = True,

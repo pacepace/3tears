@@ -1,20 +1,11 @@
-"""The campaign bundle: one naming across aspects, and each aspect's part of the writer's message held to a budget.
+"""The campaign bundle: one naming across aspects, and its round trip through its JSON and its frame.
 
-The writer of a campaign's one report reads every aspect at once, so a cell, a trial and an arm must each be named one
-way across them: a cell alias (``c1`` … ``cN``) and a trial id (``T1`` … ``TN``) are unique across the campaign and
-resolve back to the aspect they came from, since one arm under one rig is the same ``cell_ref`` in every aspect.
-
-Each aspect's part of the message is held to :data:`CAMPAIGN_MESSAGE_CHARS_PER_ASPECT` characters of compact JSON
-(the system prompt is budgeted apart). Over it, code trims in a fixed order and says what it left out: the flagged
-trials' excerpts first, then the flagged trials, then the contrasts least separated first, then the cells' readings
-last. Code's own readings and the floors are never trimmed.
+A campaign's report reads every aspect at once, so a cell, a trial and an arm must each be named one way across them:
+a cell alias (``c1`` … ``cN``) and a trial id (``T1`` … ``TN``) are unique across the campaign and resolve back to
+the aspect they came from, since one arm under one rig is the same ``cell_ref`` in every aspect.
 """
 
 from __future__ import annotations
-
-import json
-import logging
-from typing import Any
 
 import pytest
 
@@ -23,14 +14,7 @@ from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_cells import cell_at
-from threetears.evals.analysis import (
-    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
-    AnalysisContextBundle,
-    CampaignBundle,
-    assemble_context_bundle,
-    build_campaign_user_message,
-)
-from threetears.evals.analysis.campaign_bundle import aspect_view, writer_view
+from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import cell_aliases
@@ -44,31 +28,10 @@ def _aspect() -> AnalysisContextBundle:
     return assemble_context_bundle(campaign, storage=storage, profile=profile)
 
 
-def _flagged(aspect: AnalysisContextBundle, excerpt: int = 400) -> AnalysisContextBundle:
-    """``aspect`` with every trial failed and carrying an excerpt, so the trim has excerpts and trials to drop."""
-    trials = [
-        trial.model_copy(update={"state": "failed", "cause": "check", "excerpt": f"{trial.trial_id} " + "x" * excerpt})
-        for trial in aspect.trials
-    ]
-    return aspect.model_copy(update={"trials": trials})
-
-
 def _two_aspects() -> CampaignBundle:
     first = _aspect()
     second = first.model_copy(update={"aspect": "second"})
     return campaign_bundle(first, second)
-
-
-#: Room for the note an aspect's part carries when it was trimmed, which the budget counts.
-_NOTE = 600
-
-
-def _without_config(run: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in run.items() if key not in ("config", "config_provenance")}
-
-
-def _size(view: dict[str, Any]) -> int:
-    return len(json.dumps(view, separators=(",", ":"), ensure_ascii=False))
 
 
 class TestOneNamingAcrossAspects:
@@ -107,105 +70,6 @@ class TestOneNamingAcrossAspects:
         assert list(ids) == [f"T{n}" for n in range(1, 2 * count + 1)]
         assert bundle.trial(f"T{count + 1}") == ("second", bundle.aspects[1].trials[0].trial_id)
         assert bundle.trial("T999") is None
-
-    def test_the_writer_s_view_names_each_aspect_s_cells_by_their_campaign_aliases(self) -> None:
-        bundle = _two_aspects()
-        view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-        named = [[cell["cell"] for cell in aspect["cells"]] for aspect in view["aspects"]]
-        assert named == [["c1", "c2"], ["c3", "c4"]]
-        assert "variant_key" not in build_campaign_user_message(bundle)
-
-
-class TestEachAspectIsHeldToItsBudget:
-    def test_the_budget_is_per_aspect(self) -> None:
-        assert CAMPAIGN_MESSAGE_CHARS_PER_ASPECT == 24_500
-
-    def test_an_aspect_within_budget_is_sent_whole(self) -> None:
-        bundle = campaign_bundle(_aspect())
-        view = aspect_view(bundle, 0)
-        assert _size(view) <= CAMPAIGN_MESSAGE_CHARS_PER_ASPECT
-        assert "trimmed" not in view
-        assert len(view["trials"]) == sum(trial.state != "passed" for trial in bundle.aspects[0].trials)
-
-    def test_a_trimmed_aspect_fits_its_budget_with_the_note_saying_so(self) -> None:
-        bundle = campaign_bundle(_flagged(_aspect()))
-        view = aspect_view(bundle, 0)
-        assert _size(view) <= CAMPAIGN_MESSAGE_CHARS_PER_ASPECT
-        assert "The page shows all of them." in view["trimmed"]
-
-    def test_the_excerpts_go_first(self) -> None:
-        bundle = campaign_bundle(_flagged(_aspect()))
-        whole = aspect_view(bundle, 0, budget=10**9)
-        budget = _size(whole) - 1
-        view = aspect_view(bundle, 0, budget=budget)
-        assert _size(view) <= budget
-        assert len(view["trials"]) == len(whole["trials"])
-        assert view["contrasts"] == whole["contrasts"] and view["cells"] == whole["cells"]
-        # Excerpts went, the last trial's first, and nothing else.
-        excerpts = [bool(trial["excerpt"]) for trial in view["trials"]]
-        kept = excerpts.index(False)
-        assert not excerpts[-1] and excerpts == [True] * kept + [False] * (len(excerpts) - kept)
-        said = view["trimmed"].split("(")[0]
-        assert "excerpts" in said and "trials," not in said and "contrasts" not in said
-        assert "The page shows all of them" in view["trimmed"]
-
-    def test_then_the_trials_then_the_contrasts_then_the_configs_then_the_cells_readings(self) -> None:
-        bundle = campaign_bundle(_flagged(_aspect()))
-        whole = aspect_view(bundle, 0, budget=10**9)
-        no_trials = {**whole, "trials": []}
-        no_contrasts = {**no_trials, "contrasts": []}
-        # Room for everything but the trials: every excerpt and trial goes, and nothing else.
-        view = aspect_view(bundle, 0, budget=_size(no_trials) + _NOTE)
-        assert view["trials"] == [] and view["contrasts"] == whole["contrasts"] and view["cells"] == whole["cells"]
-        # Room for less than that: the contrasts go too, least separated first, the cells' readings kept.
-        view = aspect_view(bundle, 0, budget=_size(no_contrasts) + _NOTE)
-        kept = view["contrasts"]
-        assert view["trials"] == [] and len(kept) < len(whole["contrasts"])
-        assert kept == whole["contrasts"][: len(kept)] and view["cells"] == whole["cells"]
-        assert [row["verdict"] for row in whole["contrasts"]][: len(kept)] == [row["verdict"] for row in kept]
-        # Less still: the runs' configs go next, the last run's first, and the cells' readings are kept.
-        no_configs = {**no_contrasts, "runs": [_without_config(run) for run in whole["runs"]]}
-        assert no_configs["runs"] != whole["runs"], "the toy runs carry configs to trim"
-        view = aspect_view(bundle, 0, budget=_size(no_configs) + _NOTE)
-        assert view["contrasts"] == [] and view["cells"] == whole["cells"]
-        assert "config" not in view["runs"][-1] and "runs' configs" in view["trimmed"].split("(")[0]
-        # Less still: the cells' readings go last, the last cell's first.
-        view = aspect_view(bundle, 0, budget=_size(no_configs) - 50)
-        assert view["contrasts"] == [] and view["trials"] == []
-        assert all("config" not in run for run in view["runs"])
-        assert view["cells"][0] == whole["cells"][0]
-
-        def readings(cell: dict[str, Any]) -> int:
-            return len(cell["measures"]) + len(cell["judged"])
-
-        assert readings(view["cells"][-1]) < readings(whole["cells"][-1])
-        assert "cell readings" in view["trimmed"]
-
-    def test_code_s_readings_and_the_scoreboard_are_never_trimmed(self) -> None:
-        bundle = campaign_bundle(_flagged(_aspect()))
-        whole = aspect_view(bundle, 0, budget=10**9)
-        view = aspect_view(bundle, 0, budget=10)
-        assert view["readings"] == whole["readings"] and view["scoreboard"] == whole["scoreboard"]
-        assert view["disclosures"] == whole["disclosures"]
-        assert "It is still over budget: what is left is never trimmed." in view["trimmed"]
-
-    def test_a_campaign_part_over_one_aspect_s_budget_is_warned_on_never_trimmed(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        bundle = _two_aspects()
-        whole = writer_view(bundle, budget=10**9)
-        with caplog.at_level(logging.WARNING):
-            view = writer_view(bundle, budget=100)
-        assert view["arms"] == whole["arms"] and view["floors"] == whole["floors"]
-        assert any("campaign-level part" in record.getMessage() for record in caplog.records)
-
-    def test_the_message_holds_each_aspect_within_its_budget(self) -> None:
-        bundle = _two_aspects()
-        view = json.loads(build_campaign_user_message(bundle, budget=4_000).split("\n", 1)[1])
-        assert [_size(aspect) <= 4_000 or "still over budget" in aspect["trimmed"] for aspect in view["aspects"]] == [
-            True,
-            True,
-        ]
 
 
 class TestTheBundleRoundTrips:

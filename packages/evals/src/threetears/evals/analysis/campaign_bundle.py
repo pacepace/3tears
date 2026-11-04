@@ -94,6 +94,7 @@ KIND_MEANS: dict[str, str] = {
     "change": "A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.",
 }
 
+
 class CampaignBundle(EvalDocumentModel):
     """A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 
