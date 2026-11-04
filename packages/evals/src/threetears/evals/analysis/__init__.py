@@ -22,10 +22,10 @@ not here. The pipeline:
   bundle into the report plan every new analysis is written from.
 - ``gen_prompt`` + ``generator`` — the memo writer's ``eval_analysis_gen`` prompt and the closed,
   one-shot :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into
-  a schema-valid ``EvalAnalysis`` + extracted insights. Kept for the memo reporter cases (kind version 1) that
-  generate a memo candidate, and for reading old memos; no generation of an analysis resolves it.
+  a schema-valid ``EvalAnalysis`` + extracted insights. Kept for reading old memos; no generation of an analysis
+  resolves it.
 - ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
-  caught by ``service`` and ``reporter_kind``.
+  caught by ``service``.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` a campaign is read through: one page,
   verdict first, written by code from the evidence bundle beside it, as Markdown and as HTML (the kit's one
   script drawing its charts, or a static page that runs and loads nothing).
@@ -43,7 +43,8 @@ inside the package imports its own modules directly.
 
 **A name a retired generation left** stays in ``__all__`` for one minor, served by the module's ``__getattr__``
 from ``_retired`` with a ``DeprecationWarning`` naming its replacement
-(:func:`~threetears.evals.kernel.retired.served_retired`): the analysis reporter kind's contract names.
+(:func:`~threetears.evals.kernel.retired.served_retired`): the analysis reporter kind's names a host binds, its
+contract, its two kinds and its cell ceiling.
 """
 
 from __future__ import annotations
@@ -176,16 +177,6 @@ from threetears.evals.analysis.reads import (
     pivot,
     program_budget,
     run_summary,
-)
-from threetears.evals.analysis.reporter_kind import (
-    AS_RECORDED_MODEL,
-    LABEL_BANDS,
-    REPORTER_KIND,
-    AsRecordedReporterKind,
-    ReporterKind,
-    ReporterLabel,
-    render_memo_as_written,
-    reporter_cell_timeout_s,
 )
 from threetears.evals.analysis.remainder import RemainderState
 from threetears.evals.analysis.reporting import (
@@ -424,14 +415,6 @@ from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, 
 from threetears.evals.analysis.references import CellAddress
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
-from threetears.evals.analysis.reporter_kind import (
-    LabelCriterion,
-    LabelDirection,
-    LabelVerdict,
-    PreparedReporter,
-    ReporterCase,
-    WriterMessageCheck,
-)
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
     IdentityRole,
@@ -680,7 +663,6 @@ __all__ = [
     "report_html",
     "report_markdown",
     "ABSENT",
-    "AS_RECORDED_MODEL",
     "CELL_MEASURED",
     "CELL_NOT_RUN",
     "CELL_WITHHELD",
@@ -692,7 +674,6 @@ __all__ = [
     "EVAL_ANALYSIS_GEN_DEFAULT",
     "EVAL_REPORT_PLAN_DEFAULT",
     "HISTORY_METRICS",
-    "LABEL_BANDS",
     "METRIC_COMPOSITE",
     "METRIC_OUTCOME",
     "METRIC_SCORE",
@@ -790,9 +771,6 @@ __all__ = [
     "JudgeDriftDimension",
     "JudgedArm",
     "JudgedMeasure",
-    "LabelCriterion",
-    "LabelDirection",
-    "LabelVerdict",
     "LabelStatistics",
     "LensStore",
     "LeverCoverageInput",
@@ -832,16 +810,13 @@ __all__ = [
     "CallAdmission",
     "BudgetedGenerator",
     "PreparedGeneration",
-    "PreparedReporter",
     "ProjectionExclusions",
     "LateCriterion",
     "QuestionScope",
     "ReadingScope",
     "RealizedDesign",
     "RefusedMerge",
-    "ReporterCase",
     "ReporterKind",
-    "ReporterLabel",
     "ReporterOverlays",
     "RowColumns",
     "RunLister",
@@ -865,7 +840,6 @@ __all__ = [
     "UnpairedReason",
     "VerdictOrder",
     "WholeSwing",
-    "WriterMessageCheck",
     "add_runs_to_campaign",
     "analysis_report",
     "build_code_only_report",
@@ -931,7 +905,6 @@ __all__ = [
     "prompt_content_version",
     "propose_bars",
     "remove_runs_from_campaign",
-    "render_memo_as_written",
     "refuse_undeliverable_reporter_template",
     "reporter_kind_contract",
     "reporter_cell_timeout_s",
@@ -951,9 +924,13 @@ __all__ = [
 
 if TYPE_CHECKING:
     from threetears.evals.analysis._retired import (
+        REPORTER_KIND,
         REPORTER_KIND_CONTRACT,
+        AsRecordedReporterKind,
+        ReporterKind,
         ReporterOverlays,
         refuse_undeliverable_reporter_template,
+        reporter_cell_timeout_s,
         reporter_kind_contract,
     )
 else:

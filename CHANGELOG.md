@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analysis reporter kind is retired; a stored reporter template reads as data and is refused at launch
+
+**Removed:** the analysis reporter kind's module, and with it `AS_RECORDED_MODEL`, `ReporterLabel`, `ReporterCase`,
+`LabelCriterion`, `LabelDirection`, `LabelVerdict`, `LABEL_BANDS`, `PreparedReporter`, `WriterMessageCheck` and
+`render_memo_as_written` (`threetears.evals.analysis`). The report writer is evaluated by the `report_writer` kind.
+
+**Deprecated:** `REPORTER_KIND`, `ReporterKind`, `AsRecordedReporterKind` and `reporter_cell_timeout_s`
+(`threetears.evals.analysis`), kept for this minor with a `DeprecationWarning` on every read. `REPORTER_KIND` is still
+`"analysis_reporter"` and the cell ceiling keeps its answer; building either kind refuses, naming the writer kind. The
+next minor removes them.
+
+**Changed:** a stored `analysis_reporter` template and its cases list as data, and a launch or estimate of one is
+refused as a template whose kind the host has no launcher for. Nothing stored changes shape or version.
+
+**Hosts:** delete the reporter kind's registration, its launcher and its tests before re-pinning.
+
 ### evals: the analysis reporter's cases are retired; the report writer is evaluated by the report_writer kind
 
 **Removed:** the analysis reporter's case bank, curation and calibration read (`freeze_reporter_case`,

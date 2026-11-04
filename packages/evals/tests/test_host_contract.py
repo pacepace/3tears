@@ -718,9 +718,6 @@ def test_style_declares_no_locale_because_nothing_formats_by_one():
 #: different objects); each is registered with its own writer. Admission is checked structurally by
 #: :func:`test_a_self_keyed_payload_reader_reads_only_the_key_it_writes`.
 _SELF_KEYED_PAYLOAD_READERS: dict[str, tuple[tuple[str, str], ...]] = {
-    # The analysis reporter's case is a frozen bundle + recorded memo + labels (ReporterCase),
-    # defined, written and read in this one module.
-    "analysis/reporter_kind.py": (("REPORTER_CASE_KEY", "reporter_case_payload"),),
     # The judge kind's case is a frozen output, criterion and labels (JudgeCase, #628), defined, written and read
     # in this one module; the kind and the freeze in run/judge_kind.py go through its writer and reader.
     "kernel/judge_cases.py": (("JUDGE_CASE_KEY", "judge_case_payload"),),

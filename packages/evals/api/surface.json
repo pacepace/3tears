@@ -5006,11 +5006,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.AS_RECORDED_MODEL": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "stable"
-    },
     "threetears.evals.analysis.aspect_view": {
       "kind": "function",
       "signature": "",
@@ -5038,7 +5033,7 @@
     },
     "threetears.evals.analysis.AsRecordedReporterKind": {
       "kind": "class",
-      "signature": "",
+      "signature": "AsRecordedReporterKind() -> None",
       "tier": "stable"
     },
     "threetears.evals.analysis.assemble_campaign_bundle": {
@@ -6121,28 +6116,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.LABEL_BANDS": {
-      "kind": "constant (dict)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.LabelCriterion": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.LabelDirection": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.LabelStatistics": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.LabelVerdict": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -6521,11 +6496,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PreparedReporter": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PriceLine": {
       "kind": "model",
       "signature": "",
@@ -6636,11 +6606,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.render_memo_as_written": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Report": {
       "kind": "model",
       "signature": "Report(basis: ReportBasis, title: str, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
@@ -6686,19 +6651,9 @@
       "signature": "reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract",
       "tier": "stable"
     },
-    "threetears.evals.analysis.ReporterCase": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.ReporterKind": {
       "kind": "class",
-      "signature": "ReporterKind(*, prompt: str, prompt_id: str, prompt_version: str | None, client: Any, model: str, host: EvalHost) -> None",
-      "tier": "stable"
-    },
-    "threetears.evals.analysis.ReporterLabel": {
-      "kind": "model",
-      "signature": "ReporterLabel(dimension: DimName, direction: LabelDirection | None = None, verdict: LabelVerdict | None = None, quote: str, memo_excerpt: str | None = None, note: str | None = None, reader: str | None = None, collected_by: str | None = None, criterion: LabelCriterion | None = None)",
+      "signature": "ReporterKind(*, prompt: str, prompt_id: str, prompt_version: str | None, client: Any, model: str, host: Any) -> None",
       "tier": "stable"
     },
     "threetears.evals.analysis.ReporterOverlays": {
@@ -7143,11 +7098,6 @@
     },
     "threetears.evals.analysis.WholeSwing": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.WriterMessageCheck": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },

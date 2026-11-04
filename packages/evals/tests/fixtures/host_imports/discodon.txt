@@ -13,14 +13,12 @@ threetears.evals.actions.definition_drift_actions
 threetears.evals.actions.eval_catalogue
 threetears.evals.actions.standard_tools
 threetears.evals.analysis.ABSENT
-threetears.evals.analysis.AS_RECORDED_MODEL
 threetears.evals.analysis.AsRecordedReporterKind
 threetears.evals.analysis.CampaignBundle
 threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT
 threetears.evals.analysis.MIN_CASES
 threetears.evals.analysis.REPORTER_KIND
 threetears.evals.analysis.ReporterKind
-threetears.evals.analysis.ReporterLabel
 threetears.evals.analysis.ReporterOverlays
 threetears.evals.analysis.analysis_gen_request_settings_for
 threetears.evals.analysis.assemble_campaign_bundle

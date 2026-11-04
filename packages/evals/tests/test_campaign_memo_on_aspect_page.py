@@ -1,15 +1,14 @@
 """An aspect's page lays out the writer's summary of it in full, after its summary across the campaign, prints the
 writer's whys as written, reads the writer's trial ids as its own bundle's, and leads a finding's evidence with
-its aspect where the campaign holds several. The reporter reads the memo as written, its summary first.
+its aspect where the campaign holds several.
 """
 
 from __future__ import annotations
 
-from threetears.evals.analysis import build_report, render_memo_as_written, report_markdown
+from threetears.evals.analysis import build_report, report_markdown
 from threetears.evals.analysis.report.words import EVIDENCE_COLUMNS, evidence_columns
 from threetears.evals.kernel.authored import AspectSummary, FloorOverride
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.kernel.text_block import one_line
 
 from packages.evals.tests.report_support import toy_report
 
@@ -76,13 +75,3 @@ async def test_the_writer_s_summary_across_the_campaign_leads_the_memo() -> None
     markdown = report_markdown(build_report(_with_document(analysis, aspect_summaries=[summary], summary=across)))
     memo = markdown[markdown.index("## What it means") :]
     assert memo.index(across) < memo.index("**What changed:** The candidate answers more requests in the house tone.")
-
-
-async def test_the_reporter_reads_the_summary_first_under_the_question_it_reads_across() -> None:
-    """The reporter's rubrics judge the memo as written, so the summary is in it, where the campaign's page puts it."""
-    _, analysis, _ = await toy_report()
-    across = "The candidate is the better arm on tone, and nothing else moved."
-    memo = render_memo_as_written(_with_document(analysis, summary=across))
-    question = analysis.design_snapshot.question
-    assert question
-    assert memo.startswith(f"## Summary\n\nQuestion: {one_line(question)}\n\n{across}\n\n## Recommendation\n")

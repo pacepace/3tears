@@ -15,17 +15,12 @@ import pytest
 
 from threetears.evals.analysis import (
     TableBlock,
-    analysis_bundle,
     assemble_context_bundle,
     build_code_only_report,
-    render_memo_as_written,
 )
 from threetears.evals.analysis.arms import arm_names, writer_arms
-from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.declaration import SweptAxis
-from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
-from threetears.evals.kernel.text_block import one_line
 from threetears.evals.schema.values import IntervalScale, SweepableValue
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.campaign import (
@@ -35,13 +30,7 @@ from packages.evals.tests.fixtures.toyhost.campaign import (
     toyhost_campaign,
 )
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-from packages.evals.tests.report_support import toy_report
 from packages.evals.tests.aspect_support import with_aspect
-
-
-@pytest.fixture
-async def toy() -> tuple[EvalHost, EvalAnalysis, Any]:
-    return await toy_report()
 
 
 # --- #627: a measure has a reader-facing name, and every surface heads it by that -------------------------------
@@ -74,33 +63,6 @@ def test_every_core_measure_and_every_one_described_by_construction_has_a_reader
 def test_a_descriptor_stored_before_the_field_reads_with_none_and_is_headed_by_its_key() -> None:
     stored = {k: v for k, v in METRIC_DESCRIPTORS["total_ms"].model_dump(mode="json").items() if k != "reader_name"}
     assert MetricDescriptor.model_validate_json(json.dumps(stored)).reader_name is None
-
-
-# --- #581: the memo names the declared question and tabulates each finding's evidence --------------------------
-
-
-async def test_the_memo_prints_a_declared_question_in_its_words_never_its_id(toy) -> None:
-    _, analysis, _ = toy
-    memo = render_memo_as_written(analysis)
-    # The memo answers the campaign's question with its recommendation and prints the question's words above it.
-    question = analysis.design_snapshot.question
-    assert question and question != analysis_bundle(analysis).aspect
-    assert f"Question: {one_line(question)}" in memo
-    assert f"Question: {analysis_bundle(analysis).aspect}" not in memo
-
-
-async def test_the_memo_prints_each_findings_evidence_as_one_table_headed_by_reader_names(toy) -> None:
-    _, analysis, _ = toy
-    memo = render_memo_as_written(analysis)
-    evidence = memo.split("Evidence:\n\n", 1)[1].split("\n\n", 1)[0].splitlines()
-    assert evidence[:2] == ["| Arm | Measure | Value | Cases | Spread |", "|---|---|---|---|---|"]
-    assert len(evidence) == 2 + len(analysis.resolutions[0].evidence) == 4
-    assert all(row.split(" | ")[1] == "Turn time" for row in evidence[2:])
-    # The count a reader is shown is cases, never observations: a case run k times is one.
-    rows = analysis.resolutions[0].evidence
-    assert all(row.n_cases is not None and row.n_cases < row.n for row in rows), "the toy repeats each case"
-    assert [line.split(" | ")[3] for line in evidence[2:]] == [str(row.n_cases) for row in rows]
-    assert "total_ms" not in memo
 
 
 # --- #581: an arm level the campaign named is called by that name everywhere an arm is labelled ----------------
