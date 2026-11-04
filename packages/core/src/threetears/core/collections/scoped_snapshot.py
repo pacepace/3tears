@@ -455,8 +455,8 @@ class SnapshotTable:
         (reports' ``lsf_runs`` records a run once every state's rows are written), and letting go of one it no longer
         names is this L1's retention's, never the diff's. The count names the asked-for partitions and the copy's, so
         it stays bounded by them. The rows then pass this L1's retention whole. A
-        diff whose ask fails, or answers none for a scope the copy holds rows of (said at WARNING), reads nothing and
-        leaves the scope behind until an ask answers. What a diff dropped and read is said at INFO; a partition read
+        diff whose ask fails reads nothing and leaves the scope behind until an ask answers; one naming no partition
+        is no failure, since every partition the copy holds is diffed and kept while L3 holds it. What a diff dropped and read is said at INFO; a partition read
         on two diffs in a row with L3's count and newest stamp of it unchanged is said at ERROR and not read again
         until L3 changes it, as for every diffed table.
         **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows
@@ -3230,12 +3230,13 @@ class ScopedSnapshot:
         )
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
         # is rebuilt from L3, which writes its chunks again
-        now = time.monotonic()
+        # a scope a recovery left behind waits out its backoff here too, unless L3 moved it: no claim taken and no
+        # recovery said for a scope it would not try
         stuck = {
             scope
             for scope, (failures, _) in self._behind.items()
             if failures >= _BEHIND_REBUILD_AFTER
-            and now - (self._unrecovered[scope].at if scope in self._unrecovered else -math.inf) >= _WAIT_SAY_SECONDS
+            and (scope not in self._unrecovered or await self._retry_due(scope, self._unrecovered[scope]))
         }
         if stuck:
             await self._rebuild_stuck(stuck)
@@ -5052,16 +5053,26 @@ class ScopedSnapshot:
         ):
             for scope in sorted(scopes):
                 tried = self._unrecovered.get(scope)
-                if (
-                    tried is not None
-                    and time.monotonic() - tried.at < tried.wait
-                    and await self._held_epoch(scope) == tried.epoch
-                ):
+                if tried is not None and not await self._retry_due(scope, tried):
                     # failed the same way before, and L3 has not moved it since: tried at its time, not now
                     left[scope] = tried.why
                     continue
                 saw = _Saw()
-                outcome = await self._recover_one(scope, saw)
+                try:
+                    outcome = await self._recover_one(scope, saw)
+                except Exception as exc:  # prawduct:allow prawduct/broad-except -- recorded for the scope's backoff and re-raised: a publish that raises at an unchanged L3 (a full store, a lost claim) is not tried, and its groups read, at every catch-up
+                    left_now = self._left_behind(scope, f"{type(exc).__name__}: {exc}", saw, tried)
+                    log.error(
+                        "scoped snapshot %s: bringing scope %r forward from the diff raised %s: %s; tried again in "
+                        "%d s or once L3's epoch for it moves",
+                        self._name,
+                        scope,
+                        type(exc).__name__,
+                        exc,
+                        left_now.wait,
+                        extra={"extra_data": {"scope": scope, "why": repr(exc), "next_try_seconds": left_now.wait}},
+                    )
+                    raise
                 _headway(f"judged scope {scope!r} against L3", landed=True)
                 self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
                 if outcome is None:
@@ -5154,6 +5165,16 @@ class ScopedSnapshot:
             if rows is not None:
                 return epoch, rows
         return None
+
+    async def _retry_due(self, scope: str, tried: _Unrecovered) -> bool:
+        """whether a scope a recovery left behind is to be tried now: its wait is over, or L3's epoch for it moved.
+
+        :param tried: the scope's record
+        :ptype tried: _Unrecovered
+        :return: True when it is to be tried
+        :rtype: bool
+        """
+        return time.monotonic() - tried.at >= tried.wait or await self._held_epoch(scope) != tried.epoch
 
     def _left_behind(self, scope: str, why: str, saw: _Saw, tried: _Unrecovered | None) -> _Unrecovered:
         """record a scope a recovery left behind, and when it is tried again: a minute on, or twice the last wait (to
@@ -5398,19 +5419,6 @@ class ScopedSnapshot:
                         extra={"extra_data": {"table": table.name, "scope": scope, "value": repr(value)}},
                     )
                     return f"the partition values of {table.partition_by} named {value!r}, which it cannot hold"
-            if table.partial_groups and named is not None and not named and held.num_rows:
-                # an ask answering no value for a scope the copy holds rows of would thin the copy to nothing: taken
-                # as one that failed, said, and the scope left behind for the next try
-                log.warning(
-                    "scoped snapshot %s: the partition values of %s in scope %r named none while the copy holds %d "
-                    "rows; the scope stays behind until an ask names them",
-                    self._name,
-                    table.name,
-                    scope,
-                    held.num_rows,
-                    extra={"extra_data": {"table": table.name, "scope": scope, "held": held.num_rows}},
-                )
-                return f"the partition values of {table.partition_by} named none while the copy holds rows of it"
         if table.partial_groups and named is not None and group is not None:
             return await self._partly_diffed(table, scope, held_at, held, group, named, keys, held_counts, passed, saw)
         wanted = None if named is None else {_group_key(value, code) for value in named}

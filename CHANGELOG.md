@@ -129,8 +129,9 @@ rows was of another count and read again whole. Now:
   every state's rows are written), and a diff that dropped it would publish fewer rows than L3 holds. Letting go of
   a run the thinning no longer names is the L1 retention's job. The count stays bounded by the asked-for and the
   held partitions.
-- **A failed ask, or one naming no partition while the copy holds rows (said at WARNING), reads nothing:** the
-  scope stays behind and is tried again, never diffed as a plain `retained` table and never thinned to nothing.
+- **A failed ask reads nothing:** the scope stays behind and is tried again, never diffed as a plain `retained`
+  table. An ask naming no partition is no failure: every held partition is diffed and kept while L3 holds it, so
+  it thins nothing, and a scope whose partitions L3 dropped comes forward empty.
 - **What each diff dropped, read whole and read stamped-only is said at INFO**, per table and scope.
 - **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows of it
   as the copy holds is not seen, so a table set so adds and deletes whole partitions (`lsf_projections` writes and
@@ -148,7 +149,9 @@ rows was of another count and read again whole. Now:
   newest stamps of L3 as the last failed try, is tried again after 1, 2, 4 and 8 minutes, then every 15, said at
   ERROR at each try with when the next is. A write that moves the scope's epoch in L3 has it tried at the next
   catch-up, and a try seeing other counts or stamps waits a minute again: a retry is delayed, a change never
-  skipped.
+  skipped. A recovery that raises (a publish into a full store, a lost claim) backs off alike, said at ERROR with
+  the error and the next try, and the stuck-chunk recheck waits out a scope's backoff too, taking no claim for a
+  scope the recovery would not try.
 - **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
   L1's stored form, from the one conversion the L1 writes through, now public as
   `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID

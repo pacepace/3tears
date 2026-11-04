@@ -6087,25 +6087,34 @@ async def test_a_thinned_copy_whose_ask_fails_reads_nothing_and_waits(monkeypatc
     await snapshot.stop()
 
 
-async def test_a_thinned_copy_whose_ask_names_no_run_is_not_thinned_to_nothing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """an ask that answers no run for a scope the copy holds rows of would drop them all, with nothing to say so: it
-    is said at WARNING and taken as an ask that failed, and the copy keeps what it holds."""
+async def test_an_empty_ask_keeps_every_held_run_l3_still_holds() -> None:
+    """an ask that answers no run drops nothing L3 holds: every run the copy holds is diffed and kept while L3 holds
+    it, its change read as any held run's is. Taken as a failed ask, the scope stayed behind for good."""
     l3 = _thinned_l3()
     kept = ["r1"]
     snapshot, backend = await _thinned_copy(l3, kept)
-    held = _thinned_held(backend)
     _set(l3, "r1.h0", 10)
-    l3.epochs["TX"] = 2
     kept.clear()
-    caplog.set_level(logging.WARNING)
 
-    outcome = await snapshot.catch_up()
+    await _caught_up(snapshot, l3)
 
-    assert outcome.caught == () and "named none" in outcome.left["TX"], outcome
-    assert "named none while the copy holds 3 rows" in caplog.text
-    assert _thinned_held(backend) == held
+    assert _thinned_held(backend) == _l3_kept(l3, ["r1"])
+    assert ("r1", "r1.h0", 10) in _thinned_held(backend)
+    await snapshot.stop()
+
+
+async def test_an_empty_ask_for_a_scope_whose_runs_l3_dropped_comes_forward_empty() -> None:
+    """L3 dropped every run the copy holds and the ask names none: the scope comes forward empty, as L3 holds it, not
+    left behind for good."""
+    l3 = _thinned_l3()
+    kept = ["r1"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    _delete(l3, *(f"r1.{item}" for item in _RUN_ITEMS))
+    kept.clear()
+
+    await _caught_up(snapshot, l3)
+
+    assert _thinned_held(backend) == []
     await snapshot.stop()
 
 
@@ -6600,6 +6609,120 @@ async def test_the_count_names_only_the_asked_for_and_the_held_runs_never_l3s_hi
     assert args[:2] == ("TX", 1) and sorted(args[2:]) == ["r1", "r3", "r5"], args
     assert len(await l3.fetch(sql, *args)) == 3
     await snapshot.stop()
+
+
+class _RefusingPuts(_Store):
+    """an Object Store whose writes fail while ``refuse``, as a full store's do."""
+
+    refuse = False
+
+    async def put(self, name: str, data: bytes) -> None:
+        if self.refuse:
+            raise ConnectionError("the store refuses the write")
+        await super().put(name, data)
+
+
+async def test_a_recovery_whose_publish_raises_at_an_unchanged_l3_backs_off_and_a_write_is_read_at_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """a publish that raised (a full store) was neither left behind nor backed off: every catch-up diffed the scope
+    again and read the same rows, for as long as the store refused. It is tried at 1, 2, 4, 8 minutes, said at ERROR
+    with the error and the next try; a write to L3 has it read at the next catch-up."""
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], [_geo("TX", "g1", "t0", 1)])
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    store = _RefusingPuts()
+    snapshot = await _geos_snapshot(l3, table, store=store)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    l3.add([_geo("TX", "g1", "t1", 2)])
+    l3.epochs["TX"] = 2
+    store.refuse = True
+    caplog.set_level(logging.ERROR)
+    tried: list[int] = []
+
+    for minute in range(16):
+        l3.statements.clear()
+        await snapshot.catch_up()
+        if [sql for sql, _ in l3.statements if "count(*)" in sql]:
+            tried.append(minute)
+        clock.ahead += 60
+
+    assert tried == [0, 1, 3, 7, 15], f"tried at minutes {tried}"
+    said = [r.getMessage() for r in caplog.records if "forward from the diff raised ConnectionError" in r.getMessage()]
+    assert len(said) == len(tried) and "tried again in 900 s" in said[-1], said
+    # a write lands in the backoff: tried, and its rows read, at the next catch-up
+    l3.add([_geo("TX", "g1", "t2", 3)])
+    l3.epochs["TX"] = 3
+    store.refuse = False
+    l3.statements.clear()
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="the copy applied epoch 3")
+    assert _held(snapshot, "TX") == l3.rows("TX")
+    await snapshot.stop()
+
+
+class _RefusingGeos(DuckDBBackend):
+    """a DuckDB L1 of the geos table that refuses, as a broken key does, any commit carrying one scope's rows."""
+
+    refused: str | None = None
+
+    def replace_partitions(self, replacements: Any) -> int:
+        if self.refused is not None and any(r.value == self.refused for r in replacements):
+            raise duckdb.ConstraintException(f"a row of {self.refused} is already held")
+        written: int = super().replace_partitions(replacements)
+        return written
+
+
+async def test_the_recheck_of_a_scope_whose_chunks_keep_failing_waits_out_its_backoff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """a scope whose chunks this L1 keeps refusing is brought forward from the diff by the recheck; its recovery
+    raising (a store refusing writes) backs off, and the recheck took the claim and said so every minute regardless.
+    It waits out the scope's backoff: tried at 1, 2, 4 minutes, not every one."""
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], [_geo("TX", "g1", "t0", 1)])
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    pointers, store = _Pointers(), _RefusingPuts()
+    writer, _, _, _ = _snapshot(l3=l3, tables=(table,), backend=_geos_backend(), pointers=pointers, store=store)
+    l3.epochs = {"TX": 1}
+    await _started(writer, pointers)
+    metadata = MetaData()
+    _GEOS.to_sqlalchemy_table(metadata)
+    refusing = _RefusingGeos()
+    refusing.initialize(metadata)
+    replica, _, _, _ = _snapshot(l3=l3, tables=(table,), backend=refusing, pointers=pointers, store=store)
+    l3.epochs = {"TX": 1}
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    caplog.set_level(logging.WARNING)
+    # the replica refuses TX's chunks; L3 moves past the pointer the writer publishes, and the store then refuses
+    refusing.refused = "TX"
+    l3.add([_geo("TX", "g1", "t1", 2), _geo("TX", "g1", "t2", 3)])
+    l3.epochs["TX"] = 3
+    await writer.publish(
+        "TX",
+        2,
+        {
+            "geos": [
+                {k: v for k, v in r.items() if k != "source_version"}
+                for r in [_geo("TX", "g1", "t0", 1), _geo("TX", "g1", "t1", 2)]
+            ]
+        },
+    )
+    await writer.stop()
+    store.refuse = True
+
+    said: list[int] = []
+    for minute in range(8):
+        await asyncio.sleep(0.5)
+        lines = [r for r in caplog.records if "forward from the diff: their chunks kept failing" in r.getMessage()]
+        said.append(len(lines))
+        clock.ahead += 60
+
+    tried = [minute for minute in range(8) if said[minute] > (said[minute - 1] if minute else 0)]
+    assert tried == [0, 1, 3, 7], f"the recheck took the claim at minutes {tried} ({said})"
+    await replica.stop()
 
 
 def test_partial_groups_without_retained_or_named_partitions_is_refused() -> None:

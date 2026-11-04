@@ -206,10 +206,11 @@ every kept run again whole, since the copy holds part of its rows and so is of a
   written, so in that window the ask leaves out a run L3 holds, and dropping it would publish fewer rows than
   L3 holds. Letting go of a run the thinning no longer names is the L1 retention's job. The composed rows pass
   the L1's retention whole.
-- An ask that fails, or names no run while the copy holds rows (said at WARNING), reads nothing: the scope
-  stays behind for the next try. Diffed as a plain `retained` table instead, it would count and read every
-  run a write stamped, kept or not, the cost this exists to remove; thinned to nothing, it would drop the copy
-  with no record. What each diff dropped and read is said at INFO, so a thinning that goes wrong is visible.
+- An ask that fails reads nothing: the scope stays behind for the next try. Diffed as a plain `retained` table
+  instead, it would count and read every run a write stamped, kept or not, the cost this exists to remove. An
+  ask naming no run is no failure: every run the copy holds is diffed and kept while L3 holds it, so an empty
+  answer thins nothing, and a scope whose runs L3 dropped comes forward empty, as L3 holds it. What each diff
+  dropped and read is said at INFO, so a thinning that goes wrong is visible.
 
 **What it cannot see.** A delete inside a kept run that leaves L3 at least as many unchanged rows of it as the
 copy holds: the counts are the only evidence of a delete, and a copy holding part of a run cannot match its rows
@@ -235,7 +236,10 @@ that could disagree with it and make a held group look missing.
 again; one that fails the same way while its diff sees L3 as the last failed one did (the same per-group counts
 and newest stamps) would read the same rows on every try. It waits 1, 2, 4, 8, then 15 minutes between such tries,
 said at ERROR each time with the next. Only the retry is delayed: a write moving the scope's epoch in L3 has it
-tried at the next catch-up, and a try that sees other counts or stamps waits a minute again.
+tried at the next catch-up, and a try that sees other counts or stamps waits a minute again. A recovery that
+raises (its publish into a full store, a lost claim) is backed off alike, its error the reason: it read its groups
+before it raised, and would read them again at every catch-up. The recheck that rebuilds a scope whose chunks keep
+failing to apply waits out the same backoff, so a backed-off scope takes no claim and logs nothing between tries.
 
 **Why a flag on the table, not a second table.** A separate table holding only the kept runs would make the
 writer write each run twice and L3 hold it twice, and moving a run out of the kept set would be a delete in L3
