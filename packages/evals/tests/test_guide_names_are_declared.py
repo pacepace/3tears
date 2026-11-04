@@ -1,16 +1,24 @@
-"""Every name the host guide tells a host to use is declared: ``host-contract`` or ``stable``, never ``provisional``.
+"""Every name a shipped page tells a reader to use is declared: ``host-contract`` or ``stable``, never ``provisional``.
 
-``docs/adopting-a-host.md`` names things in prose that a host is to call, build, catch or match. A name it spells in
-full (`` `threetears.evals.run.definition_drift` ``) or attributes to a module in parentheses
-(`` `strict_response_format` (`threetears.evals.kernel`) ``, `` `A` and `B` (in `threetears.evals.kernel`) ``) is one
-the guide teaches, and a package that teaches a name promises it. The import statements the guide shows are held
-to ``host-contract`` by ``test_api_tiers.py``; this holds the names its prose carries.
+The pages are every page under ``docs/``, the package README and the examples' README. Each names things in prose
+that a reader is to call, build, catch or match, and a package that teaches a name promises it.
 
-A name the guide mentions that no public root exports (a module, a logger, a field) is not a name this reads.
+Two spellings are read:
+
+- **Qualified or attributed.** A name spelled in full (`` `threetears.evals.run.definition_drift` ``) or attributed
+  to a module in parentheses (`` `strict_response_format` (`threetears.evals.kernel`) ``, `` `A` and `B` (in
+  `threetears.evals.kernel`) ``) must be declared.
+- **Bare.** A name spelled alone (`` `run_cli(argv, ...)` ``, `` `EXIT_OK` ``) may also be a field, a parameter or
+  another root's name. So a bare name is held to stay declared rather than to be declared: if the newest release
+  declared it, it must not go provisional while a page still names it.
+
+The import statements the pages show are held by ``test_api_tiers.py``. A name a page mentions that no public root
+exports (a module, a logger, a field) is not a name this reads.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -18,13 +26,28 @@ from packages.evals.tests.script_loader import load_script
 
 surface = load_script("public_surface.py")
 
-GUIDE = Path(__file__).resolve().parents[1] / "docs" / "adopting-a-host.md"
+PACKAGE = Path(__file__).resolve().parents[1]
+
+#: The host guide, whose readers this was first written for.
+GUIDE = PACKAGE / "docs" / "adopting-a-host.md"
+
+#: Every page the package ships: each page under ``docs/``, the README and the examples' README.
+PAGES: tuple[Path, ...] = (
+    *sorted((PACKAGE / "docs").glob("*.md")),
+    PACKAGE / "README.md",
+    PACKAGE / "examples" / "README.md",
+)
+
+#: The released snapshot the bare spellings are held against, as a path inside the repository.
+SNAPSHOT_IN_REPO = "packages/evals/api/surface.json"
 
 _FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 _SPAN = re.compile(r"`([^`\n]+)`")
 _QUALIFIED = re.compile(r"^(threetears\.evals(?:\.\w+)+)")
 _MODULE = re.compile(r"^threetears\.evals(?:\.\w+)*$")
 _BARE = re.compile(r"^(\w+)(?:\(.*\))?$")
+#: A bare name as prose spells it: alone, called, or with a member read off it.
+_BARE_SPELLING = re.compile(r"^(\w+)(?:\(.*\)|\.\w+.*)?$")
 #: A parenthesis naming a module: ``(in `m`)``, ``(from `m`)``, ``(`m`)``, ``(host contract, from `m`; ...)``.
 _ATTRIBUTION = re.compile(r"\([^()`\n]*`(threetears\.evals(?:\.\w+)*)`[^()\n]*\)")
 #: The run of backticked names a parenthesis qualifies: ``a``, ``b`` and ``c``, directly before it.
@@ -42,7 +65,7 @@ def _bare_names(spans: str, root: str) -> set[str]:
 
 
 def _prose(text: str) -> str:
-    """The guide's prose with its fenced blocks blanked and each paragraph on one line, every offset kept."""
+    """A page's prose with its fenced blocks blanked and each paragraph on one line, every offset kept."""
     unfenced = _FENCE.sub(lambda block: re.sub(r"[^\n]", " ", block[0]), text)
     return re.sub(r"(?<!\n)\n(?!\n)", " ", unfenced)
 
@@ -63,15 +86,27 @@ def _taught_names(paragraph: str) -> dict[str, int]:
     return found
 
 
-def taught_names() -> dict[str, int]:
-    """Every public name the guide teaches, with the first line that does."""
+def taught_names(page: Path = GUIDE) -> dict[str, int]:
+    """Every public name one page teaches, spelled qualified or attributed, with the first line that does."""
     recorded = surface.load_snapshot()
-    text = GUIDE.read_text(encoding="utf-8")
+    text = page.read_text(encoding="utf-8")
     taught: dict[str, int] = {}
     for name, offset in sorted(_taught_names(_prose(text)).items(), key=lambda item: item[1]):
         if name in recorded:
             taught.setdefault(name, text.count("\n", 0, offset) + 1)
     return taught
+
+
+def bare_names(page: Path) -> dict[str, int]:
+    """Every bare name one page spells in its prose (`` `name` ``, `` `name(...)` ``, `` `name.attr` ``), with the
+    first line that does. It is a word, not yet a public name: :func:`test_no_declared_name_a_page_names_goes_provisional`
+    resolves it."""
+    text = page.read_text(encoding="utf-8")
+    found: dict[str, int] = {}
+    for span in _SPAN.finditer(_prose(text)):
+        if (bare := _BARE_SPELLING.match(span[1])) and not _MODULE.match(span[1]):
+            found.setdefault(bare[1], text.count("\n", 0, span.start()) + 1)
+    return found
 
 
 def test_the_reader_finds_the_names_it_is_written_for() -> None:
@@ -85,11 +120,58 @@ def test_the_reader_finds_the_names_it_is_written_for() -> None:
         assert name in taught, f"the guide reader missed {name}, so the test below says less than it should"
 
 
-def test_no_name_the_guide_teaches_is_provisional() -> None:
+def test_no_name_a_page_teaches_is_provisional() -> None:
     recorded = surface.load_snapshot()
-    provisional = {name: line for name, line in taught_names().items() if not surface.declared(recorded[name].tier)}
+    provisional = {
+        f"{name} <- {page.relative_to(PACKAGE)} line {line}"
+        for page in PAGES
+        for name, line in taught_names(page).items()
+        if not surface.declared(recorded[name].tier)
+    }
     assert not provisional, (
-        "docs/adopting-a-host.md teaches these names, so a host writes against them: add each to HOST_CONTRACT in "
+        "a shipped page teaches these names, so a reader writes against them: add each to HOST_CONTRACT or STABLE in "
         f"packages/evals/scripts/public_surface.py and run `{surface.REGENERATE_SNAPSHOT}`:\n  "
-        + "\n  ".join(f"{name} <- docs/adopting-a-host.md line {line}" for name, line in sorted(provisional.items()))
+        + "\n  ".join(sorted(provisional))
     )
+
+
+def _released_declared() -> set[str]:
+    tag = surface.newest_tag()
+    assert tag is not None and surface.tag_exists(tag), (
+        "no release tag in this checkout, so what the last release declared cannot be read: fetch the tags "
+        "(git fetch --tags, or fetch-depth: 0 in CI)."
+    )
+    source = surface.source_at(tag, SNAPSHOT_IN_REPO)
+    if source is None:
+        return set()
+    names = json.loads(source)["names"]
+    return {name for name, entry in names.items() if surface.declared(entry.get("tier", "provisional"))}
+
+
+def test_no_declared_name_a_page_names_goes_provisional() -> None:
+    """A bare name resolves to every public name it spells; when the newest release declared any of them, one must
+    still be declared."""
+    recorded = surface.load_snapshot()
+    released = _released_declared()
+    assert released, "the newest release declared nothing, so this test says nothing"
+    by_bare: dict[str, list[str]] = {}
+    for name in recorded:
+        by_bare.setdefault(name.rsplit(".", 1)[1], []).append(name)
+    demoted = {
+        f"{', '.join(sorted(set(spelt) & released))} <- {page.relative_to(PACKAGE)} line {line}"
+        for page in PAGES
+        for word, line in bare_names(page).items()
+        if (spelt := by_bare.get(word, []))
+        and set(spelt) & released
+        and not any(surface.declared(recorded[name].tier) for name in spelt)
+    }
+    assert not demoted, (
+        "the last release declared these names and a shipped page still names them, so a reader writes against "
+        "them: keep each in HOST_CONTRACT or STABLE in packages/evals/scripts/public_surface.py, or stop the page "
+        f"naming it, and run `{surface.REGENERATE_SNAPSHOT}`:\n  " + "\n  ".join(sorted(demoted))
+    )
+
+
+def test_the_bare_reader_finds_the_names_it_is_written_for() -> None:
+    serving = bare_names(PACKAGE / "docs" / "serving.md")
+    assert {"EXIT_OK", "run_cli", "REFUSAL_KINDS"} <= serving.keys(), "the bare reader missed a name serving.md names"

@@ -13,8 +13,8 @@
     },
     "threetears.evals.declared_names": {
       "kind": "function",
-      "signature": "declared_names() -> frozenset[str]",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.Eval": {
       "kind": "class",
@@ -234,7 +234,7 @@
     "threetears.evals.schema.CELL_TIMEOUT_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.CellIdentity": {
       "kind": "dataclass",
@@ -728,13 +728,13 @@
     },
     "threetears.evals.schema.KnownCellTimeoutOrigin": {
       "kind": "literal",
-      "signature": "'launch'` | `'kind'` | `'default'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownCostCapOrigin": {
       "kind": "literal",
-      "signature": "'chosen'` | `'inherited'` | `'uncapped'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownFailedBecause": {
       "kind": "literal",
@@ -743,13 +743,13 @@
     },
     "threetears.evals.schema.KnownMeteredCallOrigin": {
       "kind": "literal",
-      "signature": "'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownModelRoleOrigin": {
       "kind": "literal",
-      "signature": "'chosen'` | `'inherited'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownOutOfRunPurpose": {
       "kind": "literal",
@@ -768,8 +768,8 @@
     },
     "threetears.evals.schema.KnownRoleModelOrigin": {
       "kind": "literal",
-      "signature": "'chosen'` | `'inherited'` | `'alternate'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownSimulatorPurpose": {
       "kind": "literal",
@@ -824,7 +824,7 @@
     "threetears.evals.schema.METERED_CALL_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.MeteredCallOrigin": {
       "kind": "type alias",
@@ -844,7 +844,7 @@
     "threetears.evals.schema.MODEL_ROLE_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
@@ -894,7 +894,7 @@
     "threetears.evals.schema.OUT_OF_RUN_PURPOSES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.OUTCOME_DIM_ID": {
       "kind": "constant (str)",
@@ -999,7 +999,7 @@
     "threetears.evals.schema.REASONING_EFFORTS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.ReasoningEffort": {
       "kind": "type alias",
@@ -1069,7 +1069,7 @@
     "threetears.evals.schema.ROLE_MODEL_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.RoleModelOrigin": {
       "kind": "type alias",
@@ -1174,7 +1174,7 @@
     "threetears.evals.schema.SIMULATOR_PURPOSES": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.schema.SimulatorLLM": {
       "kind": "protocol",
@@ -5648,8 +5648,8 @@
     },
     "threetears.evals.analysis.format_signed": {
       "kind": "function",
-      "signature": "format_signed(value: float | None) -> str",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.format_significance": {
       "kind": "function",
@@ -5709,7 +5709,7 @@
     "threetears.evals.analysis.GATE_TOKENS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.analysis.gate_verdicts": {
       "kind": "function",
@@ -5789,7 +5789,7 @@
     "threetears.evals.analysis.GLOSSARY": {
       "kind": "constant (dict)",
       "signature": "",
-      "tier": "stable"
+      "tier": "provisional"
     },
     "threetears.evals.analysis.GoalCheckProofReading": {
       "kind": "model",
@@ -6463,8 +6463,8 @@
     },
     "threetears.evals.analysis.report_markdown": {
       "kind": "function",
-      "signature": "report_markdown(report: Report) -> str",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.analysis.ReportBasis": {
       "kind": "literal",
@@ -8559,7 +8559,7 @@
     "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "host-contract"
+      "tier": "provisional"
     },
     "threetears.evals.negotiation.anthropic_thinking": {
       "kind": "function",

@@ -43,8 +43,6 @@ The eval engine: templates, cases, runs and results; the trial loop, its judge a
 
 **Functions**
 
-- **`declared_names`** · *host contract* · function · Every declared public name of the installed build (`host-contract` and `stable`), by `root.name`.
-  <br>`declared_names() -> frozenset[str]`
 - **`grader`** · *host contract* · function · Declare what a reading needs beside its grade: `@grader(guard=0.02)`, `grader("total", margin=0.05)`.
   <br>`grader(target: Callable[[Mapping[str, Any], Any], float | bool] | str | None = None, /, *, margin: float | None = None, guard: float | None = None, range: tuple[float, float] | None = None) -> Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]`
 - **`surface_tier`** · *host contract* · function · A public name's stability tier in the installed build, by `root.name`.
@@ -163,22 +161,12 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'delivered'` | `'failed'` | `'undelivered'`
 - **`FailureOwner`** · literal · Whose failure a raised completion call was, as the host's describer reads it (`ProviderFailure.owner`): the calling `account` (refused for every model behind the key), the `provider` (it declined to serve the call at that moment: a rate limit, 429, or the provider overloaded or unavailable, 529 or 503), or the `candidate` (anything else, charged to whoever made the call).
   <br>`'account'` | `'provider'` | `'candidate'`
-- **`KnownCellTimeoutOrigin`** · *host contract* · literal · A value of `CellTimeoutOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'launch'` | `'kind'` | `'default'`
-- **`KnownCostCapOrigin`** · *host contract* · literal · A value of `CostCapOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'chosen'` | `'inherited'` | `'uncapped'`
-- **`KnownMeteredCallOrigin`** · *host contract* · literal · A value of `MeteredCallOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'chosen'` | `'inherited'` | `'uncapped'` | `'none_declared'`
-- **`KnownModelRoleOrigin`** · *host contract* · literal · A value of `ModelRoleOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'chosen'` | `'inherited'`
 - **`KnownOutOfRunPurpose`** · *host contract* · literal · A value of `OutOfRunPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'`
 - **`KnownReasoningEffort`** · *host contract* · literal · A value of `ReasoningEffort` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'`
 - **`KnownRefusalKind`** · *host contract* · literal · A value of `RefusalKind` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'`
-- **`KnownRoleModelOrigin`** · *host contract* · literal · A value of `RoleModelOrigin` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
-  <br>`'chosen'` | `'inherited'` | `'alternate'`
 - **`KnownSimulatorPurpose`** · *host contract* · literal · A value of `SimulatorPurpose` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'utterance'` | `'schedule'`
 - **`KnownUsageRole`** · *host contract* · literal · A value of `UsageRole` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
@@ -196,7 +184,6 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`CASSETTE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every cassette is written under, and the only one a read of one accepts.
   <br>`= 1`
-- **`CELL_TIMEOUT_ORIGINS`** · *host contract* · constant (tuple) · The values of `CellTimeoutOrigin` this build knows, in the order its readers list them.
 - **`CORE_BASELINE_VERSION`** · *host contract* · constant (int) · The oldest core major this build reads: always `CORE_SCHEMA_VERSION`, since the core ships no upgrader and a core major is a baseline reset that moves both.
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
@@ -223,19 +210,13 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`JUDGE_WORDING_CHANGE_SENTENCE`** · *host contract* · constant (str) · The sentence a release's `MIGRATIONS.toml` notes carry, verbatim, when it changes the wording of a built-in judge prompt (`builtin_judge_config_id`) or of the reply-format suffix a configured judge is sent (`configured_judge_config_id`).
 - **`LEASE_POOL_WORKERS`** · *host contract* · constant (int) · How many threads the job leases' own pool runs store round-trips on: enough that every lease a busy launch holds (a launch and each of its runs) renews at once; renewals past it wait only for each other.
   <br>`= 8`
-- **`METERED_CALL_ORIGINS`** · *host contract* · constant (tuple) · The values of `MeteredCallOrigin` this build knows, in the order its readers list them.
-- **`MODEL_ROLE_ORIGINS`** · *host contract* · constant (tuple) · The values of `ModelRoleOrigin` this build knows, in the order its readers list them.
 - **`NON_TERMINAL_RUN_STATUSES`** · *host contract* · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
-- **`OUT_OF_RUN_PURPOSES`** · *host contract* · constant (tuple) · The values of `OutOfRunPurpose` this build knows, in the order its readers list them.
 - **`PROSE_SCHEMA_KEY`** · *host contract* · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
-- **`REASONING_EFFORTS`** · *host contract* · constant (tuple) · The values of `ReasoningEffort` this build knows, in the order its readers list them.
 - **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
   <br>`= 13`
 - **`RESERVED_DIM_IDS`** · *host contract* · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
-- **`ROLE_MODEL_ORIGINS`** · *host contract* · constant (tuple) · The values of `RoleModelOrigin` this build knows, in the order its readers list them.
-- **`SIMULATOR_PURPOSES`** · *host contract* · constant (tuple) · The values of `SimulatorPurpose` this build knows, in the order its readers list them.
 - **`USAGE_ROLES`** · *host contract* · constant (tuple) · The values of `UsageRole` this build knows, in the order its readers list them.
 
 <a id="api-kernel"></a>
@@ -617,8 +598,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`dollars_text(amount: float | None) -> str`
 - **`format_number`** · *host contract* · function · Spell a number for a reader, the same way on every analysis surface.
   <br>`format_number(value: float | None, *, prefix: str = '') -> str`
-- **`format_signed`** · *host contract* · function · Spell a change, carrying its sign — the direction is half of what a delta says.
-  <br>`format_signed(value: float | None) -> str`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
@@ -651,8 +630,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
 - **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
   <br>`report_html(report: Report, *, static: bool = False) -> str`
-- **`report_markdown`** · *host contract* · function · Render a report as Markdown.
-  <br>`report_markdown(report: Report) -> str`
 - **`reporter_cell_timeout_s`** · function · Retired: the wall-clock ceiling one reporter cell had, the memo writer's two requests then its judge phase.
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`reporter_kind_contract`** · function · Retired: the analysis reporter kind's contract, the host's seats ignored; `REPORTER_KIND_CONTRACT`.
@@ -691,8 +668,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · Retired: what the memo writer's prompt slot is seeded from by name now, one line, never the memo writer's prompt.
-- **`GATE_TOKENS`** · constant (tuple) · Every token, in the order the module docstring lists them.
-- **`GLOSSARY`** · constant (dict) · Every term of art a page may use, in one plain sentence each.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
 - **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
@@ -1029,8 +1004,6 @@ Request negotiation: a client that never fails a request because a model lacks a
 
 **Constants**
 
-- **`ANTHROPIC_MIN_THINKING_BUDGET`** · *host contract* · constant (int) · Anthropic's floor on a thinking budget, in tokens: a budget below it is the caller's error, and a word sent as a budget is never below it.
-  <br>`= 1024`
 - **`MAX_RESENDS`** · *host contract* · constant (int) · The most times one call is resent for a refused setting: one per setting a client can drop or move (the temperature, the reasoning parameter, the reply format, enforcement).
   <br>`= 4`
 

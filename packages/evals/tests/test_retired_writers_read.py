@@ -19,8 +19,8 @@ document store holds it (``report_support.stored_plan_document``), and the one t
   plan the planned page could not draw, a plan no model reads, or no plan at all;
 - **the plan is still swept**: ``drop_derived`` deletes it, and deleting its analysis deletes it (its insights stay);
 - **a memo analysis reads the same way through every door**, the line naming the memo writer, its memo never read:
-  ``report_read`` in its four forms, ``campaign_report``, ``analysis_report`` by its id and ``analyses_list``, which
-  counts no findings;
+  ``report_read`` in its four forms, ``campaign_report``, ``analysis_report`` by its id, ``analyses_list``, which
+  counts no findings, and ``campaigns_list``;
 - **a stored memo is held as the JSON it was stored as** (``EvalAnalysis.document``), never validated as a memo: one
   no memo model would accept (a key the memo never had, its summary gone, a recommendation resting on a finding it
   does not hold, its resolutions not matching its findings) still loads, round-trips byte for byte, and reads
@@ -49,7 +49,7 @@ from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.ops import analyses_list, analysis_delete, report_read
+from threetears.evals.ops import analyses_list, analysis_delete, campaigns_list, report_read
 from packages.evals.tests.factories import empty_bundle
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -170,6 +170,24 @@ async def test_the_listing_leads_its_line_with_the_line_and_counts_no_findings(s
     assert lines[memo.id].needs_regeneration == _MEMO_LINE, "each retired writer's line names its own writer"
 
 
+def _assert_listed_with(fixture: OpsFixture, analysis: EvalAnalysis, line: str) -> None:
+    """The scope's campaign listing lists the campaign, its report needing regeneration with the retired writer's line
+    and code's headline, never blank."""
+    (listed,) = off_loop(campaigns_list, fixture.host.eval_host, TOYHOST_SCOPE).campaigns
+    assert listed.id == fixture.campaign.id and listed.title
+    assert listed.report_state == "needs_regeneration" and listed.report is not None
+    assert listed.report.analysis_id == analysis.id
+    assert listed.report.why_regenerate is not None and listed.report.why_regenerate.startswith(line)
+    assert listed.report.headline.strip()
+
+
+@pytest.mark.parametrize("stored", _STORED_PLANS)
+async def test_the_campaign_listing_lists_its_report_as_needing_regeneration_with_the_line(stored: str) -> None:
+    fixture, _, analysis = await _planned(stored)
+
+    _assert_listed_with(fixture, analysis, _LINE)
+
+
 async def test_the_line_is_said_once_and_every_form_s_page_reads_the_same_whatever_plan_is_stored() -> None:
     bodies: dict[str, list[str]] = {}
     for stored in _STORED_PLANS:
@@ -287,6 +305,12 @@ async def test_the_listing_leads_a_memo_s_line_with_the_memo_writer_s_line_and_c
 
     assert (line.id, line.basis, line.report_plan_id, line.report_doc_id) == (memo.id, "memo", None, None)
     assert (line.findings, line.needs_regeneration) == (0, _MEMO_LINE)
+
+
+async def test_the_campaign_listing_lists_a_memo_s_report_as_needing_regeneration_with_its_line() -> None:
+    fixture, memo = await _memo()
+
+    _assert_listed_with(fixture, memo, _MEMO_LINE)
 
 
 async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:

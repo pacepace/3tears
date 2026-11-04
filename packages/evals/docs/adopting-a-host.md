@@ -1124,8 +1124,8 @@ release, on:
 
 - **`host-contract`** is what a host writes against: the host and its profile, the registries, the kind seam,
   launching, the stored documents a kind builds, the store port with its conformance kits and the engine's own
-  stores, the refusals, the version constants, the `Known*` vocabularies and their value tuples (`USAGE_ROLES`, …),
-  the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
+  stores, the refusals, the version constants, the `Known*` vocabularies a declared signature takes and the value
+  tuples a page names (`USAGE_ROLES`, …), the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
   example imports. Such a name moves only with
   a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
   one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
@@ -1138,14 +1138,18 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, about 540 names, mapped by rung in [the surface](surface.md).
+The first two tiers are the declared surface, 535 names, mapped by rung in [the surface](surface.md). A declared
+name stays declared while something outside the package imports it, a shipped page teaches it or a declared
+signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
+only a known host's tests import, until that host re-pins (the rules, in full: [the surface](surface.md)). Otherwise
+it is provisional; a name that goes provisional still imports, nothing warns, and `MIGRATIONS.toml` names it.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
 and marks each host-contract one *host contract*. Nothing a host imports is provisional: each adopting host's import
 list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on one is provisional. If
 your host binds to a provisional name, send your list to be added: promoting a name costs nothing, and demoting one
-is a break.
+withdraws a promise, so it is recorded.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
