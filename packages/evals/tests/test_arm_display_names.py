@@ -37,7 +37,6 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_plan import prose_reply
 from threetears.evals.analysis import build_code_only_report, report_html, report_markdown
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.arms import arm_names
@@ -49,18 +48,14 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
-from threetears.evals.analysis.plan_assembly import check_structure, planned_report, prose_slots, read_prose
 from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.figure_keys import printed_arm_name, render
-from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import printed_arm_labels
 from threetears.evals.analysis.report.model import Report
 from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_doc_checks import check_report_doc
 from threetears.evals.analysis.report_input import Factor, Level, ReportInput
-from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report, record_campaign_call
 from threetears.evals.analysis.style import arm_display_name, arm_name, lever_reader_name
 from threetears.evals.analysis.report.blocks import DisclosureBlock
@@ -72,7 +67,6 @@ from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
-from threetears.evals.kernel.report_plan import PlanProse, PlanStructure, ReportPlan
 
 #: Each run's chunk size and retriever depth: the control first, then a candidate moving the chunk size, then one
 #: moving both.
@@ -492,55 +486,10 @@ def test_a_computed_name_and_a_setting_read_one_lever_reader_name() -> None:
 # --- one campaign, every surface -------------------------------------------------------------------------------------
 
 
-def _plan(report_input: ReportInput) -> ReportPlan:
-    """A decide-mode plan over the input, drawing code's spine (a forest of contrasts) on one measure, with prose for
-    every key it creates: what a planned campaign page lays out."""
-    facts = plan_facts(report_input)
-    # The control is the one option code finds at least as good as every other, so the plan recommends it.
-    recommended = next(arm.id for arm in report_input.arms if arm.role == "control")
-    rows = [{"option": recommended, "role": "recommended"}] + [
-        {"option": arm.id, "role": "control" if arm.role == "control" else "alternative"}
-        for arm in report_input.arms
-        if arm.id != recommended
-    ]
-    landings = [
-        {
-            "caveat": caveat.id,
-            "at": "confidence"
-            if caveat.reach == "report"
-            else ("method.0" if caveat.reach == "method" else "decision.watch"),
-        }
-        for caveat in facts.caveats
-        if not caveat.checked
-    ]
-    chart = {
-        "kind": facts.spine.kind,
-        "query": {**_WHOLE, "source": facts.spine.source or "contrasts", "measures": ["field_accuracy"]},
-        "reference": [],
-        "emphasis": "",
-    }
-    structure = {
-        "mode": "decide",
-        "headline_kind": "decision",
-        "confidence": "low",
-        "caveat_landings": landings,
-        "options": {"rows": rows},
-        "summary": [],
-        "sections": [{"id": "outcomes", "chart": chart}],
-        "explore": [],
-        "method_items": 3,
-        "durable_claims": [{"confidence": "low", "keys": [f"pass_rate.{recommended}"]}],
-    }
-    chosen = PlanStructure.model_validate(structure)
-    check_structure(chosen, report_input, facts, facts.allowed_modes)
-    prose = read_prose(PlanProse.model_validate(prose_reply(report_input, structure)), prose_slots(chosen, facts))
-    return complete_plan(planned_report(chosen, prose, facts), report_input, facts)
-
-
 def test_one_campaign_prints_each_derived_arm_one_way_on_every_surface() -> None:
-    """The campaign's page (its call lines, its readings and every aspect's fold), the plan page, the document's page,
-    the code-only page and quick's contrast rows: each prints both candidates capitalised, none the name as the levers spell it, so a
-    planned campaign page, which lays a plan page over the folds, reads one name throughout."""
+    """The campaign's page (its call lines, its readings and every aspect's fold), the document's page, the code-only
+    page and quick's contrast rows: each prints both candidates capitalised, none the name as the levers spell it, so a
+    campaign page, which lays the document's page over the folds, reads one name throughout."""
     host, campaign = _campaign()
     bundle = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
     held = analyst_input(bundle)
@@ -560,7 +509,6 @@ def test_one_campaign_prints_each_derived_arm_one_way_on_every_surface() -> None
     surfaces = {
         "campaign page": campaign_report_markdown(page),
         "campaign folds": " | ".join(report_markdown(fold.report) for fold in page.aspects),
-        "plan page": planned_page_markdown(plan_page(_plan(held), held)),
         "document page": doc_page_markdown(build(_draft(held), held, strict=True)),
         "code-only page": report_markdown(_code_only()),
         "quick's contrasts": " | ".join(

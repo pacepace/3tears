@@ -9,8 +9,7 @@ Driven over the toy host through :meth:`MountedTool.call`, the path every transp
   exploratory campaign or from a run no aspect holds, a declared aspect with no margin, a design with no axes.
 - **An axis the host does not declare is refused naming what is declarable**, the refusal listing the host's axes.
 - **Without a design the campaign is exploratory** (#685): derived from no aspect declaring one, never stored as a
-  flag, and said once, at the top, by the bundle, the code-only report, the report of a generated analysis and the
-  message the writer is sent; the writer's prompt calls the design it reads inferred from the runs, never declared.
+  flag, and said once, at the top, by the bundle, the code-only report and the message the writer is sent.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from typing import Any
 
 import pytest
 
-import json
 
 from threetears.evals.actions import Caller, MountedTool, eval_catalogue, standard_tools
 from threetears.evals.analysis import assemble_context_bundle
@@ -29,17 +27,12 @@ from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
 )
 from threetears.evals.analysis.campaigns import set_campaign_control
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from threetears.evals.analysis.generator import generate_analysis
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from threetears.evals.analysis.report import build_report
 from threetears.evals.analysis.report.model import DisclosureBlock, Report
-from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.ops import CampaignLine
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, OpsFixture, ops_fixture
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
 
 #: The question the declared campaigns here ask.
@@ -259,30 +252,11 @@ async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: Moun
     assert _EXPLORATORY_BASIS not in page
 
 
-async def test_the_writer_is_told_and_its_report_says_so_once_at_the_top(evals: MountedTool) -> None:
-    fixture, _campaign_id, bundle = await _exploratory(evals)
+async def test_the_writer_is_told_once(evals: MountedTool) -> None:
+    _fixture, _campaign_id, bundle = await _exploratory(evals)
 
     message = _writer_message(bundle)
     assert message.count(NO_DESIGN_EXPLORATORY) == 1, "the writer's view carries the line once"
-    assert "the design inferred from the runs (`design`" in EVAL_ANALYSIS_GEN_DEFAULT
-    assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT
-
-    memo = memo_payload(bundle)
-    analysis, _insights = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo)),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=fixture.host.eval_host.profile,
-    )
-    report = build_report(analysis)
-
-    assert [aspect.design for aspect in analysis.design_snapshot.aspects] == [None], "it declared nothing"
-    (said,) = _exploratory_said(report)
-    assert said.text.startswith(_EXPLORATORY_BASIS) and said.source == "verdict"
-    assert report.blocks.index(said) == 1 and said.section == "header"
 
 
 async def test_a_declared_campaign_with_no_question_keeps_the_no_question_line(evals: MountedTool) -> None:

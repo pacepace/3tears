@@ -42,9 +42,9 @@ from packages.evals.tests.ops_support import (
     OpsFixture,
     generate,
     ops_fixture,
-    planned_generation,
     settled,
 )
+from packages.evals.tests.report_support import stored_plan_analysis
 from packages.evals.tests.page_contract_support import parsed, what_runs
 from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked
 from packages.evals.tests.report_writer_support import RecordedModel, written
@@ -224,7 +224,7 @@ async def test_a_plan_analysis_reads_code_only_with_the_line_and_no_planner_page
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = off_loop(ops_fixture)
-    planned, _ = await planned_generation(fixture)
+    planned, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
 
     def planner(*_: Any, **__: Any) -> Any:
         raise AssertionError("report_read reached the planner's page")
@@ -341,7 +341,7 @@ async def test_a_document_read_by_its_id_that_no_longer_reads_gets_the_code_only
 async def test_a_stand_in_s_json_never_reads_as_a_campaign_never_analysed() -> None:
     fixture = off_loop(ops_fixture)
     never = json.loads(_read(fixture, "json").body)
-    planned, _ = await planned_generation(fixture)
+    planned, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
 
     stands_in = json.loads(_read(fixture, "json").body)
 
@@ -358,7 +358,7 @@ async def test_a_stand_in_s_json_never_reads_as_a_campaign_never_analysed() -> N
 
 async def test_the_line_is_one_constant_every_surface_prints_byte_for_byte() -> None:
     fixture = off_loop(ops_fixture)
-    planned, _ = await planned_generation(fixture)
+    planned, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
     (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses

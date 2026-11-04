@@ -24,17 +24,23 @@ beside the prompt, ``packages/evals/src/threetears/evals/analysis/GEN_PROMPT_RUL
 heading) pairs, the heading being the rule's opening sentence; the ledger's rows as (``#``, ``Heading``) pairs.
 The two lists must be equal, so a rule added without its reason, a row left for a deleted rule, and a rule
 renumbered or reworded under a row that still describes the old one all fail.
+
+**What the seed prompt says.** The last section pins sentences the seed prompt carries about what the memo writer
+reads (each aspect's depth, its contrasts and their family, the order of its cells, the judged tiers, a design inferred
+from the runs). They sat beside the readings they describe and moved here, to leave with the memo writer.
 """
 
 from __future__ import annotations
 
 import re
+import typing
 from pathlib import Path
 
 import threetears.evals.analysis as analysis_package
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT, PROMPT_CHAR_BUDGET, PROMPT_RULE_BUDGET
 from threetears.evals.analysis.generator import assemble_system_prompt
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 
 #: Where the rules start. Everything before it is preamble, not rules.
 _RULES_HEADING = "\nRULES — "
@@ -141,3 +147,53 @@ class TestEveryRuleHasItsLedgerRow:
         (number, heading), *_ = _prompt_rules(EVAL_ANALYSIS_GEN_DEFAULT)
         prompt = EVAL_ANALYSIS_GEN_DEFAULT.replace(f"{number}. {heading}.", f"{number}. RANK ON SOMETHING ELSE.", 1)
         assert len(_ledger_disagreements(prompt, _LEDGER.read_text(encoding="utf-8"))) == 2
+
+
+# =============================================================================
+# What the seed prompt says about what the memo writer reads
+# =============================================================================
+
+
+def test_the_writer_prompt_states_the_depth_rule() -> None:
+    assert "`depth.said`" in EVAL_ANALYSIS_GEN_DEFAULT
+    assert (
+        "never compare arms on pass^k above a `depth.pass_k` `common_depth`, or at all where null (`shares_no_case`)"
+        in EVAL_ANALYSIS_GEN_DEFAULT
+    )
+
+
+def test_the_prompt_tells_the_writer_to_quote_only_the_adjusted_p() -> None:
+    assert "`contrasts`" in EVAL_ANALYSIS_GEN_DEFAULT
+    assert "quote only its `p_adjusted`" in EVAL_ANALYSIS_GEN_DEFAULT
+    assert "`family_size`" in EVAL_ANALYSIS_GEN_DEFAULT
+
+
+def test_the_writer_is_not_licensed_to_separate_arms_without_a_family() -> None:
+    """The prompt once let a no-family campaign separate arms on a dimension's own sem, with no correction."""
+    assert "in a campaign with no family, where it clears that dimension's own noise floor" not in (
+        EVAL_ANALYSIS_GEN_DEFAULT
+    )
+    assert (
+        "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
+        "separated" in (EVAL_ANALYSIS_GEN_DEFAULT)
+    )
+    assert "with no question asked, on every merit-axis reading as one family" in (EVAL_ANALYSIS_GEN_DEFAULT)
+
+
+def test_the_writer_prompt_states_the_rule() -> None:
+    """The writer's table is each aspect's ``cells``, and the seed prompt says what its order is and is not."""
+    assert "(`cells`, control first; its order is not a ranking)" in EVAL_ANALYSIS_GEN_DEFAULT
+
+
+class TestThePromptPointsAtTheTiers:
+    def test_the_generator_is_told_where_the_tiers_are_and_what_each_bears(self) -> None:
+        for name in ("judge_evidence_tiers", "tier"):
+            assert f"`{name}`" in EVAL_ANALYSIS_GEN_DEFAULT
+        for tier in typing.get_args(JudgedEvidenceTier):
+            assert f"`{tier}`" in EVAL_ANALYSIS_GEN_DEFAULT
+        assert "stands only on a `calibrated` reading" in EVAL_ANALYSIS_GEN_DEFAULT
+
+
+def test_the_writer_reads_the_design_it_is_sent_as_inferred_never_declared() -> None:
+    assert "the design inferred from the runs (`design`" in EVAL_ANALYSIS_GEN_DEFAULT
+    assert "never called declared" in EVAL_ANALYSIS_GEN_DEFAULT

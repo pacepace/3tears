@@ -2,7 +2,7 @@
 
 A guardrail is declared with its margin, never assumed, and every grade is higher-is-better, so its direction is
 never stated; it joins no contrast; an arm that breached one is named above the contrasts as breached (a warning: code
-picks no arm), and the analysis writer cannot adopt it. A judged dimension is guarded on the :class:`~threetears.evals.Judge`
+picks no arm). A judged dimension is guarded on the :class:`~threetears.evals.Judge`
 (``guard={"dimension": margin}``), its margin declared on the campaign.
 
 Mutations that turn this file red: declaring a guardrail grader on a merit axis, or dropping its margin; reading a
@@ -17,22 +17,16 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
 
 from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
     DisclosureBlock,
     TableBlock,
-    generate_analysis,
     get_campaign,
-    inspect_campaign_bundle,
     report_markdown,
 )
-from threetears.evals.analysis.errors import SoundnessRefusal
 from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
@@ -42,7 +36,6 @@ from threetears.evals import Eval, Judge, Result, grader
 from threetears.evals.quick import as_host
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.one_call import callable_host
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.off_loop import off_loop
 
@@ -214,74 +207,6 @@ class TestAScorerGuardrail:
         assert check.interval_basis == "t" and check.interval is not None and check.interval[0] > -0.2
         assert check.decision == "undecided" and check.undecided_reason is not None
         assert "grader(..., range=) beside the guard" in check.undecided_reason
-
-
-class TestABreachedArmIsNeverRecommended:
-    async def test_the_analysis_writer_cannot_adopt_it_whatever_it_gained(self) -> None:
-        comparison = await _compare()
-        bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, comparison.scope_id).bundle
-        # A campaign with no question declared adopts nothing at all; read it as one that declared its question, so
-        # the adoption reaches the guardrail it breached.
-        declared = bundle.reading_scope.model_copy(update={"questions_declared": True})
-        bundle = bundle.model_copy(update={"reading_scope": declared})
-        adopting = _adopting_writer()
-        with pytest.raises(SoundnessRefusal, match="breached the guardrail no_leak"):
-            await generate_analysis(
-                campaign_bundle(bundle),
-                prompt=EVAL_ANALYSIS_GEN_DEFAULT,
-                model="offline-writer",
-                client=adopting,
-                prompt_id="eval_analysis_gen",
-                bundle_assembled_at=datetime.now(UTC).isoformat(),
-                profile=comparison.host.profile,
-            )
-        assert adopting.drafts >= 1
-
-
-def _adopting_writer() -> Any:
-    """A scripted writer whose every draft adopts the arm that improved on the control, which breached the guardrail."""
-    writer = SimpleNamespace(drafts=0)
-
-    async def generate(*, system: str, user: str, response_format: dict | None = None) -> Any:
-        writer.drafts += 1
-        view, _ = json.JSONDecoder().raw_decode(user, user.index("{"))
-        (aspect,) = view["aspects"]
-        tested = next(comparison for comparison in aspect["contrasts"] if comparison["verdict"] == "improved")
-        arm, control = tested["cell"], tested["control"]
-        label = next(cell["arm"] for cell in aspect["cells"] if cell["cell"] == arm)
-        cite = {cell: "{{" + f"{cell}|{tested['name']}|measure|mean" + "}}" for cell in (arm, control)}
-        finding = {
-            "title": "Correct score by arm",
-            "body": f"The tested arm reads {cite[arm]}, the control {cite[control]}.",
-            "evidence": [{"cell": cell, "measure_id": tested["name"], "reading": "measure"} for cell in cite],
-            "trials": [],
-            "confidence": "low",
-            "axes": [],
-            "caveats": [],
-            "invalidates": [],
-            "durable": "",
-        }
-        recommendation = {
-            "arm": label,
-            "reasons": ["Ship the arm that answers more cases correctly."],
-            "confidence": "medium",
-            "rests_on": [0],
-            "floors_overridden": [],
-            "behind_on": [],
-            "bars_missed": [],
-        }
-        summary = {"aspect": aspect["aspect"], "what_changed": "", "how_sure": "", "means": ""}
-        memo = {
-            "findings": [finding],
-            "recommendation": [recommendation],
-            "aspect_summaries": [summary],
-            "summary": "The arm that answers more cases correctly is the one to ship.",
-            "next": [],
-        }
-        return _Reply(content=json.dumps(memo), temperature=None, model="offline-writer")
-
-    writer.generate = generate
-    return writer
 
 
 class TestARefusedGuardrail:
