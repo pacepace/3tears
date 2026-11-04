@@ -279,6 +279,10 @@ class TurnReply:
     :ivar input_transformations: What the provider reported doing to the request's input, its
         ``input_transformations`` as it wrote them (a thinking block dropped, or let through, for a changed prefix),
         or ``None`` when the response carried none. An empty tuple is the provider saying it changed nothing.
+    :ivar resent_after: What each resend of the turn followed, oldest first: the provider's answer to the attempt
+        before (``anthropic 520: the response body is not JSON``, ``anthropic 529: Overloaded``) or the connection
+        that was never made. Empty when the first attempt was answered. A recording keeps it with the reply, so a
+        replay says the turn was sent more than once.
     """
 
     content: tuple[TurnBlock, ...]
@@ -296,6 +300,7 @@ class TurnReply:
     pricing_failure: str | None
     sent_binding: str | None = None
     input_transformations: tuple[dict[str, Any], ...] | None = None  # Any: the provider's JSON objects
+    resent_after: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -318,9 +323,11 @@ class TurnReply:
     def to_json(self) -> dict[str, Any]:  # Any: a JSON object
         """The reply as JSON, read back by :meth:`from_json`.
 
-        :return: Every member, the blocks as the Messages API writes them.
+        :return: Every member, the blocks as the Messages API writes them; ``resent_after`` only when the turn was
+            resent, so a reply answered at once is written as it was before the member existed.
         :rtype: dict[str, Any]
         """
+        resent: dict[str, Any] = {"resent_after": list(self.resent_after)} if self.resent_after else {}
         return {
             "content": [block.to_json() for block in self.content],
             "stop_reason": self.stop_reason,
@@ -339,12 +346,13 @@ class TurnReply:
             "input_transformations": (
                 None if self.input_transformations is None else [dict(entry) for entry in self.input_transformations]
             ),
+            **resent,
         }
 
     @classmethod
     def from_json(cls, value: Mapping[str, Any]) -> Self:  # Any: a JSON object
         """A reply read back from :meth:`to_json`'s JSON; a reply written before ``sent_binding`` and
-        ``input_transformations`` were reads them as ``None``.
+        ``input_transformations`` were reads them as ``None``, and one without ``resent_after`` was answered at once.
 
         :param value: The JSON object.
         :ptype value: Mapping[str, Any]
@@ -381,6 +389,7 @@ class TurnReply:
             pricing_failure=_optional_text(value, "pricing_failure"),
             sent_binding=_optional_text(value, "sent_binding"),
             input_transformations=_transformations(value.get("input_transformations")),
+            resent_after=_resends(value.get("resent_after")),
         )
 
 
@@ -393,9 +402,18 @@ def _transformations(value: Any) -> tuple[dict[str, Any], ...] | None:  # Any: J
     return tuple(dict(entry) for entry in value)
 
 
-#: The members :meth:`TurnReply.to_json` writes since it first could, each read as ``None`` where a reply written
-#: before lacks it.
-_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations"})
+def _resends(value: Any) -> tuple[str, ...]:  # Any: JSON
+    """A reply's stored ``resent_after``: absent for a turn answered at once, else a list of non-empty texts."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not value or not all(isinstance(entry, str) and entry for entry in value):
+        raise ValueError("a turn reply's resent_after is not a non-empty list of non-empty texts")
+    return tuple(value)
+
+
+#: The members :meth:`TurnReply.to_json` writes since it first could, each read as absent (``None``, or no resend)
+#: where a reply written before lacks it.
+_LATER_REPLY_MEMBERS = frozenset({"sent_binding", "input_transformations", "resent_after"})
 
 #: The members every reply :meth:`TurnReply.to_json` wrote has, and :meth:`TurnReply.from_json` requires.
 _REPLY_MEMBERS = frozenset(

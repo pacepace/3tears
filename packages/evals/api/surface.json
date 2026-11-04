@@ -1258,7 +1258,7 @@
     },
     "threetears.evals.schema.TurnReply": {
       "kind": "dataclass",
-      "signature": "TurnReply(content: tuple[TurnBlock, ...], stop_reason: TurnStopReason, provider_stop_reason: str | None, model: str, served_model: str | None, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cache_read_tokens: int | None, cache_write_tokens: int | None, cost_usd: float | None, price_source: str | None, pricing_failure: str | None, sent_binding: str | None = None, input_transformations: tuple[dict[str, Any], ...] | None = None)",
+      "signature": "TurnReply(content: tuple[TurnBlock, ...], stop_reason: TurnStopReason, provider_stop_reason: str | None, model: str, served_model: str | None, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cache_read_tokens: int | None, cache_write_tokens: int | None, cost_usd: float | None, price_source: str | None, pricing_failure: str | None, sent_binding: str | None = None, input_transformations: tuple[dict[str, Any], ...] | None = None, resent_after: tuple[str, ...] = ())",
       "tier": "stable"
     },
     "threetears.evals.schema.TurnReplyRefused": {

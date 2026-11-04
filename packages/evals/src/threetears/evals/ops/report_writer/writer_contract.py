@@ -200,7 +200,8 @@ ANALYST_ROUNDS_MEASURE: Final = f"{WRITER_KIND}.analyst_rounds"
 EDITOR_ROUNDS_MEASURE: Final = f"{WRITER_KIND}.editor_rounds"
 #: Every turn sent, a turn whose reply never came included.
 TURNS_MEASURE: Final = f"{WRITER_KIND}.turns"
-#: Turns sent that nothing priced, so the cell's cost is unknown rather than low.
+#: Replies that nothing priced, so the cell's cost is unknown rather than low; a turn whose reply never came reported
+#: no usage, so it is counted among the turns and never here.
 UNPRICED_TURNS_MEASURE: Final = f"{WRITER_KIND}.unpriced_turns"
 
 #: Every ending the writing loop has, in the loop's order, read off :data:`WriterEnding`: an ending the loop gains is

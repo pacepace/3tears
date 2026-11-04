@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a writer turn the provider failed costs nothing, is sent again once, and no longer stops a capped run
+
+**Fixed:** a report writer turn answered `anthropic 520: the response body is not JSON` stored its result with
+`cost_usd` null, as spend nothing could price, so a capped run stopped after that one result. A writer campaign on
+2026-11-04 lost both arms this way, at $0.67 of a $32 cap. A turn whose reply never came reported no usage, and a
+provider failing it with a 5xx bills none. It is now counted as an unanswered call (`unanswered_lost`), so the
+result's cost is the sum of the priced turns before it, and the run goes on to its next cell. A reply whose usage
+nothing could price is still unpriced spend, and still stops a capped run.
+
+**Changed:** a tool turn the provider fails with a 5xx that is no decline, or whose connection was never made, is
+sent again once after a wait, within the request's time bound (`DeclinedRetry.turn_failure_attempts`, default 2). A
+turn cut in flight is not sent again, since it may have been served. The reply names what each resend followed
+(`TurnReply.resent_after`), and a turn recording keeps it, so a replay shows the turn was sent twice. A completion's
+failure is still never sent again. `report_writer.unpriced_turns` now counts only replies nothing priced.
+
 ### evals: the report writer's skills and settings as objects under test (#1009, wave 1)
 
 **Added:** the report writer runs as a candidate kind, `report_writer`, whose levers are the analyst skill (by content
