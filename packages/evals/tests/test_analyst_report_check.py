@@ -443,7 +443,8 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when writer_case_mint gained skill (the skill its withheld notes are checked against),
 #: and withhold came to name that skill rather than the shipped one.
 #: The evals tool moved again when the three reporter actions left it (reporter_case_freeze, reporter_cases_list,
-#: reporter_case_archive), and campaign_record's help and the report format's description stopped naming the memo.
+#: reporter_case_archive), campaign_record's help and the report format's description stopped naming the memo, and
+#: the archive reason's description stopped naming a reporter case.
 _EVALS_BYTES = "cc85eb786ce28ea01632d0924e10a768678fdb96ca79d4df739a3f0b0afeaffc"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
