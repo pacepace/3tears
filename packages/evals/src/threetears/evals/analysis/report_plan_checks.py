@@ -52,7 +52,7 @@ kind draws), the measures where no rule names them, and on every spine the arms 
 transform, small multiples and emphasis. Some of what a spine draws is no query field at all: a gate matrix's binding
 reasons and cheapest passing cell, a gate scatter's gate region and one path per factor level, a lattice's row and
 column factors and its tiles' cost and latency. The page draws those from the criteria and the configs
-(:mod:`~threetears.evals.analysis.report.plan_page.resolve_gates`).
+(:mod:`~threetears.evals.analysis.report.parts.resolve_gates`).
 
 **The checks** (:func:`validate_plan`), each refusing at the field it names. They run when a plan is generated
 (:func:`~threetears.evals.analysis.report_plan_facts.complete_plan`), never when a stored plan is read, so a check
@@ -180,8 +180,8 @@ from threetears.evals.analysis.report.block_spec import (
     contrast_level,
     small_multiple_faults,
 )
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit
-from threetears.evals.analysis.report.plan_page.look import log_spread
+from threetears.evals.analysis.report.parts.charting import contrast_unit
+from threetears.evals.analysis.report.parts.look import log_spread
 from threetears.evals.analysis.report.figure_keys import (
     WEAKEST_PREFIX,
     format_figure,

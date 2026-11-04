@@ -18,7 +18,7 @@ than ten times, by the page's one log rule, which a caption says):
 
 Bars share one axis, so the measures a chart reads are in one unit, each at its own scale; in panels by slice or by
 measure, where the plan asks for them, each panel is its measure's own, in its unit
-(:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`). A summary chart's rows follow the options
+(:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`). A summary chart's rows follow the options
 table, fade an arm that does not survive the gates and bold the recommended one (GENERATOR §5.3). A figure without a mean is drawn at the statistic a criterion on it reads, else its
 p95, which a caption says. A floor or budget line sits at its criterion's threshold.
 
@@ -47,7 +47,7 @@ from threetears.evals.analysis.report.charts import (
     LineSeries,
     LinesChart,
 )
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
     KindResolver,
@@ -72,7 +72,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
 from threetears.evals.analysis.report.cost_unit import per_count, priced_in_part
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.figure_keys import cost_basis
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
     figure_text,
@@ -82,7 +82,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     magnitude_domain,
     quantity,
 )
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.words import (
     LOG_BARS_NOTE,
     PRICE_OPEN_NOTE,
     PRICE_STEP_NOTES,
@@ -539,7 +539,7 @@ def _bar_spans(
 ) -> tuple[dict[Quantity, tuple[float, float]], set[Quantity]]:
     """Each quantity's span: the stored one, else from zero past every bar (and interval, and the line) drawn in it,
     or, for a magnitude whose drawn ends span more than ten times, a log axis's decades (the one log rule,
-    :func:`~threetears.evals.analysis.report.plan_page.look.log_spread`); and the quantities drawn on a log axis."""
+    :func:`~threetears.evals.analysis.report.parts.look.log_spread`); and the quantities drawn on a log axis."""
     spans: dict[Quantity, tuple[float, float]] = {}
     logged: set[Quantity] = set()
     for own in dict.fromkeys(bar.drawn or drawn for bar in bars):

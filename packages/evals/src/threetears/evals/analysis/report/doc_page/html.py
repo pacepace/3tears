@@ -66,8 +66,8 @@ from threetears.evals.analysis.report.html_parts import (
     page_head,
     table_html,
 )
-from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageMasthead, PageSlot
-from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
+from threetears.evals.analysis.report.parts.model import PageArmsKey, PageMasthead, PageSlot
+from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
 #: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
 #: read).

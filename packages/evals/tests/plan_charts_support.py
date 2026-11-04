@@ -3,7 +3,7 @@ hold the resolvers on every chart a plan stores (an anchor, a current run, the K
 
 :func:`anchor_look` is the look the charts draw under: each arm's colour slot and the options' order from the plan,
 and code's facts about the input. :func:`drawn_charts` draws every summary and section chart of a plan through
-:func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart` under that look, its title's figure keys
+:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under that look, its title's figure keys
 written out. :func:`charts_html` and :func:`charts_markdown` lay the drawn charts out with the writers every page
 shares, so a test reads what a page would print.
 """
@@ -16,9 +16,9 @@ from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.html_parts import chart_html, escape, page_head, table_html
 from threetears.evals.analysis.report.md_parts import chart_lines, inert, one_line, table_lines
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
-from threetears.evals.analysis.report.plan_page.model import PageChart
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.look import PageLook, page_look
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import plan_facts

@@ -63,7 +63,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import CellValue, TableBlock, TableCell, TableColumn, money_columns
 from threetears.evals.analysis.report.charts import OPEN_ABOVE
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
     KindResolver,
@@ -80,10 +80,10 @@ from threetears.evals.analysis.report.plan_page.charting import (
     stat_value,
 )
 from threetears.evals.analysis.report.figure_keys import cost_basis
-from threetears.evals.analysis.report.plan_page.look import Quantity, in_change_form, quantity, quantity_of
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.resolve_changes import compare_basis, lever_label, narrow_notes
-from threetears.evals.analysis.report.plan_page.resolve_magnitudes import price_notes, settle_label, settle_notes
+from threetears.evals.analysis.report.parts.look import Quantity, in_change_form, quantity, quantity_of
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.resolve_changes import compare_basis, lever_label, narrow_notes
+from threetears.evals.analysis.report.parts.resolve_magnitudes import price_notes, settle_label, settle_notes
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
@@ -104,7 +104,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_rows import PriceStep, lever_arms
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.words import (
     PRICE_STEP_TEMPLATE,
     CELL_TEMPLATE,
     INTERVAL_HEADER,

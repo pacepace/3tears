@@ -37,7 +37,7 @@ the facts above it fills each unit's code part: the flag's disclosures (:func:`f
 weakens and leaves standing; each answer's warning, from the position the planner gave; and each chart's facts (below).
 Then it runs
 :func:`~threetears.evals.analysis.report_plan_checks.validate_plan`, draws every chart no fault names through the
-page's own resolvers (:func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart`: a chart the page
+page's own resolvers (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`: a chart the page
 cannot draw on this input is refused here, never stored), and refuses every fault it, the checks and the page found,
 together, as one :class:`~threetears.evals.analysis.errors.PlanRefusal`, so the planner's one repair round can mend
 them all.
@@ -70,8 +70,8 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.look import PageLook, page_look
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_decision import (
     allowed_modes,

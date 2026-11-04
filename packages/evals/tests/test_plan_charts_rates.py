@@ -47,11 +47,11 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
 )
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.charting import COMPUTED, figure_unit, misses_line
-from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
-from threetears.evals.analysis.report.plan_page.model import PageChart
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE
+from threetears.evals.analysis.report.parts.charting import COMPUTED, figure_unit, misses_line
+from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task

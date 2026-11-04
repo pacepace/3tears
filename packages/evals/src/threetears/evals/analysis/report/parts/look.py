@@ -39,7 +39,7 @@ count, so it never shares an axis with one.
 tiles), each level takes the kit's series colours in the factor's order, as candidates do in theirs.
 
 **A gate status's pill** (:data:`GATE_STATUS`): a pass is good, a borderline warns, a failure is bad (GENERATOR §3);
-its word is the page's (:data:`~threetears.evals.analysis.report.plan_page.words.GATE_WORDS`), so the pill never
+its word is the page's (:data:`~threetears.evals.analysis.report.parts.words.GATE_WORDS`), so the pill never
 rests on its colour alone.
 
 **Notes are code's, by the package's number rule** (:func:`figure_text`), so a chart never prints its own rounding of

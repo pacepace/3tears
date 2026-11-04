@@ -1,7 +1,7 @@
 """Intervals the tools compute, drawn: a pass rate with a count and no stated interval is drawn with its binomial one.
 
 Contracts held here (``analysis.separation.spread_interval``, the ``spread.<arm>.<key>.overall.interval`` figure key,
-``analysis.report.block_spec`` completion, ``analysis.report.plan_page.charting.computed_interval``):
+``analysis.report.block_spec`` completion, ``analysis.report.parts.charting.computed_interval``):
 
 - **the key**: an arm's spread reads an interval at its level, the mean plus and minus the normal quantile times its
   standard error, a rate's ends held to none to all; a rate of none or all reads none (a zero-width interval would
@@ -32,9 +32,9 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import DotIntervalChart
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.charting import computed_interval
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
+from threetears.evals.analysis.report.parts.charting import computed_interval
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
 from threetears.evals.analysis.report_input import ReportInput, Stat
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart

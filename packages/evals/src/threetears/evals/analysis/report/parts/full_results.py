@@ -31,9 +31,9 @@ rest as the input holds contrasts, strata or tasks, gates or guardrails, configu
 is read off the input's rows alone.
 
 **Numbers by the page's one rule.** A figure is stated as a chart states it
-(:func:`~threetears.evals.analysis.report.plan_page.charting.figure_unit`,
-:func:`~threetears.evals.analysis.report.plan_page.look.quantity`,
-:func:`~threetears.evals.analysis.report.plan_page.look.figure_text`): a rate as a percent, a change in points, money
+(:func:`~threetears.evals.analysis.report.parts.charting.figure_unit`,
+:func:`~threetears.evals.analysis.report.parts.look.quantity`,
+:func:`~threetears.evals.analysis.report.parts.look.figure_text`): a rate as a percent, a change in points, money
 per reply per 1,000 replies, which the measure's name then says. A figure the input does not hold is a dash.
 
 **A status is said in words.** Every pill's text is its status (``Passes``, ``Regressed``), so Markdown and a screen
@@ -64,13 +64,13 @@ from threetears.evals.analysis.report.figure_keys import (
     held_figure,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
     held_means,
     money_words,
     stat_value,
 )
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     GATE_STATUS,
     PageLook,
     Quantity,
@@ -79,9 +79,9 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity,
     quantity_of,
 )
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.tables import pass_rate_cell
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.tables import pass_rate_cell
+from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,

@@ -32,7 +32,7 @@ from threetears.evals.analysis.analyst.levers import lever_effects
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ForestChart, ForestRow
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.figure_keys import render
-from threetears.evals.analysis.report.plan_page.full_results import every_table
+from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput

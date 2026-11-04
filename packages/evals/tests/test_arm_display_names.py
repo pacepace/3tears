@@ -60,7 +60,7 @@ from threetears.evals.analysis.service import assemble_campaign_bundle, campaign
 from threetears.evals.analysis.style import arm_display_name, arm_name, lever_reader_name
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.plan_page.tables import arms_key
+from threetears.evals.analysis.report.parts.tables import arms_key
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.kernel.declaration import OverriddenBar
 from packages.evals.tests.analyst_support import fixture_inputs

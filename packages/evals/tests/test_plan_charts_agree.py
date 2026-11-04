@@ -57,9 +57,9 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
 )
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit, figure_unit
-from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.charting import contrast_unit, figure_unit
+from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings

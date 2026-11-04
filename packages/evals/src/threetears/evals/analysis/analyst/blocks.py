@@ -5,7 +5,7 @@ it the way a planned page draws a stored chart, by the same code:
 :func:`~threetears.evals.analysis.report.block_spec.complete_chart` completes it (its reference line's key, interval
 level, unit and axis), :func:`~threetears.evals.analysis.report.block_spec.chart_faults` and
 :func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults` hold it to the plan checks' own rules, and
-the page's resolver draws it (:func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart`, under
+the page's resolver draws it (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`, under
 :func:`~threetears.evals.analysis.report.block_spec.block_look`), as
 :func:`~threetears.evals.analysis.report_plan_facts.complete_plan` draws a plan's. So a block the analyst
 sees drawn is one a plan may store, and a block refused here is refused there. What comes back is the block's values
@@ -61,7 +61,7 @@ from threetears.evals.analysis.report.block_spec import (
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, price_frontier, render
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.report_rows import query_rows

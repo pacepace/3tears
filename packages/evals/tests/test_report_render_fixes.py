@@ -21,9 +21,9 @@ from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.charts import ExampleField, ExamplesChart
 from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
-from threetears.evals.analysis.report.plan_page.charting import measure_words
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.tables import arms_table
+from threetears.evals.analysis.report.parts.charting import measure_words
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin

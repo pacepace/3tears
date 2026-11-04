@@ -52,9 +52,9 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     held_figure,
 )
-from threetears.evals.analysis.report.plan_page.look import ArmLook, PageLook, figure_text, quantity
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.look import ArmLook, PageLook, figure_text, quantity
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION, PageArmsKey
+from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
     ARM_ROLE_WORDS,

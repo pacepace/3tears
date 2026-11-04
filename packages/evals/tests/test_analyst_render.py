@@ -48,10 +48,10 @@ from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
-from threetears.evals.analysis.report.plan_page.charting import figure_unit, held_means, money_words
-from threetears.evals.analysis.report.plan_page.look import quantity_of
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import ASPECT_MEASURE_TEMPLATE
+from threetears.evals.analysis.report.parts.charting import figure_unit, held_means, money_words
+from threetears.evals.analysis.report.parts.look import quantity_of
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import ASPECT_MEASURE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.analysis.report_plan_facts import complete_plan

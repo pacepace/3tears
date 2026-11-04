@@ -1,6 +1,6 @@
 """What a block prints, read as a reader reads it: the formatting and labels the regression prototype found wrong.
 
-Contracts held here (``analysis.report.charts`` values tables, ``analysis.report.plan_page`` resolvers and words,
+Contracts held here (``analysis.report.charts`` values tables, ``analysis.report.parts`` resolvers and words,
 ``analysis.analyst.blocks`` and ``actions.render`` pages):
 
 - **a computed change prints as its key reads it**: a compare or lever chart's value and interval ends, in points,
@@ -43,9 +43,9 @@ from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report_gates import task_costs
 from threetears.evals.kernel.numbers import money_form
 from threetears.evals.analysis.report.figure_keys import arm_settings
-from threetears.evals.analysis.report.plan_page.look import quantity
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit_of
-from threetears.evals.analysis.report.plan_page.words import SETTLE_NO_SIZE
+from threetears.evals.analysis.report.parts.look import quantity
+from threetears.evals.analysis.report.parts.charting import contrast_unit_of
+from threetears.evals.analysis.report.parts.words import SETTLE_NO_SIZE
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.style import humanize

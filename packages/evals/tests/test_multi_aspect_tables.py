@@ -22,9 +22,9 @@ from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.figure_keys import aspect_costs_per_thousand, render, resolve
-from threetears.evals.analysis.report.plan_page.full_results import every_table
-from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
-from threetears.evals.analysis.report.plan_page.tables import arms_key, arms_table
+from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report.parts.look import figure_text, quantity
+from threetears.evals.analysis.report.parts.tables import arms_key, arms_table
 from threetears.evals.analysis.report_input import Aspect, Measure, ReportInput, ScoreboardRow, Stat
 from threetears.evals.analysis.report_plan_facts import fact_arms
 

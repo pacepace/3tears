@@ -1,7 +1,7 @@
 """Levels as the input states them, and the renderer's labels: what a block prints is what a reader can read.
 
 Contracts held here (``analysis.report.figure_keys`` level figures, ``analysis.report.block_spec``,
-``analysis.report.charts`` values tables, ``analysis.report.plan_page`` labels and money):
+``analysis.report.charts`` values tables, ``analysis.report.parts`` labels and money):
 
 - **a level prints as stated**: a pair's, a spread's, a compare's and a lever's level key reads in percent to every
   digit the number rule keeps, so two levels that differ never print alike, and a chart refused for mixing levels
@@ -39,7 +39,7 @@ from threetears.evals.kernel.numbers import format_number, group_thousands, mone
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, ForestChart
 from threetears.evals.analysis.report.figure_keys import format_figure, price_frontier, resolve
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report_plan_facts import fact_arms

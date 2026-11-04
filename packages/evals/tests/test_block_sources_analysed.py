@@ -37,9 +37,9 @@ from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart
-from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.report_rows import config_grid, lever_arms, query_rows

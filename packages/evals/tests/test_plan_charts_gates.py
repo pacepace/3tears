@@ -47,9 +47,9 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
-from threetears.evals.analysis.report.plan_page.model import PageChart
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import GATE_WORDS, NOT_GATED
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
 from threetears.evals.analysis.report_decision import margin_sensitivity
 from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task

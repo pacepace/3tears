@@ -2,7 +2,7 @@
 
 Every status a chart here shows is the gate check's (:func:`~threetears.evals.analysis.report_gates.gate_check`), the
 one GENERATOR §3 function the decision's survivors read too, so a chart never shows an arm passing that the decision
-dropped; each pill states its status in words (:data:`~threetears.evals.analysis.report.plan_page.words.GATE_WORDS`),
+dropped; each pill states its status in words (:data:`~threetears.evals.analysis.report.parts.words.GATE_WORDS`),
 so a reader without the colour (Markdown, a screen reader) reads it too. Every line a chart draws at a gate is the
 gate's own threshold, read through its figure key (``criteria.<id>.threshold``): the criterion that reads the chart's
 measure where the chart reads it (over the whole comparison, or in the task a panel draws), at the statistic it draws.
@@ -53,7 +53,7 @@ cell says "Not gated here" only where some gate is declared elsewhere, which is 
 word, only its figures.
 
 Dot strips, range bars and the frontier scatter, which draw rates against the same lines, are
-:mod:`~threetears.evals.analysis.report.plan_page.resolve_rates`'.
+:mod:`~threetears.evals.analysis.report.parts.resolve_rates`'.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ from threetears.evals.analysis.report.charts import (
 )
 from threetears.evals.analysis.report.cost_unit import priced_in_part, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
     KindResolver,
@@ -102,7 +102,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     slice_name,
     stat_value,
 )
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     GATE_STATUS,
     Quantity,
     band_domain,
@@ -112,7 +112,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity_of,
     series_token,
 )
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.words import (
     CROSS_CUTTING_FLAG,
     FLOOR_ON_TEMPLATE,
     FLOOR_READS_TEMPLATE,

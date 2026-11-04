@@ -14,7 +14,7 @@
 - :mod:`serialize_md` and :mod:`serialize_html` — Markdown, and HTML whose one script is the kit's chart drawing; :mod:`serialize`
   is the switch, whose ``json`` is the bundle.
 - :mod:`words` and :mod:`figures` — the words a report is read in, and how it states a figure.
-- :mod:`doc_page` — the page a stored report document draws (:class:`DocPage`); :mod:`plan_page` — the parts it
+- :mod:`doc_page` — the page a stored report document draws (:class:`DocPage`); :mod:`parts` — the parts it
   draws with: each chart's resolver, the arms' look, the words code writes, and the tables.
 
 Hosts import these from :mod:`threetears.evals.analysis`, the public root.
@@ -131,7 +131,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocPage,
     DocTerm,
 )
-from threetears.evals.analysis.report.plan_page.model import (
+from threetears.evals.analysis.report.parts.model import (
     PageArmsKey,
     PageChart,
     PageClause,

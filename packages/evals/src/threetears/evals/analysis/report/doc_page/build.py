@@ -19,18 +19,18 @@ the page has or their order.
   (:func:`~threetears.evals.analysis.report_decision.caveat_materiality`).
 - *Decision*: each entry in the document's order, titled by its slot word alone.
 - *Options*: every arm, with its settings, served model and cost, the arms ``recommends`` names marked
-  (:func:`~threetears.evals.analysis.report.plan_page.tables.arms_table`).
+  (:func:`~threetears.evals.analysis.report.parts.tables.arms_table`).
 - *Claims*: in the document's order, each with the labels of the caveats the document lands beside it (as the
   confidence labels them), each distinct label once, so a caveat landed on a claim is one its reader and the editor
   see; a label several share says how many and the arms their records name. Each evidence block is
   completed and drawn by the code ``block_render`` uses:
   :func:`~threetears.evals.analysis.report.block_spec.complete_chart`, then
-  :func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart` under
+  :func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart` under
   :func:`~threetears.evals.analysis.report.block_spec.block_look` (the arms in the input's order, nothing
   recommended), so a block on the page is the block the analyst saw drawn, value for value.
 - *Explore*: a table of the document's prose rows. *Next steps*: after the claims.
 - *Appendix*: the arms key, every table the input holds
-  (:func:`~threetears.evals.analysis.report.plan_page.full_results.every_table`), what was left out and why, Method
+  (:func:`~threetears.evals.analysis.report.parts.full_results.every_table`), what was left out and why, Method
   (each term with the labels of the caveats landed on it), the editor's findings left open, and the made line.
 
 **Strict, or reading.** Generation builds strict: a figure key that does not resolve, a block that does not complete
@@ -83,17 +83,17 @@ from threetears.evals.analysis.report.doc_page.words import (
 )
 from threetears.evals.analysis.report.figure_keys import ARM_TEMPLATE, Figure, NamedKind, format_figure, render, resolve
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report.plan_page.full_results import every_table
-from threetears.evals.analysis.report.plan_page.look import PageLook
-from threetears.evals.analysis.report.plan_page.model import (
+from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report.parts.look import PageLook
+from threetears.evals.analysis.report.parts.model import (
     PLANNED_SECTION,
     PageChart,
     PageMasthead,
     PageSlot,
 )
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.tables import arms_key, arms_table
-from threetears.evals.analysis.report.plan_page.words import CONFIDENCE_WORDS, REFERENCE_TEMPLATE
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.tables import arms_key, arms_table
+from threetears.evals.analysis.report.parts.words import CONFIDENCE_WORDS, REFERENCE_TEMPLATE
 from threetears.evals.analysis.report_decision import (
     Caveat,
     ImpliedCaveat,

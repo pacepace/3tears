@@ -37,7 +37,7 @@ from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.plan_page.tables import arms_table
+from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
 from threetears.evals.analysis.report_input_build import report_input

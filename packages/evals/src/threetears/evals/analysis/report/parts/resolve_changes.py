@@ -19,7 +19,7 @@ about a centre).
   strata), in panels by arm, or by slice, where the plan asks for them, else grouped by arm; bold or muted by the
   descriptive 95% rule, uncorrected, which a caption says; a slice whose figure states only its change from the
   control is drawn at that change, with no bold; the bars share one axis, so the measures read are in one unit
-  (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`);
+  (:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`);
 - *human_pref*: the share of blind ratings preferring the control, per slice, about the no-preference point (50%),
   bold where its interval excludes it;
 - *configs*: lever effects, each level of a factor against the factor's first level on the query's measure,
@@ -36,7 +36,7 @@ about a centre).
 
 Every interval is drawn only where the chart states a level; every note is written by the package's number rule. A
 chart of what an analysis computes (compare, levers) spells its values table at its quantity's precision, a point to
-one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.plan_page.charting.chart_block`).
+one decimal, as the rows' keys read (:func:`~threetears.evals.analysis.report.parts.charting.chart_block`).
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.compare import ComparisonRow
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, BarsPanel, ChartReference, ForestChart, ForestRow
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     ChartContext,
     Drawn,
     KindResolver,
@@ -73,7 +73,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     stat_value,
     unit_refusal,
 )
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     Quantity,
     centred_domain,
     figure_text,
@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity,
     quantity_of,
 )
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.words import (
     BASIS_NOTE,
     COMPARE_NARROW_NOTE,
     COMPARE_NESTED_TEMPLATE,

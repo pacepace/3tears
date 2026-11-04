@@ -6,7 +6,7 @@ explore's, the appendix's), the explore table's heads, the review findings' seve
 editor's review did not clear carries first, and the lines a page read from a stored document adds where part of it no
 longer reads. The confidence's form words, the options table's role
 words and the Full results tables' words are the planned page's
-(:mod:`~threetears.evals.analysis.report.plan_page.words`), so both pages say them alike. Held here so a translation
+(:mod:`~threetears.evals.analysis.report.parts.words`), so both pages say them alike. Held here so a translation
 replaces them in one place.
 """
 

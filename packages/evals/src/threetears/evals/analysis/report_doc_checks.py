@@ -28,7 +28,7 @@ refused, so a revision sees everything at once.
    (:func:`~threetears.evals.analysis.report.block_spec.complete_chart`), held to the chart rules
    (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`,
    :func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults`) and drawn by the page's resolver
-   (:func:`~threetears.evals.analysis.report.plan_page.resolve.resolve_chart`).
+   (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`).
 3. **Caveat coverage.** Each caveat code assigns, stated or implied
    (:func:`~threetears.evals.analysis.report_decision.every_caveat`) and touching the call's confidence lands, and only
    where its reach allows: a report-wide one in the confidence; a scoped one in the confidence or beside a claim. A
@@ -67,8 +67,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report.figure_keys import keys_in, printed_arm_name, reader_names, render
-from threetears.evals.analysis.report.plan_page.look import PageLook
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.look import PageLook
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_plan_facts import fact_arms
