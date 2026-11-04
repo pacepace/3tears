@@ -292,6 +292,48 @@ def _decimal_code_scale(code: str) -> int | None:
     return int(code[len("DECIMAL(") : -1].split(",")[1]) if is_decimal else None
 
 
+def stored_value(value: Any, col_type: str) -> Any:
+    """a Python value as a DuckDB L1 stores it in a column of ``col_type`` (:meth:`DuckDBBackend.serialize_value`).
+
+    The one conversion the L1 writes every value through, so a value compared with what it holds (a scoped
+    snapshot's diff, matching L3's answer to its copy's rows) is compared as it is stored: a UUID as its text, an
+    instant as its ISO text, a decimal at its column's scale, a JSON value as its text.
+
+    :param value: the value
+    :ptype value: Any
+    :param col_type: the column's type code (:meth:`DuckDBBackend.column_types`)
+    :ptype col_type: str
+    :return: the value as stored
+    :rtype: Any
+    """
+    if value is None:
+        return None
+
+    result: Any = value
+    scale = _decimal_code_scale(col_type)
+
+    if scale is not None and not isinstance(value, bool):
+        result = stored_decimal(value, scale)
+    elif isinstance(value, enum.Enum):
+        result = value.value
+    elif isinstance(value, dict):
+        result = json.dumps(value, default=json_default)
+    elif isinstance(value, _UUID_TYPES):
+        result = str(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, bool):
+        result = value  # DuckDB has native BOOLEAN
+    elif isinstance(value, Decimal):
+        result = float(value)
+    elif isinstance(value, (tuple, list)):
+        result = json.dumps(list(value), default=json_default)
+    elif isinstance(value, bytes):
+        result = value.hex()
+
+    return result
+
+
 def _ddl_type(code: str) -> str:
     """the SQL type of a column's type code: ``VARCHAR_UUID`` is a VARCHAR column, for one.
 
@@ -1480,39 +1522,14 @@ class DuckDBBackend:
         return [dict(zip(columns, row)) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for DuckDB storage based on column type.
+        """Serialize a Python value for DuckDB storage based on column type (:func:`stored_value`).
 
         JSON values encode with the storage handler every tier shares
         (:func:`~threetears.core.backends.schema_sql.json_default`), as the SQLite L1 does: a
         nested UUID, Decimal or datetime is cached as the string the other tiers store, where a
         bare ``json.dumps`` raised on it.
         """
-        if value is None:
-            return None
-
-        result: Any = value
-        scale = _decimal_code_scale(col_type)
-
-        if scale is not None and not isinstance(value, bool):
-            result = stored_decimal(value, scale)
-        elif isinstance(value, enum.Enum):
-            result = value.value
-        elif isinstance(value, dict):
-            result = json.dumps(value, default=json_default)
-        elif isinstance(value, _UUID_TYPES):
-            result = str(value)
-        elif isinstance(value, datetime):
-            result = value.isoformat()
-        elif isinstance(value, bool):
-            result = value  # DuckDB has native BOOLEAN
-        elif isinstance(value, Decimal):
-            result = float(value)
-        elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value), default=json_default)
-        elif isinstance(value, bytes):
-            result = value.hex()
-
-        return result
+        return stored_value(value, col_type)
 
     def deserialize_field(self, value: Any, col_type: str) -> Any:
         """Deserialize a single DuckDB value back to the correct Python type."""

@@ -608,6 +608,17 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
         class_name="ScopedSnapshot",
+        attr_name="_diff_reads",
+        rationale=(
+            "the groups this replica's own last judged diffs read, (table, scope) -> group -> L3's count and "
+            "stamp of it and how many diffs in a row read it, kept only so a read this L1 did not keep stops "
+            "after two; another replica's diffs bound their own reads, a restart reads at most twice more, "
+            "and L3's count and stamp, not this map, are the state it judges by"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
         attr_name="_waiting",
         rationale=(
             "the waits this process's own control flows (its worker pass, a catch-up) have outstanding, "

@@ -5082,6 +5082,9 @@ class _VersionedL3:
                     "value": value,
                     "total": len(members),
                     "changed": sum(1 for r in members if (r["source_version"] or 0) > after),
+                    "newest": max(
+                        (r["source_version"] for r in members if r["source_version"] is not None), default=None
+                    ),
                 }
                 for value, members in groups.items()
             ]
@@ -5695,7 +5698,9 @@ def _thin_schema(run_type: str = STRING_TYPE) -> TableSchema:
         primary_key=("item",),
         columns=[
             Column("state", STRING_TYPE),
-            Column("run", run_type, nullable=True),
+            Column(
+                "run", run_type, nullable=True, **({"precision": 12, "scale": 2} if run_type == NUMERIC_TYPE else {})
+            ),
             Column("item", STRING_TYPE),
             Column("votes", BIGINT_TYPE, nullable=True),
         ],
@@ -5705,7 +5710,7 @@ def _thin_schema(run_type: str = STRING_TYPE) -> TableSchema:
 
 def _history(item: str, votes: Any) -> bool:
     """whether the copy's retention keeps a row: a history row (``<run>.h...``) with votes not below zero."""
-    return item.split(".")[1].startswith("h") and (votes or 0) >= 0
+    return item.rsplit(".", 1)[1].startswith("h") and (votes or 0) >= 0
 
 
 class _HistoryOnly(DuckDBBackend):
@@ -5751,6 +5756,20 @@ class _ArrowSqlL3(_SqlL3):
         return _pa.Table.from_pylist(rows, schema=_pa.schema(list(types.items())))
 
 
+class _DecimalSqlL3(_SqlL3):
+    """the SQLite L3 holding each run as a NUMERIC(12, 2) and answering it as PostgreSQL's driver does: a Decimal at
+    the column's scale (SQLite holds its text)."""
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        given = tuple(f"{Decimal(str(a)):.2f}" if isinstance(a, (Decimal, float)) else a for a in args)
+        rows = await super().fetch(sql, *given)
+        for row in rows:
+            for column in ("run", "value"):
+                if isinstance(row.get(column), str):
+                    row[column] = Decimal(row[column])
+        return rows
+
+
 class _UuidSqlL3(_SqlL3):
     """the SQLite L3 answering each run as a UUID, as PostgreSQL's driver does a uuid column."""
 
@@ -5776,7 +5795,12 @@ def _thinned_l3(runs: int = 5, kind: str = "rows") -> _SqlL3:
 
 
 async def _thinned_copy(
-    l3: _SqlL3, kept: list[Any], *, failing: list[bool] | None = None, run_type: str = STRING_TYPE
+    l3: _SqlL3,
+    kept: list[Any],
+    *,
+    failing: list[bool] | None = None,
+    run_type: str = STRING_TYPE,
+    partial: bool = True,
 ) -> tuple[ScopedSnapshot, DuckDBBackend]:
     """a copy of TX keeping the runs ``kept`` names (asked anew each time; failing while ``failing[0]``) and, of each,
     its history rows."""
@@ -5794,7 +5818,7 @@ async def _thinned_copy(
         partition_values=runs,
         version_column="source_version",
         retained=True,
-        partial_groups=True,
+        partial_groups=partial,
     )
     metadata = MetaData()
     _thin_schema(run_type).to_sqlalchemy_table(metadata)
@@ -5804,13 +5828,18 @@ async def _thinned_copy(
 
 
 def _thinned_held(backend: DuckDBBackend) -> list[tuple[Any, ...]]:
-    return sorted((tuple(r.values()) for r in backend.execute_query("SELECT run, item, votes FROM runs")), key=repr)
+    """the copy's rows, each run as its text (a decimal at its scale, as L3's SQLite holds it)."""
+    found = backend.execute_query("SELECT run, item, votes FROM runs")
+    return sorted(
+        ((None if r["run"] is None else str(r["run"]), r["item"], r["votes"]) for r in found),
+        key=repr,
+    )
 
 
 def _l3_kept(l3: _SqlL3, kept: list[Any]) -> list[tuple[Any, ...]]:
     """L3's rows of the runs kept, as the copy's retention keeps them."""
     found = l3.db.execute('SELECT run, item, votes FROM "runs" WHERE "state" = ?', ("TX",)).fetchall()
-    named = {None if run is None else str(run) for run in kept}
+    named = {None if run is None else f"{run:.2f}" if isinstance(run, float) else str(run) for run in kept}
     return sorted(
         (tuple(r) for r in found if r["run"] in named and _history(r["item"], r["votes"])),
         key=repr,
@@ -6077,6 +6106,143 @@ async def test_a_thinned_copy_whose_ask_names_no_run_is_not_thinned_to_nothing(
     assert outcome.caught == () and "named none" in outcome.left["TX"], outcome
     assert "named none while the copy holds 3 rows" in caplog.text
     assert _thinned_held(backend) == held
+    await snapshot.stop()
+
+
+def _trigger_l3(trigger: str, kind: str) -> tuple[_SqlL3, list[Any], str]:
+    """the L3, the runs kept and the run column's type a convergence trigger starts from."""
+    columns = ["state", "run", "item", "votes", "source_version"]
+    if trigger == "uuid_keys":
+        runs = [_uuid.UUID(int=n) for n in (1, 2, 3)]
+        rows = [{**row, "run": str(run)} for run in runs for row in _run_rows(run)]
+        return _UuidSqlL3("runs", columns, rows), list(runs[:2]), UUID_TYPE
+    if trigger == "decimal_values":
+        rows = [row for run in ("1.10", "2.20", "3.30") for row in _run_rows(run)]
+        # the ask answers floats, the copy holds Decimals at the column's scale, L3 answers Decimals
+        return _DecimalSqlL3("runs", columns, rows), [1.1, 2.2], NUMERIC_TYPE
+    l3 = _thinned_l3(kind=kind)
+    kept: list[Any] = ["r1", "r3"]
+    if trigger == "null_run":
+        l3.add(_run_rows(None))
+        kept.append(None)
+    return l3, kept, STRING_TYPE
+
+
+def _trigger_write(trigger: str, l3: _SqlL3, kept: list[Any]) -> None:
+    """write 2 of a convergence trigger."""
+    if trigger == "new_run":
+        l3.add(_run_rows("r46", version=2))
+        kept.append("r46")
+    elif trigger == "stamped_kept_run":
+        _set(l3, "r1.h0", 10)
+        l3.add([{"state": "TX", "run": "r1", "item": "r1.h9", "votes": 9, "source_version": 2}])
+    elif trigger == "partly_held_run":
+        _set(l3, "r2.h0", 7)
+    elif trigger == "retention_drops_a_stamped_row":
+        _set(l3, "r1.h1", -1)
+    elif trigger == "deleted_rows_in_an_untouched_run":
+        _delete(l3, "r1.h1", "r1.h2", "r1.x0", "r1.x1")
+    elif trigger == "deleted_rows_in_a_stamped_run":
+        _delete(l3, "r1.h1", "r1.h2", "r1.x1")
+        _set(l3, "r1.h0", 10)
+    elif trigger == "gone_run":
+        _delete(l3, *(f"r3.{item}" for item in _RUN_ITEMS))
+    elif trigger == "null_run":
+        _set(l3, "n.h0", 10)
+    elif trigger == "uuid_keys":
+        _set(l3, f"{kept[0]}.h0", 10)
+    elif trigger == "decimal_values":
+        _set(l3, "1.10.h0", 10)
+
+
+_TRIGGERS = (
+    "new_run",
+    "stamped_kept_run",
+    "partly_held_run",
+    "retention_drops_a_stamped_row",
+    "deleted_rows_in_an_untouched_run",
+    "deleted_rows_in_a_stamped_run",
+    "gone_run",
+    "null_run",
+    "uuid_keys",
+    "decimal_values",
+)
+
+
+@pytest.mark.parametrize(
+    ("trigger", "kind"),
+    [
+        *((trigger, kind) for trigger in _TRIGGERS[:8] for kind in ("rows", "arrow", "refused")),
+        ("uuid_keys", "rows"),
+        ("decimal_values", "rows"),
+    ],
+)
+async def test_a_diff_converges_so_the_next_reads_no_row_l3_has_not_changed(trigger: str, kind: str) -> None:
+    """election night: the same rows were read again and again. After a diff brings the copy to L3, a diff with
+    nothing written since (a write that touched no row of the table) counts and reads nothing, whatever brought
+    the first one about, and the copy is L3's as its retention keeps it."""
+    l3, kept, run_type = _trigger_l3(trigger, kind)
+    snapshot, backend = await _thinned_copy(l3, kept, run_type=run_type)
+    _trigger_write(trigger, l3, kept)
+    await _caught_up(snapshot, l3)
+    assert _thinned_held(backend) == _l3_kept(l3, kept), "the first diff did not bring the copy to L3"
+    held = _thinned_held(backend)
+
+    l3.epochs["TX"] = 3
+    l3.statements.clear()
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="the copy applied epoch 3")
+    assert _row_reads(l3) == [], f"the second diff read rows L3 had not changed: {_row_reads(l3)}"
+    assert len(_counts(l3)) == 1
+    assert _thinned_held(backend) == held
+    await snapshot.stop()
+
+
+async def _passes(snapshot: ScopedSnapshot, l3: _SqlL3, epochs: range) -> list[int]:
+    """a diff at each epoch, nothing written between: the rows each read."""
+    reads = []
+    for epoch in epochs:
+        l3.epochs["TX"] = epoch
+        l3.statements.clear()
+        outcome = await snapshot.catch_up()
+        assert outcome.caught == ("TX",), outcome
+        await _until(lambda: snapshot.applied_epoch("TX") == epoch, what=f"the copy applied epoch {epoch}")
+        reads.append(len(_row_reads(l3)))
+    return reads
+
+
+@pytest.mark.parametrize("partial", [True, False], ids=["partial_groups", "retained"])
+async def test_a_run_the_l1_never_keeps_is_read_twice_then_not_again_until_l3_changes_it(
+    partial: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """an L1 that never holds what L3 does of a run (its retention lets every row of it go, or keeps part of a run
+    a retained table's diff counts whole) made every diff read the run again, the same rows each time, for good.
+    Read on two diffs in a row with L3's count and newest stamp of it unchanged, it is said at ERROR and not read
+    again, the copy kept as it is; once L3 changes it, it is read again."""
+    l3 = _thinned_l3()
+    if partial:
+        # a kept run with no history row: the copy holds none of it however often it is read
+        l3.add([{"state": "TX", "run": "r9", "item": f"r9.x{i}", "votes": 1, "source_version": 1} for i in range(3)])
+        kept = ["r1", "r9"]
+    else:
+        # a retained table's diff counts each kept run against L3's whole count, which a copy of part never meets
+        kept = ["r1"]
+    snapshot, backend = await _thinned_copy(l3, kept, partial=partial)
+    held = _thinned_held(backend)
+    caplog.set_level(logging.ERROR)
+
+    reads = await _passes(snapshot, l3, range(2, 6))
+
+    assert reads == [1, 1, 0, 0], f"the run was read on every diff: {reads}"
+    looped = "r9" if partial else "r1"
+    said = [r for r in caplog.records if "was read by 2 diffs in a row" in r.getMessage()]
+    assert len(said) == 1 and f"'{looped}'" in said[0].getMessage() and "'TX'" in said[0].getMessage(), said
+    assert _thinned_held(backend) == held, "the copy was not kept as it is"
+    # L3 changes the run: it is read again, once
+    l3.add([{"state": "TX", "run": looped, "item": f"{looped}.x9", "votes": 1, "source_version": 6}])
+    assert await _passes(snapshot, l3, range(6, 7)) == [1]
     await snapshot.stop()
 
 

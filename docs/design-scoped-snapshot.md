@@ -213,6 +213,19 @@ copy holds: the counts are the only evidence of a delete, and a copy holding par
 to L3's without reading them. So a table set so must add and delete whole runs; that obligation is the writer's,
 stated on `SnapshotTable.partial_groups`, and `lsf_projections` meets it.
 
+**No group read forever.** A diff that reads a group L3 has not changed since the last diff read it, published,
+is reading what the L1 did not keep, and would read it on every diff for good: the same rows each time, as on
+election night. So every diff (`partial_groups` or not) keeps, per table and scope, each group it read with L3's
+count and newest stamp of it (the count statement answers `max` of the version column); a group read on two judged
+diffs in a row with both unchanged is said at ERROR and not read again, the copy's rows of it kept as they are,
+until L3 changes it. A diff a racing write left pending is not judged and does not count. The memory is each
+replica's own: a restart allows at most two more reads of a group, and each replica the catch-up claim moves to at
+most two of its own, never an unbounded run of them. The breaker is what
+bounds a retained table that names `partition_values` without `partial_groups`: its diff counts each kept run
+whole, which a copy of part never meets, so before the breaker it read every kept run on every diff. Values are
+compared as the L1 stores them (`stored_value`, the conversion it writes through), never by a second set of rules
+that could disagree with it and make a held group look missing.
+
 **Why a flag on the table, not a second table.** A separate table holding only the kept runs would make the
 writer write each run twice and L3 hold it twice, and moving a run out of the kept set would be a delete in L3
 the diff would then have to see. The flag keeps L3's one table as the record and the thinning in the copy,
