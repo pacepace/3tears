@@ -46,6 +46,14 @@ replica waiting on the write from reading every scope from L3 in the moment betw
 :meth:`ScopedSnapshot.on_change` calls back after every commit to the L1, for a reader that caches
 what it computed from it.
 
+**Recovery from the diff.** When every table names its :attr:`SnapshotTable.version_column`, a copy behind L3 is
+never brought forward by reading a scope whole: a writer keeps its stages as records before it commits
+(:meth:`ScopedSnapshot.record_staged`), carried on by any replica up to L3's epoch; a writer whose copy is behind
+reads the rows it needs from L2 (:meth:`ScopedSnapshot.rows_at`); and the catch-up lays the groups of rows L3
+changed since over the rows a copy holds, each scope judged on its own. A scope is read whole from L3 only where L2
+holds no copy of it, said at ERROR; any other whole read raises :class:`WholeReadRefused`
+(``docs/design-scoped-snapshot.md``, "Recovery from the diff").
+
 **L3 stays the truth.** NATS buckets are memory-backed, so a NATS restart loses the snapshot. A
 replica that finds the pointers gone asks for the buckets again (``ensure_buckets``), takes a claim
 -- renewed while it works, let go once it makes no progress for ``rebuild_stall``, released only if
@@ -123,7 +131,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
-from threetears.observe import contain, get_logger
+from threetears.observe import contain, contained, get_logger
 
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
@@ -153,6 +161,7 @@ __all__ = [
     "StagedPartitions",
     "StagedScope",
     "VersionedRead",
+    "WholeReadRefused",
     "decode_chunk",
     "encode_chunk",
     "open_tool_pod_snapshot",
@@ -377,6 +386,8 @@ class CatchUpOutcome:
     :ivar held_since: with ``CLAIM_HELD``, when that holder took the claim
     :ivar reason: with ``WAITED``, the write it waited on; with ``STALLED`` or ``FAILED``, the error
     :ivar finished_at: when it ended
+    :ivar left: scope -> why the recovery from the diff left it behind (a write in progress touched it, or it cannot
+        be diffed, which is also said at ERROR); empty for a snapshot that does not recover from the diff
     """
 
     result: CatchUpResult
@@ -386,6 +397,7 @@ class CatchUpOutcome:
     holder: str | None = None
     held_since: datetime | None = None
     reason: str | None = None
+    left: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -418,6 +430,15 @@ class SnapshotTable:
         (``(l3, scope) -> values``): a table whose copy keeps only some partitions (reports' LSF county
         projections keep each race's newest run of each model, of a night's hundreds) reads only those. None reads
         every value L3 holds; so does a read whose ask fails, which costs time and never rows
+    :ivar version_column: the L3 column holding the version of the write that last changed a row (the write's epoch,
+        :mod:`~threetears.core.collections.scope_epochs`; NULL for a row no versioned write has changed). With it a
+        scope behind L3 is brought forward from the DIFF (:meth:`ScopedSnapshot.catch_up`): the rows changed since
+        the epoch the copy holds, read from L3 with this column above that epoch, laid over the rows the copy holds;
+        never the scope's every row. When every table of a snapshot names one, the snapshot reads a scope whole from
+        L3 only to rebuild what L2 holds no copy of (``docs/design-scoped-snapshot.md``, "Recovery from the diff")
+    :ivar retained: the copy keeps only some of L3's rows of the table (a backend's retention lets the others go,
+        :meth:`~threetears.core.cache.duckdb.DuckDBBackend.export_rows`): its rows are not counted against L3's, and a
+        diff that finds rows the copy kept gone from L3 (rows it let go might count again) cannot bring it forward
     """
 
     name: str
@@ -427,6 +448,8 @@ class SnapshotTable:
     read_order: tuple[str, ...] = ()
     partition_by: str | None = None
     partition_values: Callable[[Any, str], Awaitable[Sequence[Any]]] | None = field(default=None, compare=False)
+    version_column: str | None = None
+    retained: bool = False
 
     def __post_init__(self) -> None:
         """refuse a read order naming a column twice, or a column outside the key.
@@ -446,6 +469,10 @@ class SnapshotTable:
                 f"{self.name}: partition_by {self.partition_by!r} is not a column of the key {self.key} other than "
                 f"the scope's {self.scope_column!r}"
             )
+        if self.version_column is not None and (
+            self.version_column in self.key or self.version_column == self.scope_column
+        ):
+            raise ValueError(f"{self.name}: version_column {self.version_column!r} is a column of the key or the scope")
         outside = [column for column in self.read_order if column not in self.key]
         if outside:
             raise ValueError(
@@ -1109,10 +1136,16 @@ class _Headway:
 
     :ivar at: :func:`time.monotonic` at its last step
     :ivar what: that step, for the log of a run that stops making progress
+    :ivar landed_at: :func:`time.monotonic` at the last step that LANDED something: a scope committed, a pointer or the
+        index moved, a scope judged. A run watched by its landings (a catch-up, :meth:`ScopedSnapshot._holding`) is
+        stalled once none has come for the bound, however many pages it reads meanwhile
+    :ivar landed: that step
     """
 
     at: float
     what: str
+    landed_at: float = 0.0
+    landed: str = ""
 
 
 #: the run under the rebuild claim the current task belongs to (:meth:`ScopedSnapshot._holding`), inherited by
@@ -1123,11 +1156,14 @@ _HEADWAY: Final[contextvars.ContextVar[_Headway | None]] = contextvars.ContextVa
 )
 
 
-def _headway(what: str) -> None:
+def _headway(what: str, *, landed: bool = False) -> None:
     """record a step of the run under the rebuild claim the current task belongs to; nothing outside one.
 
     :param what: the step
     :ptype what: str
+    :param landed: whether the step landed something (a scope committed, a pointer or the index moved, a scope
+        judged), not only read or wrote on the way to it
+    :ptype landed: bool
     :return: nothing
     :rtype: None
     """
@@ -1135,6 +1171,25 @@ def _headway(what: str) -> None:
     if headway is not None:
         headway.at = time.monotonic()
         headway.what = what
+        if landed:
+            headway.landed_at, headway.landed = headway.at, what
+
+
+#: why the current task may read a scope whole from L3, when it may: the cold rebuild of what L2 holds no copy of
+#: (:meth:`ScopedSnapshot._rebuild`, a scope with no copy in L2 or here). ``None`` everywhere else: in a snapshot
+#: whose every table names a :attr:`SnapshotTable.version_column`, a whole read anywhere else raises
+#: (:meth:`ScopedSnapshot._read_scope`), so no write and no routine catch-up can reach it
+_WHOLE_READ: Final[contextvars.ContextVar[str | None]] = contextvars.ContextVar(
+    "threetears_scoped_snapshot_whole_read", default=None
+)
+
+
+class WholeReadRefused(RuntimeError):
+    """a scope was to be read whole from L3 outside the cold rebuild, in a snapshot that recovers from the diff."""
+
+
+#: how often a wait that lasts is said again, at most
+_WAIT_SAY_SECONDS: Final = 60.0
 
 
 class _Stalled(TimeoutError):
@@ -1152,6 +1207,32 @@ class _CatchUpRecord:
         self.holder: str | None = None
         self.held_since: datetime | None = None
         self.claim_held = False
+        self.left: dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """a scope a recovery left for later: a write in progress touched it, or moved it while it was read.
+
+    :ivar why: what keeps it
+    """
+
+    why: str
+
+
+#: a recovery's answer for a scope neither L2 nor this L1 holds any copy of: only a whole read from L3 rebuilds it
+_NO_COPY: Final = object()
+
+
+def _group_key(value: Any) -> Any:
+    """a group's value as a diff compares it, alike from L3's answer and from the copy's rows.
+
+    :param value: the value
+    :ptype value: Any
+    :return: what it is compared as: an instant or a date as its ISO text, any other value itself
+    :rtype: Any
+    """
+    return value.isoformat() if isinstance(value, datetime) else value
 
 
 class _WriteBegan(Exception):
@@ -2086,6 +2167,14 @@ class ScopedSnapshot:
         self._rows: Mapping[str, Mapping[str, int]] = _updated({t.name: _updated({}) for t in self._tables})
         self._tasks: list[asyncio.Task[None]] = []
         self._listeners: list[Callable[[], None]] = []
+        # wait -> (when it began, when it was last said), for the waits said at most once a minute (_say_waiting)
+        self._waits: dict[str, tuple[float, float]] = {}
+        # whether every table names its version column: a scope behind L3 is then brought forward from the diff, and
+        # a scope is read whole from L3 only to rebuild what L2 holds no copy of (_WHOLE_READ)
+        self._diffable = all(t.version_column is not None for t in self._tables)
+        # scope -> when a recovery here last left it behind (it could not be brought forward from the diff): tried
+        # again no sooner than a minute after, so a scope that cannot be diffed is not asked of L3 at every recheck
+        self._unrecovered: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # status
@@ -2155,6 +2244,7 @@ class ScopedSnapshot:
         """
         self._waiting[flow] = reason
         self._waited[flow] = True
+        self._say_waiting(f"wait:{flow}", f"{flow} waits: {reason}", flow=flow)
         self._settle()
 
     def _begin_run(self, flow: str) -> None:
@@ -2173,7 +2263,64 @@ class ScopedSnapshot:
         """
         if not self._waited.get(flow, False):
             self._waiting.pop(flow, None)
+            self._waited_out(f"wait:{flow}")
         self._settle()
+
+    def _say_waiting(self, key: str, message: str, *, timed: bool = True, **extra: Any) -> None:
+        """say at INFO what a wait waits for, on whom and since when: when it begins, then at most once a minute.
+
+        :param key: the wait, kept apart from every other (``claim``, ``write:catch_up``, ``publish:TX``)
+        :ptype key: str
+        :param message: what it waits for and on whom
+        :ptype message: str
+        :param timed: whether the line says how long it has waited (a read under way says its pages instead)
+        :ptype timed: bool
+        :param extra: what the log record carries besides
+        :ptype extra: Any
+        :return: nothing
+        :rtype: None
+        """
+        now = time.monotonic()
+        since, said = self._waits.get(key, (now, -math.inf))
+        if now - said >= _WAIT_SAY_SECONDS:
+            log.info(
+                "scoped snapshot %s: %s%s",
+                self._name,
+                message,
+                f" (waiting {now - since:.0f} s)" if timed else "",
+                extra={"extra_data": {"wait": key, "waiting_seconds": round(now - since, 1), **extra}},
+            )
+            said = now
+        self._waits[key] = (since, said)
+
+    def _waited_out(self, key: str) -> None:
+        """a wait :meth:`_say_waiting` said has ended.
+
+        :param key: the wait
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        self._waits.pop(key, None)
+
+    def _say_progress(self, what: str, headway: _Headway) -> None:
+        """say at INFO, at most once a minute, what a run under the claim is on: its last step and its last landing.
+
+        :param what: the run
+        :ptype what: str
+        :param headway: its progress
+        :ptype headway: _Headway
+        :return: nothing
+        :rtype: None
+        """
+        now = time.monotonic()
+        self._say_waiting(
+            f"run:{what}",
+            f"{what} holds the rebuild claim: on {headway.what} ({now - headway.at:.0f} s ago); last landed "
+            f"{headway.landed} ({now - headway.landed_at:.0f} s ago)",
+            step=headway.what,
+            landed=headway.landed,
+        )
 
     def _count(self, replacements: Iterable[PartitionReplacement]) -> None:
         """record what each replaced scope now holds, after the replacement committed.
@@ -2275,7 +2422,7 @@ class ScopedSnapshot:
         dropped = [scope for scope, epoch in epochs.items() if epoch is None]
         # the worker takes and lets go of the swap lock itself, whatever happens to this task
         await asyncio.to_thread(self._versioned.swap, replacements, put, dropped)
-        _headway(f"committed {len(replacements)} replacements here")
+        _headway(f"committed {len(replacements)} replacements here", landed=True)
         self._behind = _updated(self._behind, drop=current)
         if count:
             self._count(replacements)
@@ -2443,6 +2590,19 @@ class ScopedSnapshot:
             if await claim.take(max_hold=self._rebuild_stall):
                 held = True
                 break
+        if held:
+            self._waited_out("hold")
+        else:
+            holding = None
+            with contained(f"scoped snapshot {self._name}: asking who holds the rebuild claim failed", log=log):
+                holding = await self._rebuild_lease.held(self._layout.claim_key)
+            self._say_waiting(
+                "hold",
+                "a write's commit and publish run without the rebuild claim: held by "
+                f"{'nobody now' if holding is None else holding.holder} since "
+                f"{'-' if holding is None else holding.acquired_at.isoformat()}",
+                holder=None if holding is None else holding.holder,
+            )
         try:
             yield held
         finally:
@@ -2946,7 +3106,12 @@ class ScopedSnapshot:
         )
         # a scope that failed is tried again at the next recheck, not at once; one that keeps failing
         # is rebuilt from L3, which writes its chunks again
-        stuck = {scope for scope, (failures, _) in self._behind.items() if failures >= _BEHIND_REBUILD_AFTER}
+        now = time.monotonic()
+        stuck = {
+            scope
+            for scope, (failures, _) in self._behind.items()
+            if failures >= _BEHIND_REBUILD_AFTER and now - self._unrecovered.get(scope, -math.inf) >= _WAIT_SAY_SECONDS
+        }
         if stuck:
             await self._rebuild_stuck(stuck)
         self._settle()
@@ -2964,14 +3129,30 @@ class ScopedSnapshot:
             log.info("scoped snapshot %s: another replica holds the claim; %s wait", self._name, sorted(scopes))
             return
         try:
-            log.warning(
-                "scoped snapshot %s: rebuilding %s from L3: their chunks kept failing", self._name, sorted(scopes)
-            )
-            rebuilt = await self._holding(
-                claim,
-                lambda: self._rebuild_scopes(scopes, reason=f"{len(scopes)} scopes could not be applied", flow="sync"),
-                what="a rebuild of scopes that could not be applied",
-            )
+            if self._diffable:
+                log.warning(
+                    "scoped snapshot %s: bringing %s forward from the diff: their chunks kept failing",
+                    self._name,
+                    sorted(scopes),
+                )
+
+                async def recovered() -> list[str]:
+                    return (await self._recover_scopes(scopes, flow="sync"))[0]
+
+                rebuilt: list[str] | None = await self._holding(
+                    claim, recovered, what="a recovery of scopes that could not be applied", by_landing=True
+                )
+            else:
+                log.warning(
+                    "scoped snapshot %s: rebuilding %s from L3: their chunks kept failing", self._name, sorted(scopes)
+                )
+                rebuilt = await self._holding(
+                    claim,
+                    lambda: self._rebuild_scopes(
+                        scopes, reason=f"{len(scopes)} scopes could not be applied", flow="sync"
+                    ),
+                    what="a rebuild of scopes that could not be applied",
+                )
         finally:
             await claim.release()
         # a scope the rebuild brought current left `behind` at its commit (_commit); one it could not
@@ -3770,12 +3951,17 @@ class ScopedSnapshot:
         instead, so it moves with the write rather than waiting for a catch-up that writes back to back keep from
         running. Every table is staged whole, so the stage carries nothing from the scope's current chunks.
 
+        Only in a snapshot that does not recover from the diff (a table names no
+        :attr:`SnapshotTable.version_column`): in one that does it raises :class:`WholeReadRefused`, and a writer
+        whose copy is behind stages from :meth:`rows_at` or leaves the scope to the recovery.
+
         :param scope: the scope
         :ptype scope: str
         :param epoch: the epoch the write will commit
         :ptype epoch: int
         :return: the staged chunks
         :rtype: StagedScope
+        :raises WholeReadRefused: in a snapshot that recovers from the diff
         """
         read = await self._read_scope(scope)
         rows = {part.table: part.arrow if part.arrow is not None else [] for part in read}
@@ -3797,6 +3983,40 @@ class ScopedSnapshot:
             order_by=table.key,
         )
 
+    async def record_staged(self, staged: Sequence[StagedScope], *, carry_at: Mapping[str, int]) -> list[str]:
+        """keep each stage as the change it is (from the scope's rows at ``carry_at`` to its epoch) BEFORE the write
+        commits, so whatever happens to the writer after, any replica can carry the scope's pointer on from L2.
+
+        For the writer, between its last stage and its commit. A record kept here is the stage
+        :meth:`publish_staged` would keep for a pointer it found behind (:class:`_StageRecord`): the catch-up
+        (:meth:`catch_up`) and every publish carry a pointer through the records that follow it, in epoch order --
+        but never past the scope's epoch in L3 (a record of a write that has not committed, or never will, is never
+        applied). A writer killed after its commit and before its publish, or one whose write ``ScopeEpochs.settled``
+        abandons at its own number, so leaves its every staged scope to be carried on in seconds, where it left them
+        to be read from L3 whole. A write that will not commit gives the records back with its stages
+        (:meth:`discard_staged`); a record a pointer has passed is dropped by the next carry, and spares its chunks
+        from the sweep only while it is ahead of its scope's pointer. Never raises: a record that cannot be kept is
+        a recovery that falls back to the diff from L3, and is logged.
+
+        :param staged: the stages, as :meth:`stage` answered them
+        :ptype staged: Sequence[StagedScope]
+        :param carry_at: scope -> its epoch before the write (0 for a scope new to the snapshot), as
+            :meth:`publish_staged` is given it
+        :ptype carry_at: Mapping[str, int]
+        :return: the scopes whose records are kept
+        :rtype: list[str]
+        """
+        kept: list[str] = []
+        gate = asyncio.Semaphore(max(1, self._l2_concurrency))
+
+        async def keep(scope: StagedScope) -> None:
+            async with gate:
+                if await self._keep(_StageRecord.of(scope, int(carry_at.get(scope.scope, 0)), self._schema)):
+                    kept.append(scope.scope)
+
+        await asyncio.gather(*(keep(scope) for scope in staged))
+        return sorted(kept)
+
     async def discard_staged(self, staged: Sequence[StagedScope]) -> None:
         """give back what a write that will never commit staged: its claims released, its chunks retired.
 
@@ -3809,6 +4029,8 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
+        # the records :meth:`record_staged` kept go first: a write that never commits must leave no change to carry
+        await self._drop_kept(_StageRecord.of(scope, 0, self._schema) for scope in staged)
         for scope in staged:
             if scope.claim is not None:
                 await scope.claim.release()
@@ -4004,6 +4226,14 @@ class ScopedSnapshot:
             if pointer is None and behind and kept and current is not None:
                 awaited = self._awaited(carry_at, kept_stages, current.epoch)
                 if awaited is not None and await self._publishing(awaited):
+                    self._say_waiting(
+                        f"publish:{scope.scope}",
+                        f"scope {scope.scope!r}'s stage at epoch {scope.epoch} waits on the write at epoch {awaited}, "
+                        "still publishing (its write claim is live), which carries it on",
+                        scope=scope.scope,
+                        epoch=scope.epoch,
+                        awaited=awaited,
+                    )
                     return "waiting"
             if pointer is None:
                 # nothing can be carried (the pointer is behind and no kept stage reaches carry_at, holds other
@@ -4011,7 +4241,8 @@ class ScopedSnapshot:
                 # scope is left to the catch-up. Left there alone, the scope stayed behind for as long as writes
                 # ran back to back, every later partial write skipped the same way (cobalt prod, 2026-10-31)
                 # read once: the scope's every table at the stage's epoch, whatever pointer it moves from
-                filled = filled or await self._filled(scope)
+                if not self._diffable:
+                    filled = filled or await self._filled(scope)
                 pointer = filled
             if pointer is None:
                 return "skipped"
@@ -4360,7 +4591,7 @@ class ScopedSnapshot:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- housekeeping: a kept stage left behind is dropped by the next publish of its scope, and spares only its own chunks meanwhile
                 contain(exc, log=log, what=f"scoped snapshot {self._name}: dropping a kept stage failed: {exc}")
 
-    async def _carry_kept(self, scopes: Iterable[str]) -> dict[str, int]:
+    async def _carry_kept(self, scopes: Iterable[str], upto: Mapping[str, int] | None = None) -> dict[str, int]:
         """carry each scope's pointer on through the stages kept after it, and drop the kept stages it reached.
 
         Run after this replica moved the scopes' pointers: a writer that found its scope's pointer behind its
@@ -4368,25 +4599,39 @@ class ScopedSnapshot:
         its stage is listed here. Each move is a compare-and-set from the entry the chain was built on, tried
         again from the pointer a racing writer left.
 
+        Never past the scope's epoch in L3: a writer keeps its records before it commits
+        (:meth:`record_staged`), so a record above L3's epoch is a write still committing, or one that never will,
+        and carrying it would put rows on the pointer that L3 may never hold.
+
         :param scopes: the scopes
         :ptype scopes: Iterable[str]
+        :param upto: scope -> its epoch in L3, the furthest it is carried; read from L3 here when ``None``
+        :ptype upto: Mapping[str, int] | None
         :return: scope -> the epoch its pointer was carried to, for each scope carried on
         :rtype: dict[str, int]
         """
         carried: dict[str, int] = {}
         try:
-            await self._carry_kept_into(set(scopes), carried)
+            scopes = set(scopes)
+            if not scopes:
+                return carried
+            limits = dict(upto) if upto is not None else dict(await self._epochs())
+            await self._carry_kept_into(scopes, carried, limits)
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- the pointers this follows already moved; a kept stage not carried on now is carried by the next publish of its scope or the catch-up, so a failure here must not fail the publish that moved them
             contain(exc, log=log, what=f"scoped snapshot {self._name}: carrying kept stages on failed: {exc}")
         return carried
 
-    async def _carry_kept_into(self, scopes: AbstractSet[str], carried: dict[str, int]) -> None:
+    async def _carry_kept_into(
+        self, scopes: AbstractSet[str], carried: dict[str, int], upto: Mapping[str, int]
+    ) -> None:
         """:meth:`_carry_kept`'s body, recording each scope carried on into ``carried`` as it goes.
 
         :param scopes: the scopes
         :ptype scopes: AbstractSet[str]
         :param carried: scope -> the epoch its pointer was carried to
         :ptype carried: dict[str, int]
+        :param upto: scope -> its epoch in L3, the furthest it is carried (a scope it does not name is carried nowhere)
+        :ptype upto: Mapping[str, int]
         :return: nothing
         :rtype: None
         """
@@ -4403,7 +4648,7 @@ class ScopedSnapshot:
                 if reached:
                     await self._drop_kept(reached)
                     remaining = [r for r in remaining if r.epoch > current.epoch]
-                target = self._chained(current, remaining)
+                target = self._chained(current, remaining, upto=int(upto.get(scope, 0)))
                 if target is current or not await self._exist(target.names()):
                     break
                 if await self._move_exactly(target, entry[1]):
@@ -4546,6 +4791,378 @@ class ScopedSnapshot:
         )
         return True
 
+    async def rows_at(self, scope: str, epoch: int, tables: Iterable[str] | None = None) -> dict[str, Any] | None:
+        """a scope's rows of each table at ``epoch``, from L2 (or this L1), never from L3; ``None`` when neither holds it.
+
+        For a writer whose copy is behind the epoch its write changes (the copy holds the scope at an earlier epoch,
+        so it cannot build the scope's rows from it): the rows at ``epoch`` are this L1's when it holds the scope
+        there, else the chunks of the scope's pointer when it is at ``epoch``, or of the pointer carried there through
+        the stages kept after it (:meth:`record_staged`) -- each chunk fetched and checked, as a replica applies one.
+        A pointer past ``epoch``, chunks under other columns, a chain that does not reach it or a chunk gone: ``None``.
+        Then the writer leaves the scope to the recovery, which brings it forward from the diff.
+
+        :param scope: the scope
+        :ptype scope: str
+        :param epoch: the epoch whose rows are wanted
+        :ptype epoch: int
+        :param tables: the tables; every table when ``None``
+        :ptype tables: Iterable[str] | None
+        :return: table -> its rows at ``epoch`` as this L1 types them (a ``pyarrow.Table``), or ``None``
+        :rtype: dict[str, pyarrow.Table] | None
+        :raises ValueError: when a table is not one of the snapshot's
+        """
+        names = [t.name for t in self._tables] if tables is None else list(tables)
+        unknown = sorted(set(names) - {t.name for t in self._tables})
+        if unknown:
+            raise ValueError(f"tables {unknown} are not the snapshot's")
+        rows = await self._local_rows(scope, epoch, names)
+        if rows is None:
+            pointer = await self._pointer_at(scope, epoch)
+            if pointer is not None:
+                try:
+                    rows = await self._chain_rows(pointer, names)
+                except _Lost as exc:
+                    log.info(
+                        "scoped snapshot %s: scope %r's rows at epoch %d could not be read from L2: %s",
+                        self._name,
+                        scope,
+                        epoch,
+                        exc,
+                    )
+        return rows
+
+    async def _local_rows(self, scope: str, epoch: int, names: Sequence[str]) -> dict[str, Any] | None:
+        """a scope's rows of ``names`` as this L1 holds them, when it holds the scope at ``epoch``; else ``None``.
+
+        :return: table -> its rows, or ``None``
+        :rtype: dict[str, pyarrow.Table] | None
+        """
+        by_name = {t.name: t for t in self._tables}
+        async with self._local:
+            applied = self._applied.get(scope)
+            if applied is None or applied.epoch != epoch:
+                return None
+            rows: dict[str, Any] = {}
+            for name in names:
+                table = by_name[name]
+                rows[name] = await asyncio.to_thread(
+                    self._backend.export_partition, name, table.scope_column, scope, order_by=table.key
+                )
+        return rows
+
+    async def _pointer_at(self, scope: str, epoch: int) -> _Pointer | None:
+        """the scope's pointer at ``epoch`` under these columns: as KV holds it, or carried there by its kept stages.
+
+        :return: the pointer, or ``None`` when neither reaches ``epoch``
+        :rtype: _Pointer | None
+        """
+        raw = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
+        current = None if raw is None else _Pointer.decode(raw)
+        if current is None or not self._loadable(current) or current.epoch > epoch:
+            return None
+        reached = current if current.epoch == epoch else self._chained(current, await self._kept_of(scope), upto=epoch)
+        return reached if reached.epoch == epoch else None
+
+    async def _chain_rows(self, pointer: _Pointer, names: Sequence[str]) -> dict[str, Any]:
+        """each named table's rows as ``pointer`` names them: its base, then its pieces in order, each chunk checked.
+
+        :return: table -> its rows
+        :rtype: dict[str, pyarrow.Table]
+        :raises _Lost: when a chunk is gone, unreadable, or holds another count
+        """
+        rows: dict[str, Any] = {}
+        for name in names:
+            base, pieces = pointer.chain(name)
+            if base is None:
+                raise _Lost(f"scope {pointer.scope!r} names no chunk for {name}")
+            parts = [await self._read_chunk(base, pointer.rows.get(name))]
+            parts += [await self._read_chunk(piece.name, piece.rows) for piece in pieces]
+            rows[name] = _concatenated(parts)
+        return rows
+
+    # ------------------------------------------------------------------
+    # recovery from the diff
+    # ------------------------------------------------------------------
+
+    async def _recover_scopes(self, scopes: AbstractSet[str], *, flow: str) -> tuple[list[str], dict[str, str]]:
+        """bring each scope behind L3 forward from the diff, each judged on its own; rebuild whole only what L2 and
+        this L1 hold no copy of.
+
+        Each scope's rows at the epoch a copy holds (its pointer's chunks, or this L1's) and the groups of its rows
+        L3 changed since (:meth:`_recover_one`): read while L3 holds the scope still at one epoch, beside a write in
+        progress too when it has not touched the scope, and published at that epoch. A scope another scope's commit
+        moves meanwhile does not hold this one back, and a scope the write in progress touched is left for after it.
+        A scope with no copy anywhere is the one thing rebuilt whole from L3, said at ERROR.
+
+        :param scopes: the scopes
+        :ptype scopes: AbstractSet[str]
+        :param flow: the control flow, whose wait it records (``catch_up``, ``sync``)
+        :ptype flow: str
+        :return: the scopes brought forward, and scope -> why, for each left behind
+        :rtype: tuple[list[str], dict[str, str]]
+        """
+        caught: list[str] = []
+        left: dict[str, str] = {}
+        cold: list[str] = []
+        waiting: list[str] = []
+        with self._doing(
+            SnapshotPhase.REBUILDING_FROM_L3, f"bringing {len(scopes)} scopes forward from the diff", total=len(scopes)
+        ):
+            for scope in sorted(scopes):
+                outcome = await self._recover_one(scope)
+                _headway(f"judged scope {scope!r} against L3", landed=True)
+                self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
+                if outcome is None:
+                    caught.append(scope)
+                    self._unrecovered.pop(scope, None)
+                elif outcome is _NO_COPY:
+                    cold.append(scope)
+                elif isinstance(outcome, _Pending):
+                    waiting.append(scope)
+                    left[scope] = outcome.why
+                else:
+                    left[scope] = str(outcome)
+                    self._unrecovered[scope] = time.monotonic()
+                    log.error(
+                        "scoped snapshot %s: scope %r cannot be brought forward from the diff: %s; it stays behind "
+                        "(it is never read whole from L3 while L2 holds a copy)",
+                        self._name,
+                        scope,
+                        outcome,
+                        extra={"extra_data": {"scope": scope, "why": str(outcome)}},
+                    )
+        if waiting:
+            self._wait(flow, f"{len(waiting)} scopes wait for a write in progress that touched them: {waiting}")
+        if cold:
+            caught += await self._rebuild_without_copy(set(cold), flow=flow)
+        return caught, left
+
+    async def _rebuild_without_copy(self, scopes: set[str], *, flow: str) -> list[str]:
+        """rebuild whole from L3 the scopes L2 holds no copy of, and this L1 none either: the one whole read a snapshot
+        that recovers from the diff makes outside its cold rebuild.
+
+        :return: the scopes rebuilt
+        :rtype: list[str]
+        """
+        for scope in sorted(scopes):
+            log.error(
+                "scoped snapshot %s: rebuilding %r whole from L3: L2 holds no copy",
+                self._name,
+                scope,
+                extra={"extra_data": {"scope": scope}},
+            )
+        token = _WHOLE_READ.set("L2 holds no copy")
+        try:
+            return (
+                await self._rebuild_scopes(scopes, reason=f"{len(scopes)} scopes L2 holds no copy of", flow=flow) or []
+            )
+        finally:
+            _WHOLE_READ.reset(token)
+
+    async def _held_epoch(self, scope: str) -> int | None:
+        """the scope's epoch in L3 when no write in progress has touched it; ``None`` while one has (or one is in
+        progress that records no touches).
+
+        :return: the epoch, or ``None``
+        :rtype: int | None
+        """
+        settled = await self._settled() if self._settled is not None else None
+        if isinstance(settled, Unsettled):
+            if settled.epochs is None or scope in settled.pending:
+                return None
+            return int(settled.epochs.get(scope, 0))
+        return int((await self._epochs()).get(scope, 0))
+
+    async def _base_of(self, scope: str) -> tuple[int, dict[str, Any]] | None:
+        """the newest copy of a scope this replica can read: its pointer's chunks, or this L1's rows; ``None`` for none.
+
+        :return: the epoch and table -> its rows there, or ``None``
+        :rtype: tuple[int, dict[str, pyarrow.Table]] | None
+        """
+        raw = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
+        pointer = None if raw is None else _Pointer.decode(raw)
+        applied = self._applied.get(scope)
+        names = [t.name for t in self._tables]
+        sources: list[tuple[int, str]] = []
+        if pointer is not None and self._loadable(pointer):
+            sources.append((pointer.epoch, "l2"))
+        if applied is not None:
+            sources.append((applied.epoch, "l1"))
+        for epoch, source in sorted(sources, reverse=True):
+            rows: dict[str, Any] | None = None
+            if source == "l1":
+                rows = await self._local_rows(scope, epoch, names)
+            elif pointer is not None:
+                try:
+                    rows = await self._chain_rows(pointer, names)
+                except _Lost as exc:
+                    log.info("scoped snapshot %s: scope %r's chunks cannot be read: %s", self._name, scope, exc)
+            if rows is not None:
+                return epoch, rows
+        return None
+
+    async def _recover_one(self, scope: str) -> str | _Pending | object | None:
+        """bring one scope forward from the diff and publish it at its epoch in L3 (:meth:`_recover_scopes`).
+
+        L3 holds the scope at one epoch, untouched by any write in progress, before the first read and after the
+        last; every table's rows are then the rows a copy holds at its epoch with every group of rows L3 changed,
+        added or removed since put in their place (:meth:`_diffed_table`).
+
+        :return: ``None`` once published (or already current); ``_NO_COPY`` when no copy is held anywhere;
+            a :class:`_Pending` while a write in progress keeps it; else why it cannot be brought forward
+        :rtype: str | _Pending | object | None
+        """
+        epoch = await self._held_epoch(scope)
+        if epoch is None:
+            return _Pending(f"a write in progress has touched scope {scope!r}")
+        seen = self._seen.get(scope)
+        if seen is not None and seen.epoch >= epoch and self._loadable(seen):
+            return None
+        base = await self._base_of(scope)
+        if base is None:
+            return _NO_COPY
+        held_at, held = base
+        if held_at > epoch:
+            return f"the copy holds it at epoch {held_at}, past L3's {epoch}"
+        composed: dict[str, Any] = {}
+        changed: dict[str, int] = {}
+        for table in self._tables:
+            if held_at == epoch:
+                composed[table.name] = held[table.name]
+                continue
+            outcome = await self._diffed_table(table, scope, held_at, held[table.name])
+            if isinstance(outcome, str):
+                return f"{table.name}: {outcome}"
+            composed[table.name], changed[table.name] = outcome
+        if await self._held_epoch(scope) != epoch:
+            return _Pending(f"scope {scope!r} was written while its diff was read")
+        seen = self._seen.get(scope)
+        if seen is not None and seen.epoch >= epoch and self._loadable(seen):
+            return None
+        pointer = await self._publish_rows(scope, epoch, composed)
+        log.info(
+            "scoped snapshot %s: scope %r brought forward from the diff, epoch %d to %d",
+            self._name,
+            scope,
+            held_at,
+            epoch,
+            extra={
+                "extra_data": {
+                    "scope": scope,
+                    "from": held_at,
+                    "to": epoch,
+                    "rows_read": changed,
+                    "moved": pointer is not None,
+                }
+            },
+        )
+        return None
+
+    async def _diffed_table(self, table: SnapshotTable, scope: str, held_at: int, held: Any) -> tuple[Any, int] | str:
+        """one table's rows of a scope at its epoch in L3, from the rows held at ``held_at`` and what L3 changed since.
+
+        The table's rows are grouped by its partition column, or else the first column it is read in after the
+        scope (a geography, a run): one statement counts each group's rows in L3 and those a write after
+        ``held_at`` stamped (:attr:`SnapshotTable.version_column`). A group a write stamped, one the copy does not
+        hold (that it keeps: :attr:`SnapshotTable.partition_values`), and one whose count is not the copy's (rows
+        removed) is read from L3 whole, pinned to its value; a group L3 holds no more is dropped; every other group
+        is the copy's. So only what moved is read. Then, unless the copy keeps only some of the table
+        (:attr:`SnapshotTable.retained`), its rows must number L3's.
+
+        :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
+        :rtype: tuple[pyarrow.Table, int] | str
+        """
+        version = table.version_column
+        if version is None:
+            return "it names no version column"
+        group = table.partition_by or next((c for c in table.paged_by if c != table.scope_column), None)
+        source, scope_column = quote_identifier(table.name), quote_identifier(table.scope_column)
+        counts = (
+            f"count(*) AS total, count(*) FILTER (WHERE {quote_identifier(version)} > $2) AS changed "
+            f"FROM {source} WHERE {scope_column} = $1"
+        )
+        if group is None:
+            rows = await self._l3.fetch(f"SELECT NULL AS value, {counts}", scope, held_at)  # noqa: S608
+        else:
+            column = quote_identifier(group)
+            rows = await self._l3.fetch(f"SELECT {column} AS value, {counts} GROUP BY {column}", scope, held_at)  # noqa: S608
+        in_l3 = {_group_key(row["value"]): (row["value"], int(row["total"]), int(row["changed"])) for row in rows}
+        values = [None] * held.num_rows if group is None else held.column(group).to_pylist()
+        keys = [_group_key(value) for value in values]
+        held_counts: dict[Any, int] = {}
+        for key in keys:
+            held_counts[key] = held_counts.get(key, 0) + 1
+        wanted: set[Any] | None = None
+        if table.partition_values is not None:
+            try:
+                wanted = {_group_key(value) for value in await table.partition_values(self._l3, scope)}
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed ask is a table judged as one the copy keeps only part of: slower or left behind, never fewer rows; recorded
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        f"scoped snapshot {self._name}: the partition values of {table.name} in scope {scope!r} "
+                        "could not be asked; the diff judges it as a table the copy keeps part of"
+                    ),
+                )
+        some = table.retained and wanted is None
+        reread: list[Any] = []
+        drop: set[Any] = set()
+        total = 0
+        for key, (value, rows_now, stamped) in in_l3.items():
+            if wanted is not None and key not in wanted:
+                drop.add(key)
+                continue
+            total += rows_now
+            had = held_counts.get(key)
+            if stamped or (had is None and not some) or (had is not None and had != rows_now and not some):
+                reread.append(value)
+                drop.add(key)
+            elif had is not None and some and had > rows_now:
+                return f"rows it keeps of {group}={value!r} went from L3, so rows it let go may count again"
+        gone = set(held_counts) - set(in_l3)
+        if gone and some:
+            return f"{len(gone)} groups of {group} it keeps went from L3, so rows it let go may count again"
+        drop |= gone
+        mask = pa.array([key not in drop for key in keys], type=pa.bool_())
+        parts: list[Any] = [held.filter(mask)]
+        columns = tuple(self._backend.column_types(table.name))
+        types = _rail_types(self._backend.column_types(table.name)) if isinstance(self._l3, ArrowL3Reader) else None
+        read = 0
+        for value in reread:
+            where = {table.scope_column: scope} if group is None else {table.scope_column: scope, group: value}
+            pages: list[Any] = []
+            try:
+                await self._read_pages(table, scope, columns, types, where, table.paged_by, None, pages)
+            except ReplyNotArrowError:
+                # NOSILENT: as a whole read does, a value the rail answers otherwise than its Arrow type: dict rows
+                pages = []
+                await self._read_pages(table, scope, columns, None, where, table.paged_by, None, pages)
+            read += sum(page.num_rows for page in pages)
+            parts += pages
+        rows_now = await self._export(table, scope, _concatenated(parts)) if reread or drop else held
+        if not table.retained and rows_now.num_rows != total:
+            return f"L3 holds {total} rows of it, the diff makes {rows_now.num_rows}"
+        return rows_now, read
+
+    async def _publish_rows(self, scope: str, epoch: int, rows: Mapping[str, Any]) -> _Pointer | None:
+        """write a scope's chunks at ``epoch`` from rows this L1 typed and move its pointer; this L1 applies it from
+        its watch, as every replica does, so a copy that cannot take the change now (a full store) never holds L2
+        back.
+
+        :return: the pointer moved to; ``None`` when the scope was already at ``epoch`` or past it
+        :rtype: _Pointer | None
+        """
+        writes = {table.name: _Write(rows[table.name]) for table in self._tables}
+        pointer, held = await self._write_scope(scope, epoch, writes, base=None, move_from=_ANY_ENTRY)
+        moved = held is not None and held == pointer
+        if moved:
+            await self._update_index(add={scope})
+            await self._carry_kept([scope], {scope: epoch})
+            await self._sweeper.retire_older(scope, epoch)
+        self._changed.set()
+        return pointer if moved else None
+
     async def _exist(self, names: Iterable[str]) -> bool:
         """whether every named chunk is in the store.
 
@@ -4570,7 +5187,7 @@ class ScopedSnapshot:
             moved = await self._pointers_bucket.update(key=key, value=pointer.encode(), revision=revision) is not None
         if moved:
             self._note_seen(pointer)
-            _headway(f"moved scope {pointer.scope!r}'s pointer")
+            _headway(f"moved scope {pointer.scope!r}'s pointer", landed=True)
         return moved
 
     async def _move_pointer(self, pointer: _Pointer) -> _Pointer:
@@ -4607,7 +5224,7 @@ class ScopedSnapshot:
         if held is None:
             raise RuntimeError(f"the pointer of scope {pointer.scope!r} kept moving under {_CAS_ATTEMPTS} attempts")
         self._note_seen(held)
-        _headway(f"moved scope {pointer.scope!r}'s pointer")
+        _headway(f"moved scope {pointer.scope!r}'s pointer", landed=True)
         return held
 
     def _note_seen(self, pointer: _Pointer) -> None:
@@ -4662,7 +5279,7 @@ class ScopedSnapshot:
         self._index = settled
         self._index_partial = partial
         self._ever_indexed = True
-        _headway("moved the index")
+        _headway("moved the index", landed=True)
 
     # ------------------------------------------------------------------
     # rebuilding from L3
@@ -4714,7 +5331,14 @@ class ScopedSnapshot:
         :return: one replacement per table, its rows an Arrow table (``None`` for none)
         :rtype: list[PartitionReplacement]
         :raises _WriteBegan: when ``moved`` says a write began
+        :raises WholeReadRefused: in a snapshot that recovers from the diff (every table names its
+            :attr:`SnapshotTable.version_column`), anywhere but the cold rebuild of what L2 holds no copy of
         """
+        if self._diffable and _WHOLE_READ.get() is None:
+            raise WholeReadRefused(
+                f"scoped snapshot {self._name}: scope {scope!r} was to be read whole from L3 outside the rebuild of "
+                "what L2 holds no copy of; a write and a catch-up bring a scope forward from the diff instead"
+            )
         result: list[PartitionReplacement] = []
         for table in self._tables if tables is None else tables:
             parts: list[Any] | None = None
@@ -4790,13 +5414,15 @@ class ScopedSnapshot:
         if table.partition_values is not None:
             try:
                 named = list(await table.partition_values(self._l3, scope))
-            except Exception as exc:  # noqa: BLE001 - a failed ask reads every value instead: slower, never fewer rows
-                log.warning(
-                    "scoped snapshot %s: the partition values of %s in scope %r could not be asked; every value is read",
-                    self._name,
-                    table.name,
-                    scope,
-                    extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- a failed ask reads every value instead: slower, never fewer rows; recorded
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        f"scoped snapshot {self._name}: the partition values of {table.name} in scope {scope!r} "
+                        "could not be asked; every value is read"
+                    ),
+                    extra={"error": f"{type(exc).__name__}: {exc}"},
                 )
             else:
                 for value in sorted(named):
@@ -4855,6 +5481,7 @@ class ScopedSnapshot:
             pages = keyset_arrow_pages(
                 self._l3, select, paged, types=types, where=dict(where), page_size=DEFAULT_PAGE_SIZE
             )
+        read, rows = 0, 0
         async with aclosing(pages):
             ahead = asyncio.ensure_future(_next_page(pages))
             try:
@@ -4862,7 +5489,18 @@ class ScopedSnapshot:
                     ahead = asyncio.ensure_future(_next_page(pages))
                     if len(page):
                         parts.append(await self._export(table, scope, page))
-                    _headway(f"read a page of {table.name} in scope {scope!r} from L3")
+                    read, rows = read + 1, rows + len(page)
+                    _headway(f"read page {read} of {table.name} in scope {scope!r} from L3 ({rows} rows)")
+                    # one line a minute for every read under way, whichever it names: never a line a page
+                    self._say_waiting(
+                        "read",
+                        f"reading {table.name} of scope {scope!r} from L3: page {read}, {rows} rows so far",
+                        timed=False,
+                        table=table.name,
+                        scope=scope,
+                        pages=read,
+                        rows=rows,
+                    )
                     if moved is not None and await moved():
                         raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
             finally:
@@ -4877,7 +5515,14 @@ class ScopedSnapshot:
         """
         return _RebuildClaim(self._rebuild_lease, key=self._layout.claim_key, ttl=self._claim_ttl, name=self._name)
 
-    async def _holding[T](self, claim: _RebuildClaim, work: Callable[[], Coroutine[Any, Any, T]], *, what: str) -> T:
+    async def _holding[T](
+        self,
+        claim: _RebuildClaim,
+        work: Callable[[], Coroutine[Any, Any, T]],
+        *,
+        what: str,
+        by_landing: bool = False,
+    ) -> T:
         """run ``work`` under the claim this replica holds, letting the claim go and stopping it once it stalls.
 
         The claim's renewal runs on its own task, so it says nothing of the work: a run stuck on one await (an
@@ -4893,12 +5538,18 @@ class ScopedSnapshot:
         :ptype work: Callable[[], Coroutine[Any, Any, T]]
         :param what: the run, for the log
         :ptype what: str
+        :param by_landing: watch the run by what it LANDS (a scope committed or judged, a pointer or the index moved),
+            not by every step: a catch-up's every scope is a few statements, so one that reads page after page for
+            the bound and lands nothing is stuck. Election night 2026-11-04 a holder whose reads kept answering, a
+            page at a time, landed nothing for 15 minutes (04:42-04:58Z) and every page renewed its claim
+        :ptype by_landing: bool
         :return: what the run answered
         :rtype: T
         :raises TimeoutError: when it made no progress for ``rebuild_stall``; the claim is let go
         :raises BaseException: what the run raised
         """
-        headway = _Headway(time.monotonic(), "took the claim")
+        now = time.monotonic()
+        headway = _Headway(now, "took the claim", landed_at=now, landed="took the claim")
 
         async def watched() -> T:
             # in this task's own context, which every task the run starts inherits; nothing else sees it
@@ -4911,12 +5562,14 @@ class ScopedSnapshot:
         try:
             while not task.done():
                 await asyncio.wait([task], timeout=look)
-                idle = time.monotonic() - headway.at
+                idle = time.monotonic() - (headway.landed_at if by_landing else headway.at)
+                self._say_progress(what, headway)
                 if task.done() or idle < stall:
                     continue
+                last = f"{headway.landed}; its last step: {headway.what}" if by_landing else headway.what
                 message = (
-                    f"scoped snapshot {self._name}: {what} made no progress for {idle:.0f} s (its last step: "
-                    f"{headway.what}); it lets the rebuild claim go and stops"
+                    f"scoped snapshot {self._name}: {what} made no progress for {idle:.0f} s (its last "
+                    f"{'landing' if by_landing else 'step'}: {last}); it lets the rebuild claim go and stops"
                 )
                 log.error(message, extra={"extra_data": {"snapshot": self._name, "last_step": headway.what}})
                 await claim.release()
@@ -4925,6 +5578,8 @@ class ScopedSnapshot:
         except asyncio.CancelledError:
             await self._stop_run(task, stall)
             raise
+        finally:
+            self._waited_out(f"run:{what}")
         return task.result()
 
     async def _stop_run(self, task: asyncio.Task[Any], within: float) -> None:
@@ -4968,11 +5623,20 @@ class ScopedSnapshot:
         claim = self._claim()
         if await claim.take():
             kept = False
+            # the cold rebuild: L2 holds no copy this replica can load (NATS lost it, or it never held one)
+            token = _WHOLE_READ.set(reason)
             try:
+                if self._diffable:
+                    log.error(
+                        "scoped snapshot %s: rebuilding every scope whole from L3: L2 holds no copy (%s)",
+                        self._name,
+                        reason,
+                    )
                 caught = await self._holding(
                     claim, lambda: self._rebuild_scopes(None, reason=reason, flow="sync"), what="a rebuild from L3"
                 )
             finally:
+                _WHOLE_READ.reset(token)
                 kept = await claim.release()
             # a rebuild that lost its claim meanwhile may have run beside another: it leaves the sweep
             # to a rebuild that held the claim throughout
@@ -5450,6 +6114,7 @@ class ScopedSnapshot:
             holder=record.holder,
             held_since=record.held_since,
             reason=reason,
+            left=MappingProxyType(dict(record.left)),
         )
 
     def _lagging(self, epochs: Mapping[str, int], scopes: Iterable[str]) -> dict[str, ScopeLag]:
@@ -5492,21 +6157,24 @@ class ScopedSnapshot:
             record.claim_held = True
             if holding is not None:
                 record.holder, record.held_since = holding.holder, holding.acquired_at
-            log.info(
-                "scoped snapshot %s: another replica holds the claim; it catches up",
-                self._name,
-                extra={
-                    "extra_data": {
-                        "holder": record.holder,
-                        "held_since": None if record.held_since is None else record.held_since.isoformat(),
-                        "behind": len(behind),
-                    }
-                },
+            self._say_waiting(
+                "claim",
+                f"the catch-up of {len(behind)} scopes behind L3 waits on the rebuild claim, held by "
+                f"{record.holder or 'a replica it does not name'} since "
+                f"{'an unknown time' if record.held_since is None else record.held_since.isoformat()}",
+                holder=record.holder,
+                held_since=None if record.held_since is None else record.held_since.isoformat(),
+                behind=len(behind),
             )
             return False
+        self._waited_out("claim")
         try:
             await self._holding(
-                claim, lambda: self._catch_up_under_claim(behind, gone, record), what="a catch-up from L3"
+                claim,
+                lambda: self._catch_up_under_claim(behind, gone, record),
+                what="a catch-up from L3",
+                # a catch-up's every scope is a few statements: one that lands nothing for the bound is stuck
+                by_landing=self._diffable,
             )
         finally:
             await claim.release()
@@ -5525,20 +6193,29 @@ class ScopedSnapshot:
         :rtype: None
         """
         if behind:
-            # first from L2: a scope whose kept stages carry its pointer to the epoch L3 records reads nothing from L3
-            carried = await self._carry_kept(behind)
+            # first from L2: a scope whose kept stages carry its pointer to the epoch L3 records reads nothing from L3;
+            # never past L3's epoch, so a record of a write not yet committed is never carried
+            carried = await self._carry_kept(behind, record.epochs)
             if carried:
                 await self._sweeper.retire_older_many(carried)
             from_l2 = sorted(s for s, epoch in carried.items() if epoch >= int(record.epochs.get(s, 0)))
             behind = behind - set(from_l2)
-            rebuilt = (
-                (await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up") or [])
-                if behind
-                else []
-            )
+            if self._diffable:
+                # then from the diff, each scope judged on its own: a commit to another scope between two reads holds
+                # none back, and nothing is read whole while a copy of the scope is held
+                rebuilt, record.left = await self._recover_scopes(behind, flow="catch_up") if behind else ([], {})
+            else:
+                rebuilt = (
+                    (
+                        await self._rebuild_scopes(behind, reason=f"{len(behind)} scopes behind L3", flow="catch_up")
+                        or []
+                    )
+                    if behind
+                    else []
+                )
             record.caught = from_l2 + rebuilt
             # a stage kept for a scope rebuilt at its epoch or past it will never move it: dropped
-            await self._carry_kept(rebuilt)
+            await self._carry_kept(rebuilt, record.epochs)
         if gone:
             await self._remove_scopes(gone)
 

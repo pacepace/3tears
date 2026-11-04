@@ -6,6 +6,68 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+Next version: v0.91.0 (new public API on `ScopedSnapshot` and `SnapshotTable`, so a minor bump).
+
+### core: a scoped snapshot recovers a behind copy from the diff, never by reading a scope whole from L3
+
+**Fixed:** on election night (cobalt prod, 2026-11-04) the copy fell behind L3 again and again (a full shared store,
+writers killed mid-write by pod rolls, a write racing its own copy), and every recovery re-read each behind scope's
+whole night from L3: 47 states, then 30, tens of minutes each, while pages went stale. Four paths led there: a writer
+killed between its stage and its publish left no record of its stage (one was kept only after a commit, and only for
+a pointer found behind); a writer whose own copy was behind staged the scope whole from L3 (`stage_from_l3`) or read
+the tables its stage left out from L3 (`_filled_from_l3`); a catch-up threw away every scope it read once ANY write
+had committed meanwhile, so writes every few seconds kept it from finishing; and a scope with no record was rebuilt
+from L3 whole. Now:
+
+- **Records before the commit.** `ScopedSnapshot.record_staged(staged, carry_at=)` keeps each stage as the change it
+  is (from the scope's rows at `carry_at` to its epoch) before the writer commits. Whatever happens to the writer
+  after, any replica carries the scope's pointer on from L2 in seconds. A record is never carried past the scope's
+  epoch in L3 (a write still committing, or one that never will), by a catch-up or by any publish; `discard_staged`
+  drops a write's records with its stages.
+- **Rows from L2.** `ScopedSnapshot.rows_at(scope, epoch, tables=None)` answers a scope's rows at an epoch from this
+  L1, or from the pointer carried there by its records, never from L3; `None` when neither reaches it. A writer
+  whose copy is behind builds its stage from it, or leaves the scope to the recovery.
+- **The diff.** `SnapshotTable.version_column` names the L3 column holding the version of the write that last
+  changed a row. When every table of a snapshot names one, a scope behind L3 is brought forward from the rows a
+  copy holds (its pointer's chunks, or this L1's) and the groups of rows L3 changed since (grouped by
+  `partition_by`, or else the first column the table is read in after the scope): one statement counts each group's
+  rows and those stamped since, and only a group stamped, missing or of another count is read, pinned to its value.
+  A table not `retained` must then number L3's rows. `SnapshotTable.retained` marks a table the copy keeps only some
+  rows of (a retention); a diff that finds rows such a table kept gone from L3 cannot bring it forward. Such a scope
+  stays behind, said at ERROR and in the new `CatchUpOutcome.left`, and is never guessed at.
+- **Each scope on its own.** The recovery judges each scope by its own epoch (unchanged, and untouched by a write in
+  progress, before its first read and after its last), so a commit to another scope never throws its work away. It
+  writes L2 before this L1 takes the change, so a copy that cannot take it now (a full store) never holds L2 back.
+- **One whole read left.** In a snapshot whose every table names a version column, a scope is read whole from L3 only
+  to rebuild what L2 holds no copy of: the cold rebuild (NATS lost the snapshot, or never held it), and a scope
+  neither L2 nor this L1 holds. Each says so at ERROR (`rebuilding <scope> whole from L3: L2 holds no copy`). Any
+  other whole read raises the new `WholeReadRefused`: `stage_from_l3` refuses, a staged publish whose pointer is
+  behind with no record to bridge it leaves the scope to the recovery (its stage kept), and a scope whose chunks
+  cannot be applied is brought forward from the diff over this L1's rows. A snapshot with a table that names no
+  version column keeps the earlier behaviour, whole reads included.
+
+### core: the stall breaker watches what a catch-up lands, and every wait says what it waits on
+
+**Fixed:** election night the rebuild claim was held 04:38:57-04:58Z while its holder's last progress was at
+04:42:31Z: every page its L3 reads answered counted as progress, so the watchdog never let the claim go, and nothing
+said what it waited on. A catch-up in a snapshot that recovers from the diff is now watched by what it LANDS (a scope
+committed or judged, a pointer or the index moved): one that reads on and lands nothing for `rebuild_stall` lets the
+claim go. The cold rebuild is still watched by its every step (a large scope's read is long and correct).
+
+**Added:** every wait says at INFO what it waits for, on whom and since when, when it begins and then at most once a
+minute while it lasts: a catch-up waiting on the rebuild claim (its holder and since when), a flow waiting on a write
+in progress, a staged publish waiting on an earlier write still publishing, a writer's commit running without the
+claim (who holds it), a run under the claim (its last step and last landing), and the reads under way (table, scope,
+pages, rows).
+
+### core: a scoped snapshot table can be read from L3 one partition value at a time
+
+**Added:** `SnapshotTable.partition_by`, a key column a scope's rows are read one value at a time (each value's rows
+paged on their own), and `SnapshotTable.partition_values`, an ask of L3 for the values a rebuild reads. On
+YugabyteDB a keyset page over a key of many columns scanned the scope's rows from their start, so a scope's read grew
+with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1 billion keys scanned
+for ~30 million rows). A failed ask reads every value: slower, never fewer rows.
+
 ## v0.90.0 -- 2026-11-02
 
 ### core: a settling commit evicts its keys from L1 in one write

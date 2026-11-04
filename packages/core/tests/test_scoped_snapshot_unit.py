@@ -13,10 +13,12 @@ import contextlib
 import asyncio
 import json
 import linecache
+import re
 import logging
 import sys
 import threading
 import time
+from dataclasses import replace
 from types import FrameType
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
@@ -5004,3 +5006,454 @@ async def test_a_restarted_replica_beside_a_dead_write_never_waits_and_serves_ev
     await asyncio.sleep(0.2)  # several rechecks while the write stays open
     assert restarted.status().phase is SnapshotPhase.READY, restarted.status()
     await restarted.stop()
+
+
+# ----------------------------------------------------------------------
+# recovery from the diff (election night 2026-11-04): a behind copy is brought forward from its writers' records
+# and the rows L3 changed since the epoch it holds, never by reading a scope whole from L3 while a copy is held
+# ----------------------------------------------------------------------
+
+_DIFFED = (
+    SnapshotTable(name="results", scope_column="state", key=("county",), version_column="source_version"),
+    SnapshotTable(name="totals", scope_column="state", key=("state",), version_column="source_version"),
+)
+
+
+class _VersionedL3:
+    """L3 for the results and the totals, every row stamped with the version of the write that last changed it.
+
+    It answers the statements a scoped snapshot sends: the scopes, each group's counts (all, and those stamped
+    after an epoch), and the rows of a scope or of one group in it. A read of the results pinned to a scope alone
+    is a whole read.
+    """
+
+    def __init__(self) -> None:
+        self.tables: dict[str, list[dict[str, Any]]] = {
+            "results": [
+                {"county": "c1", "state": "TX", "votes": 1, "source_version": 1},
+                {"county": "c3", "state": "TX", "votes": 3, "source_version": 1},
+                {"county": "c2", "state": "DE", "votes": 2, "source_version": 1},
+            ],
+            "totals": [
+                {"state": "TX", "total": 4, "source_version": 1},
+                {"state": "DE", "total": 2, "source_version": 1},
+            ],
+        }
+        self.epochs: dict[str, int] = {}
+        self.writing = False
+        self.pending: set[str] | None = None
+        #: reads of a scope's rows pinned to the scope alone, and pinned to a group in it
+        self.whole_reads = 0
+        self.diff_reads = 0
+        self.after_read: Callable[[str], None] = lambda scope: None
+
+    def write(self, epoch: int, table: str, row: dict[str, Any] | None, *, drop: str | None = None) -> None:
+        """a write at ``epoch``: ``row`` upserted (stamped), or the row keyed ``drop`` deleted; no epoch moves."""
+        key = "county" if table == "results" else "state"
+        rows = self.tables[table]
+        gone = drop if row is None else row[key]
+        self.tables[table] = [r for r in rows if not (r[key] == gone and (row is None or r["state"] == row["state"]))]
+        if row is not None:
+            self.tables[table].append({**row, "source_version": epoch})
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        table = re.search(r'FROM "(\w+)"', sql)
+        assert table is not None, sql
+        rows = self.tables[table.group(1)]
+        if "DISTINCT" in sql:
+            return [{"scope": s} for s in sorted({r["state"] for r in rows})]
+        if "count(*) AS total" in sql:
+            scope, after = args
+            grouped = re.match(r'SELECT "(\w+)" AS value', sql)
+            groups: dict[Any, list[dict[str, Any]]] = {}
+            for r in rows:
+                if r["state"] == scope:
+                    groups.setdefault(r[grouped.group(1)] if grouped else None, []).append(r)
+            return [
+                {
+                    "value": value,
+                    "total": len(members),
+                    "changed": sum(1 for r in members if (r["source_version"] or 0) > after),
+                }
+                for value, members in groups.items()
+            ]
+        pins = {column: args[int(n) - 1] for column, n in re.findall(r'"(\w+)" = \$(\d+)', sql)}
+        # the totals hold one row a scope: its one group is the scope, so only a results read is ever whole
+        if set(pins) == {"state"} and table.group(1) == "results":
+            self.whole_reads += 1
+        else:
+            self.diff_reads += 1
+        found = [
+            {k: v for k, v in r.items() if k != "source_version"}
+            for r in rows
+            if all(r.get(column) == value for column, value in pins.items())
+        ]
+        self.after_read(str(pins.get("state")))
+        return found
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        return None
+
+
+def _l3_holds(snapshot: ScopedSnapshot, l3: _VersionedL3) -> bool:
+    """whether a replica's L1 holds exactly what L3 does, every table of every scope."""
+    with snapshot.read() as cursor:
+        counties = cursor.execute("SELECT county, state, votes FROM results ORDER BY county").fetchall()
+        totals = cursor.execute("SELECT state, total FROM totals ORDER BY state").fetchall()
+    return counties == sorted((r["county"], r["state"], r["votes"]) for r in l3.tables["results"]) and totals == sorted(
+        (r["state"], r["total"]) for r in l3.tables["totals"]
+    )
+
+
+async def _diffed_pair(
+    l3: Any | None = None, *, backend: DuckDBBackend | None = None, tables: Any = _DIFFED, **options: Any
+) -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, Any]:
+    """a writer and a replica over the diffed results and totals, both ready at epoch 1 (the first one built cold)."""
+    pointers, store, l3 = _Pointers(), _Store(), l3 or _VersionedL3()
+    writer, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    replica, _, _, _ = _snapshot(
+        tables=tables, pointers=pointers, store=store, backend=backend or _two_table_backend(), l3=l3, **options
+    )
+    await _started(writer, pointers)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    # the cold rebuild that built the first copy is not what a test counts
+    l3.whole_reads = l3.diff_reads = 0
+    return writer, replica, pointers, store, l3
+
+
+async def _texas_at_2(writer: ScopedSnapshot, l3: _VersionedL3) -> list[Any]:
+    """write 2 changes TX: c1's votes, c3 deleted, c4 added, its total; the rows land in L3, its stage is made."""
+    l3.write(2, "results", {"county": "c1", "state": "TX", "votes": 10})
+    l3.write(2, "results", None, drop="c3")
+    l3.write(2, "results", {"county": "c4", "state": "TX", "votes": 4})
+    l3.write(2, "totals", {"state": "TX", "total": 14})
+    tx = [{k: v for k, v in r.items() if k != "source_version"} for r in l3.tables["results"] if r["state"] == "TX"]
+    return [await writer.stage("TX", 2, {"results": tx, "totals": [{"state": "TX", "total": 14}]})]
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["killed_before_commit", "killed_after_commit"])
+async def test_a_writer_killed_between_stage_and_publish_is_recovered_from_its_records_with_no_l3_read(
+    committed: bool,
+) -> None:
+    """election night: a writer killed between its stage and its commit (its write abandoned at its own number), or
+    between its commit and its publish, left no record, and the survivor read every state it touched whole from L3.
+    Its records, kept before the commit, carry the survivor's pointers on from L2."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    stages = await _texas_at_2(writer, l3)
+    assert await writer.record_staged(stages, carry_at={"TX": 1}) == ["TX"]
+    # the writer dies: its commit lands (or its write is abandoned at its own number, ScopeEpochs.settled), no publish
+    l3.epochs["TX"] = 2
+    del committed
+    reads = (l3.whole_reads, l3.diff_reads)
+
+    outcome = await replica.catch_up()
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
+    assert outcome.caught == ("TX",)
+    assert (l3.whole_reads, l3.diff_reads) == reads, "a scope its writer's records carry was read from L3"
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
+    assert _l3_holds(replica, l3)
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a record outlived its carry"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_writer_killed_mid_write_is_recovered_from_the_diff_with_no_whole_read() -> None:
+    """election night: a writer killed mid-write (gate mode: states written, nothing staged) left only L3's rows; the
+    survivor read each state's whole night from L3. Now it reads the groups the write stamped and the counts of the
+    rest, and its copy is L3's, a deleted row gone too."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    await _texas_at_2(writer, l3)  # its stage is lost with the writer
+    l3.epochs["TX"] = 2
+
+    outcome = await replica.catch_up()
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
+    assert l3.whole_reads == 0, "a scope with a copy held was read whole from L3"
+    assert l3.diff_reads == 3, "the diff read more than the groups the write changed (c1, c4, and the total)"
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
+    assert _l3_holds(replica, l3)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_write_whose_copy_is_a_version_behind_reads_its_base_from_l2_with_no_l3_read() -> None:
+    """election night: AP began right after LSF's commit, before it reached AP's copy; its copy was a version behind
+    and it staged the state whole from L3. The rows at the epoch it needs come from the pointer, or the pointer
+    carried on by the stage kept for it, never from L3."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    stages = await _texas_at_2(writer, l3)
+    await writer.record_staged(stages, carry_at={"TX": 1})
+    l3.epochs["TX"] = 2
+    statements = (l3.whole_reads, l3.diff_reads)
+
+    rows = await replica.rows_at("TX", 2)
+
+    assert rows is not None, "the pointer carried by its kept stage did not reach epoch 2"
+    assert sorted(rows["results"].column("county").to_pylist()) == ["c1", "c4"]
+    assert rows["totals"].column("total").to_pylist() == [14]
+    assert await replica.rows_at("TX", 3) is None, "rows at an epoch no copy reaches"
+    assert (l3.whole_reads, l3.diff_reads) == statements
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_staged_write_whose_pointer_is_behind_is_never_completed_from_l3() -> None:
+    """a stage whose pointer is behind the epoch it carries from, with no kept stage to bridge them: the write leaves
+    the scope to the recovery (its stage kept) rather than read the tables it left out whole from L3; the catch-up
+    brings it forward from the diff."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    # a write at 2 changed TX's total and published nothing
+    l3.write(2, "totals", {"state": "TX", "total": 9})
+    l3.epochs["TX"] = 2
+    l3.write(3, "results", {"county": "c5", "state": "TX", "votes": 5})
+    tx = [{k: v for k, v in r.items() if k != "source_version"} for r in l3.tables["results"] if r["state"] == "TX"]
+    stage = await writer.stage("TX", 3, {"results": tx})
+    l3.epochs["TX"] = 3
+
+    assert await writer.publish_staged([stage], carry_at={"TX": 2}) == ([], ["TX"])
+
+    assert l3.whole_reads == 0, "the stage's left-out tables were read whole from L3"
+    outcome = await replica.catch_up()
+    assert outcome.caught == ("TX",), outcome
+    assert l3.whole_reads == 0
+    await _until(lambda: replica.applied_epoch("TX") == 3, what="the replica applied epoch 3")
+    assert _l3_holds(replica, l3)
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_catch_up_while_another_scope_commits_between_every_read_finishes_in_one_attempt() -> None:
+    """election night's livelock: a catch-up threw away every scope it read once ANY write had committed meanwhile,
+    and with writes every few seconds it never finished. Each scope is judged on its own epoch."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    # a third scope, which commits between every read the catch-up makes
+    l3.tables["results"].append({"county": "c9", "state": "CA", "votes": 0, "source_version": 1})
+    l3.tables["totals"].append({"state": "CA", "total": 0, "source_version": 1})
+    l3.epochs["CA"] = 1
+    assert (await writer.catch_up()).caught == ("CA",)
+    l3.whole_reads = 0
+    for scope, votes in (("TX", 10), ("DE", 20)):
+        l3.write(2, "results", {"county": "c1" if scope == "TX" else "c2", "state": scope, "votes": votes})
+    l3.epochs.update({"TX": 2, "DE": 2})
+
+    def ca_commits(scope: str) -> None:
+        l3.epochs["CA"] += 1
+
+    l3.after_read = ca_commits
+
+    outcome = await replica.catch_up()
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
+    assert sorted(outcome.caught) == ["DE", "TX"], outcome
+    assert l3.whole_reads == 0
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_record_above_l3s_epoch_is_never_carried() -> None:
+    """a writer keeps its records before it commits: one whose commit has not landed (or never will) is never put on
+    a pointer, by a catch-up or a publish, until L3 reaches its epoch."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    stages = await _texas_at_2(writer, l3)
+    await writer.record_staged(stages, carry_at={"TX": 1})
+    l3.writing, l3.pending = True, {"TX"}  # the write has not committed
+
+    await replica.catch_up()
+    assert await replica.publish(
+        "DE", 2, {"results": [_county("c2", 2, "DE")], "totals": [{"state": "DE", "total": 2}]}
+    )
+    await writer.catch_up()
+
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1, "a record above L3's epoch was carried"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_write_that_never_commits_leaves_no_record() -> None:
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    stages = await _texas_at_2(writer, l3)
+    await writer.record_staged(stages, carry_at={"TX": 1})
+    assert [key for key in pointers.entries if key.startswith("enr.r.")]
+
+    await writer.discard_staged(stages)
+
+    assert not [key for key in pointers.entries if key.startswith("enr.r.")], "a discarded write's record stayed"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_snapshot_that_recovers_from_the_diff_reads_a_scope_whole_only_where_l2_holds_no_copy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the one whole read left is the rebuild of what L2 holds no copy of, said at ERROR; a writer asking to stage a
+    scope from L3 is refused."""
+    caplog.set_level(logging.ERROR)
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    assert "rebuilding every scope whole from L3: L2 holds no copy" in caplog.text, "the cold rebuild said nothing"
+    with pytest.raises(scoped_snapshot_module.WholeReadRefused):
+        await writer.stage_from_l3("TX", 2)
+    # a scope new to L3, with no copy anywhere: rebuilt whole, and said so
+    l3.tables["results"].append({"county": "c7", "state": "CA", "votes": 7, "source_version": 2})
+    l3.tables["totals"].append({"state": "CA", "total": 7, "source_version": 2})
+    l3.epochs["CA"] = 2
+    caplog.clear()
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == ("CA",)
+    assert "rebuilding 'CA' whole from L3: L2 holds no copy" in caplog.text
+    assert l3.whole_reads == 1  # the new scope's results, read whole
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_the_diff_cannot_prove_stays_behind_said_at_error_and_is_never_read_whole(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a copy that keeps only some of a table's rows, whose kept rows L3 dropped: rows it let go might count again,
+    which the diff cannot tell. The scope is not guessed at and not read whole; it stays behind, and the catch-up
+    says why."""
+    tables = (replace(_DIFFED[0], retained=True), _DIFFED[1])
+    writer, replica, pointers, _, l3 = await _diffed_pair(tables=tables)
+    l3.write(2, "results", None, drop="c3")
+    l3.epochs["TX"] = 2
+    caplog.set_level(logging.ERROR)
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == ()
+    assert "TX" in outcome.left and "rows it let go may count again" in outcome.left["TX"], outcome
+    assert "cannot be brought forward from the diff" in caplog.text
+    assert l3.whole_reads == 0
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1
+    await writer.stop()
+    await replica.stop()
+
+
+class _EndlessL3(_VersionedL3):
+    """a versioned L3 whose reads of TX's results, once ``endless``, never end: page after page, each answered, never
+    the last (a read of c1 alone, or of the whole scope)."""
+
+    endless = False
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        pinned = '"county" = $2' in sql and args[1] == "c1"
+        whole = '"county" = $2' not in sql and '"results"' in sql and "count(*)" not in sql and "DISTINCT" not in sql
+        if self.endless and args and args[0] == "TX" and (pinned or whole):
+            self.diff_reads += 1
+            await asyncio.sleep(0.01)
+            given = 2 if pinned else 1  # the cursor follows the pinned values
+            cursor = args[given] if len(args) > given else None
+            after = int(str(cursor)[1:]) if cursor is not None else 0
+            return [{"county": f"c{after + i + 1:09d}", "state": "TX", "votes": i} for i in range(1001)]
+        return await super().fetch(sql, *args)
+
+
+async def test_a_catch_up_whose_reads_keep_answering_but_land_nothing_lets_the_claim_go() -> None:
+    """election night: the claim was held 04:38:57-04:58Z while its holder's last progress was at 04:42:31; every page
+    its reads answered counted as progress and renewed nothing but the claim. A catch-up is watched by what it
+    lands, so one that reads on and lands nothing lets the claim go within the bound."""
+    l3 = _EndlessL3()
+    writer, replica, pointers, _, _ = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=0.5))
+    l3.write(2, "results", {"county": "c1", "state": "TX", "votes": 10})
+    l3.epochs["TX"] = 2
+    l3.endless = True
+
+    catching = asyncio.create_task(replica.catch_up())
+    await _until(lambda: l3.diff_reads > 0, what="the catch-up to read")
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the holder to let the claim go", timeout=10)
+    outcome = await asyncio.wait_for(catching, timeout=10)
+
+    assert outcome.result is CatchUpResult.STALLED, outcome
+    assert l3.diff_reads > 20, "the reads stopped answering: this is not the case under test"
+    await writer.stop()
+    await replica.stop()
+
+
+class _FullingBackend(DuckDBBackend):
+    """an L1 that refuses every change while ``full`` (a shared store with no room), as reports' SharedArrowFull."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.full = False
+
+    def replace_partitions(self, replacements: Any) -> Any:
+        if self.full:
+            raise MemoryError("no room for the change")
+        return super().replace_partitions(replacements)
+
+
+async def test_a_copy_whose_l1_is_full_still_moves_l2_and_catches_up_from_it_once_room_returns() -> None:
+    """election night: the shared store was full for hours; a catch-up committed to its own L1 before it wrote L2, so
+    L2 stopped moving too and every new pod inherited the lag. The recovery writes L2 first; a full L1 applies it from
+    L2 once it has room, with nothing read from L3."""
+    metadata = MetaData()
+    _RESULTS.to_sqlalchemy_table(metadata)
+    _TOTALS.to_sqlalchemy_table(metadata)
+    full = _FullingBackend()
+    full.initialize(metadata)
+    writer, replica, pointers, _, l3 = await _diffed_pair(backend=full)
+    await _texas_at_2(writer, l3)  # its stage is lost: the recovery reads the diff
+    l3.epochs["TX"] = 2
+    full.full = True
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2, "the full L1 held L2 back"
+    await _until(lambda: writer.applied_epoch("TX") == 2, what="another replica applied it from L2")
+    assert replica.applied_epoch("TX") == 1
+    reads = (l3.whole_reads, l3.diff_reads)
+    full.full = False
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the full replica applied it once it had room")
+    assert _l3_holds(replica, l3)
+    assert (l3.whole_reads, l3.diff_reads) == reads
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_publish_beside_a_catch_up_beside_a_write_never_waits_on_either() -> None:
+    """the writer/catch-up cycle of election night (a write's publish waiting on a catch-up's claim, the catch-up
+    waiting on the write): the write holds the claim across its commit and publish, a catch-up meanwhile answers at
+    once that the claim is held, and the write's publish goes on; once it is through, the catch-up runs."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    stages = await _texas_at_2(writer, l3)
+    l3.epochs["DE"] = 2
+    l3.write(2, "totals", {"state": "DE", "total": 3})
+
+    async with writer.holding_rebuilds() as held:
+        assert held
+        outcome = await asyncio.wait_for(replica.catch_up(), timeout=2)
+        assert outcome.result is CatchUpResult.CLAIM_HELD
+        l3.epochs["TX"] = 2
+        moved, _ = await asyncio.wait_for(writer.publish_staged(stages, carry_at={"TX": 1}), timeout=2)
+        assert moved == ["TX"]
+    outcome = await asyncio.wait_for(replica.catch_up(), timeout=5)
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP and outcome.caught == ("DE",), outcome
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_wait_says_what_it_waits_for_on_whom_and_since_when_once_a_minute_not_at_every_look(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """election night went blind at every stall: a catch-up waiting on another replica's claim said nothing useful,
+    or said it at every retry. It says what it waits on, whose claim and since when, then at most once a minute."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    l3.write(2, "totals", {"state": "DE", "total": 3})
+    l3.epochs["DE"] = 2
+    caplog.set_level(logging.INFO)
+
+    async with writer.holding_rebuilds() as held:
+        assert held
+        for _ in range(3):
+            assert (await replica.catch_up()).result is CatchUpResult.CLAIM_HELD
+
+    said = [r.getMessage() for r in caplog.records if "waits on the rebuild claim" in r.getMessage()]
+    assert len(said) == 1, said
+    assert "held by " in said[0] and " since 20" in said[0], said
+    await writer.stop()
+    await replica.stop()
