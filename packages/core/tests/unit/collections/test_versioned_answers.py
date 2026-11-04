@@ -561,3 +561,64 @@ class TestAPurgeNeverFailsAReadNorWedgesARetirement:
         await retirer.retire_older_than(2)
         hold.set()
         assert _text(await asyncio.wait_for(computing, timeout=2.0)) == "late"
+
+
+def _index_key(name: str) -> str:
+    """the bucket key of the index row ``name``."""
+    return f"{_SCOPE}.{_TABLE}_index.{name}"
+
+
+class TestForgettingAScope:
+    async def test_a_scope_forgotten_leaves_no_record_no_versions_row_and_no_answer(self) -> None:
+        """each deploy announces a scope of its own, and nothing removed one: the records and versions rows grew by
+        the scopes of every release. A scope forgotten leaves nothing; another scope is untouched."""
+        nats = FakeNatsClient()
+        answers = _replica(nats)
+        for order, version in ((1, "v1"), (2, "v2")):
+            await answers.answer(version, "a", _Computer(version), order=order, scope="r1")
+            await answers.announce(version, order, scope="r1")
+        await answers.answer("w1", "a", _Computer("w1"), order=1, scope="r2")
+        await answers.announce("w1", 1, scope="r2")
+        bucket = await _bucket(nats)
+
+        assert await answers.forget("r1") is True
+
+        assert await answers.announced("r1") is None
+        assert _index_key("announced_r1") not in bucket.keys()
+        assert _index_key("versions_r1") not in bucket.keys()
+        assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2")) == ([], [])
+        assert (_shard_keys(bucket, "v1"), _shard_keys(bucket, "v2")) == ([], [])
+        recorded = await answers.announced("r2")
+        assert recorded is not None and recorded.latest.version == "w1"
+        assert len(_entry_keys(bucket, "w1")) == 1
+        # forgetting it again, or a scope never announced, is the same as once
+        assert await answers.forget("r1") is True
+        assert await answers.forget("never") is True
+
+    async def test_an_announce_landing_while_a_scope_is_forgotten_is_kept(self) -> None:
+        """the forget read the record, then an announce rose it before the delete: the announce is newer than the
+        forget and wins. Nothing of the scope is erased, and the forget says it left the scope."""
+        nats = FakeNatsClient()
+        forgetting, announcing = _replica(nats), _replica(nats)
+        await forgetting.announce("v1", 1, scope="r1")
+        bucket = await _bucket(nats)
+        arrived, release = asyncio.Event(), asyncio.Event()
+        delete = bucket.delete
+
+        async def held_delete(*args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("key") == _index_key("announced_r1") and not release.is_set():
+                arrived.set()
+                await release.wait()
+            return await delete(*args, **kwargs)
+
+        bucket.delete = held_delete  # type: ignore[method-assign]
+        forget = asyncio.create_task(forgetting.forget("r1"))
+        await asyncio.wait_for(arrived.wait(), timeout=2)
+        await announcing.answer("v2", "a", _Computer("v2"), order=2, scope="r1")
+        await announcing.announce("v2", 2, scope="r1")
+        release.set()
+
+        assert await asyncio.wait_for(forget, timeout=2) is False
+        recorded = await announcing.announced("r1")
+        assert recorded is not None and recorded.latest.version == "v2", "the newer announce was erased"
+        assert len(_entry_keys(bucket, "v2")) == 1, "the newer announce's answers were retired"

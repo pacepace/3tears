@@ -3110,7 +3110,9 @@ async def test_a_rebuild_that_dies_part_way_names_no_snapshot_complete_and_serve
     l3.failing = "NV"
 
     await snapshot.start()
-    await _until(lambda: "failed" in snapshot.status().detail, what="the rebuild failed at NV")
+    # the history keeps the failure: the detail says "failed" only until the next pass begins, which a pointer
+    # change starts at once, so a wait on the detail waited on a window of a few milliseconds
+    await _until(lambda: SnapshotPhase.FAILED in snapshot.status().history, what="the rebuild failed at NV")
 
     assert "enr.s.DE" in pointers.entries, "a scope read before the failure was not published"
     assert "enr.s.TX" not in pointers.entries
@@ -3120,7 +3122,11 @@ async def test_a_rebuild_that_dies_part_way_names_no_snapshot_complete_and_serve
     other, _, _, _ = _snapshot(l3=l3, pointers=pointers, store=store)
     l3.epochs = dict.fromkeys(_SIZES, 1)
     await other.start()
-    await asyncio.sleep(0.3)
+    # its first pass is over: it rebuilt and failed at NV too, or waited on the claim the first holds
+    await _until(
+        lambda: {SnapshotPhase.FAILED, SnapshotPhase.WAITING} & set(other.status().history),
+        what="the other replica's first pass",
+    )
     assert not other.is_ready and other.status().source is None, "a partial rebuild was loaded as the snapshot"
     await other.stop()
 

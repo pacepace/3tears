@@ -1284,6 +1284,69 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         """
         return _announced_from(await self._index.ensure(f"{_ANNOUNCED}{scope}"), self._index.table_name)
 
+    async def forget(self, scope: str) -> bool:
+        """remove a scope a host no longer announces: its announced-version record, its versions row, and every
+        answer the row still names.
+
+        For a host whose scopes come and go (one a deploy, nothing reading at it once the next is out): each leaves
+        a record and a versions row that nothing else removes, so they grow by the scopes of every release. Every
+        change is a compare-and-set through the index, as every other change here. The record is deleted only as
+        this call read it: an :meth:`announce` that lands between the read and the delete keeps the scope (it is
+        newer than this call), and nothing else of it is touched. The scope's answers are then retired below the
+        order the record held (or, with no record, the versions row's newest), so a version answered past it is
+        kept; the versions row goes once it names no version. This replica's own background retirement of the
+        scope is let finish first, so it cannot write the row again after. A scope with nothing left is ``True``
+        at once: forgetting one twice is the same as once. The keys deleted are purged, as a retirement's are.
+
+        :param scope: the scope, as :meth:`announce` and :meth:`answer` were given it
+        :ptype scope: str
+        :return: whether nothing of the scope is left: ``False`` when an announce kept it, or a version past the
+            record's (or one still being written) kept its versions row; a later call finishes it
+        :rtype: bool
+        :raises KvError: when the index could not be read or changed
+        :raises ConcurrentModificationError: when the index kept changing past the retry budget
+        """
+        retirement = self._retirements.pop(scope, None)
+        if retirement is not None and retirement.task is not None:
+            # its failures are recorded by itself: here only its end matters
+            await asyncio.gather(retirement.task, return_exceptions=True)
+        name, row_name = f"{_ANNOUNCED}{scope}", _versions_row(scope)
+        touched: list[str] = []
+        read = await self._index.read_l2(name)
+        if read is not None:
+            seen = read.get("members")
+
+            def drop_as_read(row: dict[str, Any] | None) -> _Action:
+                # an announce since the read changed the record: it is newer than this call, and it stays
+                if row is None or row.get("members") != seen:
+                    return ("noop", None)
+                return ("delete", None)
+
+            if (await self._index.l2_cas_mutate(name, drop_as_read)).action == "deleted":
+                touched.append(self._relative(self._index.l2_key(name)))
+            elif await self._index.read_l2(name) is not None:
+                return False
+        record = _announced_from(read, self._index.table_name)
+        versions = await self._index.read_l2(row_name)
+        gone = versions is None
+        if versions is not None:
+            members: dict[str, int] = dict(versions["members"])
+            bound = record.latest.order if record is not None else max(members.values(), default=None)
+            if bound is not None:
+                await self.retire_older_than(bound + 1, scope=scope)
+
+            def drop_empty(row: dict[str, Any] | None) -> _Action:
+                return ("delete", None) if row is not None and not row["members"] else ("noop", None)
+
+            outcome = await self._index.l2_cas_mutate(row_name, drop_empty)
+            if outcome.action == "deleted":
+                touched.append(self._relative(self._index.l2_key(row_name)))
+            gone = outcome.action == "deleted" or await self._index.read_l2(row_name) is None
+        await self._purge(touched)
+        if touched:
+            log.info("forgot a scope: table=%s scope=%s gone=%s", self.table_name, scope, gone)
+        return gone
+
     async def retire_older_than(self, order: int, *, scope: str = "") -> int:
         """delete every answer this owner holds at a version of the scope of a lower order.
 

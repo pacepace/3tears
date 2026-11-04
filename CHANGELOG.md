@@ -69,6 +69,17 @@ pages, rows). Each wait ends where it resolves (a stage's when its scope's point
 waiting, the claim's when a catch-up takes it or finds nothing behind, the reads' when the last under way ends), so
 the next one says how long it has waited from its own start.
 
+### core: a scope a host no longer announces can be forgotten
+
+**Added:** `VersionedAnswers.forget(scope)` removes a scope's announced-version record, its versions row and every
+answer the row still names. A host whose scopes come and go (reports announces one a deploy) left a record and a
+versions row per scope that nothing removed, so they grew by the scopes of every release. Every change is a
+compare-and-set through the index. The record is deleted only as the call read it: an `announce` that lands between
+the read and the delete is newer and wins, and nothing of the scope is touched (`False`). Answers are retired below
+the order the forgotten record held, so a version answered past it is kept; the versions row goes once it names no
+version. Forgetting a scope with nothing left answers `True`, as many times as it is called; deleted keys are purged
+as a retirement's are.
+
 ### core: a whole read of a scope never loses a row to a NULL in a column it is paged by
 
 **Fixed:** a scope's L3 read pages by its key (or `read_order`), each page past the last row's values. A NULL in a
