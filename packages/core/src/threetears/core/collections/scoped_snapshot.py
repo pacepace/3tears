@@ -408,6 +408,12 @@ class SnapshotTable:
         about a page's rows; the scope's rows are put back in key order once read. Every column is one of
         ``key``'s: a keyset page steps past its last row by comparing every paged column, and a NULL makes that
         comparison NULL, so the rows after one would be dropped with no count to see it; a key column is never NULL
+    :ivar partition_by: a key column a scope's rows are read from L3 one value at a time: the scope's values of it
+        read first, then each value's rows paged on their own, in the value's order. On YugabyteDB a keyset page
+        over a key of many columns is not a seek: each page scanned the scope's rows from their start, so a scope's
+        read grew with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1
+        billion keys scanned for ~30 million rows, no state of 39 rebuilt in 28 minutes). Pinned to one value,
+        a page scans that value's rows alone. None reads the scope whole
     """
 
     name: str
@@ -415,6 +421,7 @@ class SnapshotTable:
     key: tuple[str, ...]
     append_only: bool = False
     read_order: tuple[str, ...] = ()
+    partition_by: str | None = None
 
     def __post_init__(self) -> None:
         """refuse a read order naming a column twice, or a column outside the key.
@@ -425,6 +432,13 @@ class SnapshotTable:
         """
         if len(set(self.read_order)) != len(self.read_order):
             raise ValueError(f"{self.name}: read_order names a column twice: {self.read_order}")
+        if self.partition_by is not None and (
+            self.partition_by not in self.key or self.partition_by == self.scope_column
+        ):
+            raise ValueError(
+                f"{self.name}: partition_by {self.partition_by!r} is not a column of the key {self.key} other than "
+                f"the scope's {self.scope_column!r}"
+            )
         outside = [column for column in self.read_order if column not in self.key]
         if outside:
             raise ValueError(
@@ -4757,16 +4771,66 @@ class ScopedSnapshot:
         :raises _WriteBegan: when ``moved`` says a write began
         """
         columns = tuple(self._backend.column_types(table.name))
-        where = {table.scope_column: scope}
+        parts: list[Any] = []
+        if table.partition_by is None:
+            await self._read_pages(
+                table, scope, columns, types, {table.scope_column: scope}, table.paged_by, moved, parts
+            )
+            return parts
+        # the scope's values of the partition column, then each value's rows on their own (SnapshotTable.partition_by)
+        values = await self._l3.fetch(
+            f"SELECT DISTINCT {quote_identifier(table.partition_by)} AS value FROM {quote_identifier(table.name)} "  # noqa: S608
+            f"WHERE {quote_identifier(table.scope_column)} = $1 ORDER BY 1",
+            scope,
+        )
+        paged = tuple(column for column in table.paged_by if column != table.partition_by)
+        for row in values:
+            where = {table.scope_column: scope, table.partition_by: row["value"]}
+            await self._read_pages(table, scope, columns, types, where, paged, moved, parts)
+        return parts
+
+    async def _read_pages(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        columns: tuple[str, ...],
+        types: Mapping[str, Any] | None,
+        where: Mapping[str, Any],
+        paged: tuple[str, ...],
+        moved: Callable[[], Awaitable[bool]] | None,
+        parts: list[Any],
+    ) -> None:
+        """the rows ``where`` names of one table, a page at a time, typed by this L1 and added to ``parts``
+        (:meth:`_read_table`).
+
+        :param table: the table
+        :ptype table: SnapshotTable
+        :param scope: the scope
+        :ptype scope: str
+        :param columns: the columns read
+        :ptype columns: tuple[str, ...]
+        :param types: each column's Arrow type as the rail answers it, or None for dict rows
+        :ptype types: Mapping[str, pyarrow.DataType] | None
+        :param where: the columns pinned, and their values
+        :ptype where: Mapping[str, Any]
+        :param paged: the columns the pages are ordered and paged by
+        :ptype paged: tuple[str, ...]
+        :param moved: asked between pages: whether a write has begun since the read started
+        :ptype moved: Callable[[], Awaitable[bool]] | None
+        :param parts: where each page's typed rows go
+        :ptype parts: list[pyarrow.Table]
+        :return: nothing
+        :rtype: None
+        :raises _WriteBegan: when ``moved`` says a write began
+        """
         pages: AsyncGenerator[Any, None]
         if types is None:
-            pages = l3_row_pages(self._l3, table.name, columns, table.paged_by, where=where)
+            pages = l3_row_pages(self._l3, table.name, columns, paged, where=dict(where))
         else:
             select = f"SELECT {', '.join(quote_identifier(c) for c in columns)} FROM {quote_identifier(table.name)}"  # noqa: S608
             pages = keyset_arrow_pages(
-                self._l3, select, table.paged_by, types=types, where=where, page_size=DEFAULT_PAGE_SIZE
+                self._l3, select, paged, types=types, where=dict(where), page_size=DEFAULT_PAGE_SIZE
             )
-        parts: list[Any] = []
         async with aclosing(pages):
             ahead = asyncio.ensure_future(_next_page(pages))
             try:
@@ -4780,7 +4844,6 @@ class ScopedSnapshot:
             finally:
                 # the page fetched ahead goes with a read that stops: the generator is closed only once it is done
                 await _given_up(ahead)
-        return parts
 
     def _claim(self) -> _RebuildClaim:
         """a fresh claim on the rebuild.

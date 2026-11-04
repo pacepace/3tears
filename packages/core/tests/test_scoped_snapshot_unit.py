@@ -4687,6 +4687,77 @@ def test_a_read_order_naming_a_column_outside_the_key_is_refused() -> None:
         SnapshotTable(name="t", scope_column="state", key=("race", "county"), read_order=("office",))
 
 
+class _PartitionedL3(_L3):
+    """L3 as YugabyteDB answers a keyset page over a key of many columns: no seek, so a page scans the scope's rows
+    from their start, unless the partition column is pinned too (a seek to that value's rows). ``scanned`` counts the
+    rows each read, ``partition_reads`` the reads of a scope's partition values."""
+
+    def __init__(self, rows: list[dict[str, Any]], partition: str) -> None:
+        super().__init__(rows)
+        self.partition = partition
+        self.scanned = 0
+        self.partition_reads = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "AS value" in sql:
+            self.partition_reads += 1
+            scope = [r for r in self.rows if r["state"] == args[0]]
+            self.scanned += len(scope)
+            return [{"value": v} for v in sorted({r[self.partition] for r in scope})]
+        if "DISTINCT" in sql:
+            return await super().fetch(sql, *args)
+        order = [part.strip().strip('"') for part in sql.split("ORDER BY", 1)[1].split("LIMIT")[0].split(",")]
+        limit = int(sql.rsplit("LIMIT", 1)[1])
+        pinned = f'"{self.partition}" = ' in sql.split("ORDER BY", 1)[0]
+        state, value = args[0], (args[1] if pinned else None)
+        cursor = tuple(args[2 if pinned else 1 :]) or None
+
+        def place(row: dict[str, Any]) -> tuple[Any, ...]:
+            return tuple(row[column] for column in order)
+
+        scope = sorted(
+            (r for r in self.rows if r["state"] == state and (not pinned or r[self.partition] == value)), key=place
+        )
+        self.scanned += len(scope)
+        return [dict(r) for r in scope if cursor is None or place(r) > cursor][:limit]
+
+
+async def test_a_scope_read_a_partition_value_at_a_time_scans_each_value_once_not_the_scope_per_page() -> None:
+    """election night 2026-11-04: reports' LSF county projections, keyed (state, run_id, ...), paged by the whole key
+    on YugabyteDB, scanned each state's rows from their start every page: ~1.1 billion keys for ~30 million rows and
+    no state of 39 rebuilt in 28 minutes. Pinned to one run at a time, a page scans that run's rows alone; the copy
+    holds the same rows, in key order."""
+    rows = _votes_by_rows(races=30, counties=200)
+    tx = sum(1 for r in rows if r["state"] == "TX")
+    held: dict[str | None, Any] = {}
+    scanned: dict[str | None, int] = {}
+    for partition in (None, "race"):
+        l3 = _PartitionedL3(rows, partition="race")
+        backend = _votes_by_backend(_OrderedBackend())
+        assert isinstance(backend, _OrderedBackend)
+        tables = (SnapshotTable(name="votes_by", scope_column="state", key=("race", "county"), partition_by=partition),)
+        snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=10)
+        await snapshot.stop()
+        held[partition] = backend.execute_query("SELECT * FROM votes_by ORDER BY state, race, county")
+        scanned[partition] = l3.scanned
+        assert all(given == sorted(given) for given in backend.given), "a scope was published out of key order"
+        assert l3.partition_reads == (0 if partition is None else 2), "one read of each scope's values"
+    pages = -(-tx // _PAGE)
+    assert len(held["race"]) == len(rows)
+    assert held["race"] == held[None]
+    assert scanned[None] >= pages * tx, f"the whole key's pages read {scanned[None]} rows"
+    assert scanned["race"] <= 3 * tx, f"a partition at a time read {scanned['race']} rows of {tx}"
+
+
+def test_a_partition_column_outside_the_key_or_the_scope_column_is_refused() -> None:
+    with pytest.raises(ValueError, match="partition_by"):
+        SnapshotTable(name="t", scope_column="state", key=("race", "county"), partition_by="office")
+    with pytest.raises(ValueError, match="partition_by"):
+        SnapshotTable(name="t", scope_column="state", key=("state", "race"), partition_by="state")
+
+
 class _SlowL3(_L3):
     """L3 answering each of a scope's keyset pages after ``wait`` seconds, recording when each fetch begins and ends."""
 
