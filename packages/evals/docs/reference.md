@@ -657,7 +657,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`report_html(report: Report, *, static: bool = False) -> str`
 - **`report_markdown`** · *host contract* · function · Render a report as Markdown.
   <br>`report_markdown(report: Report) -> str`
-- **`reporter_cell_timeout_s`** · function · The wall-clock ceiling of one reporter cell, derived from the ceilings it wraps.
+- **`reporter_cell_timeout_s`** · function · Retired: the wall-clock ceiling one reporter cell had, the memo writer's two requests then its judge phase.
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`reporter_kind_contract`** · function · Retired: the analysis reporter kind's contract, the host's seats ignored; `REPORTER_KIND_CONTRACT`.
   <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
@@ -669,7 +669,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 **Classes**
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
-- **`AsRecordedReporterKind`** · class · The memo each case's campaign actually got, replayed — the calibration candidate.
+- **`AsRecordedReporterKind`** · class · Retired: a case's recorded memo replayed. Building one refuses, naming the writer kind that replaces it.
 - **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
 - **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next steps, how the campaign was set up, then one fold per aspect.
@@ -677,8 +677,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
 - **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
-- **`ReporterKind`** · class · A (prompt preset, generator model) candidate: generates a memo over each case's bundle.
-- **`ReporterLabel`** · model · One reader's written verdict on a recorded memo, mapped to the dimension it bears on.
+- **`ReporterKind`** · class · Retired: the memo writer as a candidate. Building one refuses, naming the writer kind that replaces it.
 - **`ReporterOverlays`** · model · Retired: the analysis reporter's one overlay, the memo writer's prompt preset; no launch reads it.
 - **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
@@ -693,8 +692,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`ABSENT`** · constant (str) · What an absent or non-finite number reads as. Never `0`, which would say something was measured.
   <br>`= '—'`
-- **`AS_RECORDED_MODEL`** · constant (str) · The candidate model name the as-recorded candidate runs under.
-  <br>`= 'as-recorded'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
 - **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · The analysis generator's default system prompt.
@@ -705,7 +702,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= 5`
 - **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
   <br>`= 66003`
-- **`REPORTER_KIND`** · constant (str) · The `candidate_kind` a reporter template declares.
+- **`REPORTER_KIND`** · constant (str) · Retired: the `candidate_kind` a reporter template declares.
   <br>`= 'analysis_reporter'`
 - **`REPORTER_KIND_CONTRACT`** · *host contract* · constant (KindContract) · Retired: the analysis reporter kind's contract, now one with no overlay and no seat, which makes nothing launchable.
 

@@ -2,13 +2,16 @@
 
 The analysis reporter kind is retired with the memo writer and the report planner it measured. Pinned here:
 
-- **The case bank, its curation, its calibration read and its three actions are gone.** No root exports them, a read
-  of one raises ``AttributeError`` as for any unknown name, and the catalogue holds no ``reporter_*`` action.
+- **The case bank, its curation, its calibration read and its three actions are gone,** and so are the kind's case,
+  label and memo-rendering names. No root exports them, a read of one raises ``AttributeError`` as for any unknown
+  name, and the catalogue holds no ``reporter_*`` action.
 - **The contract and launch names a host binds at import still import**, each read warning with a
   ``DeprecationWarning`` that names the ``report_writer`` kind replacing it and says the next minor removes it,
   attributed to the line that read it.
 - **None of them makes the kind launchable.** The contract holds no overlay and seats nothing, whatever seats a host
-  passes; the template check and the three launch operations refuse, naming ``writer_template_create``.
+  passes; the template check, the three launch operations and building either reporter kind refuse, naming
+  ``writer_template_create``. ``REPORTER_KIND`` still names the kind a stored template declares, and the cell ceiling
+  keeps its answer (``test_wall_clock_ceilings``).
 """
 
 from __future__ import annotations
@@ -26,10 +29,12 @@ from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import KindContract
 from threetears.evals.run import LaunchRequest
 from threetears.evals.schema import EvalTemplate
+from threetears.evals.schema.models import JudgedArtifact
 
 #: Each root's names the reporter cases took with them: never exported again.
 REMOVED = {
     "threetears.evals.analysis": [
+        "AS_RECORDED_MODEL",
         "AmbiguousPair",
         "CalibrationCase",
         "CalibrationCell",
@@ -37,13 +42,22 @@ REMOVED = {
         "CriterionDrift",
         "DimensionReading",
         "FrozenReporterCase",
+        "LABEL_BANDS",
+        "LabelCriterion",
+        "LabelDirection",
         "LabelReading",
+        "LabelVerdict",
+        "PreparedReporter",
         "ReporterCalibration",
+        "ReporterCase",
         "ReporterCaseBank",
         "ReporterCaseStore",
+        "ReporterLabel",
+        "WriterMessageCheck",
         "freeze_reporter_case",
         "frozen_case_receipt",
         "live_reporter_cases",
+        "render_memo_as_written",
         "reporter_calibration",
         "reporter_case_bank",
         "set_reporter_case_archived",
@@ -65,9 +79,13 @@ REMOVED = {
 #: Each root's names kept for one minor: what a host binds at import.
 SHIMMED = {
     "threetears.evals.analysis": [
+        "AsRecordedReporterKind",
+        "REPORTER_KIND",
         "REPORTER_KIND_CONTRACT",
+        "ReporterKind",
         "ReporterOverlays",
         "refuse_undeliverable_reporter_template",
+        "reporter_cell_timeout_s",
         "reporter_kind_contract",
     ],
     "threetears.evals.ops": [
@@ -170,6 +188,33 @@ def test_each_launch_operation_refuses_naming_the_writer_kind() -> None:
         with pytest.raises(ValidationFailedError, match="'memo-reporter': the analysis reporter kind is retired") as e:
             call()
         assert e.value.remedy is not None and "writer_template_create" in e.value.remedy
+
+
+def test_the_kind_name_is_the_one_a_stored_reporter_template_declares() -> None:
+    assert _read("threetears.evals.analysis", "REPORTER_KIND") == "analysis_reporter"
+
+
+def test_building_either_reporter_kind_refuses_naming_the_writer_kind() -> None:
+    generating = _read("threetears.evals.analysis", "ReporterKind")
+    recorded = _read("threetears.evals.analysis", "AsRecordedReporterKind")
+    builds = [
+        lambda: generating(
+            prompt="p", prompt_id="eval_analysis_gen", prompt_version=None, client=None, model="m", host=None
+        ),
+        recorded,
+    ]
+    for build, name in zip(builds, ("ReporterKind", "AsRecordedReporterKind"), strict=True):
+        with pytest.raises(ValidationFailedError, match=f"{name}: the analysis reporter kind is retired") as refused:
+            build()
+        assert refused.value.remedy is not None and "writer_template_create" in refused.value.remedy
+
+
+def test_the_reporter_kinds_keep_the_shape_a_host_s_annotations_name() -> None:
+    for name in ("ReporterKind", "AsRecordedReporterKind"):
+        kind = _read("threetears.evals.analysis", name)
+        assert kind.judged_artifact is JudgedArtifact.DOCUMENT
+        assert kind.max_concurrent_cells is None
+        assert callable(kind.prepare) and callable(kind.invoke)
 
 
 def test_the_launch_types_keep_their_shapes_for_a_host_s_annotations() -> None:

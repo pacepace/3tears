@@ -16,8 +16,9 @@ recording, usage capture, the cell summary, storage — reads a
 :class:`~threetears.evals.kernel.candidate_kind.CandidateOutput`. The protocol is
 :mod:`threetears.evals.kernel.candidate_kind`; every implementation belongs to whoever owns its
 subject, and reaches the runner as a :class:`KindFactory` on :attr:`RunnerOptions.candidate_kinds`
-with its collaborators already bound. A host's kinds live in its own adapter; the one this
-package ships is the reporter kind, :mod:`threetears.evals.analysis.reporter_kind`.
+with its collaborators already bound. A host's kinds live in its own adapter; the ones this
+package ships are the judge kind (:mod:`threetears.evals.run.judge_kind`) and the report writer's
+(:mod:`threetears.evals.ops.report_writer.writer_kind`).
 
 The host reaches this loop only through the :class:`~threetears.evals.kernel.host.eval_host.EvalHost`
 it is handed — its storage, trace sink, cell timeout, failure describer, blocking-I/O executor and

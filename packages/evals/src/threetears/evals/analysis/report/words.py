@@ -1,9 +1,8 @@
-"""The words a report is read in — one vocabulary for the memo as written and for the page.
+"""The words a report is read in — one vocabulary for every surface a page is read on.
 
-A confidence tier, an evidence tier, a verdict and an arm are each spelled once, here, and both readers of an
-analysis — the memo the reporter eval's judge reads (:func:`~threetears.evals.analysis.reporter_kind.render_memo_as_written`)
-and the :class:`~threetears.evals.analysis.report.model.Report` every door renders — take them from this module.
-Two spellings of one arm on two surfaces would read as two arms.
+A confidence tier, an evidence tier, a verdict and an arm are each spelled once, here, and the
+:class:`~threetears.evals.analysis.report.model.Report` every door renders takes them from this module. Two spellings
+of one arm on two surfaces would read as two arms.
 
 **The first two screens speak a reader's words, not the engine's.** A trial is one case run once on one arm, and it
 is passed, failed (the candidate's failure) or lost (the test setup's). The engine's own nouns for the same things —

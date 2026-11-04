@@ -1044,9 +1044,8 @@ def fingerprint_criterion(dim: RubricDim | str) -> str:
     """The fingerprint of a criterion: the digest of the words and scale a dimension is judged on.
 
     **The criterion is the dimension's definition, not its id.** A template rubric dimension contributes its
-    ``name``, ``description``, ``scale`` and ``scoring_guide`` — the fields
-    :class:`~threetears.evals.analysis.reporter_kind.LabelCriterion` freezes for a reporter label, plus the name
-    the judge is told it is scoring. Templates are edited in place, so a dimension id outlives its wording; a
+    ``name``, ``description``, ``scale`` and ``scoring_guide`` — the words and scale a person's label was written
+    against, plus the name the judge is told it is scoring. Templates are edited in place, so a dimension id outlives its wording; a
     label keyed by the id would follow an output to a dimension that now asks something else, and be read as
     agreement with a question nobody put to the person. Keyed by the definition, a reworded dimension (or one
     moved to another scale) is a new criterion that no earlier label claims. Its ``axis`` is left out: it says

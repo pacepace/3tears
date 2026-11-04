@@ -1,7 +1,7 @@
 """The memo writer's prompt is retired as the default: the planner's is what a host seeds and a generation runs.
 
 A new analysis is written by the report planner under ``eval_report_plan``. The writer's ``eval_analysis_gen`` stays
-registered only for the memo reporter cases (kind version 1) that generate a memo candidate, and for reading old memos.
+registered until the memo writer itself leaves the package.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import pytest
 from threetears.evals import analysis
 from threetears.evals.analysis import plan_prompt
 from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
-from threetears.evals.analysis.reporter_kind import MEMO_WRITER_CALLS
 from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, SEED_PROMPTS
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import AnalysisGeneration
@@ -22,7 +21,7 @@ from threetears.evals.ops import AnalysisGeneration
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
 
 #: The modules a generation runs through: from the ``analysis_generate`` action to the stored document's analysis, and
-#: the planner's path (which the reporter kind runs) to its two calls.
+#: the planner's path to its two calls.
 GENERATION_PATH = (
     "ops/analysis.py",
     "ops/host.py",
@@ -74,6 +73,5 @@ def test_no_module_on_the_generation_path_names_the_writers_prompt_or_entry_poin
     assert not named & WRITER_NAMES, f"{relative} reaches the memo writer: {sorted(named & WRITER_NAMES)}"
 
 
-def test_the_writers_prompt_stays_registered_for_memo_reporter_cases():
+def test_the_writers_prompt_stays_registered_until_the_memo_writer_leaves():
     assert ANALYSIS_GEN_PROMPT in {entry.prompt_type for entry in SEED_PROMPTS}
-    assert MEMO_WRITER_CALLS == 2

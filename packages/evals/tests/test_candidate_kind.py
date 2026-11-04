@@ -1468,13 +1468,14 @@ async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_buil
 def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
     """The declaration is what picks the axes, so each kind this package ships is pinned.
 
-    The engine ships the reporter kinds; a host's own kinds (a conversational turn, a classifier)
-    are pinned by that host's suite.
+    The engine ships the judge kind and the report writer's; a host's own kinds (a conversational turn, a
+    classifier) are pinned by that host's suite.
     """
-    from threetears.evals.analysis.reporter_kind import AsRecordedReporterKind, ReporterKind
+    from threetears.evals.ops.report_writer.writer_kind import ReportWriterKind
+    from threetears.evals.run import JudgeKind
 
-    assert ReporterKind.judged_artifact is JudgedArtifact.DOCUMENT
-    assert AsRecordedReporterKind.judged_artifact is JudgedArtifact.DOCUMENT
+    assert ReportWriterKind.judged_artifact is JudgedArtifact.DOCUMENT
+    assert JudgeKind.judged_artifact is JudgedArtifact.UNJUDGED
 
 
 def test_an_account_refusal_must_record_the_apparatus_fault_it_is():

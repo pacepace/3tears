@@ -282,9 +282,7 @@ def plan_user_message(
 ) -> str:
     """The user message a plan generation's structure call opens with: what the planner reads of the evidence.
 
-    The report input's planner view, then code's facts (:func:`first_plan_request` says what they hold). One function,
-    called by :func:`first_plan_request` and by the reporter eval, which judges a recorded plan against exactly what its
-    planner read (:class:`~threetears.evals.analysis.reporter_kind.ReporterCase`), so the two cannot drift. Its digest
+    The report input's planner view, then code's facts (:func:`first_plan_request` says what they hold). Its digest
     is what a generation records as ``user_message_digest``.
 
     :param report_input: The campaign's report input.

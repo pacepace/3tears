@@ -12,7 +12,6 @@ Beside them sit the refusals the same work added where a ``None`` was a guess:
 
 - a rubric-dim name is namespaced on the MODEL, so a bare one is unrepresentable — in a template
   rubric, a judge config's binding, a calibration rating and a proposer's draft alike;
-- a reporter case pins a recorded memo, its writer's message and that message's digest together;
 - a run's recorded lever map is dated by the identity version that recorded it;
 - an unjudged run is a recorded level in its context key, not an unrecorded judge.
 """
@@ -27,13 +26,6 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from threetears.evals.analysis.generator import user_message_digest
-from threetears.evals.analysis.reporter_kind import (
-    LabelCriterion,
-    ReporterCase,
-    ReporterLabel,
-    judge_case_material,
-)
 from threetears.evals.kernel import (
     IDENTITY_VERSION,
     EvalStorage,
@@ -166,9 +158,9 @@ def _rescore(**fields: Any) -> JudgeRescore:
             id="CalibrationRating.rubric_dim",
         ),
         # Every place a judged dim's id is STORED, not only where one is authored: a score, a
-        # re-judge's record, the run's per-dim maps, a result's per-dim maps, the decision surface,
-        # and a reporter case's label. A bare name stored in any of them would bind, pool or
-        # compare as the global name the authored guard exists to refuse.
+        # re-judge's record, the run's per-dim maps, a result's per-dim maps and the decision surface.
+        # A bare name stored in any of them would bind, pool or compare as the global name the
+        # authored guard exists to refuse.
         pytest.param(
             lambda name: RubricScore(dim=name, score=3, scale="ordinal", axis="capability", judge_temperature=0.0),
             id="RubricScore.dim",
@@ -212,10 +204,6 @@ def _rescore(**fields: Any) -> JudgeRescore:
         pytest.param(
             lambda name: DecisionSurface(dimensions={name: JudgedDimensionFacts(higher_is_better=True)}),
             id="DecisionSurface.dimensions",
-        ),
-        pytest.param(
-            lambda name: ReporterLabel(dimension=name, direction="high", quote="q", criterion=_CRITERION),
-            id="ReporterLabel.dimension",
         ),
     ],
 )
@@ -341,60 +329,6 @@ def test_each_proposer_prompt_teaches_the_rules_its_draft_is_refused_by(seed: An
     assert "stored name is bare" not in text, "a catalog dim cannot be stored bare any more"
     assert "EVERY DIMENSION STATES ITS `scale`" in text
     assert text.count('"scale": "') >= 2, "every rubric example in the JSON shape states its scale"
-
-
-# --- a reporter case pins a memo, its writer's message and the digest together ---------------------
-
-
-_CRITERION = LabelCriterion(description="as stated", scale="ordinal", scoring_guide={})
-
-
-def _reporter_case(**fields: Any) -> ReporterCase:
-    defaults: dict[str, Any] = {
-        "bundle": {"campaign_id": "c"},
-        "bundle_fingerprint": "fp",
-        "bundle_assembled_at": "2026-01-01T00:00:00+00:00",
-        "recorded_analysis_id": "a-1",
-        "recorded_memo": "the memo",
-        "writer_message": "the message",
-        "recorded_writer_message_digest": user_message_digest("the message"),
-    }
-    defaults.update(fields)
-    return ReporterCase(**defaults)
-
-
-@pytest.mark.parametrize(
-    "missing",
-    [
-        pytest.param({"writer_message": None, "recorded_writer_message_digest": None}, id="memo-alone"),
-        pytest.param({"recorded_writer_message_digest": None}, id="no-digest"),
-        pytest.param({"recorded_memo": None, "recorded_analysis_id": None}, id="message-without-a-memo"),
-        pytest.param({"writer_message": None}, id="digest-without-a-message"),
-    ],
-)
-def test_a_reporter_case_holding_part_of_a_recorded_memo_is_refused(missing: dict[str, Any]) -> None:
-    _reporter_case()  # the control: all three
-    _reporter_case(
-        recorded_analysis_id=None, recorded_memo=None, writer_message=None, recorded_writer_message_digest=None
-    )  # and none of them
-    with pytest.raises(ValidationError, match="together or not at all"):
-        _reporter_case(**missing)
-
-
-def test_a_reporter_case_storing_an_unstamped_label_is_refused() -> None:
-    stamped = ReporterLabel(dimension="memo.accuracy", direction="high", quote="q", criterion=_CRITERION)
-    _reporter_case(labels=[stamped])
-    with pytest.raises(ValidationError, match="carry none"):
-        _reporter_case(labels=[stamped.model_copy(update={"criterion": None})])
-
-
-def test_a_case_pinning_no_memo_has_no_recorded_memo_to_judge() -> None:
-    bare = _reporter_case(
-        recorded_analysis_id=None, recorded_memo=None, writer_message=None, recorded_writer_message_digest=None
-    )
-    with pytest.raises(ValueError, match="pins no recorded memo"):
-        judge_case_material(bare, generated_over=None)
-    assert "the message" in judge_case_material(_reporter_case(), generated_over=None)
 
 
 # --- a recorded lever map carries the version that recorded it -------------------------------------
