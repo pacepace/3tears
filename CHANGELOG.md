@@ -36,8 +36,8 @@ from L3 whole. Now:
   rows and those stamped since, and only a group stamped, missing or of another count is read, pinned to its value.
   A group whose value is NULL (reports' `join_geo_id`) is read from the rows where it is NULL, paged by the other key
   columns. A table naming `partition_values` diffs only the groups the ask names; when the ask fails, no group the
-  copy does not hold is read: a `retained` table is judged as one the copy keeps part of, any other stays behind
-  until an ask answers (tried again a minute later).
+  copy does not hold is read unless a write stamped it: a `retained` table is judged as one the copy keeps part of,
+  any other stays behind until an ask answers (tried again a minute later).
   A table not `retained` must then number L3's rows. `SnapshotTable.retained` marks a table the copy keeps only some
   rows of (a retention); a diff that finds rows such a table kept gone from L3 cannot bring it forward. Such a scope
   stays behind, said at ERROR and in the new `CatchUpOutcome.left`, and is never guessed at.
@@ -108,6 +108,68 @@ YugabyteDB a keyset page over a key of many columns scanned the scope's rows fro
 with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1 billion keys scanned
 for ~30 million rows). A rebuild whose ask fails reads every value: slower, never fewer rows. A partition column
 that does not lead the key is put back in key order once read.
+
+### core: a diff over a copy that keeps some rows of some partitions reads only what was stamped
+
+**Added:** `SnapshotTable.partial_groups` (with `retained=True` and `partition_values`; refused otherwise): the copy
+keeps only the partitions the ask names, and only some rows of each (reports' `lsf_projections`, keyed by run: a
+thinned set of a night's runs, and of each kept run its history rows). Before, a diff of such a table counted every
+run L3 holds (a `GROUP BY` over the whole night that grew with it), and every kept run whose copy held part of its
+rows was of another count and read again whole. Now:
+
+- **The count names only the asked-for and the held partitions** (`IN` their values, `IS NULL` for a NULL one), so
+  it does not grow with every run L3 holds.
+- **Only what moved is read.** A kept partition a write stamped since the copy's epoch has only its stamped rows
+  read, each replacing the copy's row of its key, both as the L1 types them. One is read whole when the copy holds
+  none of it, when a write stamped its every row (one read), when the copy holds more of its rows than L3 holds
+  unchanged since the copy's epoch (rows it holds went from L3), or when the L1's retention lets go of a stamped row
+  of it. One whose copy holds fewer rows than L3 is no difference and is not read.
+- **Only a partition L3 no longer holds is dropped.** Every partition the copy holds is counted and diffed beside
+  the asked-for ones, named or not: an ask may not yet name a run L3 holds (reports' `lsf_runs` records a run once
+  every state's rows are written), and a diff that dropped it would publish fewer rows than L3 holds. Letting go of
+  a run the thinning no longer names is the L1 retention's job. The count stays bounded by the asked-for and the
+  held partitions.
+- **A failed ask reads nothing:** the scope stays behind and is tried again, never diffed as a plain `retained`
+  table. An ask naming no partition is no failure: every held partition is diffed and kept while L3 holds it, so
+  it thins nothing, and a scope whose partitions L3 dropped comes forward empty.
+- **What each diff dropped, read whole and read stamped-only is said at INFO**, per table and scope.
+- **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows of it
+  as the copy holds is not seen, so a table set so adds and deletes whole partitions (`lsf_projections` writes and
+  deletes whole runs).
+
+- **No group is read forever.** A group (any diff, `partial_groups` or not) read on two published diffs in a row while
+  L3's count and newest stamp of it stayed the same is a read the L1 did not keep (its retention lets the rows go,
+  or a `retained` table's copy of part never meets L3's count): it is said at ERROR, naming the table, scope, group
+  and why, and is not read again, the copy's rows of it kept as they are, until L3's count or stamp of it changes.
+  Only a diff that publishes, with L3's epoch for the scope unchanged across it, counts: one that fails (another
+  table's ask, a count a racing write upset) or a write left pending counts nothing, so a real change is never
+  skipped. An ask naming a value its column cannot hold (a NUMERIC asked as text that is no number) is said at
+  ERROR with the value and taken as a failed ask.
+- **A failure that repeats backs off.** A scope whose diff fails the same way, its diff seeing the same counts and
+  newest stamps of L3 as the last failed try, is tried again after 1, 2, 4 and 8 minutes, then every 15, said at
+  ERROR at each try with when the next is. A write that moves the scope's epoch in L3 has it tried at the next
+  catch-up, and a try seeing other counts or stamps waits a minute again: a retry is delayed, a change never
+  skipped. A recovery that raises (a publish into a full store, a lost claim) backs off alike, said at ERROR with
+  the error and the next try, and the stuck-chunk recheck waits out a scope's backoff too, taking no claim for a
+  scope the recovery would not try.
+- **A read from L3 says how far it is.** A step's reads from L3 (a rebuild, a diff, a catch-up beside a write) that
+  run a minute or more say at INFO, once a minute: `<phase> from L3, <s> s in: scope <n> of <m> (<scope>), <table>
+  partition <p> of <P>` (or `<table> rows <r> of <R>`) `; <done> of <total> rows read, <rate> rows/s over the last
+  minute, about <N> min left (estimate)`, saying "total not yet counted" until it is; and, once a scope that took a
+  minute is read, `read scope <scope> (<n> of <m>): <rows> rows in <s> s, <rate> rows/s`. A whole read still under way
+  a minute in counts its table and scope's rows once (`SELECT count(*) AS rows_total`, the named partitions only for
+  a `partition_values` table); a diff counts nothing more, its own counts saying what it reads. `SnapshotStatus.reading`
+  (the new `L3ReadProgress`) carries the same: `phase`, `started_at`, `scope`, `table`, `scopes_done`/`scopes_total`,
+  `partitions_done`/`partitions_total`, `table_rows_done`/`table_rows_total`, `rows_done`/`rows_total`,
+  `rows_per_second` and `eta_seconds`, kept a page at a time with no statement of its own.
+- **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
+  L1's stored form, from the one conversion the L1 writes through, now public as
+  `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID
+  as its text, an instant as its ISO text, a decimal at its column's scale. A run of a `NUMERIC(12, 2)` column asked
+  for as a float is the run the copy holds.
+
+After a diff, a diff with nothing written since counts and reads nothing, whatever brought the first about. A rebuild
+already read only the asked-for partitions, a value at a time, each page handed to the L1's retention.
 
 ## v0.90.0 -- 2026-11-02
 
