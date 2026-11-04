@@ -1362,7 +1362,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             elif await overtaken():
                 return False
         else:
-            marker = {_FORGETTING: uuid.uuid4().hex}
+            marker = {_FORGETTING: uuid.uuid7().hex}
 
             def take(row: dict[str, Any] | None) -> _Action:
                 # the key is this call's while it works; a record an announce wrote is not

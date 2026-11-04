@@ -327,6 +327,16 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_not_null",
+        rationale=(
+            "schema metadata: each table's NOT NULL columns (its declared primary key's), read from its declaration "
+            "when the table is created, as _schema_info and _keyless are; every pod derives the same map from the "
+            "same metadata"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/server.py",
         class_name="ToolServer",
         attr_name="_tools",
@@ -622,6 +632,36 @@ _ALLOWLIST = (
             "the scopes this replica's own rebuilds published from its own L1, scope -> epoch, kept across "
             "the rebuild's waits; it names what this process's DuckDB L1 holds, which no other replica holds "
             "and a restart loses with it, so it is checked against that L1 and the pointer at each use"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_waits",
+        rationale=(
+            "the log cadence of the waits this process's own control flows have outstanding, wait -> (when it "
+            "began, when it was last said) on this process's monotonic clock; it decides only how often this "
+            "replica logs a wait, a monotonic time means nothing in another process, and a restart has no waits"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_said_before",
+        rationale=(
+            "when this process last logged a wait that has ended, wait -> monotonic time, so the next short wait "
+            "under its key keeps the once-a-minute cadence; this replica's own log cadence on its own clock, "
+            "meaningless in another process and correctly empty after a restart"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_unrecovered",
+        rationale=(
+            "this replica's own retry backoff, scope -> (monotonic time its recovery here last left the scope "
+            "behind, why), so it asks L3 of a scope it cannot diff at most once a minute; another replica judges "
+            "its own copy, and a restart rightly tries every scope again at once"
         ),
     ),
     DictStateAllowlistEntry(
