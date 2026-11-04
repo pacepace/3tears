@@ -8,7 +8,7 @@ printed run).
 
 `uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cases <11 case files> --held-out-fraction 0.99
 --writer claude-sonnet-5-5 --effort medium --budget-usd 1 --turns 36 --cap-usd 32 --out <dir>` at head 6cac37f85, 2026-11-03
-23:45 to 23:58 UTC. The 11 cases are the case files made for this run; 0.99 puts every group on the held-out side, since the promotion read
+23:45 to 23:58 UTC. The 11 cases are rung 5's case files, `packages/evals/examples/5-writer/cases` (`--cases`); 0.99 puts every group on the held-out side, since the promotion read
 reads held-out cases only. The scoring judge is `google/gemini-3.8-flash`. The command line itself was not logged; the options
 are read from the log and the script's defaults.
 
