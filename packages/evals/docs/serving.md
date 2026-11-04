@@ -694,31 +694,12 @@ the gaps since a date, grouped by kind and need, suspect ones first, each group 
 and `include_sessions` (JSON only) to return its full session transcripts: what the analyst and each editor round were sent and
 did.
 
-## Reporter runs: evaluating the analysis writer itself
+## Reporter runs are retired
 
-A reporter run (the `analysis_reporter` kind, which measures the analysis writer itself) starts from a
-frozen case, never a generated one.
-
-- `reporter_case_freeze` (write) freezes a campaign's analysis bundle into a case of a reporter template —
-  with `recorded_analysis_id`, the memo the campaign got too, and any reader `labels` on it — and answers
-  with the case id, its bundle fingerprint and the `limits` the freeze recorded. Each label is a reader's verdict:
-  it names its `reader` (omitted, the caller), and the host's `attests_person` must vouch that the caller relays
-  that reader's verdict, or the freeze is refused (403) and nothing is written; a freeze with no labels asks nothing.
-  A `recorded_analysis_id` the report planner wrote freezes a **plan case** (`kind_version` 2), of a campaign of
-  any number of aspects: the bundle frozen with that analysis, the report input built from it and the plan in key
-  form. The judge reads the plan with every figure key written out as the campaign's page writes it
-  (`render_plan_for_judge`), against what the planner read (`plan_user_message`); a `memo_excerpt` quotes that text.
-  Only the as-recorded replay runs a plan case. A memo analysis freezes a memo case (`kind_version` 1), as before.
-- `reporter_cases_list` reads the template's bank: which case each campaign and memo launches, and what
-  superseded or retired the rest.
-- `reporter_case_archive` retires a case or restores it.
-
-The reporter kind evaluates memo writers and replays planned reports; the analyst's report is reviewed by its
-editor instead ([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
-
-The template then launches through `run_launch`, by the reporter kind the host registers. A run's calibration
-(`reporter_calibration`) reads memo cases and plan cases, and cases of different planner prompts, in separate
-`groups`, and never pools their agreement.
+The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list`,
+`reporter_case_archive`) are retired with the memo writer and the report planner they measured. The report writer
+is measured by a writer campaign (below, and rung 5, `examples/5-writer/`), judged pairwise
+([Judges and calibration](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
 
 ## Writer campaigns: evaluating the report writer
 

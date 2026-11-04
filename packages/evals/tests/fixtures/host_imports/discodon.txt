@@ -30,7 +30,6 @@ threetears.evals.analysis.create_campaign
 threetears.evals.analysis.dollars_text
 threetears.evals.analysis.first_request
 threetears.evals.analysis.format_number
-threetears.evals.analysis.freeze_reporter_case
 threetears.evals.analysis.generate_analysis
 threetears.evals.analysis.humanize
 threetears.evals.analysis.prompt_content_version
@@ -183,7 +182,6 @@ threetears.evals.ops.history_launch_pricer
 threetears.evals.ops.plan_reporter_arm
 threetears.evals.ops.price_largest_reporter_call
 threetears.evals.ops.report_read
-threetears.evals.ops.reporter_case_archive
 threetears.evals.ops.run_job_id
 threetears.evals.ops.start_paid_call
 threetears.evals.providers.AnthropicPublishedRates

@@ -30,7 +30,7 @@ not here. The pipeline:
   verdict first, written by code from the evidence bundle beside it, as Markdown and as HTML (the kit's one
   script drawing its charts, or a static page that runs and loads nothing).
 - ``service`` — the operations a client drives the lens with: generating and reading analyses,
-  inspecting bundles, reading an analysis as its report, the insight ledger, and the reporter cases.
+  inspecting bundles, reading an analysis as its report, and the insight ledger.
 - ``reads`` — the read lenses over runs that already exist: comparison sets, pivot, frontier,
   history, the program budget, orphaned runs, export, the cost estimate, the run summary and the
   two-run comparison (``compare_two_runs``, which ``ops.runs_compare`` exposes).
@@ -40,10 +40,18 @@ it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds th
 ``tests/test_public_surface_is_closed.py`` holds every engine type a public signature hands a host to
 being exported from a public root. A ``# debt:`` comment on an export names what retires it. Code
 inside the package imports its own modules directly.
+
+**A name a retired generation left** stays in ``__all__`` for one minor, served by the module's ``__getattr__``
+from ``_retired`` with a ``DeprecationWarning`` naming its replacement
+(:func:`~threetears.evals.kernel.retired.served_retired`): the analysis reporter kind's contract names.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from threetears.evals.analysis import _retired
+from threetears.evals.kernel.retired import served_retired
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
     InterJudgeAgreement,
@@ -169,14 +177,6 @@ from threetears.evals.analysis.reads import (
     program_budget,
     run_summary,
 )
-from threetears.evals.analysis.reporter_bank import (
-    AmbiguousPair,
-    FrozenReporterCase,
-    ReporterCalibration,
-    ReporterCaseBank,
-    frozen_case_receipt,
-)
-from threetears.evals.analysis.reporter_curation import set_reporter_case_archived
 from threetears.evals.analysis.reporter_kind import (
     AS_RECORDED_MODEL,
     LABEL_BANDS,
@@ -345,7 +345,6 @@ from threetears.evals.analysis.service import (
     record_campaign_call,
     describe_insight_id_filters,
     estimate_analysis_generation,
-    freeze_reporter_case,
     get_analysis,
     inspect_analysis_bundle,
     inspect_campaign_bundle,
@@ -353,8 +352,6 @@ from threetears.evals.analysis.service import (
     list_analysis_attempts,
     list_insights,
     prepare_analysis_generation,
-    reporter_calibration,
-    reporter_case_bank,
     run_analysis_generation,
     running_analysis_attempt,
 )
@@ -427,29 +424,12 @@ from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, 
 from threetears.evals.analysis.references import CellAddress
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
-from threetears.evals.analysis.reporter_bank import (
-    CalibrationCase,
-    CalibrationCell,
-    CalibrationGroup,
-    CriterionDrift,
-    DimensionReading,
-    LabelReading,
-)
-from threetears.evals.analysis.reporter_contract import (
-    REPORTER_KIND_CONTRACT,
-    ReporterOverlays,
-    live_reporter_cases,
-    refuse_undeliverable_reporter_template,
-    reporter_kind_contract,
-)
-from threetears.evals.analysis.reporter_curation import ReporterCaseStore
 from threetears.evals.analysis.reporter_kind import (
     LabelCriterion,
     LabelDirection,
     LabelVerdict,
     PreparedReporter,
     ReporterCase,
-    ReporterKindVersion,
     WriterMessageCheck,
 )
 from threetears.evals.analysis.reporting import (
@@ -740,7 +720,6 @@ __all__ = [
     "TrialJudgement",
     "TrialRow",
     "TrialState",
-    "AmbiguousPair",
     "AnalysisContextBundle",
     "AnalysisStore",
     "ArmLevel",
@@ -749,9 +728,6 @@ __all__ = [
     "AsRecordedReporterKind",
     "BaselineBarProposals",
     "BundleInspection",
-    "CalibrationCase",
-    "CalibrationCell",
-    "CalibrationGroup",
     "CampaignReadStore",
     "CampaignStore",
     "CaseSetIdentity",
@@ -767,7 +743,6 @@ __all__ = [
     "Confound",
     "ConfusionCount",
     "HeldFixedReading",
-    "CriterionDrift",
     "DeclarableAxes",
     "DeclaredCellCoverage",
     "DeclaredCrossing",
@@ -775,7 +750,6 @@ __all__ = [
     "DesignArm",
     "DifferentialExclusion",
     "DimensionAgreement",
-    "DimensionReading",
     "FactorPairCell",
     "FactorPairPivot",
     "FactorPairScan",
@@ -794,7 +768,6 @@ __all__ = [
     "UnpooledReason",
     "PassHatKCellReading",
     "Precision",
-    "FrozenReporterCase",
     "GenerationError",
     "GenerationTally",
     "GoalCheckProofReading",
@@ -820,7 +793,6 @@ __all__ = [
     "LabelCriterion",
     "LabelDirection",
     "LabelVerdict",
-    "LabelReading",
     "LabelStatistics",
     "LensStore",
     "LeverCoverageInput",
@@ -867,10 +839,7 @@ __all__ = [
     "ReadingScope",
     "RealizedDesign",
     "RefusedMerge",
-    "ReporterCalibration",
     "ReporterCase",
-    "ReporterCaseBank",
-    "ReporterCaseStore",
     "ReporterKind",
     "ReporterLabel",
     "ReporterOverlays",
@@ -897,7 +866,6 @@ __all__ = [
     "VerdictOrder",
     "WholeSwing",
     "WriterMessageCheck",
-    "ReporterKindVersion",
     "add_runs_to_campaign",
     "analysis_report",
     "build_code_only_report",
@@ -920,9 +888,7 @@ __all__ = [
     "format_number",
     "format_signed",
     "format_significance",
-    "freeze_reporter_case",
     "frontier",
-    "frozen_case_receipt",
     "generate_analysis",
     "get_analysis",
     "get_campaign",
@@ -966,17 +932,13 @@ __all__ = [
     "propose_bars",
     "remove_runs_from_campaign",
     "render_memo_as_written",
-    "reporter_calibration",
-    "live_reporter_cases",
     "refuse_undeliverable_reporter_template",
-    "reporter_case_bank",
     "reporter_kind_contract",
     "reporter_cell_timeout_s",
     "run_analysis_generation",
     "running_analysis_attempt",
     "run_summary",
     "set_campaign_control",
-    "set_reporter_case_archived",
     "short_digest",
     "significance_disclosure",  # debt: retires when the English moves to one renderer
     "tier_for_judges",
@@ -986,3 +948,16 @@ __all__ = [
     "Depth",
     "ModelPassHatK",
 ]
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis._retired import (
+        REPORTER_KIND_CONTRACT,
+        ReporterOverlays,
+        refuse_undeliverable_reporter_template,
+        reporter_kind_contract,
+    )
+else:
+
+    def __getattr__(name: str) -> object:
+        """Serve a name a retired generation left, warning that it leaves in the next minor."""
+        return served_retired(__name__, name, _retired.RETIRED)

@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the analysis reporter's cases are retired; the report writer is evaluated by the report_writer kind
+
+**Removed:** the analysis reporter's case bank, curation and calibration read (`freeze_reporter_case`,
+`reporter_case_bank`, `reporter_calibration`, `set_reporter_case_archived` and their types in
+`threetears.evals.analysis`), its case operations in `threetears.evals.ops` (`reporter_case_freeze`,
+`reporter_cases_list`, `reporter_case_archive` and their types), and the three `evals` tool actions of the same
+names. The report writer is evaluated by the `report_writer` kind instead: `writer_template_create`,
+`writer_case_mint`, `writer_pairwise` and `writer_promotion`.
+
+**Deprecated:** the reporter kind's contract and launch names, kept for this minor with a `DeprecationWarning` on
+every read: `REPORTER_KIND_CONTRACT`, `reporter_kind_contract`, `ReporterOverlays` and
+`refuse_undeliverable_reporter_template` (`threetears.evals.analysis`), and `REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`,
+`ReporterAdmitted`, `ReporterModelResolver`, `ReporterModelRole`, `admit_reporter_launch`, `plan_reporter_arm` and
+`price_largest_reporter_call` (`threetears.evals.ops`). Each still imports. None launches anything: the contract has
+no overlay and no seat, and the template check and the three launch operations refuse, naming the writer kind. The
+next minor removes them.
+
+**Changed:** a stored `analysis_reporter` template and its cases stay readable as data, and nothing stored changes
+shape or version. The reporter judge cases a host seeded are not carried over, since their labels quoted memo and
+plan passages; mint writer cases from the same campaigns instead.
+
+**Hosts:** delete the reporter kind's registration, its launch entry and its template check, and drop any call to the
+three actions. Optionally, before upgrading, archive the reporter cases with `reporter_case_archive` on the current
+build.
+
 ### evals: a writer turn the provider failed costs nothing, is sent again once, and no longer stops a capped run
 
 **Fixed:** a report writer turn answered `anthropic 520: the response body is not JSON` stored its result with

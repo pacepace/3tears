@@ -1,22 +1,19 @@
-"""The analysis service — generating, reading and curating a campaign's analyses, insights and reporter cases.
+"""The analysis service — generating, reading and curating a campaign's analyses and insights.
 
 Every operation here is one a client of the packages needs to drive the analysis lens: generate
 a campaign's analysis (the report planner writes it as a report plan, stored beside it) and record how the attempt
 ended, read analyses and their attempts back,
-re-assemble the bundle a generation read, read a stored analysis as its report, read
-the insight ledger, and freeze, bank and calibrate the reporter cases that measure the generator
-itself. They are module functions whose dependencies are parameters, so a host calls them
+re-assemble the bundle a generation read, read a stored analysis as its report, and read
+the insight ledger. They are module functions whose dependencies are parameters, so a host calls them
 with its own store and its own bindings; a host's service delegates to them.
 
 **What arrives as an argument.** An operation that reads the host's vocabulary — assembling a
-bundle, generating over one, freezing one — takes the
+bundle or generating over one — takes the
 :class:`~threetears.evals.kernel.host.EvalHost`: its storage, its profile, the client factory the
 generator is built from and the describer that says what a provider failure may keep. An operation
 that reads documents alone takes storage, through :class:`AnalysisStore`, which a host's store
 satisfies by having the methods; campaigns and runs are loaded through it, a missing one refused
-with ``NotFoundError``. A template the reporter-case freeze judges against is loaded through the
-caller's own loader (``load_template``), because a host may refuse a template for more than its
-absence and that refusal is the host's to decide. The generator prompt arrives resolved
+with ``NotFoundError``. The generator prompt arrives resolved
 (``resolve_prompt``) — which prompt registry it comes from is the host's — and so do the registry
 key the prompt was resolved under and the output cap the log line discloses.
 
@@ -30,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -42,30 +38,16 @@ from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal
 from threetears.evals.analysis.campaign_bundle import (
     CampaignBundle,
     build_campaign_bundle,
-    build_campaign_user_message,
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generator import GenerationTally
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
-from threetears.evals.analysis.planned_analysis import generate_planned_analysis, report_input_digest, report_plan_of
-from threetears.evals.analysis.planner import first_plan_request, plan_user_message
+from threetears.evals.analysis.planned_analysis import generate_planned_analysis, report_plan_of
+from threetears.evals.analysis.planner import first_plan_request
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input as build_report_input
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.reporter_bank import case_limits, decidable_reporter_case_bank, read_calibration
-from threetears.evals.analysis.reporter_kind import (
-    MEMO_CASE_VERSION,
-    PLAN_CASE_VERSION,
-    REPORTER_KIND,
-    LabelCriterion,
-    ReporterCase,
-    ReporterLabel,
-    render_memo_as_written,
-    render_plan_for_judge,
-    reporter_case_of,
-    reporter_case_payload,
-)
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -91,12 +73,11 @@ from threetears.evals.kernel.errors import (
     ValidationFailedError,
 )
 from threetears.evals.kernel.refusals import job_refusal
-from threetears.evals.kernel.run_pages import ResultKey, results_without_payloads
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_leases import ANALYSIS_JOB, JobLeases, write_held_record
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.kernel.storage import JobRecordStore
-from threetears.evals.schema.models import EvalTestCase, utc_now_iso
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.phase_log import phase_logged, took_in
 from threetears.evals.kernel.capped_completion import refresh_prices
@@ -107,14 +88,12 @@ from threetears.evals.kernel.remedies import (
     FIND_ANALYSIS,
     FIND_CAMPAIGN,
     FIND_RUN,
-    FIND_TEMPLATE,
     WRITER_REMEDY,
 )
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.analysis.reporter_bank import ReporterCalibration, ReporterCaseBank
     from threetears.evals.kernel.campaign import (
         AspectAnalysis,
         AttemptOutcome,
@@ -123,7 +102,7 @@ if TYPE_CHECKING:
         EvalReportPlan,
     )
     from threetears.evals.kernel.host.profile import HostProfile
-    from threetears.evals.schema.models import CalibrationRating, EvalResult, EvalRun, EvalTemplate
+    from threetears.evals.schema.models import EvalRun
     from threetears.evals.kernel.host.eval_host import EvalHost
     from concurrent.futures import Executor
 
@@ -222,44 +201,9 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Every insight in a scope, optionally narrowed by subject and by minting campaign, newest observation first."""
         ...
 
-    def load_template(self, template_id: str, scope_id: str, /) -> EvalTemplate | None:
-        """Load one template as stored in a scope, or ``None`` when it does not resolve — the calibration read's raw read."""
-        ...
-
-    def query_eval_result_keys_by_run(self, run_id: str, scope_id: str, /) -> list[ResultKey]:
-        """The key of every result of one run within a scope, in one read that ships no other field — the calibration
-        read's pass over the run, before it reads the run's results by id a page at a time."""
-        ...
-
-    def load_eval_results(
-        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
-    ) -> list[EvalResult]:
-        """The named results within a scope, in one read by id — a page of the calibration read's — each without the
-        fields ``elide`` names (the bundle's kept trials leave out the verbatim ones)."""
-        ...
-
-    def query_calibration_ratings(
-        self, scope_id: str, /, *, run_id: str | None = None, run_ids: Sequence[str] | None = None
-    ) -> list[CalibrationRating]:
-        """Calibration ratings in a scope, oldest first, of one run's results (the calibration read) or of several
-        runs' (the bundle's)."""
-        ...
-
     def analysis_archived(self, analysis_id: str, scope_id: str, /) -> bool | None:
         """Whether one stored analysis is archived, or ``None`` when it no longer resolves — what a generation's
         insight write asks of each ledger insight's minting analysis."""
-        ...
-
-    def save_test_case(self, test_case: EvalTestCase, /) -> None:
-        """Write a frozen reporter case; raises ``StorageError`` rather than returning a flag."""
-        ...
-
-    def query_test_cases(self, scope_id: str, /, *, template_id: str | None = None) -> list[EvalTestCase]:
-        """Every test case in a scope, optionally narrowed to one template — the reporter case bank's read."""
-        ...
-
-    def load_test_cases_by_ids(self, test_case_ids: list[str], scope_id: str, /) -> list[EvalTestCase]:
-        """The named test cases within a scope; an id that does not resolve is absent from the answer."""
         ...
 
 
@@ -2547,695 +2491,6 @@ def list_insights(
     )
 
 
-# ---------------------------------------------------------------------------
-# Reporter cases — the cases that measure the generator itself
-# ---------------------------------------------------------------------------
-
-
-def reporter_case_bank(storage: AnalysisStore, template_id: str, scope_id: str) -> ReporterCaseBank:
-    """Derive which of a reporter template's stored cases is live, refusing when that is undecidable.
-
-    How every consumer of the case bank reads it — a reporter launch and its price, the freeze
-    (:func:`freeze_reporter_case`) and the calibration read (:func:`reporter_calibration`) — over
-    :func:`~threetears.evals.analysis.reporter_bank.decidable_reporter_case_bank`, which a
-    retirement's restore (:func:`threetears.evals.analysis.reporter_curation.set_reporter_case_archived`) reads too.
-
-    :param storage: Where the template's cases are read.
-    :ptype storage: AnalysisStore
-    :param template_id: The reporter template.
-    :ptype template_id: str
-    :param scope_id: The partition its cases live in.
-    :ptype scope_id: str
-    :return: The bank.
-    :rtype: ReporterCaseBank
-    :raises ValidationFailedError: A stored case of the template carries a reporter case this build
-        cannot read.
-    """
-    return decidable_reporter_case_bank(
-        storage.query_test_cases(scope_id, template_id=template_id), template_id=template_id
-    )
-
-
-def _label_set(labels: Sequence[ReporterLabel], *, criterion: bool, excerpt: bool = False) -> list[str]:
-    """Labels as what makes two freezes the same case compares them: their verdicts, with or without the criterion
-    each was written against, and never who gave or relayed them (``reader``, ``collected_by``) — provenance, so a
-    re-freeze of the same verdicts names the stored case, whose own record of them stands.
-
-    The memo passage each points at (``memo_excerpt``) is left out too unless ``excerpt`` asks for it: it is no part
-    of the verdict, but a freeze whose excerpts differ from the stored case's would otherwise report a case that does
-    not hold them, so the freeze compares them apart (:func:`freeze_reporter_case`)."""
-    dropped: dict[str, Any] = {"reader": None, "collected_by": None}
-    if not excerpt:
-        dropped["memo_excerpt"] = None
-    if not criterion:
-        dropped["criterion"] = None
-    return sorted(label.model_copy(update=dropped).model_dump_json() for label in labels)
-
-
-def _whitespace_collapsed(text: str) -> str:
-    """``text`` with every run of whitespace one space: how an excerpt and the memo it quotes are compared."""
-    return re.sub(r"\s+", " ", text)
-
-
-def _excerpts(labels: Sequence[ReporterLabel]) -> str:
-    """The memo passages a case's labels quote, by dimension, as a refusal names them."""
-    quoted = [f"{label.dimension}: {label.memo_excerpt!r}" for label in labels if label.memo_excerpt is not None]
-    return "; ".join(quoted) or "none"
-
-
-def _refuse_a_label_of_another_form(labels: Sequence[ReporterLabel], *, template_id: str) -> None:
-    """Refuse a label whose form is not its dimension's scale, as the criterion the freeze stamped states it.
-
-    A pass/fail dimension takes a ``verdict``, an ordinal one a ``direction``: a label in the other form could never
-    be compared with the judge's score (:func:`~threetears.evals.analysis.reporter_bank.label_agrees`), and no
-    mapping between the two is ratified. Applied at the freeze only, so a label stored before verdicts existed keeps
-    reading.
-
-    :raises ValidationFailedError: A label's form is not its stamped criterion's scale.
-    """
-    wrong = [
-        f"{label.dimension} ({label.criterion.scale}) carries a {'verdict' if label.direction is None else 'direction'}"
-        for label in labels
-        if label.criterion is not None and (label.verdict is None) == (label.criterion.scale == "pass_fail")
-    ]
-    if wrong:
-        raise ValidationFailedError(
-            f"a label's form follows its dimension's scale on template {template_id!r}: a pass_fail dimension takes a "
-            f"verdict and an ordinal one a direction, and {'; '.join(wrong)}",
-            remedy="send a verdict (pass|fail) on each pass_fail dimension and a direction on each ordinal one",
-        )
-
-
-def _refuse_an_excerpt_not_in_the_memo(labels: Sequence[ReporterLabel], memo: str) -> None:
-    """Refuse a label whose ``memo_excerpt`` is not a passage of the recorded memo the case pins.
-
-    Compared after collapsing each run of whitespace to one space, in the excerpt and the memo alike, and trimming
-    the excerpt's ends, and nothing else: a surface prints the memo's text whitespace-collapsed, so a passage copied
-    from one matches, a line break carried at either end included, and any other difference is a passage the memo
-    does not hold.
-
-    :raises ValidationFailedError: An excerpt is not found in the memo.
-    """
-    collapsed = _whitespace_collapsed(memo)
-    if missing := [
-        label.dimension
-        for label in labels
-        if label.memo_excerpt is not None and _whitespace_collapsed(label.memo_excerpt).strip() not in collapsed
-    ]:
-        raise ValidationFailedError(
-            f"the memo_excerpt of the label(s) on {', '.join(missing)} is not a passage of the recorded memo, compared "
-            "with each run of whitespace collapsed to one space",
-            remedy="copy each excerpt verbatim from the recorded memo as the judge reads it, or omit it",
-        )
-
-
-class _PlanCase(NamedTuple):
-    """What a plan reporter case freezes of a planned analysis, read once.
-
-    :ivar stored: The analysis's stored plan.
-    :ivar bundle: The campaign bundle frozen with the analysis: what its planner planned over.
-    :ivar report_input: The report input built from it, which the plan's keys resolve against.
-    :ivar digest: That input's digest.
-    :ivar text: The plan as the judge reads it (:func:`render_plan_for_judge`).
-    :ivar message: What the planner read of that input (:func:`plan_user_message`).
-    :ivar limits: Where the frozen input is not the one the plan was written against, as sentences.
-    """
-
-    stored: EvalReportPlan
-    bundle: CampaignBundle
-    report_input: ReportInput
-    digest: str
-    text: str
-    message: str
-    limits: list[str]
-
-
-def _plan_case(storage: AnalysisStore, analysis: EvalAnalysis) -> _PlanCase:
-    """Read what a plan reporter case freezes of a planned analysis.
-
-    **The bundle is the one frozen with the analysis, never a re-assembly.** A plan's prose holds figure keys, not
-    numbers, so what a reader of it sees is the keys written out against the report input built from that bundle, as
-    the campaign's page writes them (:func:`_planned_page`). A re-assembly could move every number under unchanged
-    prose, so the judged text would not be the one the planner wrote or a reader read.
-
-    :raises NotFoundError: The analysis's plan does not resolve.
-    :raises ValidationFailedError: The analysis was frozen over a bundle of a shape this build no longer reads, or
-        written as a plan it no longer reads; a figure key of the plan does not resolve against the input built from
-        its frozen bundle, or that input's view is over the planner's budget: the plan cannot be judged as written.
-    """
-    try:
-        stored = get_report_plan(storage, analysis)
-        bundle = analysis_campaign_bundle(analysis)
-    except RefusedInput as unread:
-        raise ValidationFailedError.refusing(unread) from unread
-    if stored is None:
-        raise ValueError(f"analysis {analysis.id} was read as planned and names no report plan")
-    built = build_report_input(bundle)
-    remedy = "generate the analysis again (analysis_generate), and freeze the new one"
-    try:
-        text = render_plan_for_judge(report_plan_of(stored), built)
-        message = plan_user_message(built)
-    except UnresolvableReference as unresolved:
-        raise ValidationFailedError(
-            f"analysis {analysis.id}'s plan names a figure its frozen evidence no longer holds, so it cannot be judged "
-            f"as written: {unresolved}",
-            remedy=remedy,
-        ) from unresolved
-    except RefusedInput as refused:
-        raise ValidationFailedError(
-            f"what analysis {analysis.id}'s planner read cannot be rendered again: {refused.fault}", remedy=remedy
-        ) from refused
-    digest = report_input_digest(built)
-    limits: list[str] = []
-    if digest != stored.report_input_digest:
-        limits.append(
-            f"The report input this build makes from the analysis's frozen bundle (digest {digest}) is not the one "
-            f"the plan was written against (recorded {stored.report_input_digest}): how a report input is built "
-            "changed since. The plan's figures are written out, and the judge's evidence rendered, from this build's."
-        )
-    return _PlanCase(stored, bundle, built, digest, text, message, limits)
-
-
-def freeze_reporter_case(
-    host: EvalHost,
-    *,
-    template_id: str,
-    campaign_id: str,
-    scope_id: str,
-    analysis_id: str | None = None,
-    labels: Sequence[Any] = (),
-    supersedes: Sequence[str] = (),
-    load_template: Callable[[str], EvalTemplate],
-) -> EvalTestCase:
-    """Freeze a campaign's bundle into a reporter case of ``template_id``.
-
-    The case freezes the campaign bundle whole — what the writer of its one memo reads. A memo case (or one pinning
-    no analysis) freezes a campaign of one aspect only: a freeze of a campaign of several is refused, naming the
-    remedy.
-
-    **An analysis the report planner wrote freezes a plan case** (``kind_version`` 2), of a campaign of any number of
-    aspects: the bundle frozen with that analysis (never a re-assembly, since the plan's prose holds keys whose
-    numbers a re-assembly could move), the report input built from it and its digest, the plan in key form and the
-    planner's prompt version. Its ``recorded_memo`` is the plan as the judge reads it
-    (:func:`~threetears.evals.analysis.reporter_kind.render_plan_for_judge`), and its ``writer_message`` what the
-    planner read of that input (:func:`~threetears.evals.analysis.planner.plan_user_message`), checked against the
-    digest the plan's generation recorded. Every other rule below holds of it as of a memo case. A report input built
-    today that is not the one the plan was written against is frozen anyway and stated in ``limits``.
-
-    A case is reproducible only if its evidence stops moving, and a bundle is otherwise
-    re-assembled on demand from a store and a schema that both move. So the case carries the
-    bundle itself, its fingerprint, the instant it was assembled, and — when ``analysis_id``
-    names one — the memo that campaign actually got, which the as-recorded candidate replays.
-
-    **What the labels were written against is pinned too.** With a memo, the case freezes the
-    message that memo is judged against as TEXT (``ReporterCase.writer_message``), so a later
-    change to how a bundle is rendered cannot move the evidence under its labels. It is rendered
-    here from the bundle this freeze pins, since a stored analysis keeps no copy of the message
-    its writer was sent. It does keep a digest of it (``generation.user_message_digest``), which
-    the case copies and the freeze checks the rendered text against: a message that differs is
-    frozen anyway and stated in ``limits``, as a bundle that does not reproduce is
-    (:func:`~threetears.evals.analysis.reporter_kind.writer_message_check`). Each label is stamped with the criterion
-    the template states for its dimension (``ReporterLabel.criterion``), so a reworded rubric shows
-    on a calibration read instead of silently re-meaning the label; a label that arrives already
-    carrying one is refused.
-
-    **A label's form is its dimension's scale.** The criterion stamped on it says whether the dimension is
-    ``pass_fail``, which takes a ``verdict``, or ``ordinal``, which takes a ``direction``; a label in the other form is
-    refused, since it could never be compared with the judge's score. A label's ``memo_excerpt``, when given, must be
-    a passage of the recorded memo, compared with each run of whitespace collapsed to one space on both sides and
-    nothing else, the excerpt's ends trimmed. Both refusals are structural, and neither is applied when a stored case
-    is read. The excerpt is not part of the verdict, but a freeze quoting other passages than the pair's live case is
-    refused unless ``supersedes`` names it, as a label change is, so a correction is stored rather than dropped.
-
-    **Who gave a verdict is taken as the caller names it.** This is the host's own door, trusted as its own
-    ``rate_result`` is: a label's ``reader`` and ``collected_by`` are stored as given, or not at all. An action reaches
-    it only through the ``reporter_case_freeze`` operation, which names each reader the host attests
-    (``EvalHost.attests_person``) and the caller that relayed them. Neither is part of what makes two freezes the
-    same case (below): a re-freeze of the same verdicts returns the stored case, whose record of them stands.
-
-    **With an analysis, the bundle is assembled AS OF that analysis**: the insight ledger is
-    read at its ``generation.bundle_assembled_at``, exactly as ``bundle_inspect`` re-assembles
-    it, so the memo's own insights (and any minted since) are not in the evidence it is judged
-    against. Without one, it is assembled now. Either way it is TODAY's re-assembly of the
-    runs — a memo misled by evidence that has since been repaired is judged against the
-    repaired evidence — and when that differs from what the memo read, the case's ``limits``
-    say so.
-
-    **A case is a (campaign, recorded memo) pair, and the bundle is not its identity.** One memo
-    judged against its campaign's evidence is ONE case: the rule is stated beside
-    :func:`~threetears.evals.analysis.reporter_bank.case_pair`, which every consumer of the case
-    bank keys on. Because a freeze fingerprints TODAY's re-assembly, a re-freeze after the
-    evidence moved yields a different fingerprint for the same memo, and it is treated as what
-    it is — a revision of that memo's case — rather than as a second case the launch would
-    judge alongside the first.
-
-    **Idempotent, and immutable.** A freeze whose bundle fingerprint, labels (criteria and excerpts included)
-    and writer message match the pair's live case RETURNS it rather than minting again, so two
-    freezes of one campaign pool onto one case. Stored cases never change: a calibration read
-    against labels (or evidence) a case did not carry when it was run would be a comparison
-    against the wrong reader. Only their curation state does — a retired case
-    (:func:`~threetears.evals.analysis.reporter_curation.set_reporter_case_archived`) is not live,
-    so a freeze of its pair mints afresh.
-
-    **A case is revised by supersession — its labels, its evidence, or both.** Among the stored
-    cases of one pair, the LIVE case is the one no other stored case supersedes and no operator retired — decided by
-    :func:`reporter_case_bank`, the derivation the launch and the calibration read also use.
-    A freeze that differs from the live case — other labels, or a re-assembly whose fingerprint
-    moved — is refused unless ``supersedes`` names the live case, and then a NEW case is minted
-    carrying this freeze's bundle and labels and pointing at the one it replaces, which is left
-    exactly as it was — so every run already measured against it still resolves it, and a
-    launch never runs it again. Naming the replacement rather than
-    superseding silently is deliberate: a re-run of a freeze meant only to read its receipt
-    would otherwise re-point every later launch at evidence nobody chose to judge against.
-    Only live cases can be replaced, and ``supersedes`` can only name cases of this pair.
-
-    **Two live cases for one pair are RECOVERABLE, not unrepresentable — a stated choice.**
-    This read-then-write has no conditional insert, so two supersessions of one live case racing
-    each other can each mint a replacement. Making that unrepresentable needs a create-only
-    write keyed on the superseded case, and the eval store offers only ``if_match`` against an
-    EXISTING document's etag, which a stored case (immutable by design) never presents. So the
-    state is detected instead of prevented: the launch and its price refuse a pair holding more
-    than one live case, naming this remedy — a freeze whose ``supersedes`` names EVERY live case
-    of the pair, which mints one case replacing them all. Naming all of them is required, so a
-    freeze cannot retire a revision its author never saw; a launch never runs both.
-
-    :param host: The host: where the campaign's evidence is read and the case is written, and the
-        vocabulary the frozen bundle is assembled in.
-    :ptype host: EvalHost
-    :param template_id: The reporter template the case belongs to.
-    :ptype template_id: str
-    :param campaign_id: The campaign whose bundle is frozen.
-    :ptype campaign_id: str
-    :param scope_id: The scope its member runs (and the case) live in.
-    :ptype scope_id: str
-    :param analysis_id: A stored analysis of that campaign to pin as the recorded memo, or
-        ``None`` to freeze the bundle alone.
-    :ptype analysis_id: str | None
-    :param labels: Reader verdicts on the recorded memo, as
-        :class:`~threetears.evals.analysis.reporter_kind.ReporterLabel` objects or their
-        JSON. Each must name a dimension the template scores.
-    :ptype labels: Sequence[Any]
-    :param supersedes: The ids of the live cases of this (campaign, recorded analysis) pair this
-        freeze replaces — the one live case to revise its labels or its evidence, every live
-        case to resolve a pair holding several — or empty when it replaces none. A bare
-        string is refused: it would be read one character per id.
-    :ptype supersedes: Sequence[str]
-    :param load_template: The host's template load; raises ``NotFoundError`` for an unknown id, and
-        whatever else the host refuses a template for.
-    :ptype load_template: Callable[[str], EvalTemplate]
-    :return: The stored case — the existing live one when this freeze's labels match it.
-    :rtype: EvalTestCase
-    :raises NotFoundError: The template, campaign or analysis does not exist.
-    :raises ValidationFailedError: A template that is not of the reporter kind
-        (:data:`~threetears.evals.analysis.reporter_kind.REPORTER_KIND`), a label that does not
-        validate or names an unscored dimension, a label whose form (direction or verdict) is not its dimension's
-        scale, a ``memo_excerpt`` that is not a passage of the recorded memo,
-        labels with no recorded memo to be about, an analysis of another campaign,
-        a campaign of several aspects frozen with a memo or none, a plan whose figure keys its frozen evidence no
-        longer resolves, a bundle resolving no runs, a label change or a moved re-assembly that
-        does not name the live case in ``supersedes``, a ``supersedes`` naming a case outside this pair or one
-        already superseded or retired, ``supersedes`` on a pair with no live case, a label
-        arriving with a criterion, a pair with more than one live case that ``supersedes`` does
-        not name in full, or a stored case of the template this build cannot read.
-    :raises StorageError: The new case could not be persisted.
-    :raises TypeError: ``supersedes`` is a bare string rather than a sequence of ids.
-    """
-    if isinstance(supersedes, str):
-        raise TypeError("supersedes is a sequence of case ids; a bare string would be read one character per id")
-    replaced = [case_id for case_id in supersedes if case_id]
-    template = load_template(template_id)  # NotFoundError if absent
-    if template.candidate_kind != REPORTER_KIND:
-        # A reporter case in any other kind's template is a case nothing reads: only the reporter
-        # kind's launch runs one, and every other kind would meet a case it cannot interpret.
-        raise ValidationFailedError(
-            f"template {template_id!r} is of kind {template.candidate_kind!r}, not {REPORTER_KIND!r} — a reporter "
-            f"case is frozen into a template of the {REPORTER_KIND!r} kind, whose launch is what runs it",
-            remedy=f"freeze into a template of the {REPORTER_KIND!r} kind ({FIND_TEMPLATE})",
-        )
-    try:
-        parsed = [
-            label if isinstance(label, ReporterLabel) else ReporterLabel.model_validate(label) for label in labels
-        ]
-    except ValidationError as e:
-        raise ValidationFailedError(
-            f"invalid labels: {e}",
-            remedy="send each label as a dimension, a direction or a verdict (one), and the reader's words",
-        ) from e
-    criteria = {dim.name: LabelCriterion.of(dim) for dim in template.rubric}
-    if unscored := sorted({label.dimension for label in parsed} - set(criteria)):
-        raise ValidationFailedError(
-            f"labels name {', '.join(unscored)}, which template {template_id!r} does not score — a label on an "
-            "unjudged dimension could never be compared with anything",
-            remedy=f"label only the dimensions it scores: {', '.join(sorted(criteria)) or 'it scores none'}",
-        )
-    if supplied := sorted({label.dimension for label in parsed if label.criterion is not None}):
-        raise ValidationFailedError(
-            f"labels on {', '.join(supplied)} arrive carrying a criterion — the freeze stamps each label with the "
-            f"criterion template {template_id!r} states for its dimension, so a label records what it was written "
-            "against rather than what a caller said it was",
-            remedy="send the labels without `criterion`",
-        )
-    # The criterion each verdict was written against, as the template words it now — the words a
-    # reader of the memo had in front of them when the label is frozen with it.
-    parsed = [label.model_copy(update={"criterion": criteria[label.dimension]}) for label in parsed]
-    _refuse_a_label_of_another_form(parsed, template_id=template_id)
-    if parsed and not analysis_id:
-        raise ValidationFailedError(
-            "labels are a reader's verdict on a recorded memo, and this freeze pins none",
-            remedy=f"pass the analysis_id whose memo they were written about ({FIND_ANALYSIS})",
-        )
-
-    storage = host.storage
-    campaign = _load_campaign(storage, campaign_id, scope_id)
-    analysis = get_analysis(storage, analysis_id, scope_id) if analysis_id else None  # NotFoundError if absent
-    if analysis is not None and analysis.campaign_id != campaign_id:
-        raise ValidationFailedError(
-            f"analysis {analysis.id!r} belongs to campaign {analysis.campaign_id!r}, not {campaign_id!r} — "
-            "its memo would be judged against another campaign's evidence",
-            remedy=f"pass an analysis of campaign {campaign_id!r} ({FIND_ANALYSIS})",
-        )
-    planned = analysis is not None and analysis.report_plan_id is not None
-    if len(campaign.aspects) > 1 and not planned:
-        # A memo case judges a memo over one aspect's evidence, and the memo reporter eval has not been measured over
-        # several. A plan case judges the planner, which plans every aspect of its campaign.
-        raise ValidationFailedError(
-            f"campaign {campaign_id!r} has {len(campaign.aspects)} aspects "
-            f"({', '.join(aspect.label for aspect in campaign.aspects)}), and a reporter case freezes a campaign of "
-            "one aspect only when it pins a memo or none",
-            remedy=(
-                "freeze a campaign of one aspect: create one over the aspect's runs (campaign_create) and freeze it; "
-                f"or freeze an analysis the report planner wrote of this campaign, as a plan case ({FIND_ANALYSIS})"
-            ),
-        )
-    plan_case: _PlanCase | None = None
-    if analysis is not None and planned:
-        plan_case = _plan_case(storage, analysis)
-        _refuse_an_excerpt_not_in_the_memo(parsed, plan_case.text)
-        recorded_memo: str | None = plan_case.text
-        assembled_at = analysis.generation.bundle_assembled_at
-        bundle = plan_case.bundle
-    elif analysis is not None:
-        memo = render_memo_as_written(analysis)
-        _refuse_an_excerpt_not_in_the_memo(parsed, memo)
-        recorded_memo = memo
-        # The ledger as the generation read it, on `inspect_analysis_bundle`'s terms.
-        assembled_at = analysis.generation.bundle_assembled_at
-        bundle = _assembled_campaign_bundle(
-            campaign, storage=storage, profile=host.profile, insights_as_of=assembled_at
-        )
-    else:
-        recorded_memo = None
-        # Stamped BEFORE assembly, as a generation stamps it: the instant is the
-        # insight ledger's cutoff.
-        assembled_at = utc_now_iso()
-        bundle = _assembled_campaign_bundle(campaign, storage=storage, profile=host.profile)
-    if not bundle.run_ids:
-        unresolved = [run_id for aspect in bundle.aspects for run_id in aspect.unresolved_run_ids]
-        archived = [run_id for aspect in bundle.aspects for run_id in aspect.archived_run_ids]
-        raise ValidationFailedError(
-            f"campaign {campaign_id!r} resolves no runs in scope {scope_id!r} (unresolved: "
-            f"{unresolved or 'none attached'}; archived: {archived or 'none'}) — "
-            "a case with no evidence can ground no judgement",
-            remedy="freeze a campaign whose runs this scope holds, un-archived",
-        )
-
-    fingerprint = bundle.fingerprint()
-    wanted_analysis = analysis.id if analysis is not None else None
-    # What the recorded memo is judged against from now on, frozen as text (see
-    # `ReporterCase.writer_message`): rendered here, from the bundle this freeze pins, because the
-    # stored analysis keeps no copy of the message its writer was sent — only its digest, which
-    # the case carries so the text stays checkable against it.
-    if plan_case is not None:
-        # What the planner read, rendered from the report input the case freezes; its digest is the plan's own record.
-        writer_message: str | None = plan_case.message
-        recorded_message_digest: str | None = plan_case.stored.generation.user_message_digest
-    else:
-        writer_message = build_campaign_user_message(bundle) if analysis is not None else None
-        recorded_message_digest = analysis.generation.user_message_digest if analysis is not None else None
-    wanted_labels = _label_set(parsed, criterion=True)
-    memo_text = f"analysis {wanted_analysis!r}" if wanted_analysis else "no recorded memo"
-    bank = reporter_case_bank(storage, template.id, scope_id)
-    # The pair is the campaign the bundle names and the memo — never the fingerprint, which
-    # moves with every re-assembly of the same evidence (see `case_pair`).
-    pair = bank.pair(bundle.campaign_id, wanted_analysis)
-    live = [(stored, existing) for stored, existing in pair if bank.is_live(stored.id)]
-    live_ids = sorted(stored.id for stored, _ in live)
-    named = sorted(set(replaced))
-
-    if outside := [case_id for case_id in named if case_id not in {stored.id for stored, _ in pair}]:
-        raise ValidationFailedError(
-            f"supersedes names {', '.join(repr(case_id) for case_id in outside)}, which "
-            + ("is not a stored case" if len(outside) == 1 else "are not stored cases")
-            + f" freezing campaign {bundle.campaign_id!r} with {memo_text} — a case can only replace a case of "
-            "the same campaign and memo",
-            remedy=(
-                f"name that pair's live case(s) in supersedes: {', '.join(live_ids)}"
-                if live
-                else "no case of that pair is stored, so freeze without supersedes"
-            ),
-        )
-    if named and not live:
-        raise ValidationFailedError(
-            f"supersedes names {', '.join(repr(case_id) for case_id in named)}, and campaign "
-            f"{bundle.campaign_id!r} with {memo_text} has no live case — every stored case of it is superseded or "
-            "retired, so there is nothing for this freeze to replace",
-            remedy=(
-                "freeze without supersedes: the new case is the pair's live case, and the retired ones stay as they "
-                "are; supersedes takes only a live case, so to retire a retired case for good, restore it first "
-                "(reporter_case_archive with archived=false), then freeze with supersedes naming it"
-            ),
-        )
-    same_labels = len(live) == 1 and _label_set(live[0][1].labels, criterion=True) == wanted_labels
-    same_verdicts = len(live) == 1 and _label_set(live[0][1].labels, criterion=False) == _label_set(
-        parsed, criterion=False
-    )
-    # Today's bundle in the live case's fingerprint version, so a case frozen before fingerprints rounded their
-    # floats still matches the evidence it froze; the case this freeze stores carries the current version.
-    as_frozen = bundle.fingerprint(like=live[0][1].bundle_fingerprint) if len(live) == 1 else fingerprint
-    same_evidence = len(live) == 1 and live[0][1].bundle_fingerprint == as_frozen
-    # The digest rides with the message: a live case that froze this text without the digest its
-    # analysis records is not the case this freeze would store.
-    same_message = len(live) == 1 and (live[0][1].writer_message, live[0][1].recorded_writer_message_digest) == (
-        writer_message,
-        recorded_message_digest,
-    )
-    # The passages the labels quote are no part of the verdicts, but a freeze returning a case that quotes others
-    # would report as stored what it is not.
-    same_excerpts = len(live) == 1 and _label_set(live[0][1].labels, criterion=True, excerpt=True) == _label_set(
-        parsed, criterion=True, excerpt=True
-    )
-    if same_labels and same_evidence and same_message and same_excerpts:
-        # Idempotent on the LIVE case, whether or not a retried revision repeats its supersedes.
-        return live[0][0]
-    if live and named != live_ids:
-        # Supersession names the WHOLE live set of the pair or nothing. With one live case that is
-        # the ordinary revision; with several — two freezes racing a supersession can each mint a
-        # replacement — it is the remedy, and requiring every one of them named keeps a freeze from
-        # retiring a revision its author never saw.
-        pointer = "[" + ", ".join(repr(case_id) for case_id in live_ids) + "]"
-        if len(live) > 1:
-            raise ValidationFailedError(
-                f"campaign {bundle.campaign_id!r} with {memo_text} has {len(live)} live cases ({', '.join(live_ids)}) "
-                "— each is launched, so no launch of this template runs until one case replaces them all",
-                remedy=(
-                    f"freeze again with the labels this pair should carry and supersedes={pointer}: that stores one "
-                    "case replacing every one of them, and leaves them, and the runs measured against them, as they are"
-                ),
-            )
-        if not named:
-            differs = []
-            if not same_verdicts:
-                differs.append("under a DIFFERENT label set")
-            elif not same_labels:
-                differs.append(
-                    "with the same verdicts written against criterion text that differs from the live case's (the "
-                    "template's rubric was reworded since)"
-                )
-            elif not same_excerpts:
-                differs.append(
-                    f"with the same verdicts quoting other memo passages (stored: {_excerpts(live[0][1].labels)}; "
-                    f"this freeze: {_excerpts(parsed)})"
-                )
-            if not same_message and same_evidence:
-                differs.append(
-                    "pinning a different writer message over the same bundle (the bundle's rendering changed since)"
-                )
-            if not same_evidence:
-                differs.append(
-                    f"from a bundle that no longer re-assembles the same (frozen {live[0][1].bundle_fingerprint}, "
-                    f"now {fingerprint} — the evidence or the bundle's shape moved)"
-                )
-            raise ValidationFailedError(
-                f"case {live_ids[0]!r} already freezes campaign {bundle.campaign_id!r} with {memo_text}, "
-                + " and ".join(differs)
-                + ". One memo is one case, and stored cases are immutable — a run already measured against it "
-                "would otherwise be read against labels or evidence it never carried",
-                remedy=(
-                    f"to revise it, freeze again with supersedes={pointer}: that stores a new case carrying this "
-                    f"freeze's bundle and labels, which every later launch runs instead, and leaves {live_ids[0]!r} — "
-                    "and the runs measured against it — as they are"
-                ),
-            )
-        raise ValidationFailedError(
-            f"supersedes names {', '.join(repr(case_id) for case_id in named)}, and only the live case of this "
-            f"campaign and memo can be replaced — that is {live_ids[0]!r}; the others are already superseded or "
-            "retired",
-            remedy=f"pass supersedes={pointer}",
-        )
-
-    limits = case_limits(
-        bundle,
-        recorded_fingerprint=analysis.generation.bundle_fingerprint if analysis is not None else None,
-        writer_message=writer_message,
-        recorded_message_digest=recorded_message_digest,
-        kind_version=PLAN_CASE_VERSION if plan_case is not None else MEMO_CASE_VERSION,
-    )
-    planned_fields: dict[str, Any] = {}
-    if plan_case is not None:
-        limits += plan_case.limits
-        planned_fields = {
-            "kind_version": PLAN_CASE_VERSION,
-            "report_input": plan_case.report_input.model_dump(mode="json", by_alias=True),
-            "report_input_digest": plan_case.digest,
-            "recorded_report_input_digest": plan_case.stored.report_input_digest,
-            "recorded_plan": plan_case.stored.plan,
-            "planner_prompt_version": plan_case.stored.generation.prompt_version,
-        }
-    case = ReporterCase(
-        bundle=bundle.to_dict(),
-        bundle_fingerprint=fingerprint,
-        bundle_assembled_at=assembled_at,
-        recorded_analysis_id=analysis.id if analysis is not None else None,
-        recorded_memo=recorded_memo,
-        writer_message=writer_message,
-        recorded_writer_message_digest=recorded_message_digest,
-        labels=parsed,
-        limits=limits,
-        supersedes=named,
-        **planned_fields,
-    )
-    test_case = EvalTestCase(template_id=template.id, scope_id=scope_id, host_payload=reporter_case_payload(case))
-    try:
-        storage.save_test_case(test_case)
-    except StorageError as e:
-        raise StorageError(
-            f"reporter case for campaign {campaign_id!r} could not be stored — nothing was frozen; retry the freeze"
-        ) from e
-    log.info(
-        "eval.freeze_reporter_case template=%s campaign=%s analysis=%s scope=%s case=%s fingerprint=%s limits=%d "
-        "supersedes=%s",
-        template.id,
-        campaign_id,
-        wanted_analysis,
-        scope_id,
-        test_case.id,
-        fingerprint,
-        len(case.limits),
-        ",".join(named) or None,
-    )
-    return test_case
-
-
-def reporter_calibration(
-    storage: AnalysisStore,
-    run_id: str,
-    scope_id: str,
-) -> ReporterCalibration:
-    """Read a reporter run against its cases' labels — the rubric's calibration.
-
-    Pure read, no spend: every score comes from the run's stored results. Per case, each label
-    is set beside the judge's score and reasoning on its dimension, with whether the score
-    agrees with the label: an ordinal score inside its direction's band, a pass/fail score equal to its verdict
-    (:func:`~threetears.evals.analysis.reporter_bank.label_agrees`); every dimension no label speaks to is listed with
-    its score.
-    A case whose labels were revised since the run says which stored case superseded it, so a
-    reader of an earlier run sees that the labels it is read against were later replaced; a case
-    retired since says so too. Each label reading says whether the criterion the label was
-    written against still reads as the template states it (``criterion_drift``), and each case
-    whether its recorded memo was judged against a frozen writer message.
-
-    :param storage: Where the run's cases, results and template are read.
-    :ptype storage: AnalysisStore
-    :param run_id: The reporter run.
-    :ptype run_id: str
-    :param scope_id: The scope it ran in.
-    :ptype scope_id: str
-    :return: The calibration read.
-    :rtype: ReporterCalibration
-    :raises NotFoundError: No such run in that scope.
-    :raises ValidationFailedError: The run froze no reporter case, so it is not a reporter run; or
-        a stored case of its template carries a reporter case this build cannot read.
-    """
-    run = storage.load_eval_run(run_id, scope_id)
-    if run is None:
-        raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    loaded = {case.id: case for case in storage.load_test_cases_by_ids(list(run.test_case_ids), scope_id)}
-    pairs = []
-    missing: list[str] = []
-    for case_id in run.test_case_ids:
-        case = loaded.get(case_id)
-        if case is None:
-            missing.append(case_id)
-            continue
-        try:
-            reporter_case = reporter_case_of(case)
-        except ValueError as e:
-            raise ValidationFailedError(
-                f"case {case_id!r} of run {run_id!r} carries a reporter case this build cannot read: {e}",
-                remedy="read it with the build that wrote it",
-            ) from e
-        if reporter_case is not None:
-            pairs.append((case_id, reporter_case))
-    if not pairs:
-        raise ValidationFailedError(
-            f"run {run_id!r} froze no reporter case"
-            + (f" (and {len(missing)} of its cases no longer load)" if missing else "")
-            + ", so it has no labels to calibrate against",
-            remedy=f"calibrate a run of an analysis_reporter template ({FIND_RUN})",
-        )
-    # Who replaced whose labels, read off every stored case of the template rather than the
-    # run's own: a superseding case is minted after the run it revises, so it is never one of
-    # that run's cases. Read through the same bank the launch and the freeze read, so a case
-    # this build cannot read is refused here as it is there — it may be the one that replaced a
-    # case this read would otherwise call live.
-    template_id = run.template_id
-    if template_id is None:
-        # An ad-hoc run names no template, so there is no bank to read supersession from — and
-        # querying the scope's cases without one would read every template's.
-        raise ValidationFailedError(
-            f"run {run_id!r} names no template, so its cases' supersession cannot be read",
-            remedy=f"calibrate a run of an analysis_reporter template ({FIND_RUN})",
-        )
-    bank = reporter_case_bank(storage, template_id, scope_id)
-    superseded_by = {case_id: list(ids) for case_id, ids in bank.superseded_by.items()}
-    # Read a page at a time, the results kept without their verbatim fields, which no calibration reads.
-    results = results_without_payloads(storage, run_id, scope_id)
-    template = storage.load_template(template_id, scope_id)
-    # The template names the dims in order; a template deleted since the run still leaves its
-    # results, so the dims they were scored on stand in for it rather than dropping the read.
-    dimensions = (
-        [dim.name for dim in template.rubric]
-        if template is not None
-        else sorted({score.dim for result in results for score in result.rubric_scores})
-    )
-    return read_calibration(
-        run_id=run.id,
-        template_id=template_id,
-        status=run.status,
-        dimensions=dimensions,
-        cases=pairs,
-        results=results,
-        missing_case_ids=missing,
-        superseded_by=superseded_by,
-        archived=bank.archived,
-        live_criteria=None if template is None else {dim.name: LabelCriterion.of(dim) for dim in template.rubric},
-        judge_model=run.judge_model,
-        effective_judges=run.effective_judges,
-        ratings=storage.query_calibration_ratings(scope_id, run_id=run.id),
-        template_digest=run.template_digest,
-    )
-
-
 if TYPE_CHECKING:
 
     def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
@@ -3254,7 +2509,6 @@ __all__ = [
     "report_doc_report",
     "describe_insight_id_filters",
     "estimate_analysis_generation",
-    "freeze_reporter_case",
     "get_analysis",
     "assemble_campaign_bundle",
     "require_evidence",
@@ -3269,8 +2523,6 @@ __all__ = [
     "list_insights",
     "prepare_analysis_generation",
     "assembled_analysis_attempt",
-    "reporter_calibration",
-    "reporter_case_bank",
     "record_written_generation",
     "run_analysis_generation",
     "WrittenAttempt",

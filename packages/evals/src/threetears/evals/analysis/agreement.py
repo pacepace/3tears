@@ -63,8 +63,8 @@ another model's opinion of the same output, so it is listed as ``rated_by_an_age
 into a dimension's pairs, its kappa or its raters.
 
 Pure: the caller hands in the ratings and the results they rate, and nothing here reads storage.
-The bundle and a reporter run's calibration read both call :func:`judge_agreement`, so the two never
-compute agreement two ways.
+The bundle and the judge profiles both read agreement through :func:`judge_agreement`, so the two never
+compute it two ways.
 """
 
 from __future__ import annotations

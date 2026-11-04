@@ -10,8 +10,7 @@ defect to the host (a 500 over MCP or REST), so a refusal of what the caller ask
 - **Translated at the source.** ``campaign_record`` over an analysis frozen at a bundle shape this build no longer
   reads refuses 422 before any result is read and before any aspect's bundle is put back together; ``report_read``
   over one reads code-only, the shape checked before the evidence is assembled; a memo's page that refuses what it is
-  laid out over is a 422. None of them logs the backstop's WARNING. (``reporter_case_freeze``'s are pinned with the
-  reporter's actions, ``test_reporter_case_actions.py``.)
+  laid out over is a 422. None of them logs the backstop's WARNING.
 - **The estimate's view.** ``analysis_estimate`` reads no run and no result, so the view's budget refusal cannot
   arise there. (The planner's preparation, which can meet it, is pinned beside the planner, ``test_planner.py``.)
 """

@@ -64,8 +64,9 @@ summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
 the names a page prints for them, a reporter case may judge a report plan, and a campaign's report input may be
-frozen for the report analyst's tool, served on a cut of its own. Money is grouped by thousands. No public name
-has moved or been removed since 0.90.0; the durable version and what changed are in `notes`.
+frozen for the report analyst's tool, served on a cut of its own. Money is grouped by thousands. The analysis
+reporter's case bank, calibration read and three actions are removed; its contract and launch names are deprecated
+for this minor. The durable version and what changed are in `notes`.
 """
 notes = [
     "`report_read` (and the campaign's report in every form: markdown, html, static html, json) no longer refuses a campaign whose newest analysis is a memo frozen over a bundle shape this build does not read (a memo frozen at shape 60 on a build reading 64). It returns the code-only page over the campaign's evidence as it stands, led by the one regenerate line with the bundle's shape after it, as a report plan or an unreadable report document already did: `basis` is `code_only`, `analysis_id` the memo's, `needs_regeneration` the line. A host that caught the `RefusedInput` to show \"generate again\" reads `needs_regeneration` instead. `analysis_report`, which reads one analysis by its id, still refuses.",
@@ -129,7 +130,37 @@ notes = [
     "`writer_promotion(host, campaign_id, scope_id, *, candidate, pairwise_job=None)` (provisional) and the `writer_promotion` action's `pairwise_job` parameter (optional) name the completed `writer_pairwise` job whose report is the primary reading: the operation takes the job's status (`job_poll`'s `JobStatus`), the action its job id. Without one the read never promotes. It is refused for a job that is not a completed pass, or whose report names another campaign, candidate, control, judge or preference criterion than the read's. `WriterPromotion` gains `pairwise_job`, `primary` (the pass's verdict, or null), `void` (why the primary is void, or null), `finished_only` (the pass's verdict over the pairs whose pages were both finished, deciding nothing), `reliability` (the pass's order checks, one-order cases counted apart), `cases_to_settle` (the held-out cases a primary that does not separate would need, by `bounded_cases_to_clear`) and `readout` (each reading, its role and what it reads, then the order checks, as tables). `WriterPairwiseReport` is exported from `threetears.evals.ops.report_writer.writer_pairwise`. Additive: a caller that names no job is unchanged in shape.",
     "`OpsHost` (stable) gains `model_family: Callable[[str], str | None] | None`, default None: the host's reading of a model's family (the vendor that trained it, such as `anthropic`) by the id a launch names it by. Optional with a default, so no host breaks. A host that sets it has `writer_pairwise` refuse a scoring judge of a writer's own family before any call is made, and records each check passed; a host that leaves it unset has each check recorded as not made, never guessed. The package's harness writer host sets it. The jobs conformance kit's `writer_pairwise` happy path scores its pair by the sample's `second_judge_model` where the host places the sample's own judge in its candidate's family, so a host that sets it names a second judge of another family.",
     "A report writer result's `cost_usd` no longer goes null for a turn whose reply never came (a provider 5xx such as Cloudflare's 520, a connection never made, a request cut in flight). Such a turn is counted on the candidate row's `unanswered_lost` and adds nothing to the cost, so `cost_usd` is the sum of the priced turns, those delivered before the failure included ($0 when none was), and a capped run no longer stops on it as \"spent what could not be priced\". A stored writer result with `cost_usd` null and an unpriced row reading `the turn was sent and its reply never came` is the old record of the same fact; only a reply whose usage nothing priced is unpriced now. `report_writer.unpriced_turns` counts those replies alone, no longer the turns whose reply never came. `DeclinedRetry` (provisional) gains `turn_failure_attempts: int = 2`: a tool turn the provider failed with a 5xx that is no decline, or whose connection was never made, is sent again once by default (1 restores sending it once), and `TurnReply` (stable) gains `resent_after: tuple[str, ...] = ()`, what each resend followed, written to a turn recording only when non-empty. The out-of-run ledger's report row (`OutOfRunSpend`, purpose `analysis`) follows the same rule: `unpriced_calls` meant the replies nothing priced plus the turns whose reply never came (with `raised_calls` a subset of it), and `cost_usd` was None whenever either was present. It now means only the replies nothing priced. `raised_calls` counts the turns whose reply never came apart from it, and they add nothing to `cost_usd` or the tokens, so a row's `unpriced_calls + raised_calls` is at most `calls`. A row stored before (none in a final release: the fields are unreleased) reads its raised turns twice; one whose two counts sum past `calls` is refused on read. The ledger's totals (`OutOfRunSpendTotals.n_unpriced`) counted a row of one call that raised (a case generation's, a rubric proposal's) as unpriced; it is now counted in `n_raised` alone. A generation attempt's `EvalAnalysisAttempt.unpriced_calls` counted the calls cancelled or raised before a result came back as well as those returned with no cost; it now counts only the latter, the former in `calls` alone, so an analysis whose report a raised turn ended reads its `cost_usd` as the priced calls rather than None. An attempt stored before keeps its old count. A tool turn answered with a gateway's timeout (504, 524) is not sent again, since the provider may have served it. Additive for a host: nothing to change.",
+    "The analysis reporter kind's contract and launch names are deprecated and keep working, with a `DeprecationWarning`, for this minor; the next minor removes them: `REPORTER_KIND_CONTRACT` (host-contract), `ReporterOverlays`, `reporter_kind_contract` and `refuse_undeliverable_reporter_template` (`threetears.evals.analysis`, stable), and `REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `ReporterAdmitted`, `ReporterModelResolver`, `ReporterModelRole`, `admit_reporter_launch`, `plan_reporter_arm` and `price_largest_reporter_call` (`threetears.evals.ops`, stable). Each still imports, so a host binding them at import starts. None makes the kind launchable: `REPORTER_KIND_CONTRACT` and `reporter_kind_contract()` return `KindContract(\"analysis_reporter\")` with no overlay and no seat, and `refuse_undeliverable_reporter_template`, `admit_reporter_launch`, `plan_reporter_arm` and `price_largest_reporter_call` raise `ValidationFailedError` naming the `report_writer` kind. Their `prompts` parameter is typed `object`, since `ReporterPrompts` is removed. Port: delete the reporter kind's registration, its launch entry and its template check before the next minor.",
+    "MCP, for hosts: the `evals` tool loses three actions, `reporter_case_freeze`, `reporter_cases_list` and `reporter_case_archive`. A call naming one is refused as an unknown action. A stored `analysis_reporter` template and its cases stay readable as data (`templates_list`, the store's test cases), and nothing stored changes shape or version. The 38 reporter judge cases a host seeded are not carried over: their labels quoted memo and plan passages, which no writer writes now. What replaces them is the writer kind: create a writer template (`writer_template_create`), mint writer cases from the same campaigns at no cost (`writer_case_mint`), and judge them with the pairwise gate (`writer_pairwise`, `writer_promotion`). Optionally, before upgrading, archive the 38 with `reporter_case_archive` on the current build and store a `rubric_dim_tombstone` for each `reporter.*` rubric dimension.",
 ]
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["AmbiguousPair", "CalibrationCase", "CalibrationCell", "CriterionDrift", "DimensionReading",
+         "FrozenReporterCase", "LabelReading", "ReporterCalibration", "ReporterCaseBank", "ReporterCaseStore",
+         "freeze_reporter_case", "frozen_case_receipt", "live_reporter_cases", "reporter_calibration",
+         "reporter_case_bank", "set_reporter_case_archived"]
+why = """
+The analysis reporter's case bank, its curation and its calibration read are retired with the memo writer and the
+report planner they measured. The report writer is evaluated by the report_writer kind (writer_template_create,
+writer_case_mint, writer_pairwise, writer_promotion). A stored analysis_reporter template and its cases stay
+readable as data, and nothing stored changes. Port: delete the reporter case freeze, listing, archive and calibration
+calls; mint writer cases from the same campaigns.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["AmbiguousReporterPair", "FrozenReporterCase", "ReporterCaseEntry", "ReporterCaseFreeze",
+         "ReporterCaseListing", "ReporterPrompts", "UnreadableReporterCase", "reporter_case_archive",
+         "reporter_case_freeze", "reporter_cases_list"]
+why = """
+The analysis reporter's case operations and the three actions over them (reporter_case_freeze, reporter_cases_list,
+reporter_case_archive) are retired with the reporter cases. The report writer's cases are minted with
+writer_case_mint, listed with case_sets_list and retired with writer_case_archive. Port: delete the calls, and
+mint writer cases from the same campaigns.
+"""
 
 [[release]]
 version = "0.90.0"

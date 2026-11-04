@@ -57,9 +57,7 @@ class CurationStore(Protocol):
     module makes rather than to what a storage layer offers, which is the whole
     difference between a port and a re-export — a host adopting this family
     implements only methods it can trace to a line here, not every method a
-    full storage layer happens to carry. (A reporter case's retirement is the
-    reporter kind's, with its own port:
-    :class:`~threetears.evals.analysis.reporter_curation.ReporterCaseStore`.)
+    full storage layer happens to carry.
 
     Structural, so a host's own storage satisfies it by having the methods.
     :class:`~threetears.evals.kernel.storage.EvalStorage` does, with no

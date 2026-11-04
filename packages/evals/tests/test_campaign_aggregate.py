@@ -9,9 +9,8 @@ them.
 - **A figure any aspect lacks is withheld, naming it**, never a mean over the rest.
 - **The chart is drawn where the campaign compares more than one pair of figures** (S1, and S2 on its one aspect),
   never for a measurement (S3) or one candidate on one aspect (S4); it prints every figure as a table too.
-- **A frozen campaign bundle of shape 2 still reads.** A reporter case or a stored analysis frozen before the
-  aggregate existed is read as this shape, gaining the same figures, its fingerprint the one it recorded, so the
-  labels frozen on it stand.
+- **A frozen campaign bundle of shape 2 still reads.** A bundle or a stored analysis's frame frozen before the
+  aggregate existed is read as this shape, gaining the same figures, its fingerprint the one it recorded.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import (
-    assemble_campaign_bundle,
     campaign_report,
     campaign_report_html,
     campaign_report_markdown,
@@ -34,24 +32,12 @@ from threetears.evals.analysis.campaign_bundle import (
     CAMPAIGN_BUNDLE_SHAPE,
     CampaignBundle,
     build_campaign_bundle,
-    build_campaign_user_message,
     campaign_evidence_digest,
 )
 from threetears.evals.analysis.campaign_readings import AggregateWeighting
 from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, DisclosureBlock, TableBlock
-from threetears.evals.analysis.reporter_bank import frozen_case_receipt
-from threetears.evals.analysis.reporter_kind import (
-    judge_case_material,
-    rebuild_bundle,
-    render_case_material,
-    reporter_case_of,
-    reporter_case_payload,
-)
 from threetears.evals.kernel.errors import RefusedInput
-from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.report_support import stored_memo_analysis
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
 from packages.evals.tests.report_shapes_support import (
     SHAPES,
     ArmTrials,
@@ -62,12 +48,6 @@ from packages.evals.tests.report_shapes_support import (
     s3_measurement,
     s4_change,
     shape_of,
-)
-from packages.evals.tests.reporter_case_support import (
-    GROUNDED,
-    freeze_corpus_campaign,
-    reporter_fixture,
-    reporter_template,
 )
 from packages.evals.tests.style_support import lint_page
 
@@ -439,45 +419,3 @@ def test_a_bundle_and_a_frame_frozen_at_shape_2_read_as_this_shape_fingerprintin
     # A shape before 2 is still refused, naming this build's.
     with pytest.raises(RefusedInput, match=r"this build's shape \(3\) or one it reads as that \(2\)"):
         CampaignBundle.from_dict({**frozen, "schema_version": 1})
-
-
-async def _analysis_id(fixture: OpsFixture) -> str:
-    """A memo analysis of the corpus campaign, stored: a reporter case pins a recorded memo, which the memo writer
-    writes (a generation through the host is the report planner's)."""
-    analysis, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
-    return analysis.id
-
-
-async def test_a_reporter_case_frozen_at_shape_2_still_generates_calibrates_and_keeps_its_labels() -> None:
-    fixture = off_loop(reporter_fixture)
-    analysis_id = await _analysis_id(fixture)
-    off_loop(_a_case_frozen_at_shape_2_reads, fixture, analysis_id)
-
-
-def _a_case_frozen_at_shape_2_reads(fixture: OpsFixture, analysis_id: str) -> None:
-    """Freeze the corpus campaign with its memo and a label, store it again as shape 2 froze it, and read it back."""
-    storage = fixture.host.eval_host.storage
-    labels = [{"dimension": GROUNDED, "direction": "high", "quote": "every number traces to a run"}]
-    receipt = freeze_corpus_campaign(fixture, recorded_analysis_id=analysis_id, labels=labels)
-    (stored,) = storage.query_test_cases(TOYHOST_SCOPE, template_id=reporter_template().id)
-    case = reporter_case_of(stored)
-    assert case is not None and case.recorded_memo
-    # As a build at shape 2 froze it: the same case, its bundle without the figures across aspects.
-    before = case.model_copy(update={"bundle": _at_shape_2(case.bundle)})
-    storage.save_test_case(stored.model_copy(update={"host_payload": reporter_case_payload(before)}))
-    (frozen,) = storage.query_test_cases(TOYHOST_SCOPE, template_id=reporter_template().id)
-    held = reporter_case_of(frozen)
-    assert held is not None and held.bundle["schema_version"] == 2
-
-    # It rebuilds, its recorded fingerprint verifying, with the figures read off what it froze.
-    rebuilt = rebuild_bundle(held)
-    today = assemble_campaign_bundle(fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE)
-    assert rebuilt.fingerprint() == held.bundle_fingerprint == receipt.bundle_fingerprint
-    assert rebuilt.readings.aggregate == today.readings.aggregate
-    # A generator is sent what it would be sent over today's bundle; the recorded memo is judged as frozen.
-    assert render_case_material(held) == build_campaign_user_message(today)
-    assert held.writer_message is not None and held.writer_message in judge_case_material(held, generated_over=None)
-    # The bank still lists it, labels and all, and the same labels frozen again are this live case.
-    assert [label.dimension for label in frozen_case_receipt(frozen).labels] == [GROUNDED]
-    again = freeze_corpus_campaign(fixture, recorded_analysis_id=analysis_id, labels=labels)
-    assert again.test_case_id == frozen.id

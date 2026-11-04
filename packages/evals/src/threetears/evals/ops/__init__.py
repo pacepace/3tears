@@ -34,12 +34,10 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
-The reporter case bank's operations — :func:`reporter_case_freeze`, :func:`reporter_cases_list` and
-:func:`reporter_case_archive` — are how a surface makes the cases a reporter run measures: each is one
-campaign's analysis bundle, frozen, and a reporter template launches nothing until one is. A host launching
-reporter runs makes every refusal a reporter arm meets with :func:`admit_reporter_launch` — and plans the arm
-with :func:`plan_reporter_arm` and prices its largest generator call with :func:`price_largest_reporter_call` —
-over its own prompt registry (:class:`ReporterPrompts`) and model resolution (:data:`ReporterModelResolver`).
+The analysis reporter kind's launch names (:func:`admit_reporter_launch`, :func:`plan_reporter_arm`,
+:func:`price_largest_reporter_call` and their types) retired with the reporter cases. Each stays in ``__all__`` for
+one minor, served by the module's ``__getattr__`` from ``_retired`` with a ``DeprecationWarning``, and refuses,
+naming the ``report_writer`` kind that replaces it.
 
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
@@ -47,6 +45,10 @@ and only the names in ``__all__``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from threetears.evals.ops import _retired
+from threetears.evals.kernel.retired import served_retired
 from threetears.evals.ops.analysis import (
     AnalysisDeleted,
     AnalysisGenerationEstimate,
@@ -179,7 +181,6 @@ from threetears.evals.analysis.out_of_run_spend import (
     scope_out_of_run_spend,
 )
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.reporter_bank import FrozenReporterCase
 from threetears.evals.ops.judge_cases import (
     JudgeCaseAuthor,
     JudgeCasesFreeze,
@@ -197,24 +198,6 @@ from threetears.evals.ops.judge_profiles import (
     judge_profiles_record,
 )
 from threetears.evals.ops.regressions import RegressionAlert, RegressionSink, RegressionWatch
-from threetears.evals.ops.reporter import (
-    REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
-    AmbiguousReporterPair,
-    ReporterAdmitted,
-    ReporterModelResolver,
-    ReporterModelRole,
-    ReporterPrompts,
-    admit_reporter_launch,
-    plan_reporter_arm,
-    price_largest_reporter_call,
-    ReporterCaseEntry,
-    ReporterCaseFreeze,
-    ReporterCaseListing,
-    UnreadableReporterCase,
-    reporter_case_archive,
-    reporter_case_freeze,
-    reporter_cases_list,
-)
 from threetears.evals.ops.results import (
     ResultDetail,
     ResultLine,
@@ -300,7 +283,6 @@ __all__ = [
     "ANALYSIS_JOB_PREFIX",
     "RUN_JOB_PREFIX",
     "TERMINAL_JOB_STATES",
-    "AmbiguousReporterPair",
     "AnalysisDeleted",
     "AnalysisGenerationEstimate",
     "ArmEstimate",
@@ -321,7 +303,6 @@ __all__ = [
     "DetectableEffect",
     "DetectableEffects",
     "EvalSummary",
-    "FrozenReporterCase",
     "FrontierResult",
     "JudgeTemperatureComparison",
     "HistoryResult",
@@ -360,13 +341,9 @@ __all__ = [
     "ReporterAdmitted",
     "ReporterModelResolver",
     "ReporterModelRole",
-    "ReporterPrompts",
     "admit_reporter_launch",
     "plan_reporter_arm",
     "price_largest_reporter_call",
-    "ReporterCaseEntry",
-    "ReporterCaseFreeze",
-    "ReporterCaseListing",
     "ResultDetail",
     "ResultLine",
     "ResultListing",
@@ -390,7 +367,6 @@ __all__ = [
     "WriterLimits",
     "WRITER_KIND_CONTRACT",
     "WRITER_KIND_MEASURES",
-    "UnreadableReporterCase",
     "analyses_list",
     "analyses_undescribable",
     "analysis_archive",
@@ -432,9 +408,6 @@ __all__ = [
     "parse_job_id",
     "pivot_text",
     "report_read",
-    "reporter_case_archive",
-    "reporter_case_freeze",
-    "reporter_cases_list",
     "result_get",
     "result_rate",
     "result_rate_person",
@@ -471,3 +444,19 @@ __all__ = [
     "WriterModelFactory",
     "WriterRole",
 ]
+
+if TYPE_CHECKING:
+    from threetears.evals.ops._retired import (
+        REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
+        ReporterAdmitted,
+        ReporterModelResolver,
+        ReporterModelRole,
+        admit_reporter_launch,
+        plan_reporter_arm,
+        price_largest_reporter_call,
+    )
+else:
+
+    def __getattr__(name: str) -> object:
+        """Serve a name a retired generation left, warning that it leaves in the next minor."""
+        return served_retired(__name__, name, _retired.RETIRED)

@@ -31,6 +31,7 @@ import textwrap
 import tomllib
 import types
 import typing
+import warnings
 from collections.abc import Callable, Iterable, Iterator
 from functools import cache
 from pathlib import Path
@@ -425,11 +426,15 @@ def walked_modules() -> tuple[str, ...]:
 
 def public_names() -> Iterator[tuple[str, str, Any]]:
     """(root, name, object) for every name in every walked module's ``__all__`` (:func:`walked_modules`): the
-    package, then the roots in ``PUBLIC_ROOTS`` order, names sorted as the reference lists them."""
+    package, then the roots in ``PUBLIC_ROOTS`` order, names sorted as the reference lists them. A retired name a
+    root still serves for one minor is read without its ``DeprecationWarning``: the walk records it, never uses it."""
     for root in walked_modules():
         module = importlib.import_module(root)
         for name in sorted(module.__all__, key=lambda n: (n.casefold(), n)):
-            yield root, name, getattr(module, name)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                value = getattr(module, name)
+            yield root, name, value
 
 
 #: A public name's stability tier. ``host-contract`` is a name a host binds to (:data:`HOST_CONTRACT`): it moves
@@ -1163,7 +1168,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.analysis.AS_RECORDED_MODEL",
         "threetears.evals.analysis.ReporterLabel",
         "threetears.evals.analysis.first_request",
-        "threetears.evals.analysis.freeze_reporter_case",
         "threetears.evals.analysis.prompt_content_version",
         "threetears.evals.analysis.serialize_report",
         "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
@@ -1195,7 +1199,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.case_set_mint",
         "threetears.evals.ops.case_sets_list",
         "threetears.evals.ops.judge_case_author",
-        "threetears.evals.ops.reporter_case_archive",
         "threetears.evals.ops.run_job_id",
         "threetears.evals.run.LaunchGroup",
         "threetears.evals.run.callers_missing_the_constructor",
@@ -1246,7 +1249,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 560  # rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 558  # reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

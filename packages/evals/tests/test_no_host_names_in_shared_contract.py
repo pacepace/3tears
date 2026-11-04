@@ -269,6 +269,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/eval_file.py",
     "kernel/refusals.py",
     "kernel/remedies.py",
+    "kernel/retired.py",
     # The write-seam refusal of an undeclared authoring field, and the lock every writer of an
     # existing campaign holds. Each is shared by two packages that may not import each other —
     # authoring in run and in analysis, campaign writes in analysis and run's delete cascade — so

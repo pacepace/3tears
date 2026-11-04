@@ -442,7 +442,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: order consistency below 0.7 voids the primary, and that it reports the finished-only reading and the cases to settle.
 #: The evals tool moved again when writer_case_mint gained skill (the skill its withheld notes are checked against),
 #: and withhold came to name that skill rather than the shipped one.
-_EVALS_BYTES = "8f0a77fe8e76df7f8b45ebb127e1706cfdd50a206d7b320fc8c452ed8e67a78b"
+#: The evals tool moved again when the three reporter actions left it (reporter_case_freeze, reporter_cases_list,
+#: reporter_case_archive), campaign_record's help and the report format's description stopped naming the memo, and
+#: the archive reason's description stopped naming a reporter case.
+_EVALS_BYTES = "cc85eb786ce28ea01632d0924e10a768678fdb96ca79d4df739a3f0b0afeaffc"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"
