@@ -50,7 +50,6 @@ from threetears.evals.analysis.report.figure_keys import cost_basis, format_figu
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
-from threetears.evals.analysis.report_decision import margin_sensitivity
 from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
@@ -376,7 +375,7 @@ def test_a_readings_matrix_reads_each_candidate_by_the_direction_of_its_change()
             assert cell.status == {"worse": "bad", "better": "good", "": "neutral"}[direction]
             margin = reading.margin if reading.margin is not None else aspect.margin
             assert reading.within_interval is not None and margin is not None
-            within = flip_margin(reading) < margin  # the decision's rule, so the pill and the explore part agree
+            within = flip_margin(reading) < margin  # the decision's rule
             assert ("within margin" in cell.label) == within and ("outside margin" in cell.label) == (not within)
             floors = [f for f in report_input.floors if f.arm == reading.arm and f.aspect == aspect.id and f.reading]
             assert len(cell.reasons or []) == 1 + len(floors), "each floor reading another rate is shown apart"
@@ -577,7 +576,7 @@ def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartB
 
 def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> None:
     """A reading shown better (its interval above zero) flips at a margin of zero: at a declared margin of zero it is
-    not within it, as the decision and the explore part read it."""
+    not within it, as the decision reads it."""
     data = _input("r5").model_dump(mode="json", by_alias=True, exclude_none=True)
     aspect = data["aspects"][0]
     aspect["margin"] = 0.0
@@ -593,7 +592,6 @@ def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> Non
     columns = [column.label for column in data_block.columns]
     cell = data_block.rows[0].cells[columns.index(_arm_name(report_input, reading.arm))]
     assert "outside margin" in cell.label and "within margin" not in cell.label
-    assert not any(c.within for c in margin_sensitivity(report_input).candidates if c.arm == reading.arm)
 
 
 def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:

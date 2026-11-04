@@ -4,8 +4,8 @@ The report document's page (:mod:`~threetears.evals.analysis.report.doc_page`) a
 (:mod:`~threetears.evals.analysis.analyst.blocks`) draw with them; the planned page they were written for is retired
 with the report planner. The parts, each its own module:
 
-- :mod:`~threetears.evals.analysis.report.parts.model`: the parts as documents (the masthead, the confidence, a
-  decision slot, the options table, a chart, the arms key), model prose typed, code's lines plain text.
+- :mod:`~threetears.evals.analysis.report.parts.model`: the parts as documents (the masthead, a decision slot, a
+  chart, the arms key), model prose typed, code's lines plain text.
 - :mod:`~threetears.evals.analysis.report.parts.look`: each arm's tag, colour and mark, and how a quantity is
   stated on a chart.
 - :mod:`~threetears.evals.analysis.report.parts.words`: the words code writes on a page.

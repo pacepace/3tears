@@ -134,11 +134,7 @@ from threetears.evals.analysis.report.doc_page.model import (
 from threetears.evals.analysis.report.parts.model import (
     PageArmsKey,
     PageChart,
-    PageClause,
-    PageConfidence,
-    PageFlag,
     PageMasthead,
-    PageOptions,
     PageSlot,
 )
 
@@ -205,11 +201,7 @@ __all__ = [
     "OutcomeSegment",
     "PageArmsKey",
     "PageChart",
-    "PageClause",
-    "PageConfidence",
-    "PageFlag",
     "PageMasthead",
-    "PageOptions",
     "PageSlot",
     "DocCaveatLine",
     "DocClaim",

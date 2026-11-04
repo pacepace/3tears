@@ -8,7 +8,7 @@ campaign (``report_support.stored_plan_analysis``), its plan written beside it a
 
 - **every door reads it**, never refusing and never blank: ``report_read`` in its four forms, ``campaign_report``,
   ``analysis_report`` by its id and ``analyses_list``. Each is code's page (``basis="code_only"``) standing in for the
-  analysis (``unread_analysis_id``), with the retired writer's line (``RETIRED_GENERATION``, naming the report planner)
+  analysis (``unread_analysis_id``), with the retired writer's line (``retired_generation``, naming the report planner)
   on its first screen and as ``needs_regeneration``; the listing counts no findings. ``analysis_report`` lays the page
   over the bundles frozen with the analysis, every aspect's fold kept;
 - **the plan is never read**: the reads are the same whether the plan stored beside it is the planner's own, a host's
@@ -35,7 +35,7 @@ from packages.evals.tests.report_support import stored_memo_analysis, stored_pla
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import CampaignReport, build_report
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.campaign.memo_blocks import RETIRED_GENERATION
+from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
 from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
@@ -48,7 +48,10 @@ from threetears.evals.storage import InMemoryDocumentStore
 _HOST_PLAN: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "01a177f6.plan.json"
 
 #: The line every door prints for a planned analysis.
-_LINE: Final = RETIRED_GENERATION.format(writer="the report planner")
+_LINE: Final = (
+    "written by a retired report writer (the report planner); regenerate with analysis_generate to read a report "
+    "over it"
+)
 
 #: What the store holds beside the analysis: the planner's own plan, the host's, a plan no model reads, or none.
 _STORED_PLANS = ("planners", "hosts", "unreadable", "none")
@@ -165,6 +168,11 @@ async def test_the_line_is_said_once_and_every_form_s_page_reads_the_same_whatev
 
 def _without_instants(body: str) -> str:
     return re.sub(r"\d{4}-\d{2}-\d{2}T[0-9:.+]+", "", body)
+
+
+def test_the_line_is_worded_once_and_names_only_a_retired_writer() -> None:
+    assert retired_generation("plan") == _LINE
+    assert retired_generation("memo") is None and retired_generation("doc") is None, "a writer this version reads"
 
 
 # -- the plan is still swept --------------------------------------------------------------------------------------

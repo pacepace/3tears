@@ -306,11 +306,7 @@ from threetears.evals.analysis.report import (
     DocTerm,
     PageArmsKey,
     PageChart,
-    PageClause,
-    PageConfidence,
-    PageFlag,
     PageMasthead,
-    PageOptions,
     PageSlot,
 )
 from threetears.evals.analysis.service import (
@@ -497,11 +493,7 @@ __all__ = [
     # The parts a report document's page draws with, and the page itself.
     "PageArmsKey",
     "PageChart",
-    "PageClause",
-    "PageConfidence",
-    "PageFlag",
     "PageMasthead",
-    "PageOptions",
     "PageSlot",
     "DocCaveatLine",
     "DocClaim",

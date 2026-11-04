@@ -3286,7 +3286,7 @@ def _margin_name(margin: Margin, report_input: ReportInput) -> str:
     return f"the margin on {aspect}" if margin.kind == "margin" else f"the floor on {aspect}"
 
 
-def weakest_interval_words(margin: Margin) -> str:
+def _weakest_interval_words(margin: Margin) -> str:
     """Which interval a weakest margin's worst case is read on, in words: the multiplicity-corrected interval of the
     arm's pass-rate contrast where the input holds one (with its level), else the plain interval at the nominal level
     with no correction (a reading's and a floor's); a criterion's figure is read as measured, on no interval.
@@ -3325,7 +3325,7 @@ def _weakest(report_input: ReportInput, values: tuple[str, ...], path: str) -> F
     if field == "criterion":
         return _text(path, _margin_name(found, report_input), "what the weakest margin is read against")
     if field == "interval":
-        return _text(path, weakest_interval_words(found), "which interval the weakest margin is read on")
+        return _text(path, _weakest_interval_words(found), "which interval the weakest margin is read on")
     if found.kind != "criterion":
         if field == "margin":
             return _number(path, found.gap, "the weakest margin", "points")
@@ -7455,7 +7455,6 @@ __all__ = [
     "key_form",
     "key_subjects",
     "keys_in",
-    "weakest_interval_words",
     "lever_of",
     "literal_numbers",
     "parse_key",

@@ -159,10 +159,8 @@ from threetears.evals.analysis.report_margins import criterion_figures, flip_mar
 __all__ = [
     "AskedStanding",
     "Caveat",
-    "CandidateMargin",
     "DecisionAt",
     "ImpliedCaveat",
-    "MarginSensitivity",
     "Materiality",
     "allowed_modes",
     "asked_standing",
@@ -174,7 +172,6 @@ __all__ = [
     "every_caveat",
     "floors_not_held",
     "late_subject",
-    "margin_sensitivity",
     "report_caveats",
     "report_kind",
     "separated_by",
@@ -1119,35 +1116,6 @@ def _holds(report_input: ReportInput, base: _Outcome, trials: Iterator[_Override
     return all(_outcome(report_input, overrides) == base for overrides in trials)
 
 
-@dataclass(frozen=True)
-class CandidateMargin:
-    """One reading against its margin: where it flips, and whether it is within the margin declared.
-
-    :ivar arm: The reading's arm.
-    :ivar aspect: The aspect it is read on.
-    :ivar flip_margin: The margin it flips at (``-lo``); None where it states no interval.
-    :ivar within: Whether it is within the declared margin.
-    """
-
-    arm: str
-    aspect: str
-    flip_margin: float | None
-    within: bool
-
-
-@dataclass(frozen=True)
-class MarginSensitivity:
-    """How the call rests on the margins (:func:`margin_sensitivity`): each reading's flip, and whether the call holds
-    at every margin.
-
-    :ivar candidates: Each reading on an aspect that declares a margin, in the input's order.
-    :ivar holds: Whether the decision is the same at every margin from zero up, on each such aspect.
-    """
-
-    candidates: tuple[CandidateMargin, ...]
-    holds: bool
-
-
 def _margined(report_input: ReportInput) -> list[Aspect]:
     """The aspects that declare a margin, on the aspect or on one of its readings."""
     return [
@@ -1155,25 +1123,6 @@ def _margined(report_input: ReportInput) -> list[Aspect]:
         for aspect in report_input.aspects
         if aspect.margin is not None or any(reading.margin is not None for reading in aspect.readings)
     ]
-
-
-def margin_sensitivity(report_input: ReportInput) -> MarginSensitivity:
-    """Each reading's flip margin and whether it is within the declared margin, and whether the call holds at every
-    margin (this module's Immateriality, for a late margin). A late margin's materiality reads ``holds``; a page's
-    explore part, each candidate.
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :return: Each reading on an aspect that declares a margin, and whether the call holds at every margin; no
-        candidates, and not holding, where no aspect declares one.
-    :rtype: MarginSensitivity
-    """
-    candidates = tuple(
-        CandidateMargin(reading.arm, aspect.id, flip_margin(reading), _within(aspect, reading, _Overrides()))
-        for aspect in _margined(report_input)
-        for reading in aspect.readings
-    )
-    return MarginSensitivity(candidates, _margin_holds(report_input, _outcome(report_input, _Overrides())))
 
 
 def _margin_holds(report_input: ReportInput, base: _Outcome) -> bool:

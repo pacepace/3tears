@@ -52,7 +52,6 @@ __all__ = [
     "NO_CALL",
     "NO_LONGER_READS",
     "NO_RECOMMENDATION",
-    "RETIRED_GENERATION",
     "aspect_summary_blocks",
     "behind_on_blocks",
     "call_blocks",
@@ -86,11 +85,11 @@ NO_LONGER_READS = "written in a shape this version no longer reads; regenerate w
 #: package has retired, in place of :data:`NO_LONGER_READS`: worded once, here, and printed byte for byte by the page's
 #: first screen, ``ReportDocument.needs_regeneration`` and the analysis listing's ``needs_regeneration``. ``{writer}``
 #: names the writer (:func:`retired_generation`).
-RETIRED_GENERATION = (
+_RETIRED_GENERATION = (
     "written by a retired report writer ({writer}); regenerate with analysis_generate to read a report over it"
 )
 
-#: Each retired writer, by what it stored (``EvalAnalysis.basis``), as :data:`RETIRED_GENERATION` names it.
+#: Each retired writer, by what it stored (``EvalAnalysis.basis``), as :func:`retired_generation` names it.
 _RETIRED_WRITERS: dict[str, str] = {"plan": "the report planner"}
 
 #: The first screen's line on the code-only page that stands in for an analysis this version no longer reads, in place
@@ -132,7 +131,8 @@ def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
 
 
 def retired_generation(basis: str) -> str | None:
-    """The one line for an analysis a retired report writer wrote (:data:`RETIRED_GENERATION`, naming the writer);
+    """The one line for an analysis a retired report writer wrote, naming the writer (worded once, beside
+    :data:`NO_LONGER_READS`);
     None for one a writer this version reads.
 
     :param basis: What wrote the analysis (``EvalAnalysis.basis``).
@@ -141,7 +141,7 @@ def retired_generation(basis: str) -> str | None:
     :rtype: str | None
     """
     writer = _RETIRED_WRITERS.get(basis)
-    return RETIRED_GENERATION.format(writer=writer) if writer is not None else None
+    return _RETIRED_GENERATION.format(writer=writer) if writer is not None else None
 
 
 def unread_analysis_blocks(

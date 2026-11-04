@@ -6331,27 +6331,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PageClause": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PageConfidence": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PageFlag": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PageMasthead": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PageOptions": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

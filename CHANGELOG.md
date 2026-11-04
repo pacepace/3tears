@@ -8,12 +8,13 @@ packages (bumped in lock-step).
 
 ### evals: the planned page is retired; a planned analysis reads as code's page with the retired writer's line
 
-**Removed:** the planned page and its two forms (`PlannedPage`, `PageAnswer`, `PageExplore`, `PageSection`,
-`PageTerm`, `planned_page_html`, `planned_page_markdown`, from `threetears.evals.analysis`), its builder, and every
+**Removed:** the planned page and its two forms (`PlannedPage`, `PageAnswer`, `PageClause`, `PageConfidence`,
+`PageExplore`, `PageFlag`, `PageOptions`, `PageSection`, `PageTerm`, `planned_page_html`, `planned_page_markdown`, from
+`threetears.evals.analysis`), its builder, and every
 read of a stored plan (`save_report_plan` and `load_report_plan` on `AnalysisStore` and `EvalStorage`,
 `get_report_plan`, `report_plan_of`). `EvalReportPlan` and `ReportPlanProvenance` leave `threetears.evals.kernel`.
 None shipped in a final release. The chart resolvers, the arms' look, the words and the tables the report document's
-page and the analyst's blocks draw with stay where they are.
+page and the analyst's blocks draw with move, unchanged, from `analysis/report/plan_page/` to `analysis/report/parts/`.
 
 **Changed:** a planned analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id
 and `analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the

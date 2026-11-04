@@ -1207,7 +1207,7 @@ def analysis_report(
     An analysis a retired report writer wrote (the report planner's, ``basis="plan"``) is laid out as code's page over
     the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
     which writer wrote it and to regenerate
-    (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.RETIRED_GENERATION`); its stored plan is never read.
+    (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`); its stored plan is never read.
 
     :param storage: Where the analysis is read.
     :ptype storage: AnalysisStore
@@ -1248,7 +1248,7 @@ def campaign_report(
       readings and folds are read off that snapshot's bundle, as the JSON form carries them;
     - a report plan's (``plan``, the report planner's, a retired writer): the code-only page with the retired writer's
       line on its first screen
-      (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.RETIRED_GENERATION`,
+      (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`,
       :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). Its stored plan is never read;
     - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out; where it was frozen
       over a bundle of another shape this version no longer reads, as a plan's is (the code-only page, the regenerate

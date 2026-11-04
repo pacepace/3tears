@@ -109,8 +109,6 @@ from threetears.evals.kernel.report_plan import (
 
 __all__ = [
     "FactArm",
-    "FactCaveat",
-    "PlanFacts",
     "fact_arms",
     "plan_facts",
 ]

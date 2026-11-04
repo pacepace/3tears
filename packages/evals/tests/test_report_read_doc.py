@@ -48,7 +48,7 @@ from packages.evals.tests.report_kit_support import chromium_unavailable, render
 from packages.evals.tests.report_writer_support import RecordedModel, written
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.engine import ReportReadParams
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, RETIRED_GENERATION
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report_doc_store import read_report_doc
@@ -65,7 +65,10 @@ from threetears.evals.testing import RecordedTurns
 _RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype5"
 
 #: The line a planned analysis reads with: the report planner is a retired writer.
-_RETIRED = RETIRED_GENERATION.format(writer="the report planner")
+_RETIRED = (
+    "written by a retired report writer (the report planner); regenerate with analysis_generate to read a report "
+    "over it"
+)
 
 #: The members the campaign's JSON carried before the report document's, which every page's JSON keeps.
 _CAMPAIGN_MEMBERS = {"kind", "shape", "campaign_id", "basis", "analysis_id", "recommendation", "readings", "call"}
@@ -362,10 +365,7 @@ async def test_the_line_is_one_constant_every_surface_prints_byte_for_byte() -> 
     )
 
     assert NO_LONGER_READS == "written in a shape this version no longer reads; regenerate with analysis_generate"
-    assert _RETIRED == (
-        "written by a retired report writer (the report planner); regenerate with analysis_generate to read a report "
-        "over it"
-    )
+    assert retired_generation("plan") == _RETIRED
     assert line.id == planned.id and line.needs_regeneration == _RETIRED
     assert called.structured is not None and called.structured["needs_regeneration"].startswith(_RETIRED)
     assert _read(fixture, "markdown").body.count(_RETIRED) == 1

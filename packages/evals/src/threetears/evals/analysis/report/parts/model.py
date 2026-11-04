@@ -2,12 +2,11 @@
 
 These were the planned page's parts; the planned page is retired with the report planner, and the report document's
 page (:mod:`~threetears.evals.analysis.report.doc_page`) and the analyst's blocks
-(:mod:`~threetears.evals.analysis.analyst.blocks`) draw with the ones left: the masthead, the confidence and its
-clauses, a decision slot, the options table, a chart and the arms key. Nothing here reads the input: every figure is
-already written out, every chart already resolved.
+(:mod:`~threetears.evals.analysis.analyst.blocks`) draw with the ones left: the masthead, a decision slot, a chart
+and the arms key. Nothing here reads the input: every figure is already written out, every chart already resolved.
 
 **Who wrote what.** A field a writer wrote, its figure keys written out, is typed model prose; a line code wrote
-(the confidence's words and checked lines, slot titles, a chart's notes, the masthead's frame) is plain text.
+(slot titles, a chart's notes, the masthead's frame) is plain text.
 
 **Charts and tables are the report's blocks.** A chart is a :class:`~threetears.evals.analysis.report.blocks.ChartBlock`
 carrying the kit's data, a table a :class:`~threetears.evals.analysis.report.blocks.TableBlock`, so each prints as its
@@ -30,11 +29,7 @@ __all__ = [
     "PLANNED_SECTION",
     "PageArmsKey",
     "PageChart",
-    "PageClause",
-    "PageConfidence",
-    "PageFlag",
     "PageMasthead",
-    "PageOptions",
     "PageSlot",
 ]
 
@@ -52,31 +47,6 @@ class PageMasthead(EvalDocumentModel):
     synthetic: bool = Field(description="Whether the data is made up for an example.")
 
 
-class PageFlag(EvalDocumentModel):
-    """The amber line under the lede for the report-wide disclosures no confidence clause carries (GENERATOR §2.4)."""
-
-    title: ModelProse = Field(description="The flag in one line.")
-    text: ModelProse = Field(description="What it weakens and what survives.")
-    discloses: list[str] = Field(description="Each disclosure it carries, by caveat id (or `no_rule`), as code filled.")
-
-
-class PageClause(EvalDocumentModel):
-    """One open caveat the decision's confidence is conditional on, and the planner's clause for it."""
-
-    caveat: str = Field(description="The caveat's id.")
-    text: ModelProse = Field(description="What it is, and what would make it material.")
-
-
-class PageConfidence(EvalDocumentModel):
-    """How sure the decision is (GENERATOR §2.5): the form in code's words, the planner's clauses, then code's checked
-    line for each caveat it proved immaterial."""
-
-    form: Literal["high", "high_if_immaterial", "low"] = Field(description="The plan's confidence form.")
-    words: str = Field(description="The form, in GENERATOR §2.5's words.")
-    clauses: list[PageClause] = Field(description="Each open caveat with its clause, in the plan's order.")
-    checked: list[str] = Field(description="Code's line for each caveat it proved immaterial, in the input's order.")
-
-
 class PageSlot(EvalDocumentModel):
     """One decision slot: its key, its title in code's words, the planner's text, and whether it is the one set
     apart (the recommendation, or the lean)."""
@@ -92,13 +62,6 @@ class PageSlot(EvalDocumentModel):
         ),
     )
     highlighted: bool = Field(description="Whether it is the recommendation (decide) or the lean (tradeoff).")
-
-
-class PageOptions(EvalDocumentModel):
-    """The options table (GENERATOR §2.6) and the row it sets apart."""
-
-    table: TableBlock = Field(description="The table: a row per option, a column per family code filled.")
-    highlighted: int | None = Field(description="The position of the recommended (or leaned) row; None for none.")
 
 
 class PageChart(EvalDocumentModel):
