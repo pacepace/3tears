@@ -20,6 +20,8 @@ import json
 import subprocess
 import sys
 import textwrap
+import warnings
+from dataclasses import replace
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -183,3 +185,21 @@ async def test_runs_stored_before_declarations_were_recorded_read_on_the_reader(
         bundle = off_loop(_bundle, host, comparison)
     assert bundle.launch_declarations == []
     assert bundle.measure_catalog["correct"].materiality_threshold == 0.3
+
+
+async def test_a_host_passing_a_retired_style_field_is_warned_once_never_again_on_each_assembly(tmp_path: Path) -> None:
+    """A reading host declaring otherwise is read on a copy of its profile, and the copy warns of no retired field."""
+    path = tmp_path / "evals.sqlite"
+    comparison = await _compare(path)
+    with SqliteDocumentStore(path) as store:
+        host = callable_host([correct, no_leak], arms=True, margins={"correct": 0.3}, store=store)
+        with warnings.catch_warnings(record=True) as built:
+            warnings.simplefilter("always")
+            profile = replace(host.profile, caveat_kinds=frozenset({"adjudication_scope"}))
+        with warnings.catch_warnings(record=True) as assembled:
+            warnings.simplefilter("always")
+            bundle = off_loop(_bundle, replace(host, profile=profile), comparison)
+    retired = "HostProfile.caveat_kinds is retired"
+    assert [str(w.message) for w in built if retired in str(w.message)], "building the profile warns, once"
+    assert bundle.launch_declarations, "the bundle was read on a copy of the reader's profile"
+    assert not [w for w in assembled if retired in str(w.message)], "assembling warns again of nothing"

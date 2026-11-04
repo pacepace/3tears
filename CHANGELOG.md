@@ -22,8 +22,9 @@ gate in `scripts/test.sh`, orphaned with `evals-paid.yml`, are gone.
 prompts read them. The next minor removes them.
 
 **Changed:** `EvalAnalysis.document` is a stored memo as the JSON it was stored as, never validated as a memo and never
-read; a memo analysis reads through every door as P4-7 left it, code's page with the memo writer's line. An aspect's
-page of a stored analysis is code's (`build_code_only_report` over `analysis_bundle`). `Recommendation` and the
+read; a memo analysis reads through every door as code's page with the memo writer's line. An aspect's page of a
+stored analysis is code's (`build_code_only_report` over `analysis_bundle`). The Coverage fold, which joined a memo's
+findings and next steps to the levers, leaves every page; a page lists each thin or unswept lever under Not tested. `Recommendation` and the
 models it nests stay for this minor as the type of `CampaignReport.recommendation`, which no page fills. Nothing
 stored changes shape or version.
 
@@ -46,8 +47,7 @@ every call before its client is asked anything, naming `analysis_generate`. `EVA
 **Changed:** a memo analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id and
 `analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the memo
 writer); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line, and the
-listing counts no findings for it. `build_report` still lays one aspect's memo page out until the memo renderer
-leaves. Nothing stored changes shape or version.
+listing counts no findings for it. Nothing stored changes shape or version.
 
 **Hosts:** drop the `eval_analysis_gen` slot and any call to `generate_analysis`; regenerate a memo analysis with
 `analysis_generate` to read a report over it.
