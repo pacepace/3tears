@@ -207,7 +207,7 @@ class TestThePopulationIsDerivedFromTypes:
 class TestNoCodeMatchesOverModelProse:
     def test_the_scan_reads_the_package(self):
         """Non-vacuity: a scan over a root holding no module finds no violation by reading nothing."""
-        assert (_EVAL_ROOT / "analysis" / "generator.py").is_file(), _EVAL_ROOT
+        assert (_EVAL_ROOT / "analysis" / "service.py").is_file(), _EVAL_ROOT
 
     def test_no_deterministic_string_matching_over_prose_in_the_eval_package(self):
         violations = _violations(prose_field_names())

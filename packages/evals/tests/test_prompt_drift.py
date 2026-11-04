@@ -19,7 +19,7 @@ import importlib
 
 import pytest
 
-from threetears.evals.kernel import SEED_PROMPTS, PromptDrift, SeedTemplate, prompt_drift, seed_digest
+from threetears.evals.kernel import KIND_TEXT, SEED_PROMPTS, PromptDrift, SeedPrompt, SeedTemplate, prompt_drift, seed_digest
 
 _RESET = "call prompt_reset for the slot"
 
@@ -99,7 +99,8 @@ def test_a_copy_the_host_declares_its_own_is_never_stale() -> None:
 
 
 def test_a_text_prompt_is_read_the_same_way() -> None:
-    entry = next(entry for entry in SEED_PROMPTS if entry.kind == "text")
+    """A host's own text prompt, declared through the same type (the engine ships none since the memo writer retired)."""
+    entry = SeedPrompt(kind=KIND_TEXT, prompt_type="host_notes", seed_module="host.prompts", constant="NOTES")
     assert (
         prompt_drift(entry, shipped="new text", stored="new text", reset=_RESET, seeded_digest=None).state == "current"
     )

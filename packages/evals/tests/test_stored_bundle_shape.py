@@ -2,18 +2,19 @@
 
 A bundle is regenerated across a shape change, never migrated, and a stored read is strict. v0.75.0 and v0.76.0 froze
 analyses over bundle shape 60, which carries fields later shapes dropped. Such an analysis is listed as needing
-regeneration rather than refusing the listing of every other analysis, and the campaign's report reads code-only, led
-by the regenerate line and the shape (it was refused before; it is a fallback now, as a report plan's is).
+regeneration rather than refusing the listing of every other analysis, its line saying the shape after the retired
+writer's line (every analysis frozen then is a memo), and the campaign's report reads code-only, led by the retired
+writer's line (it was refused before; it is a fallback now, as a report plan's is).
 """
 
 from __future__ import annotations
 
+from html import escape
+
 import pytest
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
-from threetears.evals.analysis.service import campaign_report
-from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
 from threetears.evals.ops.analysis import analyses_list, report_read
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
@@ -57,9 +58,12 @@ def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_rege
     listing = analyses_list(host, campaign_id, TOYHOST_SCOPE)
 
     lines = {line.id: line for line in listing.analyses}
-    assert lines[current.id].needs_regeneration is None
+    # Both are memos, so both lines lead with the memo writer's line; only the one frozen at the old shape says why.
+    retired = retired_generation("memo")
+    assert retired is not None
+    assert lines[current.id].needs_regeneration == retired
     unreadable = lines[old.id].needs_regeneration
-    assert unreadable is not None
+    assert unreadable is not None and unreadable.startswith(f"{retired} (")
     assert f"shape {SHIPPED_SHAPE}" in unreadable and "analysis_generate" in unreadable
     assert lines[old.id].verdict.startswith("Needs regeneration: ")
 
@@ -76,31 +80,13 @@ def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped
     old = make_analysis(campaign_id=campaign_id, scope_id=TOYHOST_SCOPE, aspects=[old_aspect], campaign_bundle=frame)
     host.storage.save_analysis(old)
 
-    # A deliberate change: this read raised RefusedInput; it now returns the code-only page, as a plan's does.
+    # A deliberate change: this read raised RefusedInput; it now returns the code-only page, as a plan's does. A memo
+    # is a retired writer's, so its frozen bundle is never put back together on this door: the line names the writer.
     read = report_read(host, campaign_id, TOYHOST_SCOPE, format=format, static=(format == "html"))
 
+    retired = retired_generation("memo")
+    assert retired is not None
     assert read.basis == "code_only" and read.analysis_id == old.id
-    assert read.needs_regeneration is not None
-    assert read.needs_regeneration.startswith(f"{NO_LONGER_READS} (")
-    assert f"shape {SHIPPED_SHAPE}" in read.needs_regeneration
+    assert read.needs_regeneration == f"{retired} (analysis {old.id})"
     assert "analysis_generate" in read.needs_regeneration
-    assert NO_LONGER_READS in read.body
-
-
-def test_a_memo_whose_page_refuses_what_it_is_laid_out_over_reaches_the_caller_rather_than_reading_code_only():
-    fixture = off_loop(ops_fixture)
-    host = fixture.host.eval_host
-    campaign_id = fixture.campaign.id
-    # A bundle of this build's shape, so it is put back together, but read off another campaign: the page refuses
-    # its readings, which is a fault, not a bundle this version no longer reads.
-    other = empty_bundle(campaign_id="another-campaign")
-    held = make_analysis(
-        campaign_id=campaign_id,
-        scope_id=TOYHOST_SCOPE,
-        aspects=[analysed_aspect(other)],
-        campaign_bundle=campaign_bundle(other).frame(),
-    )
-    host.storage.save_analysis(held)
-
-    with pytest.raises(RefusedInput, match="another-campaign"):
-        campaign_report(host, campaign_id, TOYHOST_SCOPE)
+    assert (escape(retired) if format == "html" else retired) in read.body

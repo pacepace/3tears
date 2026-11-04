@@ -18,6 +18,8 @@ Contracts held here, on the memory store and the SQLite store alike:
 
 from __future__ import annotations
 
+from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
+
 import gc
 import tracemalloc
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -164,7 +166,8 @@ def test_the_listing_reads_one_key_read_then_a_page_of_whole_analyses_at_a_time(
     listing = analyses_list(host, CAMPAIGN, SCOPE)
 
     assert [line.id for line in listing.analyses] == newest_first
-    assert all(line.needs_regeneration is None for line in listing.analyses)
+    # Each is a memo, so each line leads with the memo writer's retired line, and no line adds why it did not read.
+    assert {line.needs_regeneration for line in listing.analyses} == {retired_generation("memo")}
     analyses_read = [(method, whole) for method, doc_type, whole in counted.reads if doc_type == "eval_analysis"]
     assert analyses_read[0] == ("by_doc_type", 0), "the key read ships no analysis whole"
     assert all(method == "get_many" for method, _ in analyses_read[1:])
