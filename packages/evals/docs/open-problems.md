@@ -82,14 +82,6 @@ install stays as it is, and the host supplies the chat UI: a page or panel besid
 report's sandboxed frame. Open: how a reader conversation maps onto the framework's sessions, the turn contract
 hosts build against, and whether a reader sees a question's cost before asking.
 
-### Reporter cases judge memos and planned reports, not the analyst's report
-
-No issue filed yet. The analysis reporter evaluates a writer as a subject: a case is a frozen campaign, and a judge
-reads what the writer read and wrote. Its cases are memos and planned reports. The analyst's report is held instead
-by its editor's rubric before storage, and by acceptance campaigns re-run when the skill changes. Moving the
-reporter's cases onto report documents is calibration work: the editor's thresholds (no 0, at least 11 of 14) are
-starting points until stored reports scored against people's labels set them.
-
 ## Judging
 
 ### An operator's new judge case joins the live revision

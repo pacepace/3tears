@@ -259,8 +259,8 @@ the run froze, `EvalRun.template_digest`), one apparatus provenance and one set 
 cases each run covered and whenever each ran. Its headline figure, interval, bar and verdict read the headline
 cell alone, chosen in the one order `PassHatKCellReading` states (a recorded, resolved context first, then a cell
 that pools, then most runs, most results and the first run id); every other cell stands beside it with its own
-pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text, the report page and
-the memo writer's view. A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
+pass^k and the reason it is not the headline (`FrontierPoint.pass_hat_k_cells`), named on the frontier's text and the report page.
+A run kept out of the headline is kept out of the frontier's pass^k, bar and verdict
 only: the arm's tables, its cells (see [Apparatus class](#apparatus-class)), composite, cost and latency still
 count it. A run that froze no template digest, and a run with a candidate call whose response named no model, is
 a cell of its own: a silence is never evidence of a match, so it pools with nothing and is named with what it did
@@ -557,8 +557,8 @@ document: a headline, the arms it recommends, its confidence and caveats, claims
 evidence blocks that show it, what it left out and why, next steps and method. Every number in it is a **figure key**
 code resolves; the analyst types none. Code checks the draft mechanically and sends a failing one back; an
 **editor**, the same model in a fresh context, then reviews the page as a reader would before it is stored. Optional,
-and it costs money; the verdict and every count are code's either way. Older analyses were a memo or a planned
-report; each reads as the code-only page with a line to regenerate.
+and it costs money; the verdict and every count are code's either way. An analysis a retired writer stored
+reads as the code-only page with a line to regenerate.
 See [the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence).
 
 #### Confidence

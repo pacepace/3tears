@@ -1,6 +1,6 @@
 # The analyst: how a campaign report is written
 
-Every campaign report is written this way. The planned report in [GENERATOR.md](GENERATOR.md), with its shape table, spine and code-computed mode, survives only as what the analysis reporter's plan cases judge. GENERATOR's guidance on gates, charts, words and visuals lives on in the skill (§3).
+Every campaign report is written this way. [GENERATOR.md](GENERATOR.md) holds the page rules code and the kit apply: gates, modes, the page's parts, charts, words and the visual system. The skill carries their judgment (§3).
 
 **Terminology:** the role that reviews a report before it is stored is the **report editor**. In this repository "Critic" means only the review of code changes.
 
@@ -52,9 +52,9 @@ packages/evals/src/threetears/evals/analysis/analyst/skill/
 
 An analyst is given every exemplar and the whole index, except the notes a run withholds (a blind run withholds the one reasoned on its own campaign). Nothing about a campaign chooses which notes it reads. Each index row's Structure column records the campaign its note came from, for readers of the notes.
 
-GENERATOR's content moves into these files, rewritten as judgment ("lead with the change's size when the interval excludes zero, because…") rather than lookups ("if shape D then forest").
+The page rules' judgment lives in these files, written as judgment ("lead with the change's size when the interval excludes zero, because…") rather than lookups ("if shape D then forest").
 
-**The exemplars are the most important part.** A finished memo shows *what* a good report looks like. A reasoning note shows *how it was reached*: what the analyst noticed, what it chose to lead with, what it left out, and the trap it avoided. Judgment transfers through those notes. Add one whenever a report teaches something new, especially for evals that surprised everyone.
+**The exemplars are the most important part.** A finished report shows *what* a good report looks like. A reasoning note shows *how it was reached*: what the analyst noticed, what it chose to lead with, what it left out, and the trap it avoided. Judgment transfers through those notes. Add one whenever a report teaches something new, especially for evals that surprised everyone.
 
 ### Story forms (guidance, not an enum)
 
@@ -194,7 +194,7 @@ Each finding carries a severity, and a `must_fix` sends the report back whatever
 - **The model.** The `analyst` role's client, built from the host's key. It must take tool turns; one that cannot is refused before anything is spent, naming what it lacks.
 - **The budget.** The host sets it, in dollars, or in tokens and turns for a model it has no price for. No caller can raise it per call. Every turn is admitted on its price bound before it is sent, and a refusal sends nothing. A bound built on rates the host marks as not guaranteed admits the turn on the estimate, and the report says the cap was checked against estimates.
 - **The time limit.** The engine exports the worst-case writing time for its limits: every analyst round, revision, bounce and editor review, times the host's bound on one request. The host's job budget sits above it, with headroom, so a paid write is never cut short by a round number.
-- **The page.** `report_read` serves the newest report in Markdown, HTML, static HTML (no script, no link, no URL) or JSON. A host frames the static page in a sandboxed iframe. A stored report this version no longer reads, or a planned report, is never refused by the page: it gets the code-only page and one line saying it was written in a shape this version no longer reads, and to regenerate it.
+- **The page.** `report_read` serves the newest report in Markdown, HTML, static HTML (no script, no link, no URL) or JSON. A host frames the static page in a sandboxed iframe. A stored report this version no longer reads, or one a retired writer stored, is never refused by the page: it gets the code-only page and one line saying why, and to regenerate it.
 
 How a write can end:
 
@@ -216,7 +216,7 @@ On a storing ending the job links the document to the campaign as its analysis, 
 - **Cost.** A report costs many model turns rather than one call. Kairo round 2 took one analyst round and one editor round, 19 turns, $1.60. The host's budget bounds it; a report the budget stops keeps its last reviewed draft.
 - **Determinism.** Two runs can write different but equally good reports. Stored reports are what readers see; regenerating one is a deliberate act and keeps the previous version.
 - **When there's no good story.** The analyst may conclude the campaign can't support any reading. That is a valid report: a diagnosis or exploratory story whose next steps name what to declare or run. It is not a failure.
-- **Calibration.** The editor's thresholds (no 0, at least 11 of 14) are starting points. Stored reports scored on the rubric, against reports people labelled, set them. The analysis reporter's cases still judge the planned report, not this one.
+- **Calibration.** The editor's thresholds (no 0, at least 11 of 14) are starting points. Stored reports scored on the rubric, against reports people labelled, set them. The writer's own eval (the `report_writer` kind) reads its reports pairwise ([judges and calibration](../../packages/evals/docs/judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
 - **Chat with the analyst.** Not built. A reader could question a stored report's analyst, which would resume its stored session with read-only tools; ask it for a revision, which would take the draft's path and store a new version; and let what readers teach it reach the skill only through owner-approved proposals in the gap loop. It would ship as an optional extra on the agent framework, with the host supplying the chat UI, never inside the report page (#1002).
 
 ---
