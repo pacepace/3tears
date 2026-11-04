@@ -52,7 +52,6 @@ from threetears.evals.analysis.service import (
     describe_insight_id_filters,
     get_analysis,
     get_report_plan,
-    list_analyses,
     list_insights,
     record_campaign_call,
     record_written_generation,
@@ -1337,12 +1336,17 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :return: The listing.
+    :return: The listing, newest first. The campaign's analyses are read a page at a time
+        (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_analyses_by_campaign`), each kept only as its line,
+        so the listing holds one page of whole analyses at once however many the campaign has archived. Each line's
+        verdict and title are written by code from the bundle frozen with its analysis, so no lighter read serves it.
     :rtype: AnalysisListing
     """
     return AnalysisListing(
         campaign_id=campaign_id,
-        analyses=[_analysis_line(host, analysis) for analysis in list_analyses(host.storage, campaign_id, scope_id)],
+        analyses=[
+            _analysis_line(host, analysis) for analysis in host.storage.iter_analyses_by_campaign(campaign_id, scope_id)
+        ],
     )
 
 
@@ -1380,13 +1384,13 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
     :ptype host: EvalHost
     :param scope_id: The scope.
     :ptype scope_id: str
-    :return: The listing.
+    :return: The listing. Each campaign's analyses are read a page at a time, as :func:`analyses_list` reads them.
     :rtype: UndescribableArmsListing
     """
     lines: list[UndescribableArmsLine] = []
     read = 0
     for campaign in list_campaigns(host.storage, scope_id):
-        for analysis in list_analyses(host.storage, campaign.id, scope_id):
+        for analysis in host.storage.iter_analyses_by_campaign(campaign.id, scope_id):
             read += 1
             # `levels_unavailable` set, even to an empty reason, is the admission; None is a describable arm.
             index = list(
