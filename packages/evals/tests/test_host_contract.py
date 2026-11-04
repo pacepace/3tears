@@ -12,10 +12,9 @@ The four companion gates, and where each lives:
 2. **No host names in the shared registry** — ``test_no_host_names_in_shared_contract.py`` runs the
    whole-tree version; the registry-shaped half is here.
 3. **A well-formed empty answer** — the sweepables suite.
-4. **The prompt-purity test** — **only its narrow half is here.** What this file asserts is that
-   the single function turning style into prompt text reads an engine-owned table. Asserting it
-   over an *assembled* generator prompt is a separate check and is not made here. Naming the narrow claim
-   narrowly matters, because a test called "the prompt-purity gate" makes the gap read as covered.
+4. **The retired style fields** — a host's tone register and caveat kinds were read only by the retired writers'
+   prompts. ``HostProfile.style`` and ``HostProfile.caveat_kinds`` default to None and warn when passed, and
+   ``StyleProfile`` and ``ToneRegister`` warn when read from the host contract, for one minor.
 
 Profiles and observations are really constructed; nothing here is mocked.
 """
@@ -23,20 +22,16 @@ Profiles and observations are really constructed; nothing here is mocked.
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, replace
+import warnings
+from dataclasses import replace
 from pathlib import Path
-from typing import get_args
 
 import pytest
 
-from threetears.evals.kernel.host import style as style_module
+from threetears.evals.kernel import host as host_contract
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.kernel.host.style import (
-    StyleProfile,
-    ToneRegister,
-)
 from threetears.evals.kernel.host.sweepables import (
     CANDIDATE_KIND_LEVER,
     CANDIDATE_MODEL_LEVER,
@@ -46,6 +41,7 @@ from threetears.evals.kernel.host.sweepables import (
 )
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
+from threetears.evals.kernel.retired import HOST_STYLE_RETIRED
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
     clean_sweep,
@@ -357,43 +353,42 @@ def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered():
     assert answer.state != "uncovered"
 
 
-def test_the_only_style_text_reaching_a_prompt_is_an_engine_owned_fragment():
-    """Style never reaches the model as the host wrote it — the narrow claim, named narrowly.
+def test_the_default_profile_sets_no_style_and_no_caveat_kinds_and_warns_nothing():
+    """The toy host sets neither retired field, so its profile is built without a warning and holds neither."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        toy = toyhost_profile()
 
-    **This is the seam, not the gate**, and its name says which. It asserts that
-    :func:`~threetears.evals.kernel.host.style.prompt_fragment` is the only function turning style into
-    prompt text and that it reads one enum. A gate over the whole ASSEMBLED prompt — where the
-    generator actually builds a prompt for a host — is a different check and is not this one: this
-    one fails when the seam grows a second door, that one would fail when something comes through it.
+    assert (toy.style, toy.caveat_kinds) == (None, None)
 
-    This repo has proven prose becomes instruction. The toy host's style differs from the default
-    register, so if it could leak, this profile is what would show it.
 
-    ``tone_register`` is the one field that reaches a prompt, and it reaches it as an
-    **engine-owned fragment** the host selected by key rather than wrote. That is the difference
-    between picking from a list and writing an instruction.
-    """
+@pytest.mark.parametrize("retired", ["style", "caveat_kinds"])
+def test_passing_a_retired_style_field_warns_naming_its_retirement(retired: str) -> None:
+    """A host still passing ``style=`` or ``caveat_kinds=`` is told, once per profile, that nothing reads it."""
     toy = toyhost_profile()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        value = host_contract.StyleProfile() if retired == "style" else frozenset({"adjudication_scope"})
 
-    fragment = style_module.prompt_fragment(toy.style)
+    with pytest.warns(DeprecationWarning) as caught:
+        profile = replace(toy, **{retired: value})
 
-    # The engine-owned fragments, read through the one public door: a default profile per register.
-    owned = {style_module.prompt_fragment(StyleProfile(tone_register=register)) for register in get_args(ToneRegister)}
-    assert fragment in owned
+    (warned,) = [str(warning.message) for warning in caught]
+    assert warned == f"HostProfile.{retired} is retired and leaves in the next minor: {HOST_STYLE_RETIRED}"
+    assert getattr(profile, retired) == value, "the profile still holds what it was given, for its last minor"
 
 
-def test_style_has_no_free_text_field_a_prompt_could_read():
-    """Structural enforcement, not a promise: there is no string field to fill with instructions.
+@pytest.mark.parametrize("name", ["StyleProfile", "ToneRegister"])
+def test_reading_a_retired_style_name_from_the_host_contract_warns(name: str) -> None:
+    """``StyleProfile`` and ``ToneRegister`` still import from the host contract, each read warning."""
+    with pytest.warns(DeprecationWarning) as caught:
+        getattr(host_contract, name)
 
-    A host that could write a tone sentence could steer the analysis rather than style it. Every
-    field is an engine-owned enum, and this asserts the shape rather than trusting the reviewer of the next
-    field somebody adds.
-    """
-    toy = toyhost_profile()
-
-    assert toy.style.tone_register in get_args(ToneRegister)
-    # The enum is the whole contract: no bare string a host could fill, and no slot nothing reads.
-    assert {field.name for field in fields(StyleProfile)} == {"tone_register"}
+    (warned,) = [str(warning.message) for warning in caught]
+    assert warned == (
+        f"threetears.evals.kernel.host.{name} is retired and leaves in the next minor: {HOST_STYLE_RETIRED}"
+    )
+    assert name in host_contract.__all__, "kept in __all__ for its last minor"
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent():
@@ -697,16 +692,6 @@ def test_a_proposal_with_no_rationale_is_refused_like_a_registered_bar_with_none
             measures=toy.measures,
             rationale="  ",
         )
-
-
-def test_style_declares_no_locale_because_nothing_formats_by_one():
-    """A field that claims to change formatting and changes nothing is worse than no field.
-
-    No renderer and no number formatter reads a locale, so a host that declared ``de-DE`` got reports
-    formatted as ``en-US`` with nothing telling it so. The slot comes back with the code that honours it.
-    """
-    with pytest.raises(TypeError, match="locale"):
-        StyleProfile(locale="de-DE")  # type: ignore[call-arg]
 
 
 #: Kinds shipped INSIDE the package whose payloads are a schema they define themselves, each key

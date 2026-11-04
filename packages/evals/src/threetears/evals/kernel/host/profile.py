@@ -82,6 +82,7 @@ path with a test that both callers reach it, and it gains no entry here.
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -90,6 +91,7 @@ from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.host.measures import MeasureRegistry
 from threetears.evals.kernel.host.style import StyleProfile
+from threetears.evals.kernel.retired import HOST_STYLE_RETIRED
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
@@ -219,8 +221,11 @@ class HostProfile:
     bars: BarRegistry = field(default_factory=BarRegistry)
     """The incumbent standards per behavior. A host with none registers an empty registry."""
 
-    style: StyleProfile = field(default_factory=StyleProfile)
-    """The bounded presentation contract. No field of it is free text."""
+    style: StyleProfile | None = None
+    """Retired: the tone register the retired writers' prompts read; nothing reads it now.
+
+    ``None`` by default. Passing one warns with a :class:`DeprecationWarning`; the next minor removes the field.
+    """
 
     world: WorldRegistry | None = None
     """What a run may set before the subject starts, and what it may only witness.
@@ -232,16 +237,10 @@ class HostProfile:
     the two would lose the only distinction that tells an unevaluable area from an unbuilt one.
     """
 
-    caveat_kinds: frozenset[str] = frozenset()
-    """Caveat kinds this host declares, BEYOND the four the engine owns.
+    caveat_kinds: frozenset[str] | None = None
+    """Retired: the caveat kinds the retired memo writer offered beyond the engine's own; nothing reads them now.
 
-    The engine's four (``apparatus``/``sampling``/``instrument``/``scope``) are always available;
-    this is the host's extension of them, for the same reason R8 gives the lever vocabulary to the
-    host. A closed engine-owned set on a host-facing field forces a domain with a legitimate fifth
-    kind to jam it into ``scope``, and the field then stops meaning anything — which is the one
-    thing a required classification exists to prevent. Empty is the normal case: the four cover
-    what has been seen, and they were derived from one host's caveats, so they are offered rather
-    than asserted to be complete.
+    ``None`` by default. Passing any warns with a :class:`DeprecationWarning`; the next minor removes the field.
     """
 
     variant_levers: VariantLeverReader | None = None
@@ -386,6 +385,14 @@ class HostProfile:
             :attr:`host_sweepables` as well, the registry lacks a lever the engine resolves
             for every run, or ``release_label`` names no registered ``label``.
         """
+        for retired in ("style", "caveat_kinds"):
+            if getattr(self, retired) is not None:
+                # stacklevel 3: past __post_init__ and the dataclass's __init__, to the line that built the profile.
+                warnings.warn(
+                    f"HostProfile.{retired} is retired and leaves in the next minor: {HOST_STYLE_RETIRED}",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
         self._refuse_overlapping_kind_contracts()
         self._refuse_a_kind_lever_registered_by_hand()
         object.__setattr__(

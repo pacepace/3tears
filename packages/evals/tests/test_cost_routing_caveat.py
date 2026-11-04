@@ -1,30 +1,23 @@
-"""A cost is what its runs' provider routing charged, not the model's alone (owner, 2026-10-25), and the page and the
-writer's view each say so once, at report level, wherever they present a cost figure.
+"""A cost is what its runs' provider routing charged, not the model's alone (owner, 2026-10-25), and the page says so
+once, at report level, wherever it presents a cost figure.
 
 - **The page** carries one first-screen caveat line (``caveat-cost``) among the report-wide caveats, on every shape
   that prints a cost, in HTML and in Markdown; no fold, figure or chart restates it, and an unpriced campaign has none.
   An aspect's own page that prints a cost says it once too, under its verdict among its report-wide caveats.
-- **The writer's view** hands it once, in the campaign's own ``disclosures`` (``cost_routing``), as the page spells
-  it, naming the priced aspects; no aspect's part carries it, and an unpriced campaign's view has none.
+- **The priced aspects** are each aspect that prices its arms (``priced_aspects``), what the caveat holds on.
 """
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from threetears.evals.analysis import campaign_report_html, campaign_report_markdown, report_html, report_markdown
-from threetears.evals.analysis.campaign_bundle import build_campaign_bundle, writer_view
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT, priced_aspects
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, Report
 from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, Shape, shape_of
 
 #: The id the caveat line carries on the page.
 _ANCHOR = "caveat-cost"
-
-#: The key the writer's view hands it under.
-_KEY = "cost_routing"
 
 
 def _unpriced() -> Shape:
@@ -44,11 +37,6 @@ def _unpriced() -> Shape:
 
 def _caveats(page: CampaignReport | Report) -> list[DisclosureBlock]:
     return [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.anchor == _ANCHOR]
-
-
-def _view(shape: Shape) -> dict[str, object]:
-    bundles = [shape.bundles[aspect.label] for aspect in shape.campaign.aspects]
-    return writer_view(build_campaign_bundle(shape.campaign, bundles, arms=shape.arms, readings=shape.readings))
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
@@ -96,22 +84,7 @@ def test_an_aspect_s_own_page_that_prints_no_cost_does_not_say_it() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
-def test_the_writer_s_view_hands_it_once_in_the_campaign_s_disclosures_and_in_no_aspect_s_part(name: str) -> None:
+def test_the_priced_aspects_are_every_aspect_of_a_shape_that_prices_its_arms(name: str) -> None:
     shape = SHAPES[name]()
-    view = _view(shape)
-    disclosures = view["disclosures"]
-    assert isinstance(disclosures, dict)
     labels = [aspect.label for aspect in shape.campaign.aspects]
-    assert disclosures[_KEY] == [{"aspects": labels, "said": COST_ROUTING_CAVEAT}]
-    assert json.dumps(view).count(COST_ROUTING_CAVEAT) == 1
-    parts = view["aspects"]
-    assert isinstance(parts, list)
-    for part in parts:
-        assert _KEY not in part["disclosures"] and COST_ROUTING_CAVEAT not in json.dumps(part)
-
-
-def test_a_view_handing_no_cost_does_not_say_it() -> None:
-    view = _view(_unpriced())
-    disclosures = view.get("disclosures", {})
-    assert isinstance(disclosures, dict) and _KEY not in disclosures
-    assert COST_ROUTING_CAVEAT not in json.dumps(view)
+    assert priced_aspects([shape.bundles[label] for label in labels]) == labels

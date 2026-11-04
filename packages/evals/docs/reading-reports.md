@@ -343,7 +343,7 @@ heading.
   most of a large campaign's page: `report_read`'s `trials="all"` (`campaign_report(..., trials="all")`,
   `report --trials all`) lays each one out under `T4 · double-charge · cheaper candidate · failed` (never the
   start of what the case asked), the first twelve open, and the row then leaves its result to the record. An
-  aspect's own page (`build_report`, `build_code_only_report`, the quick path's `Result.report`) lays out every
+  aspect's own page (`build_code_only_report`, the quick path's `Result.report`) lays out every
   record unless asked. A failed check is named by its declared name, else by its expression, as code
   (``check: `call_count("music.queue_track") >= 2` ``), and a judge's fail by its dimensions (`judge: tone`), else
   `failed by the judge`. A record names a named check by its name and its expression; whatever the trial detail,
@@ -359,7 +359,7 @@ heading.
 - **Methods**: a table (arms, judge, settings sent, test cost, the analysis's writer, the bundle); and the engine's own
   disclosures in a closed fold. The per-lever coverage map (status, findings that name it, next steps) is in the
   bundle's `coverage`, in the `bundle-<aspect>.json` written beside a saved page (the command line's `report --out`); the page lists each `thin` or `unswept` lever under Not tested.
-  `threetears.evals.analysis.build_report` lays it out as a closed `Coverage` fold, one row per lever, for one analysis. Then the **Glossary**: every term of
+  Then the **Glossary**: every term of
   art the page links, in one plain sentence. Every column header that is a term of art links its entry, and in HTML a
   hover reads it.
 

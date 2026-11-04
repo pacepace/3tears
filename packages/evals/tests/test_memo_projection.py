@@ -1,10 +1,10 @@
-"""Where the authored document lives, and the memo's contract refusing a list of answers keyed by question.
+"""Where a stored analysis keeps what its retired memo writer authored, and the fields no analysis carries.
 
-The memo writer authored one document per campaign (:class:`~threetears.evals.kernel.authored.AuthoredCampaignAnalysis`)
-and the stored analysis keeps it verbatim. These pin the two projection rules the stored models still hold it to: the
-question is answered by the one recommendation and one summary per aspect, so a list of answers keyed by question is off
-the contract, and the document is the only carrier of what was authored. The position links inside the document
-(``rests_on``, ``invalidates``) are the stored model's own rule and are pinned beside it in ``test_analysis_models.py``.
+The memo writer authored one document per campaign, and the stored analysis keeps it as the JSON it was stored as
+(``EvalAnalysis.document``), never validated as a memo and never read: so the stored memo over the toy corpus campaign
+reads back byte for byte, a key off the retired contract included. The document is the only carrier of what was
+authored: an analysis without the field does not construct, the fields from before it are gone, and a stored read
+refuses an old top-level copy.
 """
 
 from __future__ import annotations
@@ -17,23 +17,23 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import make_analysis
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalAnalysis
 
 #: The analysis the memo writer stored over the toy corpus campaign, as its record holds it.
 _STORED_MEMO: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "memo_analysis.json"
 
 
-class TestTheQuestionIsAnsweredByTheRecommendation:
-    """A campaign asks one question, and the memo answered it with one recommendation and a summary per aspect."""
+class TestTheStoredMemoIsHeldAsStored:
+    """A retired memo is JSON the analysis holds, never a model it validates."""
 
-    def test_a_list_of_answers_keyed_by_question_is_refused_as_off_contract(self) -> None:
+    def test_the_stored_memo_reads_back_as_it_was_stored_whatever_it_holds(self) -> None:
         record: dict[str, Any] = json.loads(_STORED_MEMO.read_text(encoding="utf-8"))
         document = record["analysis"]["document"]
-        assert AuthoredCampaignAnalysis.model_validate(document).recommendation, "the stored memo validates as stored"
+        analysis = EvalAnalysis.model_validate(record["analysis"])
+        assert (analysis.basis, analysis.document) == ("memo", document)
         answers = [{"question_id": "q-1", "resolution": "answered", "answer": "Narrow.", "rests_on": [0]}]
-        with pytest.raises(ValidationError, match="questions"):
-            AuthoredCampaignAnalysis.model_validate({**document, "questions": answers})
+        held = EvalAnalysis.model_validate({**record["analysis"], "document": {**document, "questions": answers}})
+        assert held.document is not None and held.document["questions"] == answers
 
 
 class TestTheDocumentIsTheOnlyCarrier:

@@ -250,6 +250,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/host/profile.py": {"presence": 1},
     "schema/external_spend.py": {},
     "kernel/host/style.py": {},
+    "kernel/host/_retired.py": {},
     "schema/subject.py": {},
     "kernel/host/sweepables.py": {},
     "kernel/host/timeouts.py": {},

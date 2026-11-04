@@ -5,7 +5,7 @@ their own: the case set is no part of the context key, and the cell is read at t
 run stamped before the bump pools with one stamped after it. A contestant's pass^k reads its headline cell alone; a
 run of another context, template revision or served model, or one that recorded no context, no template digest or
 no served model, stands beside it in a cell of its own, with its own reading and its reason, on the analysis bundle,
-in the campaign bundle the memo writer reads and in the frontier's text. No run leaves the counts unsaid.
+on the page and in the frontier's text. No run leaves the counts unsaid.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any, Literal
 import pytest
 
 from threetears.evals.analysis import FrontierPoint, PassHatKCellReading, assemble_context_bundle
-from threetears.evals.analysis.campaign_bundle import writer_view
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.build import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock
@@ -23,7 +22,6 @@ from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, c
 from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity, derive_variant_identity
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 from threetears.evals.schema.values import NominalScale, SweepableValue
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import DEFAULT_SUBJECT, make_campaign, make_eval_run, make_scored_result
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -183,14 +181,6 @@ def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_lose
     # No run vanishes: every run behind the point is in exactly one cell.
     assert sorted(run_id for cell in _cells(point) for run_id in cell.run_ids) == sorted(run.id for run in runs)
 
-    view = writer_view(campaign_bundle(bundle))
-    [aspect] = view["aspects"]
-    unpooled = aspect["disclosures"]["pass_k_unpooled"]
-    assert "headline" in unpooled["reading"]
-    lines = [line for arm_lines in unpooled["by_arm"].values() for line in arm_lines]
-    for cell in beside:
-        assert any(", ".join(cell.run_ids) in line and (cell.detail or "") in line for line in lines)
-
 
 def test_the_headline_pass_hat_k_reads_the_pooled_runs_alone():
     """A run kept out of the pool counts in neither the headline, its interval nor its verdict."""
@@ -285,12 +275,6 @@ def test_a_run_whose_responses_named_no_model_stands_apart_and_is_named_with_its
     assert point.pass_hat_k_curve == [{"k": 1, "pass_hat_k": 1.0, "n_cases": 1}]
     assert bundle.model_identity_disclosure is not None
     assert bundle.model_identity_disclosure.startswith("Model identity unconfirmed")
-    view = writer_view(campaign_bundle(bundle))
-    [aspect] = view["aspects"]
-    assert aspect["disclosures"]["model_identity_disclosure"] == bundle.model_identity_disclosure
-    [[line]] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
-    assert line.startswith("run(s) run-b kept out of this pass^k, as a cell of their own (no recorded served model): ")
-    assert "named no served model" in line
 
 
 def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_rest_still_read():
@@ -465,10 +449,6 @@ def test_a_headline_that_is_one_silent_run_says_so():
     assert (beside.run_ids, beside.reason) == (["run-x2"], "no_recorded_template")
     text = frontier_text(bundle.frontier)
     assert "this pass^k rests on run(s) run-x1 alone, a cell of their own (no recorded template revision)" in text
-    view = writer_view(campaign_bundle(bundle))
-    [aspect] = view["aspects"]
-    [lines] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
-    assert lines[0].startswith("this pass^k rests on run(s) run-x1 alone")
 
 
 def test_a_point_of_one_silent_run_says_nothing_of_its_cells():
@@ -483,25 +463,14 @@ def test_a_point_of_one_silent_run_says_nothing_of_its_cells():
     assert (headline.run_ids, headline.reason, headline.detail) == (["run-x1"], None, None)
     assert "pass^k rests on" not in frontier_text(bundle.frontier)
     assert PASS_HAT_K_CELL_READING not in frontier_text(bundle.frontier)
-    [aspect] = writer_view(campaign_bundle(bundle))["aspects"]
-    assert "pass_k_unpooled" not in aspect["disclosures"]
     assert not any("pass^k" in line for line in _page_run_lines([run], results))
 
 
-def test_the_writer_view_names_many_silent_runs_in_one_line_per_reason():
-    """Forty runs that froze no digest cost the writer one line, not forty; the page still names each."""
+def test_the_page_names_each_of_many_silent_runs():
+    """Forty runs that froze no digest: the page names each, one line per run kept out."""
     silent = [_launched(f"run-s{i:02d}", test_case_ids=["tc1"], template_digest=None) for i in range(40)]
     runs, results = _silences_corpus(*silent, served={})
-    bundle = _bundle(runs, results)
 
-    view = writer_view(campaign_bundle(bundle))
-
-    [aspect] = view["aspects"]
-    [lines] = aspect["disclosures"]["pass_k_unpooled"]["by_arm"].values()
-    assert lines == [
-        "run(s) run-s00, run-s01, run-s02 and 37 more kept out of this pass^k, as 40 cells of their own "
-        "(no recorded template revision), 40 run(s) in all, each with its own pass^k"
-    ]
     page = [line for line in _page_run_lines(runs, results) if "kept out of this pass^k" in line]
     assert len(page) == 40
 
@@ -586,8 +555,9 @@ def test_the_page_names_a_run_whose_responses_named_no_model_under_its_arm():
     assert lines.count(PASS_HAT_K_CELL_READING) == 1
 
 
-def test_the_writer_view_keys_each_arms_cells_by_the_arm_so_two_arms_on_one_model_stay_apart():
-    """Two arms run one model: each one's kept-out cell is named under its own arm, never merged under the model."""
+def test_each_arms_cells_are_its_own_so_two_arms_on_one_model_stay_apart():
+    """Two arms run one model: each one's kept-out cell stands under its own arm's point, never merged under the
+    model."""
     runs: list[EvalRun] = []
     results: dict[str, list[EvalResult]] = {}
     for arm in ("a", "b"):
@@ -603,13 +573,5 @@ def test_the_writer_view_keys_each_arms_cells_by_the_arm_so_two_arms_on_one_mode
     bundle = _bundle(runs, results)
     points = bundle.frontier.subjects[0].points
     assert len(points) == 2 and len({point.model for point in points}) == 1, "one model, two arms"
-    view = writer_view(campaign_bundle(bundle))
-
-    [aspect] = view["aspects"]
-    by_arm = aspect["disclosures"]["pass_k_unpooled"]["by_arm"]
-    assert len(by_arm) == 2
-    assert sorted(line.split(" kept out")[0] for lines in by_arm.values() for line in lines) == [
-        "run(s) run-a-rig",
-        "run(s) run-b-rig",
-    ]
-    assert aspect["disclosures"]["pass_k_unpooled"]["reading"] == PASS_HAT_K_CELL_READING
+    cells = sorted((sorted(_cells(point)[0].run_ids), [cell.run_ids for cell in _cells(point)[1:]]) for point in points)
+    assert cells == [(["run-a1", "run-a2"], [["run-a-rig"]]), (["run-b1", "run-b2"], [["run-b-rig"]])]

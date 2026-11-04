@@ -112,11 +112,7 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
-from threetears.evals.analysis.campaign_bundle import (
-    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
-    CampaignBundle,
-    build_campaign_user_message,
-)
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
@@ -284,7 +280,6 @@ from threetears.evals.analysis.report import (
     analysis_verdict,
     build_campaign_report,
     build_code_only_report,
-    build_report,
     campaign_report_html,
     campaign_report_markdown,
     report_html,
@@ -472,12 +467,10 @@ __all__ = [
     "aspect_view",
     "aspect_views",
     "campaign_readings",
-    # What the writer of a campaign's one memo reads: every aspect's evidence, the floors and code's readings.
-    "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT",
+    # A campaign's whole evidence: every aspect's evidence, the floors and code's readings.
     "CampaignBundle",
     "CellAddress",
     "assemble_campaign_bundle",
-    "build_campaign_user_message",
     # A campaign's page over its aspects, and its two forms a person reads.
     "CampaignAspectFold",
     "CampaignReport",
@@ -621,7 +614,6 @@ __all__ = [
     "verdict_token",
     "TextBlock",
     "TextRole",
-    "build_report",
     "report_html",
     "report_markdown",
     "ABSENT",

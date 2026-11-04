@@ -13,8 +13,8 @@ own lever, whose level is exactly the members a launch set.
 
 The surface is in the variant key, so every run of one arm resolves one surface: only a level of the knob held by
 two or more ARMS can refute the fold. Where no level is, the fold still applies (the knob names the arm) but is
-marked on every comparison that folds it as an ``unverified_fold`` confound, which reaches the generator's context
-and the code-only report — an untested fold is never presented as a checked non-confound.
+marked on every comparison that folds it as an ``unverified_fold`` confound, which reaches the code-only report — an
+untested fold is never presented as a checked non-confound.
 
 Every campaign here is the toy host's, with its extractor kind re-contracted to carry the knob, and is read through
 :func:`~threetears.evals.analysis.assemble_context_bundle` — the entry point every lens is reached through.
@@ -40,8 +40,6 @@ from threetears.evals.analysis import (
     build_code_only_report,
 )
 from threetears.evals.analysis.bundle.schema import UNVERIFIED_FOLD_PREFIX
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel import (
     ControlDeclaration,
     SweptAxis,
@@ -328,12 +326,6 @@ class TestATwoArmSweepFoldsButIsMarkedUnverified:
         bundle = _bundle([control, repeat, _batch("high", _HIGH)])
         assert _PARAMS not in {row.name for row in bundle.coverage}
         assert _confound(_row(bundle, _EFFORT), _UNVERIFIED_PARAMS) is not None
-
-    def test_the_mark_reaches_the_generator_s_context(self) -> None:
-        message = _writer_message(self._sweep())
-        assert '"kind":"unverified_fold"' in message
-        assert f'"dimension":"{_UNVERIFIED_PARAMS}"' in message
-        assert "folded, unverified:" in message
 
     def test_the_mark_reaches_the_code_only_report(self) -> None:
         bundle = self._sweep()
@@ -741,8 +733,3 @@ class TestAFixedLeverDeclaringASurfaceIsCheckedAtRegistration:
         )
         with pytest.raises(RegistrationError, match="one of resolves_into / read_residual without the other"):
             SHARED_CORE.extend([self._lever("surface"), family])
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

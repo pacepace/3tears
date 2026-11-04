@@ -19,9 +19,9 @@ difference, so the rule is:
   it shares with the control's; never longer than the arm's own name, and two arms whose short names would read alike
   are each named in full.
 
-The first half pins the rule on the naming functions themselves; the second builds reports — code-only ones through
-the toy host, and analysis reports by hand — and reads their tables in both outputs, Markdown and HTML, since a name
-is only as consistent as the one surface that spells it differently.
+The first half pins the rule on the naming functions themselves; the second builds code-only reports through the toy
+host and reads their tables in both outputs, Markdown and HTML, since a name is only as consistent as the one surface
+that spells it differently.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     report_html,
     report_markdown,
 )
@@ -52,12 +51,8 @@ from threetears.evals.analysis.arms import (
     short_digest,
     writer_arms,
 )
-from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report import ChartBlock, TableBlock
-from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
-from threetears.evals.kernel.campaign import EvalAnalysis, FindingResolution, VariantIndexEntry
-from threetears.evals.kernel.surface import CellFacts, DecisionSurface, MeasureFacts
+from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host import HostProfile, KindContract
 from threetears.evals.schema import SweepableValue
 from threetears.evals.kernel.identity import compute_variant_key
@@ -74,12 +69,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.g2_support import g2_report
 from packages.evals.tests.report_support import toy_campaign_host
-
-#: Three rigs, by their apparatus class ids.
-RIG, RIG_B, RIG_C = "a" * 64, "b" * 64, "c" * 64
 
 # =============================================================================
 # The rule, on the naming functions
@@ -380,157 +371,6 @@ class TestTheCutNeverMergesTwoArms:
         assert len(arms) == 2 and len(set(arms)) == 2
         assert all(arm.startswith("extractor.instructions=") and ELISION in arm and " (arm " in arm for arm in arms)
         _assert_every_output_prints(cut_alike, set(arms))
-
-
-# =============================================================================
-# An analysis report: its recommendations and evidence name arms the same way
-# =============================================================================
-
-#: What only the shared lever set holds — a label carrying it leaked the lever dump.
-_LEVER_DUMP_MARK = "A support agent who"
-
-
-def _rig_only_index() -> list[VariantIndexEntry]:
-    """#567's campaign: one assistant stack, carrying another kind's lever, measured under three rigs."""
-    return [_entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier"))]
-
-
-def _mixed_index() -> list[VariantIndexEntry]:
-    """An assistant arm and a classifier arm, each carrying the other kind's levers as the engine resolves them."""
-    not_assistant = SweepableValue.not_this_kind("assistant")
-    return [
-        _entry(**_SHARED, classifier__prompt=SweepableValue.not_this_kind("classifier")),
-        _entry(
-            candidate_kind=_value("classifier"),
-            model=_value("openai/gpt-5-mini"),
-            backstory=not_assistant,
-            directives=not_assistant,
-            classifier__prompt=_value("Label the request."),
-        ),
-    ]
-
-
-def _cell(variant: str, rig: str) -> CellFacts:
-    """One cell: six trials over two cases, carrying latency."""
-    latency = MeasureSummary(
-        population="scored", name="total_ms", attribution_scope="end_to_end", n=6, n_independent=2, mean=41250.0
-    )
-    return CellFacts(
-        variant_key=variant,
-        apparatus_class_id=rig,
-        run_ids=[f"run-{variant[:6]}-{rig[:2]}"],
-        n_observations=6,
-        n_cases=2,
-        repeats_per_case_min=3,
-        repeats_per_case_max=3,
-        measures=MeasureCollection(measures=[latency]),
-    )
-
-
-def _analysis_naming(cells: list[tuple[str, str]], index: list[VariantIndexEntry]) -> EvalAnalysis:
-    """An analysis whose recommendation and finding evidence name every cell in ``cells``, over ``index``."""
-    refs = [cell_ref(variant, rig) for variant, rig in cells]
-    rows = [
-        {
-            "aspect": "conversation",
-            "cell_ref": ref,
-            "measure_id": "total_ms",
-            "reading": "measure",
-            "value": 41250.0,
-            "n": 6,
-            "dispersion": "sem",
-        }
-        for ref in refs
-    ]
-    document = AuthoredCampaignAnalysis.model_validate(
-        {
-            "findings": [
-                {
-                    "title": "No rig moved the latency.",
-                    "body": "",
-                    "confidence": "high",
-                    "axes": [],
-                    "evidence": [{"cell": ref, "measure_id": "total_ms", "reading": "measure"} for ref in refs],
-                    "trials": [],
-                    "caveats": [],
-                    "invalidates": [],
-                    "durable": "",
-                }
-            ],
-            "recommendation": [
-                {
-                    "arm": "control",
-                    "reasons": ["Keep the current assistant prompt."],
-                    "confidence": "high",
-                    "rests_on": [0],
-                    "floors_overridden": [],
-                    "behind_on": [],
-                    "bars_missed": [],
-                }
-            ],
-            "aspect_summaries": [],
-            "summary": "Keep the current assistant prompt.",
-            "next": [],
-        }
-    )
-    surface = DecisionSurface(
-        cells=sorted(
-            (_cell(variant, rig) for variant, rig in cells), key=lambda c: (c.variant_key, c.apparatus_class_id)
-        ),
-        measures={"total_ms": MeasureFacts(unit="ms", merit_axis="latency", higher_is_better=False)},
-    )
-    return make_analysis(
-        document=document,
-        aspects=[analysed_aspect(decision_surface=surface, variant_index=index)],
-        resolutions=[FindingResolution.model_validate({"evidence": rows})],
-    )
-
-
-def _rig_only_analysis() -> tuple[EvalAnalysis, list[str]]:
-    (arm,) = _rig_only_index()
-    rigs = [RIG, RIG_B, RIG_C]
-    names = [f"gpt-5-mini (test setup {rig[:12]})" for rig in rigs]
-    return _analysis_naming([(arm.variant_key, rig) for rig in rigs], [arm]), names
-
-
-def _mixed_analysis() -> tuple[EvalAnalysis, list[str]]:
-    assistant, classifier = index = _mixed_index()
-    return (
-        _analysis_naming([(assistant.variant_key, RIG), (classifier.variant_key, RIG)], index),
-        ["assistant", "classifier"],
-    )
-
-
-@pytest.fixture(params=[_rig_only_analysis, _mixed_analysis], ids=["one-arm-three-rigs", "two-kinds"])
-def named(request: pytest.FixtureRequest) -> tuple[Report, list[str]]:
-    """An analysis report, and the names its recommendation and evidence must give the cells they name, in order."""
-    subject, names = request.param()
-    return build_report(subject), names
-
-
-class TestAnAnalysisReportNamesArmsByTheRule:
-    def test_the_recommendation_names_its_one_arm_by_its_label(self, named: tuple[Report, list[str]]) -> None:
-        report, _ = named
-        (facts,) = [
-            block for block in report.blocks if isinstance(block, TableBlock) and block.name == "recommendation_facts"
-        ]
-        # The facts are one row, a column per fact, so each header links its term.
-        assert [column.header for column in facts.columns] == ["Arm", "Confidence"]
-        (row,) = facts.values()
-        assert row["arm"] == "control"
-        assert "**Recommend control:** Keep the current assistant prompt." in report_markdown(report).splitlines()
-        assert "| control | high |" in report_markdown(report)
-        assert "<td>control</td>" in report_html(report)
-
-    def test_the_evidence_names_the_cells_alike(self, named: tuple[Report, list[str]]) -> None:
-        report, names = named
-        assert _arm_column(report, "evidence") == names
-
-    def test_no_output_carries_a_lever_dump_or_an_inapplicable_lever(self, named: tuple[Report, list[str]]) -> None:
-        report, _ = named
-        for output in (report_markdown(report), report_html(report)):
-            assert _LEVER_DUMP_MARK not in output
-            assert "(not a " not in output
 
 
 # --- a campaign's derived arms are labelled as the page names them -------------------------------------------------

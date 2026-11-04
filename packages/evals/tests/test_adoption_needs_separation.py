@@ -1,33 +1,30 @@
-"""How a stored memo's page lays out the guardrails on the arm it recommends, and the scope of a finding no question
-asked about.
+"""How code's page lays out the guardrails on a candidate: an undecided guardrail is frozen with an analysis's aspect
+and stated on the aspect's page, and a held one adds nothing.
 
 The memo writer refused a recommendation of a candidate the statistics did not separate from the control; it is
-retired, and those refusals left with it. The memos it stored still lay out
-(:func:`~threetears.evals.analysis.report.build_report`): an undecided guardrail on the recommended arm is frozen with
-the analysis and stated on its page, a held one adds nothing, and a finding resting on readings no declared question
-asked about is labelled exploratory. Each memo here is built as the writer stored one (:func:`_stored_memo`), over the
-toy host's campaign with its narrow width declared the control.
+retired, and its refusals and the memo page left with it. What stays is code's: the guardrail frozen with an aspect
+(:func:`~threetears.evals.analysis.doc_analysis.aspect_analysis`) and the aspect's page
+(:func:`~threetears.evals.analysis.report.build_code_only_report`), over the toy host's campaign with its narrow width
+declared the control.
 """
 
 from __future__ import annotations
 
-from packages.evals.tests.report_support import memo_analysis_over
-
-from typing import Any
-
-from packages.evals.tests.aspect_support import with_aspect, with_control
+from packages.evals.tests.aspect_support import with_control
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS, TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
+from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_cells import arm_at, cell_at
+from packages.evals.tests.toyhost_cells import cell_at
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.report import build_report
-from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock, TextBlock
-from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.analysis.doc_analysis import aspect_analysis
+from threetears.evals.analysis.report import Report, build_code_only_report
+from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailDecision, GuardrailReadings
+
+#: When the toy aspect's page is laid out.
+_ASSEMBLED_AT = "2026-10-14T19:23:41+00:00"
 
 
 def _toy_bundle(*, control: bool) -> AnalysisContextBundle:
@@ -41,62 +38,18 @@ def _toy_bundle(*, control: bool) -> AnalysisContextBundle:
     return assemble_context_bundle(controlled, storage=storage, profile=profile)
 
 
-def _memo(bundle: CampaignBundle, level: int) -> dict[str, Any]:
-    """The toy memo: one finding on the widths' latency (``total_ms``), recommending the arm at ``level``."""
-    return {
-        "findings": [
-            {
-                "title": "widening the chunk slows every document down",
-                "body": "The narrow width averaged about 920 ms per document and the wide one about 1420 ms.",
-                "confidence": "high",
-                "axes": [TOYHOST_AXIS],
-                "evidence": [
-                    {"cell": cell_at(bundle, TOYHOST_NARROW), "measure_id": "total_ms", "reading": "measure"},
-                    {"cell": cell_at(bundle, TOYHOST_WIDE), "measure_id": "total_ms", "reading": "measure"},
-                ],
-                "trials": [],
-                "caveats": [],
-                "invalidates": [],
-                "durable": "",
-            }
-        ],
-        "recommendation": [
-            {
-                "arm": arm_at(bundle, level),
-                "reasons": ["The width recommended is the one to run."],
-                "confidence": "high",
-                "rests_on": [0],
-                "floors_overridden": [],
-                "behind_on": [],
-                "bars_missed": [],
-            }
-        ],
-        "aspect_summaries": [
-            {
-                "aspect": bundle.labels[0],
-                "what_changed": "The wide chunk width slowed every document down.",
-                "how_sure": "Sure of the direction; the gap is wide.",
-                "means": "The wider one is slower by a wide margin.",
-            }
-        ],
-        "summary": "The width recommended is the one to run.",
-        "next": [],
-    }
+def _page(bundle: AnalysisContextBundle) -> Report:
+    """Code's page over the aspect's bundle."""
+    return build_code_only_report(bundle, assembled_at=_ASSEMBLED_AT)
 
 
-def _adopted(bundle: AnalysisContextBundle, level: int) -> EvalAnalysis:
-    """The stored memo over ``bundle`` recommending the arm at ``level``."""
-    campaign = campaign_bundle(bundle)
-    return memo_analysis_over(campaign, _memo(campaign, level))
-
-
-# --- guardrails: an undecided guardrail on the recommended arm is stated on its page ----------------------------
+# --- guardrails: an undecided guardrail on a candidate is stated on its page -------------------------------------
 
 
 def _with_guardrail(bundle: AnalysisContextBundle, decision: GuardrailDecision) -> AnalysisContextBundle:
     """The bundle with one judged guardrail decided ``decision`` for the wide width against the control.
 
-    Its cells are those of the family's first comparison, so the check names the arm the memo adopts.
+    Its cells are those of the family's first comparison, so the check names the wide width.
     """
     comparison = bundle.multiple_comparisons.families[0].comparisons[0]
     control, contrast = comparison.control, comparison.contrast
@@ -123,13 +76,13 @@ def _with_guardrail(bundle: AnalysisContextBundle, decision: GuardrailDecision) 
     return bundle.model_copy(update={"guardrails": guardrails})
 
 
-class TestAGuardrailOnTheAdoptedArm:
+class TestAGuardrailOnACandidate:
     def test_an_undecided_guardrail_is_frozen_with_the_analysis_and_the_report_states_it(self):
         bundle = _with_guardrail(_toy_bundle(control=True), "undecided")
-        analysis = _adopted(bundle, TOYHOST_WIDE)
+        held = aspect_analysis(bundle, campaign_bundle(bundle).surfaces()[bundle.aspect])
 
-        assert analysis.aspects[0].decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
-        report = build_report(analysis)
+        assert held.decision_surface.guardrails == bundle.guardrails, "frozen with the analysis"
+        report = _page(bundle)
         assert any(
             isinstance(b, DisclosureBlock) and "not known to be safe" in b.text and "boundary.correct" in b.text
             for b in report.blocks
@@ -140,44 +93,8 @@ class TestAGuardrailOnTheAdoptedArm:
         bundle = _with_guardrail(_toy_bundle(control=True), "held").model_copy()
         held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
         bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})
-        report = build_report(_adopted(bundle, TOYHOST_WIDE))
-        (facts,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "recommendation_facts"]
-        assert "Guardrails" not in {column.header for column in facts.columns}
+        report = _page(bundle)
         assert not any(
             isinstance(b, DisclosureBlock) and "boundary.correct" in b.text and "undecided" in b.text
             for b in report.blocks
         )
-
-
-# --- exploratory: a finding resting on readings no declared question asked about is labelled ----------------
-
-
-def _toy_bundle_asking(axes: list[str]) -> AnalysisContextBundle:
-    """The toy campaign's bundle, its one question scoped to ``axes``."""
-    profile = toyhost_profile()
-    campaign, storage = toyhost_campaign(profile=profile)
-    campaign = with_aspect(campaign, design={"merit_axes": axes})
-    return assemble_context_bundle(campaign, storage=storage, profile=profile)
-
-
-def _finding_scope(analysis: EvalAnalysis) -> str | None:
-    report = build_report(analysis)
-    (title,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    return {fact.name: fact.value for fact in title.facts}.get("Scope")
-
-
-class TestAFindingNoQuestionAskedAboutIsExploratory:
-    """The toy memo's one finding rests on the arms' latency (`total_ms`)."""
-
-    def test_a_question_on_quality_leaves_the_latency_finding_exploratory(self):
-        bundle = _toy_bundle_asking(["quality"])
-        assert "total_ms" in bundle.reading_scope.exploratory_measures
-        scope = _finding_scope(_adopted(bundle, TOYHOST_NARROW))
-        assert scope is not None and scope.startswith("exploratory")
-
-    def test_a_question_on_latency_asks_about_it_and_no_label_is_added(self):
-        bundle = _toy_bundle_asking(["latency"])
-        analysis = _adopted(bundle, TOYHOST_NARROW)
-        assert _finding_scope(analysis) is None
-        report = build_report(analysis)
-        assert not [b for b in report.blocks if getattr(b, "source", None) == "scope"], "said only with no question"

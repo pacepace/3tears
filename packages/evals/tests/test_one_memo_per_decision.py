@@ -4,7 +4,7 @@ The owner's ruling (seven memos for one decision is the worst evals pain) as an 
 runs. Seven campaigns stored before aspects existed — v15 documents, one template each — are adopted whole into one
 campaign (``aspects_from``): one analysis is stored over all seven, the campaign's page lays out one row per aspect,
 and the person's call is recorded through ``campaign_record``. The analysis is a memo, as the retired memo writer
-stored one (:func:`_stored_memo`): every door reads it as code's page standing in for it, over the same aspects, so
+stored one, held as JSON (:func:`_stored_memo`): every door reads it as code's page standing in for it, over the same aspects, so
 the page, the listing and the call read what code read, never the memo's words. A stored v15
 campaign read alone is a campaign of one aspect, whose fold is the aspect's own page. And a campaign of two aspects
 that regresses on one (breaking its floor) and improves on the other shows both on its first screen, the broken floor
@@ -13,8 +13,6 @@ missed bar.
 """
 
 from __future__ import annotations
-
-from packages.evals.tests.report_support import memo_analysis_over
 
 import hashlib
 import json
@@ -38,11 +36,16 @@ from threetears.evals.analysis import (
     get_campaign,
     list_analyses,
 )
-from threetears.evals.analysis.campaign_bundle import writer_view
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.doc_analysis import aspect_analysis
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
+from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
+from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
@@ -281,9 +284,49 @@ async def _generated(held: Store, campaign: EvalCampaign) -> str:
     still holds from before the report writer."""
     bundle = off_loop(assemble_campaign_bundle, held.host, campaign.id, SCOPE)
     control = next(arm.label for arm in bundle.arms if arm.role == "control")
-    analysis = memo_analysis_over(bundle, _memo(control, [aspect.label for aspect in campaign.aspects]))
+    analysis = _stored_memo(bundle, _memo(control, [aspect.label for aspect in campaign.aspects]))
     off_loop(held.host.storage.save_analysis, analysis)
     return analysis.id
+
+
+def _stored_memo(bundle: CampaignBundle, memo: dict[str, Any]) -> EvalAnalysis:
+    """``memo`` (no findings) over ``bundle`` as the retired memo writer stored it, its memo held as JSON: the
+    recommended arm's key resolved by code, every aspect's bundle and the campaign's frame frozen beside it."""
+    surfaces = bundle.surfaces()
+    recommended = memo["recommendation"]
+    arm = bundle.arm(recommended[0]["arm"]) if recommended else None
+    first = bundle.aspects[0]
+    written = utc_now_iso()
+    return EvalAnalysis(
+        recommended_variant_key=arm.variant_key if arm is not None else None,
+        campaign_id=bundle.campaign_id,
+        subject_id=bundle.subject_id,
+        subject_kind=bundle.subject_kind,
+        behavior=bundle.behavior,
+        observation_refs=bundle.run_ids,
+        model_versions={key: value for aspect in bundle.aspects for key, value in aspect.model_versions.items()},
+        scope_id=bundle.scope_id,
+        generation=GenerationProvenance(
+            prompt_id="eval_analysis_gen",
+            prompt_version="memo-writer",
+            generator_model="memo-writer-model",
+            bundle_fingerprint=bundle.fingerprint(),
+            generated_at=written,
+            bundle_assembled_at=written,
+            token_cost=0.0,
+            repair_attempts=0,
+            repaired_refusal=None,
+            user_message_digest="sha256:memo",
+            cell_model_version=first.cell_model_version,
+            bundle_schema_version=first.schema_version,
+            host_declarations_digest=first.host_declarations_digest,
+        ),
+        design_snapshot=bundle.declaration,
+        document=memo,
+        judged_tier_rule=JUDGED_TIER_RULE,
+        aspects=[aspect_analysis(aspect, surfaces[aspect.aspect]) for aspect in bundle.aspects],
+        campaign_bundle=bundle.frame(),
+    )
 
 
 def _table(page: CampaignReport, name: str) -> TableBlock:
@@ -575,16 +618,6 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
     assert rows(held, two) == rows(timely_store, timely) and len(rows(held, two)) == 2
     assert all(confirmatory for *_, confirmatory in rows(held, two))
 
-    view = writer_view(off_loop(assemble_campaign_bundle, held.host, two.id, SCOPE))
-    # Handed once, for the whole report, each criterion naming the aspects it was set late on, never in an aspect's
-    # part. Dated as the page dates them, so the memo and the page say one date; the margins came first, so are not
-    # named.
-    assert view["disclosures"]["late_criteria"] == [
-        {"criterion": "aspect", "name": None, "set_at": "1 Jan 2099", "aspects": ["billing", "tone"]},
-        {"criterion": "floor", "name": "billing/rate_drop/*", "set_at": "1 Jan 2099", "aspects": ["billing"]},
-        {"criterion": "bar", "name": COST_BAR.measure_id, "set_at": "1 Jan 2099", "aspects": ["tone"]},
-    ]
-    assert not [part for part in view["aspects"] if "late_criteria" in part]
     analysis_id = await _generated(held, two)
 
     page = off_loop(campaign_report, held.host, two.id, SCOPE)
@@ -642,11 +675,20 @@ def _undated(text: str, *ids: str) -> str:
     return _FINGERPRINT.sub("<fingerprint>", _WHEN.sub("<when>", text))
 
 
+def _late_criteria(node: Any) -> list[Any]:
+    """Every late criterion anywhere in a report input's JSON."""
+    if isinstance(node, dict):
+        return [*node.get("late_criteria", []), *(late for value in node.values() for late in _late_criteria(value))]
+    if isinstance(node, list):
+        return [late for item in node for late in _late_criteria(item)]
+    return []
+
+
 async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declared_before_them() -> None:
     """#919: past runs that are still valid count as evidence. A campaign declared before its runs, and one created
     after them adopting its aspects (``aspects_from``), every criterion set before its readings were visible, read the
-    same runs identically: the writer's input, the page and its confidence wording differ by nothing but ids and
-    dates, and neither names a late criterion, the question's timing or when the runs began."""
+    same runs identically: the report writer's input, the page and its confidence wording differ by nothing but ids
+    and dates, and neither names a late criterion, the question's timing or when the runs began."""
     held, declared = await _build_two()
     host = held.host
     adopting = off_loop(
@@ -665,14 +707,15 @@ async def test_a_campaign_adopting_still_valid_runs_reads_exactly_as_one_declare
     assert stored.declared_at is not None and stored.declared_at < first_result, "declared before the runs"
 
     async def told(campaign: EvalCampaign) -> tuple[str, str]:
-        view = json.dumps(writer_view(off_loop(assemble_campaign_bundle, host, campaign.id, SCOPE)), sort_keys=True)
+        bundle = off_loop(assemble_campaign_bundle, host, campaign.id, SCOPE)
+        view = json.dumps(report_input(bundle).model_dump(mode="json"), sort_keys=True)
         page = campaign_report_markdown(off_loop(campaign_report, host, campaign.id, SCOPE))
         return _undated(view, campaign.id), _undated(page, campaign.id)
 
     (declared_view, declared_page), (adopted_view, adopted_page) = await told(declared), await told(adopting)
-    assert adopted_view == declared_view, "the writer is told the same thing"
+    assert adopted_view == declared_view, "the report writer is told the same thing"
     assert adopted_page == declared_page, "the page says the same thing, its confidence wording included"
-    assert "late_criteria" not in adopted_view and "after its readings" not in adopted_page
+    assert not _late_criteria(json.loads(adopted_view)) and "after its readings" not in adopted_page
     assert "began" not in adopted_page and "after the runs" not in adopted_page
 
 

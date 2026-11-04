@@ -12,7 +12,7 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import build_campaign_report, build_code_only_report
-from threetears.evals.analysis.campaign_bundle import CampaignBundle, writer_view
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.depth_reading import aspect_depth
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
@@ -40,7 +40,7 @@ def _page(arms: TwoArms) -> CampaignReport:
             arms.bundle, assembled_at=_ASSEMBLED_AT, campaign_name="depth", arm_labels=read.arm_labels()
         )
     }
-    return build_campaign_report(arms.campaign, read, reports, None)
+    return build_campaign_report(arms.campaign, read, reports)
 
 
 def _lines(page: CampaignReport, section: str) -> list[str]:
@@ -52,7 +52,7 @@ def _lines(page: CampaignReport, section: str) -> list[str]:
 # =============================================================================
 
 
-def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_the_writer_view_and_the_page() -> None:
+def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_its_depths_and_the_page() -> None:
     # A ran tc1 and tc2 twice; B ran tc3 and tc4 once: a pool across case sets.
     arms = TwoArms({"tc1": (True, True), "tc2": (True, False)}, {"tc3": (True,), "tc4": (False,)}, k_a=2, k_b=2)
     subject = arms.bundle.frontier.subjects[0]
@@ -61,9 +61,8 @@ def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_the_w
     assert subject.shares_no_case
     # Every case each arm measured is left out of the comparison, so the page's "Cases left out" says two apiece.
     assert [(point.n_common_cases, point.n_cases_left_out) for point in subject.points] == [(0, 2), (0, 2)]
-    view = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=arms.readings().readings))
-    [entry] = view["aspects"][0]["depth"]["pass_k"]
-    assert (entry["common_depth"], entry["shares_no_case"], entry["unmeasured_for"]) == (None, True, ["B"])
+    [entry] = aspect_depth(arms.bundle, arms.readings().arm_labels().__getitem__).subjects
+    assert (entry.common_depth, entry.shares_no_case, entry.unmeasured_for) == (None, True, ["B"])
     page = _page(arms)
     assert "On character the arms share no case, so pass^k compares nothing between them." in _lines(page, "scorecard")
     assert "On character, pass^2 is unmeasured for B, which ran no case twice." in _lines(page, "scorecard")
@@ -138,7 +137,7 @@ def test_the_model_s_line_is_true_when_only_one_arm_falls_short() -> None:
         )
     }
 
-    page = build_campaign_report(arms.campaign, read, reports, None)
+    page = build_campaign_report(arms.campaign, read, reports)
 
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [row["arm"].value for row in table.rows] == ["B"]
@@ -161,7 +160,7 @@ def test_a_frozen_campaign_bundle_or_frame_of_the_old_shape_is_refused_naming_wh
 
 
 # =============================================================================
-# Floors in the writer's view
+# Floors in the readings
 # =============================================================================
 
 
@@ -178,16 +177,10 @@ def test_a_floor_states_its_worst_case_its_margin_and_how_far_it_is_short_after_
     assert (status.margin, status.worst_drop) == (10.0, pytest.approx(-100 * low))
     assert status.short_by == pytest.approx(-100 * low - 10.0)
 
-    view = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings, floors=read.floors))
-
-    keys = list(view)
-    assert keys.index("pass_rate_verdicts") < keys.index("floors")
-    assert view["pass_rate_verdicts"] == [{"aspect": "character", "arm": "B", "reading": "unclear", "change": 12.5}]
-    [arm] = view["floors"]
-    [floor] = arm["unclear"]
-    assert (arm["arm"], floor["reads"], floor["margin"]) == ("B", "the pass rate", 10.0)
-    # Spelled as the page prints points: to one decimal.
-    assert floor["short_by"] == round(-100 * low - 10.0, 1)
+    assert [(row.aspect, row.arm_label, row.reading, round(row.change, 1)) for row in read.readings] == [
+        ("character", "B", "unclear", 12.5)
+    ]
+    assert status.arm_label == "B"
 
 
 #: Twenty cases, for a floor to be read over enough of them (5 at least) to be held or broken.
@@ -205,17 +198,6 @@ def _floor_arms(control: int, candidate: int, margin: float = 10.0) -> TwoArms:
     )
 
 
-def _written(arms: TwoArms) -> dict[str, object]:
-    """The one floor the writer's view rolls up under its arm, with the status it is listed under; a figure the view
-    leaves out, having none, as None."""
-    read = arms.readings()
-    [arm] = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings, floors=read.floors))[
-        "floors"
-    ]
-    [(status, [floor])] = [(state, floors) for state, floors in arm.items() if state != "arm"]
-    return {"status": status, "margin": None, "worst_drop": None, "short_by": None, **floor}
-
-
 def test_a_held_floor_states_its_margin_and_worst_case_and_is_short_by_nothing() -> None:
     # B passes exactly the cases A does: every paired difference is zero, and over twenty cases the interval on them
     # stays inside a 60-point margin.
@@ -225,14 +207,6 @@ def test_a_held_floor_states_its_margin_and_worst_case_and_is_short_by_nothing()
     assert status.status == "held"
     assert status.margin == 60.0 and status.worst_drop is not None and 0.0 <= status.worst_drop <= 60.0
     assert status.short_by is None
-    floor = _written(arms)
-    assert (floor["status"], floor["margin"], floor["reads"], floor["short_by"]) == (
-        "held",
-        60.0,
-        "the pass rate",
-        None,
-    )
-    assert floor["worst_drop"] == round(status.worst_drop, 1)
 
 
 def test_a_broken_floor_is_short_by_nothing_because_its_worst_case_is_not_how_far_it_is_broken() -> None:
@@ -244,9 +218,6 @@ def test_a_broken_floor_is_short_by_nothing_because_its_worst_case_is_not_how_fa
     assert status.status == "broken"
     assert status.margin == 10.0 and status.worst_drop is not None and status.worst_drop > 10.0
     assert status.short_by is None
-    floor = _written(arms)
-    assert (floor["status"], floor["margin"], floor["short_by"]) == ("broken", 10.0, None)
-    assert floor["worst_drop"] == round(status.worst_drop, 1)
 
 
 def test_an_unclear_floor_is_short_by_what_its_worst_case_lies_past_the_margin() -> None:
@@ -256,7 +227,7 @@ def test_an_unclear_floor_is_short_by_what_its_worst_case_lies_past_the_margin()
     assert status.status == "unclear"
     assert status.worst_drop is not None and status.worst_drop > 10.0
     assert status.short_by == pytest.approx(status.worst_drop - 10.0)
-    assert status.short_by is not None and _written(arms)["short_by"] == round(status.short_by, 1)
+    assert status.short_by is not None
 
 
 def test_a_cost_floor_has_no_margin_worst_case_or_shortfall() -> None:
@@ -264,6 +235,3 @@ def test_a_cost_floor_has_no_margin_worst_case_or_shortfall() -> None:
     [status] = arms.readings().floors
 
     assert (status.margin, status.worst_drop, status.short_by) == (None, None, None)
-    floor = _written(arms)
-    assert (floor["margin"], floor["worst_drop"], floor["short_by"]) == (None, None, None)
-    assert floor["reads"] == "the cost per reply"

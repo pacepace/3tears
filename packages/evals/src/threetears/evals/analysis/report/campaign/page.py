@@ -1,23 +1,24 @@
-"""Build a campaign's page: the decision first, then what code read across its aspects, the writer's findings and
-next steps, how the campaign was set up, then one fold per aspect.
+"""Build a campaign's page: the decision first, then what code read across its aspects, how the campaign was set up,
+then one fold per aspect.
 
-Code reports, the writer recommends, a person decides, and the page keeps the three apart. The first screen is the
-decision. Under the title, for every kind: **the question**, or that none was asked (:mod:`.provenance`); **the
-writer's summary** and, for a change or a choice, **the writer's recommendation** and its whys (:mod:`.memo_blocks`);
+Code reports, the writer recommends, a person decides, and the page keeps the three apart. This page is code's: the
+writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
+The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
+(:mod:`.provenance`); one line on where the campaign's report is: the report document it is stored as, the analysis
+this version no longer reads or a retired writer wrote, or that no recommendation was written (:mod:`.memo_blocks`);
 then **what warns**, one line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
 safe on (:mod:`.warnings`), and each report-wide caveat once (:mod:`.provenance`); then the person's call (a
 measurement's only once one is recorded).
 
 Then, under **Scorecard**, code's readings by the campaign's kind (:mod:`.scorecard`), the figures across aspects
-(:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then the memo's
-**Findings** and **Next steps**; then **Design & provenance**; then one closed fold per aspect: the writer's summary
-of the aspect (what changed, how sure, what it means) when there is one, then the aspect's own page as
+(:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then **Design &
+provenance**; then one closed fold per aspect: the aspect's own page as
 :func:`~threetears.evals.analysis.report.build.build_code_only_report` built it, which the serializers lay out in the
 fold without its title, its question, its broken floors or its verdict line, and without what the campaign states
 once for every aspect (:func:`~.provenance.for_the_campaign`).
 
 Every arm is named by its label, never by its role; every line code writes is held to
-:mod:`~threetears.evals.analysis.style`, and the memo's words are printed as written.
+:mod:`~threetears.evals.analysis.style`.
 """
 
 from __future__ import annotations
@@ -31,12 +32,8 @@ from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.memo_blocks import (
     NO_LONGER_READS,
-    aspect_summary_blocks,
-    behind_on_blocks,
+    NO_RECOMMENDATION,
     call_blocks,
-    memo_blocks,
-    memo_summary_blocks,
-    recommendation_blocks,
     report_doc_blocks,
     unread_analysis_blocks,
 )
@@ -64,8 +61,7 @@ from threetears.evals.analysis.report.model import (
     Report,
     ReportBlock,
 )
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
-from threetears.evals.kernel.campaign import EvalCampaign, FindingResolution
+from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
 
@@ -76,21 +72,16 @@ def build_campaign_report(
     campaign: EvalCampaign,
     readings: CampaignReadings,
     aspect_reports: Mapping[str, Report],
-    memo: AuthoredCampaignAnalysis | None,
     *,
     call: CampaignCall | None = None,
-    recommended_variant_key: str | None = None,
-    resolutions: Sequence[FindingResolution] = (),
-    trial_ids: Mapping[str, tuple[str, str]] | None = None,
     report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
     arms: Sequence[CampaignArm] | None = None,
 ) -> CampaignReport:
-    """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
-    warns and the person's call; then the Scorecard, the findings and next steps, Design & provenance, then one fold
-    per aspect.
+    """Lay a campaign out as code's page: under the title the question, where its report is, what warns and the
+    person's call; then the Scorecard, Design & provenance, then one fold per aspect.
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -99,20 +90,8 @@ def build_campaign_report(
     :param aspect_reports: Each aspect's own page, keyed by its label: one per aspect, each built over the bundle its
         readings were read from (:func:`~threetears.evals.analysis.report.build.build_code_only_report`).
     :ptype aspect_reports: Mapping[str, Report]
-    :param memo: The writer's memo over the campaign; None where none was written.
-    :ptype memo: AuthoredCampaignAnalysis | None
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
-    :param recommended_variant_key: The variant key of the arm the memo recommends, as the analysis recorded it
-        (``EvalAnalysis.recommended_variant_key``); required where the page holds a recommendation, which a
-        measurement's never does.
-    :ptype recommended_variant_key: str | None
-    :param resolutions: What code filled for each of the memo's findings, by position (``EvalAnalysis.resolutions``),
-        which each finding's trace reads the readings it cites off; empty traces only the trials each names.
-    :ptype resolutions: Sequence[FindingResolution]
-    :param trial_ids: The ids the memo names trials by, each to its aspect and its id in that aspect's bundle
-        (:meth:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.trial_ids`); None traces no trial.
-    :ptype trial_ids: Mapping[str, tuple[str, str]] | None
     :param report_doc_id: The report document of the analysis the page is laid out for, when it is one
         (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there, in place of
         "no analysis has been generated"; None for any other page.
@@ -133,40 +112,28 @@ def build_campaign_report(
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the title names; None names the arms its readings label.
     :ptype arms: Sequence[CampaignArm] | None
-    :return: The page, ``basis="analysis"`` with a memo, ``code_only`` without one.
+    :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
-    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
-        are of another campaign, or the memo recommends an arm and no key is given for it.
+    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, or the readings
+        are of another campaign.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
-    recommendation = memo.recommended() if memo is not None and readings.kind != "measurement" else None
-    if recommendation is not None and recommended_variant_key is None:
-        raise RefusedInput(
-            f"the memo recommends {recommendation.arm}, and the page is given no variant key for that arm",
-            remedy="pass the key the analysis recorded for its recommended arm (EvalAnalysis.recommended_variant_key)",
-        )
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
-    # The first screen is the decision: the question, then the writer's read across every aspect and what it
-    # recommends, then what warns, one line per arm, and each report-wide caveat once.
+    # The first screen is the decision: the question, then where the campaign's report is, then what warns, one line
+    # per arm, and each report-wide caveat once.
     blocks: list[ReportBlock] = [
         *question_blocks(campaign),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
-        *memo_summary_blocks(memo),
     ]
-    if kind != "measurement":
-        blocks += recommendation_blocks(
-            memo,
-            kind,
-            noted=any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id)),
-        )
-    if kind == "choice":
-        blocks += behind_on_blocks(memo, names=names)
+    noted = any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id))
+    if kind != "measurement" and not noted:
+        blocks.append(DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION))
     blocks += [
-        *bar_warnings(readings, memo, names=names),
-        *floor_warnings(readings, memo, names=names),
+        *bar_warnings(readings, names=names),
+        *floor_warnings(readings, names=names),
         *guardrail_warnings(campaign, readings, reports, names=names),
         *caveat_blocks(bundles, section="warnings"),
     ]
@@ -183,18 +150,15 @@ def build_campaign_report(
     blocks += bar_blocks(readings, reports, names=names)
     if kind != "measurement" or call is not None:
         blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
-    blocks += memo_blocks(memo, campaign, readings, reports, resolutions, trial_ids or {}, names=names)
     # Design & provenance: what each declared check name stands for, the design and when each criterion was set,
     # then what depth says once.
     blocks += check_legend_blocks(names)
     blocks += provenance_blocks(bundles, readings.arm_labels(), names=names)
     blocks += depth_provenance_blocks(readings)
-    summaries = {summary.aspect: summary for summary in (memo.aspect_summaries if memo is not None else [])}
     folds = [
         CampaignAspectFold(
             aspect=aspect.label,
             shows=aspect_shows(readings, aspect.label),
-            summary=aspect_summary_blocks(summaries.get(aspect.label)),
             # What the campaign states once for every aspect, its fold does not say again.
             report=for_the_campaign(reports[aspect.label]),
         )
@@ -203,18 +167,16 @@ def build_campaign_report(
     if readings.readings or readings.pairs:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
     return CampaignReport(
-        basis="analysis" if memo is not None else "code_only",
+        basis="code_only",
         title=_title(campaign, readings, arms),
         campaign_id=campaign.id,
         campaign_name=campaign.name or None,
         scope_id=campaign.scope_id,
-        finding_count=len(memo.findings) if memo is not None else 0,
+        finding_count=0,
         blocks=blocks,
         aspects=folds,
         readings=readings,
         call=call,
-        recommendation=recommendation,
-        recommended_variant_key=recommended_variant_key if recommendation is not None else None,
         unread_analysis_id=unread_analysis_id,
     )
 

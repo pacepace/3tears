@@ -39,17 +39,13 @@ from threetears.evals.analysis import (
     TextBlock,
     analysis_report,
     build_code_only_report,
-    build_report,
     campaign_report,
     report_html,
     report_markdown,
     set_campaign_control,
 )
-from threetears.evals.analysis.report.build import contrast_rows
-from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.figures import measure_rulers
+from threetears.evals.analysis.report.build import analysis_bundle, contrast_rows
 from threetears.evals.analysis.report.model import table_row
-from threetears.evals.kernel.authored import NextStep
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
@@ -70,18 +66,17 @@ async def toy() -> tuple[EvalHost, EvalAnalysis, Report]:
 
 
 class TestTheToyAnalysisSerializesTwoWays:
-    async def test_markdown_carries_the_title_the_basis_the_words_the_numbers_and_the_chart_values(
+    async def test_markdown_carries_the_title_the_question_the_arms_and_the_writer_in_the_methods(
         self, toy: tuple[Any, EvalAnalysis, Report]
     ) -> None:
         _, analysis, report = toy
         markdown = report_markdown(report)
-        finding = analysis.document.findings[0]
         lines = markdown.splitlines()
 
         # The title is code's (what is compared and on what, the campaign's name a qualifier); the declared question is
-        # quoted whole on its own line under it, then the arms; who wrote the memo is in the methods.
+        # quoted whole on its own line under it, then the arms; who wrote the analysis is in the methods.
         assert report.source.campaign_name == "chunk width sweep"
-        assert report.title == "256tok vs 1024tok · extract_invoice_fields (chunk width sweep)"
+        assert report.title == "1024tok vs 256tok · extract_invoice_fields (chunk width sweep)"
         # The title is the first line: nothing stands above it.
         top = lines.index(f"# {report.title}")
         assert top == 0
@@ -90,17 +85,9 @@ class TestTheToyAnalysisSerializesTwoWays:
         )
         assert lines[top + 3].startswith(" vs ".join(sorted(["1024tok", "256tok"]))), "each arm once, then the date"
         assert f"| Analysis | {analysis.generation.generator_model}, prompt " in markdown
-        # A finding leads with its headline, unnumbered: nothing on the page cites a finding by number.
-        assert f"**{finding.title}**" in markdown and "**F1." not in markdown
-        assert "**Readings**" in markdown and "| Arm | Turn time | Cases |" in markdown
-        # The finding's intervals are drawn in that table's rows, so no chart of them follows it.
-        assert not _finding_charts(report) and "**Turn time**" not in markdown
-        assert f"Caveat (sampling): {finding.caveats[0].text}" in markdown
         assert "## Methods" in markdown
 
-    async def test_html_carries_the_same_and_draws_the_chart_and_the_intervals_inline(
-        self, toy: tuple[Any, Any, Report]
-    ) -> None:
+    async def test_html_carries_the_same_and_draws_the_chart(self, toy: tuple[Any, Any, Report]) -> None:
         _, _, report = toy
         page = report_html(report)
 
@@ -108,19 +95,13 @@ class TestTheToyAnalysisSerializesTwoWays:
         assert page.index("<header>") < page.index(f"<h1>{_escaped(report.title)}</h1>") < page.index("</header>")
         header = page[page.index("<header>") + len("<header>") : page.index("</header>")]
         assert header.lstrip().startswith("<h1>") and 'role="alert"' not in page
-        # The outcome bar is the page's one chart, beside its table; the finding's intervals are glyphs in its
-        # readings table, whose rows already print every figure a glyph draws.
+        # The outcome bar is the page's one chart, beside its table.
         assert 'data-figure="outcome_bar"' in page and 'data-figure="interval_rows"' not in page
         assert page.count('data-kind="') == page.count('class="tbl chart-values"') == 1
-        assert page.count('<svg class="viz-glyph"') == 2
 
 
 def _escaped(text: str) -> str:
     return html.escape(text, quote=True)
-
-
-def _finding_charts(report: Report) -> list[ChartBlock]:
-    return [block for block in report.blocks if isinstance(block, ChartBlock) and block.section == "memo"]
 
 
 # =============================================================================
@@ -134,63 +115,11 @@ class TestTheToyReportsContent:
         order = list(SECTION_TITLES)
         seen = list(dict.fromkeys(block.section for block in report.blocks))
         assert seen == [section for section in order if section in seen]
-        # No decision rule is declared, and the glossary is the serializers', drawn from the blocks' terms.
-        assert set(seen) == set(order) - {"decision", "glossary"}
+        # No decision rule is declared, the glossary is the serializers', drawn from the blocks' terms, and code's page
+        # lays out no writer's words.
+        assert set(seen) == set(order) - {"decision", "glossary", "memo"}
 
-    async def test_an_authors_caveat_is_attached_to_its_finding_as_written(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (caveat,) = [block for block in report.blocks if isinstance(block, TextBlock) and block.role == "caveat"]
-        written = analysis.document.findings[0].caveats[0]
-
-        assert (caveat.section, caveat.finding, caveat.body) == ("memo", 0, written.text)
-        assert [(fact.name, fact.value) for fact in caveat.facts] == [("Kind", written.kind)]
-
-    async def test_the_evidence_table_is_codes_numbers_at_the_finding(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
-        evidence = analysis.resolutions[0].evidence
-
-        assert table.finding == 0
-        # Code's numbers, stated on each measure's one ruler for the report (a latency in s where the surface is).
-        rulers = measure_rulers(analysis.aspects[0].decision_surface)
-        stated = [row.value * (rulers[row.measure_id].factor if row.reading == "measure" else 1.0) for row in evidence]
-        # One row per arm, one column per reading: the toy's finding reads one measure on each arm.
-        assert [row["reading_0"] for row in table.values()] == pytest.approx(stated)
-        assert any(cell["reading_0"].unit == "s" for cell in table.rows), (
-            "the toy's turn time reads in s on its surface"
-        )
-        assert [row["cases"] for row in table.values()] == [row.n_cases for row in evidence]
-
-    async def test_a_finding_s_evidence_carries_its_intervals_in_the_table_on_the_same_ruler(
-        self, toy: tuple[Any, EvalAnalysis, Report]
-    ) -> None:
-        _, analysis, report = toy
-        (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "evidence"]
-        evidence = analysis.resolutions[0].evidence
-        surface = analysis.aspects[0].decision_surface
-        factor = measure_rulers(surface)[evidence[0].measure_id].factor
-
-        # Each arm's cell carries the interval its cell holds on the reading, restated onto the same ruler.
-        cells = [row["reading_0"] for row in table.rows]
-        assert all(cell.unit == "s" and not cell.zero_line for cell in cells)
-        resolved = [resolve_reading(surface, row.cell_ref, row.measure_id, row.reading) for row in evidence]
-        assert [cell.low for cell in cells] == pytest.approx([r.ci_low * factor for r in resolved])  # type: ignore[operator]
-        assert [cell.high for cell in cells] == pytest.approx([r.ci_high * factor for r in resolved])  # type: ignore[operator]
-        assert all(cell.low <= cell.value <= cell.high for cell in cells)  # type: ignore[operator]
-        assert not _finding_charts(report)
-
-    async def test_the_recommendation_rests_on_its_finding(self, toy: tuple[Any, Any, Report]) -> None:
-        _, _, report = toy
-        (recommendation,) = [b for b in report.blocks if isinstance(b, TextBlock) and b.role == "recommendation"]
-        assert recommendation.rests_on == [0]
-        assert [fact.name for fact in recommendation.facts] == ["Disposition"]
-        assert recommendation.facts[0].value.startswith("recommend ")
-
-    async def test_the_memo_is_labelled_as_its_writer_s_and_the_methods_say_how_it_was_generated(
+    async def test_the_methods_name_the_analysis_s_writer_and_say_how_it_was_generated(
         self, toy: tuple[Any, EvalAnalysis, Report]
     ) -> None:
         _, analysis, report = toy
@@ -205,25 +134,10 @@ class TestTheToyReportsContent:
         # The toy corpus records no served model, so the methods say which model answered is unconfirmed.
         texts = [block.text for block in notes if isinstance(block, DisclosureBlock)]
         assert any(text.startswith("Model identity unconfirmed:") for text in texts)
-        # After the table: the memo's coverage map in its own fold, then the engine's disclosures in theirs.
-        assert {block.fold for block in notes} == {"Coverage", "Disclosures"}
-        # The memo is never introduced: the page does not describe itself.
+        # After the table: the engine's disclosures, in their fold.
+        assert {block.fold for block in notes} == {"Disclosures"}
+        # The writer is never introduced: the page does not describe itself.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "Written by" in b.text]
-
-    async def test_the_coverage_map_is_joined_to_the_findings_and_counted(self, toy: tuple[Any, Any, Report]) -> None:
-        _, _, report = toy
-        (coverage,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "coverage"]
-        # The map restates no finding: it counts them, in the methods' Coverage fold, after the methods table.
-        assert coverage.section == "methods" and coverage.fold == "Coverage"
-        assert coverage.values()[0]["findings"] == "1 finding"
-        methods = [block for block in report.blocks if block.section == "methods"]
-        assert isinstance(methods[0], TableBlock) and methods[0].name == "methods" and methods[1] is coverage
-        unnamed = [row for row in coverage.values() if row["findings"] == "no finding"]
-        said = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.text.startswith("Levers no finding")]
-        assert len(said) == (1 if unnamed else 0) and all(b.fold == "Coverage" for b in said)
-        # In a fold of its own name the table is titled once, by the fold.
-        assert "<details><summary>Coverage</summary>\n\n| Lever | Coverage |" in report_markdown(report)
-        assert "**Coverage**" not in report_markdown(report)
 
     async def test_the_service_refuses_an_analysis_it_does_not_hold(self, toy: tuple[EvalHost, Any, Any]) -> None:
         host, analysis, _ = toy
@@ -453,13 +367,13 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
     """The campaign's newest analysis is its report, through either door: a memo, a retired writer's, is stood in for
     by code's page naming it (its own page is laid out by its id over what was frozen with it, not over the evidence
-    now), and its aspect's page is the memo's."""
+    now), and its aspect's page is code's, over the bundle frozen with it."""
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
     assert (resolved.basis, resolved.unread_analysis_id) == ("code_only", analysis.id)
     assert (stored.basis, stored.unread_analysis_id) == ("code_only", analysis.id)
-    assert report.basis == "analysis" and report.source.analysis_id == analysis.id
+    assert report.basis == "code_only" and report.source.bundle_fingerprint == analysis.aspects[0].bundle_fingerprint
 
 
 async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
@@ -474,20 +388,20 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
     assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).unread_analysis_id == analysis.id
 
 
-async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(
+async def test_a_lever_no_comparison_exercised_is_said_in_words_never_by_its_path(
     toy: tuple[EvalHost, EvalAnalysis, Report],
 ) -> None:
-    """The writer proposed holding a never-exercised research model fixed: a step that spends money on a non-lever."""
+    """A research model the runs never exercised is said in words under Not tested, never as its lever's path."""
     _, analysis, _ = toy
     lever = "persona.tool_configs.research.research_model"
-    held = NextStep(title="evaluate with the research model held fixed", why="it moved", leverage="high", lever=lever)
-    document = analysis.document.model_copy(update={"next": [held, *analysis.document.next]})
     unexercised = {"factor": lever, "role": "research", "results": 1, "arms": ["candidate"]}
     (aspect,) = analysis.aspects
-    frozen = aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})
-    report = build_report(analysis.model_copy(update={"document": document, "aspects": [frozen]}))
-    steps = [block.body for block in report.blocks if isinstance(block, TextBlock) and block.role == "next_step"]
-    assert steps and not [step for step in steps if "research model" in step]
+    frozen = analysis.model_copy(
+        update={
+            "aspects": [aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})]
+        }
+    )
+    report = build_code_only_report(analysis_bundle(frozen), assembled_at=analysis.generation.bundle_assembled_at)
     markdown = report_markdown(report)
     assert lever not in markdown and "research model: one research call was made, on " in markdown
 

@@ -1,5 +1,5 @@
-"""A campaign's first screen, in order: the title, the question, the writer's summary and recommendation, what warns,
-then the person's call; code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
+"""A campaign's first screen, in order: the title, the question, where its report is, what warns, then the person's
+call; code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
 it is announced over it.
 
 **Who changes what here.** Chunk 03 of the senior-report plan owns this module and the order. Each part's marker
@@ -32,16 +32,13 @@ from threetears.evals.analysis.report.model import (
 )
 
 from packages.evals.tests.campaign_page_support import (
-    SUMMARY,
     first_screen_markdown,
     header_html,
     kind_page_of,
     opening,
     page_of,
-    recommending_nothing,
-    two_aspect_memo,
 )
-from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, CONTROL_LABEL, QUESTION
+from packages.evals.tests.campaign_support import ASSEMBLED_AT, CANDIDATE_LABEL, QUESTION
 from packages.evals.tests.report_shapes_support import SHAPES, s1_change, s2_choice, s4_change
 
 #: Where code's readings are found, under the Scorecard after the first screen, by the campaign's kind (the
@@ -61,19 +58,14 @@ _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing.
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
     ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),
-    ("memo", SUMMARY),
-    ("memo", f"**Recommended:** {CONTROL_LABEL} (high confidence)"),
-    ("memo", "- The billing floor is broken"),
     ("03", f"**{_FLOOR_WARNING}**"),
-    ("memo", NO_CALL),
+    ("03", NO_CALL),
 ]
 
 #: The same first screen in HTML, in order.
 _CHANGE_HTML: list[tuple[str, str]] = [
     ("03", "<h1>"),
     ("03", '<p class="question">'),
-    ("memo", 'data-role="summary"'),
-    ("memo", 'data-role="recommendation"'),
     ("03", '<p class="flag warning">'),
 ]
 
@@ -102,12 +94,10 @@ async def test_both_aspects_readings_are_in_the_scorecard_after_the_broken_floor
 
 
 @pytest.mark.parametrize(("screen", "markers"), [("markdown", _CHANGE_MARKDOWN), ("html", _CHANGE_HTML)])
-async def test_the_first_screen_runs_title_question_summary_recommendation_warning_call(
-    screen: str, markers: list[tuple[str, str]]
-) -> None:
-    """A change with a recommendation reads its summary, then the recommendation, then what warns, then the call; code's
-    table after what warns, wherever the scorecard lays it out."""
-    page = await page_of("billing", "tone", memo=two_aspect_memo())
+async def test_the_first_screen_runs_title_question_warning_call(screen: str, markers: list[tuple[str, str]]) -> None:
+    """A change reads its question, then what warns, then the call; code's table after what warns, wherever the
+    scorecard lays it out."""
+    page = await page_of("billing", "tone")
     said = first_screen_markdown(page) if screen == "markdown" else header_html(page)
     order = [said.index(marker) for _, marker in markers]
     assert order == sorted(order)
@@ -116,14 +106,9 @@ async def test_the_first_screen_runs_title_question_summary_recommendation_warni
     else:
         whole, warning, table = campaign_report_html(page), '<p class="flag warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
-    assert page.basis == "analysis" and page.finding_count == 1
+    assert page.basis == "code_only" and page.finding_count == 0
     # The arms are priced, so the report-wide cost caveat closes what warns, once.
-    assert opening(page) == [
-        ("text", "summary"),
-        ("text", "recommendation"),
-        ("text", "reason"),
-        ("cost", COST_ROUTING_CAVEAT),
-    ]
+    assert opening(page) == [("memo", NO_RECOMMENDATION), ("cost", COST_ROUTING_CAVEAT)]
 
 
 async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
@@ -139,19 +124,18 @@ async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_wr
     assert opening(page)[0] == ("memo", NO_RECOMMENDATION)
 
 
-async def test_a_measurement_opens_on_its_summary_then_its_warning_then_its_measures() -> None:
-    summary = "Alpha passes most cases on solo and costs too much a reply to meet its bar."
-    page = await kind_page_of("solo", memo=recommending_nothing(summary))
+async def test_a_measurement_opens_on_its_warning_then_its_measures() -> None:
+    page = await kind_page_of("solo")
     _, caption, mark = _SCORECARD["measurement"]
     assert page.readings.kind == "measurement"
-    assert opening(page) == [("text", "summary"), ("cost", COST_ROUTING_CAVEAT)]
+    assert opening(page) == [("cost", COST_ROUTING_CAVEAT)]
     first = first_screen_markdown(page)
     assert first.startswith("# ")
-    assert first.index(summary) < first.index("**alpha falls short of the bar on solo.**")
+    assert "**alpha falls short of the bar on solo.**" in first
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)
     assert markdown.index("**alpha falls short of the bar on solo.**") < markdown.index(caption)
     header = header_html(page)
-    assert header.index("<h1>") < header.index('data-role="summary"') < header.index('<p class="flag warning">')
+    assert header.index("<h1>") < header.index('<p class="flag warning">')
     assert html.index('<p class="flag warning">') < html.index(mark)
 
 
@@ -274,7 +258,7 @@ def test_a_depth_row_of_one_subject_among_several_links_its_aspect_s_fold() -> N
     report = build_code_only_report(
         two, assembled_at=ASSEMBLED_AT, campaign_name=shape.name, arm_labels=shape.readings.arm_labels()
     )
-    page = build_campaign_report(shape.campaign, shape.readings, {label: report}, None)
+    page = build_campaign_report(shape.campaign, shape.readings, {label: report})
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "pass_k_depth"]
     said = {(row["aspect"].text, row["aspect"].ref) for row in table.rows}
     # Each subject's rows say where they are by the aspect and the subject, and link the aspect's own fold.

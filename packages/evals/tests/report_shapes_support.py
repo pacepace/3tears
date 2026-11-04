@@ -30,7 +30,6 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, Report
 from threetears.evals.analysis.report.words import campaign_arm_tags
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.declaration import BarOverride, CampaignArm, DecisionClause, RateDrop
@@ -148,21 +147,9 @@ class Shape:
         """The variant key of the arm the campaign labels ``label``."""
         return next(arm.variant_key for arm in self.arms if arm.label == label)
 
-    def page(
-        self,
-        memo: AuthoredCampaignAnalysis | None = None,
-        *,
-        recommended: str | None = None,
-    ) -> CampaignReport:
-        """The campaign's page, with ``memo`` where one was written; ``recommended`` is the label of the arm the memo
-        recommends, whose key the analysis recorded."""
-        return build_campaign_report(
-            self.campaign,
-            self.readings,
-            self.reports,
-            memo,
-            recommended_variant_key=self.key(recommended) if recommended is not None else None,
-        )
+    def page(self) -> CampaignReport:
+        """The campaign's page."""
+        return build_campaign_report(self.campaign, self.readings, self.reports)
 
 
 def _run(aspect: str, arm: ArmTrials) -> EvalRun:

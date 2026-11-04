@@ -3,13 +3,12 @@
 A trial is one case run once on one arm, and it ends in exactly one state: **lost** to the test setup (the harness
 faulted it, or the judge could not tell on a dimension it needs), **failed** by the candidate (its model failed, or a
 check or a judged dimension failed it), or **passed**. A judge that could not tell on one dimension does not lose a
-trial a failed check has already decided. The census counts every trial, the rows carry what a reader drills into,
-capped with the lost and failed kept first, and the writer reads the rows without the excerpts.
+trial a failed check has already decided. The census counts every trial, and the rows carry what a reader drills into,
+capped with the lost and failed kept first.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from functools import cache
 from typing import Any
@@ -19,8 +18,6 @@ import pytest
 from threetears.evals.analysis.bundle import trials as trials_module
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
-from threetears.evals.analysis.campaign_bundle import WRITER_EXCERPT_CHARS, build_campaign_user_message
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema import EvalResult, EvalTrace, GoalStateOutcome, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import eval_trace_doc_id
@@ -231,27 +228,8 @@ def test_the_trials_are_capped_with_the_lost_and_failed_kept_first(monkeypatch: 
     assert bundle.scoreboard[0].ran == 6, "the census counts every trial, kept or not"
 
 
-def test_the_writer_reads_the_flagged_trials_and_only_the_tail_of_what_their_judge_saw() -> None:
-    bundle = _bundle(_results())
-    payload = json.loads(_writer_message(bundle).removeprefix("CAMPAIGN BUNDLE (JSON):\n"))
-    assert "package_version" not in json.dumps(payload)
-    (aspect,) = payload["aspects"]
-    assert [trial["state"] for trial in aspect["trials"]] == [
-        trial.state for trial in bundle.trials if trial.state != "passed"
-    ]
-    for trial in aspect["trials"]:
-        assert not {"first_input", "error_words", "result_id"} & trial.keys()
-        assert {"trial", "state", "cause"} <= trial.keys()
-        assert len(trial.get("excerpt", "")) <= WRITER_EXCERPT_CHARS + 1
-
-
 def test_the_build_is_carried_and_left_out_of_the_fingerprint() -> None:
     bundle = _bundle(_results())
     assert bundle.schema_version == 65
     assert bundle.package_version is not None
     assert bundle.model_copy(update={"package_version": "9.9.9"}).fingerprint() == bundle.fingerprint()
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

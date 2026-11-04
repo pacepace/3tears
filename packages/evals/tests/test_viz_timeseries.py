@@ -5,21 +5,19 @@
   position's runs, so a position reads exactly as a campaign of only its runs would. Positions are ordered
   by when each first ran — never by name, which would put ``0.10`` before ``0.9``.
 - **The host's release label** (``kernel/host/profile.py``). It must name a registered ``label``.
-- **The generation freezes it** on the analysis's decision surface, and the writer reads it by cell alias.
+- **The generation freezes it** on the analysis's decision surface.
 - **A small cell records its cases**: below five, the bundle carries each case's mean.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import uuid
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
 from threetears.evals.schema.models import EvalResult, EvalRun
@@ -328,12 +326,6 @@ class TestTheGenerationFreezesTheAxis:
         bundle = _two_days()
         assert _generated(bundle).aspects[0].decision_surface.time_axis == bundle.time_axis
 
-    def test_the_writer_sees_the_axis_by_alias(self) -> None:
-
-        message = json.loads(_writer_message(_two_days()).split("\n", 1)[1])
-        cells = message["aspects"][0]["time_axis"]["positions"][0]["cells"]
-        assert all("cell" in cell and "variant_key" not in cell for cell in cells)
-
 
 # =============================================================================
 # Per-case values below the band floor (#677)
@@ -371,8 +363,3 @@ class TestASmallCellRecordsItsCases:
         for cell in bundle.cell_measures:
             assert all(m.case_means is None for m in cell.measures.measures)
             assert all(j.case_means is None for j in cell.judged)
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

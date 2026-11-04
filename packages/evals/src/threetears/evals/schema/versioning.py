@@ -438,6 +438,12 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   no generation writes a plan, and a stored ``eval_report_plan`` keeps its shape, its plan held verbatim and no
 #:   longer validated as a plan on read. Loosening a check refuses nothing it accepted, so every stored plan still reads,
 #:   and ``drop_derived`` and ``analysis_delete`` still sweep it.
+#:
+#:   Within v13, no generation writes a memo, with no bump, because nothing stored changes: the memo writer is retired,
+#:   and a memo stored before it is held as the JSON it was stored as (``EvalAnalysis.document`` loosened to verbatim
+#:   JSON), never validated as a memo and never read; every door lays its analysis out as code's page with the retired
+#:   writer's line. Loosening the field refuses nothing it accepted, so every stored v13 analysis still reads, and a
+#:   build from before it reads everything it writes, since it writes no new field.
 REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

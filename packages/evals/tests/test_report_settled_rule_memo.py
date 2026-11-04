@@ -1,11 +1,7 @@
-"""A memo page over floors read either way: the memo's own answer, printed as written.
+"""A page over floors read either way: a broken floor warns, on the first screen, and never decides.
 
-The memo writer is retired; its renderer stays until it leaves, so a memo is stored as the memo writer stored one
-(:func:`~packages.evals.tests.test_report_trace.stored_memo`) and laid out by ``build_report``.
-
-A floor warns and never decides, so the memo's answer to the question is printed as written, under the page's warning
-line for each floor broken. A finding disputing a floor's reading is the writer's prompt to prevent, never the page's to
-rewrite (owner, 2026-10-24). The G2 numbers are replayed through the quick path, with the G2 floors declared before the run, as the
+A floor warns and never decides, so each floor broken is one warning line under the page's title, and the verdict names
+no keep. The G2 numbers are replayed through the quick path, with the G2 floors declared before the run, as the
 presentation tests replay them.
 
 Since #845 a rate floor is read either way only on an interval over enough cases, so G2's four cases leave its rate
@@ -25,20 +21,15 @@ from threetears.evals.analysis import (
     Report,
     assemble_context_bundle,
     build_code_only_report,
-    build_report,
     get_campaign,
     report_markdown,
 )
-from threetears.evals.analysis.references import cell_aliases
-from threetears.evals.analysis.report import DisclosureBlock, TextBlock
+from threetears.evals.analysis.report import DisclosureBlock
 from threetears.evals.analysis.style import lint_prose
 from packages.evals.tests.style_support import lint_page
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.report_support import memo_analysis_over
 
 #: The G2 campaign's title.
 TITLE = "G2: can the cheaper model replace production?"
@@ -90,41 +81,8 @@ def _first_cases(right: int, cost: float) -> Any:
     return run
 
 
-def _finding(title: str, measure: str, aliases: dict[str, str], body: str = "") -> dict[str, Any]:
-    """A finding on one reading of both arms."""
-    return {
-        "title": title,
-        "body": body,
-        "confidence": "low",
-        "axes": [],
-        "evidence": [{"cell": alias, "measure_id": measure, "reading": "measure"} for alias in aliases.values()],
-        "trials": [],
-        "caveats": [],
-        "invalidates": [],
-        "durable": "",
-    }
-
-
-async def _memo_page(bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str) -> Report:
-    """The page a stored analysis of ``findings`` and one answer to the G2 question renders."""
-    memo = authored_memo(bundle, findings, means=answer)
-    return build_report(
-        memo_analysis_over(campaign_bundle(bundle), memo, generated_at="2026-10-14T19:23:41+00:00"), campaign_name=TITLE
-    )
-
-
-def _aliases(comparison: Result, bundle: AnalysisContextBundle, candidate: str = CANDIDATE) -> dict[str, str]:
-    """Each arm's cell alias, production first."""
-    by_variant = {ref.split(":")[0]: alias for alias, ref in cell_aliases(bundle.cell_measures).items()}
-    return {name: by_variant[comparison.arm_variants[name]] for name in (PRODUCTION, candidate)}
-
-
-def _answers(report: Report) -> list[TextBlock]:
-    return [block for block in report.blocks if isinstance(block, TextBlock) and block.role == "answer"]
-
-
 # =============================================================================
-# 1. The answer line: the memo's own, beside the warning a broken floor gives on the first screen
+# A broken floor is a warning on the first screen
 # =============================================================================
 
 
@@ -136,34 +94,17 @@ def _warnings(report: Report) -> list[str]:
     ]
 
 
-async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
+async def test_a_broken_floor_is_the_page_s_first_warning_line() -> None:
     """Until floors, a settled rule's question got no answer line ("See the decision rule above."). A floor decides
-    nothing: the memo's answer is printed as written, and each broken floor is the page's first line."""
-    comparison, bundle = await _compare(0.003301, shown=True)
-    aliases = _aliases(comparison, bundle)
-    report = await _memo_page(
-        bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
-    )
-    (answer,) = _answers(report)
-    assert answer.body == "Keep production."
+    nothing: each broken floor is a warning line on the page's first screen, bolded under its title."""
+    _, bundle = await _compare(0.003301, shown=True)
+    report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
     markdown = report_markdown(report)
-    assert "Keep production." in markdown
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
     (warning,) = _warnings(report)
     assert warning == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {bundle.aspect}."
     assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown
     assert lint_page(markdown, question=G2_QUESTION) == []
-
-
-async def test_a_memo_recommending_the_arm_a_floor_warns_against_is_printed_as_written() -> None:
-    comparison, bundle = await _compare(0.003301, shown=True)
-    aliases = _aliases(comparison, bundle)
-    report = await _memo_page(
-        bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Switch to the candidate."
-    )
-    (answer,) = _answers(report)
-    assert answer.body == "Switch to the candidate."
-    assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and "contradicts" in b.text]
 
 
 async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_keep() -> None:
@@ -176,37 +117,3 @@ async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_kee
     assert lint_prose(rate) == []
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     assert not verdict.startswith("Keep")
-
-
-# =============================================================================
-# 2. A finding naming no reading is noted with what was not tested
-# =============================================================================
-
-
-async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and_leaves_the_memo() -> None:
-    comparison, bundle = await _compare(0.003301)
-    aliases = _aliases(comparison, bundle)
-    unread = {
-        **_finding("Turn latency comparison was withheld due to concurrent execution.", "match", {}),
-        "evidence": [],
-    }
-    report = await _memo_page(
-        bundle, [_finding("The candidate skipped the queue", "match", aliases), unread], "Keep production."
-    )
-    markdown = report_markdown(report)
-    # Findings are evidence: one citing no reading is not one, so What it means holds the other alone.
-    titles = [b.body for b in report.blocks if isinstance(b, TextBlock) and b.role == "finding_title"]
-    assert titles == ["The candidate skipped the queue"]
-    assert report.finding_count == 2 and not [b for b in report.blocks if b.finding == 1]
-    noted = "The analysis also noted: Turn latency comparison was withheld due to concurrent execution."
-    (said,) = [
-        b for b in report.blocks if isinstance(b, DisclosureBlock) and b.section == "not_tested" and b.source == "memo"
-    ]
-    assert said.text == noted
-    # After code's own Not-tested lines, before the folded disclosures.
-    section = [b for b in report.blocks if b.section == "not_tested"]
-    assert [b.fold for b in section[: section.index(said)]] == [None] * section.index(said)
-    assert all(b.fold is not None for b in section[section.index(said) + 1 :])
-    not_tested = markdown.split("\n## Not tested\n", 1)[1].split("\n## ", 1)[0]
-    assert noted in not_tested and markdown.count("Turn latency comparison") == 1
-    assert lint_page(markdown, question=G2_QUESTION) == []

@@ -46,11 +46,9 @@ from threetears.evals.analysis.style import ArmName, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 
 __all__ = [
-    "COST_ROUTING_CAVEAT",
     "aspect_provenance_blocks",
     "caveat_blocks",
     "for_the_campaign",
-    "priced_aspects",
     "provenance_blocks",
     "question_blocks",
     "setup_disclosure",

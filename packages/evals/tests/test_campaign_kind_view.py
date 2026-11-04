@@ -1,14 +1,13 @@
-"""What a campaign's writer is told of its kind, read off its arms (owner, 2026-10-18).
+"""What a campaign's kind is, read off its arms (owner, 2026-10-18), and what its report input says of it.
 
-A **measurement** (one arm) has nothing to choose between, so its writer is told it recommends no arm. A **choice**
-(several arms, no control) leads with code's pair readings and its missed bars, so the writer reads which arm was shown
-ahead before anything else. Driven over the toy host's campaign: no control for a choice, its narrow width alone for a
-measurement.
+A **measurement** (one arm) has nothing to choose between, so its report input says it recommends no arm. A **choice**
+(several arms, no control) carries code's pair readings and its missed bars, so its report input says which arm was
+shown ahead and which bar was missed. Driven over the toy host's campaign: no control for a choice, its narrow width
+alone for a measurement.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from packages.evals.tests.aspect_support import with_control
@@ -17,9 +16,9 @@ from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHO
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_cells import arm_at, cell_at
 from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.campaign_readings import BarStatus, PairReading
 from threetears.evals.analysis.cells import variant_of_cell_ref
+from threetears.evals.analysis.report_input_build import report_input
 
 
 def _aspect(*, control: bool) -> AnalysisContextBundle:
@@ -92,18 +91,18 @@ def _bar(bundle: CampaignBundle, level: int, status: str = "missed") -> BarStatu
     )
 
 
-def test_one_arm_is_a_measurement_and_its_writer_is_told_so() -> None:
+def test_one_arm_is_a_measurement_and_its_report_input_says_so() -> None:
     bundle = _measurement()
     assert bundle.kind == "measurement"
-    view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-    assert view["kind"] == "measurement" and "recommends no arm" in view["kind_means"]
+    meta = report_input(bundle).meta
+    assert meta.kind == "measurement" and meta.kind_means is not None and "recommends no arm" in meta.kind_means
 
 
-def test_several_arms_and_no_control_are_a_choice_and_its_pairs_come_first() -> None:
+def test_several_arms_and_no_control_are_a_choice_and_its_pairs_and_bars_are_read() -> None:
     bare = _choice()
     bundle = _choice(pairs=[_pair(bare, ahead=TOYHOST_WIDE)], bars=[_bar(bare, TOYHOST_NARROW)])
     assert bundle.kind == "choice" and bundle.control() is None
-    view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-    assert list(view)[:5] == ["campaign", "kind", "kind_means", "pairs", "bars"]
-    assert view["pairs"][0]["ahead"] == arm_at(bundle, TOYHOST_WIDE)
-    assert view["bars"][0]["status"] == "missed" and "bar_warning" in view
+    read = report_input(bundle)
+    assert read.meta.kind == "choice"
+    assert [pair.ahead for aspect in read.aspects for pair in aspect.pairs] == [arm_at(bundle, TOYHOST_WIDE)]
+    assert [bar.status for bar in read.bars] == ["missed"]

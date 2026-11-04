@@ -3,8 +3,8 @@
 A reader short on time takes a table's top row for the recommendation. So the decision surface leads with
 the control, marked as the reference every other arm is read against, follows with the other arms in
 alphabetical order of their names, and says on the table that row order is not a ranking. This file pins
-that every place the arms are laid out follows it: the report's scoreboard and cases table, and the writer's
-``cell_measures`` (which the stored surface is a copy of, and whose order mints the writer's cell aliases).
+that every place the arms are laid out follows it: the report's scoreboard and cases table, and the bundle's
+``cell_measures`` (which the stored surface is a copy of, and whose order mints the campaign's cell aliases).
 
 Driven over the toy host's campaign. Its arms are named by chunk width (``chunk_tokens=256tok`` and
 ``chunk_tokens=1024tok``), so alphabetically the wide width comes first; declaring the narrow width the control is what makes control
@@ -13,9 +13,6 @@ first and name order disagree.
 
 from __future__ import annotations
 
-from typing import Any
-
-import json
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
@@ -25,7 +22,6 @@ from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
 from threetears.evals.analysis.report.model import TableBlock
@@ -56,18 +52,15 @@ def _table(bundle: AnalysisContextBundle, name: str) -> TableBlock:
     return table
 
 
-class TestTheWritersCellsFollowTheRule:
+class TestTheCellsFollowTheRule:
     def test_the_control_leads_cell_measures_and_is_the_first_alias(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)
         narrow, wide = cell_at(bundle, TOYHOST_NARROW), cell_at(bundle, TOYHOST_WIDE)
 
         assert [cell_ref(c.variant_key, c.apparatus_class_id) for c in bundle.cell_measures] == [narrow, wide]
-        shown = json.loads(_writer_message(bundle).split("\n", 1)[1])
-        (aspect,) = shown["aspects"]
-        assert aspect["cells"][0]["cell"] == "c1"
-        variant = variant_of_cell_ref(narrow)
-        assert variant is not None
-        assert aspect["cells"][0]["arm"] == campaign_bundle(bundle).label_of(variant)
+        aliases = campaign_bundle(bundle).cell_aliases()
+        first = next(iter(aliases))
+        assert first == "c1" and aliases[first].cell_ref == narrow
 
     def test_without_a_control_the_arms_are_in_name_order(self) -> None:
         """The wide width's name sorts before the narrow one's (``1024`` before ``256``), whatever the keys say."""
@@ -104,8 +97,3 @@ class TestTheCodeOnlyReportFollowsTheRule:
         narrow, wide = (variant_of_cell_ref(cell_at(bundle, level)) for level in (TOYHOST_NARROW, TOYHOST_WIDE))
         headers = [column.header for column in _table(bundle, "cases").columns]
         assert headers.index(f"▸ {_label(narrow, names)}") < headers.index(_label(wide, names))
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

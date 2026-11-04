@@ -10,11 +10,11 @@
 - :mod:`.depth_blocks` — how deep each arm ran, pass^k at the common depth, the opt-in model, and what limits each
   comparison's interval.
 - :mod:`.aggregate` — figures across aspects; none yet.
-- :mod:`.memo_blocks` — the writer's and the person's words: the summary, the recommendation, the findings with
-  their trace, the next steps, each aspect's summary, and the call.
+- :mod:`.memo_blocks` — where the campaign's report is (a report document, an analysis this version no longer reads,
+  or none written), and the person's call.
 - :mod:`.names` — what the page calls an aspect.
-- :mod:`.common` — what several parts share: the memo's words as printed, the arms' names, a floor by its key, a rate
-  by its name, a change in points.
+- :mod:`.common` — what several parts share: the arms' names, a floor by its key, a rate by its name, a change in
+  points.
 
 :mod:`threetears.evals.analysis.report.campaign_page` re-exports the page's public names.
 """

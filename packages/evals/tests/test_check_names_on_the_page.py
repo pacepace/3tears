@@ -99,9 +99,9 @@ def _page(build: str, names: Mapping[str, str]) -> CampaignReport:
     if build == "measurement":
         assert shape.readings.missed_bars(), "solo misses the bar on a check"
         kept = CampaignCall(arm="solo", variant_key=shape.key("solo"), called_at=_CALLED_AT, called_by="op")
-        return build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=kept)
+        return build_campaign_report(shape.campaign, shape.readings, shape.reports, call=kept)
     if build != "s1":
-        return build_campaign_report(shape.campaign, shape.readings, shape.reports, None)
+        return build_campaign_report(shape.campaign, shape.readings, shape.reports)
     broken = [status.floor for status in shape.readings.broken_floors() if status.reading == CHECKS[1]]
     assert broken, "v4 breaks tone's floor on the second check"
     call = CampaignCall(
@@ -112,7 +112,7 @@ def _page(build: str, names: Mapping[str, str]) -> CampaignReport:
         reason="Cheaper.",
         floors_overridden=broken,
     )
-    return build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=call)
+    return build_campaign_report(shape.campaign, shape.readings, shape.reports, call=call)
 
 
 #: A trial's failed-check line, which states a check's name and then its expression, in Markdown and in HTML.
@@ -159,7 +159,7 @@ def _default_page(build: str, by_aspect: Mapping[str, Mapping[str, str]] | None 
     record), its checks named ``NAMES`` on every aspect unless ``by_aspect`` says otherwise."""
     shape = {"s1": s1_change, "s2": s2_choice, "s4": s4_change, "measurement": _measurement}[build]()
     named = _named_by(shape, by_aspect or {label: NAMES for label in shape.bundles}, trials="table")
-    return build_campaign_report(named.campaign, named.readings, named.reports, None)
+    return build_campaign_report(named.campaign, named.readings, named.reports)
 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])
@@ -212,7 +212,7 @@ def test_the_call_names_a_check_bar_by_the_check_s_name_whether_it_overrides_it_
         called_by="op",
         bars_overridden=[OverriddenBar(aspect=missed.aspect, measure=missed.measure)],
     )
-    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=call)
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, call=call)
     calls = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
     assert (
         f"The call overrides a missed bar on {missed.aspect}: solo misses the bar on {NAMES[CHECKS[0]]}: its whole "
@@ -242,7 +242,7 @@ def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_the_wh
     returns: dict[str, str],
 ) -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": returns})
-    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None)
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports)
     assert _measure_column(page) == f"`{CHECKS[0]}`"
     # Each folded row still names the check as its own aspect does.
     assert _fold_names(page) == {"orders": "Total right", "returns": returns.get(CHECKS[0], f"`{CHECKS[0]}`")}
@@ -250,9 +250,7 @@ def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_the_wh
 
 def test_a_column_whose_aspects_name_its_check_alike_is_headed_by_the_name() -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": {CHECKS[0]: "Total right"}})
-    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports, None)) == (
-        "Total right"
-    )
+    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports)) == ("Total right")
 
 
 def test_a_call_over_a_check_bar_no_longer_missed_names_the_check_by_its_name() -> None:
@@ -267,6 +265,6 @@ def test_a_call_over_a_check_bar_no_longer_missed_names_the_check_by_its_name() 
         called_by="op",
         bars_overridden=[OverriddenBar(aspect=held, measure=measure)],
     )
-    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, None, call=call)
+    page = build_campaign_report(shape.campaign, shape.readings, shape.reports, call=call)
     calls = [block.text for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
     assert f"The call overrides the bar on {NAMES[CHECKS[0]]} on {held} (no longer missed)." in calls

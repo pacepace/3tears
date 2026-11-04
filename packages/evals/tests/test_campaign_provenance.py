@@ -256,7 +256,7 @@ def _shape_page(name: str, change: Callable[[AnalysisContextBundle], AnalysisCon
         )
         for label, bundle in shape.bundles.items()
     }
-    return build_campaign_report(shape.campaign, shape.readings, reports, None)
+    return build_campaign_report(shape.campaign, shape.readings, reports)
 
 
 @pytest.mark.parametrize("name", ["s1", "s2", "s4"])

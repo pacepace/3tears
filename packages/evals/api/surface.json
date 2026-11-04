@@ -1436,11 +1436,6 @@
       "signature": "AspectDesign(axes: list[SweptAxis], bars: list[BarOverride] = list(), guardrail_margins: list[GuardrailMargin] = list(), intended_repetitions: int | None = None, held_fixed: ControlDeclaration, merit_axes: list[MeritAxis] | None = None, merit_priority: list[MeritAxis] = list(), crossing: Literal['full', 'star'] | None = None, skipped_cells: list[dict[str, str]] = list(), measure_latency: bool = False)",
       "tier": "host-contract"
     },
-    "threetears.evals.kernel.AspectSummary": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.AttemptOutcome": {
       "kind": "literal",
       "signature": "",
@@ -1448,11 +1443,6 @@
     },
     "threetears.evals.kernel.AttributionScope": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.AuthoredCampaignAnalysis": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -1655,11 +1645,6 @@
       "kind": "protocol",
       "signature": "CassetteStore{delete_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> int; get_cassette(self, key: CassetteKey, scope_id: str, /) -> EvalCassette | None; list_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> list[EvalCassette]; list_cassettes_for_template(self, template_id: str, scope_id: str, /, *, limit: int | None = None) -> list[EvalCassette]; read_case_cassettes(self, *, corpus_id: str, template_id: str, test_case_id: str, scope_id: str) -> CaseRecordings; save_cassette(self, cassette: EvalCassette, /) -> None}",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.Caveat": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.ceiling_is_estimate": {
       "kind": "function",
@@ -1968,7 +1953,7 @@
     },
     "threetears.evals.kernel.EvalAnalysis": {
       "kind": "model",
-      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 13, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: AuthoredCampaignAnalysis | None, report_plan_id: str | None = None, report_doc_id: str | None = None, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
+      "signature": "EvalAnalysis(id: str = <lambda>(), doc_type: Literal['eval_analysis'] = 'eval_analysis', schema_version: SchemaVersion = 13, scope_id: str, campaign_id: str, subject_id: str, subject_kind: str, behavior: str, observation_refs: list[str] = list(), model_versions: dict[str, str] = dict(), generation: GenerationProvenance, design_snapshot: CampaignDeclaration, document: VerbatimJsonObject | None, report_plan_id: str | None = None, report_doc_id: str | None = None, recommended_variant_key: str | None, judged_tier_rule: JudgedTierRule = 'interval_lower_bound', resolutions: list[FindingResolution] = list(), aspects: list[AspectAnalysis], campaign_bundle: VerbatimJsonObject, archived: bool = False, archived_reason: str | None = None, created_at: str = utc_now_iso())",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalAnalysisAttempt": {
@@ -2037,11 +2022,6 @@
       "tier": "host-contract"
     },
     "threetears.evals.kernel.EvalSweep": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.EvidenceRef": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -2133,11 +2113,6 @@
     },
     "threetears.evals.kernel.FIND_TEST_CASE": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.Finding": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -2618,11 +2593,6 @@
     },
     "threetears.evals.kernel.MIN_TEMPERATURE_REPEATS": {
       "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.NextStep": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -3518,7 +3488,7 @@
     },
     "threetears.evals.kernel.host.HostProfile": {
       "kind": "dataclass",
-      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile = StyleProfile(), world: WorldRegistry | None = None, caveat_kinds: frozenset[str] = frozenset(), variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
+      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile | None = None, world: WorldRegistry | None = None, caveat_kinds: frozenset[str] | None = None, variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.IgnoresTemplateFields": {
@@ -5076,17 +5046,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.build_campaign_user_message": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.build_code_only_report": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.build_report": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -5108,11 +5068,6 @@
     },
     "threetears.evals.analysis.campaign_kind": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.CAMPAIGN_MESSAGE_CHARS_PER_ASPECT": {
-      "kind": "constant (int)",
       "signature": "",
       "tier": "provisional"
     },

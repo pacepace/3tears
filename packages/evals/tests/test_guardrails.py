@@ -21,16 +21,13 @@ sentence when questions are declared, or a per-row label when none are.
 
 from __future__ import annotations
 
-from typing import Any
 
 from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.stats import GUARDRAIL_HELD_NEEDS_RANGE, GUARDRAIL_OUTSIDE_RANGE
@@ -158,10 +155,6 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), control=False)
         assert bundle.guardrails.checks == []
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
-
-    def test_the_writer_sees_the_guardrails_by_cell_alias(self):
-        message = _writer_message(two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST)))
-        assert '"guardrails"' in message and '"decision":"breached"' in message
 
 
 # --- a measure may be a guardrail too ------------------------------------------------------------------------
@@ -316,8 +309,3 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         named = [str(row["reading"]) for row in listed.values()]
         assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
         assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text
-
-
-def _writer_message(bundle: Any) -> str:
-    """What the writer is sent over one aspect's bundle: the campaign bundle of that one aspect, rendered."""
-    return build_campaign_user_message(campaign_bundle(bundle))

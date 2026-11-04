@@ -3,8 +3,7 @@
 The proposer sent ``{"type": "json_object"}``, so a provider was free to write any object: a host whose stored
 proposer prompt predates ``RubricDim.scale`` becoming required got drafts with no ``scale`` on every dimension, and
 every paid draft failed validation. A strict ``json_schema`` derived from the model the reply is read into makes a
-provider that enforces it unable to write that draft at all, whatever the prompt says, as the analysis writer's
-contract already does. Held here for the proposer (both axes), the variation writer and the judge; the reply is
+provider that enforces it unable to write that draft at all, whatever the prompt says. Held here for the proposer (both axes), the variation writer and the judge; the reply is
 still validated on return, so a provider that cannot enforce a strict schema is caught there, as before.
 """
 
@@ -21,7 +20,6 @@ from threetears.evals import kernel
 from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft
 from threetears.evals.kernel import plan_variation_calls
 from threetears.evals.kernel.provider import withhold_failure_detail
-from threetears.evals.kernel.authored import response_format as authored_response_format
 from threetears.evals.kernel.authored import strict_schema as authored_strict_schema
 from threetears.evals.run.judge import judge_reply_format
 from threetears.evals.run.simulator import SIMULATED_USER_RESPONSE_FORMAT, next_speaker_response_format
@@ -215,7 +213,6 @@ _DIRECTIVE_CALLS = [
     "judge (pass_fail)",
     "simulated user",
     "next speaker",
-    "analysis",
 ]
 
 
@@ -238,7 +235,6 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
         "judge (pass_fail)": _judge_request("pass_fail").response_format,
         "simulated user": SIMULATED_USER_RESPONSE_FORMAT,
         "next speaker": next_speaker_response_format(["alice", "bob"]),
-        "analysis": authored_response_format(["scope"]),
     }
 
 
@@ -296,8 +292,8 @@ def _enumerated(node: Any, path: str = "") -> list[tuple[str, Any]]:
 def test_every_directive_enumerates_strings_only(call: str) -> None:
     """An integer enum was sent to a Gemini model under strict routing and not enforced: it left the field out.
 
-    Each directive is built here as the engine builds it for its call, the analysis writer's with host vocabularies
-    among its enums; every one must enumerate strings and nothing else.
+    Each directive is built here as the engine builds it for its call; every one must enumerate strings and nothing
+    else.
     """
     enumerated = _enumerated(_strict(_every_directive()[call]))
 
@@ -308,7 +304,7 @@ def test_the_walk_reaches_the_enums_the_directives_carry() -> None:
     """The walk above finds nothing to refuse in a directive with no enum; it does reach the ones that carry one."""
     carrying = {call for call, directive in _every_directive().items() if _enumerated(_strict(directive))}
 
-    assert carrying == {"proposal", "judge (ordinal)", "judge (pass_fail)", "next speaker", "analysis"}
+    assert carrying == {"proposal", "judge (ordinal)", "judge (pass_fail)", "next speaker"}
 
 
 @pytest.mark.parametrize("scale", ["ordinal", "pass_fail"])

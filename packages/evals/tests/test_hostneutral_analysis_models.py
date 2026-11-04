@@ -6,8 +6,9 @@ corpus is not used, because these are the stored models' own rules.
 
 Pinned here, from ``kernel/campaign.py`` and ``kernel/authored.py``:
 
-- confidence is a tier, on the authored finding and recommendation alike; an evidence row names the
-  aspect and the reading it resolved; the analysis keeps each aspect's evidence bundle it was written over.
+- confidence is a tier, on the recommendation a page carries (the retired memo's, which ``CampaignReport`` still
+  types); an evidence row names the aspect and the reading it resolved; the analysis keeps each aspect's evidence
+  bundle it was written over, its retired memo held as the JSON it was stored as.
 - a recommendation whose reason opens with a negation is stored as written — which arm it recommends lives in
   ``arm``.
 """
@@ -21,7 +22,7 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel import authored
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Finding, Recommendation
+from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.campaign import (
     CONFIDENCE_TIERS,
     CampaignDeclaration,
@@ -95,24 +96,25 @@ def _recommendation(reason: str = "model-b is faster.", *, confidence: Any = "hi
 
 
 def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None = None, **fields: Any) -> EvalAnalysis:
-    finding = Finding(
-        title="model-b extracts faster.",
-        body="",
-        confidence=confidence,
-        axes=[AXIS],
-        evidence=[],
-        trials=[],
-        caveats=[],
-        invalidates=[],
-        durable="",
-    )
-    document = AuthoredCampaignAnalysis(
-        findings=[finding],
-        recommendation=[recommendation or _recommendation()],
-        aspect_summaries=[],
-        summary="One finding, and nothing yet argues for a switch.",
-        next=[],
-    )
+    finding = {
+        "title": "model-b extracts faster.",
+        "body": "",
+        "confidence": confidence,
+        "axes": [AXIS],
+        "evidence": [],
+        "trials": [],
+        "caveats": [],
+        "invalidates": [],
+        "durable": "",
+    }
+    # The memo as the retired memo writer stored it: JSON, held as written.
+    document = {
+        "findings": [finding],
+        "recommendation": [(recommendation or _recommendation()).model_dump(mode="json")],
+        "aspect_summaries": [],
+        "summary": "One finding, and nothing yet argues for a switch.",
+        "next": [],
+    }
     aspect = analysed_aspect(
         empty_bundle(campaign_id="camp-invoices", behavior="extraction", aspect="extraction"),
         decision_surface=_surface(),
@@ -161,23 +163,19 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
 class TestConfidenceIsATier:
     @pytest.mark.parametrize("tier", CONFIDENCE_TIERS)
     def test_every_tier_is_accepted(self, tier: str) -> None:
-        analysis = _analysis(confidence=tier, recommendation=_recommendation(confidence=tier))
-        assert analysis.document.findings[0].confidence == tier
-        assert analysis.document.recommendation[0].confidence == tier
+        assert _recommendation(confidence=tier).confidence == tier
 
     def test_the_tiers_are_the_four_named_ones_in_order(self) -> None:
         assert CONFIDENCE_TIERS == ("very_high", "high", "medium", "low")
 
     def test_the_authored_contract_offers_exactly_the_stored_tiers(self) -> None:
-        """The contract sent to the generator and the tiers every surface ranks by are one set."""
+        """The confidence words the authored models declare and the tiers every surface ranks by are one set."""
         assert set(get_args(authored.Confidence)) == set(CONFIDENCE_TIERS)
 
     @pytest.mark.parametrize(
         "bad", ["certain", 0.8, 1.5], ids=["a-word-that-is-no-tier", "a-probability", "out-of-range"]
     )
     def test_anything_but_a_tier_is_refused(self, bad: Any) -> None:
-        with pytest.raises(ValidationError):
-            _analysis(confidence=bad)
         with pytest.raises(ValidationError):
             _recommendation(confidence=bad)
 
@@ -221,5 +219,6 @@ class TestARecommendationsWordingIsNotRefused:
         "reason", ["Do not keep model-a.", "Never ship model-a to the intake queue.", "Don't widen the sweep."]
     )
     def test_a_reason_that_opens_with_a_negation_is_stored_as_written(self, reason: str) -> None:
+        assert _recommendation(reason).reasons == [reason]
         analysis = _analysis(recommendation=_recommendation(reason))
-        assert analysis.document.recommendation[0].reasons == [reason]
+        assert analysis.document is not None and analysis.document["recommendation"][0]["reasons"] == [reason]
