@@ -36,7 +36,7 @@ from threetears.evals.analysis.report.parts.charting import computed_interval
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE, COMPUTED_REPEATS_NOTE
 from threetears.evals.analysis.report_input import ReportInput, Stat
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
 
 _EMPTY: dict[str, Any] = {

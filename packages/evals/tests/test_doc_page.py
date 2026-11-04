@@ -56,7 +56,7 @@ from threetears.evals.analysis.report.doc_page.words import (
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report_decision import every_caveat, late_subject
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding, Story
 
 #: Every converted document.

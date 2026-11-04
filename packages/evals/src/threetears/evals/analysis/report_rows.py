@@ -1,9 +1,9 @@
 """What a report plan's chart query selects from the report input: the one owner of that selection.
 
-A chart's :class:`~threetears.evals.kernel.report_plan.ChartQuery` names a source and filters on it. The plan checks
-(:mod:`~threetears.evals.analysis.report_plan_checks`) refuse a query that selects nothing, or a forest whose rows
-carry no interval, and a page draws the rows the query selects. Both read the selection here, so what the checks
-pass is what the page draws.
+A chart's :class:`~threetears.evals.kernel.report_plan.ChartQuery` names a source and filters on it. The chart checks
+(:func:`~threetears.evals.analysis.report.block_spec.chart_faults`) refuse a query that selects nothing, or a forest
+whose rows carry no interval, and a page draws the rows the query selects. Both read the selection here, so what the
+checks pass is what the page draws.
 
 **The rows of each source**, every one a :class:`SourceRow` holding the input's own record:
 

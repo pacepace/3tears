@@ -2,7 +2,7 @@
 
 - The examples table's Details column reads a case's input as key and value pairs, never as raw JSON, cut or whole.
 - The weakest margin's worst case is read on the multiplicity-corrected interval where the input holds one, and the
-  figure ``weakest.interval`` (and the planner's facts) say which interval that is.
+  figure ``weakest.interval`` says which interval that is.
 - A judged dimension no judge tier covers still carries the scale it was recorded on, so a pass/fail one reads as a
   pass rate and never as a 1 to 5 mean.
 - A goal check with no declared name is named the same everywhere: a reader name is the measure's printed name.
@@ -16,6 +16,7 @@ import functools
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.plan_charts_support import stored_charts
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.block_spec import block_look
@@ -27,7 +28,7 @@ from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin
-from threetears.evals.analysis.report_plan_facts import fact_arms, plan_facts
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.numbers import UNPRICED
 
 #: A world as a case gave it, cut short by the snapshot: its last value ends mid-word, its last pair mid-list.
@@ -45,11 +46,10 @@ def _r5() -> ReportInput:
 # --- 1. the examples' details ---------------------------------------------------------------------------------------
 
 
-def _examples_drawn(path: object, report_input: ReportInput) -> list[ExamplesChart]:
+def _examples_drawn(path: str, report_input: ReportInput) -> list[ExamplesChart]:
     """Every examples chart a stored plan names, drawn by the chart resolver on ``report_input``."""
-    plan = dataset.load_plan(path)
     look = block_look(report_input, fact_arms(report_input))
-    specs = [*plan.summary, *(section.chart for section in plan.sections)]
+    specs = stored_charts(path).charts()
     drawn = [resolve_chart(spec, report_input, look, title=spec.title) for spec in specs if spec.kind == "examples"]
     return [one.chart.data for one in drawn if isinstance(one.chart.data, ExamplesChart)]
 
@@ -103,15 +103,13 @@ def test_the_examples_table_details_column_holds_no_json() -> None:
             assert not any("{" in text or '"' in text for text in details)
 
 
-def _plans_with_examples() -> list[tuple[str, str, object]]:
+def _plans_with_examples() -> list[tuple[str, str, str]]:
     found = []
     for name in ("r1", "r2", "r3", "r4", "r5"):
-        for path in (dataset.HERE / name / "anchor.plan.json", dataset.current_run(name)):
-            plan = dataset.load_plan(path)
-            drawn = [chart for chart in plan.summary if chart.kind == "examples"]
-            drawn += [section.chart for section in plan.sections if section.chart.kind == "examples"]
+        for label in ("anchor", "run"):
+            drawn = [chart for chart in stored_charts(f"{name}-{label}").charts() if chart.kind == "examples"]
             if drawn and name == "r5":
-                found.append((name, path.stem, path))
+                found.append((name, label, f"{name}-{label}"))
     return found
 
 
@@ -130,8 +128,6 @@ def test_the_weakest_margins_worst_case_is_read_on_the_corrected_interval_and_sa
     assert margin.corrected and margin.value == pytest.approx(corrected_worst)
     said = render("{weakest.interval}", held, {})
     assert said.startswith("the multiplicity-corrected 99.69% interval")
-    assert "weakest.interval" in plan_facts(held).weakest.keys  # type: ignore[union-attr]
-    assert "read on the multiplicity-corrected" in plan_facts(held).weakest.said  # type: ignore[union-attr]
 
 
 def test_a_margin_with_no_corrected_interval_says_it_is_read_on_the_plain_one() -> None:

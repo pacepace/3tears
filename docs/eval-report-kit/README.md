@@ -20,11 +20,9 @@ What a campaign report is, how it is written, and the parts it is drawn with: th
 | `BLIND-TEST.md` | A dated record (2026-10-25): what a fresh agent found with only this kit, and how each gap was closed |
 | `schema/report-input.schema.json` | The normalized input the analyst's tools read, frozen in each snapshot |
 | `schema/report-doc.schema.json` | The report document the analyst writes and the store keeps (`report-doc/1`) |
-| `schema/report-plan.schema.json` | The planned report's plan |
 | `adapters/bundle_to_report.py` | Campaign writer-input package → report input |
 | `kit/kit.css`, `kit/kit.js`, `kit/API.md` | Visual system and chart helpers |
 | `references/rN-*.src.html` + `.json` | Page source and its data; `.html` is the built page |
-| `references/r5-kairo-round2.plan.json` | The plan a planner should write for Kairo round 2 |
 | `scripts/build.py` | Inline the kit and data into a page |
 | `scripts/check.py` | Render at 1200 and 390 px, light and dark; report overflow, label overlaps and errors |
 

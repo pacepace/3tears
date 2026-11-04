@@ -71,7 +71,7 @@ from threetears.evals.analysis.style import humanize
 if TYPE_CHECKING:
     # The page builder's facts sit above the report's blocks, which read this module: named for the checker alone.
     from threetears.evals.analysis.report.figure_keys import NamedKind
-    from threetears.evals.analysis.report_plan_facts import FactArm
+    from threetears.evals.analysis.report_arms import FactArm
 
 __all__ = [
     "GATE_STATUS",

@@ -3,8 +3,8 @@ options that survive, which one dominates, and so the modes a plan may take.
 
 The planner chooses the mode only from :func:`allowed_modes`, states its confidence against the caveats
 :func:`report_caveats` lists, and never mentions a caveat :func:`caveat_materiality` proved immaterial; code renders
-that one's checked line. :mod:`threetears.evals.analysis.report_plan_checks` refuses a plan that departs from any of
-it.
+that one's checked line. The report document's invariants and the editor's facts
+(:mod:`~threetears.evals.analysis.report_doc_facts`) read the same decisions.
 
 **Caveat ids.** Every entry of the report input's ``caveats`` gets one stable id, the same vocabulary the plan's flag,
 confidence clauses and landing lists use:
@@ -61,8 +61,8 @@ it), and an unsettled aspect whose unsettled candidates include the option code'
 one option dominating, which the plan must recommend). Report-wide caveats are what the decision's confidence is
 conditional on. *Scoped*: a confound or short run touching only some comparisons, and an unsettled aspect on no
 option code's decision names, said beside the claim it qualifies; where the plan itself recommends an unsettled
-candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too
-(:mod:`~threetears.evals.analysis.report_plan_checks`). *Method-level*: latency, an unreported observation, and an
+candidate (a pick by a ranking rule, which code does not make), its confidence is conditional on that caveat too.
+*Method-level*: latency, an unreported observation, and an
 apparatus confound that is not report-wide.
 
 **Unsettled past the margin.** A reading is left unsettled past its margin when it is not within the margin (the one

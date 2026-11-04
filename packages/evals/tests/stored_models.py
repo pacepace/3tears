@@ -12,7 +12,9 @@ exempt from every rule the set is used to enforce, with nothing going red.
 from __future__ import annotations
 
 import importlib
+import json
 import pkgutil
+from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
@@ -41,9 +43,8 @@ from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenanc
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from packages.evals.tests.report_doc_support import converted_doc
-from packages.evals.tests.report_plan_support import r5_input, r5_plan
+from packages.evals.tests.fixtures.report_plans.dataset import report_input_of
 from threetears.evals.analysis.analyst.snapshot import report_snapshot
-from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import (
@@ -123,6 +124,9 @@ def _cassette() -> EvalCassette:
 
 
 #: What a sampled call's request carried, as its client reported it: the frozen corpus holds every sent-settings field.
+#: The stored records the retired report writers left, kept to read.
+_RETIRED_WRITERS = Path(__file__).resolve().parent / "fixtures" / "retired_writers"
+
 _SENT = ClientRequestSettings(max_tokens=10240, reasoning_effort="high", strict_output=True)
 
 
@@ -294,7 +298,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     "EvalInsight": make_insight,
     # The r5 reference input, frozen bare, as a local analyst server seeds a fixture snapshot.
     "EvalReportSnapshot": lambda: report_snapshot(
-        ReportInput.model_validate(r5_input()),
+        report_input_of("r5"),
         scope_id="uni-1",
         campaign_id=None,
         source="report_input",
@@ -340,14 +344,14 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         turns=2,
         session={"format": 2, "snapshot": "report-snapshot:0b5b9abb32a03ae7801253cf2df6cfeb", "session": {}},
     ),
-    # The reference Kairo plan, as a planned generation stores it beside its analysis.
+    # A plan the retired report planner stored beside its analysis, held verbatim (``fixtures/retired_writers``).
     "EvalReportPlan": lambda: EvalReportPlan(
         id=report_plan_id("analysis-1"),
         scope_id="uni-1",
         analysis_id="analysis-1",
         campaign_id="campaign-1",
         report_input_digest="0" * 64,
-        plan=r5_plan(),
+        plan=json.loads((_RETIRED_WRITERS / "01a177f6.plan.json").read_text(encoding="utf-8")),
         generation=ReportPlanProvenance(
             prompt_id="eval_report_plan",
             prompt_version="abcdef012345",

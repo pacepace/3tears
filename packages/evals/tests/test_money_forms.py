@@ -55,7 +55,7 @@ from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, Plann
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import criterion_ruler, gate_check
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.numbers import MoneyForm, money_form, spell_dollars
 
 #: r1 to r5, and Kairo round 2 frozen from its bundle.

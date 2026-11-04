@@ -38,7 +38,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import keys_in, render
 from threetears.evals.analysis.report_doc_checks import DocVerdict
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.analyst_gap import (
     EvalAnalystGap,
     GapBounce,

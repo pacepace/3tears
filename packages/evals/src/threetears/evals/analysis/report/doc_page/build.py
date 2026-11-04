@@ -7,8 +7,8 @@ the page has or their order.
 
 **Part by part:**
 
-- *Masthead*: code's, as the planned page's (:func:`~threetears.evals.analysis.report_plan_facts.plan_facts`), its
-  keys written out. *Draft*: a page its editor's review did not clear says so first, under the masthead, in code's
+- *Masthead*: code's (GENERATOR §2.1: the campaign's kind, the system under test, the counts and the run date, counts
+  and date as figure keys where the input holds the figure), its keys written out. *Draft*: a page its editor's review did not clear says so first, under the masthead, in code's
   one line (:func:`~threetears.evals.analysis.report.doc_page.model.draft_line`), its open findings listed in the
   appendix; the caller says which a page is (``draft``), from the stored document's
   :attr:`~threetears.evals.kernel.report_doc.EvalReportDoc.draft`. *Headline*, *lede*, *flag*: the document's prose, every figure key written out with each arm's name
@@ -103,7 +103,7 @@ from threetears.evals.analysis.report_decision import (
     late_subject,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms, plan_facts
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
@@ -167,14 +167,59 @@ class _Reader:
             return UNRESOLVED
 
 
+#: The masthead's kind, by what the campaign is (GENERATOR §2.1).
+_KIND_LABELS = {
+    "change": "Change · control vs candidates",
+    "choice": "Choice · candidates compared",
+    "measurement": "Measurement · one arm",
+}
+
+
+def _resolves(key: str, report_input: ReportInput) -> bool:
+    try:
+        resolve(key, report_input)
+    except UnresolvableReference:
+        return False
+    return True
+
+
+def _first_resolving(keys: Sequence[str], report_input: ReportInput) -> str | None:
+    return next((key for key in keys if _resolves(key, report_input)), None)
+
+
+def _masthead_counts(report_input: ReportInput, kind: str) -> str:
+    """The masthead's counts, as figure keys where they resolve: the arms, then the tasks or aspects, then the cases."""
+    counts: list[str] = []
+    if kind == "change":
+        name = _first_resolving(("control.name", "control.id"), report_input)
+        counts.append(f"{{{name}}} vs {{n_candidates}} candidates" if name else "{n_candidates} candidates")
+    elif kind == "choice":
+        counts.append(f"{len(report_input.arms)} arms")
+    if report_input.tasks:
+        counts.append(f"{len(report_input.tasks)} tasks")
+    elif len(report_input.aspects) > 1:
+        counts.append(f"{len(report_input.aspects)} aspects")
+    elif aspect := _first_resolving(("aspect.name", "aspect.id"), report_input):
+        counts.append(f"{{{aspect}}}")
+    if _resolves("cases", report_input) and _resolves("repeats", report_input):
+        counts.append("{cases} cases × {repeats} repeats")
+    return " · ".join(counts)
+
+
 def _masthead(reader: _Reader) -> PageMasthead:
-    masthead = plan_facts(reader.report_input).masthead
+    """GENERATOR §2.1: kind · system under test · counts · run date, each key written out."""
+    report_input = reader.report_input
+    meta = report_input.meta
+    if len({arm.id for arm in report_input.arms}) <= 1:
+        kind = "measurement"
+    else:
+        kind = "change" if any(arm.role == "control" for arm in report_input.arms) else "choice"
     return PageMasthead(
-        kind=masthead.kind,
-        system=masthead.system,
-        counts=reader.written(masthead.counts, "masthead.counts"),
-        run_date=reader.written(masthead.run_date, "masthead.run_date"),
-        synthetic=masthead.synthetic,
+        kind=_KIND_LABELS[kind],
+        system=meta.behavior or meta.campaign,
+        counts=reader.written(_masthead_counts(report_input, kind), "masthead.counts"),
+        run_date=reader.written("{meta.run_date}" if meta.run_date else "", "masthead.run_date"),
+        synthetic=bool(meta.synthetic),
     )
 
 

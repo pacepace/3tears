@@ -36,7 +36,7 @@ from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report_doc_store import doc_verdicts_and_page
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc
 
 #: The acceptance runs the reviews read.

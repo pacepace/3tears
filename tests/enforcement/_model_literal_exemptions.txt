@@ -67,6 +67,5 @@ packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pri
 # the plan-scoring dataset's scorer id: OPUS_SCORER names the model its committed score records were written under,
 # an identity those records pool by (dataset.pool_key), not a model any code calls; no threetears.models constant
 # names it, and a moved constant would silently relabel recorded calibration data.
-packages/evals/tests/fixtures/report_plans/dataset.py::scorer id recorded in committed calibration score records (an identity records pool by), not a model the code calls
 packages/evals/tests/test_providers_pricing.py::pins the default pricer's published rate per Claude id; the model id is the row under test, not a default
 packages/evals/tests/test_report_writer_pricing.py::drives the shipped client on the Claude id the report writer's default pricer prices; the model id is the subject under test, not a default

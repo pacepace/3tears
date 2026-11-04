@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_rows import config_grid, lever_arms, query_rows
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
