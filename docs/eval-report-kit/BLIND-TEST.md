@@ -1,6 +1,6 @@
 # Blind handoff test, 2026-10-25
 
-A fresh agent got only this bundle (with the Kairo reference, UPSTREAM.md and CONVERGENCE.md removed, and Kairo-specific examples scrubbed) plus the raw Kairo round 2 writer-input package. It had to produce the memo from scratch.
+A fresh agent got only this bundle (with the Kairo reference, UPSTREAM.md and CONVERGENCE.md removed, and Kairo-specific examples scrubbed) plus the raw Kairo round 2 writer-input package. It had to produce the report from scratch.
 
 ## Result
 

@@ -225,7 +225,7 @@ class ExtractorScript:
 
 
 #: The two contestants. ``extractor-v3`` is better on every document and dearer per token, which
-#: is the shape a reader has to weigh; an arm that won on every axis would leave a memo with
+#: is the shape a reader has to weigh; an arm that won on every axis would leave a report with
 #: nothing to say that the table does not.
 TOY_SCRIPTS: tuple[ExtractorScript, ...] = (
     ExtractorScript(

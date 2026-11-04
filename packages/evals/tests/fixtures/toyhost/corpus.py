@@ -80,7 +80,7 @@ TOYHOST_SCOPE = "toyhost-scope"
 #: The documents every measured observation is taken over. Not test cases from a battery — the toy
 #: host has neither — just the sampling unit its numbers are means across.
 #:
-#: **Twelve, not two.** A generator handed two shared cases per arm rightly declines to rank the
+#: **Twelve, not two.** A report writer handed two shared cases per arm rightly declines to rank the
 #: arms on so few; twelve is enough cases for a comparison to be worth making.
 TOYHOST_DOCUMENTS = (
     "doc-01",
@@ -506,7 +506,7 @@ def toyhost_batch(**toyhost_values: Any) -> EvalRun:
             "created_at": TOYHOST_INSTANT,
             "k_runs": 3,
             # A batch that produced its observations ENDED; `status` defaults to "pending",
-            # which says the opposite, and a generator reading a pending run treats its
+            # which says the opposite, and a report writer reading a pending run treats its
             # numbers as provisional.
             "status": "completed",
         }
@@ -611,7 +611,7 @@ def toyhost_measurements(
             ),
             # The kind's own mechanical fact, the one `kind.py` reports for the same
             # observation: whether this extraction cleared the accuracy the host's bar names. Carried so the
-            # bundle's per-check pass rate — the mechanical tier a generator reads with or without a bar —
+            # bundle's per-check pass rate — the mechanical tier a report reads with or without a bar —
             # has a toy-host instance.
             goal_state_outcomes=[
                 GoalStateOutcome(
