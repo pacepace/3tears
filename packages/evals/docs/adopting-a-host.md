@@ -100,8 +100,9 @@ pass it to every entrypoint. It holds:
 
 - the `EvalStorage` you read and write through;
 - a factory for the completion clients the engine's own roles call: the judge, the simulator, case generation, the
-  proposers, the memo writer (`analysis`) and the report writer (`analyst`, one model for both the analyst and its
-  editor, whose client must also take tool turns; one that cannot is refused before anything is spent). Every
+  proposers and the report writer (`analyst`, one model for both the analyst and its editor, whose client must also
+  take tool turns; one that cannot is refused before anything is spent). The `analysis` role was the retired memo
+  writer's, and the engine no longer asks for it. Every
   completion a client returns is read by `CompletionResult`'s attribute names, and the usage ledger reads the
   token and cost attributes with a default, so a renamed attribute would degrade every usage row to
   "unreported" in silence. Check your completion type in your own suite with
@@ -399,8 +400,8 @@ client, in your suite, hold the wrapper to what the engine reads.
 
 **A client builder of your own sends every reasoning field.** The judge asks by a token budget
 (`JUDGE_REQUEST_SETTINGS.reasoning_max_tokens`, with `reasoning_effort=None`), so its reasoning is bounded where a
-model takes a budget; `SIMULATOR_REQUEST_SETTINGS` and `analysis_gen_request_settings_for`'s value ask by
-`reasoning_effort` and hold `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
+model takes a budget; `SIMULATOR_REQUEST_SETTINGS` asks by
+`reasoning_effort` and holds `reasoning_max_tokens=None`. A builder that reads only one of the two fields sends no
 reasoning parameter to the roles that ask by the other, so they reason at the provider's default while the run
 records what they asked for. Build the request from every field: `wire_settings_for(settings, temperature)`
 (`threetears.evals.negotiation`) turns the engine's value into what `negotiate` sends, so nothing is hand-copied and
@@ -413,8 +414,8 @@ named in words your mapping does not know (no finish reason at all, a value newe
 Anthropic's `pause_turn`), and `error` only when the provider reported an error in place of a completion
 (OpenRouter's `error` finish reason) or returned no choices. Map anything you do not recognise to `truncated`, never to
 `end_turn`, which would read a cut-short reply as finished, and never to `error`, which tells the operator the call
-failed when it produced output. Every word but `end_turn` is cut short: the judge and the analysis generator never
-parse or repair such a reply, and their message says why for each; for `truncated` the provider's raw value is what
+failed when it produced output. Every word but `end_turn` is cut short: the judge never
+parses or repairs such a reply, and its message says why for each; for `truncated` the provider's raw value is what
 to look at, so log it.
 
 **Every enum a strict reply format sends is a string.** A provider's strict mode can accept an integer enum without
@@ -457,7 +458,7 @@ carried, send it once more with the closest setting the model takes, or without 
 carried. On a router that enforces parameters (OpenRouter's `require_parameters`, whose "no endpoint" answer names
 no parameter), drop the refused settings first, the temperature before any other, keeping enforcement; only when
 the request still finds no endpoint, send it without enforcement, and report `strict_output=False`. The engine's
-judge, simulated user and analysis generator all ask for `strict_output=True`, so a strict call your router cannot
+judge and simulated user both ask for `strict_output=True`, so a strict call your router cannot
 place is answered unenforced rather than failed: the call is recorded as sent unenforced, disclosed, and never
 pooled with an enforced one.
 
@@ -586,7 +587,7 @@ asked, because `supported_parameters` says some endpoint takes it, not that one 
 request's others; so it never rules a temperature out of a 404, and the temperature is still the first thing dropped.
 Read the catalogue once, at boot, and keep the facts: facts that moved mid-run because something else fetched the
 catalogue would send two calls of one run differently for no reason the run records. Build `asked` from the engine's
-own value (`wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature)`, or the simulator's or the analysis generator's),
+own value (`wire_settings_for(JUDGE_REQUEST_SETTINGS, temperature)`, or the simulator's),
 never from constants copied by hand.
 
 **What a refusal teaches lasts for the process; enforcement is decided per call.** `LearnedSettings` holds what a
@@ -884,11 +885,11 @@ or the other, an added optional field included:
   open vocabulary, a new doc type. Its ledger entry says, in words, that an older build that ignores the change
   reads the document correctly and its writes leave it true (`MINOR_ADDITIVITY_SENTENCE`); when that is false, the
   change is a major. **A minor rolls with no stop, in either direction,** with one exception the ledger states
-  where it applies: a minor that adds a field inside an opaque payload a kind reads. The durable v16.1 and v16.2
-  minors added fields to a reporter case's labels, inside `EvalTestCase.host_payload`. An older build keeps that
-  payload verbatim, so the document still rolls, but its reporter kind cannot read a case carrying the new fields,
-  and one such case stops that reporter template on the older pods (its launches, prices, freezes, calibration reads
-  and restores) until they upgrade. Freeze none until every pod runs the newer build. Otherwise, a build reads any newer minor of its own
+  where it applies: a minor that adds a field inside an opaque payload a kind reads, such as
+  `EvalTestCase.host_payload`. An older build keeps that payload verbatim, so the document still rolls, but its kind
+  cannot read a case carrying the new fields, and one such case stops that kind's template on the older pods until
+  they upgrade. Write none until every pod runs the newer build. (The durable v16.1 and v16.2 minors were this case,
+  for the retired reporter kind's labels.) Otherwise, a build reads any newer minor of its own
   major: every field it does not declare, at every depth, is kept on the model, out of every attribute, dump and
   digest, and written back where it was the next time the engine writes that document, stamped with the newer
   minor. So while a fleet is half upgraded, an older process reads what a newer one wrote as if the new fields
@@ -942,7 +943,8 @@ for profile in dropped.judge_profiles:                # the one kind that does n
 `drop_derived` deletes nothing else: runs, results, cassettes and every durable document stay. Analyses come back by
 generating them again and insights with the analyses that mint them; a judge profile only by recording it again, and
 until then a campaign that took its judges' tier from it reads its own evidence's tier. The campaign rewrite (durable v16) is such a bump
-(regenerable v12: one memo per campaign), and so is the memo's summary across its aspects (regenerable v13). A
+(regenerable v12: one analysis per campaign), and so is regenerable v13 (a summary across aspects, written by the
+retired memo writer). A
 cassette is not touched by either bump: its format has its own `CASSETTE_SCHEMA_VERSION`, bumped only
 when the cassette itself changes, because re-capturing a corpus calls your third-party tools again. A cassette
 written under another cassette version is refused, by name, and you re-capture it (a new capture run, so a new
@@ -1192,7 +1194,7 @@ snapshot:
   the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`); no name this
   guide's prose teaches may be provisional (`tests/test_guide_names_are_declared.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
-  prepared) records it. The generator refuses to write a snapshot that drops an unrecorded name. A name the last
+  prepared) records it. The snapshot script refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
   refused.
 - **A section that names the tag before it (`since`).** The test reads both surfaces from git and holds the
@@ -1250,7 +1252,7 @@ lever, and the surface is compared with the swept entries removed.
 Only arms can test a fold: every run of one arm resolves the same surface, so only a knob level held by two or
 more arms (differing in, say, the model) can show the surface moving on its own. A plain two-arm `low` / `high`
 sweep still folds, but every comparison that does carries an `unverified_fold:llm_parameters` confound, which the
-analysis generator and the code-only report both state.
+code-only report states and the report input carries to the analyst.
 
 A residual reader checks that sweep. `ResolvesInto("llm_parameters", read_residual=reader)` takes a
 `reader(run, results, removed)` that returns the surface with the knob's contribution taken out (`removed` is the
@@ -1651,8 +1653,7 @@ another fingerprint (`outdated`) or none (`undeclared`). The error names the pro
 to the shipped default, or rewrite the edit's output instructions for the current shape and make its line read the
 current one. The registry is yours, so name your reset as `reset=` (an action or a command your operator can
 run), which an override requires. An edited copy that carries the current line passes: the line is the editor's
-statement that the edit was written for this shape. The analysis generator's prompt states no shape (its schema is
-sent and its grammar appended by code), so it binds no contract.
+statement that the edit was written for this shape.
 
 **The drift check is opt-in.** A stored copy seeded from an older default keeps being sent after an upgrade
 changes the default. To see that before you pay for it, record `seed_digest(default)` when you seed a slot and read

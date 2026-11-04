@@ -11,7 +11,7 @@ This page shows how `3tears-evals` sits inside a host app: the engine, the ports
 | `DocumentStore` (storage) | An adapter over your database, or evals' in-memory or SQLite store | A store over `threetears.core` (designed; no adapter ships yet) |
 | `TraceSink` (tracing, optional) | A sink over your OpenTelemetry pipeline | A sink over the pipeline `threetears.observe`'s `init_telemetry` builds |
 | `CompletionClient` (model calls) | A client over your own SDK, or evals' own `Model` | 3tears-models, once [#1013](https://github.com/pacepace/3tears/issues/1013) moves the client there |
-| `CandidateKind` (what is evaluated) | Your production code: a chat agent, a classifier | The kinds evals ships: any function, a judge, the analysis reporter |
+| `CandidateKind` (what is evaluated) | Your production code: a chat agent, a classifier | The kinds evals ships: any function, a judge, the report writer |
 
 [Adopting the engine](../packages/evals/docs/adopting-a-host.md) is the full host guide.
 
