@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         EvalAnalysis,
         EvalInsight,
         EvalReportPlan,
+        ReportPlanProvenance,
     )
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import EvalRun
@@ -1131,6 +1132,13 @@ def _campaign_page(
     return _planned_page(page, bundle, plan, analysis_id=analysis.id)
 
 
+def _made_by(provenance: ReportPlanProvenance, analysis_id: str) -> str:
+    """The planned page's made line: the planner model that wrote the stored plan, the day, and its analysis."""
+    return MADE_TEMPLATE.format(
+        model=provenance.generator_model, date=provenance.generated_at[:10], analysis=analysis_id
+    )
+
+
 def _planned_page(
     page: CampaignReport, bundle: CampaignBundle, plan: EvalReportPlan, *, analysis_id: str
 ) -> CampaignReport:
@@ -1140,11 +1148,10 @@ def _planned_page(
     :raises RefusedInput: A figure key or a chart in the plan no longer resolves against the report input built from
         the frozen bundle.
     """
-    made = MADE_TEMPLATE.format(
-        model=plan.generation.generator_model, date=plan.generation.generated_at[:10], analysis=analysis_id
-    )
     try:
-        planned = plan_page(report_plan_of(plan), build_report_input(bundle), made=made)
+        planned = plan_page(
+            report_plan_of(plan), build_report_input(bundle), made=_made_by(plan.generation, analysis_id)
+        )
     except UnresolvableReference as unresolved:
         raise RefusedInput(
             f"analysis {analysis_id}'s plan names a figure or a chart its frozen evidence no longer holds: {unresolved}",

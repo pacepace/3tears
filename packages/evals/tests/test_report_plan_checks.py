@@ -1705,9 +1705,12 @@ class TestD3:
         is walked with every model its fields hold that the module does not export, a field named by its place in the
         exported one; the stored plan's completions of the planner's parts aside (their prose is the parts')."""
         stored = (report_plan.ReportPlan, report_plan.ChartSpec, report_plan.Section)
+        # The planner's call contracts left __all__ when the planner retired (nothing in src names them); they stay
+        # walked as exported until the plan models leave.
+        retired = ("DurableClaim", "PlanProse", "PlanStructure", "StructureChart")
         exported = [
             model
-            for name in report_plan.__all__
+            for name in (*report_plan.__all__, *retired)
             if isinstance(model := getattr(report_plan, name), type) and issubclass(model, BaseModel)
         ]
         prose: set[tuple[str, str]] = set()

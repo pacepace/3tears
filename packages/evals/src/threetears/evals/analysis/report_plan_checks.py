@@ -214,7 +214,6 @@ from threetears.evals.kernel.report_plan import ChartSpec, OptionRow, ReportPlan
 from threetears.evals.schema.prose import field_is_prose
 
 __all__ = [
-    "MODE_SLOTS",
     "OPTION_COLUMN_FAMILIES",
     "Spine",
     "classify",
