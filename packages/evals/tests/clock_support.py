@@ -54,4 +54,5 @@ def _import_every_lazy_name() -> None:
         for name, module in list(sys.modules.items()):
             if name.startswith("threetears.") and module is not None and "__getattr__" in vars(module):
                 for attribute in dir(module):
-                    getattr(module, attribute)
+                    if not attribute.startswith("_"):
+                        getattr(module, attribute)

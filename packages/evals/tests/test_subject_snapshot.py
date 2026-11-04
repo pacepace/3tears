@@ -272,7 +272,11 @@ _NO_CLOCK_AT_IMPORT = textwrap.dedent(
 
     def watch(code, offset, called, arg0):
         if not is_clock(called):
-            # A call site names one callee, so one that called no clock never will: it stops being watched.
+            # A call site names one callee, so one that called no clock never will and stops being watched. A frozen
+            # clock is the exception: under freezegun, datetime.now and time.time_ns at a site that reads the real
+            # clock once the freeze ends are its fakes, so that site stays watched.
+            if getattr(called, "__module__", None) == "freezegun.api":
+                return None
             return sys.monitoring.DISABLE
         frame = sys._getframe(1)
         while frame is not None and frame.f_code.co_filename.startswith(STDLIB):
@@ -292,7 +296,21 @@ _NO_CLOCK_AT_IMPORT = textwrap.dedent(
         importlib.import_module("packages.evals." + name)
     for path in sorted(Path("packages/evals/tests").glob("test_*.py")):
         importlib.import_module("packages.evals.tests." + path.stem)
+
+    # The control: after every import, the two reads this guard exists for must still be seen, a stored model's
+    # timestamp and its uuid7 id. A guard that has stopped watching either site, or whose TREE is not where the
+    # package's source runs from, would otherwise pass having seen nothing.
+    from threetears.evals.schema import models
+
+    seen = len(reads)
+    models.utc_now_iso()
+    models.EvalRun.model_fields["id"].default_factory()
+    control = reads[seen:]
+    del reads[seen:]
     sys.monitoring.set_events(TOOL, sys.monitoring.events.NO_EVENTS)
+    for wanted in (" utc_now_iso", " EvalRun.<lambda>"):
+        if not any(read.endswith(wanted) for read in control):
+            sys.exit(f"the guard no longer sees the read at{wanted}; it saw only {control}")
 
     if reads:
         sys.exit("the clock was read while importing:\\n" + "\\n".join(sorted(set(reads))))
