@@ -5691,10 +5691,10 @@ async def test_a_diff_whose_partition_values_ask_fails_reads_no_value_the_copy_n
     await snapshot.stop()
 
 
-def _thin_schema(run_type: str = STRING_TYPE) -> TableSchema:
+def _thin_schema(run_type: str = STRING_TYPE, name: str = "runs") -> TableSchema:
     """the runs table as a thinned copy holds it: keyed in the L1 by its item alone, so a run may be NULL."""
     return TableSchema(
-        name="runs",
+        name=name,
         primary_key=("item",),
         columns=[
             Column("state", STRING_TYPE),
@@ -6243,6 +6243,139 @@ async def test_a_run_the_l1_never_keeps_is_read_twice_then_not_again_until_l3_ch
     # L3 changes the run: it is read again, once
     l3.add([{"state": "TX", "run": looped, "item": f"{looped}.x9", "votes": 1, "source_version": 6}])
     assert await _passes(snapshot, l3, range(6, 7)) == [1]
+    await snapshot.stop()
+
+
+def _partial_table(name: str, ask: Any) -> SnapshotTable:
+    return SnapshotTable(
+        name=name,
+        scope_column="state",
+        key=("run", "item"),
+        partition_by="run",
+        partition_values=ask,
+        version_column="source_version",
+        retained=True,
+        partial_groups=True,
+    )
+
+
+async def test_a_group_read_by_diffs_that_failed_is_still_read_once_one_can_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the breaker counted the reads of diffs that published nothing: a run a write changed in place (its count the
+    same), read by two diffs that another table's failed ask then stopped, was skipped by the third, which published
+    it stale, and no later diff saw it stamped again. Only a published diff's reads count."""
+    l3 = _thinned_l3()
+    l3.db.execute('CREATE TABLE "notes" ("state", "run", "item", "votes", "source_version")')
+    l3.db.executemany(
+        'INSERT INTO "notes" VALUES (?, ?, ?, ?, ?)',
+        [(r["state"], r["run"], r["item"], r["votes"], r["source_version"]) for r in _run_rows("r1")],
+    )
+    failing = [False]
+
+    async def runs(l3: Any, scope: str) -> list[str]:
+        return ["r1"]
+
+    async def notes(l3: Any, scope: str) -> list[str]:
+        if failing[0]:
+            raise ConnectionError("the ask failed")
+        return ["r1"]
+
+    metadata = MetaData()
+    _thin_schema().to_sqlalchemy_table(metadata)
+    _thin_schema(name="notes").to_sqlalchemy_table(metadata)
+    backend = _HistoryOnly()
+    backend.initialize(metadata)
+    snapshot, pointers, _, _ = _snapshot(
+        l3=l3, tables=(_partial_table("runs", runs), _partial_table("notes", notes)), backend=backend
+    )
+    l3.epochs = {"TX": 1}
+    await _started(snapshot, pointers)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    # write 2 changes a kept run's row in place: stamped, its count the same
+    _set(l3, "r1.h0", 10)
+    l3.epochs["TX"] = 2
+    failing[0] = True
+    for _ in range(2):
+        outcome = await snapshot.catch_up()
+        assert outcome.caught == () and "could not be asked" in outcome.left["TX"], outcome
+        clock.ahead += 61
+    failing[0] = False
+
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert ("r1", "r1.h0", 10) in _thinned_held(backend), "the changed run was published stale"
+    await snapshot.stop()
+
+
+class _PhantomL3(_SqlL3):
+    """the SQLite L3 a racing write runs beside: while ``phantoms``, each read of TX's rows sees a row the write
+    added and took back (a count before it never saw it, a count after it never sees it)."""
+
+    phantoms = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if not (self.phantoms and sql.startswith('SELECT "state", "geo"') and args[:1] == ("TX",)):
+            return await super().fetch(sql, *args)
+        self.phantoms -= 1
+        self.add([_geo("TX", "g1", "phantom", 2)])
+        try:
+            return await super().fetch(sql, *args)
+        finally:
+            self.db.execute('DELETE FROM "geos" WHERE item = ?', ("phantom",))
+
+
+async def test_a_group_whose_diffs_a_racing_write_upset_is_still_read_once_one_can_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a write racing two diffs left each read a row its count never saw, so each failed on the count and published
+    nothing; counted, the third diff skipped the group, and the scope never caught up. Those diffs count nothing,
+    and a clean one reads the group and publishes L3's rows."""
+    l3 = _PhantomL3("geos", ["state", "geo", "item", "votes", "source_version"], [_geo("TX", "g1", "t0", 1)])
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot = await _geos_snapshot(l3, table)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    l3.add([_geo("TX", "g1", "t1", 2)])
+    l3.epochs["TX"] = 2
+    l3.phantoms = 2
+    for _ in range(2):
+        outcome = await snapshot.catch_up()
+        assert outcome.caught == () and "L3 holds 2 rows" in outcome.left["TX"], outcome
+        clock.ahead += 61
+
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _held(snapshot, "TX") == l3.rows("TX")
+    await snapshot.stop()
+
+
+async def test_an_ask_naming_a_value_its_column_cannot_hold_reads_nothing_and_says_the_value(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """an ask answering text that is no number for a NUMERIC run column raised from the diff's comparison; it is an
+    ask that failed, said at ERROR with the value, and the scope waits for one that answers."""
+    l3, kept, run_type = _trigger_l3("decimal_values", "rows")
+    snapshot, backend = await _thinned_copy(l3, kept, run_type=run_type)
+    _set(l3, "1.10.h0", 10)
+    l3.epochs["TX"] = 2
+    kept.append("not a number")
+    l3.statements.clear()
+    caplog.set_level(logging.ERROR)
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == () and "'not a number'" in outcome.left["TX"], outcome
+    assert "named 'not a number'" in caplog.text
+    assert _counts(l3) == [] and _row_reads(l3) == []
+    kept.remove("not a number")
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    clock.ahead += 61
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _thinned_held(backend) == _l3_kept(l3, kept)
     await snapshot.stop()
 
 

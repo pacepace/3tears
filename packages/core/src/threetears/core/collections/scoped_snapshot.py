@@ -124,6 +124,7 @@ from contextlib import (
 )
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from decimal import InvalidOperation
 from enum import StrEnum
 from itertools import islice, product
 from types import MappingProxyType
@@ -136,6 +137,7 @@ from threetears.observe import contain, contained, get_logger
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
 from threetears.core.backends.protocol import ArrowL3Reader
+from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement, stored_value
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, l3_row_pages
 from threetears.core.keyset import keyset_arrow_pages, keyset_pages
@@ -2185,7 +2187,7 @@ class ScopedSnapshot:
         self._rebuild_lease = KVLease(None, bucket=pointers, pod_id=self._replica.decode("utf-8"), expire_entries=True)
         # what the pointer bucket says, as the watch last delivered it
         self._seen: dict[str, _Pointer] = {}
-        # (table, scope) -> each group the last judged diffs read, by L3's count and newest stamp of it (_breaks)
+        # (table, scope) -> each group the last published diffs read, by L3's count and newest stamp of it (_breaks)
         self._diff_reads: dict[tuple[str, str], _GroupReads] = {}
         self._index: frozenset[str] | None = None
         # an index a publish created while no rebuild had written one names only the scopes published
@@ -5131,8 +5133,8 @@ class ScopedSnapshot:
             return f"the copy holds it at epoch {held_at}, past L3's {epoch}"
         composed: dict[str, Any] = {}
         changed: dict[str, int] = {}
-        # what each table's diff read, kept for the next diff only once this one is judged (published, or found it
-        # cannot be): a diff a write raced is not one whose reads the L1 failed to keep
+        # what each table's diff read, kept for the next diff only once this one publishes at an unchanged L3: a diff
+        # that failed or a write raced published nothing, so its reads are no evidence the L1 failed to keep them
         passed: dict[str, _GroupReads] = {}
         for table in self._tables:
             if held_at == epoch:
@@ -5141,7 +5143,6 @@ class ScopedSnapshot:
             passed[table.name] = {}
             outcome = await self._diffed_table(table, scope, held_at, held[table.name], passed[table.name])
             if isinstance(outcome, str):
-                self._keep_reads(scope, passed)
                 return f"{table.name}: {outcome}"
             composed[table.name], changed[table.name] = outcome
         if await self._held_epoch(scope) != epoch:
@@ -5170,7 +5171,8 @@ class ScopedSnapshot:
         return None
 
     def _keep_reads(self, scope: str, passed: Mapping[str, _GroupReads]) -> None:
-        """keep what a judged diff of a scope read of each table, for the next diff's :meth:`_breaks`.
+        """keep what a diff of a scope read of each table, once it publishes at an unchanged L3, for the next diff's
+        :meth:`_breaks`; a diff that fails or a write races keeps nothing.
 
         :param passed: table -> the groups its diff read
         :ptype passed: Mapping[str, _GroupReads]
@@ -5196,7 +5198,7 @@ class ScopedSnapshot:
         """whether a group a diff is to read is not read: the diffs just before read it :data:`_REREADS` times in a
         row while L3's count and newest stamp of it stayed as they are now.
 
-        A read of what L3 has not changed since the last diff read it, published, is a read this L1 did not keep (its
+        A read of what L3 has not changed since the last diff read it and published is a read this L1 did not keep (its
         retention lets go of the rows, or holds them otherwise than L3 counts them): read again, it is read on every
         diff for good, the same rows each time (election night). After :data:`_REREADS` such reads the group is said
         at ERROR, once, and the copy's rows of it are kept as they are, stale but present, until L3's count or newest
@@ -5302,6 +5304,24 @@ class ScopedSnapshot:
                 )
                 if waits:
                     return f"the partition values of {table.partition_by} could not be asked: {type(exc).__name__}"
+            for value in named or ():
+                try:
+                    _group_key(value, code)
+                except (InvalidOperation, NonFiniteNumericError) as exc:
+                    # a value this L1 cannot store in the column (a NUMERIC asked as text that is no number): an ask
+                    # that failed, said with the value, and the scope left behind for the next try
+                    log.error(
+                        "scoped snapshot %s: the partition values of %s in scope %r named %r, which its column %s "
+                        "cannot hold (%s); the scope stays behind until an ask names values it can",
+                        self._name,
+                        table.name,
+                        scope,
+                        value,
+                        table.partition_by,
+                        type(exc).__name__,
+                        extra={"extra_data": {"table": table.name, "scope": scope, "value": repr(value)}},
+                    )
+                    return f"the partition values of {table.partition_by} named {value!r}, which it cannot hold"
             if table.partial_groups and named is not None and not named and held.num_rows:
                 # an ask answering no value for a scope the copy holds rows of would thin the copy to nothing: taken
                 # as one that failed, said, and the scope left behind for the next try

@@ -132,11 +132,14 @@ rows was of another count and read again whole. Now:
   as the copy holds is not seen, so a table set so adds and deletes whole partitions (`lsf_projections` writes and
   deletes whole runs).
 
-- **No group is read forever.** A group (any diff, `partial_groups` or not) read on two judged diffs in a row while
+- **No group is read forever.** A group (any diff, `partial_groups` or not) read on two published diffs in a row while
   L3's count and newest stamp of it stayed the same is a read the L1 did not keep (its retention lets the rows go,
   or a `retained` table's copy of part never meets L3's count): it is said at ERROR, naming the table, scope, group
   and why, and is not read again, the copy's rows of it kept as they are, until L3's count or stamp of it changes.
-  A diff a racing write left pending does not count.
+  Only a diff that publishes, with L3's epoch for the scope unchanged across it, counts: one that fails (another
+  table's ask, a count a racing write upset) or a write left pending counts nothing, so a real change is never
+  skipped. An ask naming a value its column cannot hold (a NUMERIC asked as text that is no number) is said at
+  ERROR with the value and taken as a failed ask.
 - **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
   L1's stored form, from the one conversion the L1 writes through, now public as
   `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID
