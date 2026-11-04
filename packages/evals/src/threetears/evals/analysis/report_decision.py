@@ -1,9 +1,9 @@
-"""What code decides before the planner writes: the caveats a report input carries, which of them are immaterial, the
-options that survive, which one dominates, and so the modes a plan may take.
+"""What code decides about a report input: the caveats it carries, which of them are immaterial, the options that
+survive, which one dominates, and so the modes a report may take (:func:`decision_at`).
 
-The planner chooses the mode only from :func:`allowed_modes`, states its confidence against the caveats
-:func:`report_caveats` lists, and never mentions a caveat :func:`caveat_materiality` proved immaterial; code renders
-that one's checked line. The report document's invariants and the editor's facts
+A report states its confidence against the caveats :func:`report_caveats` lists, and never mentions a caveat
+:func:`caveat_materiality` proved immaterial; code renders that one's checked line. The report document's invariants
+and the editor's facts
 (:mod:`~threetears.evals.analysis.report_doc_facts`) read the same decisions.
 
 **Caveat ids.** Every entry of the report input's ``caveats`` gets one stable id, the same vocabulary the plan's flag,
@@ -116,7 +116,7 @@ survivor on every axis that matters:
   arm is at least as good as another unless a pair reading on an asked aspect shows the other ahead of it. With no
   asked reading, pair or floor, the aspect ties.
 
-**Modes** (:func:`allowed_modes`, GENERATOR §1.1), read in this order:
+**Modes** (:func:`decision_at`'s ``modes``, GENERATOR §1.1), read in this order:
 
 1. *No call* when the report measures one arm (there is nothing to choose), when no option survives, or, in a change,
    when no surviving candidate is separated: its asked readings' intervals cross zero and sit outside the margin (or
@@ -156,8 +156,8 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
-#: ``allowed_modes`` and ``report_kind`` left ``__all__`` with the plan checks, their last caller outside this module
-#: (P4-6); they stay as this module's own steps.
+#: ``report_kind`` left ``__all__`` with the plan checks, its last caller outside this module (P4-6); it stays as this
+#: module's own step.
 __all__ = [
     "AskedStanding",
     "Caveat",
@@ -906,17 +906,6 @@ def _outcome(report_input: ReportInput, overrides: _Overrides) -> _Outcome:
     return frozenset({"tradeoff"}), ()
 
 
-def allowed_modes(report_input: ReportInput) -> frozenset[str]:
-    """The modes a plan for this input may take (this module's Modes).
-
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :return: The allowed modes, of ``decide``, ``tradeoff`` and ``no_call``.
-    :rtype: frozenset[str]
-    """
-    return _outcome(report_input, _Overrides())[0]
-
-
 #: An axis code's decision weighs, as the snapshot declares it (:func:`weighed_axes`).
 DecisionAxis = Literal["gates", "control", "asked", "ranking", "cost"]
 
@@ -930,7 +919,7 @@ def weighed_axes(report_input: ReportInput) -> tuple[DecisionAxis, ...]:
     Where nothing but cost is declared, this module's dominance rule reduces to a cost ranking: every survivor ties
     on the other axes, so the cheapest dominates. The analyst's analyses read that as no dominance call
     (:mod:`~threetears.evals.analysis.analyst.analyses`), since nothing declared says the cheapest is good enough; the
-    planner's :func:`allowed_modes` reads the rule as it stands.
+    modes :func:`decision_at` reads apply the rule as it stands.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -956,7 +945,7 @@ class DecisionAt:
     """The decision code makes at given values of the late criteria it can sweep: the allowed modes, and the one option
     that dominates.
 
-    :ivar modes: The allowed modes, as :func:`allowed_modes` reads them at those values.
+    :ivar modes: The allowed modes at those values (this module's Modes).
     :ivar dominant: The one option that dominates there; empty when none does alone.
     """
 

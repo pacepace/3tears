@@ -31,7 +31,7 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.report_decision import allowed_modes, surviving_options
+from threetears.evals.analysis.report_decision import decision_at, surviving_options
 from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
@@ -98,7 +98,7 @@ def _r4_facts_at_prods_figure() -> dict[str, Any]:
     return data
 
 
-#: Each case's survivors and allowed modes, captured from ``surviving_options`` and ``allowed_modes`` before survivors
+#: Each case's survivors and allowed modes, captured from ``surviving_options`` and the declared modes (``decision_at``) before survivors
 #: were read through the gate check (the retired planner's shape, once a third column, left with it). They must never move, save where GENERATOR §1.1
 #: rules: a gate read in every task fails an arm lacking its figure in any one, which moved the one synthetic case
 #: built for it ("r1 Atlas-M without billing quality", once ``["atlas-m"]`` and ``decide``).
@@ -149,7 +149,7 @@ class TestSurvivorsAreUnchanged:
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_survivors_and_modes_are_as_before(self, case: str, make: Any, survivors: list[str], modes: set[str]):
         report_input = _input(make())
-        assert (surviving_options(report_input), allowed_modes(report_input)) == (survivors, modes)
+        assert (surviving_options(report_input), decision_at(report_input).modes) == (survivors, modes)
 
     @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_an_arm_survives_exactly_when_no_place_fails_it_and_no_guardrail_is_breached(

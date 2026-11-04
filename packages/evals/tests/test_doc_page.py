@@ -32,6 +32,7 @@ from typing import Any, get_args
 
 import pytest
 
+from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from packages.evals.tests.report_doc_support import LATER_DOCS, PROTOTYPE1_DOCS, converted_doc, snapshot_of
 from threetears.evals.analysis.analyst.blocks import block_render, values_table
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -53,7 +54,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     OMITTED_TITLE,
     SEVERITY_WORDS,
 )
-from threetears.evals.analysis.report.figure_keys import format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import format_figure, render, resolve
 from threetears.evals.analysis.report_decision import every_caveat, late_subject
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
@@ -105,6 +106,64 @@ def test_each_valid_document_renders_strict_to_html_and_markdown(name: str) -> N
     assert "<script" not in static and "<link" not in static
     assert markdown.startswith(page.masthead.kind)
     assert all(evidence.chart is not None and not evidence.degraded for c in page.claims for evidence in c.evidence)
+
+
+#: Each document's masthead where the report planner stored a plan on the same input: the plan's masthead, its keys
+#: as code filled them when it stored the plan (``fixtures/plan_charts/``).
+_STORED_MASTHEADS = {
+    "prototype3/r1": "r1-anchor",
+    "prototype3/r2": "r2-anchor",
+    "prototype3/r3": "r3-anchor",
+    "prototype3/r4": "r4-anchor",
+    "prototype3/kairo": "r5-reference",
+}
+
+#: Each other shape's masthead, in full: a change over aspects, a choice over one aspect with its cases and repeats,
+#: a measurement of one arm.
+_MASTHEADS = {
+    "prototype2/s1": (
+        "Change · control vs candidates",
+        "billing",
+        "production vs 3 candidates · 3 aspects",
+        "2026-10-01",
+        False,
+    ),
+    "prototype2/s2": (
+        "Choice · candidates compared",
+        "answers",
+        "3 arms · answers · 20 cases × 3 repeats",
+        "2026-10-01",
+        False,
+    ),
+    "prototype2/s3": ("Measurement · one arm", "accuracy", "2 aspects", "2026-10-01", False),
+}
+
+
+def _masthead(name: str) -> tuple[str, str, str, str, bool]:
+    held = _page(name).masthead
+    return (held.kind, held.system, held.counts, held.run_date, held.synthetic)
+
+
+@pytest.mark.parametrize("name", sorted(_STORED_MASTHEADS))
+def test_the_masthead_is_the_one_a_stored_plan_on_the_same_input_carries(name: str) -> None:
+    """Code's masthead, its keys written out: the campaign's kind, the system, the counts (the control against the
+    candidates, or the arms; the tasks, else the aspects, else the asked aspect; the cases and repeats) and the run
+    date, as the planner's completion wrote it on the same input."""
+    stored = json.loads((PLAN_CHARTS / f"{_STORED_MASTHEADS[name]}.json").read_text(encoding="utf-8"))["masthead"]
+    report_input = _input(name)
+    names = {arm.id: arm.name for arm in fact_arms(report_input)}
+    assert _masthead(name) == (
+        stored["kind"],
+        stored["system"],
+        render(stored["counts"], report_input, names),
+        render(stored["run_date"], report_input, names),
+        stored["synthetic"],
+    )
+
+
+@pytest.mark.parametrize("name", sorted(_MASTHEADS))
+def test_the_masthead_of_each_other_shape_is_pinned_in_full(name: str) -> None:
+    assert _masthead(name) == _MASTHEADS[name]
 
 
 @pytest.mark.parametrize("name", _PLANTED)
