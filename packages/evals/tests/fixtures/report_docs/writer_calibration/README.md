@@ -1,7 +1,7 @@
 # Writer judge calibration: flash and haiku against the Opus editor, 2026-11-03
 
 The record of one paid run of `tests/fixtures/report_plans/writer_calibration.py`, kept as small JSON plus its log. The turn
-recordings are not kept. Files: `20261103-flash-haiku.json` (the result), `20261103-flash-haiku.log` (the printed run).
+recordings are not kept. Files: `20261103-flash-haiku.json` (the result), `20261103-flash-haiku-run.txt` (the printed run).
 
 ## What ran
 
