@@ -27,9 +27,9 @@ from __future__ import annotations
 
 from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt
 
-#: The memo writer's system prompt. No analysis generation resolves it: ``analysis_generate`` runs the report writer,
-#: whose words are the analyst skill the package ships. It leaves with the memo writer; a host keeps the slot only
-#: until then. The report planner's slot, ``eval_report_plan``, is retired already: nothing seeds or reads it.
+#: The memo writer's system prompt slot. No analysis generation resolves it: ``analysis_generate`` runs the report
+#: writer, whose words are the analyst skill the package ships. Its seed is the root's retired one-line text (read
+#: with a ``DeprecationWarning``), never the memo writer's prompt; the slot leaves with the memo writer. The report planner's slot, ``eval_report_plan``, is retired already: nothing seeds or reads it.
 ANALYSIS_GEN_PROMPT = "eval_analysis_gen"
 
 #: The capability-rubric proposer's prompt — a sectioned template, seeded into a template registry.
@@ -44,7 +44,7 @@ SEED_PROMPTS: tuple[SeedPrompt, ...] = (
     SeedPrompt(
         kind=KIND_TEXT,
         prompt_type=ANALYSIS_GEN_PROMPT,
-        seed_module="threetears.evals.analysis.gen_prompt",
+        seed_module="threetears.evals.analysis",
         constant="EVAL_ANALYSIS_GEN_DEFAULT",
     ),
     SeedPrompt(
