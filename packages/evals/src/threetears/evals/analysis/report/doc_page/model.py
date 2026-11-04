@@ -26,7 +26,7 @@ from pydantic import Field
 from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.doc_page.words import CAVEATS_TEMPLATE, DRAFT_OPEN, DRAFT_UNCLEARED, FINDINGS_OPEN
 from threetears.evals.analysis.report.md_parts import one_line
-from threetears.evals.analysis.report.plan_page.model import PageArmsKey, PageChart, PageMasthead, PageSlot
+from threetears.evals.analysis.report.parts.model import PageArmsKey, PageChart, PageMasthead, PageSlot
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 

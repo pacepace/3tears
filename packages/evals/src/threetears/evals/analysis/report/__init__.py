@@ -14,9 +14,8 @@
 - :mod:`serialize_md` and :mod:`serialize_html` — Markdown, and HTML whose one script is the kit's chart drawing; :mod:`serialize`
   is the switch, whose ``json`` is the bundle.
 - :mod:`words` and :mod:`figures` — the words a report is read in, and how it states a figure.
-- :mod:`plan_page` — a campaign's page built from its report plan (:class:`PlannedPage`), and its two forms:
-  :func:`planned_page_html` and :func:`planned_page_markdown`. Its builder,
-  :func:`~threetears.evals.analysis.report.plan_page.build.plan_page`, is the analysis service's.
+- :mod:`doc_page` — the page a stored report document draws (:class:`DocPage`); :mod:`parts` — the parts it
+  draws with: each chart's resolver, the arms' look, the words code writes, and the tables.
 
 Hosts import these from :mod:`threetears.evals.analysis`, the public root.
 """
@@ -121,12 +120,6 @@ from threetears.evals.analysis.report.serialize_html import campaign_report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
-# The page built from a report plan reads the report's blocks and their writers, so it loads after them. Its builder,
-# ``plan_page.build.plan_page``, is not exported here: it reads the figure keys, which read this package's figures
-# through the run summary, which loads this package; and its signature takes the report plan and the report input,
-# which no public root exports.
-from threetears.evals.analysis.report.plan_page.html import planned_page_html
-from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.doc_page.model import (
     DocCaveatLine,
     DocClaim,
@@ -138,20 +131,11 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocPage,
     DocTerm,
 )
-from threetears.evals.analysis.report.plan_page.model import (
-    PageAnswer,
+from threetears.evals.analysis.report.parts.model import (
     PageArmsKey,
     PageChart,
-    PageClause,
-    PageConfidence,
-    PageExplore,
-    PageFlag,
     PageMasthead,
-    PageOptions,
-    PageSection,
     PageSlot,
-    PageTerm,
-    PlannedPage,
 )
 
 __all__ = [
@@ -215,19 +199,10 @@ __all__ = [
     "LinesChart",
     "OutcomeBar",
     "OutcomeSegment",
-    "PageAnswer",
     "PageArmsKey",
     "PageChart",
-    "PageClause",
-    "PageConfidence",
-    "PageExplore",
-    "PageFlag",
     "PageMasthead",
-    "PageOptions",
-    "PageSection",
     "PageSlot",
-    "PageTerm",
-    "PlannedPage",
     "DocCaveatLine",
     "DocClaim",
     "DocConfidence",
@@ -268,8 +243,6 @@ __all__ = [
     "build_report",
     "campaign_report_html",
     "campaign_report_markdown",
-    "planned_page_html",
-    "planned_page_markdown",
     "report_html",
     "report_markdown",
 ]

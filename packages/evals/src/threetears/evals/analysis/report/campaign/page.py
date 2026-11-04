@@ -30,6 +30,7 @@ from threetears.evals.analysis.depth_reading import PAIRING_METHOD
 from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.memo_blocks import (
+    NO_LONGER_READS,
     aspect_summary_blocks,
     behind_on_blocks,
     call_blocks,
@@ -84,6 +85,7 @@ def build_campaign_report(
     report_doc_id: str | None = None,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
+    unread_line: str = NO_LONGER_READS,
     arms: Sequence[CampaignArm] | None = None,
 ) -> CampaignReport:
     """Lay a campaign out as its page: under the title the question, the writer's summary and recommendation, what
@@ -124,6 +126,10 @@ def build_campaign_report(
         code-only page stands in for: the first screen says so in the same line
         (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`); None for any other page.
     :ptype unread_report_doc_id: str | None
+    :param unread_line: What ``unread_analysis_id`` was, as its line says:
+        :data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`, or the line of the retired
+        writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`).
+    :ptype unread_line: str
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the title names; None names the arms its readings label.
     :ptype arms: Sequence[CampaignArm] | None
@@ -147,7 +153,7 @@ def build_campaign_report(
     blocks: list[ReportBlock] = [
         *question_blocks(campaign),
         *report_doc_blocks(report_doc_id),
-        *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id),
+        *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
         *memo_summary_blocks(memo),
     ]
     if kind != "measurement":

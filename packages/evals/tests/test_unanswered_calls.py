@@ -36,7 +36,9 @@ from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle,
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.plan_page.build import plan_page
+from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report.parts.tables import arms_table
+from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
@@ -434,17 +436,20 @@ def test_the_overview_of_an_arm_whose_calls_all_came_back_cites_none() -> None:
     assert all(not row.unanswered for row in campaign_overview(held, "snap").arms)
 
 
+def _cost_flags(held: ReportInput) -> list[str | None]:
+    """Each arm's cost flag in a report document's options table (the arms table) over ``held``."""
+    table = arms_table(held, block_look(held, fact_arms(held)), ())
+    return [row["cost_per_1k"].flag for row in table.rows]
+
+
 def _flag_changes(unanswered: Unanswered) -> list[tuple[str | None, str | None]]:
-    """On the Kairo reference plan, whose options table has a cost column: each cost flag that changes when its first
+    """On the Kairo round 2 input, whose options table has a cost column: each cost flag that changes when its first
     arm is given ``unanswered``, before and after."""
-    plan = dataset.load_plan(dataset.HERE / "r5" / "anchor.plan.json")
     held = dataset.report_input_of("r5")
     arm = next(iter(held.scoreboard))
     counted = held.scoreboard[arm].model_copy(update={"unanswered": {"candidate": unanswered}})
-    flagged = plan_page(plan, held.model_copy(update={"scoreboard": {**held.scoreboard, arm: counted}}))
-    unflagged = plan_page(plan, held)
-    flags = [row["cost_per_1k"].flag for row in flagged.options.table.rows]
-    before = [row["cost_per_1k"].flag for row in unflagged.options.table.rows]
+    flags = _cost_flags(held.model_copy(update={"scoreboard": {**held.scoreboard, arm: counted}}))
+    before = _cost_flags(held)
     return [(old, new) for old, new in zip(before, flags, strict=True) if old != new]
 
 

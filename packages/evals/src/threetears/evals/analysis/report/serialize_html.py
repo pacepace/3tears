@@ -95,7 +95,6 @@ from threetears.evals.analysis.report.html_parts import (
     term_link,
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
-from threetears.evals.analysis.report.plan_page.html import planned_page_html
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
@@ -157,11 +156,6 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
 
-    A planned analysis's page (``plan_page`` set) is the page its report plan draws
-    (:func:`~threetears.evals.analysis.report.plan_page.html.planned_page_html`), static where this page is, with the
-    aspects' folds and the glossary they link as its closed appendix after Method, so a trial's id and its stored
-    result are reached as on every other campaign page.
-
     A report document's page (``doc_page`` set) is the page its stored document draws
     (:func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html`), static where this page is, written whole:
     its own appendix holds every table its snapshot holds. With ``doc_trials`` (``trials="all"``), the aspects' folds
@@ -178,8 +172,6 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         if not report.doc_trials:
             return doc_page_html(report.doc_page, static=static)
         return _links_in_sight(doc_page_html(report.doc_page, static=static, record=_appendix(report, static)))
-    if report.plan_page is not None:
-        return _links_in_sight(planned_page_html(report.plan_page, appendix=_appendix(report, static), static=static))
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
     slugs = report.fold_ids
     parts = [

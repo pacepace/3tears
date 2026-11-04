@@ -663,18 +663,11 @@ def prose_response_format() -> dict[str, Any]:
 
 __all__ = [
     "REPORT_PLAN_SCHEMA",
-    "CaveatClause",
     "ChartQuery",
     "ChartReference",
     "ChartSpec",
-    "Decision",
-    "DecisionConfidence",
-    "DecisionSlot",
-    "Explore",
-    "ExploreControl",
     "Flag",
     "Masthead",
-    "MethodItem",
     "OptionRow",
     "Options",
     "PlanArm",

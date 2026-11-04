@@ -46,11 +46,11 @@ from threetears.evals.analysis.report.block_spec import block_look, complete_cha
 from threetears.evals.analysis.report.charts import even_precision
 from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
 from threetears.evals.analysis.report_rows import PriceStep, query_rows
-from threetears.evals.analysis.report.plan_page.full_results import every_table
-from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
-from threetears.evals.analysis.report.plan_page.model import PageChart
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.tables import arms_table
+from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report.parts.look import figure_text, quantity
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.kernel.report_plan import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report_gates import criterion_ruler, gate_check

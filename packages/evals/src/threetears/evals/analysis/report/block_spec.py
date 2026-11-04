@@ -37,7 +37,7 @@ a chart of readings draws, is at :data:`~threetears.evals.analysis.stats.INTERVA
 strip, bars or a table of arms' figures (measures, judged dimensions, configs) none of which states an interval, where
 some is a pass/fail rate with a count, is completed at the level of the interval code computes from that count, marked
 "computed" (``95% computed``): the page then draws those intervals, and names them as code's
-(:func:`~threetears.evals.analysis.report.plan_page.charting.computed_interval`). A
+(:func:`~threetears.evals.analysis.report.parts.charting.computed_interval`). A
 diverging chart over judged figures or strata whose figures carry a standard error and no interval is drawn at the
 descriptive level, "95% uncorrected" (:data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`): a bar is separated
 from zero where its change exceeds 1.96 times the two arms' standard errors combined (GENERATOR §5.2).
@@ -46,7 +46,7 @@ from zero where its change exceeds 1.96 times the two arms' standard errors comb
 and the margin line, one point beyond each end. Every other chart leaves its domain empty, which lets the renderer fit
 it. A chart that would mix interval levels (§5.2: one interval system per chart) is refused at its query. Which
 measures a chart draws, and whether it can draw them in their units, is the page's own rule and the only unit rule
-here (:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`, §5.2: one unit per axis): a chart of
+here (:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`, §5.2: one unit per axis): a chart of
 strata or tasks naming no measure where its slices hold several (a heatmap reads every one), or measures or contrasts
 in more than one unit on one axis, is refused here by the same function the page refuses it by; a kind that draws each
 measure in its own panel (a heatmap's matrix, a dot strip's strip, bars in panels by slice or measure) may read
@@ -96,7 +96,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.analyst.compare import ComparisonRow, arms_compare
 from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
 from threetears.evals.analysis.analyst.settle import settle_cases
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     COMPUTED,
     computed_interval,
     contrast_unit,
@@ -105,7 +105,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     figure_unit,
     unit_refusal,
 )
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look
+from threetears.evals.analysis.report.parts.look import PageLook, page_look
 from threetears.evals.analysis.report_decision import control_arm, surviving_options
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
@@ -256,7 +256,7 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
     facts give them, the arms in the input's order, the survivors, the reader names, and no arm recommended.
 
-    It is :func:`~threetears.evals.analysis.report.plan_page.look.page_look`, the planned page's own, with nothing a
+    It is :func:`~threetears.evals.analysis.report.parts.look.page_look`, the planned page's own, with nothing a
     plan chooses: a chart whose query lists its arms draws them in that order on both.
 
     :param report_input: The report input the chart reads.
@@ -595,7 +595,7 @@ _COMPUTED_KINDS = frozenset({"dot_interval", "bars", "table"})
 
 def _computed_level(chart: PlannedChart, report_input: ReportInput, path: str, faults: list[_Fault]) -> str:
     """The level a dot strip, bars or a table of arms' figures prints where no figure it reads states an interval and
-    some carries one computed here (:func:`~threetears.evals.analysis.report.plan_page.charting.computed_interval`):
+    some carries one computed here (:func:`~threetears.evals.analysis.report.parts.charting.computed_interval`):
     the computed intervals' level, marked computed (``95% computed``); empty otherwise."""
     if chart.kind not in _COMPUTED_KINDS:
         return ""

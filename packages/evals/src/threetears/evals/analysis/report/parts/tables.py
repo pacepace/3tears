@@ -1,36 +1,9 @@
-"""The planned page's two tables of code's own: the options table and the arms key.
-
-**The options table** (GENERATOR §2.6): a row per option in the plan's order, the recommended (or leaned) one set
-apart; its first columns name the option, as its arm's chip, and why it is shown, then what it runs (its settings as
-the campaign declared them, and its served model where the settings do not name it), so the page says what each
-option is wherever some option declares either; then one column per family code filled (``Options.columns``), each
-cell from the input, by the package's number rule. The families are the plan
-checks' vocabulary (:data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES`), each with its one
-cell renderer, and a family the vocabulary holds that no renderer fills stops this module loading:
-
-===============  ===================================================================================================
-family           cell
-===============  ===================================================================================================
-pass_rate        the pass rate, and its passes over its usable trials (``765 of 897``) where the scoreboard holds them
-reading.change   the asked reading's change in points, and its interval
-reading.verdict  a pill by GENERATOR §3's colour rule (worse is bad, better good, not separated neutral), the margin
-                 verdict in its words; the control's reads ``Control``
-judged:<dim>     the arm's figure on the judged dimension
-gate             the arm's gate status (:func:`~threetears.evals.analysis.report_gates.gate_check`) as a pill, and
-                 its first binding reason
-measure:<key>    the arm's figure on the measure: its mean, else the statistic a criterion on it reads
-cost_per_1k      dollars per 1,000 of what the cost counts, the uplift against the control's, and how many of the
-                 arm's calls went unanswered beside it, where any did (``calls.unanswered.<arm>``); an arm with no
-                 cost says none beside its dash
-===============  ===================================================================================================
-
-A cell the input holds no figure for is a dash. A column outside these families is refused: it is no column the
-page can fill. A pill's cell says its status in words (``Passes``, ``Worse, within margin``), so Markdown and a
-screen reader, which lose the colour, lose nothing.
+"""The tables of code's own a report document's page lays out: the arms table and the arms key.
 
 **The arms table** (:func:`arms_table`), a report document's options table: every arm in the input's order, whatever
 the document says, as its chip, its role (the arms the document recommends marked ``recommended`` beside it), what
-it runs (as the options table says it, where some arm declares it), its quality and its cost side by side:
+it runs (its settings as the campaign declared them, and its served model where the settings do not name it, where
+some arm declares either), its quality and its cost side by side:
 
 - its pass rate, with its passes over its usable trials, where some arm's scoreboard holds one;
 - its cost per run (per one of what the cost counts), or per 1,000 where the column's
@@ -51,9 +24,8 @@ present where some arm holds it.
 
 **More than one aspect.** The input's scoreboard holds the lead aspect's trials alone, so where more than one aspect
 counts usable trials, each table lays out one column group per aspect, in the input's aspect order, each head naming
-its aspect (``Speed pass rate``): the arms table each aspect's pass rate, its cost and its usable trials; the options
-table each aspect's pass rate and cost where the plan places the family (every other family reads the lead aspect, as
-the plan's checks do); the arms key each aspect's usable trials. Each aspect's figures are its keys'
+its aspect (``Speed pass rate``): the arms table each aspect's pass rate, its cost and its usable trials; the arms key
+each aspect's usable trials. Each aspect's figures are its keys'
 (``aspects.<aspect>.scoreboard.<arm>.*``, ``aspects.<aspect>.calls.unanswered.<arm>``), and its cost the one cost
 rule read on it (:func:`~threetears.evals.analysis.report.figure_keys.aspect_costs_per_thousand`), every aspect's cost
 in one form. An aspect's cost carries no uplift against the control's: that ratio's key reads the lead aspect alone.
@@ -64,9 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
 
-from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
-from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import (
     PRICED_SHARE_TEMPLATE,
     REPLIES,
@@ -79,14 +49,12 @@ from threetears.evals.analysis.report.figure_keys import (
     Figure,
     aspect_costs_per_thousand,
     cost_basis,
-    cost_ruler,
     format_figure,
     held_figure,
 )
-from threetears.evals.analysis.report.plan_page.charting import figure_stat, measure_words, stat_value
-from threetears.evals.analysis.report.plan_page.look import GATE_STATUS, ArmLook, PageLook, figure_text, quantity
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION, PageArmsKey, PageOptions
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.look import ArmLook, PageLook, figure_text, quantity
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION, PageArmsKey
+from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
     ARM_ROLE_WORDS,
@@ -95,117 +63,26 @@ from threetears.evals.analysis.report.plan_page.words import (
     ARMS_TABLE_ORDER,
     ARMS_TAKEAWAY,
     COST_HEADER,
-    GATE_WORDS,
     OPTION_HEADERS,
     OPTIONS_TITLE,
     PASSES_TEMPLATE,
     PRICED_HEADER,
     RECOMMENDED_MARK,
-    ROLE_WORDS,
     SERVED_BY_TEMPLATE,
     TOOL_SPEND_TEMPLATE,
     UPLIFT_NOT_COMPARABLE,
-    reading_words,
 )
-from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Aspect, Pricing, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
-from threetears.evals.analysis.report_plan_checks import OPTION_COLUMN_FAMILIES
-from threetears.evals.analysis.report_rows import query_aspect
 from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.numbers import UNPRICED
-from threetears.evals.kernel.report_plan import ReportPlan
 
-__all__ = ["arms_key", "arms_table", "options_table", "pass_rate_cell"]
-
-#: The roles whose row the options table sets apart: the recommendation, or the lean.
-_SET_APART = ("recommended", "lean")
-
-
-#: Each reading direction's pill (GENERATOR §3: by the direction of the change, never by the margin).
-_READING_STATUS: dict[str, ChartStatus] = {"worse": "bad", "better": "good", "": "neutral"}
-
-#: An options cell: the family's column, the arm, the input and the look in; the cell out.
-_CellReader = Callable[[str, str, ReportInput, PageLook], TableCell]
+__all__ = ["arms_key", "arms_table", "pass_rate_cell"]
 
 
 def _said(figure: Figure | None, filters: tuple[str, ...] = ()) -> str | None:
     """A figure as its cell says it, by the package's number rule; None (a dash) for none."""
     return format_figure(figure, filters) if figure is not None else None
-
-
-def _pass_rate(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    return pass_rate_cell(report_input, arm)
-
-
-def _reading_change(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    figure = held_figure(f"reading.{arm}.change", report_input)
-    interval = held_figure(f"reading.{arm}.interval", report_input) if figure is not None else None
-    return TableCell(value=_said(figure), flag=_said(interval))
-
-
-def _reading_verdict(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    if arm in look.arms and look.arm(arm).control:
-        return TableCell(value=ARM_ROLE_WORDS["control"], status="neutral")
-    aspect = query_aspect("", report_input)
-    reading = next((one for one in aspect.readings if one.arm == arm), None) if aspect is not None else None
-    if reading is None or reading.within_interval is None:
-        return TableCell(value=None)
-    low, high = (float(end) for end in reading.within_interval)
-    direction = "worse" if high < 0 else "better" if low > 0 else ""
-    margin = aspect.margin if aspect is not None else None
-    within = -low < float(margin) if margin is not None else None
-    return TableCell(value=reading_words(direction, within), status=_READING_STATUS[direction])
-
-
-def _judged(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    dimension = column.removeprefix("judged:")
-    return TableCell(value=_said(held_figure(f"judged.{dimension}.{arm}", report_input)))
-
-
-def _gate(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    checked = gate_check(report_input, arm)
-    reasons = (*checked.fails, *checked.borders)
-    return TableCell(
-        value=GATE_WORDS[checked.status], status=GATE_STATUS[checked.status], flag=reasons[0] if reasons else None
-    )
-
-
-def _measure(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    key = column.removeprefix("measure:")
-    stat = figure_stat(report_input, key, arm)
-    read = stat_value(report_input, key, stat) if stat is not None else None
-    if read is None:
-        return TableCell(value=None)
-    return TableCell(value=_said(held_figure(f"measure.{key}.{arm}.{read[1]}", report_input)))
-
-
-def _cost(column: str, arm: str, report_input: ReportInput, look: PageLook) -> TableCell:
-    figure = held_figure(f"cost_per_1k.{arm}", report_input)
-    control = look.control
-    uplift = (
-        held_figure(f"cost.uplift.{arm}", report_input)
-        if figure is not None and control is not None and arm != control.id
-        else None
-    )
-    marks: list[str] = []
-    if uplift is not None and isinstance(uplift.value, float):
-        marks.append(("+" if uplift.value > 0 else "") + format_figure(uplift))
-    # Beside the cost, never in it: the cost counts the answered calls, so an arm whose calls went unanswered says how
-    # many, where any did.
-    if figure is not None:
-        # A cost over part of the arm's calls is a smaller total, never stated bare.
-        share = priced_in_part(report_input, arm)
-        marks += [share] if share is not None else []
-        marks += _unanswered_marks(arm, report_input)
-    # Per the count the column's head names, by the one owner of money's scale (figure_keys.cost_ruler). An arm the cost
-    # rule states no cost for says it is unpriced, never a blank.
-    said = (
-        cost_ruler(report_input).spell(figure.value)
-        if figure is not None and isinstance(figure.value, float)
-        else UNPRICED
-    )
-    return TableCell(value=said, flag="; ".join(marks) or None)
 
 
 def _unanswered_marks(arm: str, report_input: ReportInput, where: str = "") -> list[str]:
@@ -224,45 +101,6 @@ def _calls(figure: Figure, what: str) -> str:
     return f"{format_figure(figure)} {'call' if figure.value == 1 else 'calls'} {what}"
 
 
-#: Each column family's cell reader, keyed by the family exactly as
-#: :data:`~threetears.evals.analysis.report_plan_checks.OPTION_COLUMN_FAMILIES` spells it (``judged:<dim>``,
-#: ``measure:<key>`` for the keyed ones).
-_RENDERERS: dict[str, _CellReader] = {
-    "pass_rate": _pass_rate,
-    "reading.change": _reading_change,
-    "reading.verdict": _reading_verdict,
-    "judged:<dim>": _judged,
-    "gate": _gate,
-    "measure:<key>": _measure,
-    "cost_per_1k": _cost,
-}
-
-if _unrendered := [family for family in OPTION_COLUMN_FAMILIES if family not in _RENDERERS]:
-    # The vocabulary is the plan checks'; a family they accept that this table cannot fill would refuse a stored plan.
-    raise RuntimeError(f"the options table has no cell renderer for the column families {_unrendered}")
-
-#: Each keyed family by its prefix (``judged`` → ``judged:<dim>``).
-_KEYED = {family.partition(":")[0]: family for family in OPTION_COLUMN_FAMILIES if ":" in family}
-
-
-def _family(column: str) -> str:
-    """The family a column is of: itself for a family written alone, its keyed family for ``judged:<dim>`` and
-    ``measure:<key>``; a column of no family is returned as it is, which no renderer holds."""
-    prefix, keyed, _ = column.partition(":")
-    return _KEYED.get(prefix, column) if keyed else column
-
-
-def _header(column: str, report_input: ReportInput) -> str:
-    family = _family(column)
-    if family == "judged:<dim>":
-        return measure_words(report_input, column.removeprefix("judged:"), kind="judged")
-    if family == "measure:<key>":
-        return measure_words(report_input, column.removeprefix("measure:"))
-    if family == "cost_per_1k":
-        return COST_HEADER.format(per=cost_ruler(report_input).words(cost_basis(report_input).noun))
-    return OPTION_HEADERS[family]
-
-
 def _chip(arm: ArmLook) -> TableCell:
     """An arm's cell, drawn as its chip: its tag on its colour, then its name."""
     return TableCell(value=arm.name, tag=arm.tag, color=arm.token)
@@ -271,74 +109,6 @@ def _chip(arm: ArmLook) -> TableCell:
 def _option_cell(option: str, look: PageLook) -> TableCell:
     """An option's cell: its arm's chip, or a modeled option's id."""
     return _chip(look.arm(option)) if option in look.arms else TableCell(value=option)
-
-
-def options_table(plan: ReportPlan, report_input: ReportInput, look: PageLook) -> PageOptions:
-    """The options table (this module's account).
-
-    :param plan: The stored plan.
-    :ptype plan: ReportPlan
-    :param report_input: The report input it was written against.
-    :ptype report_input: ReportInput
-    :param look: The page's look.
-    :ptype look: PageLook
-    :return: The table and the row it sets apart.
-    :rtype: PageOptions
-    :raises UnresolvableReference: A column is no family the page fills.
-    """
-    if stray := [column for column in plan.options.columns if _family(column) not in _RENDERERS]:
-        raise UnresolvableReference(
-            f"the options table's columns {stray} are no column family the page fills; it fills "
-            f"{list(OPTION_COLUMN_FAMILIES)}"
-        )
-    described = any(_runs(report_input, row.option) for row in plan.options.rows)
-    aspects = _laid_out_aspects(report_input)
-    # With more than one aspect, the pass rate and the cost are each aspect's, a column per aspect where the plan
-    # places the family; every other family reads the lead aspect as the plan's checks do.
-    grouped = {
-        column: _aspect_groups(report_input, look, aspects, (column,), per=1000)
-        for column in plan.options.columns
-        if aspects and column in (_PASS_RATE, _COST)
-    }
-    columns = [
-        TableColumn(key="option", header=OPTION_HEADERS["option"]),
-        TableColumn(key="role", header=OPTION_HEADERS["role"]),
-        *([TableColumn(key=_RUNS, header=ARM_HEADERS["settings"])] if described else []),
-    ]
-    for column in plan.options.columns:
-        columns += (
-            grouped[column][0] if column in grouped else [TableColumn(key=column, header=_header(column, report_input))]
-        )
-    rows = []
-    for row in plan.options.rows:
-        cells = {"option": _option_cell(row.option, look), "role": TableCell(value=ROLE_WORDS[row.role])}
-        if described:
-            cells[_RUNS] = TableCell(value=_runs(report_input, row.option) or None)
-        for column in plan.options.columns:
-            if column in grouped:
-                group_columns, by_arm = grouped[column]
-                held = by_arm.get(row.option, {})
-                cells |= {
-                    held_column.key: held.get(held_column.key, TableCell(value=None)) for held_column in group_columns
-                }
-                continue
-            cells[column] = (
-                _RENDERERS[_family(column)](column, row.option, report_input, look)
-                if row.option in look.arms
-                else TableCell(value=None)
-            )
-        rows.append(cells)
-    highlighted = next((index for index, row in enumerate(plan.options.rows) if row.role in _SET_APART), None)
-    table = TableBlock(
-        section=PLANNED_SECTION,
-        name="options",
-        title=OPTIONS_TITLE,
-        columns=columns,
-        rows=rows,
-        order="as the plan lists the options, the recommended first",
-        total_rows=len(rows),
-    )
-    return PageOptions(table=table, highlighted=highlighted)
 
 
 #: The options table's column saying what an option runs.

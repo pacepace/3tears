@@ -1,7 +1,6 @@
-"""The Full results part (GENERATOR §2.11): every table the plan lists, each a table block of the input's figures.
+"""The Full results tables (GENERATOR §2.11): each a table block of the input's figures.
 
-The plan names the tables (``full_results``, filled by code at completion from what the input holds); this module
-draws each, in the plan's order, its rows in the input's order and every arm a column or a row in the input's order:
+Each table's rows are in the input's order, and every arm a column or a row in the input's order:
 
 ====================  ============================================================================================
 table                 rows and cells
@@ -25,15 +24,15 @@ table                 rows and cells
 grouped by aspect in the input's order, the aspect named in its own column and every figure that aspect's own (a
 measure's ``per_arm`` on the lead aspect, its ``by_aspect`` entry on another; a dash where the aspect did not read it).
 
-**Every table the input holds** (:func:`every_table`): a report document's full-results appendix, which no plan
-lists. It is each table above, in that order, where the input holds a row of it: every arm by measure always, the
+**Every table the input holds** (:func:`every_table`): a report document's full-results appendix. It is each table
+above, in that order, where the input holds a row of it: every arm by measure always, the
 rest as the input holds contrasts, strata or tasks, gates or guardrails, configurations and cells. Which tables print
 is read off the input's rows alone.
 
 **Numbers by the page's one rule.** A figure is stated as a chart states it
-(:func:`~threetears.evals.analysis.report.plan_page.charting.figure_unit`,
-:func:`~threetears.evals.analysis.report.plan_page.look.quantity`,
-:func:`~threetears.evals.analysis.report.plan_page.look.figure_text`): a rate as a percent, a change in points, money
+(:func:`~threetears.evals.analysis.report.parts.charting.figure_unit`,
+:func:`~threetears.evals.analysis.report.parts.look.quantity`,
+:func:`~threetears.evals.analysis.report.parts.look.figure_text`): a rate as a percent, a change in points, money
 per reply per 1,000 replies, which the measure's name then says. A figure the input does not hold is a dash.
 
 **A status is said in words.** Every pill's text is its status (``Passes``, ``Regressed``), so Markdown and a screen
@@ -64,13 +63,13 @@ from threetears.evals.analysis.report.figure_keys import (
     held_figure,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     figure_unit,
     held_means,
     money_words,
     stat_value,
 )
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     GATE_STATUS,
     PageLook,
     Quantity,
@@ -79,9 +78,9 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity,
     quantity_of,
 )
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.tables import pass_rate_cell
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.tables import pass_rate_cell
+from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,
@@ -97,9 +96,8 @@ from threetears.evals.analysis.report_gates import GateCheck, gate_check
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Judged, Measure, ReportInput, Stat
 from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
 from threetears.evals.analysis.style import humanize
-from threetears.evals.kernel.report_plan import ReportPlan
 
-__all__ = ["every_table", "full_results"]
+__all__ = ["every_table"]
 
 
 #: Each corrected comparison's verdict's pill: a separated gain or equivalence good, a regression bad, the rest
@@ -565,7 +563,7 @@ def _configs(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
     return [_table("configs", columns, rows, "in the input's order")]
 
 
-#: Each table the plan may list, to its builder.
+#: Each table, to its builder, in the order the appendix lays them out.
 _TABLES: dict[str, _TableBuilder] = {
     "arms_by_measure": _arms_by_measure,
     "contrasts": _contrasts,
@@ -574,21 +572,6 @@ _TABLES: dict[str, _TableBuilder] = {
     "configs": _configs,
     "cells": _cells,
 }
-
-
-def full_results(plan: ReportPlan, report_input: ReportInput, look: PageLook) -> list[TableBlock]:
-    """Every Full results table the plan lists, in its order (this module's account).
-
-    :param plan: The stored plan.
-    :ptype plan: ReportPlan
-    :param report_input: The report input it was written against.
-    :ptype report_input: ReportInput
-    :param look: The page's look.
-    :ptype look: PageLook
-    :return: The tables; a listed table the input holds no rows for is laid out empty, saying so.
-    :rtype: list[TableBlock]
-    """
-    return [table for name in plan.full_results for table in _TABLES[name](report_input, look)]
 
 
 def every_table(report_input: ReportInput, look: PageLook) -> list[TableBlock]:

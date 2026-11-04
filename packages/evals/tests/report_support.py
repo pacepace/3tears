@@ -7,7 +7,8 @@ toy host, which reaches the engine only through its public roots.
 the two records under ``fixtures/retired_writers/`` over the toy corpus campaign (at ``52bf24449``): each holds the
 analysis as its writer stored it, with its insights, and the planner's its report plan. A host holds analyses like
 these, which every read keeps serving, so a test stores the record as it was written and reads it back; nothing here
-calls either writer.
+calls either writer. Nothing reads a stored plan any more, so the package has no write for one either: a test that
+stores the plan beside its analysis writes it through the host's document store (:func:`stored_plan_document`).
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from typing import Any, Final
 from threetears.evals.analysis import Report, TableBlock, build_report, report_markdown
 from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
-from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight, EvalReportPlan
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.kernel.storage import EvalStorage, save_document
+from threetears.evals.schema.store_port import DocumentStore
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -30,6 +32,7 @@ __all__ = [
     "page_violations",
     "stored_memo_analysis",
     "stored_plan_analysis",
+    "stored_plan_document",
     "toy_campaign_host",
     "toy_report",
 ]
@@ -100,20 +103,33 @@ async def stored_memo_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[
 
 
 async def stored_plan_analysis(host: EvalHost, campaign: EvalCampaign) -> tuple[EvalAnalysis, list[EvalInsight]]:
-    """The analysis the report planner stored over the toy corpus campaign, stored again with its plan and insights:
-    the shape of every analysis the planner wrote, which reads as the code-only page with the regenerate line.
+    """The analysis the report planner stored over the toy corpus campaign, stored again with its insights: the shape
+    of every analysis the planner wrote, which reads as the code-only page with the retired writer's line. Its plan is
+    not stored (nothing reads it): :func:`stored_plan_document` stores it beside the analysis.
 
     :param host: The host holding the campaign's runs and results.
     :param campaign: The toy corpus campaign.
-    :return: The stored analysis and its insights; its plan reads with ``get_report_plan``.
+    :return: The stored analysis and its insights.
     """
-    record = _record("plan", campaign)
+    return off_loop(_stored, host.storage, _record("plan", campaign))
 
-    def store() -> tuple[EvalAnalysis, list[EvalInsight]]:
-        host.storage.save_report_plan(EvalReportPlan.model_validate(record["plan"]))
-        return _stored(host.storage, record)
 
-    return off_loop(store)
+def stored_plan_document(
+    store: DocumentStore, campaign: EvalCampaign, *, plan: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The report plan the planner stored beside its analysis over the toy corpus campaign, written as a host's
+    document store holds it (``eval_report_plan``), never validated on the way in.
+
+    :param store: The document store under the host's storage.
+    :param campaign: The toy corpus campaign.
+    :param plan: The plan body to store in place of the planner's own; None stores its own.
+    :return: The stored document.
+    """
+    document: dict[str, Any] = dict(_record("plan", campaign)["plan"])
+    if plan is not None:
+        document["plan"] = plan
+    save_document(store, document)
+    return document
 
 
 async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:

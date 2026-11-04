@@ -1,5 +1,5 @@
-"""The gate family's charts on a planned page: gate matrices, gate scatters and lattices, each drawn from the plan's
-query, the criteria and the configs.
+"""The gate family's charts as the chart resolver draws them: gate matrices, gate scatters and lattices, each drawn
+from the plan's query, the criteria and the configs.
 
 Held over every r1–r5 anchor and current run, and over charts these tests build on the same inputs for the sources no
 committed plan draws yet. The expected side is always computed from the input, never typed in: the gate check
@@ -21,7 +21,7 @@ committed plan draws yet. The expected side is always computed from the input, n
   the first factor's level, and cover the grid.
 - **Lattice** (r3): the first factor's levels by the rest's, each tile the config's figure, cost per 1,000 replies,
   p95 latency and gate status.
-- **Names are text**: markup in every name these charts print is escaped on the page.
+- **Names are text**: markup in every name these charts print is escaped where a page lays them out.
 """
 
 from __future__ import annotations
@@ -37,24 +37,19 @@ import pytest
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
+from packages.evals.tests.plan_charts_support import anchor_look, charts_html, charts_markdown, drawn_charts
 from threetears.evals.analysis import (
     ChartBlock,
     GateMatrixChart,
     GateScatterChart,
     LatticeChart,
-    PlannedPage,
-    planned_page_html,
-    planned_page_markdown,
 )
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_count, per_noun
 from threetears.evals.analysis.report.figure_keys import cost_basis, format_figure, resolve
-from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.drawable import plan_look
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
-from threetears.evals.analysis.report.plan_page.words import GATE_WORDS, NOT_GATED
-from threetears.evals.analysis.report_decision import margin_sensitivity
-from threetears.evals.analysis.report_plan_facts import plan_facts
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import GATE_WORDS, NOT_GATED
 from threetears.evals.analysis.report_gates import gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import Criterion, FloorRead, Reading, ReportInput, Task
 from threetears.evals.analysis.report_margins import criterion_place, flip_margin
@@ -89,19 +84,17 @@ def _plan(path: Path) -> ReportPlan:
 
 
 @functools.cache
-def _page(name: str, path: Path) -> PlannedPage:
-    return plan_page(_plan(path), _input(name))
+def _drawn(name: str, path: Path) -> list[tuple[ChartSpec, PageChart]]:
+    return drawn_charts(_plan(path), _input(name))
 
 
 def _stored_charts() -> list[Any]:
     """Every chart of these kinds a committed plan draws, beside its input, as parameters."""
     found = []
     for name, label, path in _PLANS:
-        plan = _plan(path)
-        specs = [(chart, True) for chart in plan.summary] + [(section.chart, False) for section in plan.sections]
-        page = _page(name, path)
-        blocks = [chart.chart for chart in page.summary] + [section.chart.chart for section in page.sections]
-        for (spec, summary), block in zip(specs, blocks, strict=True):
+        summaries = len(_plan(path).summary)
+        for index, (spec, drawn) in enumerate(_drawn(name, path)):
+            block, summary = drawn.chart, index < summaries
             if spec.kind in _KINDS:
                 assert isinstance(block, ChartBlock)
                 found.append(
@@ -149,13 +142,13 @@ def _spec(kind: str, source: str, **query: Any) -> ChartSpec:
 
 
 def _draw(name: str, spec: ChartSpec) -> tuple[ChartBlock, list[str]]:
-    """The chart as the input's own anchor plan's page draws it in its first section."""
+    """The chart as the input's own anchor plan draws it in its first section."""
     plan = _plan(dataset.HERE / name / "anchor.plan.json")
     section = plan.sections[0].model_copy(update={"chart": spec})
-    page = plan_page(plan.model_copy(update={"summary": [], "sections": [section]}), _input(name))
-    block = page.sections[0].chart.chart
+    ((_, drawn),) = drawn_charts(plan.model_copy(update={"summary": [], "sections": [section]}), _input(name))
+    block = drawn.chart
     assert isinstance(block, ChartBlock)
-    return block, page.sections[0].chart.notes
+    return block, drawn.notes
 
 
 def _gating(report_input: ReportInput) -> list[Criterion]:
@@ -267,8 +260,8 @@ def test_a_task_matrix_prices_its_costs_per_what_the_task_cost_measure_counts() 
     assert all(task_costs(held, task).measure == key for task in costed)
     plan = _plan(dataset.HERE / "r1" / "anchor.plan.json")
     section = plan.sections[0].model_copy(update={"chart": _spec("gate_matrix", "tasks")})
-    page = plan_page(plan.model_copy(update={"summary": [], "sections": [section]}), held)
-    block = page.sections[0].chart.chart
+    ((_, drawn),) = drawn_charts(plan.model_copy(update={"summary": [], "sections": [section]}), held)
+    block = drawn.chart
     assert isinstance(block, ChartBlock) and isinstance(block.data, GateMatrixChart)
     assert block.data.cost_unit == per_count(noun)
     assert any(f" {per_count(noun)}" in cell for row in block.values_table()[1] for cell in row)
@@ -382,7 +375,7 @@ def test_a_readings_matrix_reads_each_candidate_by_the_direction_of_its_change()
             assert cell.status == {"worse": "bad", "better": "good", "": "neutral"}[direction]
             margin = reading.margin if reading.margin is not None else aspect.margin
             assert reading.within_interval is not None and margin is not None
-            within = flip_margin(reading) < margin  # the decision's rule, so the pill and the explore part agree
+            within = flip_margin(reading) < margin  # the decision's rule
             assert ("within margin" in cell.label) == within and ("outside margin" in cell.label) == (not within)
             floors = [f for f in report_input.floors if f.arm == reading.arm and f.aspect == aspect.id and f.reading]
             assert len(cell.reasons or []) == 1 + len(floors), "each floor reading another rate is shown apart"
@@ -574,16 +567,16 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
 
 
 def _resolved(report_input: ReportInput, spec: ChartSpec, anchor: str) -> ChartBlock:
-    """The chart as the page's resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
+    """The chart as the resolver draws it on ``report_input``, under the look the input's anchor plan gives."""
     plan = _plan(dataset.HERE / anchor / "anchor.plan.json")
-    drawn = resolve_chart(spec, report_input, plan_look(plan, report_input, plan_facts(report_input)), title="")
+    drawn = resolve_chart(spec, report_input, anchor_look(plan, report_input), title="")
     assert isinstance(drawn.chart, ChartBlock)
     return drawn.chart
 
 
 def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> None:
     """A reading shown better (its interval above zero) flips at a margin of zero: at a declared margin of zero it is
-    not within it, as the decision and the explore part read it."""
+    not within it, as the decision reads it."""
     data = _input("r5").model_dump(mode="json", by_alias=True, exclude_none=True)
     aspect = data["aspects"][0]
     aspect["margin"] = 0.0
@@ -599,7 +592,6 @@ def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> Non
     columns = [column.label for column in data_block.columns]
     cell = data_block.rows[0].cells[columns.index(_arm_name(report_input, reading.arm))]
     assert "outside margin" in cell.label and "within margin" not in cell.label
-    assert not any(c.within for c in margin_sensitivity(report_input).candidates if c.arm == reading.arm)
 
 
 def test_a_lattice_tile_no_gate_reads_has_no_status_never_a_pass() -> None:
@@ -643,13 +635,12 @@ def _hostile(report_input: ReportInput) -> ReportInput:
 @pytest.mark.parametrize("name", ["r1", "r2", "r3"])
 def test_markup_in_the_names_these_charts_print_is_text_on_the_page(name: str) -> None:
     plan = _plan(dataset.HERE / name / "anchor.plan.json")
-    page = plan_page(plan, _hostile(_input(name)))
-    drawn = {chart.chart.chart for chart in [*page.summary, *(section.chart for section in page.sections)]}
-    assert drawn & _KINDS
-    html = planned_page_html(page)
+    charts = [drawn for _, drawn in drawn_charts(plan, _hostile(_input(name)))]
+    assert {chart.chart.chart for chart in charts} & _KINDS
+    html = charts_html(charts)
     assert what_runs(html) == []
     assert "<script>alert" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html
-    assert HOSTILE_LINE.split("<")[1] in planned_page_markdown(page)
+    assert HOSTILE_LINE.split("<")[1] in charts_markdown(charts)
 
 
 @pytest.mark.parametrize(

@@ -35,17 +35,12 @@ from threetears.evals.analysis.campaign_bundle import (
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generator import GenerationTally
-from threetears.evals.kernel.report_plan import ReportPlan
-from threetears.evals.analysis.report_input_build import report_input as build_report_input
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
-from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.model import TrialDetail
-from threetears.evals.analysis.report.plan_page.build import plan_page
-from threetears.evals.analysis.report.plan_page.words import MADE_TEMPLATE
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names, printed_arm_labels
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalAnalysisAttempt, EvalCampaign
@@ -73,7 +68,6 @@ from threetears.evals.kernel.remedies import (
     FIND_CAMPAIGN,
     FIND_RUN,
 )
-from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
@@ -82,7 +76,6 @@ if TYPE_CHECKING:
         AttemptOutcome,
         EvalAnalysis,
         EvalInsight,
-        EvalReportPlan,
     )
     from threetears.evals.kernel.host.profile import HostProfile
     from threetears.evals.schema.models import EvalRun
@@ -143,17 +136,8 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Delete one analysis — a generation withdrawing what it stored for an attempt written lost."""
         ...
 
-    def save_report_plan(self, plan: EvalReportPlan, /) -> None:
-        """Write the report plan a planned analysis was written as; raises ``StorageError`` rather than returning a
-        flag."""
-        ...
-
-    def load_report_plan(self, plan_id: str, scope_id: str, /) -> EvalReportPlan | None:
-        """Load one report plan by id (``EvalAnalysis.report_plan_id``), or ``None`` when it does not resolve."""
-        ...
-
     def delete_report_plan(self, plan_id: str, scope_id: str, /) -> bool:
-        """Delete one report plan — a generation withdrawing what it stored."""
+        """Delete one report plan, the retired report planner's: an analysis's delete sweeping what it stored."""
         ...
 
     def list_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> list[EvalAnalysis]:
@@ -1050,19 +1034,16 @@ def _campaign_page(
     *,
     assembled_at: str,
     analysis: EvalAnalysis | None = None,
-    plan: EvalReportPlan | None = None,
     fingerprints: Mapping[str, str] | None = None,
     trials: TrialDetail = "table",
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
+    unread_line: str = NO_LONGER_READS,
 ) -> CampaignReport:
-    """Lay a campaign bundle out as the campaign's page: code's readings, the memo or the plan where there is one, the
-    call.
+    """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
 
     Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels; the
-    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold. A planned analysis is
-    laid out as the page its plan draws (:func:`~threetears.evals.analysis.report.plan_page.build.plan_page`), the
-    code-only page's folds its appendix.
+    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold.
 
     :param campaign: The campaign, declaring what the bundle was assembled against.
     :ptype campaign: EvalCampaign
@@ -1070,10 +1051,8 @@ def _campaign_page(
     :ptype bundle: CampaignBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), which dates each aspect's page.
     :ptype assembled_at: str
-    :param analysis: The stored analysis whose memo or plan the page lays out; None for a code-only page.
+    :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
     :ptype analysis: EvalAnalysis | None
-    :param plan: The plan a planned ``analysis`` was written as; None for a memo or a code-only page.
-    :ptype plan: EvalReportPlan | None
     :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
         against the bundle; an aspect not named is hashed.
     :ptype fingerprints: Mapping[str, str] | None
@@ -1083,6 +1062,9 @@ def _campaign_page(
     :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: On a code-only page, the report document read by its id that it stands in for.
     :ptype unread_report_doc_id: str | None
+    :param unread_line: What ``unread_analysis_id`` was, as the page's first screen says it: ``NO_LONGER_READS``, or
+        the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`).
+    :ptype unread_line: str
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1122,37 +1104,12 @@ def _campaign_page(
         report_doc_id=analysis.report_doc_id if analysis is not None else None,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
+        unread_line=unread_line,
         arms=bundle.arms,
     )
     if analysis is None:
         return page
-    if plan is None:
-        return page.model_copy(update={"analysis_id": analysis.id})
-    return _planned_page(page, bundle, plan, analysis_id=analysis.id)
-
-
-def _planned_page(
-    page: CampaignReport, bundle: CampaignBundle, plan: EvalReportPlan, *, analysis_id: str
-) -> CampaignReport:
-    """The page a planned analysis's report plan draws, over the report input built from its frozen bundle, in place
-    of the code-only page's blocks; the code-only page's folds stay, as the planned page's appendix.
-
-    :raises RefusedInput: A figure key or a chart in the plan no longer resolves against the report input built from
-        the frozen bundle.
-    """
-    made = MADE_TEMPLATE.format(
-        model=plan.generation.generator_model, date=plan.generation.generated_at[:10], analysis=analysis_id
-    )
-    try:
-        planned = plan_page(report_plan_of(plan), build_report_input(bundle), made=made)
-    except UnresolvableReference as unresolved:
-        raise RefusedInput(
-            f"analysis {analysis_id}'s plan names a figure or a chart its frozen evidence no longer holds: {unresolved}",
-            remedy="generate the analysis again (analysis_generate), which plans over the campaign's evidence as it stands",
-        ) from unresolved
-    return CampaignReport.model_validate(
-        {**dict(page), "basis": "analysis", "analysis_id": analysis_id, "blocks": [], "plan_page": planned}
-    )
+    return page.model_copy(update={"analysis_id": analysis.id})
 
 
 def _declared(declared: CampaignDeclaration) -> dict[str, Any]:  # Any: the campaign's fields, by name
@@ -1200,11 +1157,11 @@ def _analysis_page(
     campaign: EvalCampaign | None,
     *,
     trials: TrialDetail,
-    plan: EvalReportPlan | None = None,
     bundle: CampaignBundle | None = None,
 ) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it (``bundle``, where the caller
-    has put it back together already): the page its plan draws, for a planned one."""
+    has put it back together already). One a retired writer wrote is code's page over that bundle, standing in for it
+    with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`)."""
     bundle = bundle if bundle is not None else analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
@@ -1214,61 +1171,27 @@ def _analysis_page(
         for entry in (entries if isinstance(entries, list) else [])
         if isinstance(entry, dict) and str(entry.get("fingerprint", "")).startswith(FINGERPRINT_PREFIX)
     }
+    retired = retired_generation(analysis.basis)
+    if retired is not None:
+        log.info("analysis %s reads code-only: %s", analysis.id, retired)
+        page = _campaign_page(
+            _as_analysed(analysis, campaign),
+            bundle,
+            assembled_at=analysis.generation.bundle_assembled_at,
+            fingerprints=fingerprints,
+            trials=trials,
+            unread_analysis_id=analysis.id,
+            unread_line=retired,
+        )
+        return CampaignReport.model_validate({**dict(page), "needs_regeneration": retired})
     return _campaign_page(
         _as_analysed(analysis, campaign),
         bundle,
         assembled_at=analysis.generation.bundle_assembled_at,
         analysis=analysis,
-        plan=plan,
         fingerprints=fingerprints,
         trials=trials,
     )
-
-
-def report_plan_of(stored: EvalReportPlan) -> ReportPlan:
-    """The plan a stored report plan holds, as the plan model.
-
-    :param stored: The stored plan.
-    :ptype stored: EvalReportPlan
-    :return: Its plan.
-    :rtype: ReportPlan
-    """
-    return ReportPlan.model_validate(stored.plan)
-
-
-def get_report_plan(storage: AnalysisStore, analysis: EvalAnalysis) -> EvalReportPlan | None:
-    """The report plan a stored analysis was written as; None for one the memo writer wrote.
-
-    :param storage: Where the plan is read.
-    :ptype storage: AnalysisStore
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :return: The plan, or None for a memo.
-    :rtype: EvalReportPlan | None
-    :raises NotFoundError: The analysis is planned and its plan does not resolve (deleted outside the analysis's
-        delete).
-    :raises RefusedInput: The stored plan no longer validates as the plan this build reads (its shape moved inside
-        the regenerable version): the analysis needs generating again, which the remedy says.
-    """
-    if analysis.report_plan_id is None:
-        return None
-    try:
-        plan = storage.load_report_plan(analysis.report_plan_id, analysis.scope_id)
-    except ValidationError as unreadable:
-        first = unreadable.errors()[0]
-        where = ".".join(str(step) for step in first["loc"]) or "the document"
-        raise RefusedInput(
-            f"analysis {analysis.id!r} was written as a report plan this build cannot read "
-            f"({unreadable.error_count()} field error(s); first at {where}: {first['msg']})",
-            remedy="generate the analysis again (analysis_generate); a report plan is regenerated, never migrated",
-        ) from unreadable
-    if plan is None:
-        raise NotFoundError(
-            "report plan",
-            analysis.report_plan_id,
-            remedy="generate the analysis again (analysis_generate); its plan was deleted apart from it",
-        )
-    return plan
 
 
 def analysis_report(
@@ -1281,6 +1204,11 @@ def analysis_report(
     its frozen bundle, the memo once on the first screen. The person's call is the campaign's as recorded now. Derived
     on every read and never written back, so a stored analysis stays pivotable.
 
+    An analysis a retired report writer wrote (the report planner's, ``basis="plan"``) is laid out as code's page over
+    the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
+    which writer wrote it and to regenerate
+    (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`); its stored plan is never read.
+
     :param storage: Where the analysis is read.
     :ptype storage: AnalysisStore
     :param analysis_id: The analysis to report.
@@ -1290,20 +1218,14 @@ def analysis_report(
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
         table alone, each row naming its stored result; ``all`` adds each one's full record.
     :ptype trials: TrialDetail
-    :return: The page, ``basis="analysis"``; :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
+    :return: The page, ``basis="analysis"`` (``code_only`` for a retired writer's); :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
         in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
     :rtype: CampaignReport
     :raises NotFoundError: No analysis with that id in the scope.
-    :raises RefusedInput: The analysis was written over a bundle of another shape, or as a report plan this build no
-        longer reads (:func:`get_report_plan`); either way the remedy is to generate it again.
+    :raises RefusedInput: The analysis was written over a bundle of another shape; the remedy is to generate it again.
     """
     analysis = get_analysis(storage, analysis_id, scope_id)
-    return _analysis_page(
-        analysis,
-        storage.load_campaign(analysis.campaign_id, scope_id),
-        trials=trials,
-        plan=get_report_plan(storage, analysis),
-    )
+    return _analysis_page(analysis, storage.load_campaign(analysis.campaign_id, scope_id), trials=trials)
 
 
 def campaign_report(
@@ -1324,10 +1246,10 @@ def campaign_report(
       document is, so it degrades rather than refuses
       (:func:`~threetears.evals.analysis.report_doc_store.read_report_doc`), its made line at its foot; the campaign's
       readings and folds are read off that snapshot's bundle, as the JSON form carries them;
-    - a report plan's (``plan``, the report planner's): every one is written in a shape this version no longer reads,
-      so its page is the code-only page with the one regenerate line on its first screen
-      (:data:`~threetears.evals.analysis.report.campaign.memo_blocks.NO_LONGER_READS`,
-      :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). No planner page is reached;
+    - a report plan's (``plan``, the report planner's, a retired writer): the code-only page with the retired writer's
+      line on its first screen
+      (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`,
+      :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). Its stored plan is never read;
     - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out; where it was frozen
       over a bundle of another shape this version no longer reads, as a plan's is (the code-only page, the regenerate
       line saying the bundle's shape).
@@ -1371,9 +1293,10 @@ def campaign_report(
         except RefusedInput as unread:
             return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
         return _doc_page(host, campaign, read, analysis_id=reported.id, trials=trials)
-    if reported.report_plan_id is not None:
-        why = f"analysis {reported.id} was written by the report planner, as report-plan/1"
-        return _stands_in(host, campaign, why, trials=trials, unread_analysis_id=reported.id)
+    if (retired := retired_generation(reported.basis)) is not None:
+        return _stands_in(
+            host, campaign, f"analysis {reported.id}", trials=trials, unread_analysis_id=reported.id, line=retired
+        )
     try:
         frozen = analysis_campaign_bundle(reported)
     except RefusedInput as unread:
@@ -1463,9 +1386,11 @@ def _stands_in(
     trials: TrialDetail,
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
+    line: str = NO_LONGER_READS,
 ) -> CampaignReport:
     """The code-only page standing in for an analysis or a report document this version no longer reads: its first
-    screen says so in the one regenerate line, and its ``needs_regeneration`` is that line with why."""
+    screen says so in the one line (``NO_LONGER_READS``, or the retired writer's), and its ``needs_regeneration`` is
+    that line with why."""
     named = unread_analysis_id or unread_report_doc_id
     log.info("campaign %s's report %s reads code-only: %s", campaign.id, named, why)
     page = _code_only_page(
@@ -1474,8 +1399,9 @@ def _stands_in(
         trials=trials,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
+        unread_line=line,
     )
-    return CampaignReport.model_validate({**dict(page), "needs_regeneration": f"{NO_LONGER_READS} ({why})"})
+    return CampaignReport.model_validate({**dict(page), "needs_regeneration": f"{line} ({why})"})
 
 
 def _code_only_page(
@@ -1485,6 +1411,7 @@ def _code_only_page(
     trials: TrialDetail = "table",
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
+    unread_line: str = NO_LONGER_READS,
 ) -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
@@ -1500,6 +1427,8 @@ def _code_only_page(
     :param unread_report_doc_id: The report document, read by its id, that this version no longer reads and the page
         stands in for; None for none.
     :ptype unread_report_doc_id: str | None
+    :param unread_line: What ``unread_analysis_id`` was, as the line says it.
+    :ptype unread_line: str
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
@@ -1512,6 +1441,7 @@ def _code_only_page(
         trials=trials,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
+        unread_line=unread_line,
     )
 
 
@@ -1832,6 +1762,5 @@ __all__ = [
     "running_analysis_attempt",
     "list_insights",
     "record_written_generation",
-    "report_plan_of",
     "WrittenAttempt",
 ]

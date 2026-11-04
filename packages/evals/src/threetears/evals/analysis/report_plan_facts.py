@@ -37,7 +37,7 @@ the facts above it fills each unit's code part: the flag's disclosures (:func:`f
 weakens and leaves standing; each answer's warning, from the position the planner gave; and each chart's facts (below).
 Then it runs
 :func:`~threetears.evals.analysis.report_plan_checks.validate_plan`, draws every chart no fault names through the
-page's own resolvers (:func:`~threetears.evals.analysis.report.plan_page.drawable.undrawn_charts`: a chart the page
+page's own resolvers (:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`: a chart the page
 cannot draw on this input is refused here, never stored), and refuses every fault it, the checks and the page found,
 together, as one :class:`~threetears.evals.analysis.errors.PlanRefusal`, so the planner's one repair round can mend
 them all.
@@ -57,7 +57,7 @@ plan: :func:`~threetears.evals.analysis.report.block_spec.complete_chart` fills 
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -70,9 +70,15 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.plan_page.drawable import undrawn_charts
+from threetears.evals.analysis.report.parts.look import PageLook, page_look
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.words import arm_tags
-from threetears.evals.analysis.report_decision import allowed_modes, caveat_materiality, report_caveats
+from threetears.evals.analysis.report_decision import (
+    allowed_modes,
+    caveat_materiality,
+    report_caveats,
+    surviving_options,
+)
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect, weakest_margin
 from threetears.evals.analysis.report_rows import query_aspect
@@ -98,12 +104,11 @@ from threetears.evals.kernel.report_plan import (
     Signals,
     WarningAnswer,
     WarningRef,
+    plan_recommended_arm,
 )
 
 __all__ = [
     "FactArm",
-    "FactCaveat",
-    "PlanFacts",
     "fact_arms",
     "plan_facts",
 ]
@@ -447,7 +452,7 @@ def complete_plan(planned: PlannedReport, report_input: ReportInput, facts: Plan
         validate_plan(plan, report_input)
     except PlanRefusal as refused:
         faults.extend(refused.faults)
-    faults += undrawn_charts(plan, report_input, facts, faulted=[path for path, _ in faults])
+    faults += _undrawn_charts(plan, report_input, facts, faulted=[path for path, _ in faults])
     if faults:
         raise PlanRefusal(faults)
     return plan
@@ -551,3 +556,41 @@ def _chart(chart: PlannedChart, report_input: ReportInput, path: str, faults: li
     spec, found = complete_chart(chart, report_input, path)
     faults += found
     return spec
+
+
+def _plan_look(plan: ReportPlan, report_input: ReportInput, facts: PlanFacts) -> PageLook:
+    """The look a plan's charts draw with: each arm's tag, name, colour and mark, the options table's order, the
+    survivors and the recommended arm."""
+    return page_look(
+        facts.arms,
+        {arm.id: arm.color_slot for arm in plan.arms},
+        order=[row.option for row in plan.options.rows],
+        survivors=surviving_options(report_input),
+        recommended=plan_recommended_arm(plan),
+        names=facts.names,
+    )
+
+
+def _plan_charts(plan: ReportPlan) -> Iterator[tuple[str, ChartSpec, bool]]:
+    for index, chart in enumerate(plan.summary):
+        yield f"summary[{index}]", chart, True
+    for index, section in enumerate(plan.sections):
+        yield f"sections[{index}].chart", section.chart, False
+
+
+def _undrawn_charts(
+    plan: ReportPlan, report_input: ReportInput, facts: PlanFacts, *, faulted: Collection[str] = ()
+) -> list[tuple[str, str]]:
+    """Every chart of the plan the resolvers cannot draw on its input, each as a fault at its field path, summary
+    charts first, in the plan's order; a chart at or under a path already in ``faulted`` is not drawn, so a chart the
+    checks refused is refused once."""
+    look = _plan_look(plan, report_input, facts)
+    faults: list[tuple[str, str]] = []
+    for path, chart, summary in _plan_charts(plan):
+        if any(seen == path or seen.startswith((f"{path}.", f"{path}[")) for seen in faulted):
+            continue
+        try:
+            resolve_chart(chart, report_input, look, title=chart.title, summary=summary)
+        except UnresolvableReference as refused:
+            faults.append((path, f"is refused by the page, which draws it from this input: {refused}"))
+    return faults

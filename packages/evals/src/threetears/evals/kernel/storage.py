@@ -52,7 +52,6 @@ from threetears.evals.kernel.campaign import (
     EvalCampaign,
     EvalGenerationSlot,
     EvalInsight,
-    EvalReportPlan,
     EvalSweep,
     generation_slot_id,
 )
@@ -1658,16 +1657,9 @@ class EvalStorage:
         """Delete an analysis by id within a scope."""
         return self._store.delete(analysis_id, scope_id)
 
-    def save_report_plan(self, plan: EvalReportPlan) -> None:
-        """Persist the report plan a planned analysis was written as, in the scope it names."""
-        self._save(plan.to_dict())
-
-    def load_report_plan(self, plan_id: str, scope_id: str) -> EvalReportPlan | None:
-        """Load a report plan by id (``EvalAnalysis.report_plan_id``) within a scope, or ``None`` when none resolves."""
-        return self._load(EvalReportPlan, plan_id, scope_id)
-
     def delete_report_plan(self, plan_id: str, scope_id: str) -> bool:
-        """Delete a report plan by id within a scope, reporting whether there was one."""
+        """Delete a report plan, the retired report planner's, by id within a scope, reporting whether there was one:
+        an analysis's delete sweeps the plan it stored, which nothing reads."""
         return self._store.delete(plan_id, scope_id)
 
     def save_report_snapshot(self, snapshot: EvalReportSnapshot) -> None:

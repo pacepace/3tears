@@ -2,10 +2,10 @@
 
 Each ``resolve_*`` module owns ``RESOLVERS``, its kinds to their resolvers, so the kinds are resolved apart:
 
-- :mod:`~threetears.evals.analysis.report.plan_page.resolve_changes`: forest, diverging bars;
-- :mod:`~threetears.evals.analysis.report.plan_page.resolve_magnitudes`: bars, lines;
-- :mod:`~threetears.evals.analysis.report.plan_page.resolve_examples`: example cards;
-- :mod:`~threetears.evals.analysis.report.plan_page.resolve_gates`, ``resolve_rates``, ``resolve_cells`` and
+- :mod:`~threetears.evals.analysis.report.parts.resolve_changes`: forest, diverging bars;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_magnitudes`: bars, lines;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_examples`: example cards;
+- :mod:`~threetears.evals.analysis.report.parts.resolve_gates`, ``resolve_rates``, ``resolve_cells`` and
   ``resolve_table``: the rest of the kit's kinds and the plain table, each registered by its own module.
 
 A kind no module resolves is refused, naming the kind and its source, never drawn empty; so is a kind two modules
@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.plan_page import (
+from threetears.evals.analysis.report.parts import (
     resolve_cells,
     resolve_changes,
     resolve_examples,
@@ -26,9 +26,9 @@ from threetears.evals.analysis.report.plan_page import (
     resolve_rates,
     resolve_table,
 )
-from threetears.evals.analysis.report.plan_page.charting import ChartContext, KindResolver
-from threetears.evals.analysis.report.plan_page.look import PageLook
-from threetears.evals.analysis.report.plan_page.model import PageChart
+from threetears.evals.analysis.report.parts.charting import ChartContext, KindResolver
+from threetears.evals.analysis.report.parts.look import PageLook
+from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import config_grid
 from threetears.evals.kernel.report_plan import ChartSpec

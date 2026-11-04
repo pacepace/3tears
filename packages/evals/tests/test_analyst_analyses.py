@@ -53,7 +53,6 @@ from threetears.evals.analysis.report_decision import (
     control_arm,
     decision_at,
     dominant_options,
-    margin_sensitivity,
     surviving_options,
     weighed_axes,
 )
@@ -563,7 +562,6 @@ def test_a_margin_sweep_holds_where_the_late_margin_check_finds_the_margin_immat
     held = _all_inputs()[name]
     (aspect,) = [aspect for aspect in held.aspects if aspect.margin is not None]
     result = sensitivity(held, f"margin:{aspect.id}")
-    assert result.holds == margin_sensitivity(held).holds
     assert result.holds == caveat_materiality(held)["late:margin"].immaterial
     assert result.declared is not None and result.declared.key == f"aspects.{aspect.id}.margin"
 

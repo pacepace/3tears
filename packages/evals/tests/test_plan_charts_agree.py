@@ -12,7 +12,7 @@ accept draws, each figure its key's in that key's unit.
   measure, each measure, and a pair of measures for each pair of units; unpanelled, or in panels by arm or by task)
   that the plan checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
   read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
-  page's own drawing (:mod:`~threetears.evals.analysis.report.plan_page.drawable`), so none is refused at render.
+  page's own drawing (the completion draws each chart through the resolver), so none is refused at render.
 - **The floor.** That inclusion makes "nothing accepted is refused" hold by construction, so the (kind, source) pairs
   each input's charts were accepted and drawn on are pinned (``fixtures/report_plans/sweep_floor.json``): a pair the
   page stops drawing fails here rather than quietly leaving the accepted set.
@@ -41,6 +41,7 @@ from typing import Any, get_args
 
 import pytest
 
+from packages.evals.tests.plan_charts_support import anchor_look
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.analysis import ChartBlock, TableBlock
@@ -56,14 +57,13 @@ from threetears.evals.analysis.report.charts import (
     ScatterChart,
 )
 from threetears.evals.analysis.report.figure_keys import resolve
-from threetears.evals.analysis.report.plan_page.charting import contrast_unit, figure_unit
-from threetears.evals.analysis.report.plan_page.drawable import plan_look
-from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
-from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.charting import contrast_unit, figure_unit
+from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
-from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
+from threetears.evals.analysis.report_plan_facts import complete_plan
 from threetears.evals.analysis.report_rows import query_rows
 from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, PlannedReport, ReportPlan
 
@@ -229,10 +229,9 @@ def _completes_on_itself(key: str) -> bool:
 
 @functools.cache
 def _look(key: str) -> PageLook:
-    """The look the anchor's page draws with on the input: the page's own (:func:`plan_look`)."""
+    """The look the anchor's charts draw with on the input (:func:`anchor_look`)."""
     plan = dataset.load_plan(dataset.HERE / _base(key) / "anchor.plan.json")
-    report_input = _input(key)
-    return plan_look(plan, report_input, plan_facts(report_input))
+    return anchor_look(plan, _input(key))
 
 
 # --- probing the checks ----------------------------------------------------------------------------------------------
@@ -583,8 +582,7 @@ def _refused_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> 
 
 def _drawn_on(name: str, report_input: ReportInput, spec: ChartSpec) -> Any:
     plan = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
-    look = plan_look(plan, report_input, plan_facts(report_input))
-    return resolve_chart(spec, report_input, look, title="chart").chart
+    return resolve_chart(spec, report_input, anchor_look(plan, report_input), title="chart").chart
 
 
 def _stored(chart: dict[str, Any], **code: Any) -> ChartSpec:

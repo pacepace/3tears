@@ -33,7 +33,7 @@ from threetears.evals.analysis.report.charts import (
     Token,
 )
 from threetears.evals.analysis.report.cost_unit import REPLIES, money_ruler, per_count
-from threetears.evals.analysis.report.plan_page.look import arm_shape, arm_token, cost_axis_format
+from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, cost_axis_format
 from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
@@ -1026,7 +1026,7 @@ class ChartBlock(_Block):
         replies and its pass rate, labelled by its short name (by its tag on a phone), the legend naming each tag's
         arm; the cost axis from zero to past the dearest arm, the pass rate's from zero to 100%, so no axis is cut to
         flatter a gap. Cost is drawn per 1,000 replies, since a reply's own cost is a fraction of a cent an axis
-        cannot print, and the axis carries the digits its ticks need (:func:`~threetears.evals.analysis.report.plan_page.look.cost_axis_format`). No frontier is
+        cannot print, and the axis carries the digits its ticks need (:func:`~threetears.evals.analysis.report.parts.look.cost_axis_format`). No frontier is
         drawn, since none is tested. Money's ruler is the one owner's over every point's cost and interval
         (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`, #993): per 1,000 replies, or per 1,000,000
         where a cost is under a cent per 1,000, each tip's cost and its interval in the chart's one form."""

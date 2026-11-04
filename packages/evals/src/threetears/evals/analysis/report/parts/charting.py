@@ -10,7 +10,7 @@ here, once:
   rate's scale read from every figure the input holds for it (a share where each lies in 0 to 1, a percent
   otherwise), as the figure keys read it; an ordinal judged dimension a ``score``; a contrast of how each trial ended,
   the pass rate, a share; a scoreboard figure money (a reply's cost, or the trials' in all) or a count.
-  :func:`~threetears.evals.analysis.report.plan_page.look.quantity` says how it is drawn. A contrast's change
+  :func:`~threetears.evals.analysis.report.parts.look.quantity` says how it is drawn. A contrast's change
   (:func:`contrast_unit`) is in points where it is a rate's, else in its figures' own unit: an ordinal dimension's is
   a score change, never points.
 - **One unit per axis** (:func:`unit_refusal`, over the measures a chart draws, :func:`drawn_keys`, or the contrasts
@@ -74,9 +74,9 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
-from threetears.evals.analysis.report.plan_page.look import PageLook, Quantity, figure_text, quantity, series_token
-from threetears.evals.analysis.report.plan_page.model import PLANNED_SECTION
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
+from threetears.evals.analysis.report.parts.model import PLANNED_SECTION
+from threetears.evals.analysis.report.parts.words import (
     ASPECT_MEASURE_TEMPLATE,
     COMPUTED_NOTE,
     COMPUTED_REPEATS_NOTE,
@@ -387,7 +387,7 @@ def money_words(
 ) -> str:
     """What a reader calls a measure (:func:`measure_words`, or ``name`` where the chart names it otherwise) with the
     count its money is drawn per in it, as the one owner of money's words writes it
-    (:meth:`~threetears.evals.analysis.report.plan_page.look.Quantity.label`): ``Cost per 1k calls`` drawn per
+    (:meth:`~threetears.evals.analysis.report.parts.look.Quantity.label`): ``Cost per 1k calls`` drawn per
     1,000,000 reads ``Cost per 1,000,000 calls``, never both counts; any other figure's words as they are.
 
     :param report_input: The report input.

@@ -33,8 +33,8 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmPr
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
 from threetears.evals.analysis.report_input import report_input_digest
 from threetears.evals.analysis.report.block_spec import block_look
-from threetears.evals.analysis.report.plan_page.tables import arms_table
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.tables import arms_table
+from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     SERVED_BY_TEMPLATE,
     TOOL_SPEND_TEMPLATE,

@@ -10,7 +10,7 @@
   matrix keeps the slices every arm holding the measure has one in.
 
 Each matrix is drawn in its own measure's unit (the one-unit rule,
-:func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): where the measures it reads are in several
+:func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`): where the measures it reads are in several
 units, each panel carries its unit's format and span, the panels of one unit sharing one span. An arm (or a slice) lacking a figure anywhere in its matrix is left out, and a caption names it;
 cells below the floor are outlined by the kit. The count format follows the largest count: thousands where one
 reaches ten thousand.
@@ -49,7 +49,7 @@ from threetears.evals.analysis.report.charts import (
     HeatmapPanel,
     HeatmapRow,
 )
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts.charting import (
     STORED_SPAN_REFUSAL,
     ChartContext,
     CriterionWhere,
@@ -72,8 +72,8 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_refusal,
 )
 from threetears.evals.analysis.report.figure_keys import INTERVAL_TEMPLATE
-from threetears.evals.analysis.report.plan_page.look import Quantity, band_domain, figure_text, in_change_form, quantity
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.look import Quantity, band_domain, figure_text, in_change_form, quantity
+from threetears.evals.analysis.report.parts.words import (
     BELOW_TEMPLATE,
     CASES_TEMPLATE,
     CONFUSION_NOTE,

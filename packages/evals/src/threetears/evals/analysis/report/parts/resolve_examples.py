@@ -22,8 +22,8 @@ from threetears.evals.analysis.report.charts import (
     ExampleMetaText,
     ExamplesChart,
 )
-from threetears.evals.analysis.report.plan_page.charting import ChartContext, Drawn, KindResolver, chart_block
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.charting import ChartContext, Drawn, KindResolver, chart_block
+from threetears.evals.analysis.report.parts.words import (
     EXPECTED_TERM,
     INPUT_TERM,
     NO_REASON,

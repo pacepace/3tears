@@ -7,12 +7,11 @@ Contracts held here (``threetears.evals.ops.report_read``, ``threetears.evals.an
   its made line at its foot: Markdown and HTML are that page as its writers write it, the static page runs, links and
   loads nothing (no ``<script>``, no ``<link>``, no URL), and JSON is the campaign's JSON, every member it carried
   before, plus ``report_doc``: the stored document, its id and its generation record, with no transcript;
-- **a ``plan`` analysis** reads as the code-only page with the one regenerate line, in every form, and no planner page
-  is reached;
+- **a ``plan`` analysis** reads as the code-only page with the retired writer's line, in every form;
 - **a document this version no longer reads** (a stale version, a model that no longer validates, a snapshot gone, a
   document deleted apart from its analysis) reads the same way, never refused;
-- **the line is one constant**, which the page, ``ReportDocument.needs_regeneration`` and the listing print byte for
-  byte;
+- **each line is one constant** (the regenerate line, and the retired writer's), which the page,
+  ``ReportDocument.needs_regeneration`` and the listing print byte for byte;
 - **``include_sessions``** adds each stored session, equal to the stored one, for any stored version read by
   ``report_doc_id``; a read without it, and ``list_report_docs``, read no session; a page form refuses it;
 - **``report_doc_id``** of another campaign, or of none, is refused as not found;
@@ -32,7 +31,6 @@ from typing import Any
 
 import pytest
 
-import threetears.evals.analysis.service as analysis_service
 from packages.evals.tests.doc_writer_support import TOY_DOC
 from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY, seeded_host, snapshot_ids
 from packages.evals.tests.off_loop import off_loop
@@ -50,7 +48,7 @@ from packages.evals.tests.report_kit_support import chromium_unavailable, render
 from packages.evals.tests.report_writer_support import RecordedModel, written
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.engine import ReportReadParams
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report_doc_store import read_report_doc
@@ -65,6 +63,12 @@ from threetears.evals.testing import RecordedTurns
 
 #: The accepted runs: Kairo round 2 and the six misfits, each a recording replayed here.
 _RUNS = Path(__file__).parent / "fixtures" / "report_docs" / "prototype5"
+
+#: The line a planned analysis reads with: the report planner is a retired writer.
+_RETIRED = (
+    "written by a retired report writer (the report planner); regenerate with analysis_generate to read a report "
+    "over it"
+)
 
 #: The members the campaign's JSON carried before the report document's, which every page's JSON keeps.
 _CAMPAIGN_MEMBERS = {"kind", "shape", "campaign_id", "basis", "analysis_id", "recommendation", "readings", "call"}
@@ -193,25 +197,26 @@ async def test_json_keeps_every_member_it_carried_and_gains_the_report_doc_witho
 
 
 def _code_only_with_the_line(
-    fixture: OpsFixture, analysis_id: str | None, basis: str | None, **asked: Any
+    fixture: OpsFixture, analysis_id: str | None, basis: str | None, *, line: str = NO_LONGER_READS, **asked: Any
 ) -> list[ReportDocument]:
-    """Every form of the report is the code-only page with the one regenerate line, naming what it stands in for:
-    the campaign's analysis, or the report document asked for by its id. Never refused."""
+    """Every form of the report is the code-only page with the one line (the regenerate line, or the retired
+    writer's), naming what it stands in for: the campaign's analysis, or the report document asked for by its id.
+    Never refused."""
     named = analysis_id if analysis_id is not None else asked["report_doc_id"]
     said = (
-        f"This campaign's analysis {analysis_id} was {NO_LONGER_READS}."
+        f"This campaign's analysis {analysis_id} was {line}."
         if analysis_id is not None
-        else f"Report document {named} was {NO_LONGER_READS}."
+        else f"Report document {named} was {line}."
     )
     reads = []
     for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
         read = _read(fixture, form, static=static, **asked)
         assert (read.basis, read.analysis_id, read.analysis_basis) == ("code_only", analysis_id, basis), form
         assert read.doc is None and read.needs_regeneration is not None, form
-        assert read.needs_regeneration.startswith(f"{NO_LONGER_READS} ("), form
+        assert read.needs_regeneration.startswith(f"{line} ("), form
         if form != "json":
             assert (escape(said) if form == "html" else said) in read.body, form
-            assert NO_LONGER_READS in read.body, form
+            assert (escape(line) if form == "html" else line) in read.body, form
             assert "No recommendation was written" not in read.body, form
         else:
             body = json.loads(read.body)
@@ -220,19 +225,11 @@ def _code_only_with_the_line(
     return reads
 
 
-async def test_a_plan_analysis_reads_code_only_with_the_line_and_no_planner_page_is_reached(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_plan_analysis_reads_code_only_with_the_retired_writers_line() -> None:
     fixture = off_loop(ops_fixture)
     planned, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
 
-    def planner(*_: Any, **__: Any) -> Any:
-        raise AssertionError("report_read reached the planner's page")
-
-    monkeypatch.setattr(analysis_service, "plan_page", planner)
-    monkeypatch.setattr(analysis_service, "get_report_plan", planner)
-
-    _code_only_with_the_line(fixture, planned.id, "plan")
+    _code_only_with_the_line(fixture, planned.id, "plan", line=_RETIRED)
     assert 'data-page="campaign"' in _read(fixture, "html").body, "the code-only page, not the plan's"
 
 
@@ -347,8 +344,7 @@ async def test_a_stand_in_s_json_never_reads_as_a_campaign_never_analysed() -> N
 
     assert never["needs_regeneration"] is None
     assert (
-        stands_in["needs_regeneration"].startswith(f"{NO_LONGER_READS} (")
-        and planned.id in (stands_in["needs_regeneration"])
+        stands_in["needs_regeneration"].startswith(f"{_RETIRED} (") and planned.id in (stands_in["needs_regeneration"])
     )
     assert stands_in != never
 
@@ -369,11 +365,12 @@ async def test_the_line_is_one_constant_every_surface_prints_byte_for_byte() -> 
     )
 
     assert NO_LONGER_READS == "written in a shape this version no longer reads; regenerate with analysis_generate"
-    assert line.id == planned.id and line.needs_regeneration == NO_LONGER_READS
-    assert called.structured is not None and called.structured["needs_regeneration"].startswith(NO_LONGER_READS)
-    for form in ("markdown", "html"):
-        assert _read(fixture, form).body.count(NO_LONGER_READS) == 1, form
-    assert NO_LONGER_READS in called.text
+    assert retired_generation("plan") == _RETIRED
+    assert line.id == planned.id and line.needs_regeneration == _RETIRED
+    assert called.structured is not None and called.structured["needs_regeneration"].startswith(_RETIRED)
+    assert _read(fixture, "markdown").body.count(_RETIRED) == 1
+    assert _read(fixture, "html").body.count(escape(_RETIRED)) == 1
+    assert _RETIRED in called.text
 
 
 # -- transcripts -----------------------------------------------------------------------------------------------------------

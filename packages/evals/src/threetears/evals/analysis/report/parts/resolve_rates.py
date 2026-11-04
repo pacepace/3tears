@@ -3,7 +3,7 @@
 **dot_interval** marks each figure with a faint interval against its floor:
 
 - *readings*, *contrasts*: each change as the diverging chart reads it (the one owner of how a reading or a contrast
-  reads as a change, :mod:`~threetears.evals.analysis.report.plan_page.resolve_changes`), a dot per row, panels by
+  reads as a change, :mod:`~threetears.evals.analysis.report.parts.resolve_changes`), a dot per row, panels by
   measure where it reads several;
 - *measures*, *judged*: an arm per row, a panel per measure where it reads several;
 - *tasks*, *strata*: an arm per row, a panel per slice (and measure) where there are several, or a panel per arm, a
@@ -18,7 +18,7 @@ The line is the stored one, else the one criterion on the measure read where the
 task, or in the one task a panel draws). A dot that misses its line is hollow. A strip always states a level (the
 kit's contract): the stored one, else the one level the figures it reads declare, else none, when no interval is
 drawn. A rate's interval is drawn within 0 to 100, where a rate lies. Each strip is drawn in its own measure's unit
-(the one-unit rule, :func:`~threetears.evals.analysis.report.plan_page.charting.unit_refusal`): where the measures
+(the one-unit rule, :func:`~threetears.evals.analysis.report.parts.charting.unit_refusal`): where the measures
 it reads are in several, each panel carries its unit's format and span, the panels of one unit sharing one span; a
 strip per arm holds every measure, so its measures must share one unit, each drawn at its own scale.
 
@@ -34,9 +34,9 @@ a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.r
 a panel draws) is hollow; on a summary, an arm that does not survive is faded. Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
 caption says. A config takes its first factor's colour, which a legend names
-(:func:`~threetears.evals.analysis.report.plan_page.charting.factor_token`); a panel of more than eight points labels
+(:func:`~threetears.evals.analysis.report.parts.charting.factor_token`); a panel of more than eight points labels
 only the stressed and the recommended one
-(:func:`~threetears.evals.analysis.report.plan_page.charting.point_labels`).
+(:func:`~threetears.evals.analysis.report.parts.charting.point_labels`).
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ from threetears.evals.analysis.report.charts import (
     ScatterPanel,
     ScatterPoint,
 )
-from threetears.evals.analysis.report.plan_page import resolve_changes
-from threetears.evals.analysis.report.plan_page.charting import (
+from threetears.evals.analysis.report.parts import resolve_changes
+from threetears.evals.analysis.report.parts.charting import (
     STORED_SPAN_REFUSAL,
     ChartContext,
     CriterionWhere,
@@ -91,7 +91,7 @@ from threetears.evals.analysis.report.plan_page.charting import (
     unit_quantities,
     unit_refusal,
 )
-from threetears.evals.analysis.report.plan_page.look import (
+from threetears.evals.analysis.report.parts.look import (
     Quantity,
     band_domain,
     centred_domain,
@@ -102,7 +102,7 @@ from threetears.evals.analysis.report.plan_page.look import (
     quantity,
     quantity_of,
 )
-from threetears.evals.analysis.report.plan_page.words import (
+from threetears.evals.analysis.report.parts.words import (
     BAR_STRIP_NOTE,
     BAR_WORD,
     FLOOR_STRIP_NOTE,
