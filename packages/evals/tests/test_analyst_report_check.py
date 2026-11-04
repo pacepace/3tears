@@ -445,7 +445,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when the three reporter actions left it (reporter_case_freeze, reporter_cases_list,
 #: reporter_case_archive), campaign_record's help and the report format's description stopped naming the memo, and
 #: the archive reason's description stopped naming a reporter case.
-_EVALS_BYTES = "cc85eb786ce28ea01632d0924e10a768678fdb96ca79d4df739a3f0b0afeaffc"
+#: The evals tool moved again when a memo analysis came to read code-only, as a plan's does: analyses_list's and
+#: report_read's help, and the listing line's basis, findings, verdict and needs_regeneration, stopped saying a memo
+#: is laid out as written.
+_EVALS_BYTES = "b7d2f81815b6065ba0a1e3b4c9033c66974c21787760d050487b0c2159c4234e"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"

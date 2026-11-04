@@ -7,33 +7,23 @@ declared question stands is a separate surface with its own tests; nothing here 
 
 from __future__ import annotations
 
-import copy
 import itertools
-import json
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
-from packages.evals.tests.toyhost_memo import (
-    MODEL,
-    PROMPT,
-    PROMPT_ID,
-    FixturedClient,
-    alias_at,
-    cell_at,
-    memo_payload,
-)
+from packages.evals.tests.toyhost_cells import cell_at
+from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.generator import generate_analysis
+from threetears.evals.analysis.references import ResolvedReading, resolve_reading
 from threetears.evals.kernel.authored import Caveat, Finding, OffVocabulary, validate_authored
-from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow
-from threetears.evals.schema.models import utc_now_iso
+from threetears.evals.kernel.campaign import ENGINE_CAVEAT_KINDS, EvalAnalysis, EvidenceRow, ReadingKind
 from packages.evals.tests.factories import empty_document, make_analysis
 
 
@@ -259,12 +249,11 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
 
     The row names a cell and a reading and code fills its number, so "does the campaign report
     this?" is answered by whether the reading RESOLVES — against the decision surface, which holds
-    every measure and judged dimension the bundle measured in each cell. A row naming anything else
-    has no number to fill and is refused, repairably, naming which row it was.
+    every measure and judged dimension the bundle measured in each cell. A reading naming anything else
+    has no number to fill and is refused, naming what the cell does hold.
 
-    Driven through :func:`~threetears.evals.analysis.generator.generate_analysis` over the toy
-    host's campaign, with a fixtured completion: the surface is the one the generator builds from
-    the bundle, and a refusal is the one a finished generation raises after its one repair.
+    Resolved through :func:`~threetears.evals.analysis.references.resolve_reading` over the surface a stored analysis
+    of the toy host's campaign freezes (:func:`~threetears.evals.analysis.doc_analysis.aspect_analysis`).
     """
 
     @staticmethod
@@ -274,41 +263,24 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
 
     @staticmethod
     def _cell(bundle: Any) -> Any:
-        """The facts of the cell the rows below name, read off the bundle the generator was handed."""
+        """The facts of the cell the readings below name, read off the bundle the analysis froze."""
         ref = cell_at(bundle, TOYHOST_NARROW)
         (cell,) = [cell for cell in bundle.cell_measures if cell_ref(cell.variant_key, cell.apparatus_class_id) == ref]
         return cell
 
-    async def _generate(self, bundle: Any, *rows: dict[str, str]) -> EvalAnalysis:
-        """Generate over a memo whose SECOND finding carries ``rows`` as its evidence."""
-        payload = memo_payload(bundle)
-        (finding,) = payload["findings"]
-        payload["findings"] = [finding, {**copy.deepcopy(finding), "evidence": list(rows)}]
-        profile = toyhost_profile()
-        analysis, _insights = await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(payload)),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=profile,
-        )
-        return analysis
-
-    async def _resolve(self, measure: str, reading: str = "measure") -> EvidenceRow:
+    def _resolve(self, measure: str, reading: ReadingKind = "measure") -> ResolvedReading:
         bundle = self._bundle()
-        row = {"cell": alias_at(bundle, TOYHOST_NARROW), "measure_id": measure, "reading": reading}
-        analysis = await self._generate(bundle, row)
-        return analysis.resolutions[1].evidence[0]
+        analysis, _ = doc_analysis_over(campaign_bundle(bundle))
+        (aspect,) = analysis.aspects
+        return resolve_reading(aspect.decision_surface, cell_at(bundle, TOYHOST_NARROW), measure, reading)
 
-    async def test_a_measure_the_campaign_reported_survives_with_its_number_filled(self):
+    def test_a_measure_the_campaign_reported_survives_with_its_number_filled(self):
         bundle = self._bundle()
         (reported,) = [m for m in self._cell(bundle).measures.measures if m.name == "total_ms"]
 
-        row = await self._resolve("total_ms")
+        row = self._resolve("total_ms")
 
-        assert (row.cell_ref, row.measure_id, row.reading, row.value, row.n) == (
+        assert (row.cell_ref, row.measure_id, row.reading, row.mean, row.n) == (
             cell_at(bundle, TOYHOST_NARROW),
             "total_ms",
             "measure",
@@ -317,39 +289,18 @@ class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:
         )
         assert row.dispersion, "a resolved number carries its spread"
 
-    async def test_a_measure_the_campaign_never_reported_is_refused(self):
-        with pytest.raises(GenerationError, match="no such measure"):
-            await self._resolve("invented_metric")
+    def test_a_measure_the_campaign_never_reported_is_refused(self):
+        with pytest.raises(UnresolvableReference, match="no such measure"):
+            self._resolve("invented_metric")
 
-    async def test_the_refusal_names_the_finding_and_the_row(self):
-        """An operator deciding whether to re-run a billed generation needs to know which row."""
-        with pytest.raises(GenerationError) as excinfo:
-            await self._resolve("invented_metric")
-        assert "findings[1].evidence[0]" in str(excinfo.value)
-
-    async def test_a_judged_dimension_the_campaign_scored_survives_as_evidence(self):
+    def test_a_judged_dimension_the_campaign_scored_survives_as_evidence(self):
         """Quality is reportable: a judged score is a measurement the bundle carries, off the ranking surface."""
         (scored,) = [j for j in self._cell(self._bundle()).judged if j.dimension == TOYHOST_JUDGED_DIMENSION]
 
-        row = await self._resolve(TOYHOST_JUDGED_DIMENSION, "judged")
+        row = self._resolve(TOYHOST_JUDGED_DIMENSION, "judged")
 
-        assert (row.value, row.reading) == (scored.mean, "judged")
+        assert (row.mean, row.reading) == (scored.mean, "judged")
 
-    async def test_a_judged_dimension_the_campaign_never_scored_is_refused(self):
-        with pytest.raises(SoundnessRefusal, match="no such dimension"):
-            await self._resolve("tone", "judged")
-
-    async def test_the_refusal_is_repairable_rather_than_terminal(self):
-        """The class is the contract, so assert it rather than its superclass.
-
-        ``SoundnessRefusal`` subclasses ``GenerationError``, so the tests above would pass for a
-        refusal on the terminal side of the repair boundary too. A row naming a reading the
-        campaign never measured is something a finished call DID, and the refusal names the row,
-        so it is feedable.
-        """
-        with pytest.raises(UnresolvableReference):
-            await self._resolve("invented_metric")
-
-    async def test_a_finding_citing_no_reading_resolves_to_no_row(self):
-        analysis = await self._generate(self._bundle())
-        assert analysis.resolutions[1].evidence == []
+    def test_a_judged_dimension_the_campaign_never_scored_is_refused(self):
+        with pytest.raises(UnresolvableReference, match="no such dimension"):
+            self._resolve("tone", "judged")

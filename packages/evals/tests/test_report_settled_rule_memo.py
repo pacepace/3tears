@@ -1,5 +1,8 @@
 """A memo page over floors read either way: the memo's own answer, printed as written.
 
+The memo writer is retired; its renderer stays until it leaves, so a memo is stored as the memo writer stored one
+(:func:`~packages.evals.tests.test_report_trace.stored_memo`) and laid out by ``build_report``.
+
 A floor warns and never decides, so the memo's answer to the question is printed as written, under the page's warning
 line for each floor broken. A finding disputing a floor's reading is the writer's prompt to prevent, never the page's to
 rewrite (owner, 2026-10-24). The G2 numbers are replayed through the quick path, with the G2 floors declared before the run, as the
@@ -12,7 +15,6 @@ outright: a drop whose whole interval is past the margin.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -24,7 +26,6 @@ from threetears.evals.analysis import (
     assemble_context_bundle,
     build_code_only_report,
     build_report,
-    generate_analysis,
     get_campaign,
     report_markdown,
 )
@@ -37,7 +38,7 @@ from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.aspect_support import redeclared
 from packages.evals.tests.g2_support import CANDIDATE, CASES, G2_FLOORS, G2_QUESTION, PRODUCTION, answering, declaring
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.report_support import memo_analysis_over
 
 #: The G2 campaign's title.
 TITLE = "G2: can the cheaper model replace production?"
@@ -104,21 +105,12 @@ def _finding(title: str, measure: str, aliases: dict[str, str], body: str = "") 
     }
 
 
-async def _memo_page(
-    comparison: Result, bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str
-) -> Report:
+async def _memo_page(bundle: AnalysisContextBundle, findings: list[dict[str, Any]], answer: str) -> Report:
     """The page a stored analysis of ``findings`` and one answer to the G2 question renders."""
     memo = authored_memo(bundle, findings, means=answer)
-    analysis, _ = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo)),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at="2026-10-14T19:23:41+00:00",
-        profile=comparison.host.profile,
+    return build_report(
+        memo_analysis_over(campaign_bundle(bundle), memo, generated_at="2026-10-14T19:23:41+00:00"), campaign_name=TITLE
     )
-    return build_report(analysis, campaign_name=TITLE)
 
 
 def _aliases(comparison: Result, bundle: AnalysisContextBundle, candidate: str = CANDIDATE) -> dict[str, str]:
@@ -150,7 +142,7 @@ async def test_a_broken_floor_never_replaces_the_memo_s_answer() -> None:
     comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     report = await _memo_page(
-        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
+        bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Keep production."
     )
     (answer,) = _answers(report)
     assert answer.body == "Keep production."
@@ -167,7 +159,7 @@ async def test_a_memo_recommending_the_arm_a_floor_warns_against_is_printed_as_w
     comparison, bundle = await _compare(0.003301, shown=True)
     aliases = _aliases(comparison, bundle)
     report = await _memo_page(
-        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Switch to the candidate."
+        bundle, [_finding("The candidate skipped the queue", "match", aliases)], "Switch to the candidate."
     )
     (answer,) = _answers(report)
     assert answer.body == "Switch to the candidate."
@@ -199,7 +191,7 @@ async def test_a_finding_naming_no_reading_is_noted_with_what_was_not_tested_and
         "evidence": [],
     }
     report = await _memo_page(
-        comparison, bundle, [_finding("The candidate skipped the queue", "match", aliases), unread], "Keep production."
+        bundle, [_finding("The candidate skipped the queue", "match", aliases), unread], "Keep production."
     )
     markdown = report_markdown(report)
     # Findings are evidence: one citing no reading is not one, so What it means holds the other alone.

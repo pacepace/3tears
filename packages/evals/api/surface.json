@@ -1406,11 +1406,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.ANALYSIS_GEN_PROMPT": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ANALYSIS_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
@@ -5106,11 +5101,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.CallAdmission": {
-      "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.campaign_aggregate": {
       "kind": "function",
       "signature": "",
@@ -5666,11 +5656,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.first_request": {
-      "kind": "function",
-      "signature": "first_request(bundle: CampaignBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]",
-      "tier": "stable"
-    },
     "threetears.evals.analysis.FloorContrast": {
       "kind": "model",
       "signature": "",
@@ -5818,7 +5803,7 @@
     },
     "threetears.evals.analysis.generate_analysis": {
       "kind": "async function",
-      "signature": "generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]",
+      "signature": "generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: Callable[[str, str, dict[str, Any] | None], None] | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.GenerationError": {
@@ -6425,11 +6410,6 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.analysis.prompt_content_version": {
-      "kind": "function",
-      "signature": "prompt_content_version(prompt: str, profile: HostProfile) -> str",
-      "tier": "stable"
     },
     "threetears.evals.analysis.propose_bars": {
       "kind": "function",

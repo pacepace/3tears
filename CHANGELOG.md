@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the memo writer is retired; a memo analysis reads as code's page with the retired writer's line
+
+**Removed:** the memo writer's modules (`generator`, `gen_prompt` and its rules ledger, `generation_round`,
+`prose_refs`), and with them `first_request`, `prompt_content_version` and `CallAdmission`
+(`threetears.evals.analysis`) and `ANALYSIS_GEN_PROMPT` (`threetears.evals.kernel`). `SEED_PROMPTS` no longer seeds
+`eval_analysis_gen`. The memo writer's recorded paid lane and its CI workflow (`evals-paid.yml`) go with it.
+`GenerationTally` moved to `analysis/generation_tally.py` and stays exported; what a stored analysis keeps of each
+aspect is built in `analysis/doc_analysis.py`.
+
+**Deprecated:** `generate_analysis` (`threetears.evals.analysis`) keeps importing for this minor, warning, and refuses
+every call before its client is asked anything, naming `analysis_generate`. `EVAL_ANALYSIS_GEN_DEFAULT` and
+`analysis_gen_request_settings_for` stay as they were (one minor).
+
+**Changed:** a memo analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id and
+`analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the memo
+writer); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line, and the
+listing counts no findings for it. `build_report` still lays one aspect's memo page out until the memo renderer
+leaves. Nothing stored changes shape or version.
+
+**Hosts:** drop the `eval_analysis_gen` slot and any call to `generate_analysis`; regenerate a memo analysis with
+`analysis_generate` to read a report over it.
+
 ### evals: the planned page is retired; a planned analysis reads as code's page with the retired writer's line
 
 **Removed:** the planned page and its two forms (`PlannedPage`, `PageAnswer`, `PageClause`, `PageConfidence`,

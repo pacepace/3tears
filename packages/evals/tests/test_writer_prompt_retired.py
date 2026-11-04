@@ -1,7 +1,7 @@
 """No generation runs the memo writer: ``analysis_generate`` writes with the report writer and names no prompt.
 
-The memo writer's ``eval_analysis_gen`` stays registered until the memo writer itself leaves the package. The report
-planner's slot, ``eval_report_plan``, is retired already (``test_retired_names``).
+The memo writer is retired, and its slot, ``eval_analysis_gen``, with it, as the report planner's ``eval_report_plan``
+is (``test_prompt_catalogue``, ``test_retired_names``).
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, SEED_PROMPTS
 from threetears.evals.ops import AnalysisGeneration
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
@@ -55,7 +54,3 @@ def test_no_module_on_the_generation_path_names_the_writers_prompt_or_entry_poin
     }
 
     assert not named & WRITER_NAMES, f"{relative} reaches the memo writer: {sorted(named & WRITER_NAMES)}"
-
-
-def test_the_writers_prompt_stays_registered_until_the_memo_writer_leaves():
-    assert ANALYSIS_GEN_PROMPT in {entry.prompt_type for entry in SEED_PROMPTS}

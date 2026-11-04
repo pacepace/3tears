@@ -558,7 +558,7 @@ evidence blocks that show it, what it left out and why, next steps and method. E
 code resolves; the analyst types none. Code checks the draft mechanically and sends a failing one back; an
 **editor**, the same model in a fresh context, then reviews the page as a reader would before it is stored. Optional,
 and it costs money; the verdict and every count are code's either way. Older analyses were a memo or a planned
-report; a memo still renders as its page, and a planned report reads as the code-only page with a line to regenerate.
+report; each reads as the code-only page with a line to regenerate.
 See [the analyst's report](reading-reports.md#the-analysts-report-written-over-frozen-evidence).
 
 #### Confidence
