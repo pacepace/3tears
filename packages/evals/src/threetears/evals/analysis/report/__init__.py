@@ -3,11 +3,10 @@
 - :mod:`model` — the :class:`Report` and :meth:`Report.write`, which puts the page, its Markdown and ``bundle.json``
   in one directory; it re-exports the blocks.
 - :mod:`blocks` — a page's blocks (``text``, ``table``, ``chart``, ``trial``, ``disclosure``) and what they carry.
-- :mod:`campaign_page` — :func:`build_campaign_report`, a campaign's page over its aspects: code's warnings, the
-  writer's summary and recommendation, code's readings, the person's call, then one fold per aspect holding that
-  aspect's page; each part is laid out by its own module of :mod:`campaign`, and ``campaign_page`` re-exports them.
-- :mod:`build` — :func:`build_report`, laying a stored analysis out over the bundle frozen with it, and
-  :func:`build_code_only_report`, laying a campaign's evidence out when no analysis exists. One page either way.
+- :mod:`campaign_page` — :func:`build_campaign_report`, code's page for a campaign over its aspects: code's warnings,
+  where its report is, code's readings, the person's call, then one fold per aspect holding that aspect's page; each
+  part is laid out by its own module of :mod:`campaign`, and ``campaign_page`` re-exports them.
+- :mod:`build` — :func:`build_code_only_report`, laying one aspect's evidence out as code's page.
 - :mod:`verdict` — the first screen's basis and verdict lines, and the words for every way a trial is lost or fails.
 - :mod:`charts` — the eval report kit's chart kinds as models, each carrying the values its chart draws, which a
   :class:`ChartBlock` carries as its ``data``; :mod:`svg` — the interval glyph a table cell draws, as inline SVG.
@@ -27,7 +26,6 @@ from threetears.evals.analysis.report.build import (
     analysis_bundle,
     analysis_verdict,
     build_code_only_report,
-    build_report,
 )
 from threetears.evals.analysis.report.campaign_page import build_campaign_report
 from threetears.evals.analysis.report.charts import (
@@ -240,7 +238,6 @@ __all__ = [
     "analysis_verdict",
     "build_campaign_report",
     "build_code_only_report",
-    "build_report",
     "campaign_report_html",
     "campaign_report_markdown",
     "report_html",

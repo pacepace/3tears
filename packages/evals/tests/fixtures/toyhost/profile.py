@@ -1,4 +1,4 @@
-"""The toy host's profile — six measures, two bars in opposite directions, a world, and a style unlike the default.
+"""The toy host's profile — six measures, two bars in opposite directions and a world.
 
 Each measure is chosen for a value-shape the engine has to handle: a bounded ratio, two unbounded quantities in opposite better-directions, an
 **unbounded count** — the class where a confidence interval reached −7.7 on a quantity that
@@ -19,7 +19,6 @@ from threetears.evals.kernel.host import (
     BarRegistry,
     HostProfile,
     MeasureRegistry,
-    StyleProfile,
 )
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.kind import (
@@ -132,18 +131,6 @@ TOYHOST_BARS: tuple[Bar, ...] = (
     ),
 )
 
-#: A style deliberately unlike the default, so the prompt-purity test is asserting something: a register of its own.
-TOYHOST_STYLE = StyleProfile(tone_register="executive")
-
-#: A caveat kind the ENGINE does not own, registered for the reason the two opposite-direction
-#: bars are registered: the four engine kinds were derived from one product's caveats, and a
-#: fixture that only ever uses them proves nothing about whether the field is open. Adjudication
-#: scope is a real fifth kind for this domain — which invoices the human key covers is neither
-#: apparatus, sampling, instrument nor scope — and forcing it into `scope` is exactly the
-#: collapse a closed enum on a host-facing field causes.
-TOYHOST_CAVEAT_KINDS: frozenset[str] = frozenset({"adjudication_scope"})
-
-
 def toyhost_profile(
     *,
     with_world: bool = True,
@@ -184,8 +171,6 @@ def toyhost_profile(
         host_sweepables=TOYHOST_TUNABLE_SWEEPABLE_REGISTRY if tunable_retrieval else TOYHOST_SWEEPABLE_REGISTRY,
         measures=MeasureRegistry(TOYHOST_MEASURES, families=(TOYHOST_EXTRACTION_FAMILY,)),
         bars=BarRegistry(TOYHOST_BARS),
-        style=TOYHOST_STYLE,
-        caveat_kinds=TOYHOST_CAVEAT_KINDS,
         world=world if with_world else None,
         variant_levers=tunable_variant_levers if tunable_retrieval else variant_levers,
         kinds=(replace(TOY_EXTRACTOR_CONTRACT, seats=None) if every_seat else TOY_EXTRACTOR_CONTRACT,),
@@ -196,9 +181,7 @@ __all__ = [
     "FIELD_COUNT_ERROR",
     "TOYHOST_BARS",
     "TOYHOST_EXTRACTION_FAMILY",
-    "TOYHOST_CAVEAT_KINDS",
     "TOYHOST_ID",
     "TOYHOST_MEASURES",
-    "TOYHOST_STYLE",
     "toyhost_profile",
 ]

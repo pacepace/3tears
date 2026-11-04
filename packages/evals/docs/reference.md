@@ -422,7 +422,7 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`ResolvesInto`** · dataclass · Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
 - **`RolePins`** · dataclass · One pinned ROLE — who filled a seat in the rig, and the inputs that identify them.
 - **`SeedRefused`** · *host contract* · exception · A seed asked for a write the registry or the subject cannot make.
-- **`StyleProfile`** · dataclass · One host's bounded presentation contract.
+- **`StyleProfile`** · dataclass · Retired: one host's tone register, which nothing reads now that the writers that read it are retired.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
 - **`TemplateCaseFields`** · *host contract* · protocol · What a host's check over a template case reads of it: the fields of a seed corpus's `threetears.evals.run.SeedTemplateCase`, which is what the check is handed.
@@ -1098,9 +1098,9 @@ Everything the engine knows about one consuming product.
 | `host_sweepables` | `SweepableRegistry` | required | What this host itself declares it sweeps and what holds its measurements: the shared core (`SHARED_CORE`) extended with the host's own levers, apparatus and labels. |
 | `measures` | `MeasureRegistry` | required | What this host can see. The observability map. |
 | `bars` | `BarRegistry` | `BarRegistry()` | The incumbent standards per behavior. A host with none registers an empty registry. |
-| `style` | `StyleProfile` | `StyleProfile()` | The bounded presentation contract. No field of it is free text. |
+| `style` | `StyleProfile \| None` | `None` | Retired: the tone register the retired writers' prompts read; nothing reads it now. |
 | `world` | `WorldRegistry \| None` | `None` | What a run may set before the subject starts, and what it may only witness. |
-| `caveat_kinds` | `frozenset[str]` | `frozenset()` | Caveat kinds this host declares, BEYOND the four the engine owns. |
+| `caveat_kinds` | `frozenset[str] \| None` | `None` | Retired: the caveat kinds the retired memo writer offered beyond the engine's own; nothing reads them now. |
 | `variant_levers` | `VariantLeverReader \| None` | `None` | How this host resolves a run's level of each of its OWN fixed levers. See `VariantLeverReader`. |
 | `observed_model_levers` | `Mapping[str, str]` | `dict()` | Levers whose INHERITED value is recoverable from what a run observably did. |
 | `action_parameters` | `ActionParameterReader \| None` | `None` | How a goal check learns which of a call's recorded parameters are closed values. |

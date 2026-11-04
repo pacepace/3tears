@@ -14,25 +14,15 @@ reach those screens; :data:`ENGINE_WORDS` maps each to what a reader is told ins
 from __future__ import annotations
 
 import typing
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from threetears.evals.analysis.arms import arm_label, arm_names, multi_rig_variants, short_digest
+from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
-from threetears.evals.analysis.cells import variant_of_cell_ref
-from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.references import cell_index, resolve_reading, restated_dispersion
-from threetears.evals.analysis.report.figures import MeasureRuler, analysis_rulers
-from threetears.evals.analysis.report.blocks import CellValue, TableCell
 from threetears.evals.kernel.analysis_measures import BarDecision
-from threetears.evals.analysis.style import arm_display_name, arm_name, declared_check_name, measure_name
+from threetears.evals.analysis.style import arm_display_name, arm_name, measure_name
 from threetears.evals.kernel.campaign import (
-    AspectAnalysis,
     ConfidenceTier,
-    EvalAnalysis,
-    EvidenceRow,
-    EvidenceTier,
-    VariantIndexEntry,
 )
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
@@ -87,51 +77,10 @@ ENGINE_WORDS: dict[str, str] = {
 #: Words that never appear on a report's first two screens: the engine's nouns, and "winner", which no arm is.
 FIRST_SCREEN_BANNED: tuple[str, ...] = (*ENGINE_WORDS, "winner")
 
-#: What a finding's trace says where it reaches nothing: no cost, floor, contrast, guardrail, bar or one-arm reading on
-#: the page prints a figure the finding cites, and it names no trial the page holds, so nothing of it links anywhere.
-#: Said in the finding's ``Evidence`` fold.
-UNTRACED = "No contrast, guardrail, bar or cost on this page shows this finding's figures."
-
 #: A confidence tier as a reader says it.
 CONFIDENCE_WORDS = worded(
     {"very_high": "very high", "high": "high", "medium": "medium", "low": "low"}, ConfidenceTier, "a confidence tier"
 )
-
-#: What a verdict stands on, as a reader says it — code's tier, read off the finding's evidence rows.
-EVIDENCE_TIER_WORDS = worded(
-    {
-        "mechanical": "checks and measures",
-        "calibrated": "judged scores from a judge that agrees with people",
-        "separation": "judged scores from a judge that agrees with itself; not shown to agree with people",
-        "undetermined": "judged scores whose judge's reliability has not been measured enough to say",
-        "incidental": "judged scores from a judge measured as neither agreeing with people nor with itself",
-        "none": "no reading it names",
-    },
-    EvidenceTier,
-    "an evidence tier",
-)
-
-
-#: What a page says where the memo recommends no arm, by the campaign's kind (a change always recommends one).
-NO_RECOMMENDATION_WORDS: dict[str, str] = {
-    "measurement": "This campaign measures one arm, so there is no arm to recommend.",
-    "choice": "No clear winner: the writer recommends no arm.",
-    "change": "The writer recommends no arm.",
-}
-
-
-def stands_on_words(analysis: EvalAnalysis, tier: EvidenceTier) -> str:
-    """What a finding stands on, as a reader says it.
-
-    :param analysis: The analysis the tier was stored in.
-    :ptype analysis: EvalAnalysis
-    :param tier: The finding's tier.
-    :ptype tier: EvidenceTier
-    :return: The words.
-    :rtype: str
-    """
-    return EVIDENCE_TIER_WORDS[tier]
-
 
 #: What a contrast's test said against the control, as a reader says it: each arm by its label and the direction by
 #: name, never "the control", which a reader took for a place ("improved on the control" read as "in the control").
@@ -237,180 +186,6 @@ def reading_heading(
     if reading != "judged" and goal_check_of(name) is not None:
         return measure_name(name, declared=declared)
     return reading_name(surface.measure_heading(name, reading))
-
-
-def cell_arm_labels(surface: DecisionSurface, variant_index: Sequence[VariantIndexEntry]) -> dict[str, str]:
-    """Name every cell on the surface by its arm, adding the test setup only where one arm ran under two.
-
-    The words are :func:`~threetears.evals.analysis.arms.arm_label`'s over the index's
-    :func:`~threetears.evals.analysis.arms.arm_names`, so one arm reads alike in every table of the report and in
-    the memo the reporter eval's judge reads.
-
-    :param surface: The decision surface whose cells to name.
-    :ptype surface: DecisionSurface
-    :param variant_index: The variant index, which says what each cell's arm carried.
-    :ptype variant_index: Sequence[VariantIndexEntry]
-    :return: ``cell_ref -> label`` for every cell.
-    :rtype: dict[str, str]
-    """
-    multi = multi_rig_variants(surface.cells)
-    names = arm_names(variant_index)
-    return {
-        ref: arm_label(cell.variant_key, names)
-        + (f" (test setup {short_digest(cell.apparatus_class_id)})" if cell.variant_key in multi else "")
-        for ref, cell in cell_index(surface).items()
-    }
-
-
-def arm_namer(analysis: EvalAnalysis) -> Callable[[str], str]:
-    """Name the arm a cell reference points at, as :func:`cell_arm_labels` names it, over every aspect's cells.
-
-    One arm under one rig is one ``cell_ref`` in every aspect it ran in, and is named alike in each. A reference naming
-    a variant no aspect's surface holds is named by the variant indexes' labeller, in its own words, rather than
-    printed as the reference.
-
-    :param analysis: The analysis whose references to name.
-    :ptype analysis: EvalAnalysis
-    :return: A function from a cell reference to its arm's name.
-    :rtype: Callable[[str], str]
-    """
-    index = list({entry.variant_key: entry for aspect in analysis.aspects for entry in aspect.variant_index}.values())
-    labels: dict[str, str] = {}
-    for aspect in analysis.aspects:
-        for ref, label in cell_arm_labels(aspect.decision_surface, index).items():
-            labels.setdefault(ref, label)
-    names = arm_names(index)
-
-    def name(ref: str) -> str:
-        if ref in labels:
-            return labels[ref]
-        variant = variant_of_cell_ref(ref)
-        if variant is None:
-            return "an arm this analysis cannot read"
-        return arm_label(variant, names)
-
-    return name
-
-
-#: A finding's evidence table, column key → header: one layout for the memo as written and for the report.
-EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("arm", "Arm"),
-    ("measure", "Measure"),
-    ("value", "Value"),
-    ("cases", "Cases"),
-    ("spread", "Spread"),
-)
-
-
-def evidence_columns(analysis: EvalAnalysis) -> tuple[tuple[str, str], ...]:
-    """A finding's evidence table's columns for this analysis: :data:`EVIDENCE_COLUMNS`, led by the aspect each row
-    was read on where the campaign holds more than one.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :return: Column key → header, in display order.
-    :rtype: tuple[tuple[str, str], ...]
-    """
-    return (("aspect", "Aspect"), *EVIDENCE_COLUMNS) if len(analysis.aspects) > 1 else EVIDENCE_COLUMNS
-
-
-#: The key a stored bundle holds its declared check names under: the field's own serialized name, so a rename or an
-#: alias of the field is followed here.
-_CHECK_NAMES_KEY = AnalysisContextBundle.model_fields["goal_check_names"].serialization_alias or "goal_check_names"
-
-
-def _frozen_check_names(held: AspectAnalysis) -> dict[str, str]:
-    """The display names an aspect's frozen bundle declares for its goal checks (``goal_check_names``), by check
-    expression, read without parsing the bundle; none where the bundle was frozen naming none.
-
-    :param held: One aspect of a stored analysis.
-    :ptype held: AspectAnalysis
-    :return: Each named check's display name, by its expression.
-    :rtype: dict[str, str]
-    """
-    names = held.bundle.get(_CHECK_NAMES_KEY)
-    if not isinstance(names, dict):
-        return {}
-    return {check: name for check, name in names.items() if isinstance(check, str) and isinstance(name, str)}
-
-
-def evidence_rows(
-    analysis: EvalAnalysis, evidence: Sequence[EvidenceRow], arm: Callable[[str], str]
-) -> list[dict[str, TableCell]]:
-    """A finding's evidence as table rows, keyed by :func:`evidence_columns` — each reading by what a reader calls it.
-
-    Each row is read on the aspect it was resolved on (``EvidenceRow.aspect``). A measure's value and spread are stated
-    on its one ruler for the report (:func:`~threetears.evals.analysis.report.figures.analysis_rulers`): a share on 0–1 as a percent, a cost per
-    reply on the scale its heading names; a judged score on its dimension's; a goal check's
-    pass rate is its count (``11 of 12``), as the scoreboard counts.
-
-    :param analysis: The analysis the evidence was resolved under.
-    :ptype analysis: EvalAnalysis
-    :param evidence: One finding's resolved evidence rows, in the order code resolved them.
-    :ptype evidence: Sequence[EvidenceRow]
-    :param arm: The analysis's :func:`arm_namer`.
-    :ptype arm: Callable[[str], str]
-    :return: One row per evidence row, in order.
-    :rtype: list[dict[str, TableCell]]
-    """
-    rows: list[dict[str, TableCell]] = []
-    for row in evidence:
-        held = analysis.aspect(row.aspect)
-        surface = held.decision_surface
-        ruler = analysis_rulers(analysis, row.aspect).of(row.measure_id, row.reading)
-        declared = declared_check_name(_frozen_check_names(held), row.measure_id)
-        values: dict[str, CellValue] = {
-            "aspect": row.aspect,
-            "arm": arm(row.cell_ref),
-            "measure": ruler.scaled(reading_heading(surface, row.measure_id, row.reading, declared=declared)),
-            # Cases, never trials: the count every interval is read over.
-            "cases": row.n_cases,
-            "spread": _restated_spread(analysis, row, ruler),
-        }
-        cells = {key: TableCell(value=value) for key, value in values.items()}
-        cells["value"] = evidence_figure(row, ruler)
-        rows.append({key: cells[key] for key, _ in evidence_columns(analysis)})
-    return rows
-
-
-def evidence_figure(row: EvidenceRow, ruler: MeasureRuler) -> TableCell:
-    """One evidence row's figure as a reader is shown it: a goal check's pass rate as the scoreboard counts it
-    (``11 of 12``), any other reading on its ruler for the report.
-
-    :param row: The resolved evidence row.
-    :ptype row: EvidenceRow
-    :param ruler: The ruler its reading is stated on.
-    :ptype ruler: MeasureRuler
-    :return: The figure's cell.
-    :rtype: TableCell
-    """
-    if (passed := _passed_of(row)) is not None:
-        return TableCell(value=passed)
-    return TableCell(value=row.value * ruler.factor, unit=ruler.unit)
-
-
-def _passed_of(row: EvidenceRow) -> str | None:
-    """A goal check's pass rate as the scoreboard counts it (``11 of 12``); None for any other reading.
-
-    A check holds or not on each observation, so its rate times its observations is the count that held.
-    """
-    if row.reading != "measure" or goal_check_of(row.measure_id) is None or row.n <= 0:
-        return None
-    held = row.value * row.n
-    return f"{round(held)} of {row.n}" if abs(held - round(held)) < 1e-6 else None
-
-
-def _restated_spread(analysis: EvalAnalysis, row: EvidenceRow, ruler: MeasureRuler) -> str:
-    """An evidence row's spread on its value's ruler: as stored where nothing is restated, else re-read off the surface."""
-    if ruler.factor == 1.0:
-        return row.dispersion
-    surface = analysis.aspect(row.aspect).decision_surface
-    try:
-        resolved = resolve_reading(surface, row.cell_ref, row.measure_id, row.reading)
-    except UnresolvableReference:
-        facts = surface.measures.get(row.measure_id)
-        return f"{row.dispersion} (in {facts.unit})" if facts is not None and facts.unit else row.dispersion
-    return restated_dispersion(resolved, ruler.factor, unit=ruler.unit)
 
 
 def positions(numbers: list[int]) -> str:
@@ -524,32 +299,22 @@ def counted(n: int, of: int, what: str) -> str:
 
 
 __all__ = [
-    "NO_RECOMMENDATION_WORDS",
-    "UNTRACED",
     "BAR_DECISION_WORDS",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",
     "ENGINE_WORDS",
-    "EVIDENCE_COLUMNS",
-    "evidence_columns",
-    "evidence_figure",
-    "EVIDENCE_TIER_WORDS",
     "FIRST_SCREEN_BANNED",
     "GUARDRAIL_DECISION_WORDS",
     "LOWER_IS_BETTER",
-    "arm_namer",
     "arm_tags",
     "campaign_arm_tags",
-    "cell_arm_labels",
     "declared_arm_names",
     "printed_arm_labels",
     "comparison_words",
     "counted",
-    "evidence_rows",
     "guardrail_words",
     "positions",
     "reading_heading",
     "reading_name",
-    "stands_on_words",
     "worded",
 ]

@@ -27,7 +27,7 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis, Confidence
+from threetears.evals.kernel.authored import Confidence
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall, Floor, printed_aspect_name
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgedTierRule, weakest_judged_tier
 from threetears.evals.schema.values import SweepableValue
@@ -601,19 +601,6 @@ class CoverageLens(EvalDocumentModel):
     levers: list[LeverCoverage] = Field(default_factory=list, description="Per-lever coverage summaries.")
 
 
-# The caveat kinds the ENGINE owns, available to every host.
-#
-# Deliberately not a closed enum on the field. R8 gives the lever vocabulary to the host for the
-# reason that applies here too: a closed engine-owned set on a host-facing field forces a domain
-# with a legitimate fifth kind to jam it into ``scope``, and the field then stops meaning anything
-# — which is the one thing a required classification exists to prevent. A host registers its own
-# kinds on its profile (:attr:`~threetears.evals.kernel.host.profile.HostProfile.caveat_kinds`) and the
-# union is CHECKED nowhere yet — that belongs where a profile is in hand and prompt compliance is
-# judged on output, which is where the prompt is rebuilt. These four were derived from
-# the first host's own caveats and are offered, not imposed.
-ENGINE_CAVEAT_KINDS: frozenset[str] = frozenset({"apparatus", "sampling", "instrument", "scope"})
-
-
 class EvidenceRow(EvalDocumentModel):
     """One reading at one cell, and the number code resolved it to, with its basis.
 
@@ -938,22 +925,15 @@ class EvalAnalysis(EvalDocumentModel):
     requires it be non-empty — that the campaign actually EXISTS is a service
     concern checked at generate time, not a model validator.
 
-    **One memo per campaign.** Code reports, the writer recommends, a person decides: ``document`` is the writer's one
-    memo over every aspect — findings across them, one recommendation, a short summary per aspect and next steps
-    (:class:`~threetears.evals.kernel.authored.AuthoredCampaignAnalysis`) — kept as written, except that each figure
-    reference in its prose is replaced by the value code read (:mod:`threetears.evals.analysis.prose_refs`).
-    **Everything else code filled sits beside it**: ``resolutions`` holds, per finding by position, the numbers its
-    readings resolved to (each row naming its aspect); ``aspects`` holds each aspect's frozen bundle and what code read
-    off it; and ``campaign_bundle`` what the campaign adds over its aspects — its question, arms, floors and code's
-    readings across aspects. Links inside the document are positions, and :meth:`check_positions` refuses one that
-    points nowhere or makes the ``invalidates`` relation cycle.
-
-    **Memo, plan or report document.** An analysis ``analysis_generate`` writes today is a report document: the
-    analyst's ``report-doc/1`` (an ``eval_report_doc``, stored beside it), which ``report_doc_id`` names (:attr:`basis`
-    is ``doc``). One the report planner wrote names its :class:`EvalReportPlan` in ``report_plan_id`` (``basis``
-    ``plan``), and one stored before the planner keeps its memo (``basis`` ``memo``); each reads as it was written
-    until it is generated again. Exactly one of ``document``, ``report_plan_id`` and ``report_doc_id`` is set. Either
-    way ``recommended_variant_key``, ``aspects``, ``campaign_bundle`` and the insights it minted mean the same thing.
+    **What wrote it.** An analysis ``analysis_generate`` writes is a report document: the analyst's ``report-doc/1``
+    (an ``eval_report_doc``, stored beside it), which ``report_doc_id`` names (:attr:`basis` is ``doc``). Two retired
+    writers stored the others, which every door reads as code's page with the retired writer's line: the report
+    planner's names its :class:`EvalReportPlan` in ``report_plan_id`` (``basis`` ``plan``), and the memo writer's keeps
+    its memo in ``document`` (``basis`` ``memo``), held as the JSON it was stored as and never read. Exactly one of
+    ``document``, ``report_plan_id`` and ``report_doc_id`` is set. Whatever wrote it, ``recommended_variant_key``,
+    ``aspects`` (each aspect's frozen bundle and what code read off it), ``campaign_bundle`` (what the campaign adds
+    over its aspects: its question, arms, floors and code's readings across aspects) and the insights it minted mean
+    the same thing.
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid7()))
@@ -990,11 +970,10 @@ class EvalAnalysis(EvalDocumentModel):
             "analysis written against one declaration must not later read as written against another."
         ),
     )
-    document: AuthoredCampaignAnalysis | None = Field(
+    document: VerbatimJsonObject | None = Field(
         description=(
-            "What the memo writer authored, as written, with each figure reference in its prose rendered by code. None "
-            "for an analysis the report planner wrote, whose words are its plan (`report_plan_id`), and for a report "
-            "document's (`report_doc_id`)."
+            "The memo a retired memo writer stored, as the JSON it was stored as; no door reads it. None for an "
+            "analysis the report planner wrote (`report_plan_id`) and for a report document's (`report_doc_id`)."
         )
     )
     report_plan_id: str | None = Field(
@@ -1030,7 +1009,10 @@ class EvalAnalysis(EvalDocumentModel):
     )
     resolutions: list[FindingResolution] = Field(
         default_factory=list,
-        description="What code filled for each finding, by position in `document.findings`: its numbers.",
+        description=(
+            "What code filled for each finding of a retired memo, by position in `document`'s findings: its numbers. "
+            "Empty for a plan's and a report document's."
+        ),
     )
     aspects: list[AspectAnalysis] = Field(
         min_length=1, description="Each aspect's frozen evidence and what code read off it, in the campaign's order."
@@ -1091,16 +1073,15 @@ class EvalAnalysis(EvalDocumentModel):
 
     @model_validator(mode="after")
     def check_positions(self) -> EvalAnalysis:
-        """Refuse a link that points nowhere, a resolution that does not match its finding, or a gating cycle.
+        """Refuse aspects that are not one each, an analysis written as none or several of a memo, a plan and a report
+        document, and resolutions on one that holds no memo.
 
-        Also refuses aspects that are not one each, a resolved row or an aspect summary naming an aspect the analysis
-        does not hold, and an aspect summarised twice.
+        A retired memo is held as stored, never read, so nothing in it is checked against its resolutions.
 
         :return: This analysis, unchanged.
         :rtype: EvalAnalysis
-        :raises ValueError: A position is out of range, a finding invalidates itself, the ``invalidates``
-            relation cycles, ``resolutions`` does not have one entry per finding, a resolution's
-            rows are not the readings its finding names, or an aspect is unknown or repeated.
+        :raises ValueError: An aspect appears twice, not exactly one of ``document``, ``report_plan_id`` and
+            ``report_doc_id`` is set, or an analysis with no memo holds resolutions.
         """
         labels = [aspect.label for aspect in self.aspects]
         if repeated := sorted({label for label in labels if labels.count(label) > 1}):
@@ -1111,68 +1092,8 @@ class EvalAnalysis(EvalDocumentModel):
                 "an analysis is written as a memo (`document`), a report plan (`report_plan_id`) or a report document "
                 "(`report_doc_id`): exactly one is set"
             )
-        if self.document is None:
-            if self.resolutions:
-                raise ValueError(
-                    "a planned analysis or a report document has no memo findings, so it holds no resolutions"
-                )
-            return self
-        findings = self.document.findings
-        count = len(findings)
-        if self.resolutions and len(self.resolutions) != count:
-            raise ValueError(f"resolutions has {len(self.resolutions)} entries for {count} findings; one per finding")
-        # A finding's evidence tier is read off its resolved rows, so the rows must be the readings the
-        # finding names — one per reading, in order, of the same kind — or the tier describes other evidence.
-        for index, (finding, resolution) in enumerate(zip(findings, self.resolutions, strict=False)):
-            named = [(ref.cell, ref.measure_id, ref.reading) for ref in finding.evidence]
-            resolved = [(row.cell_ref, row.measure_id, row.reading) for row in resolution.evidence]
-            if named != resolved:
-                raise ValueError(
-                    f"resolutions[{index}].evidence resolves {resolved} and findings[{index}] names {named}; "
-                    "one resolved row per named reading, in order"
-                )
-            if stray := sorted({row.aspect for row in resolution.evidence} - set(labels)):
-                raise ValueError(f"resolutions[{index}].evidence names aspect(s) {stray}, which this analysis lacks")
-        summarised = [summary.aspect for summary in self.document.aspect_summaries]
-        if twice := sorted({label for label in summarised if summarised.count(label) > 1}):
-            raise ValueError(f"aspect_summaries summarise {twice} more than once; one summary per aspect")
-        if unknown := sorted(set(summarised) - set(labels)):
-            raise ValueError(f"aspect_summaries name {unknown}, which this analysis's aspects ({labels}) do not hold")
-
-        def in_range(where: str, positions: list[int]) -> None:
-            bad = [position for position in positions if not 0 <= position < count]
-            if bad:
-                raise ValueError(
-                    f"{where} names finding position(s) {bad}, and there are {count} findings (0-{count - 1})"
-                )
-
-        recommended = self.document.recommended()
-        if recommended is not None:
-            in_range("recommendation.rests_on", recommended.rests_on)
-        if (recommended is None) != (self.recommended_variant_key is None):
-            raise ValueError(
-                "recommended_variant_key is the key of the arm the memo recommends: set exactly when the memo makes a "
-                "recommendation"
-            )
-        for index, finding in enumerate(findings):
-            in_range(f"findings[{index}].invalidates", finding.invalidates)
-            if index in finding.invalidates:
-                raise ValueError(f"findings[{index}] invalidates itself")
-        # A gating cycle has no reading order: each finding would have to be read before the other.
-        state: dict[int, int] = {}
-
-        def visit(node: int, trail: list[int]) -> None:
-            state[node] = 1
-            for nxt in findings[node].invalidates:
-                if state.get(nxt) == 1:
-                    raise ValueError(f"findings invalidate each other in a cycle: {[*trail, node, nxt]}")
-                if state.get(nxt) is None:
-                    visit(nxt, [*trail, node])
-            state[node] = 2
-
-        for node in range(count):
-            if state.get(node) is None:
-                visit(node, [])
+        if self.document is None and self.resolutions:
+            raise ValueError("a planned analysis or a report document has no memo findings, so it holds no resolutions")
         return self
 
 
@@ -1768,7 +1689,6 @@ class EvalInsight(EvalDocumentModel):
 
 
 __all__ = [
-    "ENGINE_CAVEAT_KINDS",
     "AttemptOutcome",
     "CampaignView",
     "CampaignWindow",

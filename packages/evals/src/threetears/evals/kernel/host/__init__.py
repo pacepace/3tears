@@ -32,9 +32,16 @@ Two gates hold this boundary, and they fail for different reasons:
 **This module is the package's public root.** A host imports from here and from no module below
 it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds that. Code inside the
 package imports its own modules directly.
+
+**A name a retired generation left** stays in ``__all__`` for one minor, served by the module's ``__getattr__``
+from ``_retired`` with a ``DeprecationWarning`` naming its replacement
+(:func:`~threetears.evals.kernel.retired.served_retired`): the tone register a host declared, :class:`StyleProfile`
+and :data:`ToneRegister`, which only the retired writers' prompts read.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.host.apparatus import ApparatusError
 from threetears.evals.kernel.host.bars import (
@@ -77,10 +84,6 @@ from threetears.evals.kernel.host.profile import (
     ProfileRegistrationError,
     ToolActionReader,
     VariantLeverReader,
-)
-from threetears.evals.kernel.host.style import (
-    StyleProfile,
-    ToneRegister,
 )
 from threetears.evals.kernel.host.sweepables import (
     CANDIDATE_KIND_LEVER,
@@ -125,6 +128,7 @@ from threetears.evals.kernel.host.world_conformance import (
 )
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, schema_violations
 from threetears.evals.kernel.host.world_seed import SeedRefused, SeedWrite, check_seed, SeedRefusalKind
+from threetears.evals.kernel.retired import served_retired
 
 __all__ = [
     "CANDIDATE_KIND_LEVER",
@@ -208,3 +212,13 @@ __all__ = [
     "schema_violations",
     "served_models_by_score",
 ]
+
+if TYPE_CHECKING:
+    from threetears.evals.kernel.host._retired import StyleProfile, ToneRegister
+else:
+    # Imported last, beside the module __getattr__ that serves it.
+    from threetears.evals.kernel.host import _retired
+
+    def __getattr__(name: str) -> object:
+        """Serve a name a retired generation left, warning that it leaves in the next minor."""
+        return served_retired(__name__, name, _retired.RETIRED)

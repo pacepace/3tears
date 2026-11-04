@@ -29,7 +29,7 @@ Where `testament` is installed (outside CI, unless `TESTAMENT=off`), `test.sh` h
 runners instead, and none of the above applies: testament distributes the tests itself, `-n`,
 `-x`, `--maxfail` or `--lf` make it run locally, and a package run there skips its integration
 tests (`.testament.toml` selects `-m "not integration"`). Two kinds of run never go to the pool:
-one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`, `THREETEARS_EVALS_PAID*`),
+one gated by an environment variable (`RECORD`, `THREETEARS_LIVE_*`),
 whose tests would skip on runners without it, and one that passes its own `-m`.
 
 Two things break under a parallel run that a serial one hides. A fixed `asyncio.sleep` that

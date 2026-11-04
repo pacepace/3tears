@@ -866,9 +866,8 @@ def _assembled_campaign_bundle(
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
     """Assemble the campaign bundle a generation launched right now would read, without generating.
 
-    Every aspect's evidence, the campaign's arms and floors, and code's readings across them — the writer's whole
-    input (:func:`~threetears.evals.analysis.campaign_bundle.build_campaign_user_message` renders what it is sent).
-    Costs nothing: storage reads and no model call. Not refused when it resolves no runs: an empty bundle is the
+    Every aspect's evidence, the campaign's arms and floors, and code's readings across them — what the report
+    writer's snapshot freezes. Costs nothing: storage reads and no model call. Not refused when it resolves no runs: an empty bundle is the
     answer, as :func:`inspect_campaign_bundle`'s is.
 
     :param host: The host: where the campaign's runs, results and insights are read, and its vocabulary.
@@ -1040,10 +1039,10 @@ def _campaign_page(
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
 ) -> CampaignReport:
-    """Lay a campaign bundle out as the campaign's page: code's readings, the memo where there is one, the call.
+    """Lay a campaign bundle out as code's page for the campaign: code's readings, where its report is, the call.
 
-    Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels; the
-    memo, when there is one, is laid out once, on the campaign's page, never again inside a fold.
+    Each aspect's fold is that aspect's code-only page over its bundle, its arms named by the campaign's labels, its
+    methods naming the analysis's writer where one is given.
 
     :param campaign: The campaign, declaring what the bundle was assembled against.
     :ptype campaign: EvalCampaign
@@ -1051,7 +1050,8 @@ def _campaign_page(
     :ptype bundle: CampaignBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), which dates each aspect's page.
     :ptype assembled_at: str
-    :param analysis: The stored analysis whose memo the page lays out; None for a code-only page.
+    :param analysis: The stored analysis the page is laid out for, whose writer the methods name and whose report
+        document the first screen points at; None for a page no analysis is named on.
     :ptype analysis: EvalAnalysis | None
     :param fingerprints: Each aspect's bundle fingerprint in the current version, by label, where it was just checked
         against the bundle; an aspect not named is hashed.
@@ -1091,16 +1091,11 @@ def _campaign_page(
         )
         for aspect in bundle.aspects
     }
-    memo = analysis.document if analysis is not None else None
     page = build_campaign_report(
         campaign,
         readings,
         reports,
-        memo,
         call=campaign.call,
-        recommended_variant_key=analysis.recommended_variant_key if analysis is not None else None,
-        resolutions=analysis.resolutions if analysis is not None else (),
-        trial_ids=bundle.trial_ids(),
         report_doc_id=analysis.report_doc_id if analysis is not None else None,
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,

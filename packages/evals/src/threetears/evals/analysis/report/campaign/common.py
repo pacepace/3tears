@@ -1,5 +1,5 @@
-"""What several parts of a campaign's page share: the memo's words as the page prints them, each arm's name on one
-aspect, a floor by its key, and a change in points."""
+"""What several parts of a campaign's page share: each arm's name on one aspect, a floor by its key, and a change in
+points."""
 
 from __future__ import annotations
 
@@ -12,19 +12,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.style import ArmName, arm_name
 from threetears.evals.kernel.declaration import Floor
 
-__all__ = ["as_written", "floor_of", "named_arms", "points"]
-
-
-def as_written(text: str) -> str:
-    """The writer's words as the page prints them: as written, on one line. Code reads none of them: whether they
-    keep the prompt's rules is for a host's reporter eval to measure, in whatever language they are written.
-
-    :param text: The writer's words.
-    :ptype text: str
-    :return: The words, each run of whitespace one space.
-    :rtype: str
-    """
-    return " ".join(text.split())
+__all__ = ["floor_of", "named_arms", "points"]
 
 
 def named_arms(bundle: AnalysisContextBundle, labels: Mapping[str, str]) -> dict[str, ArmName]:

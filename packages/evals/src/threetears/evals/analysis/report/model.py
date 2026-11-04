@@ -169,8 +169,7 @@ class Report(EvalDocumentModel):
     def _every_link_lands(self) -> Self:
         """Refuse one id carried twice, by cells or blocks, and a cell linking to an id nothing on the page carries.
 
-        A finding's trace links a figure only where the page prints the same figure; a finding whose trace reaches
-        nothing says so in words instead (:data:`~threetears.evals.analysis.report.words.UNTRACED`).
+        A cell links a figure only where the page prints the same figure.
 
         :raises ValueError: An id is carried twice, or a link names one nothing carries.
         """

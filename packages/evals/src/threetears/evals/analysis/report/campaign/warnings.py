@@ -1,8 +1,7 @@
 """What warns on a campaign's page, for every kind, under its question and answer: one plain line per arm for the bars
 it misses, then one per arm for the floors it breaks, then one per arm and decision for the guardrails it is not
 shown safe on. Each line says what the warning means for the arm, names the aspects it holds on, and leaves the
-figures to the tables below. A bar's or a floor's line is followed at once by the writer's why where the memo
-recommends that arm over it: each only warns, and this is where it warns."""
+figures to the tables below. Each only warns, and this is where it warns."""
 
 from __future__ import annotations
 
@@ -11,44 +10,27 @@ from collections.abc import Mapping, Sequence
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.report.campaign.common import as_written, named_arms
+from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.model import DisclosureBlock, Fact, Report, ReportBlock, TextBlock
+from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.analysis.style import humanize
-from threetears.evals.kernel.authored import AuthoredCampaignAnalysis
 from threetears.evals.kernel.campaign import EvalCampaign
 
 __all__ = ["bar_warnings", "campaign_warnings", "floor_line", "floor_warnings", "guardrail_warnings", "listed", "where"]
 
 
-def bar_warnings(
-    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None, *, names: AspectNames
-) -> list[ReportBlock]:
+def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
     """One line per arm missing a bar, for every kind: ``Adopting alpha overrides the 2 bars it misses on answers.``,
-    or for a measurement, whose bars are its standard, ``solo falls short of the bar on clarity.``; each followed at
-    once by the writer's why where the memo recommends that arm below a bar (``bars_missed``).
+    or for a measurement, whose bars are its standard, ``solo falls short of the bar on clarity.``
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
-    :param memo: The writer's memo; None where none was written.
-    :ptype memo: AuthoredCampaignAnalysis | None
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
-    :return: The lines, each arm's whys after its line.
+    :return: The lines.
     :rtype: list[ReportBlock]
     """
-    recommendation = memo.recommended() if memo is not None else None
-    answers: dict[tuple[str, str], list[ReportBlock]] = {}
-    if recommendation is not None:
-        for missed in recommendation.bars_missed:
-            if why := as_written(missed.why):
-                answers.setdefault((missed.aspect, missed.measure), []).append(_why(why, recommendation.arm))
-    blocks: list[ReportBlock] = []
-    for arm, statuses, text in _bar_lines(readings, names):
-        blocks.append(DisclosureBlock(section="warnings", source="bar", text=text))
-        if recommendation is not None and arm == recommendation.arm:
-            blocks += [why for status in statuses for why in answers.pop((status.aspect, status.measure), [])]
-    return blocks
+    return [DisclosureBlock(section="warnings", source="bar", text=text) for *_, text in _bar_lines(readings, names)]
 
 
 #: How a guardrail's line says what it means for an arm, by the guardrail's decision, the breached first.
@@ -104,41 +86,26 @@ def guardrail_warnings(
     return blocks
 
 
-def floor_warnings(
-    readings: CampaignReadings, memo: AuthoredCampaignAnalysis | None, *, names: AspectNames
-) -> list[ReportBlock]:
+def floor_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[ReportBlock]:
     """One line per candidate breaking a floor, naming the aspects it breaks one on: ``Adopting v2 overrides the
-    10-point floor it breaks on billing.``; each followed at once by the writer's why, where the memo recommends the
-    arm over a floor it breaks. Which rate broke it, and the interval it broke on, are the aspect's floors table's.
+    10-point floor it breaks on billing.`` Which rate broke it, and the interval it broke on, are the aspect's floors
+    table's.
 
     :param readings: What code read off the campaign.
     :ptype readings: CampaignReadings
-    :param memo: The writer's memo; None where none was written.
-    :ptype memo: AuthoredCampaignAnalysis | None
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
-    :return: The lines, each arm's whys after its line.
+    :return: The lines.
     :rtype: list[ReportBlock]
     """
-    recommendation = memo.recommended() if memo is not None else None
-    overrides: dict[str, list[ReportBlock]] = {}
-    if recommendation is not None:
-        for override in recommendation.floors_overridden:
-            if why := as_written(override.why):
-                overrides.setdefault(override.floor, []).append(_why(why, recommendation.arm))
-    blocks: list[ReportBlock] = []
-    for arm, statuses, text in _floor_lines(readings, names):
-        blocks.append(DisclosureBlock(section="warnings", source="floor", text=text))
-        # The why answers the recommended arm's breaking of the floor, never another arm's breaking of the same one.
-        if recommendation is not None and arm == recommendation.arm:
-            for key in dict.fromkeys(status.floor for status in statuses):
-                blocks += overrides.get(key, [])
-    return blocks
+    return [
+        DisclosureBlock(section="warnings", source="floor", text=text) for *_, text in _floor_lines(readings, names)
+    ]
 
 
 def campaign_warnings(readings: CampaignReadings, names: AspectNames) -> list[str]:
     """What warns on a campaign's page of its bars and floors, as code words it: each arm missing a bar, then each
-    candidate breaking a floor — never the writer's why beside them, nor the guardrail lines after.
+    candidate breaking a floor — never the guardrail lines after.
 
     The page's own warnings are these lines, so whatever repeats them (an analysis's listing line) says what its page
     says, word for word.
@@ -225,11 +192,6 @@ def _by_arm[Status: (BarStatus, FloorStatus)](statuses: Sequence[Status]) -> dic
     for status in statuses:
         found.setdefault(status.arm_label, []).append(status)
     return found
-
-
-def _why(why: str, arm: str) -> ReportBlock:
-    """The writer's why for recommending ``arm`` over what the line before it warns of, as written."""
-    return TextBlock(section="warnings", role="override", body=why, facts=[Fact(name="Arm", value=arm)])
 
 
 def where(names: Sequence[str], total: int) -> str:

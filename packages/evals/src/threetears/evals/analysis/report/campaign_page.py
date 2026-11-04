@@ -10,7 +10,7 @@ that lays it out.
   code read (:mod:`~threetears.evals.analysis.report.campaign.scorecard`).
 - :class:`AspectNames` is what it calls each aspect, which those lines take
   (:mod:`~threetears.evals.analysis.report.campaign.names`).
-- :data:`NO_RECOMMENDATION` and :data:`NO_CALL` are its lines where no memo or no call exists
+- :data:`NO_RECOMMENDATION` and :data:`NO_CALL` are its lines where no report or no call exists
   (:mod:`~threetears.evals.analysis.report.campaign.memo_blocks`).
 """
 

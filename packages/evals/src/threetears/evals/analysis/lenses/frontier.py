@@ -442,44 +442,6 @@ def pass_hat_k_cell_lines(reading: PassHatKCellReading) -> list[str]:
     return [" ".join(line.split()) for line in lines]
 
 
-#: How many run ids a bounded line names before it counts the rest (:func:`pass_hat_k_cell_lines_bounded`).
-_RUNS_NAMED = 3
-
-
-def pass_hat_k_cell_lines_bounded(readings: Sequence[PassHatKCellReading]) -> list[str]:
-    """One point's cell lines, bounded for a surface with a budget: at most one line per reason.
-
-    The headline's line is said as :func:`pass_hat_k_cell_lines` says it. A reason only one kept-out cell stands apart
-    for gets that cell's own line. A reason several do gets one line counting their runs and cells, naming the first
-    :data:`_RUNS_NAMED` run ids and how many more, so a contestant of many runs that each recorded
-    nothing costs one line, not one per run.
-
-    :param readings: The point's cells (:attr:`FrontierPoint.pass_hat_k_cells`).
-    :ptype readings: Sequence[PassHatKCellReading]
-    :return: The sentences, each one line.
-    :rtype: list[str]
-    """
-    lines: list[str] = []
-    by_reason: dict[str, list[PassHatKCellReading]] = {}
-    for reading in readings:
-        if reading.headline:
-            lines += pass_hat_k_cell_lines(reading)
-        elif reading.reason is not None:
-            by_reason.setdefault(reading.reason, []).append(reading)
-    for reason, cells in by_reason.items():
-        if len(cells) == 1:
-            lines += pass_hat_k_cell_lines(cells[0])
-            continue
-        run_ids = [run_id for cell in cells for run_id in cell.run_ids]
-        named = ", ".join(run_ids[:_RUNS_NAMED])
-        more = len(run_ids) - _RUNS_NAMED
-        lines.append(
-            f"run(s) {named}{f' and {more} more' if more > 0 else ''} kept out of this pass^k, as {len(cells)} "
-            f"cells of their own ({_REASON_WORDS[reason]}), {len(run_ids)} run(s) in all, each with its own pass^k"
-        )
-    return lines
-
-
 class FrontierPoint(EvalBaseModel):
     """One contestant's position on quality x cost x latency, within a subject.
 
@@ -2302,7 +2264,6 @@ __all__ = [
     "PASS_HAT_K_CELL_READING",
     "PassHatKCellReading",
     "pass_hat_k_cell_lines",
-    "pass_hat_k_cell_lines_bounded",
     "FrontierResult",
     "FrontierVerdict",
     "normalize_bar",

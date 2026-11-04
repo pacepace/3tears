@@ -28,11 +28,11 @@ EXTRA_ARGS=("$@")
 # manifest command carries `-m "not integration"`, so a package run there skips integration tests.
 #
 # Two kinds of run stay local, because the pool would quietly change them. A run gated by an
-# environment variable (RECORD, THREETEARS_LIVE_*, THREETEARS_EVALS_PAID*) would reach runners that
+# environment variable (RECORD, THREETEARS_LIVE_*) would reach runners that
 # do not have it, so its tests would skip -- and a skip reads like a pass. And a run that selects
 # with `-m` would meet the manifest's own `-m "not integration"`, where pytest keeps only one.
 local_only=""
-if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*|THREETEARS_EVALS_PAID[A-Z_]*)=' >/dev/null; then
+if env | grep -E '^(RECORD|THREETEARS_LIVE_[A-Z_]*)=' >/dev/null; then
     local_only="an environment gate is set"
 fi
 for arg in ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}; do

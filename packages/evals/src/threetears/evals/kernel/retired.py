@@ -21,6 +21,14 @@ REPORTER_RETIRED = (
 )
 
 
+#: Why a host's style and caveat kinds retired, as each warning says it: their only readers were the retired writers'
+#: prompts.
+HOST_STYLE_RETIRED = (
+    "the report writer reads no host style or caveat kinds (their only readers were the retired memo writer's and "
+    "report planner's prompts); drop the argument"
+)
+
+
 @dataclass(frozen=True)
 class Retired:
     """One retired name: what reading it returns, and why it retired, naming its replacement.
@@ -56,4 +64,4 @@ def served_retired(root: str, name: str, retired: Mapping[str, Retired]) -> obje
     return entry.value
 
 
-__all__ = ["REPORTER_RETIRED", "Retired", "served_retired"]
+__all__ = ["HOST_STYLE_RETIRED", "REPORTER_RETIRED", "Retired", "served_retired"]
