@@ -201,7 +201,7 @@ def test_the_import_reader_sees_every_spelling(tmp_path: Path) -> None:
 def test_a_tier_comes_from_the_declared_list() -> None:
     installed = surface.installed_surface()
     assert installed["threetears.evals.kernel.host.EvalHost"].tier == "host-contract"
-    assert installed["threetears.evals.quick.EXIT_FAILED"].tier == "stable"
+    assert installed["threetears.evals.analysis.judge_drift"].tier == "stable"
     assert installed["threetears.evals.kernel.AttemptOutcome"].tier == "provisional"
     assert {name for name, entry in installed.items() if entry.tier == "host-contract"} == surface.HOST_CONTRACT
     assert {name for name, entry in installed.items() if entry.tier == "stable"} == surface.STABLE
@@ -222,7 +222,7 @@ def test_the_installed_tier_map_is_the_repository_snapshot() -> None:
 
 def test_a_host_gates_its_imports_by_tier_against_the_installed_build() -> None:
     assert threetears.evals.surface_tier("threetears.evals.kernel.host.EvalHost") == "host-contract"
-    assert threetears.evals.surface_tier("threetears.evals.quick.EXIT_FAILED") == "stable"
+    assert threetears.evals.surface_tier("threetears.evals.analysis.judge_drift") == "stable"
     assert threetears.evals.surface_tier("threetears.evals.kernel.AttemptOutcome") == "provisional"
     assert "threetears.evals.surface_tier" in threetears.evals.declared_names()
     with pytest.raises(KeyError, match="not a public name of this build"):
