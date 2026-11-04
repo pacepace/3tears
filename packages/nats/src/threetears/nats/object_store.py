@@ -79,6 +79,7 @@ __all__ = [
     "NatsObjectStore",
     "ObjectInfo",
     "object_store_stream_name",
+    "stored_bytes_of_put",
 ]
 
 log = get_logger(__name__)
@@ -136,6 +137,44 @@ _FAILED_OR_UNANSWERED: Final[tuple[type[BaseException], ...]] = (*_FAILED, NatsC
 _EXPECTED_LAST_SUBJECT_SEQUENCE: Final[str] = "Nats-Expected-Last-Subject-Sequence"
 
 _DIGEST_PREFIX: Final[str] = "SHA-256="
+
+#: what a stream counts for one stored message beyond its subject, headers and payload (nats-server's
+#: ``memStoreMsgSize``/``fileStoreMsgSize``: the sequence, the timestamp and the lengths)
+_STORED_MESSAGE_OVERHEAD: Final = 16
+
+#: the bytes the metadata's JSON may grow by past the estimate :func:`stored_bytes_of_put` makes without it: its
+#: digest, sizes, write time and options (a record runs to about 300 bytes, the name aside)
+_META_ALLOWANCE: Final = 512
+
+
+def stored_bytes_of_put(bucket: str, name: str, size: int, *, chunks: int, nuid_length: int) -> int:
+    """the bytes a stream holds after a put of ``size`` bytes in ``chunks`` chunks: what the put asks room for.
+
+    Each message is counted as nats-server counts it -- its subject, its headers and its payload, plus
+    :data:`_STORED_MESSAGE_OVERHEAD` -- and the metadata message at :data:`_META_ALLOWANCE` past its name and
+    headers, so the estimate never falls short of the server's count and passes it by no more than that allowance.
+
+    :param bucket: the fully-qualified bucket name
+    :ptype bucket: str
+    :param name: the object's name
+    :ptype name: str
+    :param size: the object's bytes
+    :ptype size: int
+    :param chunks: how many chunk messages carry them
+    :ptype chunks: int
+    :param nuid_length: the length of the object's chunk token
+    :ptype nuid_length: int
+    :return: the bytes the put adds to the stream
+    :rtype: int
+    """
+    chunk_subject = len(_chunk_subject(bucket, "x" * nuid_length))
+    meta_subject = len(_meta_subject(bucket, name))
+    # the metadata's one header as nats-py frames it: "NATS/1.0\r\n" + "key: value\r\n" + "\r\n"
+    meta_headers = len("NATS/1.0\r\n") + len(_EXPECTED_LAST_SUBJECT_SEQUENCE) + len(": 0\r\n") + len("\r\n")
+    chunk_bytes = size + chunks * (chunk_subject + _STORED_MESSAGE_OVERHEAD)
+    # the record names the object and its bucket, each once
+    meta_bytes = meta_subject + meta_headers + _META_ALLOWANCE + len(name) + len(bucket) + _STORED_MESSAGE_OVERHEAD
+    return chunk_bytes + meta_bytes
 
 
 def object_store_stream_name(bucket: str) -> str:
@@ -438,8 +477,9 @@ class NatsObjectStore:
         :rtype: ObjectInfo
         :raises ValueError: when the name is outside :data:`OBJECT_NAME_GRAMMAR`
         :raises ObjectExistsError: when the bucket already holds an object of that name
-        :raises ObjectStoreError: when a chunk or the metadata could not be written, the bucket's
-            ``max_bytes`` among the reasons
+        :raises ObjectStoreFullError: when the bucket has no room for it: refused before any chunk is
+            written when the room read before the put shows it, else by the server part way
+        :raises ObjectStoreError: when a chunk or the metadata could not be written, or the room could not be read
         """
         _check_name(name)
         if await self._raw_info(name) is not None:
@@ -452,6 +492,13 @@ class NatsObjectStore:
         nuid = uuid.uuid7().hex
         chunk_subject = _chunk_subject(self._full_name, nuid)
         pieces = [data[start : start + self._chunk_bytes] for start in range(0, len(data), self._chunk_bytes)]
+        # refused before the first chunk when the store cannot hold it: a put the server refused part way left the
+        # chunks it had written, which the declarer purges only while no write claim stands, never while the writer
+        # that met the full store holds its own (cobalt prod, 2026-11-01). Writers racing past this check meet the
+        # server's own refusal, as before
+        await self._require_room(
+            name, stored_bytes_of_put(self._full_name, name, len(data), chunks=len(pieces), nuid_length=len(nuid))
+        )
         for piece in pieces:
             await self._publish(js, chunk_subject, piece, headers=None, name=name)
         record = _NatsObjectInfo(
@@ -478,6 +525,35 @@ class NatsObjectStore:
             },
         )
         return _public_info(record)
+
+    async def _require_room(self, name: str, needed: int) -> None:
+        """refuse a put the store has no room for, before it writes anything (one ``STREAM.INFO``).
+
+        :param name: the object, for the error
+        :ptype name: str
+        :param needed: the bytes the put adds (:func:`stored_bytes_of_put`)
+        :ptype needed: int
+        :return: nothing
+        :rtype: None
+        :raises ObjectStoreFullError: when what the stream holds and ``needed`` pass its ``max_bytes``
+        :raises ObjectStoreError: when the stream cannot be read
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await self._bounded(lambda: js.stream_info(self.stream), what="object store room")
+        except _FAILED as exc:
+            raise ObjectStoreError(f"reading the room in object store {self._full_name} failed: {exc}") from exc
+        bound = int(info.config.max_bytes or 0)
+        held = int(info.state.bytes or 0)
+        # a bound of 0 or -1 is none: the stream takes whatever the server has room for
+        if bound > 0 and held + needed > bound:
+            raise ObjectStoreFullError(
+                f"object store {self._full_name} is full: writing {name!r} ({needed} bytes stored) would pass its "
+                f"max_bytes ({held} of {bound} held); nothing was written. retire objects no longer served, or raise "
+                "the bucket's bound",
+                bucket=self._full_name,
+                name=name,
+            )
 
     async def _publish(
         self, js: Any, subject: str, payload: bytes, *, headers: dict[str, str] | None, name: str

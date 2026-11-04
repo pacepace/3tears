@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: a put the Object Store has no room for is refused before any chunk is written
+
+**Fixed:** `NatsObjectStore.put` wrote its chunks before its metadata, and a store at its `max_bytes` refused it part
+way: the chunks already written stayed, named by no object, until the declarer's orphan purge, which runs only while
+no write claim stands. The writer that met the full store holds its own claim, so on a busy store they stayed (cobalt
+prod, 2026-11-01: the reports pod's store at its 1 GiB bound, "unnamed object chunks kept: a write is in flight" with
+51 claims, one purge of 4 subjects all night; against a live server a refused 1 MB put left 524 KB behind). A put now
+reads the stream's size and bound first (one `STREAM.INFO`) and raises `ObjectStoreFullError` before its first chunk
+when the bytes it adds -- counted as the server counts them, `stored_bytes_of_put` -- would pass the bound; the store
+holds exactly what it held. Writers racing past the check meet the server's refusal, as before. A store with no bound
+(`max_bytes` 0 or -1) is not checked. A principal putting into a store now needs `STREAM.INFO` on it, which every pod
+granted its own store already holds (it binds with it). New public name: `threetears.nats.object_store.stored_bytes_of_put`.
+
 ## v0.91.0 -- 2026-11-04
 
 ### core: a scoped snapshot recovers a behind copy from the diff, never by reading a scope whole from L3
