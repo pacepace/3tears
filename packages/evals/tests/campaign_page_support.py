@@ -117,7 +117,7 @@ def opening(page: CampaignReport) -> list[tuple[str, str]]:
     for block in page.blocks:
         if isinstance(block, TableBlock):
             break
-        if isinstance(block, TextBlock) and block.role != "override":
+        if isinstance(block, TextBlock):
             said.append(("text", block.role))
         elif isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
             said.append((block.source, block.text))

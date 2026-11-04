@@ -56,9 +56,6 @@ if TYPE_CHECKING:
 #: How an answer's resolution leads it.
 RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}
 
-#: How a retired memo's summary of an aspect leads each of its three parts, where a page still holds one.
-SUMMARY_LEADS: dict[str, str] = {"what_changed": "What changed:", "how_sure": "How sure:", "means": "What it means:"}
-
 
 def report_markdown(report: Report) -> str:
     """Render a report as Markdown.
@@ -230,13 +227,6 @@ def _text(block: TextBlock) -> list[str]:
         disposition = facts.get("Disposition", "")
         sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
         return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else inert(body + sure)]
-    if block.role == "override":
-        over = (
-            f"The memo recommends {facts['Arm']} over {facts.get('Over', 'it')}" if "Arm" in facts else "The memo's why"
-        )
-        return [f"**{over}:** {body}"]
-    if block.role in SUMMARY_LEADS:
-        return [f"**{SUMMARY_LEADS[block.role]}** {body}"]
     if block.role == "reason":
         return [f"- {inert(body)}"]  # one line: body is one_line(...) above
     if block.role == "next_step":
@@ -308,7 +298,6 @@ def _quoted(label: str, text: str) -> list[str]:
 
 __all__ = [
     "RESOLUTION_WORDS",
-    "SUMMARY_LEADS",
     "campaign_report_markdown",
     "report_markdown",
     "trial_summary",

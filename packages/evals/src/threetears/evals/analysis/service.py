@@ -1194,7 +1194,7 @@ def analysis_report(
 
     Laid out over the bundles and code's readings frozen with the analysis at generation, so it reads as it was
     written whatever has been archived or re-run since: the campaign as it was declared then, every aspect's fold over
-    its frozen bundle, the memo once on the first screen. The person's call is the campaign's as recorded now. Derived
+    its frozen bundle. The person's call is the campaign's as recorded now. Derived
     on every read and never written back, so a stored analysis stays pivotable.
 
     An analysis a retired report writer wrote (the memo writer's, ``basis="memo"``, or the report planner's,
@@ -1212,7 +1212,7 @@ def analysis_report(
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
         table alone, each row naming its stored result; ``all`` adds each one's full record.
     :ptype trials: TrialDetail
-    :return: The page, ``basis="analysis"`` (``code_only`` for a retired writer's); :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
+    :return: The page, ``basis="code_only"`` over the analysis's frozen bundles, carrying its ``analysis_id``; :meth:`~threetears.evals.analysis.report.CampaignReport.write` puts it
         in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
     :rtype: CampaignReport
     :raises NotFoundError: No analysis with that id in the scope.

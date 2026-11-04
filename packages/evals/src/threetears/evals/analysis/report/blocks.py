@@ -156,17 +156,13 @@ SECTION_TITLES: dict[str, str] = {
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
 
 
-#: What a text block's author wrote it as. ``summary`` is the memo's read across every aspect, which a campaign's page
-#: opens on after its warnings.
+#: What a text block's author wrote it as. ``summary`` is a read across every aspect, which a campaign's page opens on
+#: after its warnings. No builder in this version writes a text block: every page it builds is code's.
 TextRole = Literal[
     "summary",
     "answer",
     "recommendation",
     "reason",
-    "override",
-    "what_changed",
-    "how_sure",
-    "means",
     "finding_title",
     "finding_body",
     "caveat",

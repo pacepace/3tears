@@ -6016,9 +6016,9 @@ class _Stop:
 
 
 @dataclass
-class _Memo:
-    """What one report input has read as (:func:`_memo`): each key's figure or the refusal it raised (kept with no frame,
-    :func:`_frameless`), and the ids each slot offered after the slots matched before it."""
+class _InputCache:
+    """What one report input has read as (:func:`_input_cache`): each key's figure or the refusal it raised (kept
+    with no frame, :func:`_frameless`), and the ids each slot offered after the slots matched before it."""
 
     figures: dict[str, Figure | UnresolvableReference]
     offered: dict[tuple[Callable[[ReportInput, tuple[str, ...]], Iterable[str]], tuple[str, ...]], list[str]]
@@ -6027,7 +6027,7 @@ class _Memo:
 
 @dataclass(frozen=True, eq=False)
 class _ByIdentity:
-    """A report input by its identity, held weakly: equal only to a handle on the same live input, so a memo never
+    """A report input by its identity, held weakly: equal only to a handle on the same live input, so a cache never
     outlives its input's identity (an input made later at the same address is another input) and never keeps it alive.
     """
 
@@ -6044,32 +6044,32 @@ class _ByIdentity:
         return held is not None and held is other.ref()
 
 
-#: The most report inputs whose memos are kept at once, the least recently read let go first: a sweep reads a copy of
-#: its input per value, each with a memo of a few keys, while the input it sweeps is read throughout.
-_MEMO_INPUTS = 256
+#: The most report inputs whose reads are kept at once, the least recently read let go first: a sweep reads a copy of
+#: its input per value, each with a cache of a few keys, while the input it sweeps is read throughout.
+_CACHED_INPUTS = 256
 
 
-@functools.lru_cache(maxsize=_MEMO_INPUTS)
-def _memo_of(held: _ByIdentity) -> _Memo:
-    """A fresh memo for one input (:func:`_memo`)."""
-    return _Memo(figures={}, offered={}, amounts={})
+@functools.lru_cache(maxsize=_CACHED_INPUTS)
+def _input_cache_of(held: _ByIdentity) -> _InputCache:
+    """A fresh cache for one input (:func:`_input_cache`)."""
+    return _InputCache(figures={}, offered={}, amounts={})
 
 
-def _memo(report_input: ReportInput) -> _Memo:
-    """The memo of one report input, made empty on its first read.
+def _input_cache(report_input: ReportInput) -> _InputCache:
+    """What one report input has read as, made empty on its first read.
 
     A key's figure and a slot's ids are pure in the input, and a report input is frozen and never changed in place (an
-    input with a moved line is a copy, :meth:`~pydantic.BaseModel.model_copy`, with its own memo). So a key read twice
+    input with a moved line is a copy, :meth:`~pydantic.BaseModel.model_copy`, with its own cache). So a key read twice
     on one input, which a cited figure's text, a page sized by halving and a listing ordered by its figures all do,
     walks the grammar once, and each family sharing a slot reads the slot's ids once (four lever families read a
     setting's arm pairs, an O(arms squared) scan, alike).
     """
-    return _memo_of(_ByIdentity(id(report_input), weakref.ref(report_input)))
+    return _input_cache_of(_ByIdentity(id(report_input), weakref.ref(report_input)))
 
 
 def _offered(slot: _Ids, report_input: ReportInput, values: tuple[str, ...]) -> list[str]:
     """The ids an id slot offers on an input after the slots matched before it, read once per input."""
-    offered = _memo(report_input).offered
+    offered = _input_cache(report_input).offered
     key = (slot.options, values)
     found = offered.get(key)
     if found is None:
@@ -6188,13 +6188,13 @@ def keys_in(text: str) -> list[FigureKey]:
     :ptype text: str
     :return: Each key with its span.
     :rtype: list[FigureKey]
-    :raises UnresolvableReference: The text holds a double brace (the memo's grammar, never a report document's), a
-        brace that opens or closes no key, or a key :func:`parse_key` refuses.
+    :raises UnresolvableReference: The text holds a double brace (the retired figure reference's grammar, never a
+        report document's), a brace that opens or closes no key, or a key :func:`parse_key` refuses.
     """
     if "{{" in text or "}}" in text:
         raise UnresolvableReference(
-            "plan prose holds a double brace: a figure key is `{path|filter}` in single braces, and `{{…}}` is the "
-            "memo's figure reference, which a plan never writes"
+            "report prose holds a double brace: a figure key is `{path|filter}` in single braces, and `{{…}}` is the "
+            "retired figure reference, which a report document never writes"
         )
     keys = [parse_key(match.group(1), match.span()) for match in _KEY.finditer(text)]
     left = _KEY.sub("", text)
@@ -6242,7 +6242,7 @@ def resolve(key: str, report_input: ReportInput) -> Figure:
     :raises UnresolvableReference: The path names nothing the input holds (the refusal lists what could come next
         where it stopped matching), reads two ways (naming both), or names a figure the input leaves unstated.
     """
-    figures = _memo(report_input).figures
+    figures = _input_cache(report_input).figures
     held = figures.get(key)
     if isinstance(held, UnresolvableReference):
         raise _frameless(held)
@@ -6284,7 +6284,7 @@ def _frameless(refused: UnresolvableReference) -> UnresolvableReference:
     traceback shows its context, as a first raise has it.
 
     A raised refusal's traceback, and its cause's, hold the frames it unwound through, each with the report input among
-    its locals, so the memo keeps this copy and raises a fresh one on each read: a refused key never keeps its input
+    its locals, so the cache keeps this copy and raises a fresh one on each read: a refused key never keeps its input
     alive, and no two reads share an exception.
     """
     twin = type(refused)(*refused.args)
@@ -6443,9 +6443,9 @@ def _money_amounts(reading: _Reading, figure: Figure, report_input: ReportInput)
 
     The set is the family's, never the figure's: every key of ``cost_per_1k.*`` reads the same set, so each is spelled
     in one form. Read once per family and fixed ids on an input."""
-    memo = _memo(report_input).amounts
+    cached = _input_cache(report_input).amounts
     key = (id(reading.family), _fixed_values(reading), figure.scale, figure.change)
-    held = memo.get(key)
+    held = cached.get(key)
     if held is not None:
         return held
     compared = reading.family.compares(report_input, reading.values) if reading.family.compares is not None else None
@@ -6455,7 +6455,7 @@ def _money_amounts(reading: _Reading, figure: Figure, report_input: ReportInput)
         siblings = [one for one in _sibling_figures(reading, report_input) if one.scale == figure.scale]
         amounts = _numbers_of(one for one in siblings if not one.change)
         found = tuple(amounts or _numbers_of(siblings))
-    memo[key] = found
+    cached[key] = found
     return found
 
 
