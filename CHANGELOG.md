@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-Next version: v0.91.0 (new public API on `ScopedSnapshot` and `SnapshotTable`, so a minor bump).
+## v0.91.0 -- 2026-11-04
 
 ### core: a scoped snapshot recovers a behind copy from the diff, never by reading a scope whole from L3
 
@@ -23,7 +23,9 @@ from L3 whole. Now:
   is (from the scope's rows at `carry_at` to its epoch) before the writer commits. Whatever happens to the writer
   after, any replica carries the scope's pointer on from L2 in seconds. A record is never carried past the scope's
   epoch in L3 (a write still committing, or one that never will), by a catch-up or by any publish; `discard_staged`
-  drops a write's records with its stages.
+  drops a write's records with its stages. The writer calls it only once every data transaction of its write that
+  touches the staged scopes has committed: an abandoned write commits what it left at its own number, and a record
+  kept beside an open or rolled-back data transaction would be carried there with rows L3 never held.
 - **Rows from L2.** `ScopedSnapshot.rows_at(scope, epoch, tables=None)` answers a scope's rows at an epoch from this
   L1, or from the pointer carried there by its records, never from L3; `None` when neither reaches it. A writer
   whose copy is behind builds its stage from it, or leaves the scope to the recovery.
@@ -32,6 +34,10 @@ from L3 whole. Now:
   copy holds (its pointer's chunks, or this L1's) and the groups of rows L3 changed since (grouped by
   `partition_by`, or else the first column the table is read in after the scope): one statement counts each group's
   rows and those stamped since, and only a group stamped, missing or of another count is read, pinned to its value.
+  A group whose value is NULL (reports' `join_geo_id`) is read from the rows where it is NULL, paged by the other key
+  columns. A table naming `partition_values` diffs only the groups the ask names; when the ask fails, no group the
+  copy does not hold is read: a `retained` table is judged as one the copy keeps part of, any other stays behind
+  until an ask answers (tried again a minute later).
   A table not `retained` must then number L3's rows. `SnapshotTable.retained` marks a table the copy keeps only some
   rows of (a retention); a diff that finds rows such a table kept gone from L3 cannot bring it forward. Such a scope
   stays behind, said at ERROR and in the new `CatchUpOutcome.left`, and is never guessed at.
@@ -52,13 +58,16 @@ from L3 whole. Now:
 04:42:31Z: every page its L3 reads answered counted as progress, so the watchdog never let the claim go, and nothing
 said what it waited on. A catch-up in a snapshot that recovers from the diff is now watched by what it LANDS (a scope
 committed or judged, a pointer or the index moved): one that reads on and lands nothing for `rebuild_stall` lets the
-claim go. The cold rebuild is still watched by its every step (a large scope's read is long and correct).
+claim go. The cold rebuild is still watched by its every step (a large scope's read is long and correct), and so is
+the whole read of a scope with no copy inside a catch-up: each of its pages counts as landed.
 
 **Added:** every wait says at INFO what it waits for, on whom and since when, when it begins and then at most once a
 minute while it lasts: a catch-up waiting on the rebuild claim (its holder and since when), a flow waiting on a write
 in progress, a staged publish waiting on an earlier write still publishing, a writer's commit running without the
 claim (who holds it), a run under the claim (its last step and last landing), and the reads under way (table, scope,
-pages, rows).
+pages, rows). Each wait ends where it resolves (a stage's when its scope's pointer moves or its publish ends without
+waiting, the claim's when a catch-up takes it or finds nothing behind, the reads' when the last under way ends), so
+the next one says how long it has waited from its own start.
 
 ### core: a scoped snapshot table can be read from L3 one partition value at a time
 
@@ -66,7 +75,8 @@ pages, rows).
 paged on their own), and `SnapshotTable.partition_values`, an ask of L3 for the values a rebuild reads. On
 YugabyteDB a keyset page over a key of many columns scanned the scope's rows from their start, so a scope's read grew
 with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1 billion keys scanned
-for ~30 million rows). A failed ask reads every value: slower, never fewer rows.
+for ~30 million rows). A rebuild whose ask fails reads every value: slower, never fewer rows. A partition column
+that does not lead the key is put back in key order once read.
 
 ## v0.90.0 -- 2026-11-02
 

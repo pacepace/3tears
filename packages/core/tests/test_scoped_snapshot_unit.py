@@ -15,6 +15,7 @@ import json
 import linecache
 import re
 import logging
+import sqlite3
 import sys
 import threading
 import time
@@ -5142,10 +5143,22 @@ async def test_a_writer_killed_between_stage_and_publish_is_recovered_from_its_r
     writer, replica, pointers, _, l3 = await _diffed_pair()
     stages = await _texas_at_2(writer, l3)
     assert await writer.record_staged(stages, carry_at={"TX": 1}) == ["TX"]
-    # the writer dies: its commit lands (or its write is abandoned at its own number, ScopeEpochs.settled), no publish
-    l3.epochs["TX"] = 2
-    del committed
     reads = (l3.whole_reads, l3.diff_reads)
+    if committed:
+        # the writer dies after its commit landed, before its publish
+        l3.epochs["TX"] = 2
+    else:
+        # the writer dies before its commit: its data is in L3, its write still open, TX touched. Nothing is carried
+        # past L3's epoch meanwhile, and nothing is read
+        l3.writing, l3.pending = True, {"TX"}
+        waiting = await replica.catch_up()
+        assert waiting.caught == (), waiting
+        assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1, "a record of an open write was carried"
+        assert (l3.whole_reads, l3.diff_reads) == reads
+        # ScopeEpochs.settled finds its writer's lease free and abandons the write: a commit of what it left, its
+        # touched scopes moved to its number
+        l3.writing, l3.pending = False, None
+        l3.epochs["TX"] = 2
 
     outcome = await replica.catch_up()
 
@@ -5252,21 +5265,39 @@ async def test_a_catch_up_while_another_scope_commits_between_every_read_finishe
     await replica.stop()
 
 
-async def test_a_record_above_l3s_epoch_is_never_carried() -> None:
+@pytest.mark.parametrize("carrier", ["catch_up", "publish_staged"])
+async def test_a_record_above_l3s_epoch_is_never_carried(carrier: str) -> None:
     """a writer keeps its records before it commits: one whose commit has not landed (or never will) is never put on
-    a pointer, by a catch-up or a publish, until L3 reaches its epoch."""
+    a pointer, by a catch-up or a publish, until L3 reaches its epoch. TX's pointer is behind at 1, with records
+    1->2 (committed) and 2->3 (still writing) kept and L3 at 2: the pointer stops at 2, and reaches 3 only once the
+    write at 3 commits."""
     writer, replica, pointers, _, l3 = await _diffed_pair()
     stages = await _texas_at_2(writer, l3)
-    await writer.record_staged(stages, carry_at={"TX": 1})
-    l3.writing, l3.pending = True, {"TX"}  # the write has not committed
+    assert await writer.record_staged(stages, carry_at={"TX": 1}) == ["TX"]
+    l3.epochs["TX"] = 2  # the write at 2 committed; its writer has not published
+    # the write at 3 changes TX's total, keeps its record, and has not committed
+    l3.write(3, "totals", {"state": "TX", "total": 15})
+    third = [await writer.stage("TX", 3, {"totals": [{"state": "TX", "total": 15}]})]
+    assert await writer.record_staged(third, carry_at={"TX": 2}) == ["TX"]
+    l3.writing, l3.pending = True, {"TX"}
 
-    await replica.catch_up()
-    assert await replica.publish(
-        "DE", 2, {"results": [_county("c2", 2, "DE")], "totals": [{"state": "DE", "total": 2}]}
-    )
-    await writer.catch_up()
+    if carrier == "catch_up":
+        outcome = await replica.catch_up()
+        assert outcome.caught == ("TX",), outcome
+    else:
+        # the publish carries the scope on through the records after it, as far as L3's epoch (read from L3 here)
+        assert await writer.publish_staged(stages, carry_at={"TX": 1}) == (["TX"], [])
 
-    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1, "a record above L3's epoch was carried"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2, "a record above L3's epoch was carried"
+    # once the write at 3 commits, its record carries the pointer on from L2
+    l3.writing, l3.pending = False, None
+    l3.epochs["TX"] = 3
+    reads = (l3.whole_reads, l3.diff_reads)
+    assert (await replica.catch_up()).caught == ("TX",)
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 3
+    assert (l3.whole_reads, l3.diff_reads) == reads, "a scope its records carry was read from L3"
+    await _until(lambda: replica.applied_epoch("TX") == 3, what="the replica applied epoch 3")
+    assert _l3_holds(replica, l3)
     await writer.stop()
     await replica.stop()
 
@@ -5462,3 +5493,327 @@ async def test_a_wait_says_what_it_waits_for_on_whom_and_since_when_once_a_minut
     assert "held by " in said[0] and " since 20" in said[0], said
     await writer.stop()
     await replica.stop()
+
+
+class _SqlL3:
+    """L3 as a SQL engine answers it (SQLite in memory): every statement a scoped snapshot sends is run as sent, its
+    keyset pages included, so a NULL in a paged column ends a read as it does on PostgreSQL. ``delay`` says how long
+    a statement takes; ``statements`` records each sent, with its parameters."""
+
+    def __init__(self, table: str, columns: list[str], rows: list[dict[str, Any]]) -> None:
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.table, self.columns = table, columns
+        self.db.execute(f'CREATE TABLE "{table}" ({", ".join(f'"{c}"' for c in columns)})')
+        self.add(rows)
+        self.epochs: dict[str, int] = {}
+        self.writing = False
+        self.pending: set[str] | None = None
+        self.statements: list[tuple[str, tuple[Any, ...]]] = []
+        self.delay: Callable[[str, tuple[Any, ...]], float] = lambda sql, args: 0.0
+
+    def add(self, rows: list[dict[str, Any]]) -> None:
+        marks = ", ".join("?" for _ in self.columns)
+        self.db.executemany(
+            f'INSERT INTO "{self.table}" VALUES ({marks})',  # noqa: S608
+            [tuple(row.get(c) for c in self.columns) for row in rows],
+        )
+
+    def rows(self, scope: str) -> list[tuple[Any, ...]]:
+        """the scope's rows, every column but the version, sorted."""
+        kept = [c for c in self.columns if c != "source_version"]
+        found = self.db.execute(
+            f'SELECT {", ".join(f'"{c}"' for c in kept)} FROM "{self.table}" WHERE "state" = ?',  # noqa: S608
+            (scope,),
+        ).fetchall()
+        return sorted((tuple(r) for r in found), key=repr)
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        self.statements.append((sql, args))
+        wait = self.delay(sql, args)
+        if wait:
+            await asyncio.sleep(wait)
+        return [dict(r) for r in self.db.execute(re.sub(r"\$(\d+)", r"?\1", sql), args).fetchall()]
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        return None
+
+
+_GEOS = TableSchema(
+    name="geos",
+    primary_key=("item",),
+    columns=[
+        Column("state", STRING_TYPE),
+        Column("geo", STRING_TYPE, nullable=True),
+        Column("item", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+class _OwnKeyBackend(DuckDBBackend):
+    """a DuckDB L1 that refuses a NULL only in its table's own key, not in every column a scope is paged by: as
+    reports' shared store holds its geography rows, whose join_geo_id is NULL for a state's own."""
+
+    def export_rows(self, table: str, column: str, value: Any, rows: Any, **options: Any) -> Any:
+        return super().export_rows(table, column, value, rows, **{**options, "primary_key": ("item",)})
+
+
+def _geos_backend() -> DuckDBBackend:
+    metadata = MetaData()
+    _GEOS.to_sqlalchemy_table(metadata)
+    backend = _OwnKeyBackend()
+    backend.initialize(metadata)
+    return backend
+
+
+def _geo(state: str, geo: str | None, item: str, version: int) -> dict[str, Any]:
+    return {"state": state, "geo": geo, "item": item, "votes": 1, "source_version": version}
+
+
+def _held(snapshot: ScopedSnapshot, scope: str) -> list[tuple[Any, ...]]:
+    with snapshot.read() as cursor:
+        found = cursor.execute("SELECT state, geo, item, votes FROM geos WHERE state = ?", [scope]).fetchall()
+    return sorted((tuple(r) for r in found), key=repr)
+
+
+async def _geos_snapshot(
+    l3: _SqlL3, table: SnapshotTable, *, backend: DuckDBBackend | None = None, **options: Any
+) -> ScopedSnapshot:
+    """one snapshot over ``l3``'s one table, ready at epoch 1 from a cold rebuild."""
+    snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(table,), backend=backend or _geos_backend(), **options)
+    l3.epochs = {"TX": 1}
+    await _started(snapshot, pointers)
+    return snapshot
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["counted", "retained"])
+async def test_a_diff_reads_every_page_of_a_group_whose_value_is_null(
+    retained: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reports' join_geo_id is NULL for a state's own rows: a diff reads that group from the rows where it is NULL.
+    Paged by the NULL column too, every page after the first compared against NULL and came back empty: a table
+    counted against L3 was left behind for good, and a retained one silently lost the rows."""
+    monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 3)
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], [_geo("TX", "g1", "t0", 1)])
+    table = SnapshotTable(
+        name="geos", scope_column="state", key=("geo", "item"), version_column="source_version", retained=retained
+    )
+    snapshot = await _geos_snapshot(l3, table)
+    # a write at 2 adds ten rows with no geography: four pages of three
+    l3.add([_geo("TX", None, f"n{i}", 2) for i in range(10)])
+    l3.epochs["TX"] = 2
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _held(snapshot, "TX") == l3.rows("TX"), "rows of the NULL group were lost"
+    nulls = [sql for sql, _ in l3.statements if "IS NULL" in sql]
+    assert len(nulls) == 4, nulls
+    await snapshot.stop()
+
+
+_RUNS = TableSchema(
+    name="runs",
+    primary_key=("run", "item"),
+    columns=[
+        Column("state", STRING_TYPE),
+        Column("run", STRING_TYPE),
+        Column("item", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+async def test_a_diff_whose_partition_values_ask_fails_reads_no_value_the_copy_never_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """reports' LSF projections keep a race's newest runs of a night's hundreds, named by an ask of L3. A diff whose
+    ask failed judged every run the copy never kept as missing and read each one: close to the whole read the diff
+    replaced. It reads none of them; a table counted against L3 waits, behind, for an ask that answers."""
+    l3 = _SqlL3(
+        "runs",
+        ["state", "run", "item", "votes", "source_version"],
+        [
+            {"state": "TX", "run": f"r{run}", "item": f"i{item}", "votes": 1, "source_version": 1}
+            for run in range(1, 6)
+            for item in range(3)
+        ],
+    )
+    failing = False
+
+    async def newest(l3: Any, scope: str) -> list[str]:
+        if failing:
+            raise ConnectionError("the ask failed")
+        return ["r1"]
+
+    table = SnapshotTable(
+        name="runs",
+        scope_column="state",
+        key=("run", "item"),
+        partition_by="run",
+        partition_values=newest,
+        version_column="source_version",
+    )
+    metadata = MetaData()
+    _RUNS.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
+    backend.initialize(metadata)
+    snapshot = await _geos_snapshot(l3, table, backend=backend)
+    assert len(backend.execute_query("SELECT * FROM runs")) == 3, "the rebuild read more than the run it keeps"
+    l3.add([{"state": "TX", "run": "r1", "item": "i9", "votes": 9, "source_version": 2}])
+    l3.epochs["TX"] = 2
+    failing = True
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == (), outcome
+    assert "partition values" in outcome.left["TX"], outcome
+    unkept = [args for _, args in l3.statements if set(args) & {"r2", "r3", "r4", "r5"}]
+    assert unkept == [], f"runs the copy never kept were read: {unkept}"
+    assert len(backend.execute_query("SELECT * FROM runs")) == 3
+    # the ask answers again: the next try, a minute on, brings the scope forward from the diff
+    failing = False
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    clock.ahead += 61
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert sorted(r["item"] for r in backend.execute_query("SELECT item FROM runs")) == ["i0", "i1", "i2", "i9"]
+    await snapshot.stop()
+
+
+async def test_a_catch_up_rebuilding_a_scope_with_no_copy_is_not_stopped_while_its_whole_read_pages_on() -> None:
+    """a scope neither L2 nor this L1 holds is rebuilt whole inside a catch-up, which is watched by what it lands.
+    Nothing lands until the scope commits, so a read longer than rebuild_stall was stopped as stalled and began
+    again at the next catch-up, for good. Each page of a whole read is its progress."""
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], [_geo("TX", "g1", "t0", 1)])
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot = await _geos_snapshot(l3, table, rebuild_stall=timedelta(seconds=0.5))
+    # CA, new to L3, with no copy anywhere: six pages, each 0.2 s, the read past the bound
+    l3.add([_geo("CA", "g1", f"c{i:04d}", 2) for i in range(5500)])
+    l3.epochs["CA"] = 2
+    l3.delay = lambda sql, args: 0.2 if "ORDER BY" in sql and args[:1] == ("CA",) else 0.0
+
+    outcome = await asyncio.wait_for(snapshot.catch_up(), timeout=20)
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
+    assert outcome.caught == ("CA",), outcome
+    pages = [sql for sql, args in l3.statements if "ORDER BY" in sql and args[:1] == ("CA",)]
+    assert len(pages) >= 6, "the read was not long enough to be the case under test"
+    await _until(lambda: snapshot.applied_epoch("CA") == 2, what="the copy applied CA")
+    assert _held(snapshot, "CA") == l3.rows("CA")
+    await snapshot.stop()
+
+
+async def test_a_scope_read_a_value_at_a_time_of_a_column_that_does_not_lead_the_key_is_held_in_key_order() -> None:
+    """partition_by need not lead the key: read a county at a time, a scope's rows came grouped by county, and with no
+    read_order nothing put them back in key order."""
+    rows = _votes_by_rows(races=4, counties=30)
+    l3 = _PartitionedL3(rows, partition="county")
+    backend = _votes_by_backend(_OrderedBackend())
+    assert isinstance(backend, _OrderedBackend)
+    tables = (SnapshotTable(name="votes_by", scope_column="state", key=("race", "county"), partition_by="county"),)
+    snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=10)
+    await snapshot.stop()
+
+    assert l3.partition_reads == 2, "the scopes were not read a county at a time"
+    assert backend.given and all(given == sorted(given) for given in backend.given), "a scope was out of key order"
+    assert len(backend.execute_query("SELECT * FROM votes_by")) == len(rows)
+
+
+class _Clock:
+    """the scoped snapshot's clock, which a test moves on: ``time`` as the module uses it, ``monotonic`` ahead by
+    ``ahead`` seconds."""
+
+    def __init__(self) -> None:
+        self.ahead = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.ahead
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+
+def _waited(caplog: pytest.LogCaptureFixture, wait: str) -> list[float]:
+    """how long each line said for ``wait`` had waited, in the order said."""
+    return [
+        r.extra_data["waiting_seconds"]  # type: ignore[attr-defined]
+        for r in caplog.records
+        if getattr(r, "extra_data", {}).get("wait") == wait
+    ]
+
+
+async def test_every_wait_ends_where_it_resolves_so_a_later_one_counts_from_its_own_start(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a wait that never ended counted the next one from the first the process ever had: a scope's second publish
+    wait, hours after its first, said '(waiting 7200 s)' on its first line. Each wait ends where it resolves: the
+    catch-up's claim wait when a catch-up finds nothing behind, a read's when the reads under way end, a run's when
+    it does."""
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    caplog.set_level(logging.INFO)
+
+    async with writer.holding_rebuilds() as held:
+        assert held
+        l3.epochs["DE"] = 2
+        assert (await replica.catch_up()).result is CatchUpResult.CLAIM_HELD
+        l3.epochs["DE"] = 1
+        assert (await replica.catch_up()).result is CatchUpResult.CAUGHT_UP  # nothing behind: the wait has ended
+        clock.ahead += 7200
+        l3.epochs["DE"] = 2
+        assert (await replica.catch_up()).result is CatchUpResult.CLAIM_HELD
+    assert [round(s) for s in _waited(caplog, "claim")] == [0, 0], "the claim wait counted from an ended one"
+
+    # two catch-ups two hours apart, each reading from L3 under the claim
+    for epoch, scope in ((2, "TX"), (3, "TX")):
+        l3.write(epoch, "results", {"county": "c1", "state": scope, "votes": epoch * 10})
+        l3.epochs[scope] = epoch
+        assert scope in (await replica.catch_up()).caught
+        clock.ahead += 7200
+    reads = _waited(caplog, "read")
+    assert len(reads) >= 2 and all(s < 60 for s in reads), f"a read counted from an ended one: {reads}"
+    runs = [
+        r.extra_data["waiting_seconds"]  # type: ignore[attr-defined]
+        for r in caplog.records
+        if str(getattr(r, "extra_data", {}).get("wait", "")).startswith("run:")
+    ]
+    assert runs and all(s < 60 for s in runs), f"a run counted from an ended one: {runs}"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_stage_that_waits_again_hours_after_its_last_wait_ended_counts_from_its_own_start(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a staged publish waiting on an earlier write still publishing: once that write's publish carried it on, the
+    wait has ended, and the scope's next wait, two hours on, says it began then."""
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    ap, lsf, reader, pointers, _, l3 = await _overlapping_writers()
+    caplog.set_level(logging.INFO)
+    # twice, two hours apart: the AP side's write commits and its publish lags, the LSF side's stage after it waits,
+    # and the AP publish carries it on
+    for ap_epoch, ap_saw in ((2, 1), (4, 3)):
+        ap_stages = await _ap_write(ap, l3, ap_epoch, total=ap_epoch)
+        stages, carry = await _lsf_write(lsf, l3, ap_epoch + 1)
+        assert await lsf.publish_staged(stages, carry_at=carry) == ([], []), "the LSF stage did not wait"
+        moved, _ = await ap.publish_staged(ap_stages, carry_at=dict.fromkeys(_BOTH, ap_saw))
+        assert moved == list(_BOTH)
+        await _until(lambda: lsf.applied_epoch("TX") == ap_epoch + 1, what="the LSF side saw its stage carried on")
+        clock.ahead += 7200
+
+    waited = _waited(caplog, "publish:TX")
+    assert len(waited) == 2, f"the second wait was not said when it began: {waited}"
+    assert all(s < 60 for s in waited), f"a publish wait counted from an ended one: {waited}"
+    for snapshot in (ap, lsf, reader):
+        await snapshot.stop()

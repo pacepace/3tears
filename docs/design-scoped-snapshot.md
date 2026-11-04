@@ -150,15 +150,26 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
 - **Records before the commit.** A writer keeps each stage as a record (`record_staged`) between its
   last stage and its commit, so a writer killed after that leaves its change in L2. A record is carried
   only up to the scope's epoch in L3, never past it: a record of a write that has not committed is never
-  applied, and goes once a pointer passes it.
+  applied, and goes once a pointer passes it. The precondition it rests on, the writer's to keep: every
+  data transaction of the write that touches the staged scopes has committed before `record_staged`.
+  `ScopeEpochs.settled` abandons a dead writer's write by committing what it left (its touched scopes
+  move to the write's number), so a record kept while one of those transactions was open, or after one
+  rolled back, would be carried to that epoch with rows L3 never held, and nothing after could tell:
+  the pointer is at L3's epoch and no row is stamped past it. No L3 statement can tell a committed data
+  transaction of the write from an open one, so the snapshot does not check it.
 - **Rows from L2.** `rows_at(scope, epoch)` answers a scope's rows at an epoch from this L1 or from the
   pointer carried there by its records. A writer whose copy is behind builds from it, else leaves the
   scope to the recovery; no write reads a scope whole from L3.
 - **The diff.** Every table names `version_column`, the version of the write that last changed a row.
   A behind scope's rows are a copy's (its pointer's chunks, or this L1's) with every group of rows L3
   changed since put in their place: one statement counts each group's rows and those stamped after the
-  copy's epoch; a group stamped, missing, or of another count is read pinned to its value; a group gone
-  is dropped. A table the copy keeps all of must then number L3's rows. A `retained` table (a retention
+  copy's epoch; a group stamped, missing, or of another count is read pinned to its value (a group whose
+  value is NULL from the rows where it is NULL, paged by the other key columns: a keyset page compares
+  every paged column, and a NULL makes that comparison NULL); a group gone is dropped. A table the copy
+  keeps all of must then number L3's rows. A table naming `partition_values` reads only the groups the
+  ask names; when the ask fails, no group the copy does not hold is read (each of a night's hundreds of
+  runs): a `retained` table is judged as one the copy keeps part of, any other stays behind until an ask
+  answers. A `retained` table (a retention
   keeps some rows) cannot be diffed when rows it kept went from L3 (rows it let go may count again):
   the scope stays behind, said at ERROR, never guessed at and never read whole.
   The contract it rests on: every write stamps every row it inserts or updates. A delete is seen by the
@@ -170,7 +181,8 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
   or a scope neither L2 nor this L1 holds), said at ERROR; any other whole read raises
   `WholeReadRefused`.
 - **The stall breaker** watches a catch-up by what it lands (a scope committed or judged, a pointer
-  moved), not by pages read.
+  moved), not by pages read; a page of a whole read (a scope with no copy, rebuilt inside a catch-up)
+  counts as landed, since that read is long and correct.
 
 ## Append-only tables: a base and its pieces
 
