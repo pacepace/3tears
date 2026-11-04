@@ -923,11 +923,7 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
     def test_separation_never_says_the_judge_went_unchecked_against_people(self) -> None:
         # `separation` is also the tier of a judge checked against people over enough results and found wanting
         # (calibration `not_met`), so "not checked" would be false there — and kinder than the truth.
-        from threetears.evals.analysis.report.words import EVIDENCE_TIER_WORDS
-
-        words = EVIDENCE_TIER_WORDS["separation"]
-        assert "not checked" not in words
-        assert "not shown to agree with people" in words
+        # The words that state a judge's tier on a page are the methods' sentence over it (``tier_sentence``).
         tier = JudgeEvidenceTier(
             rubric_dim=TONE,
             scale="ordinal",
@@ -938,6 +934,12 @@ class TestTheWordsClaimOnlyWhatWasMeasured:
             separation=separation_criterion(SEPARATION_MIN_RESULTS, SEPARATION_MIN_RESULTS, 0.9, (0.85, 1.0)),
         )
         assert tier.calibration.state == "not_met", "the case the words must stay true for"
+        words = tier_sentence(tier)
+        assert "not checked" not in words
+        assert (
+            ": separation — agreement with people 0.1 (bounds -0.1 to 0.3) over 20 pairs from 20 results, misses"
+            in words
+        )
 
 
 class TestTheStoredShapeMovedTheSchemaVersion:
