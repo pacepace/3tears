@@ -1019,7 +1019,7 @@
     "threetears.evals.schema.REFUSAL_KINDS": {
       "kind": "constant (tuple)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "host-contract"
     },
     "threetears.evals.schema.RefusalField": {
       "kind": "type alias",
@@ -1028,8 +1028,8 @@
     },
     "threetears.evals.schema.RefusalKind": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "str",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.refuse_on_event_loop": {
       "kind": "function",
@@ -5713,8 +5713,8 @@
     },
     "threetears.evals.analysis.gate_verdicts": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult",
+      "tier": "stable"
     },
     "threetears.evals.analysis.GateCell": {
       "kind": "model",
@@ -6088,8 +6088,8 @@
     },
     "threetears.evals.analysis.lint_prose": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]",
+      "tier": "stable"
     },
     "threetears.evals.analysis.list_analyses": {
       "kind": "function",
@@ -6458,8 +6458,8 @@
     },
     "threetears.evals.analysis.report_html": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "report_html(report: Report, *, static: bool = False) -> str",
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.report_markdown": {
       "kind": "function",
@@ -7219,27 +7219,27 @@
     "threetears.evals.quick.EXIT_FAILED": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.quick.EXIT_GATE_FAILED": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.quick.EXIT_OK": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.quick.EXIT_REFUSED": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.quick.EXIT_RUN_DID_NOT_COMPLETE": {
       "kind": "constant (int)",
       "signature": "",
-      "tier": "provisional"
+      "tier": "stable"
     },
     "threetears.evals.quick.Grader": {
       "kind": "dataclass",
@@ -7248,13 +7248,13 @@
     },
     "threetears.evals.quick.HostCommand": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "HostCommand(name: str, help: str, configure: Callable[[argparse.ArgumentParser], None], handler: Callable[[EvalHost | LaunchHost, argparse.Namespace], int | Coroutine[Any, Any, int]])",
+      "tier": "stable"
     },
     "threetears.evals.quick.HostFactory": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "Callable[[], EvalHost | LaunchHost]",
+      "tier": "stable"
     },
     "threetears.evals.quick.JudgeCalibration": {
       "kind": "dataclass",
@@ -7273,8 +7273,8 @@
     },
     "threetears.evals.quick.run_cli": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int",
+      "tier": "stable"
     },
     "threetears.evals.quick.WorldOutcome": {
       "kind": "model",

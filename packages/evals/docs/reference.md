@@ -171,6 +171,8 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`'utterance'` | `'schedule'`
 - **`KnownUsageRole`** · *host contract* · literal · A value of `UsageRole` this build knows, as a type: what a caller names (an action's argument, a filter) and what this build writes, refused outside the set as any `Literal` is.
   <br>`'candidate'` | `'judge'` | `'simulator'` | `'inner_agent'` | `'external'`
+- **`RefusalKind`** · *host contract* · type alias · What refused a call or ended a job: the public engine error it was, by kind.
+  <br>`str`
 - **`RubricAxis`** · literal · The two rubric axes a dimension sits on: what a subject should DO (`capability`) and what it should refuse or withstand (`boundary`).
   <br>`'capability'` | `'boundary'`
 - **`StopReason`** · *host contract* · literal · Why a completion stopped, in the engine's words.
@@ -211,6 +213,7 @@ The engine's stored shapes and the ports a host implements: what is written down
 - **`NON_TERMINAL_RUN_STATUSES`** · *host contract* · constant (frozenset) · Statuses a run can still leave under its own power — it is either queued or executing, and something in-process is expected to write its terminal status.
 - **`PROSE_SCHEMA_KEY`** · *host contract* · constant (str) · The JSON Schema keyword marking a string property as model prose, for vocabularies declared as schema rather than as Pydantic models (a world dimension's value schema).
   <br>`= 'x-model-prose'`
+- **`REFUSAL_KINDS`** · *host contract* · constant (tuple) · The refusal kinds this build knows, one per public engine error class, in the order its readers list them.
 - **`REGENERABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The version every regenerable document is written under, the cassette apart (`CASSETTE_SCHEMA_VERSION`), and the only one a read of one accepts.
   <br>`= 13`
 - **`RESERVED_DIM_IDS`** · *host contract* · constant (frozenset) · The reserved dim ids, which are deliberately NOT namespaced: they identify the two dual-score axes rather than a rubric dimension scored in some context, so there is no context to name. `require_namespaced_dim_name` exempts them — a judge service is built for these ids on every run.
@@ -597,6 +600,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`format_number(value: float | None, *, prefix: str = '') -> str`
 - **`frontier`** · function · Rank each subject's variants on quality x cost x latency, cheapest above bar.
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
+- **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
+  <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
 - **`generate_analysis`** · *host contract* · async function · Retired: the memo writer. Every call refuses before anything is sent, naming what writes a report now.
   <br>`generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: Callable[[str, str, dict[str, Any] | None], None] | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
@@ -617,10 +622,14 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings`
 - **`judge_self_agreement`** · function · Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
   <br>`judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement`
+- **`lint_prose`** · function · Every rule `text` breaks.
+  <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Retired: refuses every analysis reporter template, naming the writer kind that replaces it.
   <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
+- **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
+  <br>`report_html(report: Report, *, static: bool = False) -> str`
 - **`reporter_cell_timeout_s`** · function · Retired: the wall-clock ceiling one reporter cell had, the memo writer's two requests then its judge phase.
   <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
 - **`reporter_kind_contract`** · function · Retired: the analysis reporter kind's contract, the host's seats ignored; `REPORTER_KIND_CONTRACT`.
@@ -759,14 +768,35 @@ The host bridge: an eval's host, the command line, and a measure declared on the
   <br>`as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost`
 - **`measure`** · *host contract* · function · Declare the measure a function computes, on the function: `@measure(higher_is_better=True, ...)`.
   <br>`measure(*, name: str | None = None, reader_name: str | None = None, description: str | None = None, family: str = 'mechanical', transferability_class: str = 'mechanical', attribution_scope: str = 'end_to_end', data_type: str = 'numeric', **declared: Any) -> Callable[[Callable[..., Any]], Measure]`
+- **`run_cli`** · function · Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
+  <br>`run_cli(argv: Sequence[str] | None = None, *, host_factory: HostFactory | None = None, prog: str = 'python -m threetears.evals', commands: Sequence[HostCommand] = ()) -> int`
 
 **Classes**
 
 - **`Grader`** · dataclass · A function or a field with what its reading declares: a margin, a guardrail, or a range.
+- **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
 - **`JudgeCalibration`** · dataclass · How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
 - **`WorldOutcome`** · model · What a world runner's graders see: the agent's answer, the state it left, and the calls it made.
 - **`WorldRunner`** · dataclass · A runner that hosts an agent on a world: `World(...)(agent)`.
+
+**Types**
+
+- **`HostFactory`** · type alias · What names the host the commands work in: called once, with no arguments, per invocation.
+  <br>`Callable[[], EvalHost | LaunchHost]`
+
+**Constants**
+
+- **`EXIT_FAILED`** · constant (int) · Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
+  <br>`= 3`
+- **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
+  <br>`= 4`
+- **`EXIT_OK`** · constant (int) · Exit code: every run completed, or the command read what it was asked for.
+  <br>`= 0`
+- **`EXIT_REFUSED`** · constant (int) · Exit code: the command was refused before it could do anything.
+  <br>`= 2`
+- **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
+  <br>`= 1`
 
 <a id="api-harness"></a>
 ### `threetears.evals.harness`

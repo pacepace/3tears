@@ -279,9 +279,7 @@ threetears.evals.schema.EvalRun
 threetears.evals.schema.EvalTemplate
 threetears.evals.schema.EvalTestCase
 threetears.evals.schema.ExternalSpend
-threetears.evals.schema.FailureOwner
 threetears.evals.schema.GoalCheckControl
-threetears.evals.schema.JOB_LEASE_RENEWAL_FRACTION
 threetears.evals.schema.JudgeConfig
 threetears.evals.schema.JudgeEvidence
 threetears.evals.schema.JudgedArtifact

@@ -6,15 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: 31 declared names nothing outside the package imports go provisional
+### evals: 18 declared names nothing outside the package imports go provisional
 
-**Changed:** the declared surface (`host-contract` and `stable`) drops from 553 names to 522. A name goes provisional
-when nothing outside the package imports it, the host guide does not teach it, and no declared signature reaches it.
-Ports a host implements, version constants and one-minor shims stay declared. The 31 names are the `Known*` origin
-and purpose vocabularies that no declared signature takes, with their value tuples; the quick command line's
-`run_cli`, `HostCommand`, `HostFactory` and `EXIT_*` codes; `report_html`, `report_markdown`, `format_signed`,
-`GLOSSARY`, `lint_prose`, `GATE_TOKENS` and `gate_verdicts`; `declared_names`; and `ANTHROPIC_MIN_THINKING_BUDGET`.
+**Changed:** the declared surface (`host-contract` and `stable`) drops from 553 names to 535. A name goes provisional
+when nothing outside the package imports it, no shipped page teaches it, and no declared signature reaches it. Ports a
+host implements, version constants and one-minor shims stay declared. The 18 names are the `Known*` origin
+vocabularies that no declared signature takes, with their value tuples and `REASONING_EFFORTS`; `report_markdown`,
+`format_signed`, `GLOSSARY` and `GATE_TOKENS`; `declared_names`; and `ANTHROPIC_MIN_THINKING_BUDGET`.
 `MIGRATIONS.toml`'s notes list each by root. Nothing is removed, nothing warns, and nothing stored changes.
+`tests/test_guide_names_are_declared.py` now reads every shipped page, and holds a declared name that a page names
+in prose to its tier.
 
 **Hosts:** nothing to change. A host that binds one of these names sends its import list to have it declared again.
 
