@@ -92,8 +92,6 @@ log = get_logger(__name__)
 #: The key under which a writer case lives inside ``EvalTestCase.host_payload``.
 WRITER_CASE_KEY = "writer_case"
 
-#: Why a turn counted as sent has no usage: its reply never came.
-_UNRETURNED = "the turn was sent and its reply never came"
 
 #: The writer case's payload version: a snapshot frozen whole, the notes withheld, and where the case came from. A
 #: later shape takes the next version, and a case of a version this build does not know does not read.
@@ -641,8 +639,18 @@ class ReportWriterKind:
 
 
 def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
-    """Every turn the cell sent, as the candidate role's usage: priced as its client priced it, an unpriced turn and a
-    turn whose reply never came as unpriced, with why."""
+    """Every turn the cell sent, as the candidate role's usage: each reply priced as its client priced it, a reply
+    nothing priced as unpriced, with why, and a turn whose reply never came as an unanswered call beside them.
+
+    **A turn whose reply never came is no spend.** Its request ended before any completion was returned, so no reply
+    reported usage. A provider that answers with a failure status (a 5xx, the 520 of its edge whose body is not even
+    JSON) or that the connection never reached bills nothing: its priced cost is $0. A request cut in flight (a
+    timeout, a cancel) may have been served, and no reply carries what it cost. Either way the turn is counted
+    unanswered (``RoleUsage.unanswered_lost``), which neither prices nor unprices the cell's cost (owner, 2026-10-27),
+    so the result's ``cost_usd`` is the sum of the turns that were priced, those delivered before the failure
+    included: a failed write is the candidate's failure, never spend the run cannot count. Only a reply that reported
+    usage its client could not price is unpriced spend, which stops a capped run.
+    """
     ledger = RoleUsageLedger(role="candidate")
     for turn in tally.turns:
         ledger.add(
@@ -655,15 +663,8 @@ def _telemetry(tally: Tally, model: str) -> CandidateTelemetry:
             price_source=turn.price_source,
             unpriced_reason=turn.pricing_failure,
         )
-    for _ in range(tally.unreturned_turns()):
-        ledger.add(
-            model=model,
-            prompt_tokens=None,
-            completion_tokens=None,
-            reasoning_tokens=None,
-            cost_usd=None,
-            unpriced_reason=_UNRETURNED,
-        )
+    if unreturned := tally.unreturned_turns():
+        ledger.add_unanswered(model=model, lost=unreturned)
     return CandidateTelemetry(usage=ledger.rows(), turns_delivered=len(tally.turns))
 
 

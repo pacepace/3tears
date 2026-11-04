@@ -1859,9 +1859,9 @@ async def analysis_generate(
 
 
 def _attempt_tally(tally: Tally, *, prompt_version: str, refusals: Sequence[str] = ()) -> GenerationTally:
-    """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each turn whose reply
-    never came or reported no cost an unpriced call; the priced turns' cost (a floor whenever a turn is unpriced);
-    and the model each reply named."""
+    """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each reply that
+    reported no cost an unpriced call (a turn whose reply never came adds nothing and is not one); the priced turns'
+    cost (a floor whenever a reply is unpriced); and the model each reply named."""
     turns = tally.turns
     return GenerationTally(
         calls=tally.sent,
@@ -1892,15 +1892,17 @@ def _spend_row(
 ) -> OutOfRunSpend | None:
     """The report's one out-of-run ledger row, ``None`` for a report that sent no turn.
 
-    It states every turn sent (``calls``, a turn whose reply never came included), the priced share and the unpriced
-    turns apart (``priced_usd``, ``unpriced_calls``) and what admitted them (``admitted_by``, the report budget). Its
-    total, ``cost_usd``, is ``None`` whenever a turn is unpriced (``Tally.spent_usd``): never $0, and never the priced
-    share read as the whole. Its tokens are ``None`` when a turn's reply never came, since nothing reported them.
+    It states every turn sent (``calls``, a turn whose reply never came included), the priced share, the replies
+    nothing priced and the turns whose reply never came apart (``priced_usd``, ``unpriced_calls``, ``raised_calls``)
+    and what admitted them (``admitted_by``, the report budget). Its total, ``cost_usd``, is ``None`` whenever a reply
+    is unpriced (``Tally.spent_usd``): never $0, and never the priced share read as the whole. A turn whose reply never
+    came is no unpriced spend: it reported no usage and adds nothing to the total or the tokens, as the eval result's
+    usage counts it unanswered (owner, 2026-10-27), so a report the provider failed one turn of is priced at the turns
+    that came back.
     """
     if not tally.sent:
         return None
     turns = tally.turns
-    complete = tally.sent == len(turns)
     priced, unpriced = tally.priced_usd(), tally.unpriced_turns()
     served = {turn.served_model for turn in turns}
     sources = sorted({turn.price_source for turn in turns if turn.price_source is not None})
@@ -1910,9 +1912,9 @@ def _spend_row(
         model=attempt.generator_model,
         served_model=served.pop() if len(served) == 1 else None,
         outcome="completed",
-        prompt_tokens=_summed([turn.input_tokens for turn in turns]) if complete else None,
-        completion_tokens=_summed([turn.output_tokens for turn in turns]) if complete else None,
-        reasoning_tokens=_summed([turn.reasoning_tokens for turn in turns]) if complete else None,
+        prompt_tokens=_summed([turn.input_tokens for turn in turns]),
+        completion_tokens=_summed([turn.output_tokens for turn in turns]),
+        reasoning_tokens=_summed([turn.reasoning_tokens for turn in turns]),
         # The total is the priced share itself when every turn is priced: one figure, never two sums of it.
         cost_usd=None if unpriced else priced,
         price_source=", ".join(sources) if sources else None,

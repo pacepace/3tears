@@ -75,13 +75,14 @@ def test_the_lens_lists_a_scopes_calls_and_sums_them_with_the_unpriced_counted_b
 
     assert [row.id for row in report.rows] == [row.id for row in rows[:4]], "the scope's calls, oldest first"
     totals = report.totals
-    assert (totals.n_calls, totals.n_raised, totals.n_unpriced, totals.n_unbounded) == (4, 1, 2, 1)
+    # Ruling of 2026-11-04: the raised call reported no usage, so it is raised alone, never unpriced.
+    assert (totals.n_calls, totals.n_raised, totals.n_unpriced, totals.n_unbounded) == (4, 1, 1, 1)
     assert totals.priced_usd == pytest.approx(0.06), "only the priced calls are summed"
     assert totals.ceiling_usd == pytest.approx(0.14)
     assert (report.by_purpose["variation"].n_calls, report.by_purpose["proposer"].priced_usd) == (3, 0.05)
     assert list(report.by_launch) == [_GROUP] and report.by_launch[_GROUP].n_calls == 3, "a proposal is in no launch"
     text = out_of_run_spend_text(report)
-    assert "total: 4 call(s): $0.0600 reported, 2 unpriced (so at least), 1 raised" in text
+    assert "total: 4 call(s): $0.0600 reported, 1 unpriced (so at least), 1 raised" in text
     assert "TimeoutError" in text
 
 

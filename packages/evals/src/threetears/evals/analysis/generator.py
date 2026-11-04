@@ -259,8 +259,10 @@ class GenerationTally(BaseModel):
 
     @property
     def unpriced_calls(self) -> int:
-        """Calls sent whose cost was never observed: cut off before a result, or returned with none."""
-        return self.calls - self.returned + self.unreported_cost
+        """Calls that returned with no reported cost. A call cut off before a result is not one: no reply reported
+        its usage, so it adds nothing to ``token_cost`` and never makes it a floor (owner, 2026-10-27, applied to the
+        attempt record 2026-11-04); ``calls - returned`` counts it."""
+        return self.unreported_cost
 
 
 def refuse_an_unlisted_writer(profile: HostProfile, model: str) -> None:

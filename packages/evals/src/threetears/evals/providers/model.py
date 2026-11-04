@@ -85,6 +85,11 @@ log = get_logger(__name__)
 #: The output cap a :class:`Model` sends when given none: Anthropic requires one, and a price ceiling needs one.
 DEFAULT_MAX_TOKENS: Final = 8192
 
+#: The statuses by which a gateway says it gave up waiting on the provider (504, and Cloudflare's 524): the provider
+#: may still have served the request and billed it, so a tool turn answered with one is never sent again, as a turn cut
+#: in flight is not.
+_GATEWAY_TIMEOUTS: Final = frozenset({504, 524})
+
 #: How long one request may take, in seconds, on a client the model opens itself, unless ``timeout=`` says
 #: otherwise. A call the provider declined is sent again within it (:class:`DeclinedRetry`); nothing else is.
 _REQUEST_TIMEOUT: Final = httpx.Timeout(600.0, connect=20.0)
@@ -449,15 +454,20 @@ class _Live:
             )
 
     async def _post(
-        self, body: Mapping[str, Any], *, betas: Sequence[str] = ()
-    ) -> tuple[int, Mapping[str, Any]]:  # Any: JSON
-        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it; ``betas``
-        go as Anthropic's ``anthropic-beta`` header.
+        self, body: Mapping[str, Any], *, betas: Sequence[str] = (), failure_attempts: int = 1
+    ) -> tuple[int, Mapping[str, Any], tuple[str, ...]]:  # Any: JSON
+        """The provider's answer to ``body``, parsed, the call sent again while the provider declines it, and what
+        each resend followed (:attr:`~threetears.evals.schema.TurnReply.resent_after`); ``betas`` go as Anthropic's
+        ``anthropic-beta`` header.
 
         A declined answer (the ``provider`` owner: a 429 that is no spent quota, a 529, a 503, as a status or as the
-        code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`),
-        all within one request's timeout of the first attempt. Any other failure, and the last decline, is raised as
-        it came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
+        code a 200's body carries) is sent again up to the policy's attempts, after its wait (:class:`DeclinedRetry`).
+        With ``failure_attempts`` above 1 (a tool turn's: the policy's ``turn_failure_attempts``), a call the provider
+        failed with a 5xx status that is no decline, or whose connection was never made, is sent again too, up to that
+        many attempts in all: nothing came back, so nothing was billed. A gateway's timeout (504, 524) is not: the
+        provider may still have served it. Every wait and resend ends within one
+        request's timeout of the first attempt. Any other failure, and the last decline or failure, is raised as it
+        came; an error in a 200's body that is no decline is left to :func:`read_reply`, as before.
         """
         if self.provider == "anthropic":
             path, headers = "/messages", {"x-api-key": self._key, "anthropic-version": "2023-06-01"}
@@ -467,49 +477,81 @@ class _Live:
             path, headers = "/chat/completions", {"authorization": f"Bearer {self._key}"}
         client = self.http_client()
         budget = client.timeout.read
-        started = time.monotonic()
-        made = 0
+        until = time.monotonic() + budget if budget is not None else None
+        made = declined = failed = 0
+        resent_after: list[str] = []
+        # The answer the next resend follows, re-read if that resend brings none; or the connection never made.
         previous: httpx.Response | None = None
+        unsent: httpx.ConnectError | httpx.ConnectTimeout | None = None
         while True:
-            if previous is not None:
-                until = started + budget if budget is not None else None
+            if made == 0:
+                try:
+                    response: httpx.Response | None = await client.post(self._url + path, json=body, headers=headers)
+                except (httpx.ConnectError, httpx.ConnectTimeout) as never:
+                    if failure_attempts < 2:
+                        raise
+                    # NOSILENT: the request never reached the provider; it is sent again below, or raised there.
+                    response, unsent = None, never
+            else:
                 response, lost = await self._resend(client, path, body, headers, until=until)
                 if response is None:
                     # The resend brought no answer: cut at the call's time bound, or lost on the way (a reset, a
-                    # connect timeout). The decline before it is what the provider said, so it is what is raised.
+                    # connect timeout). What the attempt before it met is what the provider said, so it is raised.
                     log.warning(
-                        "eval.providers a resend of a declined call brought no answer provider=%s model=%s attempt=%d: %s",
+                        "eval.providers a resend brought no answer provider=%s model=%s attempt=%d: %s",
                         self.provider,
                         self.model_name,
                         made + 1,
                         "cut at the call's time bound" if isinstance(lost, TimeoutError) else type(lost).__name__,
                     )
+                    if previous is None:
+                        assert unsent is not None, "a resend follows an answer or a connection never made"
+                        raise unsent from lost
                     error, _ = self._read(previous, made + 1)
-                    assert error is not None, "the answer before a resend is a decline"
+                    assert error is not None, "the answer before a resend is a failure"
                     raise error from lost
-            else:
-                response = await client.post(self._url + path, json=body, headers=headers)
             made += 1
-            error, parsed = self._read(response, made)
-            if error is None:
-                assert parsed is not None
-                return response.status_code, parsed
-            if error.owner != "provider" or made >= self._retry.attempts:
-                raise error
-            wait = self._retry.wait_s(made, response.headers.get("retry-after"))
-            if wait is None or (budget is not None and time.monotonic() - started + wait >= budget):
-                raise error
+            if response is None:
+                assert unsent is not None
+                failed += 1
+                if failed >= failure_attempts:
+                    raise unsent
+                after, wait = (
+                    f"the connection was never made ({type(unsent).__name__})",
+                    self._retry.wait_s(failed, None),
+                )
+                standing: BaseException = unsent
+            else:
+                error, parsed = self._read(response, made)
+                if error is None:
+                    assert parsed is not None
+                    return response.status_code, parsed, tuple(resent_after)
+                if error.owner == "provider":
+                    declined += 1
+                    if declined >= self._retry.attempts:
+                        raise error
+                    tried = declined
+                elif response.status_code >= 500 and response.status_code not in _GATEWAY_TIMEOUTS:
+                    failed += 1
+                    if failed >= failure_attempts:
+                        raise error
+                    tried = failed
+                else:
+                    raise error
+                after, wait = str(error), self._retry.wait_s(tried, response.headers.get("retry-after"))
+                standing, previous, unsent = error, response, None
+            if wait is None or (until is not None and time.monotonic() + wait >= until):
+                raise standing
             log.warning(
-                "eval.providers sending a declined call again provider=%s model=%s status=%s attempt=%d/%d wait_s=%.1f",
+                "eval.providers sending a call again provider=%s model=%s attempt=%d wait_s=%.1f after: %s",
                 self.provider,
                 self.model_name,
-                error.status,
                 made + 1,
-                self._retry.attempts,
                 wait,
+                after,
             )
             await self._retry.sleep(wait)
-            previous = response
+            resent_after.append(after)
 
     def _read(
         self, response: httpx.Response, made: int
@@ -580,7 +622,8 @@ class _Live:
             if refused and refused[-1][0] == body:
                 raise refused[-1][1]  # nothing closer to send: the refusal stands, as it came
             try:
-                return await self._post(body)
+                status, parsed, _ = await self._post(body)
+                return status, parsed
             except ProviderError as failure:
                 refused.append((body, failure))
                 raise
@@ -634,10 +677,10 @@ class _Live:
         clearing: ToolResultClearing | None = None,
         binding: ThinkingBinding | None = None,
     ) -> TurnReply:
-        """One tool turn over the Messages API, priced as a completion is; declined calls resent as :meth:`_post`
-        does, and nothing else (a tool turn negotiates no setting: the caller chose them). A clearing goes as the
-        body's ``context_management``, and a binding as its ``thinking.block_binding`` where the body thinks, each
-        under its beta header."""
+        """One tool turn over the Messages API, priced as a completion is; declined calls, and a 5xx or a connection
+        never made, resent as :meth:`_post` does, and nothing else (a tool turn negotiates no setting: the caller
+        chose them). A clearing goes as the body's ``context_management``, and a binding as its
+        ``thinking.block_binding`` where the body thinks, each under its beta header."""
         read = await self._read_for_call()
         body = turn_body(
             self.model_name,
@@ -653,7 +696,9 @@ class _Live:
         betas = [ToolResultClearing.BETA] if clearing is not None else []
         if "block_binding" in body.get("thinking", {}):
             betas.append(ThinkingBinding.BETA)
-        status, parsed = await self._post(body, betas=betas)
+        status, parsed, resent_after = await self._post(
+            body, betas=betas, failure_attempts=self._retry.turn_failure_attempts
+        )
         reply = read_reply(self.provider, self.model_name, status, parsed)
         turned: TurnRead = read_turn(status, parsed)
         price = self._price(reply, read.failure)
@@ -680,6 +725,7 @@ class _Live:
             pricing_failure=price.unpriced_reason,
             sent_binding=body.get("thinking", {}).get("block_binding", {}).get("prefix_mismatch_behavior"),
             input_transformations=turned.input_transformations,
+            resent_after=resent_after,
         )
 
     def turn_price_ceiling(
@@ -764,7 +810,11 @@ class Model:
     did not bill, is sent again after a wait, at most three attempts in all, all within one request's timeout of the
     first (``retry=``, :class:`~threetears.evals.providers.DeclinedRetry`), each resend logged at WARNING; a provider
     that asks to wait longer than the policy's longest wait is not sent it again. The answer that stands names how
-    many attempts it took.
+    many attempts it took. A tool turn (:meth:`turn`) the provider failed with a 5xx that is no decline and no gateway
+    timeout (a 500, a 502, a 520 from its edge; never a 504 or a 524, which it may still have served), or whose
+    connection was never made, is sent again too, two attempts in all by default
+    (``DeclinedRetry.turn_failure_attempts``), within the same bound: no completion came back, so nothing was billed,
+    and the reply names what each resend followed (``TurnReply.resent_after``).
 
     **Recording.** Given ``recording=``, a file that exists is replayed, offline and free, and ``RECORD=1`` in the
     environment records it again live (started afresh by the first model built on it in the run). A file that does
@@ -882,7 +932,8 @@ class Model:
         :ptype catalogue_fetch_timeout: float | None
         :param retry: How a call the provider declined (a 429 that is no spent quota, a 529, a 503) is sent again;
             ``None`` is :class:`~threetears.evals.providers.DeclinedRetry`'s defaults: three attempts, waiting the
-            provider's ``retry-after`` or one then two seconds, any wait at most twenty.
+            provider's ``retry-after`` or one then two seconds, any wait at most twenty; and two attempts of a tool
+            turn the provider failed with a 5xx, or whose connection was never made.
         :ptype retry: DeclinedRetry | None
         :param pricer: What the host pays for a call (:class:`~threetears.evals.providers.Pricer`): asked for its rates
             before every call is bounded and, when it answered them, for the call's price after it returns; a call it

@@ -153,8 +153,8 @@ class OutOfRunSpend(CoreDocumentModel):
         ge=0,
         exclude_if=lambda value: value is None,
         description=(
-            "Of `calls`, those nothing priced: a reply that reported no cost, or a turn in flight when the writing "
-            "stopped, whose reply never came and which may have been billed. Set exactly when `calls` is."
+            "Of `calls`, the replies nothing priced: each reported usage, and no cost. A turn whose reply never came "
+            "is counted in `raised_calls` and never here. Set exactly when `calls` is."
         ),
     )
     raised_calls: int | None = Field(
@@ -162,9 +162,11 @@ class OutOfRunSpend(CoreDocumentModel):
         ge=0,
         exclude_if=lambda value: value is None,
         description=(
-            "Of `unpriced_calls`, the turns whose reply never came: the client raised, or the writing was cancelled "
-            "or ran out of time while they were in flight. The row's `outcome` is the row's (`completed`: it "
-            "ledgers what the report spent), so this is what counts its raised calls. Set exactly when `calls` is."
+            "Of `calls`, the turns whose reply never came: the client raised, or the writing was cancelled or ran out "
+            "of time while they were in flight. Apart from `unpriced_calls`: no reply reported their usage, so they "
+            "add nothing to `cost_usd` or the tokens and never make it None. The row's `outcome` is the row's "
+            "(`completed`: it ledgers what the report spent), so this is what counts its raised calls. Set exactly "
+            "when `calls` is."
         ),
     )
     priced_usd: float | None = Field(
@@ -235,10 +237,10 @@ class OutOfRunSpend(CoreDocumentModel):
             return self
         if self.unpriced_calls is None or self.raised_calls is None or self.priced_usd is None:
             raise ValueError("a row of several calls states its unpriced_calls, its raised_calls and its priced_usd")
-        if not self.raised_calls <= self.unpriced_calls <= self.calls:
+        if self.unpriced_calls + self.raised_calls > self.calls:
             raise ValueError(
                 f"a row of {self.calls} calls with {self.unpriced_calls} unpriced and {self.raised_calls} raised: "
-                "raised calls are unpriced, and unpriced ones are calls"
+                "unpriced replies and raised turns are calls apart"
             )
         if self.unpriced_calls and self.cost_usd is not None:
             raise ValueError("a row with an unpriced call has no total: cost_usd is None, and priced_usd its floor")
