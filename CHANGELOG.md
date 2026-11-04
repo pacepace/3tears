@@ -117,14 +117,18 @@ thinned set of a night's runs, and of each kept run its history rows). Before, a
 run L3 holds (a `GROUP BY` over the whole night that grew with it), and every kept run whose copy held part of its
 rows was of another count and read again whole. Now:
 
-- **The count names only the asked-for partitions** (`IN` their values, `IS NULL` for a NULL one), so it does not
-  grow with every run L3 holds.
+- **The count names only the asked-for and the held partitions** (`IN` their values, `IS NULL` for a NULL one), so
+  it does not grow with every run L3 holds.
 - **Only what moved is read.** A kept partition a write stamped since the copy's epoch has only its stamped rows
   read, each replacing the copy's row of its key, both as the L1 types them. One is read whole when the copy holds
   none of it, when a write stamped its every row (one read), when the copy holds more of its rows than L3 holds
   unchanged since the copy's epoch (rows it holds went from L3), or when the L1's retention lets go of a stamped row
   of it. One whose copy holds fewer rows than L3 is no difference and is not read.
-- **Pruned and gone partitions are dropped unread:** one the ask no longer names, and one L3 no longer holds.
+- **Only a partition L3 no longer holds is dropped.** Every partition the copy holds is counted and diffed beside
+  the asked-for ones, named or not: an ask may not yet name a run L3 holds (reports' `lsf_runs` records a run once
+  every state's rows are written), and a diff that dropped it would publish fewer rows than L3 holds. Letting go of
+  a run the thinning no longer names is the L1 retention's job. The count stays bounded by the asked-for and the
+  held partitions.
 - **A failed ask, or one naming no partition while the copy holds rows (said at WARNING), reads nothing:** the
   scope stays behind and is tried again, never diffed as a plain `retained` table and never thinned to nothing.
 - **What each diff dropped, read whole and read stamped-only is said at INFO**, per table and scope.
@@ -140,6 +144,11 @@ rows was of another count and read again whole. Now:
   table's ask, a count a racing write upset) or a write left pending counts nothing, so a real change is never
   skipped. An ask naming a value its column cannot hold (a NUMERIC asked as text that is no number) is said at
   ERROR with the value and taken as a failed ask.
+- **A failure that repeats backs off.** A scope whose diff fails the same way, its diff seeing the same counts and
+  newest stamps of L3 as the last failed try, is tried again after 1, 2, 4 and 8 minutes, then every 15, said at
+  ERROR at each try with when the next is. A write that moves the scope's epoch in L3 has it tried at the next
+  catch-up, and a try seeing other counts or stamps waits a minute again: a retry is delayed, a change never
+  skipped.
 - **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
   L1's stored form, from the one conversion the L1 writes through, now public as
   `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID

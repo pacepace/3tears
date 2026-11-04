@@ -194,15 +194,18 @@ As a plain `retained` table its diff counted every run L3 holds, a `GROUP BY` gr
 every kept run again whole, since the copy holds part of its rows and so is of another count. `partial_groups`
 (with `retained` and `partition_values`) diffs over the named runs alone:
 
-- The count statement names them (`AND run IN (...)`, `IS NULL` for a NULL one): its cost follows the runs
-  the copy keeps, not the ones L3 holds.
+- The count statement names them and the runs the copy holds (`AND run IN (...)`, `IS NULL` for a NULL
+  one): its cost follows the runs the copy keeps, not the ones L3 holds.
 - A stamped run has only its rows stamped after the copy's epoch read, each replacing the copy's row of its key,
   both keyed as the L1 types them. It is read whole instead when every row of it is stamped (rewritten whole,
   one read), when the copy holds more of its rows than L3 holds unchanged (rows it holds went), or when the
   L1's retention lets go of a stamped row (the copy's row of that key cannot be told from what was kept). A run
   the copy holds none of is read whole; one it holds fewer rows of than L3 is no difference.
-- A named run L3 holds no more, and one the ask no longer names, is dropped and never read. The composed rows
-  pass the L1's retention whole.
+- Only a held run L3 holds no more is dropped. A held run the ask does not name is diffed like a named one,
+  never dropped: reports names runs from `lsf_runs`, which records a run only once every state's rows are
+  written, so in that window the ask leaves out a run L3 holds, and dropping it would publish fewer rows than
+  L3 holds. Letting go of a run the thinning no longer names is the L1 retention's job. The composed rows pass
+  the L1's retention whole.
 - An ask that fails, or names no run while the copy holds rows (said at WARNING), reads nothing: the scope
   stays behind for the next try. Diffed as a plain `retained` table instead, it would count and read every
   run a write stamped, kept or not, the cost this exists to remove; thinned to nothing, it would drop the copy
@@ -227,6 +230,12 @@ bounds a retained table that names `partition_values` without `partial_groups`: 
 whole, which a copy of part never meets, so before the breaker it read every kept run on every diff. Values are
 compared as the L1 stores them (`stored_value`, the conversion it writes through), never by a second set of rules
 that could disagree with it and make a held group look missing.
+
+**A failure that repeats backs off.** A scope whose diff cannot be brought forward stays behind and is tried
+again; one that fails the same way while its diff sees L3 as the last failed one did (the same per-group counts
+and newest stamps) would read the same rows on every try. It waits 1, 2, 4, 8, then 15 minutes between such tries,
+said at ERROR each time with the next. Only the retry is delayed: a write moving the scope's epoch in L3 has it
+tried at the next catch-up, and a try that sees other counts or stamps waits a minute again.
 
 **Why a flag on the table, not a second table.** A separate table holding only the kept runs would make the
 writer write each run twice and L3 hold it twice, and moving a run out of the kept set would be a delete in L3

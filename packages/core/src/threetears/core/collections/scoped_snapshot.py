@@ -450,8 +450,11 @@ class SnapshotTable:
         when a write stamped its every row, when the copy holds more of its rows than L3 holds unchanged since the
         copy's epoch, or when this L1's retention lets go of a row a write stamped in it; one a write stamped
         otherwise has only its stamped rows read, each replacing the copy's row of its key; one whose copy holds
-        fewer rows than L3 is no difference and is not read. A named partition L3 no longer holds, and one the ask no
-        longer names, is dropped from the copy, and neither is read. The rows then pass this L1's retention whole. A
+        fewer rows than L3 is no difference and is not read. A partition the copy holds is diffed alike whether the
+        ask names it or not, and dropped only once L3 no longer holds it: an ask may not yet name a partition L3 holds
+        (reports' ``lsf_runs`` records a run once every state's rows are written), and letting go of one it no longer
+        names is this L1's retention's, never the diff's. The count names the asked-for partitions and the copy's, so
+        it stays bounded by them. The rows then pass this L1's retention whole. A
         diff whose ask fails, or answers none for a scope the copy holds rows of (said at WARNING), reads nothing and
         leaves the scope behind until an ask answers. What a diff dropped and read is said at INFO; a partition read
         on two diffs in a row with L3's count and newest stamp of it unchanged is said at ERROR and not read again
@@ -1218,6 +1221,41 @@ class _WholeReadRefused(RuntimeError):
 
 #: how often a wait that lasts is said again, at most
 _WAIT_SAY_SECONDS: Final = 60.0
+
+#: the longest a scope whose diff fails the same way, L3 unchanged for it, waits between tries: doubling from a
+#: minute (1, 2, 4, 8), then this
+_UNRECOVERED_WAIT_CAP: Final = 900.0
+
+
+@dataclass
+class _Saw:
+    """what a diff of a scope saw of L3: the scope's epoch there, and each table's groups with their counts and
+    newest stamps (:meth:`ScopedSnapshot._group_counts`).
+
+    :ivar epoch: the scope's epoch in L3 the diff ran at
+    :ivar groups: table -> each group, its rows and its newest stamp
+    """
+
+    epoch: int | None = None
+    groups: dict[str, frozenset[tuple[Any, int, Any]]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Unrecovered:
+    """a scope a recovery left behind: when, why, how long until it is tried again, and what its diff saw of L3.
+
+    :ivar at: when it was left (``time.monotonic``)
+    :ivar why: why it could not be brought forward
+    :ivar wait: how long, from ``at``, until it is tried again while L3's epoch for it stays ``epoch``
+    :ivar epoch: the scope's epoch in L3 then
+    :ivar saw: what the diff saw of L3, with ``why``: a next failure seeing the same waits twice as long
+    """
+
+    at: float
+    why: str
+    wait: float
+    epoch: int | None
+    saw: tuple[str, frozenset[tuple[str, frozenset[tuple[Any, int, Any]]]]]
 
 
 class _Stalled(TimeoutError):
@@ -2247,10 +2285,11 @@ class ScopedSnapshot:
         # whether every table names its version column: a scope behind L3 is then brought forward from the diff, and
         # a scope is read whole from L3 only to rebuild what L2 holds no copy of (_WHOLE_READ)
         self._diffable = all(t.version_column is not None for t in self._tables)
-        # scope -> when a recovery here last left it behind (it could not be brought forward from the diff) and why:
-        # tried again no sooner than a minute after, so a scope that cannot be diffed is not asked of L3 (and said at
-        # ERROR) at every retry
-        self._unrecovered: dict[str, tuple[float, str]] = {}
+        # scope -> when a recovery here last left it behind (it could not be brought forward from the diff), why, and
+        # what its diff saw: tried again no sooner than a minute after, twice as long each time it fails the same way
+        # with L3 unchanged for it (to _UNRECOVERED_WAIT_CAP), and at once when L3's epoch for it moves, so a scope
+        # that cannot be diffed is not read from L3 (and said at ERROR) at every retry
+        self._unrecovered: dict[str, _Unrecovered] = {}
 
     # ------------------------------------------------------------------
     # status
@@ -3196,7 +3235,7 @@ class ScopedSnapshot:
             scope
             for scope, (failures, _) in self._behind.items()
             if failures >= _BEHIND_REBUILD_AFTER
-            and now - self._unrecovered.get(scope, (-math.inf, ""))[0] >= _WAIT_SAY_SECONDS
+            and now - (self._unrecovered[scope].at if scope in self._unrecovered else -math.inf) >= _WAIT_SAY_SECONDS
         }
         if stuck:
             await self._rebuild_stuck(stuck)
@@ -5013,10 +5052,16 @@ class ScopedSnapshot:
         ):
             for scope in sorted(scopes):
                 tried = self._unrecovered.get(scope)
-                if tried is not None and time.monotonic() - tried[0] < _WAIT_SAY_SECONDS:
-                    left[scope] = tried[1]
+                if (
+                    tried is not None
+                    and time.monotonic() - tried.at < tried.wait
+                    and await self._held_epoch(scope) == tried.epoch
+                ):
+                    # failed the same way before, and L3 has not moved it since: tried at its time, not now
+                    left[scope] = tried.why
                     continue
-                outcome = await self._recover_one(scope)
+                saw = _Saw()
+                outcome = await self._recover_one(scope, saw)
                 _headway(f"judged scope {scope!r} against L3", landed=True)
                 self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
                 if outcome is None:
@@ -5029,14 +5074,16 @@ class ScopedSnapshot:
                     left[scope] = outcome.why
                 else:
                     left[scope] = str(outcome)
-                    self._unrecovered[scope] = (time.monotonic(), str(outcome))
+                    left_now = self._left_behind(scope, str(outcome), saw, tried)
                     log.error(
                         "scoped snapshot %s: scope %r cannot be brought forward from the diff: %s; it stays behind "
-                        "(it is never read whole from L3 while L2 holds a copy)",
+                        "(it is never read whole from L3 while L2 holds a copy), tried again in %d s or once L3's "
+                        "epoch for it moves",
                         self._name,
                         scope,
                         outcome,
-                        extra={"extra_data": {"scope": scope, "why": str(outcome)}},
+                        left_now.wait,
+                        extra={"extra_data": {"scope": scope, "why": str(outcome), "next_try_seconds": left_now.wait}},
                     )
         if waiting:
             self._wait(flow, f"{len(waiting)} scopes wait for a write in progress that touched them: {waiting}")
@@ -5108,18 +5155,42 @@ class ScopedSnapshot:
                 return epoch, rows
         return None
 
-    async def _recover_one(self, scope: str) -> str | _Pending | object | None:
+    def _left_behind(self, scope: str, why: str, saw: _Saw, tried: _Unrecovered | None) -> _Unrecovered:
+        """record a scope a recovery left behind, and when it is tried again: a minute on, or twice the last wait (to
+        :data:`_UNRECOVERED_WAIT_CAP`) when it failed the same way, its diff seeing L3 as the last one did.
+
+        A failure that repeats while L3 holds the scope as it did repeats on every try: each try reads the same rows
+        and says the same thing. Waiting longer each time bounds that, and never skips a change: a write to the scope
+        moves its epoch in L3, which tries it at once, and a diff seeing other counts or stamps waits a minute again.
+
+        :param tried: the scope's last record, if it had one
+        :ptype tried: _Unrecovered | None
+        :return: the record kept
+        :rtype: _Unrecovered
+        """
+        seen = (why, frozenset(saw.groups.items()))
+        same = tried is not None and tried.saw == seen
+        wait = min(tried.wait * 2, _UNRECOVERED_WAIT_CAP) if same and tried is not None else _WAIT_SAY_SECONDS
+        record = _Unrecovered(at=time.monotonic(), why=why, wait=wait, epoch=saw.epoch, saw=seen)
+        self._unrecovered[scope] = record
+        return record
+
+    async def _recover_one(self, scope: str, saw: _Saw | None = None) -> str | _Pending | object | None:
         """bring one scope forward from the diff and publish it at its epoch in L3 (:meth:`_recover_scopes`).
 
         L3 holds the scope at one epoch, untouched by any write in progress, before the first read and after the
         last; every table's rows are then the rows a copy holds at its epoch with every group of rows L3 changed,
         added or removed since put in their place (:meth:`_diffed_table`).
 
+        :param saw: where what the diff saw of L3 goes (:class:`_Saw`)
+        :ptype saw: _Saw | None
         :return: ``None`` once published (or already current); ``_NO_COPY`` when no copy is held anywhere;
             a :class:`_Pending` while a write in progress keeps it; else why it cannot be brought forward
         :rtype: str | _Pending | object | None
         """
+        saw = saw if saw is not None else _Saw()
         epoch = await self._held_epoch(scope)
+        saw.epoch = epoch
         if epoch is None:
             return _Pending(f"a write in progress has touched scope {scope!r}")
         seen = self._seen.get(scope)
@@ -5141,7 +5212,7 @@ class ScopedSnapshot:
                 composed[table.name] = held[table.name]
                 continue
             passed[table.name] = {}
-            outcome = await self._diffed_table(table, scope, held_at, held[table.name], passed[table.name])
+            outcome = await self._diffed_table(table, scope, held_at, held[table.name], passed[table.name], saw)
             if isinstance(outcome, str):
                 return f"{table.name}: {outcome}"
             composed[table.name], changed[table.name] = outcome
@@ -5250,7 +5321,7 @@ class ScopedSnapshot:
         return times > _REREADS
 
     async def _diffed_table(
-        self, table: SnapshotTable, scope: str, held_at: int, held: Any, passed: _GroupReads
+        self, table: SnapshotTable, scope: str, held_at: int, held: Any, passed: _GroupReads, saw: _Saw | None = None
     ) -> tuple[Any, int] | str:
         """one table's rows of a scope at its epoch in L3, from the rows held at ``held_at`` and what L3 changed since.
 
@@ -5267,6 +5338,8 @@ class ScopedSnapshot:
 
         :param passed: where each group read goes, by L3's count and newest stamp of it
         :ptype passed: _GroupReads
+        :param saw: where the groups it counted go, with their counts and newest stamps
+        :ptype saw: _Saw | None
         :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
         :rtype: tuple[pyarrow.Table, int] | str
         """
@@ -5336,9 +5409,9 @@ class ScopedSnapshot:
                 )
                 return f"the partition values of {table.partition_by} named none while the copy holds rows of it"
         if table.partial_groups and named is not None and group is not None:
-            return await self._partly_diffed(table, scope, held_at, held, group, named, keys, held_counts, passed)
+            return await self._partly_diffed(table, scope, held_at, held, group, named, keys, held_counts, passed, saw)
         wanted = None if named is None else {_group_key(value, code) for value in named}
-        in_l3 = await self._group_counts(table, scope, held_at, group, code)
+        in_l3 = await self._group_counts(table, scope, held_at, group, code, saw=saw)
         # the copy keeps only some of the table's groups, and which is unknown: a retained table with no values named
         some = table.retained and wanted is None
         reread: list[Any] = []
@@ -5384,6 +5457,8 @@ class ScopedSnapshot:
         group: str | None,
         code: str,
         named: Sequence[Any] | None = None,
+        *,
+        saw: _Saw | None = None,
     ) -> dict[Any, tuple[Any, int, int, Any]]:
         """each group's rows of a scope in L3, those a write after ``held_at`` stamped, and its newest stamp, in one
         statement.
@@ -5395,6 +5470,8 @@ class ScopedSnapshot:
         :param named: count only these groups (``IN`` their values, ``IS NULL`` for a NULL one); every group when
             ``None``, none when empty
         :ptype named: Sequence[Any] | None
+        :param saw: where the groups counted go, with their counts and newest stamps
+        :ptype saw: _Saw | None
         :return: each group as a diff compares it (:func:`_group_key`) -> its value as L3 answers it, its rows, its
             stamped rows and its newest stamp
         :rtype: dict[Any, tuple[Any, int, int, Any]]
@@ -5425,10 +5502,13 @@ class ScopedSnapshot:
                 held_at,
                 *members,
             )
-        return {
+        counted = {
             _group_key(row["value"], code): (row["value"], int(row["total"]), int(row["changed"]), row["newest"])
             for row in rows
         }
+        if saw is not None:
+            saw.groups[table.name] = frozenset((key, total, newest) for key, (_, total, _, newest) in counted.items())
+        return counted
 
     async def _partly_diffed(
         self,
@@ -5441,18 +5521,21 @@ class ScopedSnapshot:
         keys: Sequence[Any],
         held_counts: Mapping[Any, int],
         passed: _GroupReads,
+        saw: _Saw | None = None,
     ) -> tuple[Any, int] | str:
         """one table's rows of a scope at its epoch in L3, for a copy keeping some rows of the groups its ask names
         (:attr:`SnapshotTable.partial_groups`; :meth:`_diffed_table`).
 
-        One statement counts each named group's rows in L3 and those stamped after ``held_at``, and no other group's:
-        the count follows the groups the copy keeps, never every one L3 holds. A named group is read whole when the
+        One statement counts the rows in L3, and those stamped after ``held_at``, of each named group and each the copy
+        holds, and no other group's: the count follows the groups the copy keeps, never every one L3 holds. A group
+        the copy holds is diffed whether the ask names it or not (the ask may not name a group L3 already holds; a
+        group it no longer names is this L1's retention's to let go). A named group is read whole when the
         copy holds none of its rows, when a write stamped every row of it (one read, not its stamped rows and then
         the rest), when the copy holds more of its rows than L3 holds unchanged since ``held_at`` (rows the copy holds
         went from L3), or when this L1's retention lets go of a row a write stamped in it (the copy's row of that key,
         which it no longer keeps, cannot be told). One a write stamped otherwise has its stamped rows read, each
         replacing the copy's row of its key, both as this L1 types them. A group the copy holds fewer rows of than L3
-        is the copy's. A named group L3 holds no more, and every group the ask no longer names, is dropped. A group
+        is the copy's. Only a held group L3 holds no more is dropped. A group
         read on diffs in a row with L3 unchanged is not read again (:meth:`_breaks`). The rows are then this L1's
         retention's (:meth:`_export`). What it dropped and read is said at INFO.
 
@@ -5466,15 +5549,24 @@ class ScopedSnapshot:
         :ptype held_counts: Mapping[Any, int]
         :param passed: where each group read goes, by L3's count and newest stamp of it
         :ptype passed: _GroupReads
+        :param saw: where the groups it counted go, with their counts and newest stamps
+        :ptype saw: _Saw | None
         :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
         :rtype: tuple[pyarrow.Table, int] | str
         """
         codes = self._backend.column_types(table.name)
         code = codes.get(group, "VARCHAR")
-        wanted = {_group_key(value, code) for value in named}
-        in_l3 = await self._group_counts(table, scope, held_at, group, code, named)
-        # every held group the ask no longer names, and every named one L3 holds no more
-        dropped = {key for key in held_counts if key not in wanted or key not in in_l3}
+        named_keys = {_group_key(value, code) for value in named}
+        # every group the copy holds is counted and diffed beside the named ones, named or not: an ask may not name a
+        # run L3 holds yet (reports' lsf_runs records a run once every state's rows are written), and a group the ask
+        # does not name is the L1 retention's to let go, never the diff's. So the count is bounded by the named
+        # groups and the copy's, never by every group L3 holds
+        held_values = {key: value for key, value in zip(keys, held.column(group).to_pylist(), strict=True)}
+        counted = [*named, *(value for key, value in held_values.items() if key not in named_keys)]
+        wanted = named_keys | set(held_counts)
+        in_l3 = await self._group_counts(table, scope, held_at, group, code, counted, saw=saw)
+        # only a held group L3 holds no more is dropped
+        dropped = {key for key in held_counts if key not in in_l3}
         drop = set(dropped)
         whole: list[Any] = []
         stamped_only: list[tuple[Any, Any, int, tuple[int, Any]]] = []

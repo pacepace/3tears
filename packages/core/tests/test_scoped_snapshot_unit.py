@@ -6000,8 +6000,8 @@ async def test_a_thinned_copy_equals_l3_restricted_to_its_retention_after_the_di
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """a stamped row the retention lets go: the copy's row of its key cannot be told from what the retention kept,
-    so the run is read whole and the copy is L3's rows of its kept runs as its retention keeps them. A run the ask
-    no longer names goes, unread."""
+    so the run is read whole and the copy is L3's rows of its kept runs as its retention keeps them. A held run the
+    ask no longer names, which L3 still holds, stays, unread: letting it go is the retention's, never the diff's."""
     l3 = _thinned_l3()
     kept = ["r1", "r2", "r3"]
     snapshot, backend = await _thinned_copy(l3, kept)
@@ -6013,10 +6013,10 @@ async def test_a_thinned_copy_equals_l3_restricted_to_its_retention_after_the_di
 
     await _caught_up(snapshot, l3)
 
-    assert _thinned_held(backend) == _l3_kept(l3, kept)
+    assert _thinned_held(backend) == _l3_kept(l3, [*kept, "r2"])
     assert ("r1", "r1.h1", 1) not in _thinned_held(backend), "the changed row's old version stayed"
     assert not [args for _, args in _row_reads(l3) if "r2" in args], "a run the ask no longer names was read"
-    assert "1 dropped, 1 read whole, 0 read stamped only" in caplog.text
+    assert "0 dropped, 1 read whole, 0 read stamped only" in caplog.text
     await snapshot.stop()
 
 
@@ -6128,8 +6128,13 @@ def _trigger_l3(trigger: str, kind: str) -> tuple[_SqlL3, list[Any], str]:
     return l3, kept, STRING_TYPE
 
 
-def _trigger_write(trigger: str, l3: _SqlL3, kept: list[Any]) -> None:
-    """write 2 of a convergence trigger."""
+def _trigger_write(trigger: str, l3: _SqlL3, kept: list[Any]) -> list[Any]:
+    """write 2 of a convergence trigger; the runs the copy keeps though the ask no longer names them."""
+    if trigger == "held_unnamed_run":
+        # the ask leaves out a run the copy holds and L3 still holds: kept, and its change read
+        kept.remove("r3")
+        _set(l3, "r3.h0", 10)
+        return ["r3"]
     if trigger == "new_run":
         l3.add(_run_rows("r46", version=2))
         kept.append("r46")
@@ -6153,6 +6158,7 @@ def _trigger_write(trigger: str, l3: _SqlL3, kept: list[Any]) -> None:
         _set(l3, f"{kept[0]}.h0", 10)
     elif trigger == "decimal_values":
         _set(l3, "1.10.h0", 10)
+    return []
 
 
 _TRIGGERS = (
@@ -6164,6 +6170,7 @@ _TRIGGERS = (
     "deleted_rows_in_a_stamped_run",
     "gone_run",
     "null_run",
+    "held_unnamed_run",
     "uuid_keys",
     "decimal_values",
 )
@@ -6172,7 +6179,7 @@ _TRIGGERS = (
 @pytest.mark.parametrize(
     ("trigger", "kind"),
     [
-        *((trigger, kind) for trigger in _TRIGGERS[:8] for kind in ("rows", "arrow", "refused")),
+        *((trigger, kind) for trigger in _TRIGGERS[:9] for kind in ("rows", "arrow", "refused")),
         ("uuid_keys", "rows"),
         ("decimal_values", "rows"),
     ],
@@ -6183,9 +6190,9 @@ async def test_a_diff_converges_so_the_next_reads_no_row_l3_has_not_changed(trig
     the first one about, and the copy is L3's as its retention keeps it."""
     l3, kept, run_type = _trigger_l3(trigger, kind)
     snapshot, backend = await _thinned_copy(l3, kept, run_type=run_type)
-    _trigger_write(trigger, l3, kept)
+    unnamed = _trigger_write(trigger, l3, kept)
     await _caught_up(snapshot, l3)
-    assert _thinned_held(backend) == _l3_kept(l3, kept), "the first diff did not bring the copy to L3"
+    assert _thinned_held(backend) == _l3_kept(l3, [*kept, *unnamed]), "the first diff did not bring the copy to L3"
     held = _thinned_held(backend)
 
     l3.epochs["TX"] = 3
@@ -6300,7 +6307,8 @@ async def test_a_group_read_by_diffs_that_failed_is_still_read_once_one_can_publ
     for _ in range(2):
         outcome = await snapshot.catch_up()
         assert outcome.caught == () and "could not be asked" in outcome.left["TX"], outcome
-        clock.ahead += 61
+        # past the retry's wait, however long the backoff of a failure that repeats has grown
+        clock.ahead += 901
     failing[0] = False
 
     assert (await snapshot.catch_up()).caught == ("TX",)
@@ -6343,7 +6351,8 @@ async def test_a_group_whose_diffs_a_racing_write_upset_is_still_read_once_one_c
     for _ in range(2):
         outcome = await snapshot.catch_up()
         assert outcome.caught == () and "L3 holds 2 rows" in outcome.left["TX"], outcome
-        clock.ahead += 61
+        # past the retry's wait, however long the backoff of a failure that repeats has grown
+        clock.ahead += 901
 
     assert (await snapshot.catch_up()).caught == ("TX",)
     await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
@@ -6376,6 +6385,168 @@ async def test_an_ask_naming_a_value_its_column_cannot_hold_reads_nothing_and_sa
     assert (await snapshot.catch_up()).caught == ("TX",)
     await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
     assert _thinned_held(backend) == _l3_kept(l3, kept)
+    await snapshot.stop()
+
+
+class _Unkept(DuckDBBackend):
+    """a DuckDB L1 that lets go of every run's non-history rows (:func:`_history`) though its table is not retained:
+    a count the copy never meets, so every diff of it fails the same way."""
+
+    def export_rows(self, *args: Any, **kwargs: Any) -> Any:
+        exported = super().export_rows(*args, **kwargs)
+        if not exported.num_rows:
+            return exported
+        items, votes = exported.column("item").to_pylist(), exported.column("votes").to_pylist()
+        return exported.filter(_pa.array([_history(i, v) for i, v in zip(items, votes, strict=True)]))
+
+
+async def _never_matching(monkeypatch: pytest.MonkeyPatch) -> tuple[ScopedSnapshot, _SqlL3, _Clock]:
+    """a copy of a table counted against L3 whose L1 never holds L3's count, behind at epoch 2."""
+    l3 = _thinned_l3()
+    table = SnapshotTable(name="runs", scope_column="state", key=("run", "item"), version_column="source_version")
+    metadata = MetaData()
+    _thin_schema().to_sqlalchemy_table(metadata)
+    backend = _Unkept()
+    backend.initialize(metadata)
+    snapshot = await _geos_snapshot(l3, table, backend=backend)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    l3.epochs["TX"] = 2
+    return snapshot, l3, clock
+
+
+async def test_a_diff_that_fails_the_same_way_with_l3_unchanged_is_tried_at_1_2_4_8_then_15_minutes(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """a scope whose diff can never succeed (its L1 never holds L3's count) was read from L3 every minute for good,
+    the same rows each time. A failure that repeats with L3 unchanged for the scope waits twice as long each time, to
+    15 minutes, said at ERROR at every try with when the next is."""
+    snapshot, l3, clock = await _never_matching(monkeypatch)
+    caplog.set_level(logging.ERROR)
+    tried: list[int] = []
+
+    for minute in range(46):
+        l3.statements.clear()
+        outcome = await snapshot.catch_up()
+        assert outcome.caught == () and "L3 holds" in outcome.left["TX"], outcome
+        if _counts(l3):
+            tried.append(minute)
+        clock.ahead += 60
+
+    assert tried == [0, 1, 3, 7, 15, 30, 45], f"tried at minutes {tried}"
+    said = [r.getMessage() for r in caplog.records if "cannot be brought forward from the diff" in r.getMessage()]
+    assert len(said) == len(tried), said
+    assert [m.split("tried again in ")[1].split(" s")[0] for m in said] == [
+        "60",
+        "120",
+        "240",
+        "480",
+        "900",
+        "900",
+        "900",
+    ]
+    await snapshot.stop()
+
+
+async def test_a_write_during_a_failing_scopes_backoff_is_read_at_the_very_next_try(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a scope backing off a failure that repeats is never skipped once L3 changes it: a write moves its epoch, and
+    the next catch-up diffs it at once and reads what the write changed; its next wait is a minute again."""
+    snapshot, l3, clock = await _never_matching(monkeypatch)
+    for _ in range(3):
+        await snapshot.catch_up()
+        clock.ahead += 60 * 8
+    # three failures: the next try is four minutes on; a write lands a minute in
+    clock.ahead -= 60 * 7
+    l3.add([{"state": "TX", "run": "r2", "item": "r2.h9", "votes": 9, "source_version": 3}])
+    l3.epochs["TX"] = 3
+    l3.statements.clear()
+
+    await snapshot.catch_up()
+
+    assert len(_counts(l3)) == 1, "the scope a write changed was not tried"
+    assert [args for _, args in _row_reads(l3) if "r2" in args], "what the write changed was not read"
+    l3.statements.clear()
+    clock.ahead += 61
+    await snapshot.catch_up()
+    assert len(_counts(l3)) == 1, "the failure L3 changed did not go back to a minute's wait"
+    await snapshot.stop()
+
+
+async def test_a_held_run_the_ask_does_not_name_yet_is_kept_and_diffed_once_named() -> None:
+    """reports names runs from lsf_runs, which records a run once every state's rows are written: in that window the
+    ask leaves out a run the copy holds and L3 holds, and the diff dropped it, publishing fewer rows than L3 holds.
+    A held run L3 holds is kept; once named, it is diffed as every named run is."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r2"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    kept.remove("r2")
+    _set(l3, "r1.h0", 10)
+
+    await _caught_up(snapshot, l3)
+
+    assert _thinned_held(backend) == _l3_kept(l3, ["r1", "r2"]), "a held run L3 holds was dropped"
+    assert not [args for _, args in _row_reads(l3) if "r2" in args], "an unchanged held run was read"
+    # named again, and changed: its stamped rows are read
+    kept.append("r2")
+    _set(l3, "r2.h0", 10, version=3)
+    l3.epochs["TX"] = 3
+    l3.statements.clear()
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="the copy applied epoch 3")
+    assert ("r2", "r2.h0", 10) in _thinned_held(backend)
+    r2 = [sql for sql, args in _row_reads(l3) if "r2" in args]
+    assert r2 and all('"source_version" > 2' in sql for sql in r2), r2
+    await snapshot.stop()
+
+
+async def test_a_held_run_the_ask_does_not_name_is_still_diffed_when_a_write_stamps_it() -> None:
+    """a held run left out of the ask that a write changes: not diffed, its change would be behind the copy's epoch
+    once the copy moved on, and never seen stamped again. It is diffed like a named run."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r2"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    kept.remove("r2")
+    _set(l3, "r2.h0", 10)
+
+    await _caught_up(snapshot, l3)
+
+    assert ("r2", "r2.h0", 10) in _thinned_held(backend), "a held run's change was left behind"
+    await snapshot.stop()
+
+
+async def test_a_held_run_gone_from_l3_that_the_ask_does_not_name_is_dropped() -> None:
+    """a held run L3 holds no more is dropped, named or not."""
+    l3 = _thinned_l3()
+    kept = ["r1", "r3"]
+    snapshot, backend = await _thinned_copy(l3, kept)
+    kept.remove("r3")
+    _delete(l3, *(f"r3.{item}" for item in _RUN_ITEMS))
+
+    await _caught_up(snapshot, l3)
+
+    assert {run for run, _, _ in _thinned_held(backend)} == {"r1"}, "a run gone from L3 stayed in the copy"
+    assert _row_reads(l3) == []
+    await snapshot.stop()
+
+
+async def test_the_count_names_only_the_asked_for_and_the_held_runs_never_l3s_history() -> None:
+    """the count follows the runs asked for and the runs the copy holds: of 45 runs in L3, the copy holding two and
+    the ask naming one of them and a new one, three are counted."""
+    l3 = _thinned_l3(runs=45)
+    kept = ["r1", "r3"]
+    snapshot, _ = await _thinned_copy(l3, kept)
+    kept[:] = ["r1", "r5"]
+    _set(l3, "r1.h0", 10)
+
+    await _caught_up(snapshot, l3)
+
+    counts = _counts(l3)
+    assert len(counts) == 1, counts
+    sql, args = counts[0]
+    assert args[:2] == ("TX", 1) and sorted(args[2:]) == ["r1", "r3", "r5"], args
+    assert len(await l3.fetch(sql, *args)) == 3
     await snapshot.stop()
 
 
