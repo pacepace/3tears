@@ -14,11 +14,10 @@ ONE run:
   cells already running finish, their results stay persisted and the run is marked ``budget_stopped`` (a
   distinct, honest terminal status, not an infra ``failed``) by raising :class:`BudgetStoppedError`, which the
   job manager translates. The run may land past the cap by up to the width's worth of cells.
-- Never inside a cell. The cap refuses no call a cell is making
-  (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve` holds nothing back and
-  :meth:`~threetears.evals.kernel.candidate_kind.CellSink.cost_cap_reached` is always ``False``): a refusal
-  inside a cell contaminates whichever cell happened to ask once the cap was spent, so a looping cell is
-  bounded by the cell timeout, not by the cap.
+- Never inside a cell. The cap refuses no call a cell is making (a cell only counts its spend, through
+  :meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`): a refusal inside a cell contaminates
+  whichever cell happened to ask once the cap was spent, so a looping cell is bounded by the cell timeout,
+  not by the cap.
 - :class:`AccountExhaustedError` is the account-side twin: the provider account behind the
   run refused a candidate call (out of credit, or the key refused), so the run stops after
   that cell and is marked ``exhausted``. Nothing configures it; a cell observes it.

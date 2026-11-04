@@ -7,7 +7,7 @@ the call when the ceiling would take it past its cap — so a call whose ceiling
 made, whatever the run is predicted to spend, and the case reaching it is excluded after the cases before it were
 paid for. Neither the estimate nor the launch said so.
 
-The judge kind prices every case's call before launch, as its cell reserves it (the client's ``price_ceiling`` for
+The judge kind prices every case's call before launch, as its cell makes it (the client's ``price_ceiling`` for
 the case's prompt, times the judge's parse-retry attempts), and the arm carries the largest
 (``ArmPlan.call_ceiling``). One rule refuses the arm when that ceiling is above its cap, for the estimate and the
 launch alike, naming the cap one call needs and what lowers the ceiling. A cap at or above it is admitted.

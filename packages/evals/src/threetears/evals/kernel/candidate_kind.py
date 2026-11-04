@@ -123,7 +123,6 @@ __all__ = [
     "CellReservation",
     "CellSink",
     "CellSpanWindow",
-    "CostCapReached",
     "UnknownCandidateKind",
     "VariantConfig",
 ]
@@ -440,32 +439,13 @@ class CellSpanWindow(Protocol):
 CellPending = Literal["apparatus", "candidate", "background_work", "simulator", "judge"]
 
 
-class CostCapReached(Exception):
-    """Deprecated: the engine no longer raises it, because no ceiling is asked inside a cell.
-
-    The run's cost cap used to refuse a cell's next paid call from inside the cell, raised as this from
-    :meth:`CellSink.reserve`. It is now read between cells, against what the recorded cells landed
-    (:func:`~threetears.evals.run.runner.execute_run`); a cell already running finishes whole, and a cell that
-    loops is bounded by the cell timeout. The name stays so a host that imported it keeps importing, and so a
-    host that catches it keeps compiling; nothing the engine runs raises it, and nothing it runs catches it.
-    """
-
-    def __init__(self, detail: str = "the run's cost cap has no room for another paid call") -> None:
-        """Say what the cap refused.
-
-        :param detail: What was refused, for a log line; the cell's record names the cap's own numbers.
-        :ptype detail: str
-        """
-        super().__init__(detail)
-        self.detail = detail
-
-
 class CellReservation(Protocol):
-    """The handle of one paid call a cell is making, which lands the call's cost on its source when it returns.
+    """Retired with :meth:`CellSink.reserve`: the handle of one paid call, landing the call's cost when it returns.
 
     Minted by :meth:`CellSink.reserve` before the call is made. It holds nothing against the run: no ceiling is
     asked inside a cell. It is closed exactly once: :meth:`settle` when the call returned, :meth:`release`
-    when it did not.
+    when it did not. Settling it adds the cost as :meth:`CellSink.add_spend` does, which is what to call instead.
+    The next minor removes it with :meth:`CellSink.reserve`.
     """
 
     def settle(self, cost_usd: float | None) -> None:
@@ -501,8 +481,8 @@ class CellSink(Protocol):
     total per source (:data:`CellPending`: the candidate, its background work, the simulator, the judge, the
     rig), each only ever added to (:meth:`add_spend`). It asks no ceiling: the run's cost cap and its
     metered-call ceiling are read BETWEEN cells, against what the recorded cells landed, and stop new cells from
-    starting while the running ones finish. :meth:`reserve` and :meth:`cost_cap_reached` remain for the hosts
-    that call them, and refuse and report nothing.
+    starting while the running ones finish. :meth:`reserve` and :meth:`cost_cap_reached` are retired: each warns,
+    refuses and reports nothing, and the next minor removes both.
 
     A kind is handed one per cell, like ``span_window``, and uses it for that cell alone.
     """
@@ -546,7 +526,7 @@ class CellSink(Protocol):
 
         Each call ADDS: report each paid call's cost once, as it lands. A source's total only ever grows,
         so a kind reporting its candidate's spend and the engine reporting the simulator's or the judge's
-        never overwrite one another. A call made through :meth:`reserve` is counted by settling its
+        never overwrite one another. A call made through the retired :meth:`reserve` is counted by settling its
         reservation instead — adding it here too would count it twice.
 
         Not the cell's record: what the cell stores is what :meth:`CandidateKind.invoke` returns, or at a
@@ -562,10 +542,12 @@ class CellSink(Protocol):
         ...  # pragma: no cover — protocol
 
     def reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation:
-        """Open the handle for one paid call, to settle once the call returns or release if it does not.
+        """Retired: open the handle for one paid call, to settle once the call returns or release if it does not.
 
-        Never refuses the call: the cost cap is read between cells, so nothing inside a cell is turned away
-        by it. The ceiling is the most the call can cost
+        Warns with a :class:`DeprecationWarning`; the next minor removes it. It never refuses the call: the cost cap
+        is read between cells, so nothing inside a cell is turned away by it, and the handle adds nothing over
+        counting the call's cost with :meth:`add_spend` once it returns, which is what to call instead. The ceiling
+        is the most the call can cost
         (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`) and is only checked to be
         a usable amount.
 
@@ -580,7 +562,9 @@ class CellSink(Protocol):
         ...  # pragma: no cover — protocol
 
     def cost_cap_reached(self) -> bool:
-        """Deprecated: always ``False``, because the cost cap is read between cells and never inside one.
+        """Retired: always ``False``, because the cost cap is read between cells and never inside one.
+
+        Warns with a :class:`DeprecationWarning`; the next minor removes it. Drop the check.
 
         :return: ``False``.
         :rtype: bool
@@ -626,7 +610,7 @@ class CandidateKind(Protocol):
 
     **What a paid call owes the run's cost cap.** Nothing inside the cell: the cap is read between cells against
     the spend of the cells already recorded, and a cell already running finishes whole. A kind reports its
-    spend as it lands (:meth:`CellSink.add_spend`, or settling a :meth:`CellSink.reserve` handle) and returns
+    spend as it lands (:meth:`CellSink.add_spend`) and returns
     it on its output, which is what the cap counts once the cell's result is recorded.
     """
 
@@ -722,7 +706,7 @@ class CandidateKind(Protocol):
         :ptype test_case: EvalTestCase
         :param sink: This cell's sink, for what the kind is waiting on, how to read the spend it has
             billed so far, and keeping each paid call in the cell's spend as it is made
-            (:meth:`CellSink.reserve`, :meth:`CellSink.add_spend`). The cell's, like
+            (:meth:`CellSink.add_spend`). The cell's, like
             ``span_window``, not the kind's.
         :ptype sink: CellSink
         :return: The candidate's output, its judge-free facts and its telemetry.

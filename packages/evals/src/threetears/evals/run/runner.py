@@ -67,6 +67,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
+from threetears.evals.kernel.retired import COST_CAP_INSIDE_A_CELL_RETIRED, warn_retired
 from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
     CandidateKindDefect,
@@ -830,11 +831,13 @@ class _CellSink:
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
 
     def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldCall:
-        """Open the handle that lands one paid call's cost, never refusing the call — see
+        """Retired: open the handle that lands one paid call's cost, never refusing the call — see
         :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`.
 
-        The cost cap is read between cells, against what has landed, so nothing here can turn a call away: a
-        refusal inside a cell contaminates whichever cell happened to ask once the cap was spent.
+        Warns that it leaves in the next minor, naming :meth:`add_spend`, and otherwise answers as it did. The cost
+        cap is read between cells, against what has landed, so nothing here can turn a call away: a refusal inside
+        a cell contaminates whichever cell happened to ask once the cap was spent. The engine's own calls count
+        their cost with :meth:`add_spend` once they return.
 
         :param source: Whose call it is.
         :ptype source: CellPending
@@ -845,15 +848,26 @@ class _CellSink:
         :rtype: _HeldCall
         :raises ValueError: ``ceiling_usd`` is negative or not finite.
         """
+        warn_retired(
+            "threetears.evals.kernel.CellSink.reserve",
+            f"{COST_CAP_INSIDE_A_CELL_RETIRED}; count each paid call's cost with add_spend(source, cost) once it "
+            "returns",
+        )
         _refuse_an_unusable_amount(ceiling_usd, what="a call's ceiling")
         return _HeldCall(sink=self, source=source)
 
     def cost_cap_reached(self) -> bool:
-        """Always ``False``: the cost cap is read between cells, never inside one.
+        """Retired: always ``False``, because the cost cap is read between cells, never inside one.
+
+        Warns that it leaves in the next minor.
 
         :return: ``False``.
         :rtype: bool
         """
+        warn_retired(
+            "threetears.evals.kernel.CellSink.cost_cap_reached",
+            f"{COST_CAP_INSIDE_A_CELL_RETIRED}; it is always False, so drop the check",
+        )
         return False
 
     def close_reservation(self, held: _HeldCall, cost_usd: float | None, *, settled: bool) -> None:
@@ -3293,8 +3307,8 @@ async def judge_dims(
     dimension and returned as an outcome carrying the exception's type as its error, so one
     dimension's crash does not discard the scores its siblings paid for. **Except a host's
     completion breaking the protocol** (:class:`~threetears.evals.schema.completion.CompletionProtocolDefect`):
-    that is the host's code, which every call would meet, so it is raised — the call's hold on the cap
-    released, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
+    that is the host's code, which every call would meet, so it is raised — what its calls were billed counted in
+    the cell's spend, every sibling call still in flight cancelled — and fails whatever is judging, a run included.
 
     :param template: The run's template, whose ``rubric`` names the per-dim calls.
     :ptype template: EvalTemplate
@@ -3310,9 +3324,9 @@ async def judge_dims(
         completion order — so a caller whose deadline cancels this phase still holds the
         calls already paid for, which the return value cannot give it.
     :ptype settled: list[tuple[str, JudgeOutcome]] | None
-    :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: a
-        call is reserved at its ceiling (:meth:`JudgeService.price_ceiling`) before it is sent and settled
-        to what it cost when it returns. Nothing is refused here; the run's cost cap is read between cells.
+    :param sink: The cell's sink when the calls are a cell's, which keeps each one in the cell's spend: what a
+        call cost is added (:meth:`~threetears.evals.kernel.candidate_kind.CellSink.add_spend`) when it returns.
+        Nothing is refused here; the run's cost cap is read between cells.
         ``None`` for calls no run's cap bounds (a re-judge, whose calls are priced out of run).
     :ptype sink: CellSink | None
     :return: ``(dim_id, outcome)`` for every call made, in dimension order.
@@ -3328,7 +3342,6 @@ async def judge_dims(
             try:
                 if sink is not None:
                     await refresh_prices(judge_service.client_for(request))
-                held = sink.reserve("judge", judge_service.price_ceiling(request)) if sink is not None else None
             except Exception as e:  # prawduct:ok-broad-except — judge boundary; pricing builds the dim's client, whose refusal is this dim's alone
                 # NOSILENT: this dim's outcome is unscored with this error, which the result's judge errors carry.
                 contain(
@@ -3346,11 +3359,8 @@ async def judge_dims(
                     # the run rather than this dim. What its calls were billed is settled into the cell's spend
                     # and handed to the caller's record as this dim's outcome, so the run's spend still sums it.
                     billed = defect_usage(defect)
-                    if held is not None:
-                        if billed is None:
-                            held.release()
-                        else:
-                            held.settle(billed.cost_usd)
+                    if sink is not None and billed is not None:
+                        sink.add_spend("judge", billed.cost_usd)
                     if settled is not None:
                         settled.append(
                             (
@@ -3372,15 +3382,11 @@ async def judge_dims(
                         level="error",
                     )
                     outcome = JudgeOutcome(score=None, error=f"{type(e).__name__}: {e}")
-                except BaseException:
-                    # A cancel — the cell's deadline, or its run's — leaves no open reservation once it unwinds.
-                    if held is not None:
-                        held.release()
-                    raise
-                if held is not None:
+                if sink is not None:
                     # What the cell's judge spend is summed from: the outcome's usage, every attempt in it. A call that
-                    # returned nothing at all reported no usage, and counts nothing, as the judge fold reads it.
-                    held.settle(outcome.usage.cost_usd if outcome.usage is not None else 0.0)
+                    # returned nothing at all reported no usage, and counts nothing, as the judge fold reads it. A
+                    # cancel — the cell's deadline, or its run's — unwinds past this and counts nothing.
+                    sink.add_spend("judge", outcome.usage.cost_usd if outcome.usage is not None else 0.0)
         if settled is not None:
             settled.append((dim_id, outcome))
         return outcome

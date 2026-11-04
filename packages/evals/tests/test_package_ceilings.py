@@ -2,7 +2,8 @@
 
 A host derives its outer budgets from :class:`~threetears.evals.run.Ceilings`, so a field that drifted from the
 constant or function the engine bounds by would derive a budget from a number nothing holds. Each field is held
-to the engine's own original here, by identity for the two functions.
+to the engine's own original here, by identity for the functions. The retired generation ceiling is a property now,
+not a field: reading it warns and returns the function it did (``test_retired_names``).
 """
 
 from __future__ import annotations
@@ -11,7 +12,12 @@ import dataclasses
 
 import pytest
 
-from threetears.evals.kernel.inner_ceilings import PROPOSER_MAX_TOKENS, generation_ceiling_s, judge_phase_ceiling_s
+from threetears.evals.kernel.inner_ceilings import (
+    PROPOSER_MAX_TOKENS,
+    generation_ceiling_s,
+    judge_phase_ceiling_s,
+    writer_ceiling_s,
+)
 from threetears.evals.run import Ceilings
 from threetears.evals.run.simulator import SCHEDULER_CALL_ATTEMPTS, SIMULATOR_ANSWER_BUDGET_TOKENS, SIMULATOR_MAX_TOKENS
 
@@ -23,11 +29,13 @@ def test_each_field_is_the_ceiling_it_names() -> None:
     assert ceilings.simulator_max_tokens == SIMULATOR_MAX_TOKENS
     assert ceilings.simulator_answer_budget_tokens == SIMULATOR_ANSWER_BUDGET_TOKENS
     assert ceilings.proposer_max_tokens == PROPOSER_MAX_TOKENS
-    assert ceilings.generation_ceiling_s is generation_ceiling_s
+    assert ceilings.writer_ceiling_s is writer_ceiling_s
     assert ceilings.judge_phase_ceiling_s is judge_phase_ceiling_s
+    with pytest.warns(DeprecationWarning, match="Ceilings.generation_ceiling_s is retired"):
+        assert ceilings.generation_ceiling_s is generation_ceiling_s
 
 
-def test_the_fields_are_the_seven_ceilings_and_none_is_set_by_the_caller() -> None:
+def test_the_fields_are_the_six_ceilings_and_none_is_set_by_the_caller() -> None:
     fields = dataclasses.fields(Ceilings)
 
     assert [f.name for f in fields] == [
@@ -35,7 +43,6 @@ def test_the_fields_are_the_seven_ceilings_and_none_is_set_by_the_caller() -> No
         "simulator_max_tokens",
         "simulator_answer_budget_tokens",
         "proposer_max_tokens",
-        "generation_ceiling_s",
         "writer_ceiling_s",
         "judge_phase_ceiling_s",
     ]
@@ -50,7 +57,8 @@ def test_a_budget_derived_from_the_ceilings_is_the_ceiling_it_wraps() -> None:
     def request_s(max_tokens: int) -> float:
         return max_tokens / 100
 
-    generation_s = ceilings.generation_ceiling_s(request_s=request_s, generator_max_tokens=1000)
+    with pytest.warns(DeprecationWarning, match="Ceilings.generation_ceiling_s is retired"):
+        generation_s = ceilings.generation_ceiling_s(request_s=request_s, generator_max_tokens=1000)
     judging_s = ceilings.judge_phase_ceiling_s(
         judge_dims=3, judge_concurrency=2, judge_call_attempts=2, judge_max_tokens=500, request_s=request_s
     )

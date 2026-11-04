@@ -102,10 +102,12 @@ the unit of measurement, and it is measured whole or never begun.
 - **A call nobody can price** (a client with no `price_ceiling`, or one answering `None`) is made like any other.
   An unpriced spend still counts: a capped run stops before its next cell once a recorded result's spend could not
   be priced, because the cap cannot be read against what it cannot count.
-- **A kind reports its spend as it lands** (`CellSink.add_spend`, or settling a `CellSink.reserve` handle, or by
-  wrapping its client in `CappedCompletion`), and returns it on its output, which is what the cap counts once the
-  cell's result is recorded. `CellSink.reserve` never refuses and `CellSink.cost_cap_reached` is always `False`;
-  `CostCapReached` is no longer raised by the engine. They remain so a host that imports them keeps importing.
+- **A kind reports its spend as it lands** (`CellSink.add_spend`, or by wrapping its client in `CappedCompletion`),
+  and returns it on its output, which is what the cap counts once the cell's result is recorded.
+- **Three names from the in-cell cap are deprecated, and the next minor removes them.** Each still works for this
+  minor and raises a `DeprecationWarning` when used. `CellSink.reserve` never refuses; count a call's cost with
+  `add_spend` once it returns. `CellSink.cost_cap_reached` is always `False`; drop the check. The engine no longer
+  raises `CostCapReached`; drop the `except` clause.
   The shipped adapter's resend of a request a provider refused for a setting it carried is not another attempt:
   the refused request generated nothing and is taken to be unbilled (an assumption no provider documents), so its
   `price_ceiling` prices one attempt per request. **It is not free in time.** A refused send can take up to

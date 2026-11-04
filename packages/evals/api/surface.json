@@ -3878,7 +3878,7 @@
     },
     "threetears.evals.run.Ceilings": {
       "kind": "dataclass",
-      "signature": "Ceilings(scheduler_call_attempts: int (derived), simulator_max_tokens: int (derived), simulator_answer_budget_tokens: int (derived), proposer_max_tokens: int (derived), generation_ceiling_s: Callable[..., float] (derived), writer_ceiling_s: Callable[..., float] (derived), judge_phase_ceiling_s: Callable[..., float] (derived))",
+      "signature": "Ceilings(scheduler_call_attempts: int (derived), simulator_max_tokens: int (derived), simulator_answer_budget_tokens: int (derived), proposer_max_tokens: int (derived), writer_ceiling_s: Callable[..., float] (derived), judge_phase_ceiling_s: Callable[..., float] (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.run.CellContext": {

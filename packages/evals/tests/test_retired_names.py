@@ -31,6 +31,14 @@ The memo writer itself is retired:
   ``eval_analysis_gen`` (``test_prompt_catalogue``).
 - **``generate_analysis`` still imports**, warning that ``analysis_generate`` writes a campaign's report now, and every
   call refuses with ``ValidationFailedError`` naming ``analysis_generate`` before its client is asked anything.
+
+The run's cost cap is read between cells, and the names that asked it inside one are retired:
+
+- **``CostCapReached`` still imports from the kernel** and warns that nothing raises it; a host's ``except`` clause
+  still compiles. ``CellSink.reserve`` and ``CellSink.cost_cap_reached`` stay on the protocol and warn when the
+  engine's sink is asked (``test_cell_width_and_spend``), naming ``add_spend``; no engine path calls either.
+- **``Ceilings.generation_ceiling_s``**, the report planner's ceiling, still answers what it did and warns naming
+  ``writer_ceiling_s``. The planner's call count is no public name.
 """
 
 from __future__ import annotations
@@ -339,3 +347,57 @@ def test_the_memo_writer_refuses_every_call_naming_analysis_generate_before_its_
 
     assert "analysis_generate" in str(refused.value) and "analysis_generate" in (refused.value.remedy or "")
     assert client.asked == []
+
+
+# --- the in-cell cost cap and the report planner's ceiling ---------------------------------------------------------
+
+
+def test_cost_cap_reached_still_imports_from_the_kernel_and_warns_that_nothing_raises_it() -> None:
+    root = importlib.import_module("threetears.evals.kernel")
+    assert "CostCapReached" in root.__all__
+    with pytest.warns(DeprecationWarning) as caught:
+        retired = root.CostCapReached
+    (warning,) = caught
+    message = str(warning.message)
+    assert message.startswith("threetears.evals.kernel.CostCapReached is retired and leaves in the next minor: ")
+    assert "read between cells" in message and "drop the except clause" in message
+    assert warning.filename == __file__
+    assert issubclass(retired, Exception), "a host's except clause still compiles"
+    assert retired().detail == "the run's cost cap has no room for another paid call"
+
+
+def test_an_import_of_cost_cap_reached_warns_at_the_importing_line() -> None:
+    with pytest.warns(DeprecationWarning, match="CostCapReached is retired") as caught:
+        from threetears.evals.kernel import CostCapReached
+    assert issubclass(CostCapReached, Exception)
+    assert caught[0].filename == __file__
+
+
+def test_the_cell_sink_keeps_both_retired_members_for_a_host_s_annotations() -> None:
+    """The engine's sink answers them as it did and warns (``test_cell_width_and_spend``); no engine path calls them."""
+    from threetears.evals.kernel import CellReservation, CellSink
+
+    assert callable(CellSink.reserve) and callable(CellSink.cost_cap_reached)
+    assert callable(CellReservation.settle) and callable(CellReservation.release)
+
+
+def test_the_generation_ceiling_still_answers_and_warns_naming_the_writer_ceiling() -> None:
+    from threetears.evals.run import Ceilings
+
+    with pytest.warns(DeprecationWarning) as caught:
+        ceiling = Ceilings().generation_ceiling_s
+    (warning,) = caught
+    message = str(warning.message)
+    assert message.startswith(
+        "threetears.evals.run.Ceilings.generation_ceiling_s is retired and leaves in the next minor: "
+    )
+    assert "Ceilings().writer_ceiling_s" in message
+    assert warning.filename == __file__
+    assert ceiling(request_s=lambda _max_tokens: 100.0, generator_max_tokens=1) == 400.0, "four planner requests"
+
+
+def test_the_planner_s_call_count_is_no_public_name() -> None:
+    from threetears.evals.kernel import inner_ceilings
+
+    assert "MAX_GENERATION_CALLS" not in inner_ceilings.__all__
+    assert not hasattr(inner_ceilings, "MAX_GENERATION_CALLS")
