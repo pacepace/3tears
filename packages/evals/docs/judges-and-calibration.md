@@ -879,7 +879,7 @@ longer holds.
 
 ### The calibration set, and its honesty rule
 
-`tests/fixtures/report_plans/writer_calibration.py` turns the Opus editor's recorded reviews into judge-kind cases.
+`tests/fixtures/writer_cases/writer_calibration.py` turns the Opus editor's recorded reviews into judge-kind cases.
 Each recorded run of prototypes 4 and 5 is replayed once per round, so each replay ends on that round's page exactly as
 the gate's judge reads it, and is paired with the review of that round.
 
@@ -902,7 +902,7 @@ with `attests_person`); then it is a person's label. That is each app's work, ne
 
 ### The acceptance check: a hollowed skill must read worse
 
-`tests/fixtures/report_plans/writer_acceptance.py` checks the instrument end to end on a change whose direction is
+`tests/fixtures/writer_cases/writer_acceptance.py` checks the instrument end to end on a change whose direction is
 known. The control is the shipped skill. The candidate, **hollow**, is the shipped skill with `principles.md` and
 `statistics.md` each left as one stub line; every other file is byte-identical, `editor.md` included, so the in-loop
 editor is one instrument for both arms. Both arms run one writer over the held-out cases, then the pass, then the read.

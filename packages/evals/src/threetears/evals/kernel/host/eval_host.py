@@ -63,8 +63,8 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
 
 #: The apparatus roles the engine asks a host for a completion client in. ``judge`` scores a cell,
-#: ``simulator`` plays the other side of a conversation, ``analysis`` writes a campaign's memo, and
-#: ``variation`` writes the values of a template's ``llm`` variation axes when a launch generates its
+#: ``simulator`` plays the other side of a conversation, ``analysis`` was the retired memo writer's (the engine asks
+#: for it no more; it stays so a host's resolver naming it still types), and ``variation`` writes the values of a template's ``llm`` variation axes when a launch generates its
 #: cases (``n_variations``) — before any run starts, so outside every run's cost cap. A role of its
 #: own because it is a different job from the simulator's: a host resolves or refuses each role on
 #: its own, and a kind with no simulated user still generates. ``proposer`` drafts a rubric for operator

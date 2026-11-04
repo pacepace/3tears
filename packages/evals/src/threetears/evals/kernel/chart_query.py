@@ -9,6 +9,9 @@ words (:data:`PlanChartKind`, :data:`ReferenceKind`).
 
 The report planner's plan, which these charts were first written for, is retired: a stored plan is read only as
 verbatim JSON (:class:`~threetears.evals.kernel.campaign.EvalReportPlan`), never validated against a model here.
+The models' own docstrings still say "planner": they are the JSON schema's descriptions, served in the report
+document's schema (``docs/eval-report-kit/schema/report-doc.schema.json`` holds it byte for byte), so they change only
+with that schema, never in a rename.
 **Field-level constraints only**: whether a chart names things its input holds is
 :func:`~threetears.evals.analysis.report.block_spec.chart_faults`.
 """
@@ -83,7 +86,7 @@ class _Plan(BaseModel):
 class ChartQuery(_Plan):
     """What a chart reads from the report input, structured so code can check it names things that exist.
 
-    Writer-written. An empty list or string means no filter there: every arm, every measure, every stratum, no
+    Planner-written. An empty list or string means no filter there: every arm, every measure, every stratum, no
     aspect, no limit (``limit`` 0).
     """
 
@@ -98,20 +101,20 @@ class ChartQuery(_Plan):
 
 
 class _PlannedChartReference(_Plan):
-    """A reference line as the writer asks for it: what kind of line it is."""
+    """A reference line as the planner asks for it: what kind of line it is."""
 
     kind: ReferenceKind
 
 
 class ChartReference(_PlannedChartReference):
-    """A reference line on a chart: what kind of line it is, and the figure it sits at. The writer picks the kind;
+    """A reference line on a chart: what kind of line it is, and the figure it sits at. The planner picks the kind;
     code fills the key from the chart's aspect, and the renderer reads the value from it and writes the label."""
 
     key: _ChartId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
 
 
 class PlannedChart(_Plan):
-    """A chart as the writer chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
+    """A chart as the planner chooses it: kind, title, what it reads, a reference line and the one thing it stresses."""
 
     kind: PlanChartKind
     title: ModelProse = Field(description="The chart's title; empty when the section headline says it.")
@@ -121,7 +124,7 @@ class PlannedChart(_Plan):
 
 
 class ChartSpec(PlannedChart):
-    """A chart as stored: the writer's choice plus what code reads off the data. ``level``, ``unit`` and ``domain``
+    """A chart as stored: the planner's choice plus what code reads off the data. ``level``, ``unit`` and ``domain``
     are code-filled; an empty ``domain`` lets the renderer fit the axis."""
 
     reference: Sequence[ChartReference] = Field(max_length=1, description="At most one reference line.")

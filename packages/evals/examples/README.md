@@ -176,7 +176,7 @@ Its eleven cases ([`cases/`](5-writer/cases/), one `.json.gz` each) are frozen c
 | `misfit` | one more, in the r3 group | dev |
 
 A case's side is its split group's, and `held_out_fraction=0.35` puts 7 of the 11 on the held-out side, where a
-promotion is read. `tests/fixtures/report_plans/export_writer_cases.py` wrote the files; a ladder case is frozen
+promotion is read. `tests/fixtures/writer_cases/export_writer_cases.py` wrote the files; a ladder case is frozen
 once, since a rung run again is new evidence with a new snapshot id.
 
 It replays its recordings with no key: 14 reports, the judge's scores and its preference between the two arms' pages,
