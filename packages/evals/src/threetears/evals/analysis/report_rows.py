@@ -1,4 +1,4 @@
-"""What a report plan's chart query selects from the report input: the one owner of that selection.
+"""What a chart's query selects from the report input: the one owner of that selection.
 
 A chart's :class:`~threetears.evals.kernel.chart_query.ChartQuery` names a source and filters on it. The chart checks
 (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`) refuse a query that selects nothing, or a forest

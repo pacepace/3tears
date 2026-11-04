@@ -14,7 +14,7 @@ packages (bumped in lock-step).
 `threetears.evals.analysis.report_doc_prose`; and `threetears.evals.analysis.report.campaign.memo_blocks` is
 `threetears.evals.analysis.report.campaign.answer_blocks`. The parts' block section constant `PLANNED_SECTION` is
 `WRITER_SECTION`; its value, the section literal `"memo"`, is unchanged on every page and document. The figure-key
-grammar's `planner=` argument is `uncounted=`, after the `counted` flag of the input it describes.
+grammar's `planner=` argument, which only the retired planner's prompt passed, is removed.
 `analysis_generate`'s and `analysis_estimate`'s `model` argument is described as the report writer's model. The test
 fixtures split by subject: `tests/fixtures/report_plans/` becomes `tests/fixtures/report_inputs/` (the r1 to r5 inputs,
 the Kairo round 2 bundle and the helpers that read them) and `tests/fixtures/writer_cases/` (the writer's exporter,

@@ -96,9 +96,7 @@ number a reader sees is code's.
 module's own families, statistics and filters, with examples rendered on a synthetic input, so the section can never
 teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
 :func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
-group's forms). The section for an uncounted input (``uncounted=True``, an input built without ``counted``, as the
-retired report planner's was) leaves out the statistics only a counted input states (a pass rule's, a contrast's
-counts), which an uncounted input never holds.
+group's forms).
 """
 
 from __future__ import annotations
@@ -129,8 +127,6 @@ from threetears.evals.analysis.report.cost_unit import (
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
-    ANALYST_ASPECT_FIELDS,
-    ANALYST_CONTRAST_FIELDS,
     Arm,
     Aspect,
     Cell,
@@ -352,15 +348,10 @@ class _Ids:
 
 @dataclass(frozen=True)
 class _Statistic:
-    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar.
-
-    ``analyst_only`` names the options only a counted input (an analyst's) holds: the uncounted grammar does not list
-    them, since an uncounted input states none of them.
-    """
+    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar."""
 
     options: tuple[str, ...]
     name: str = "<statistic>"
-    analyst_only: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -625,13 +616,6 @@ def _n_candidates(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
 
 
 _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule", "pass_threshold", "no_criterion")
-
-#: The aspect fields read off its pass rule, which an input states where it states the rule.
-_PASS_RULE_FIELDS = frozenset({"pass_threshold", "no_criterion"})
-
-#: The aspect fields the uncounted grammar leaves out: those only a counted input states (the input contract's
-#: ``ANALYST_ASPECT_FIELDS``) and those read off its pass rule.
-_ANALYST_ASPECT_FIELDS = ANALYST_ASPECT_FIELDS | _PASS_RULE_FIELDS
 
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
@@ -5246,14 +5230,14 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(_Word("n_candidates"), what="how many candidates ran", resolve=_n_candidates),
     _family_of(
         _Word("aspect"),
-        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
+        _Statistic(_ASPECT_FIELDS, "<field>"),
         what="the one asked aspect",
         resolve=_asked_aspect_field,
     ),
     _family_of(
         _Word("aspects"),
         _Ids("<aspect>", _aspects),
-        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
+        _Statistic(_ASPECT_FIELDS, "<field>"),
         what="any aspect, by id",
         resolve=_named_aspect_field,
     ),
@@ -5277,7 +5261,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _keyed("<arm>", lambda ri: dict.fromkeys(c.arm for c in ri.contrasts)),
         _Ids("<measure>", _contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
+        _Statistic(_CONTRAST_STATISTICS),
         what="a corrected contrast of an arm against the control on a measure or judged dimension",
         resolve=_contrast,
         compares=lambda ri, values: _means_of(ri, values[1]),
@@ -5443,7 +5427,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _Ids("<arm>", _aspect_contrast_arms),
         _Ids("<measure>", _aspect_contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
+        _Statistic(_CONTRAST_STATISTICS),
         what="a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more "
         "than one",
         resolve=_aspect_contrast,
@@ -6200,7 +6184,7 @@ def parse_key(inner: str, span: tuple[int, int] | None = None) -> FigureKey:
 def keys_in(text: str) -> list[FigureKey]:
     """Every figure key in a piece of report prose, in order.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :return: Each key with its span.
     :rtype: list[FigureKey]
@@ -6852,7 +6836,7 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
 def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:
     """Replace every figure key in report prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :param report_input: The report input the plan was written against.
     :ptype report_input: ReportInput
@@ -6919,7 +6903,7 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
     bounds it on both sides. Any Unicode decimal digit left is an offence (``95 percent``, ``1,000 cases``). An id
     made only of digits (an arm ``1017``) is never set aside: prose writes ``{arm:1017}``.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :param report_input: The report input the plan was written against.
     :ptype report_input: ReportInput
@@ -7171,16 +7155,11 @@ _FILTER_EXAMPLES: dict[str, str] = {
 }
 
 
-def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str], *, uncounted: bool = False) -> str:
-    """One family's line in the grammar: its form, what it reads, its statistics (an uncounted input's without those
-    only a counted input states), what of it is derived, and its example rendered on the made-up input."""
+def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]) -> str:
+    """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its example
+    rendered on the made-up input."""
     statistic = family.statistic()
-    offered = (
-        [option for option in statistic.options if not (uncounted and option in statistic.analyst_only)]
-        if statistic
-        else []
-    )
-    listed = f" ({statistic.name}: {', '.join(offered)})" if statistic else ""
+    listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
     tag = (
         (f" {family.derived_note}" if family.derived_note else " Derived: descriptive, no interval.")
         if family.derived
@@ -7248,17 +7227,14 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
 _EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
 
 
-def figure_key_grammar(*, uncounted: bool = False) -> str:
+def figure_key_grammar() -> str:
     """Write the section that teaches figure keys, from this module's own families and filters: the whole grammar, as
-    the analyst's reference pages hold it, or the part an uncounted input resolves.
+    the analyst's reference pages hold it.
 
     Each family's form and statistics, each filter and every example come from the code that parses and renders
     them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
     analyst with the code.
 
-    :param uncounted: Write the section for an uncounted input, without the statistics only a counted input states (a
-        pass rule's, a contrast's counts), which an uncounted input never holds.
-    :ptype uncounted: bool
     :return: The section, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
@@ -7266,7 +7242,7 @@ def figure_key_grammar(*, uncounted: bool = False) -> str:
     """
     example = _example_input()
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES, uncounted=uncounted) for family in _FAMILIES]
+    lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in _FAMILIES]
     lines += _grammar_filters(example, _EXAMPLE_NAMES)
     return "\n".join(lines)
 

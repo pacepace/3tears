@@ -333,8 +333,8 @@ class CampaignReport(EvalDocumentModel):
     steps, how the campaign was set up, then one fold per aspect.
 
     **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
-    sections), under the title: the question, or the line saying none was asked; a retired memo's summary across
-    every aspect and its recommendation with its whys, or a line saying none was written; what warns, one plain line
+    sections), under the title: the question, or the line saying none was asked; the line saying where the
+    campaign's report is, or that none was written; what warns, one plain line
     per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
     caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
     the title.
