@@ -255,10 +255,8 @@ __all__ = [
     "Confidence",
     "FloorOverride",
     "MapFieldInSchema",
-    "PORTABLE_STRICT_KEYWORDS",
     "Reading",
     "Recommendation",
-    "UnportableSchema",
     "strict_response_format",
     "strict_schema",
 ]
