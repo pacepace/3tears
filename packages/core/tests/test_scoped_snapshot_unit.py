@@ -5552,18 +5552,11 @@ _GEOS = TableSchema(
 )
 
 
-class _OwnKeyBackend(DuckDBBackend):
-    """a DuckDB L1 that refuses a NULL only in its table's own key, not in every column a scope is paged by: as
-    reports' shared store holds its geography rows, whose join_geo_id is NULL for a state's own."""
-
-    def export_rows(self, table: str, column: str, value: Any, rows: Any, **options: Any) -> Any:
-        return super().export_rows(table, column, value, rows, **{**options, "primary_key": ("item",)})
-
-
-def _geos_backend() -> DuckDBBackend:
+def _geos_backend(schema: TableSchema = _GEOS) -> DuckDBBackend:
+    """a DuckDB L1 holding ``schema``: NOT NULL only in its own key, so a scope's key column outside it may be NULL."""
     metadata = MetaData()
-    _GEOS.to_sqlalchemy_table(metadata)
-    backend = _OwnKeyBackend()
+    schema.to_sqlalchemy_table(metadata)
+    backend = DuckDBBackend()
     backend.initialize(metadata)
     return backend
 
@@ -5604,6 +5597,7 @@ async def test_a_diff_reads_every_page_of_a_group_whose_value_is_null(
     # a write at 2 adds ten rows with no geography: four pages of three
     l3.add([_geo("TX", None, f"n{i}", 2) for i in range(10)])
     l3.epochs["TX"] = 2
+    l3.statements.clear()  # the diff's reads, not the cold rebuild's
 
     outcome = await snapshot.catch_up()
 
@@ -5817,3 +5811,103 @@ async def test_a_stage_that_waits_again_hours_after_its_last_wait_ended_counts_f
     assert all(s < 60 for s in waited), f"a publish wait counted from an ended one: {waited}"
     for snapshot in (ap, lsf, reader):
         await snapshot.stop()
+
+
+_RACES = TableSchema(
+    name="races",
+    primary_key=("race", "item"),
+    columns=[
+        Column("state", STRING_TYPE),
+        Column("race", STRING_TYPE),
+        Column("geo", STRING_TYPE, nullable=True),
+        Column("item", STRING_TYPE),
+        Column("votes", BIGINT_TYPE, nullable=True),
+    ],
+    on_conflict="update",
+)
+
+
+def _races_rows() -> list[dict[str, Any]]:
+    """TX's rows of two races, many with no geography (a state's own rows): more than a page of them in r1, between
+    pages of rows that have one; and one of DE's."""
+    rows = [
+        *({"race": "r1", "geo": None, "item": f"a{i:04d}"} for i in range(1500)),
+        *({"race": "r1", "geo": "g1", "item": f"b{i:04d}"} for i in range(500)),
+        *({"race": "r2", "geo": "g2", "item": f"c{i:04d}"} for i in range(300)),
+        *({"race": "r2", "geo": None, "item": f"d{i:04d}"} for i in range(50)),
+    ]
+    return [
+        *({"state": "TX", **row, "votes": 1, "source_version": 1} for row in rows),
+        {"state": "DE", "race": "r1", "geo": None, "item": "e0000", "votes": 1, "source_version": 1},
+    ]
+
+
+def _races_held(snapshot: ScopedSnapshot, scope: str) -> list[tuple[Any, ...]]:
+    with snapshot.read() as cursor:
+        found = cursor.execute("SELECT state, race, geo, item, votes FROM races WHERE state = ?", [scope]).fetchall()
+    return sorted((tuple(r) for r in found), key=repr)
+
+
+class _RacesOrder(DuckDBBackend):
+    """a DuckDB L1 recording the key order of every scope of races it is given whole."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.given: list[list[tuple[Any, ...]]] = []
+
+    def replace_partitions(self, replacements: Any) -> int:
+        for r in replacements:
+            if r.arrow is not None and r.table == "races":
+                self.given.append([tuple(row.values()) for row in r.arrow.select(list(r.primary_key)).to_pylist()])
+        return super().replace_partitions(replacements)
+
+
+def _null_last(key: tuple[Any, ...]) -> tuple[Any, ...]:
+    """a key as the L1 orders it: ascending, a NULL after every value."""
+    return tuple((value is None, "" if value is None else value) for value in key)
+
+
+@pytest.mark.parametrize("read_order", [(), ("geo",)], ids=["key_order", "read_order"])
+async def test_a_cold_rebuild_reads_every_row_whose_paged_column_is_null(read_order: tuple[str, ...]) -> None:
+    """the cold rebuild is the one whole read left, and a copy missing rows is the worst failure there is. Paged by a
+    key column that holds NULL (not leading the key, or leading the read order), a keyset page past a row with a NULL
+    compared NULL: the page after one ended the read, and rows with one were dropped from every later page, with no
+    count to see it. Rows with a NULL are read apart, paged by the rest, and the copy holds every row, in key order."""
+    l3 = _SqlL3("races", ["state", "race", "geo", "item", "votes", "source_version"], _races_rows())
+    table = SnapshotTable(name="races", scope_column="state", key=("race", "geo", "item"), read_order=read_order)
+    metadata = MetaData()
+    _RACES.to_sqlalchemy_table(metadata)
+    backend = _RacesOrder()
+    backend.initialize(metadata)
+    snapshot = await _geos_snapshot(l3, table, backend=backend)
+
+    for scope in ("TX", "DE"):
+        assert _races_held(snapshot, scope) == l3.rows(scope), f"rows of {scope} were lost to a NULL"
+    assert all(given == sorted(given, key=_null_last) for given in backend.given), "a scope was out of key order"
+    await snapshot.stop()
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["every_value", "named_values"])
+async def test_a_cold_rebuild_a_value_at_a_time_reads_the_rows_whose_value_is_null(named: bool) -> None:
+    """a partition column that holds NULL: its NULL value was read pinned ``= NULL``, which names no row, and the
+    rows were missing from the copy. They are read from the rows where it is NULL."""
+    rows = [
+        *(_geo("TX", "g1", f"t{i}", 1) for i in range(5)),
+        *(_geo("TX", None, f"n{i}", 1) for i in range(7)),
+    ]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+
+    async def every(l3: Any, scope: str) -> list[str | None]:
+        return ["g1", None]
+
+    table = SnapshotTable(
+        name="geos",
+        scope_column="state",
+        key=("geo", "item"),
+        partition_by="geo",
+        partition_values=every if named else None,
+    )
+    snapshot = await _geos_snapshot(l3, table)
+
+    assert _held(snapshot, "TX") == l3.rows("TX"), "the rows whose partition value is NULL were lost"
+    await snapshot.stop()

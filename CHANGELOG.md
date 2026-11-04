@@ -69,6 +69,21 @@ pages, rows). Each wait ends where it resolves (a stage's when its scope's point
 waiting, the claim's when a catch-up takes it or finds nothing behind, the reads' when the last under way ends), so
 the next one says how long it has waited from its own start.
 
+### core: a whole read of a scope never loses a row to a NULL in a column it is paged by
+
+**Fixed:** a scope's L3 read pages by its key (or `read_order`), each page past the last row's values. A NULL in a
+paged column makes that comparison NULL: a page whose last row held one ended the read, and rows holding one were
+dropped from every page after the first, with no count to see it. A `partition_by` value that was NULL was read
+pinned `= NULL` and named no row. The cold rebuild, the one whole read left, would have built a copy missing them.
+Now every key column the L1 does not hold NOT NULL (outside its table's own primary key, the new
+`DuckDBBackend.not_null_columns`) is read NULL-safe: the rows with no NULL in those columns are the keyset read they
+always were, and each pattern of NULLs is read apart, paged by the columns left; a NULL partition value is read from
+the rows where it is NULL; the scope is put back in key order (NULL last). A table whose every paged column is held
+NOT NULL sends the same statements as before. `DuckDBBackend.export_rows` refuses a NULL only in a column its table
+holds NOT NULL, not in every column of the key it is given. A backend that does not say which columns it holds NOT
+NULL is read as before. Reports' snapshot tables hold every key, `read_order` and `partition_by` column NOT NULL, so
+none of their reads change.
+
 ### core: a scoped snapshot table can be read from L3 one partition value at a time
 
 **Added:** `SnapshotTable.partition_by`, a key column a scope's rows are read one value at a time (each value's rows

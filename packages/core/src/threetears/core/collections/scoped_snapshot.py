@@ -125,7 +125,7 @@ from contextlib import (
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from itertools import islice
+from itertools import islice, product
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
@@ -133,7 +133,7 @@ from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreE
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
 from threetears.observe import contain, contained, get_logger
 
-from threetears.core.sql_fragments import quote_identifier
+from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
 from threetears.core.backends.protocol import ArrowL3Reader
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
@@ -418,8 +418,9 @@ class SnapshotTable:
         the scope's every row, so a scope's read grows with the square of its rows. Its pages are then read in
         this order, the key's other columns after it (unique, as the key is), which such an index serves with
         about a page's rows; the scope's rows are put back in key order once read. Every column is one of
-        ``key``'s: a keyset page steps past its last row by comparing every paged column, and a NULL makes that
-        comparison NULL, so the rows after one would be dropped with no count to see it; a key column is never NULL
+        ``key``'s. A keyset page steps past its last row by comparing every paged column, and a NULL makes that
+        comparison NULL, so a key column the L1 does not hold NOT NULL (outside its own key) is read NULL-safe: the
+        rows with a NULL in it apart from the rest, each pattern of NULLs paged by the columns left
     :ivar partition_by: a key column a scope's rows are read from L3 one value at a time: the scope's values of it
         read first, then each value's rows paged on their own, in the value's order. On YugabyteDB a keyset page
         over a key of many columns is not a seek: each page scanned the scope's rows from their start, so a scope's
@@ -987,8 +988,8 @@ def _concatenated(parts: Sequence[Any]) -> Any:
 def _in_key_order(rows: Any, key: Sequence[str]) -> Any:
     """a scope's rows, read in another order (:attr:`SnapshotTable.read_order`), in ``key`` order; blocking.
 
-    Arrow's sort, ascending, as the L1's ``ORDER BY`` the key orders an export: a key's columns are never null, and
-    its text compares by its bytes in both.
+    Arrow's sort, ascending, as the L1's ``ORDER BY`` the key orders an export: a NULL last in both (a key column
+    this L1 does not hold NOT NULL may hold one), and text compared by its bytes in both.
 
     :param rows: the rows
     :ptype rows: pyarrow.Table
@@ -5415,7 +5416,9 @@ class ScopedSnapshot:
             # read a partition value at a time, the rows come in that column's order first: in key order only where
             # it leads the paged columns
             by_value = table.partition_by is not None and table.paged_by[:1] != (table.partition_by,)
-            if arrow is not None and (table.paged_by != table.key or by_value):
+            # and rows with a NULL in a paged column are read apart from the rest (_read_pages)
+            apart = bool(self._nullable(table, table.paged_by, {table.scope_column: scope}))
+            if arrow is not None and (table.paged_by != table.key or by_value or apart):
                 # read in the order its index serves: put back in key order, as every other path holds a scope
                 arrow = await asyncio.to_thread(_in_key_order, arrow, table.key)
             result.append(
@@ -5485,9 +5488,8 @@ class ScopedSnapshot:
                     extra={"error": f"{type(exc).__name__}: {exc}"},
                 )
             else:
-                for value in sorted(named):
-                    where = {table.scope_column: scope, table.partition_by: value}
-                    await self._read_pages(table, scope, columns, types, where, paged, moved, parts)
+                for value in sorted(named, key=lambda v: (v is None, v)):
+                    await self._read_value(table, table.partition_by, scope, columns, types, value, paged, moved, parts)
                 return parts
         values = await self._l3.fetch(
             f"SELECT DISTINCT {quote_identifier(table.partition_by)} AS value FROM {quote_identifier(table.name)} "  # noqa: S608
@@ -5495,9 +5497,54 @@ class ScopedSnapshot:
             scope,
         )
         for row in values:
-            where = {table.scope_column: scope, table.partition_by: row["value"]}
-            await self._read_pages(table, scope, columns, types, where, paged, moved, parts)
+            await self._read_value(table, table.partition_by, scope, columns, types, row["value"], paged, moved, parts)
         return parts
+
+    async def _read_value(
+        self,
+        table: SnapshotTable,
+        column: str,
+        scope: str,
+        columns: tuple[str, ...],
+        types: Mapping[str, Any] | None,
+        value: Any,
+        paged: tuple[str, ...],
+        moved: Callable[[], Awaitable[bool]] | None,
+        parts: list[Any],
+    ) -> None:
+        """one value's rows of a table read a :attr:`SnapshotTable.partition_by` value at a time (:meth:`_read_table`).
+
+        A NULL value is no equality's: its rows are read from those where the column is NULL. Pinned ``= NULL``, they
+        were read as none, and missing from the copy with no count to see it.
+
+        :param column: the partition column, :attr:`SnapshotTable.partition_by`
+        :ptype column: str
+        :return: nothing
+        :rtype: None
+        """
+        if value is None:
+            source = (
+                f"(SELECT * FROM {quote_identifier(table.name)} WHERE {quote_identifier(column)} IS NULL) "  # noqa: S608
+                f"AS {quote_identifier(table.name)}"
+            )
+            where: dict[str, Any] = {table.scope_column: scope}
+            await self._read_pages(table, scope, columns, types, where, paged, moved, parts, source)
+            return
+        where = {table.scope_column: scope, column: value}
+        await self._read_pages(table, scope, columns, types, where, paged, moved, parts)
+
+    def _nullable(self, table: SnapshotTable, paged: Sequence[str], where: Mapping[str, Any]) -> tuple[str, ...]:
+        """the columns of ``paged`` that may hold NULL in rows ``where`` names: every one this L1 does not hold NOT NULL
+        (a backend that does not say holds every key column NOT NULL), and none ``where`` pins.
+
+        :return: the columns, in paged order
+        :rtype: tuple[str, ...]
+        """
+        not_null = getattr(self._backend, "not_null_columns", None)
+        if not_null is None:
+            return ()
+        held = not_null(table.name)
+        return tuple(column for column in paged if column not in held and column not in where)
 
     async def _read_pages(
         self,
@@ -5511,8 +5558,89 @@ class ScopedSnapshot:
         parts: list[Any],
         source: str | None = None,
     ) -> None:
+        """the rows ``where`` names of one table, NULL-safe: a keyset read of each pattern of NULLs the paged columns
+        may hold (:meth:`_read_keyset`).
+
+        A keyset page past a row compares every paged column, and a NULL makes that comparison NULL: a row with a NULL
+        in a paged column was dropped from every page after the first, and a page whose last row had one ended the
+        read, with no count to see it. So the rows are read apart by which of the paged columns that may hold NULL
+        (:meth:`_nullable`) do: those with none first, paged by every column; then each pattern of NULLs, paged by the
+        columns not NULL in it. A table whose every paged column is held NOT NULL reads as before, one keyset read.
+        Rows read apart come in no key order; the caller puts them in it.
+
+        :param source: what the rows are read FROM in place of the table, as :meth:`_read_keyset` takes it
+        :ptype source: str | None
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when more than a page of rows is NULL in every column that pages them
+        :raises _WriteBegan: when ``moved`` says a write began
+        """
+        nullable = self._nullable(table, paged, where)
+        base = quote_identifier(table.name) if source is None else source
+        for pattern in product((False, True), repeat=len(nullable)):
+            nulls = {column for column, null in zip(nullable, pattern, strict=True) if null}
+            rest = tuple(column for column in paged if column not in nulls)
+            derived = source
+            if nullable:
+                conditions = " AND ".join(
+                    f"{quote_identifier(c)} IS {'NULL' if c in nulls else 'NOT NULL'}" for c in nullable
+                )
+                derived = f"(SELECT * FROM {base} WHERE {conditions}) AS {quote_identifier(table.name)}"  # noqa: S608
+            # a pattern whose every column left is pinned (or NULL) has nothing to page by; with no NULL, the read is
+            # the keyset read it always was
+            if not nulls or any(column not in where for column in rest):
+                await self._read_keyset(table, scope, columns, types, where, rest, moved, parts, derived)
+            else:
+                await self._read_unpaged(table, scope, columns, where, parts, derived)
+
+    async def _read_unpaged(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        columns: tuple[str, ...],
+        where: Mapping[str, Any],
+        parts: list[Any],
+        source: str | None,
+    ) -> None:
+        """the rows ``where`` names that no column is left to page by (each NULL, or pinned): one statement, which
+        must hold them all.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when they are more than a page
+        """
+        conditions, values = equality_conditions(where)
+        select = (
+            f"SELECT {', '.join(quote_identifier(c) for c in columns)} "  # noqa: S608
+            f"FROM {quote_identifier(table.name) if source is None else source}"
+            f"{f' WHERE {conditions}' if conditions else ''} LIMIT {DEFAULT_PAGE_SIZE + 1}"
+        )
+        rows = [dict(row) for row in await self._l3.fetch(select, *values)]
+        if len(rows) > DEFAULT_PAGE_SIZE:
+            raise ValueError(
+                f"scoped snapshot {self._name}: {table.name} of scope {scope!r} holds more than {DEFAULT_PAGE_SIZE} "
+                f"rows with no column left to page them by ({source or 'the table'}); none can be read a page at a time"
+            )
+        if rows:
+            parts.append(await self._export(table, scope, rows))
+        _headway(
+            f"read {len(rows)} rows of {table.name} in scope {scope!r} from L3", landed=_WHOLE_READ.get() is not None
+        )
+
+    async def _read_keyset(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        columns: tuple[str, ...],
+        types: Mapping[str, Any] | None,
+        where: Mapping[str, Any],
+        paged: tuple[str, ...],
+        moved: Callable[[], Awaitable[bool]] | None,
+        parts: list[Any],
+        source: str | None = None,
+    ) -> None:
         """the rows ``where`` names of one table, a page at a time, typed by this L1 and added to ``parts``
-        (:meth:`_read_table`).
+        (:meth:`_read_pages`, which keeps a NULL out of every column it pages by).
 
         :param table: the table
         :ptype table: SnapshotTable
