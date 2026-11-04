@@ -414,6 +414,10 @@ class SnapshotTable:
         read grew with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1
         billion keys scanned for ~30 million rows, no state of 39 rebuilt in 28 minutes). Pinned to one value,
         a page scans that value's rows alone. None reads the scope whole
+    :ivar partition_values: with ``partition_by``, the values of it a rebuild reads, asked of L3 for a scope
+        (``(l3, scope) -> values``): a table whose copy keeps only some partitions (reports' LSF county
+        projections keep each race's newest run of each model, of a night's hundreds) reads only those. None reads
+        every value L3 holds; so does a read whose ask fails, which costs time and never rows
     """
 
     name: str
@@ -422,6 +426,7 @@ class SnapshotTable:
     append_only: bool = False
     read_order: tuple[str, ...] = ()
     partition_by: str | None = None
+    partition_values: Callable[[Any, str], Awaitable[Sequence[Any]]] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """refuse a read order naming a column twice, or a column outside the key.
@@ -432,6 +437,8 @@ class SnapshotTable:
         """
         if len(set(self.read_order)) != len(self.read_order):
             raise ValueError(f"{self.name}: read_order names a column twice: {self.read_order}")
+        if self.partition_values is not None and self.partition_by is None:
+            raise ValueError(f"{self.name}: partition_values names the values of no partition_by column")
         if self.partition_by is not None and (
             self.partition_by not in self.key or self.partition_by == self.scope_column
         ):
@@ -4777,13 +4784,30 @@ class ScopedSnapshot:
                 table, scope, columns, types, {table.scope_column: scope}, table.paged_by, moved, parts
             )
             return parts
-        # the scope's values of the partition column, then each value's rows on their own (SnapshotTable.partition_by)
+        # the scope's values of the partition column, then each value's rows on their own (SnapshotTable.partition_by);
+        # only the values the table names when it names some (SnapshotTable.partition_values)
+        paged = tuple(column for column in table.paged_by if column != table.partition_by)
+        if table.partition_values is not None:
+            try:
+                named = list(await table.partition_values(self._l3, scope))
+            except Exception as exc:  # noqa: BLE001 - a failed ask reads every value instead: slower, never fewer rows
+                log.warning(
+                    "scoped snapshot %s: the partition values of %s in scope %r could not be asked; every value is read",
+                    self._name,
+                    table.name,
+                    scope,
+                    extra={"extra_data": {"error": f"{type(exc).__name__}: {exc}"}},
+                )
+            else:
+                for value in sorted(named):
+                    where = {table.scope_column: scope, table.partition_by: value}
+                    await self._read_pages(table, scope, columns, types, where, paged, moved, parts)
+                return parts
         values = await self._l3.fetch(
             f"SELECT DISTINCT {quote_identifier(table.partition_by)} AS value FROM {quote_identifier(table.name)} "  # noqa: S608
             f"WHERE {quote_identifier(table.scope_column)} = $1 ORDER BY 1",
             scope,
         )
-        paged = tuple(column for column in table.paged_by if column != table.partition_by)
         for row in values:
             where = {table.scope_column: scope, table.partition_by: row["value"]}
             await self._read_pages(table, scope, columns, types, where, paged, moved, parts)

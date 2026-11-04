@@ -4751,6 +4751,48 @@ async def test_a_scope_read_a_partition_value_at_a_time_scans_each_value_once_no
     assert scanned["race"] <= 3 * tx, f"a partition at a time read {scanned['race']} rows of {tx}"
 
 
+async def test_a_table_naming_its_partition_values_reads_only_those_and_every_value_when_the_ask_fails() -> None:
+    """reports' LSF county projections keep each race's newest run of each model: a rebuild asks L3 for those runs and
+    reads them alone, not the night's hundreds. An ask that fails reads every value, slower, never fewer rows."""
+    rows = _votes_by_rows(races=30, counties=200)
+    kept = {"r03", "r07"}
+    held: dict[str, Any] = {}
+    for case in ("named", "failing"):
+
+        async def named(l3: Any, scope: str) -> list[str]:
+            if case == "failing":
+                raise RuntimeError("the ask failed")
+            return sorted(kept) if scope == "TX" else []
+
+        l3 = _PartitionedL3(rows, partition="race")
+        backend = _votes_by_backend(_OrderedBackend())
+        tables = (
+            SnapshotTable(
+                name="votes_by",
+                scope_column="state",
+                key=("race", "county"),
+                partition_by="race",
+                partition_values=named,
+            ),
+        )
+        snapshot, *_ = _snapshot(l3=l3, tables=tables, backend=backend)
+        await snapshot.start()
+        await snapshot.wait_ready(timeout=10)
+        await snapshot.stop()
+        held[case] = backend.execute_query("SELECT race FROM votes_by WHERE state = 'TX'")
+        assert l3.partition_reads == (0 if case == "named" else 2)
+    assert {r["race"] for r in held["named"]} == kept
+    assert len(held["failing"]) == sum(1 for r in rows if r["state"] == "TX")
+
+
+def test_partition_values_with_no_partition_column_is_refused() -> None:
+    async def named(l3: Any, scope: str) -> list[str]:
+        return []
+
+    with pytest.raises(ValueError, match="partition_values"):
+        SnapshotTable(name="t", scope_column="state", key=("race", "county"), partition_values=named)
+
+
 def test_a_partition_column_outside_the_key_or_the_scope_column_is_refused() -> None:
     with pytest.raises(ValueError, match="partition_by"):
         SnapshotTable(name="t", scope_column="state", key=("race", "county"), partition_by="office")
