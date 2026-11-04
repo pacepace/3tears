@@ -1,7 +1,7 @@
 # Writer acceptance: the hollow skill against the shipped skill, 2026-11-03
 
 The record of one paid run of `tests/fixtures/report_plans/writer_acceptance.py`, kept as small JSON plus its log. The turn
-recordings and the store are not kept. Files: `20261103-sonnet-hollow.json` (the result), `20261103-sonnet-hollow.log` (the
+recordings and the store are not kept. Files: `20261103-sonnet-hollow.json` (the result), `20261103-sonnet-hollow-run.txt` (the
 printed run).
 
 ## What ran
@@ -51,10 +51,10 @@ A stronger model read the eleven pairs with the arm key sealed (`20261103-blind-
 confidence (sure 1.0, lean 0.6, coin flip 0.2) 3.2 to 3.4. The reader found statistical slips in both arms' pages
 that the editor had passed. These are an agent's verdicts, recorded as such; no label or profile is derived from them.
 
-## 2026-11-04: the `no-editor` variant (`20261104-sonnet-no-editor.json`, `.log`)
+## 2026-11-04: the `no-editor` variant (`20261104-sonnet-no-editor.json`, `20261104-sonnet-no-editor-run.txt`)
 
 Same command with `--variant no-editor` (the shipped skill, `revisions=0`: the editor reviews once and never sends a
-report back). The first attempt (`20261104-sonnet-no-editor-attempt1-520.log`) ended after $0.67: one turn in each arm
+report back). The first attempt (`20261104-sonnet-no-editor-attempt1-520-run.txt`) ended after $0.67: one turn in each arm
 failed with an Anthropic 520, the result's cost read as unpriced, and the cap rule stopped both runs; that is a bug,
 fixed on `reset/failed-turn-cost`. The second attempt completed for $5.39 ($3.14 shipped, $2.16 no-editor, $0.09 pass).
 

@@ -1,0 +1,3 @@
+no-editor start 2026-11-04T00:28:23Z head 8b3078d5b
+writer_acceptance.py: the pairwise pass refused before any call: arms no-editor and shipped ran no case and repeat in common, so no page has a partner; launch both arms over the same cases and repeats (run_launch), then ask again
+no-editor exit 1 at 2026-11-04T00:30:28Z
