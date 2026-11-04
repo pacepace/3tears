@@ -5328,6 +5328,11 @@ async def test_a_scope_the_diff_cannot_prove_stays_behind_said_at_error_and_is_n
     assert "cannot be brought forward from the diff" in caplog.text
     assert l3.whole_reads == 0
     assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1
+    # the retry a minute's wait does not reach asks L3 nothing more and says it once
+    caplog.clear()
+    again = await replica.catch_up()
+    assert again.left == outcome.left
+    assert "cannot be brought forward from the diff" not in caplog.text
     await writer.stop()
     await replica.stop()
 

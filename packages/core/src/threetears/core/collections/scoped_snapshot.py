@@ -138,7 +138,7 @@ from threetears.core.backends.arrow_reply import ReplyNotArrowError
 from threetears.core.backends.protocol import ArrowL3Reader
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, l3_row_pages
-from threetears.core.keyset import keyset_arrow_pages
+from threetears.core.keyset import keyset_arrow_pages, keyset_pages
 from threetears.core.coordination.lease import HeldLease, KVLease, LeaseUnavailable
 
 if TYPE_CHECKING:
@@ -2172,9 +2172,10 @@ class ScopedSnapshot:
         # whether every table names its version column: a scope behind L3 is then brought forward from the diff, and
         # a scope is read whole from L3 only to rebuild what L2 holds no copy of (_WHOLE_READ)
         self._diffable = all(t.version_column is not None for t in self._tables)
-        # scope -> when a recovery here last left it behind (it could not be brought forward from the diff): tried
-        # again no sooner than a minute after, so a scope that cannot be diffed is not asked of L3 at every recheck
-        self._unrecovered: dict[str, float] = {}
+        # scope -> when a recovery here last left it behind (it could not be brought forward from the diff) and why:
+        # tried again no sooner than a minute after, so a scope that cannot be diffed is not asked of L3 (and said at
+        # ERROR) at every retry
+        self._unrecovered: dict[str, tuple[float, str]] = {}
 
     # ------------------------------------------------------------------
     # status
@@ -3110,7 +3111,8 @@ class ScopedSnapshot:
         stuck = {
             scope
             for scope, (failures, _) in self._behind.items()
-            if failures >= _BEHIND_REBUILD_AFTER and now - self._unrecovered.get(scope, -math.inf) >= _WAIT_SAY_SECONDS
+            if failures >= _BEHIND_REBUILD_AFTER
+            and now - self._unrecovered.get(scope, (-math.inf, ""))[0] >= _WAIT_SAY_SECONDS
         }
         if stuck:
             await self._rebuild_stuck(stuck)
@@ -4909,6 +4911,10 @@ class ScopedSnapshot:
             SnapshotPhase.REBUILDING_FROM_L3, f"bringing {len(scopes)} scopes forward from the diff", total=len(scopes)
         ):
             for scope in sorted(scopes):
+                tried = self._unrecovered.get(scope)
+                if tried is not None and time.monotonic() - tried[0] < _WAIT_SAY_SECONDS:
+                    left[scope] = tried[1]
+                    continue
                 outcome = await self._recover_one(scope)
                 _headway(f"judged scope {scope!r} against L3", landed=True)
                 self._progress = replace(self._progress, scopes_done=self._progress.scopes_done + 1)
@@ -4922,7 +4928,7 @@ class ScopedSnapshot:
                     left[scope] = outcome.why
                 else:
                     left[scope] = str(outcome)
-                    self._unrecovered[scope] = time.monotonic()
+                    self._unrecovered[scope] = (time.monotonic(), str(outcome))
                     log.error(
                         "scoped snapshot %s: scope %r cannot be brought forward from the diff: %s; it stays behind "
                         "(it is never read whole from L3 while L2 holds a copy)",
@@ -5115,7 +5121,7 @@ class ScopedSnapshot:
                 continue
             total += rows_now
             had = held_counts.get(key)
-            if stamped or (had is None and not some) or (had is not None and had != rows_now and not some):
+            if stamped or (had is None and not some and rows_now) or (had is not None and had != rows_now and not some):
                 reread.append(value)
                 drop.add(key)
             elif had is not None and some and had > rows_now:
@@ -5130,14 +5136,21 @@ class ScopedSnapshot:
         types = _rail_types(self._backend.column_types(table.name)) if isinstance(self._l3, ArrowL3Reader) else None
         read = 0
         for value in reread:
-            where = {table.scope_column: scope} if group is None else {table.scope_column: scope, group: value}
+            # a group pinned to its value; a NULL one, which no equality names, read from the rows where it is NULL
+            pinned = group is not None and value is not None
+            where = {table.scope_column: scope, **({group: value} if pinned and group is not None else {})}
+            nulls = (
+                f"(SELECT * FROM {source} WHERE {quote_identifier(group)} IS NULL) AS {source}"  # noqa: S608
+                if group is not None and value is None
+                else None
+            )
             pages: list[Any] = []
             try:
-                await self._read_pages(table, scope, columns, types, where, table.paged_by, None, pages)
+                await self._read_pages(table, scope, columns, types, where, table.paged_by, None, pages, nulls)
             except ReplyNotArrowError:
                 # NOSILENT: as a whole read does, a value the rail answers otherwise than its Arrow type: dict rows
                 pages = []
-                await self._read_pages(table, scope, columns, None, where, table.paged_by, None, pages)
+                await self._read_pages(table, scope, columns, None, where, table.paged_by, None, pages, nulls)
             read += sum(page.num_rows for page in pages)
             parts += pages
         rows_now = await self._export(table, scope, _concatenated(parts)) if reread or drop else held
@@ -5449,6 +5462,7 @@ class ScopedSnapshot:
         paged: tuple[str, ...],
         moved: Callable[[], Awaitable[bool]] | None,
         parts: list[Any],
+        source: str | None = None,
     ) -> None:
         """the rows ``where`` names of one table, a page at a time, typed by this L1 and added to ``parts``
         (:meth:`_read_table`).
@@ -5469,15 +5483,23 @@ class ScopedSnapshot:
         :ptype moved: Callable[[], Awaitable[bool]] | None
         :param parts: where each page's typed rows go
         :ptype parts: list[pyarrow.Table]
+        :param source: what the rows are read FROM in place of the table (a derived table naming rows no equality
+            can, a group whose value is NULL); the table when ``None``
+        :ptype source: str | None
         :return: nothing
         :rtype: None
         :raises _WriteBegan: when ``moved`` says a write began
         """
         pages: AsyncGenerator[Any, None]
-        if types is None:
+        select = (
+            f"SELECT {', '.join(quote_identifier(c) for c in columns)} "  # noqa: S608
+            f"FROM {quote_identifier(table.name) if source is None else source}"
+        )
+        if types is None and source is None:
             pages = l3_row_pages(self._l3, table.name, columns, paged, where=dict(where))
+        elif types is None:
+            pages = keyset_pages(self._l3, select, paged, where=dict(where), page_size=DEFAULT_PAGE_SIZE)
         else:
-            select = f"SELECT {', '.join(quote_identifier(c) for c in columns)} FROM {quote_identifier(table.name)}"  # noqa: S608
             pages = keyset_arrow_pages(
                 self._l3, select, paged, types=types, where=dict(where), page_size=DEFAULT_PAGE_SIZE
             )
