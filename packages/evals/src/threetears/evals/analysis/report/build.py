@@ -369,8 +369,9 @@ def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
             f"({', '.join(aspect.label for aspect in analysis.aspects)}), and this page lays out one",
             remedy=(
                 "read each aspect's evidence with threetears.evals.analysis.inspect_analysis_bundle (naming its "
-                "aspect) and the memo with threetears.evals.analysis.get_analysis; the campaign's page, which lays out "
-                "every aspect, is read through report_read, or threetears.evals.analysis.analysis_report by its id"
+                "aspect) and the analysis with threetears.evals.analysis.get_analysis; the campaign's page, which "
+                "lays out every aspect, is read through report_read, or threetears.evals.analysis.analysis_report by "
+                "its id"
             ),
         )
     return analysis.aspects[0]
@@ -397,8 +398,8 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
 
 
 def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> str:
-    """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never the
-    memo's words.
+    """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never a
+    writer's words.
 
     It opens with what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in the
     page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
@@ -1247,7 +1248,7 @@ class _ChartLedger:
 
     def sentence(self) -> str | None:
         """Every interval not drawn, in one sentence; None when nothing was left out, or no arm could have one drawn
-        at all (the caveat under the scoreboard says so). Read after the memo and the contrasts are laid out."""
+        at all (the caveat under the scoreboard says so). Read after the contrasts are laid out."""
         if all(usable < MIN_CASES for usable in self._usable.values()):
             return None
         parts = []

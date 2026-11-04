@@ -95,7 +95,7 @@ from threetears.evals.analysis.report.html_parts import (
     term_link,
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
-from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
+from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, trial_summary
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -151,9 +151,9 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
     question, the answer, what warns, set apart but never announced over the title). The sections the page reads
     before its folds follow, open (the findings, the next steps, Design & provenance); then one closed ``<section>``
-    per aspect, its summary the aspect's label and what code read there, its
-    body a retired memo's summary of the aspect, where one is held, and the aspect's own page laid out as its page lays it out, a heading
-    level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
+    per aspect, its summary the aspect's label and what code read there, its body any text blocks the fold holds
+    (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.summary`, empty on every page built now) and the
+    aspect's own page laid out as its page lays it out, a heading level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
 
     A report document's page (``doc_page`` set) is the page its stored document draws
@@ -237,8 +237,8 @@ _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 
 def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[str]:
-    """One aspect's closed fold: a retired memo's summary of it where one is held, then its page's first screen and sections, a heading level
-    down, every id in it prefixed ``a-<slug>--``.
+    """One aspect's closed fold: any text blocks the fold holds, then its page's first screen and sections, a heading
+    level down, every id in it prefixed ``a-<slug>--``.
 
     Ids derived from the slug join it with ``--``, which :func:`~threetears.evals.analysis.report.blocks.fold_ids`
     never writes (it folds every run of other characters into one hyphen), so an aspect labelled "billing body" can
@@ -395,15 +395,6 @@ def _text(block: TextBlock) -> str:
             f' <span class="facts">({escape(facts["Confidence"])} confidence)</span>' if "Confidence" in facts else ""
         )
         return f'<p data-role="recommendation">{lead}{body}{sure}</p>'
-    if block.role == "override":
-        over = (
-            f"The memo recommends {escape(facts['Arm'])} over {escape(facts.get('Over', 'it'))}"
-            if "Arm" in facts
-            else "The memo's why"
-        )
-        return f'<p class="override" data-role="override"><strong>{over}:</strong> {body}</p>'
-    if block.role in SUMMARY_LEADS:
-        return f'<p data-role="{block.role}"><strong>{SUMMARY_LEADS[block.role]}</strong> {body}</p>'
     if block.role == "reason":
         return f'<p data-role="reason">{body}</p>'
     if block.role == "next_step":
