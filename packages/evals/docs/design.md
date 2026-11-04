@@ -480,9 +480,9 @@ production path, and a decision logged where nothing ingested it.
 **Two writers came before the analyst, and both are retired** (2026-07 to 2026-10). The memo writer read one
 closed bundle in one call and wrote a summary, findings and a recommendation. A deterministic gate on the numbers in
 its sentences grew to 4,099 lines in 33 days and was deleted, because every real memo found a claim shape it could
-not parse; its prompt grew 12× in 23 days, mostly defence against past incidents. Two of its headlines read a
-contrast that did not separate as "does not change" and kept a model over a judge cut off on ten of twelve trials,
-so the census, the verdict and every count moved to code: that is still the code-only page's shape. The report
+not parse; its prompt grew 12× in 23 days, mostly defence against past incidents. One of its headlines read a
+contrast that did not separate as "does not change"; another kept a model over a judge cut off on ten of twelve
+trials. So the census, the verdict and every count moved to code: that is still the code-only page's shape. The report
 planner that followed chose a page from a fixed vocabulary, after code classified the campaign into a shape and fixed
 its first chart, and each campaign nobody had anticipated needed a new shape, chart or rule, each a branch on what
 kind of eval it was.
