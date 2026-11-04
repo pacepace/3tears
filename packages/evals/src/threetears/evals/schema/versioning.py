@@ -433,6 +433,11 @@ MINOR_ADDITIVITY_SENTENCE: Final[str] = (
 #:   v13 memo stored before it reads and renders as it did. A bump here would refuse them, so none is taken; a build
 #:   from before the planner refuses a planned analysis on read (a field it does not know), which is the regenerable
 #:   rule's own answer, and never misreads it.
+#:
+#:   Within v13 too, the report planner and its plan model are retired, with no bump, because nothing stored changes:
+#:   no generation writes a plan, and a stored ``eval_report_plan`` keeps its shape, its plan held verbatim and no
+#:   longer validated as a plan on read. Loosening a check refuses nothing it accepted, so every stored plan still reads,
+#:   and ``drop_derived`` and ``analysis_delete`` still sweep it.
 REGENERABLE_SCHEMA_VERSION: int = 13
 """The version every regenerable document but the cassette is written under, and the only one a read of one accepts.
 

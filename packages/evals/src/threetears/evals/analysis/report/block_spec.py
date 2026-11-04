@@ -11,9 +11,8 @@ chart the plan checks accept is one an analyst sees drawn, and a chart refused o
 - :func:`chart_faults` and :func:`small_multiple_faults`: what refuses one chart on its input (below);
 - :func:`block_look`: the look a chart is drawn with when no plan orders the arms or recommends one.
 
-The plan completion (:func:`~threetears.evals.analysis.report_plan_facts.complete_plan`) and the plan checks
-(:func:`~threetears.evals.analysis.report_plan_checks.validate_plan`) call these for every chart a plan holds; what a
-whole plan adds (a summary chart showing the options table's rows, the spine) stays theirs.
+The analyst's ``block_render`` (:func:`~threetears.evals.analysis.analyst.blocks.block_render`) and the document
+page's evidence blocks call these for every chart they draw.
 
 **A chart's reference line** sits at a line the input declares, and code fills its figure key:
 
@@ -106,7 +105,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_refusal,
 )
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
-from threetears.evals.analysis.report_decision import control_arm, surviving_options
+from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import (
@@ -122,19 +121,18 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, ChartSpec, PlannedChart
 
-if TYPE_CHECKING:  # an arm's facts are read by type only: the completion step that defines them imports this module.
-    from threetears.evals.analysis.report_plan_facts import FactArm
+if TYPE_CHECKING:  # an arm's facts are read by type only: the module that defines them sits above the page's parts.
+    from threetears.evals.analysis.report_arms import FactArm
 
+#: ``bare_key_faults`` and ``contrast_level`` are this module's own steps: nothing outside it reads them.
 __all__ = [
     "BLOCK_SOURCES",
     "INTERVAL_KINDS",
     "LINE_KINDS",
     "PANELLED_KINDS",
-    "bare_key_faults",
     "block_look",
     "chart_faults",
     "complete_chart",
-    "contrast_level",
     "held_aspects",
     "line_statistics",
     "small_multiple_faults",
@@ -254,7 +252,7 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
 
 def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
-    facts give them, the arms in the input's order, the survivors, the reader names, and no arm recommended.
+    facts give them, the arms in the input's order, the reader names, and no arm recommended.
 
     It is :func:`~threetears.evals.analysis.report.parts.look.page_look`, the planned page's own, with nothing a
     plan chooses: a chart whose query lists its arms draws them in that order on both.
@@ -262,7 +260,7 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     :param report_input: The report input the chart reads.
     :ptype report_input: ReportInput
     :param arms: Each arm as code's facts give it
-        (:func:`~threetears.evals.analysis.report_plan_facts.fact_arms`).
+        (:func:`~threetears.evals.analysis.report_arms.fact_arms`).
     :ptype arms: Sequence[FactArm]
     :return: The look.
     :rtype: PageLook
@@ -271,7 +269,6 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
         arms,
         {arm.id: arm.color_slot for arm in arms},
         order=(),
-        survivors=surviving_options(report_input),
         recommended=None,
         names={str(kind): found for kind, found in reader_names(report_input).items()},
     )

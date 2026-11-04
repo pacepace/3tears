@@ -71,7 +71,7 @@ from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_prose_checks import (
     internal_ids,
     literal_faults,

@@ -18,7 +18,7 @@ Contracts held here (``threetears.evals.analysis.report_gates``, GENERATOR.md §
   mean), the figure and the line ("p95 3.6 s > 3 s", "Resolves the issue 90% ±4.4"), with where the figure sits when
   the check is not narrowed to a task or a cell;
 - ``surviving_options`` reads its survivors through the gate check, borderline counting as a pass, and gives the
-  same survivors, modes and shapes as before the gate check existed: the literal expectations below were captured
+  same survivors and modes as before the gate check existed: the literal expectations below were captured
   from the code before it was rewritten.
 """
 
@@ -31,11 +31,10 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.report_decision import allowed_modes, surviving_options
+from threetears.evals.analysis.report_decision import decision_at, surviving_options
 from threetears.evals.analysis.report_gates import GateCheck, gate_check, routing_picks, task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
-from threetears.evals.analysis.report_plan_checks import classify
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
 
@@ -99,23 +98,23 @@ def _r4_facts_at_prods_figure() -> dict[str, Any]:
     return data
 
 
-#: Each case's survivors, allowed modes and shape, captured from ``surviving_options``, ``allowed_modes`` and
-#: ``classify`` before survivors were read through the gate check. They must never move, save where GENERATOR §1.1
+#: Each case's survivors and allowed modes, captured from ``surviving_options`` and the declared modes (``decision_at``) before survivors
+#: were read through the gate check (the retired planner's shape, once a third column, left with it). They must never move, save where GENERATOR §1.1
 #: rules: a gate read in every task fails an arm lacking its figure in any one, which moved the one synthetic case
 #: built for it ("r1 Atlas-M without billing quality", once ``["atlas-m"]`` and ``decide``).
-BEFORE: list[tuple[str, Any, list[str], set[str], str]] = [
-    ("r1", lambda: _data("r1"), ["atlas-m"], {"decide"}, "A"),
-    ("r2", lambda: _data("r2"), ["brisk-s.low.r1"], {"decide"}, "B"),
-    ("r3", lambda: _data("r3"), ["brisk-s.few"], {"decide"}, "C"),
-    ("r4", lambda: _data("r4"), ["prod", "f64"], {"tradeoff"}, "D"),
-    ("r5", lambda: _data("r5"), ["September", "qwen3.8-flash", "1017"], {"decide"}, "D"),
-    ("r5 breached guardrail", _r5_breached, ["September", "qwen3.8-flash"], {"decide"}, "D"),
-    ("r2 no p95 for the pick", _r2_no_p95, [], {"no_call"}, "B"),
-    ("r5 tone guardrail", _r5_tone, [], {"no_call"}, "D"),
-    ("r1 resolves above Atlas-M", _r1_resolves_above_atlas_m, [], {"no_call"}, "A"),
-    ("r1 Atlas-M without billing quality", _r1_atlas_m_without_billing_quality, [], {"no_call"}, "A"),
-    ("r3 cell floor at 95", _r3_cell_floor_95, [], {"no_call"}, "C"),
-    ("r4 facts at prod's figure", _r4_facts_at_prods_figure, ["prod"], {"decide"}, "D"),
+BEFORE: list[tuple[str, Any, list[str], set[str]]] = [
+    ("r1", lambda: _data("r1"), ["atlas-m"], {"decide"}),
+    ("r2", lambda: _data("r2"), ["brisk-s.low.r1"], {"decide"}),
+    ("r3", lambda: _data("r3"), ["brisk-s.few"], {"decide"}),
+    ("r4", lambda: _data("r4"), ["prod", "f64"], {"tradeoff"}),
+    ("r5", lambda: _data("r5"), ["September", "qwen3.8-flash", "1017"], {"decide"}),
+    ("r5 breached guardrail", _r5_breached, ["September", "qwen3.8-flash"], {"decide"}),
+    ("r2 no p95 for the pick", _r2_no_p95, [], {"no_call"}),
+    ("r5 tone guardrail", _r5_tone, [], {"no_call"}),
+    ("r1 resolves above Atlas-M", _r1_resolves_above_atlas_m, [], {"no_call"}),
+    ("r1 Atlas-M without billing quality", _r1_atlas_m_without_billing_quality, [], {"no_call"}),
+    ("r3 cell floor at 95", _r3_cell_floor_95, [], {"no_call"}),
+    ("r4 facts at prod's figure", _r4_facts_at_prods_figure, ["prod"], {"decide"}),
 ]
 
 
@@ -147,20 +146,14 @@ def _failing_places(report_input: ReportInput, arm: str) -> list[tuple[str, str]
 
 
 class TestSurvivorsAreUnchanged:
-    @pytest.mark.parametrize(("case", "make", "survivors", "modes", "shape"), BEFORE, ids=[row[0] for row in BEFORE])
-    def test_survivors_modes_and_shape_are_as_before(
-        self, case: str, make: Any, survivors: list[str], modes: set[str], shape: str
-    ):
+    @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
+    def test_survivors_and_modes_are_as_before(self, case: str, make: Any, survivors: list[str], modes: set[str]):
         report_input = _input(make())
-        assert (surviving_options(report_input), allowed_modes(report_input), classify(report_input)[1]) == (
-            survivors,
-            modes,
-            shape,
-        )
+        assert (surviving_options(report_input), decision_at(report_input).modes) == (survivors, modes)
 
-    @pytest.mark.parametrize(("case", "make", "survivors", "modes", "shape"), BEFORE, ids=[row[0] for row in BEFORE])
+    @pytest.mark.parametrize(("case", "make", "survivors", "modes"), BEFORE, ids=[row[0] for row in BEFORE])
     def test_an_arm_survives_exactly_when_no_place_fails_it_and_no_guardrail_is_breached(
-        self, case: str, make: Any, survivors: list[str], modes: set[str], shape: str
+        self, case: str, make: Any, survivors: list[str], modes: set[str]
     ):
         """Both ways, from checks narrowed to each place the gates read: a survivor fails nowhere, and an arm that
         fails nowhere (and is not breached) survives."""

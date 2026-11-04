@@ -28,7 +28,7 @@ from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report_doc_checks import DocVerdict, check_report_doc
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.report_doc import ReportDoc, Story
 
 #: The Kairo document of the third prototype, which most negatives are planted in.

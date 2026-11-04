@@ -64,7 +64,7 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.analyst.blocks import block_catalog, block_render
 from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.kernel.errors import RefusedInput

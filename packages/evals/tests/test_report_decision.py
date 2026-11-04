@@ -25,8 +25,8 @@ import pytest
 
 from threetears.evals.analysis.report.figure_keys import flip_margin, resolve
 from threetears.evals.analysis.report_decision import (
-    allowed_modes,
     caveat_materiality,
+    decision_at,
     dominant_options,
     report_caveats,
     surviving_options,
@@ -125,12 +125,77 @@ class TestCaveatIds:
         assert report_caveats(_input()) == report_caveats(_input())
 
 
+#: Kairo's open report-wide caveats, in the order code lists them.
+KAIRO_OPEN = ["late:aspect", "late:control", "judge_uncalibrated"]
+
+
+def _report_wide(report_input: ReportInput) -> list[str]:
+    """The caveats the decision is conditional on: every report-wide caveat code did not prove immaterial, in
+    :func:`report_caveats`' order."""
+    materiality = caveat_materiality(report_input)
+    return [
+        caveat.id
+        for caveat in report_caveats(report_input)
+        if caveat.reach == "report" and not materiality[caveat.id].immaterial
+    ]
+
+
+class TestReportWideCaveats:
+    """Which caveats reach the whole report, as :func:`report_caveats` scopes them."""
+
+    def test_kairo_holds_its_open_late_criteria_and_the_judge(self):
+        """The late margin and floor were proved immaterial, so they are not report-wide caveats left open; the
+        aspect, the control and the judge are."""
+        assert _report_wide(_input()) == KAIRO_OPEN
+
+    def test_a_calibrated_judge_raises_no_caveat(self):
+        data = _data()
+        data["caveats"]["judge_tiers"] = {}
+        for judged in data["judged"].values():
+            judged.update(tier="calibrated", calibration="calibrated")
+        assert _report_wide(_input(data=data)) == ["late:aspect", "late:control"]
+
+    def test_one_calibrated_dimension_leaves_the_judge_uncaveated(self):
+        data = _data()
+        data["judged"]["__outcome__"].update(calibration="calibrated")
+        assert "judge_uncalibrated" not in _report_wide(_input(data=data))
+
+    def test_a_confound_on_every_candidates_contrasts_is_report_wide(self):
+        data = _data()
+        for contrast in data["contrasts"]:
+            if contrast["arm"] == "qwen3.8-flash":
+                contrast["confounds"] = ["observed:reasoning_ratio"]
+        assert "confound:observed:reasoning_ratio" in _report_wide(_input(data=data))
+
+    def test_a_confound_on_one_candidate_is_scoped(self):
+        assert not [item for item in _report_wide(_input()) if item.startswith("confound:")]
+
+    def test_a_short_run_of_the_control_is_report_wide_and_of_one_candidate_scoped(self):
+        data = _data()
+        assert not [item for item in _report_wide(_input(data=data)) if item.startswith("short_run:")]
+        data["caveats"]["short_runs"][0]["arm"] = "September"
+        run = data["caveats"]["short_runs"][0]["run"]
+        assert f"short_run:{run}" in _report_wide(_input(data=data))
+
+    def test_a_change_with_one_candidate_makes_its_short_run_report_wide(self):
+        data = _data()
+        data["arms"] = data["arms"][:2]
+        runs = [f"short_run:{run['run']}" for run in data["caveats"]["short_runs"]]
+        assert set(runs) <= set(_report_wide(_input(data=data)))
+
+    def test_an_apparatus_confound_on_every_comparison_is_report_wide(self):
+        data = _data()
+        for contrast in data["contrasts"]:
+            contrast["confounds"] = ["simulator_sent_settings"]
+        assert "apparatus:simulator_sent_settings" in _report_wide(_input(data=data))
+
+
 class TestUnsettledPastTheMargin:
     def test_an_unasked_aspect_left_unsettled_on_the_pick_is_report_wide_and_open(self):
         """The issue's state: the asked aspect leaves qwen3.8-flash (the cheapest) dominant, and its unasked voice
         reading allows a loss past the declared margin and a change short of it."""
         report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015), "qwen3.8-flash"))
-        assert (allowed_modes(report_input), dominant_options(report_input)) == ({"decide"}, ["qwen3.8-flash"])
+        assert (decision_at(report_input).modes, dominant_options(report_input)) == ({"decide"}, ["qwen3.8-flash"])
         assert unsettled_arms(report_input) == {"unsettled:voice": ("qwen3.8-flash",)}
         assert _unsettled_ids(report_input) == [("unsettled:voice", "report")]
         materiality = caveat_materiality(report_input)["unsettled:voice"]
@@ -290,12 +355,12 @@ class TestAllowedModes:
         [("r1", {"decide"}), ("r2", {"decide"}), ("r3", {"decide"}), ("r4", {"tradeoff"}), ("r5", {"decide"})],
     )
     def test_each_reference_allows_its_pages_mode(self, name: str, modes: set[str]):
-        assert allowed_modes(_input(name)) == modes
+        assert decision_at(_input(name)).modes == modes
 
     def test_a_declared_ranking_rule_turns_a_tradeoff_into_a_decision(self):
         data = _data("r4")
         data["contrast_families"][0]["merit_axes"] = ["quality", "cost"]
-        assert allowed_modes(_input(data=data)) == {"decide"}
+        assert decision_at(_input(data=data)).modes == {"decide"}
 
     def test_no_survivor_is_a_no_call(self):
         data = _data()
@@ -303,20 +368,20 @@ class TestAllowedModes:
             {"id": "tone", "kind": "guardrail", "measure": "persona.holds_character",
              "direction": "higher_is_better", "threshold": 0.95},
         ]  # fmt: skip
-        assert (surviving_options(_input(data=data)), allowed_modes(_input(data=data))) == ([], {"no_call"})
+        assert (surviving_options(_input(data=data)), decision_at(_input(data=data)).modes) == ([], {"no_call"})
 
     def test_every_candidate_unseparated_is_a_no_call(self):
         data = _data()
         for reading in data["aspects"][0]["readings"]:
             reading["within_interval"] = [-16.0, 1.0]
-        assert allowed_modes(_input(data=data)) == {"no_call"}
+        assert decision_at(_input(data=data)).modes == {"no_call"}
 
     def test_a_separated_contrast_on_an_asked_latency_aspect_separates_its_candidate(self):
         """A question a measure answers: the pass-rate readings are unclear with no margin, and a corrected contrast on
         the asked latency aspect shows qwen3.8-flash improved, so it is separated and (cheapest too) decides."""
         data = _p95_improved(_unclear_readings(_data()))
         _cost(data, "qwen3.8-flash", 0.0015)
-        assert allowed_modes(_input(data=data)) == {"decide"}
+        assert decision_at(_input(data=data)).modes == {"decide"}
         assert dominant_options(_input(data=data)) == ["qwen3.8-flash"]
 
     def test_a_latency_question_ranked_by_its_merit_priority_decides_by_the_rule(self):
@@ -325,19 +390,19 @@ class TestAllowedModes:
         picks."""
         data = _p95_improved(_unclear_readings(_data()))
         data["contrast_families"][0]["merit_axes"] = ["latency", "cost"]
-        assert (allowed_modes(_input(data=data)), dominant_options(_input(data=data))) == ({"decide"}, [])
+        assert (decision_at(_input(data=data)).modes, dominant_options(_input(data=data))) == ({"decide"}, [])
 
     def test_a_regressed_candidate_counts_as_separated(self):
         by_reading = _unclear_readings(_data())
         by_reading["aspects"][0]["readings"][0]["within_interval"] = [-8.0, -2.0]
-        assert allowed_modes(_input(data=by_reading)) == {"decide"}
+        assert decision_at(_input(data=by_reading)).modes == {"decide"}
         by_contrast = _unclear_readings(_data())
         by_contrast["contrasts"].append(
             {"arm": "qwen3.8-flash", "control": "September", "kind": "judged", "measure": "persona.holds_character",
              "aspect": "character adherence (v2)", "verdict": "regressed", "delta": -5.0, "interval": [-8.0, -2.0],
              "p_adjusted": 0.01}
         )  # fmt: skip
-        assert allowed_modes(_input(data=by_contrast)) == {"decide"}
+        assert decision_at(_input(data=by_contrast)).modes == {"decide"}
 
     @pytest.mark.parametrize(("change", "ahead"), [(3.0, "September"), (0.4, None)])
     def test_a_choices_pass_rate_pair_is_read_as_before(self, change: float, ahead: str | None):
@@ -345,7 +410,10 @@ class TestAllowedModes:
         data = _data()
         data["arms"][0]["role"] = "challenger"
         data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": change, "ahead": ahead}]
-        assert (allowed_modes(_input(data=data)), dominant_options(_input(data=data))) == ({"decide"}, ["September"])
+        assert (decision_at(_input(data=data)).modes, dominant_options(_input(data=data))) == (
+            {"decide"},
+            ["September"],
+        )
 
     @pytest.mark.parametrize("verdict", ["not_separated", "untested"])
     def test_an_unclear_reading_with_no_separated_contrast_is_still_a_no_call(self, verdict: str):
@@ -355,14 +423,14 @@ class TestAllowedModes:
             for contrast in data["contrasts"]
             if contrast["arm"] != "September"
         ]
-        assert allowed_modes(_input(data=data)) == {"no_call"}
+        assert decision_at(_input(data=data)).modes == {"no_call"}
 
     def test_one_arm_measured_is_a_no_call(self):
         data = _data()
         data["arms"] = data["arms"][:1]
-        assert allowed_modes(_input(data=data)) == {"no_call"}
+        assert decision_at(_input(data=data)).modes == {"no_call"}
 
     def test_two_survivors_neither_dominating_is_a_tradeoff(self):
         data = _cost(_data(), "1017", 0.0015)
         data["floors"] = [floor for floor in data["floors"] if floor["arm"] != "1017"]
-        assert (dominant_options(_input(data=data)), allowed_modes(_input(data=data))) == ([], {"tradeoff"})
+        assert (dominant_options(_input(data=data)), decision_at(_input(data=data)).modes) == ([], {"tradeoff"})

@@ -8,7 +8,7 @@ Contracts held here, over the r1–r5 fixture inputs (``fixtures/report_plans/rN
 - the limit: strata keep the largest by cases, largest first, ties in the input's order and an uncounted stratum
   last; examples keep the first in the input's order, so the Kairo plan's examples query gives T15, T44, T213 and
   T215; a limit on any other source keeps every row;
-- every chart of every anchor plan selects rows, and a forest's rows each carry an interval.
+- every chart of every anchor plan the retired planner stored selects rows, and a forest's rows each carry an interval.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.fixtures.report_plans import dataset
-from packages.evals.tests.report_kit_support import KIT
+from packages.evals.tests.plan_charts_support import stored_charts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
 from threetears.evals.kernel.report_plan import ChartQuery
@@ -243,13 +243,11 @@ def test_human_pref_rows_keep_the_querys_arms_as_every_source_of_one_arm_does() 
 
 def test_every_stored_human_pref_query_selects_what_it_did_without_its_arms() -> None:
     """The filter moves no stored chart: each committed plan's preference query keeps its rated arm."""
-    plans = [FIXTURES / name / "anchor.plan.json" for name in ("r1", "r2", "r3", "r4", "r5")]
-    plans += dataset.run_plans()
+    plans = [(name, f"{name}-{label}") for name in ("r1", "r2", "r3", "r4", "r5") for label in ("anchor", "run")]
     held = 0
-    for path in plans:
-        plan = dataset.load_plan(path)
-        report_input = dataset.report_input_of(dataset.plan_input(path) if "runs" in path.parts else path.parent.name)
-        for chart in [*plan.summary, *(section.chart for section in plan.sections)]:
+    for name, path in [*plans, ("r5", "r5-reference")]:
+        report_input = dataset.report_input_of(name)
+        for chart in stored_charts(path).charts():
             if chart.query.source != "human_pref":
                 continue
             held += 1
@@ -293,8 +291,7 @@ def test_an_examples_limit_keeps_the_first_in_the_inputs_order() -> None:
 
 
 def test_the_kairo_plans_examples_query_selects_t15_t44_t213_and_t215() -> None:
-    plan = dataset.load_plan(KIT / "references" / "r5-kairo-round2.plan.json")
-    (query,) = [section.chart.query for section in plan.sections if section.chart.query.source == "examples"]
+    (query,) = [chart.query for chart in stored_charts("r5-reference").charts() if chart.query.source == "examples"]
     assert query.limit == 4
     assert _labels(query_rows(query, dataset.report_input_of("r5"))) == ["T15", "T44", "T213", "T215"]
 
@@ -311,9 +308,8 @@ def test_a_limit_on_any_other_source_keeps_every_row() -> None:
 
 @pytest.mark.parametrize("name", ["r1", "r2", "r3", "r4", "r5"])
 def test_every_chart_of_an_anchor_plan_selects_rows_and_a_forests_carry_intervals(name: str) -> None:
-    plan = dataset.load_plan(FIXTURES / name / "anchor.plan.json")
     report_input = dataset.report_input_of(name)
-    charts = [*plan.summary, *(section.chart for section in plan.sections)]
+    charts = stored_charts(f"{name}-anchor").charts()
     assert charts
     for chart in charts:
         rows = query_rows(chart.query, report_input)

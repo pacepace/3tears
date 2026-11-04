@@ -26,7 +26,7 @@ from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text, quantity
 from threetears.evals.analysis.report.parts.tables import arms_key, arms_table
 from threetears.evals.analysis.report_input import Aspect, Measure, ReportInput, ScoreboardRow, Stat
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 
 #: The cost measure the r5 input's cost is read from, and the measure only the second aspect reads.
 _COST = "production_replicating_cost"

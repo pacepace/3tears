@@ -41,7 +41,7 @@ from threetears.evals.analysis.report.parts.words import (
 )
 from threetears.evals.analysis.report_input import Pricing
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.report_plan_facts import fact_arms
+from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.schema.models import EvalResult, EvalRun, RoleUsage
 
 #: The arms of the planted campaign: the control and the candidate.

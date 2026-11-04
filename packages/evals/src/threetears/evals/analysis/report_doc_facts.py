@@ -7,14 +7,13 @@ handles it well, so each is handed to the editor as a fact: one sentence stating
 it rests on. **A fact never refuses**, never blocks storage, and never says what the editor should conclude. The
 editor reads each beside the page and decides whether the document answers it.
 
-**The facts** (:func:`editor_facts`), in this order, each from the code the report plan's checks and the analyst's
-tools already hold:
+**The facts** (:func:`editor_facts`), in this order, each from code the analyst's tools and the report decision
+already hold:
 
 - ``gate_failed``: an arm the document recommends misses a declared gate or guardrail figure
   (:func:`~threetears.evals.analysis.analyst.analyses.gate_reads`), one fact per figure missed.
 - ``warning_unanswered``: code raises a warning on an arm the document recommends
-  (:func:`~threetears.evals.analysis.report_plan_checks.raised_warnings`: a floor read broken or unclear, an aspect
-  where a pair reading shows another arm ahead, a bar missed), and no figure key in the document names it. A key
+  (a floor read broken or unclear, an aspect where a pair reading shows another arm ahead, a bar missed), and no figure key in the document names it. A key
   names a floor's warning where its path holds the floor's key and the arm, a pair's where it holds both arms, a bar's
   where it holds the bar's measure and the arm.
 - ``call_vs_dominance``: the call (``recommends``) differs from code's call as ``options_dominance`` reads it
@@ -27,7 +26,7 @@ tools already hold:
   measure, the aspect, or the floor). The sentence says whether the margin's arm is one the document recommends;
   whether Watch should say more about it is the editor's.
 - ``adoption``: a recommended arm is a candidate (the snapshot has a control and it is not that arm), and the
-  evidence for switching to it is short, as the report plan's adoption check read it: the snapshot asks no question of
+  evidence for switching to it is short: the snapshot asks no question of
   any aspect; or a guardrail the pipeline read on it is breached
   (:func:`~threetears.evals.analysis.analyst.analyses.breached_guardrails`); or it is shown better on no asked aspect
   (:func:`~threetears.evals.analysis.report_decision.shown_better`) and not shown no worse
@@ -120,9 +119,8 @@ from threetears.evals.analysis.report.figure_keys import (
 from threetears.evals.analysis.report_decision import control_arm, floors_not_held, report_caveats, shown_better
 from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, Reading, ReportInput
 from threetears.evals.analysis.report_margins import Margin, weakest_margin
-from threetears.evals.analysis.report_plan_checks import raised_warnings
 from threetears.evals.kernel.report_doc import Claim, ReportDoc, report_doc_prose
-from threetears.evals.kernel.report_plan import ChartQuery, WarningRef
+from threetears.evals.kernel.report_plan import ChartQuery
 
 #: The names with a caller outside this module: the writing loop's editor turn, whose user message carries the facts.
 #: ``EditorFact`` and ``EditorFactKind`` join them with their first production caller outside this module.
@@ -278,13 +276,45 @@ def _gate_facts(report_input: ReportInput, path: str, arm: str) -> Iterator[Edit
 # --- a recommended arm and the warnings code raises on it -----------------------------------------------------------
 
 
-def _names_warning(key: str, warning: WarningRef, arm: str) -> bool:
+@dataclass(frozen=True)
+class _Warning:
+    """One warning code raises on an arm, named by what it is about in the report input's ids.
+
+    - ``floor_broken`` and ``floor_unclear``: ``aspect`` is the floor's aspect, ``name`` its ``floor`` key.
+    - ``behind_on``: ``aspect`` is where another arm is shown ahead, ``name`` that arm's id.
+    - ``bar_missed``: ``aspect`` is the bar's aspect, ``name`` its measure key.
+    """
+
+    kind: Literal["floor_broken", "floor_unclear", "behind_on", "bar_missed"]
+    aspect: str
+    name: str
+
+
+def _raised_warnings(report_input: ReportInput, arm: str) -> list[_Warning]:
+    """Every warning code raises on an arm, each once: floors first, then pair readings, then bars."""
+    raised: dict[_Warning, None] = {}
+    for floor in report_input.floors:
+        if floor.arm == arm and floor.status == "broken":
+            raised.setdefault(_Warning("floor_broken", floor.aspect, floor.floor))
+        elif floor.arm == arm and floor.status == "unclear":
+            raised.setdefault(_Warning("floor_unclear", floor.aspect, floor.floor))
+    for aspect in report_input.aspects:
+        for pair in aspect.pairs:
+            if arm in pair.arms and pair.ahead is not None and pair.ahead != arm:
+                raised.setdefault(_Warning("behind_on", aspect.id, pair.ahead))
+    for bar in report_input.bars:
+        if bar.arm == arm and bar.status == "missed":
+            raised.setdefault(_Warning("bar_missed", bar.aspect, bar.measure))
+    return list(raised)
+
+
+def _names_warning(key: str, warning: _Warning, arm: str) -> bool:
     """Whether a cited key's path names a warning's figure: a floor's by its key, a pair's by the other arm, a bar's
     by its measure, each beside the arm."""
     return _bounded(arm, key) and _bounded(warning.name, key)
 
 
-def _warning_said(report_input: ReportInput, warning: WarningRef) -> list[_Part]:
+def _warning_said(report_input: ReportInput, warning: _Warning) -> list[_Part]:
     """What a warning says, in a sentence's parts: its floor's key, the arm ahead or the bar's measure as written."""
     aspect = _aspect_name(report_input, warning.aspect)
     if warning.kind == "behind_on":
@@ -295,7 +325,7 @@ def _warning_said(report_input: ReportInput, warning: WarningRef) -> list[_Part]
 
 
 def _warning_facts(report_input: ReportInput, path: str, arm: str, keys: Sequence[str]) -> Iterator[EditorFact]:
-    for warning in raised_warnings(report_input, arm):
+    for warning in _raised_warnings(report_input, arm):
         if any(_names_warning(key, warning, arm) for key in keys):
             continue
         parts: list[_Part] = [

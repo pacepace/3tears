@@ -47,7 +47,6 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report_decision import (
     DecisionAt,
-    allowed_modes,
     asked_standing,
     caveat_materiality,
     control_arm,
@@ -126,7 +125,6 @@ def _each_figure_resolves(structured: dict[str, Any], held: ReportInput) -> None
 def test_the_decision_with_no_override_is_the_declared_decision(name: str) -> None:
     held = _all_inputs()[name]
     declared = decision_at(held)
-    assert declared.modes == allowed_modes(held)
     dominant = dominant_options(held)
     assert declared.dominant == (tuple(dominant) if len(dominant) == 1 else ())
 

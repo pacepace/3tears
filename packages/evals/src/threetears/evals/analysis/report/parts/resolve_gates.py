@@ -679,7 +679,6 @@ def _scatter_point(context: ChartContext, point: _Point, axes: tuple[_Axis, _Axi
         color=color,
         shape=shape,
         hollow=True if point.check.status == "fail" else None,
-        muted=True if context.summary and point.arm not in context.look.survivors else None,
         tip=[*tip, *_check_lines(point.check)],
     )
 

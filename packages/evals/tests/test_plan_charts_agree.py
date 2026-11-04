@@ -1,18 +1,25 @@
-"""The plan checks and the planned page agree on what a chart draws: one unit per axis, and every chart the checks
-accept draws, each figure its key's in that key's unit.
+"""The chart checks and the page agree on what a chart draws: one unit per axis, and every chart the checks accept
+draws, each figure its key's in that key's unit.
+
+The checks are the ones ``block_render`` holds a block to: code's completion
+(:func:`~threetears.evals.analysis.report.block_spec.complete_chart`), the chart checks
+(:func:`~threetears.evals.analysis.report.block_spec.chart_faults`), the panels
+(:func:`~threetears.evals.analysis.report.block_spec.small_multiple_faults`) and the page's own drawing
+(:func:`~threetears.evals.analysis.report.parts.resolve.resolve_chart`), each probe drawn under the look the
+input's anchor plan gave its charts (``fixtures/plan_charts/``).
 
 - **One unit per axis.** On r1's tasks, which hold rates, a score, seconds and money per 1,000 replies, a chart over
   measures in several units draws each measure in its own panel, in its own unit, where its kind panels by measure (a
   heatmap's matrix, a dot strip's strip, bars in panels by task); every other one (a strip per arm, bars on one axis)
-  is refused by the plan checks and by the page alike, and so is a chart of tasks naming no measure where its kind
+  is refused by the checks and by the page alike, and so is a chart of tasks naming no measure where its kind
   draws only one. A chart in one unit shares one format and span across its panels.
-- **The sweep.** On every r1–r5 input, and each with a control where it has none (its recommended arm, so its anchor
-  plan holds on it) or without the one it has, and on r1 with a control and one of its per-task rates stated as a
+- **The sweep.** On every r1–r5 input, and each with a control where it has none (its anchor's recommended arm) or
+  without the one it has, and on r1 with a control and one of its per-task rates stated as a
   share beside the others' percents, every chart over the vocabulary (each kind, each source it reads; no
   measure, each measure, and a pair of measures for each pair of units; unpanelled, or in panels by arm or by task)
-  that the plan checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
+  that the checks accept on that input draws on that input. Each figure a chart of figures draws is its key's,
   read through the figure keys, in that key's unit, and every axis's format is that key's. The checks include the
-  page's own drawing (the completion draws each chart through the resolver), so none is refused at render.
+  page's own drawing, so none is refused at render.
 - **The floor.** That inclusion makes "nothing accepted is refused" hold by construction, so the (kind, source) pairs
   each input's charts were accepted and drawn on are pinned (``fixtures/report_plans/sweep_floor.json``): a pair the
   page stops drawing fails here rather than quietly leaving the accepted set.
@@ -35,17 +42,15 @@ import itertools
 import json
 import re
 from collections.abc import Iterator, Sequence
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import anchor_look
+from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
 from packages.evals.tests.fixtures.report_plans import dataset
-from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.analysis import ChartBlock, TableBlock
-from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
+from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import (
     BarsChart,
     DiffHeatmapChart,
@@ -62,10 +67,9 @@ from threetears.evals.analysis.report.parts.look import PageLook, quantity
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
-from threetears.evals.analysis.report_plan_checks import raised_warnings
-from threetears.evals.analysis.report_plan_facts import complete_plan
+from threetears.evals.analysis.report.block_spec import chart_faults, complete_chart, small_multiple_faults
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, PlannedReport, ReportPlan
+from threetears.evals.kernel.report_plan import ChartQuery, ChartSpec, PlannedChart
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
 
@@ -77,15 +81,9 @@ _PANELS = ("none", "arm", "task")
 # --- inputs, and the anchor plan each is probed beside -------------------------------------------------------------
 
 
-def _anchor_json(name: str) -> dict[str, Any]:
-    loaded: dict[str, Any] = json.loads((dataset.HERE / name / "anchor.plan.json").read_text(encoding="utf-8"))
-    return loaded
-
-
 def _recommended(name: str) -> str | None:
     """The arm the anchor recommends; None where it recommends none (a trade-off)."""
-    rows = _anchor_json(name)["options"]["rows"]
-    return next((row["option"] for row in rows if row["role"] == "recommended"), None)
+    return stored_charts(f"{name}-anchor").recommended
 
 
 def _with_control(report_input: ReportInput, control: str | None) -> ReportInput:
@@ -181,8 +179,8 @@ def _spread(data: dict[str, Any], keys: Sequence[str]) -> dict[str, Any]:
 
 @functools.cache
 def _input(key: str) -> ReportInput:
-    """An input by key: ``rN`` as it is; ``rN+control`` with the arm its anchor recommends made the control (so the
-    anchor's plan still holds), ``rN-control`` with its control made a candidate; then each change named after a
+    """An input by key: ``rN`` as it is; ``rN+control`` with the arm its anchor recommends made the control,
+    ``rN-control`` with its control made a candidate; then each change named after a
     ``~``, in order: ``~spread`` gives its two rates (:data:`_RESTATED`, :data:`_BESIDE`) a p50 and a p95, ``~restated``
     states the first on another scale (:func:`_restated`)."""
     base, *changes = key.split("~")
@@ -220,18 +218,10 @@ def _variants() -> list[str]:
 _VARIANTS = _variants()
 
 
-def _completes_on_itself(key: str) -> bool:
-    """Whether the anchor's plan completes on the input: every input but one whose control was taken away, which its
-    anchor's prose names. Such an input's probes are completed on the input itself (code's fill reads no arm's role)
-    and judged and drawn on the variant."""
-    return not key.endswith("-control")
-
-
 @functools.cache
 def _look(key: str) -> PageLook:
     """The look the anchor's charts draw with on the input (:func:`anchor_look`)."""
-    plan = dataset.load_plan(dataset.HERE / _base(key) / "anchor.plan.json")
-    return anchor_look(plan, _input(key))
+    return anchor_look(stored_charts(f"{_base(key)}-anchor"), _input(key))
 
 
 # --- probing the checks ----------------------------------------------------------------------------------------------
@@ -252,46 +242,33 @@ def _query(source: str, **fields: Any) -> dict[str, Any]:
 
 
 def _chart(kind: str, source: str, **query: Any) -> dict[str, Any]:
-    """A chart as the planner writes it: no line, nothing stressed; code fills its level, unit and axis."""
+    """A chart as it is asked for: no line, nothing stressed; code fills its level, unit and axis."""
     return {"kind": kind, "title": "", "query": _query(source, **query), "reference": [], "emphasis": ""}
 
 
-def _reply(name: str, charts: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], int]:
-    """The anchor's reply with a probe section per chart after its own, in plain words that cite no figure; and how
-    many sections the anchor has, where the probes start."""
-    plan = _anchor_json(name)
-    recommended = _recommended(name)
-    raised = raised_warnings(dataset.report_input_of(name), recommended) if recommended is not None else []
-    warnings = [warning.model_dump() for warning in raised]
-    reply = planned_reply(plan, warnings)
-    first = len(reply["sections"])
-    template = deepcopy(reply["sections"][-1])
-    template.update(eyebrow="Probe", headline="A probe chart", takeaway="", caption="", caveats=[])
-    reply["sections"] += [template | {"id": f"probe{index}", "chart": chart} for index, chart in enumerate(charts)]
-    return reply, first
+def _probe_on(report_input: ReportInput, look: PageLook, chart: dict[str, Any]) -> tuple[ChartSpec, list[str]]:
+    """The chart as code completes it on ``report_input``, and why the checks refuse it: completion's, the chart
+    checks' and the panels' faults (the ones ``block_render`` holds a block to), then, where none, the page's own
+    refusal to draw it under ``look``."""
+    spec, faults = complete_chart(PlannedChart.model_validate(chart), report_input, "chart")
+    faults = [*faults, *chart_faults("chart", spec, report_input), *small_multiple_faults("chart", spec)]
+    if not faults:
+        try:
+            resolve_chart(spec, report_input, look, title="chart")
+        except UnresolvableReference as refused:
+            faults.append(("chart", f"is refused by the page, which draws it from this input: {refused}"))
+    return spec, [why for _, why in faults]
 
 
 def _probe_faults(key: str, charts: Sequence[dict[str, Any]]) -> dict[int, list[str]]:
-    """What completing each chart on input ``key`` refuses, by the chart's index: the faults at its own chart."""
-    reply, first = _reply(_base(key), charts)
-    try:
-        complete_plan(PlannedReport.model_validate(reply), _input(key))
-    except PlanRefusal as refused:
-        faults: dict[int, list[str]] = {}
-        for path, why in refused.faults:
-            for index in range(len(charts)):
-                if path.startswith(f"sections[{first + index}].chart"):
-                    faults.setdefault(index, []).append(why)
-        return faults
-    return {}
+    """What the checks refuse each chart for on input ``key``, by the chart's index: only the charts refused."""
+    probed = (_probe_on(_input(key), _look(key), chart)[1] for chart in charts)
+    return {index: whys for index, whys in enumerate(probed) if whys}
 
 
 def _completed(key: str, charts: Sequence[dict[str, Any]]) -> list[ChartSpec]:
-    """Each chart as code completes it, on an input its anchor's plan completes on."""
-    name = key if _completes_on_itself(key) else _base(key)
-    reply, first = _reply(_base(key), charts)
-    plan: ReportPlan = complete_plan(PlannedReport.model_validate(reply), _input(name))
-    return [section.chart for section in plan.sections[first:]]
+    """Each chart as code completes it on input ``key``."""
+    return [_probe_on(_input(key), _look(key), chart)[0] for chart in charts]
 
 
 def _draw(key: str, spec: ChartSpec) -> Any:
@@ -475,7 +452,7 @@ def test_r1s_tasks_hold_measures_in_several_units_and_the_two_named_differ() -> 
 
 def _accepted_and_drawn(kind: str, **query: Any) -> Any:
     chart = _chart(kind, "tasks", **query)
-    assert _probe_faults("r1", [chart]) == {}, "the plan checks accept it"
+    assert _probe_faults("r1", [chart]) == {}, "the checks accept it"
     (spec,) = _completed("r1", [chart])
     block = _draw("r1", spec)
     assert _drew(spec, block)
@@ -565,24 +542,26 @@ def test_a_chart_of_tasks_in_one_unit_shares_one_format_and_span_across_its_pane
 # --- one rule at both ends, over figures by measure -----------------------------------------------------------------
 
 
+def _anchor_look_on(name: str, report_input: ReportInput) -> PageLook:
+    return anchor_look(stored_charts(f"{name}-anchor"), report_input)
+
+
 def _accepted_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> ChartSpec:
-    """The chart as completion stores it on ``report_input``, beside ``name``'s anchor; refused if completion refuses
-    it anywhere."""
-    reply, first = _reply(name, [chart])
-    return complete_plan(PlannedReport.model_validate(reply), report_input).sections[first].chart
+    """The chart as code completes it on ``report_input``, under ``name``'s anchor's look; the checks accept it."""
+    spec, whys = _probe_on(report_input, _anchor_look_on(name, report_input), chart)
+    assert not whys, whys
+    return spec
 
 
 def _refused_on(name: str, report_input: ReportInput, chart: dict[str, Any]) -> list[str]:
-    """Why completion refuses the chart on ``report_input``, at the chart's own field."""
-    reply, first = _reply(name, [chart])
-    with pytest.raises(PlanRefusal) as refused:
-        complete_plan(PlannedReport.model_validate(reply), report_input)
-    return [why for path, why in refused.value.faults if path.startswith(f"sections[{first}].chart")]
+    """Why the checks refuse the chart on ``report_input``, under ``name``'s anchor's look."""
+    _, whys = _probe_on(report_input, _anchor_look_on(name, report_input), chart)
+    assert whys, "the checks refuse it"
+    return whys
 
 
 def _drawn_on(name: str, report_input: ReportInput, spec: ChartSpec) -> Any:
-    plan = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
-    return resolve_chart(spec, report_input, anchor_look(plan, report_input), title="chart").chart
+    return resolve_chart(spec, report_input, _anchor_look_on(name, report_input), title="chart").chart
 
 
 def _stored(chart: dict[str, Any], **code: Any) -> ChartSpec:
@@ -661,7 +640,7 @@ def _alike_pair(input_key: str) -> list[str]:
 
 
 def _accepted_spec(input_key: str, chart: dict[str, Any]) -> ChartSpec:
-    assert _probe_faults(input_key, [chart]) == {}, "the plan checks accept it"
+    assert _probe_faults(input_key, [chart]) == {}, "the checks accept it"
     (spec,) = _completed(input_key, [chart])
     return spec
 
@@ -864,17 +843,13 @@ def _sweep(input_key: str) -> _Swept:
                 probes.append(
                     (kind, source, _chart(kind, source, measures=measures, small_multiples_by=by), vocabulary)
                 )
-    refused = _probe_faults(input_key, [chart for _, _, chart, _ in probes])
-    kept = [probe for index, probe in enumerate(probes) if index not in refused]
-    if not _completes_on_itself(input_key):
-        # Completed on the input with its control (code's fill reads no arm's role), so each must be accepted there.
-        stranded = _probe_faults(_base(input_key), [chart for _, _, chart, _ in kept])
-        assert not stranded, f"accepted on {input_key}, refused on {_base(input_key)}: {stranded}"
-    specs = _completed(input_key, [chart for _, _, chart, _ in kept])
+    probed = [_probe_on(_input(input_key), _look(input_key), chart) for _, _, chart, _ in probes]
+    kept = [(probe, spec) for probe, (spec, whys) in zip(probes, probed, strict=True) if not whys]
+    specs = [spec for _, spec in kept]
     accepted = []
     refused_by_page: dict[tuple[str, str], list[str]] = {}
     misdrawn: dict[tuple[str, str], list[str]] = {}
-    for (kind, source, _, vocabulary), spec in zip(kept, specs, strict=True):
+    for ((kind, source, _, vocabulary), _), spec in zip(kept, specs, strict=True):
         accepted.append((kind, source, spec))
         try:
             block = _draw(input_key, spec)
@@ -892,7 +867,7 @@ def _sweep(input_key: str) -> _Swept:
     return _Swept(accepted=accepted, refused_by_page=refused_by_page, misdrawn=misdrawn)
 
 
-# One case per input, each over every kind and source: the sweep is one probe of the plan checks over every chart on
+# One case per input, each over every kind and source: the sweep is one probe of the checks over every chart on
 # the input, so a case per (kind, source) made every process its cases landed in sweep the input again, and spread
 # over the pool's batches they swept it hundreds of times. Every pair is still held, and a failure names each pair as
 # its own case's id did (``<input>-<kind>-<source>``), all of them at once.
