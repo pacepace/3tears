@@ -8,6 +8,7 @@ nothing about time, runs under :func:`frozen_clock`. A test whose subject is "no
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -35,5 +36,22 @@ def frozen_clock(*, step_seconds: float = 0.0) -> Iterator[None]:
     :return: Nothing; the clock is frozen until the block ends.
     :rtype: Iterator[None]
     """
+    _import_every_lazy_name()
     with freeze_time(FIXED_INSTANT, real_asyncio=True, auto_tick_seconds=step_seconds):
         yield
+
+
+def _import_every_lazy_name() -> None:
+    """Resolve every name a loaded ``threetears`` module serves lazily (a module ``__getattr__``), until none is left.
+
+    Freezing reads every attribute of every loaded module after it has swapped ``datetime.date`` for its fake, so a
+    lazy name resolved then imports its module under the fake, and a pydantic model there declaring a ``date`` field
+    fails to build. Resolved here first, the freeze imports nothing.
+    """
+    seen = 0
+    while seen != len(sys.modules):
+        seen = len(sys.modules)
+        for name, module in list(sys.modules.items()):
+            if name.startswith("threetears.") and module is not None and "__getattr__" in vars(module):
+                for attribute in dir(module):
+                    getattr(module, attribute)
