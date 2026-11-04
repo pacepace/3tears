@@ -176,6 +176,11 @@ _RESULT_KEY_EXCLUDED: Final = (
 #: whole at once.
 READINGS_PAGE: Final[int] = 1000
 
+#: The most whole analyses a paged walk of a campaign's analyses asks the store for in one read
+#: (:meth:`EvalStorage.iter_analyses_by_campaign`). Each carries every aspect's frozen bundle, so a page is what a
+#: listing holds whole at once, however many analyses the campaign has archived.
+ANALYSES_PAGE: Final[int] = 4
+
 #: The judge's prose a result carries outside any list, which no reading carries
 #: (:class:`~threetears.evals.kernel.result_reading.ResultReading`): its narration and the reserved axes' reasoning.
 _READING_PROSE: Final = ("judge_reasoning", "transcript_score.reasoning", "outcome_score.reasoning")
@@ -1615,6 +1620,39 @@ class EvalStorage:
         (:func:`_analysis_order`), so two written at one instant list in one order on every store."""
         items = self._store.by_doc_type("eval_analysis", scope_id, campaign_id=campaign_id)
         return self._hydrate_all(EvalAnalysis, sorted(items, key=_analysis_order, reverse=True))
+
+    def iter_analyses_by_campaign(self, campaign_id: str, scope_id: str, /) -> Iterator[EvalAnalysis]:
+        """Every analysis of a campaign, newest first as :meth:`list_analyses_by_campaign` orders them, read
+        :data:`ANALYSES_PAGE` at a time.
+
+        For a listing that reads each analysis whole and keeps only a line of it. One key read orders the campaign's
+        analyses with their bundles, memo and resolutions left out (as :meth:`load_reported_analysis` reads them), then
+        the analyses are read by id a page at a time, each page when the walk reaches it. A walk holds one page of whole
+        analyses, never the campaign's every one. An analysis deleted between the key read and its page's read is not
+        yielded.
+
+        :param campaign_id: The campaign.
+        :ptype campaign_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: The analyses, newest first.
+        :rtype: Iterator[EvalAnalysis]
+        :raises ValidationError: A stored analysis does not read under this build's model, when its page is read.
+        """
+        keys = self._store.by_doc_type(
+            "eval_analysis", scope_id, campaign_id=campaign_id, exclude=_ANALYSIS_HEAVY_FIELDS
+        )
+        ids = [str(key["id"]) for key in sorted(keys, key=_analysis_order, reverse=True)]
+        del keys
+        for start in range(0, len(ids), ANALYSES_PAGE):
+            page = ids[start : start + ANALYSES_PAGE]
+            place = {analysis_id: index for index, analysis_id in enumerate(page)}
+            rows = self._store.get_many("eval_analysis", page, scope_id)
+            rows.sort(key=lambda row: place.get(str(row.get("id")), len(place)))
+            analyses = self._hydrate_all(EvalAnalysis, rows)
+            # Dropped before the page is handed out, so the walk holds one page's analyses and no copy of their rows.
+            del rows
+            yield from analyses
 
     def delete_analysis(self, analysis_id: str, scope_id: str) -> bool:
         """Delete an analysis by id within a scope."""
