@@ -477,20 +477,9 @@ async def test_an_analysis_is_archived_and_restored_through_the_action_its_delet
         off_loop(analysis_archive, fixture.host.eval_host, "no-such-analysis", TOYHOST_SCOPE, archived=True)
 
 
-async def test_an_agent_lists_reads_and_deletes_the_insights_an_analysis_minted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """#651: holding only the standard tools, an agent reaches the insight ledger end to end."""
-    import packages.evals.tests.ops_support as support
-
-    memo = support.memo_payload
-
-    def durable_memo(bundle: Any) -> dict[str, Any]:
-        payload = memo(bundle)
-        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
-        return payload
-
-    monkeypatch.setattr(support, "memo_payload", durable_memo)
+async def test_an_agent_lists_reads_and_deletes_the_insights_an_analysis_minted() -> None:
+    """#651: holding only the standard tools, an agent reaches the insight ledger end to end (the toy document's one
+    claim is durable, so the analysis mints one insight)."""
     fixture = off_loop(ops_fixture)
     tools = {tool.name: tool for tool in eval_catalogue().mount_all(standard_tools())}
     evals, admin = tools["evals"], tools["evals_admin"]

@@ -60,7 +60,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE
+from packages.evals.tests.toyhost_plan import planned_generation, planner_fixture
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import reporter_template
 
@@ -110,7 +111,7 @@ class _StoreKeepingNoKeyOrder(InMemoryDocumentStore):
 
 @pytest.mark.parametrize("order", [jsonb_order, reversed_order], ids=["jsonb", "reversed"])
 async def test_a_plan_generated_through_the_host_and_frozen_from_its_store_is_verified(order: KeyOrder) -> None:
-    fixture = off_loop(ops_fixture, store=_StoreKeepingNoKeyOrder(order))
+    fixture = off_loop(planner_fixture, store=_StoreKeepingNoKeyOrder(order))
     storage = fixture.host.eval_host.storage
     off_loop(storage.save_template, reporter_template())
 
@@ -221,7 +222,7 @@ def test_the_two_kinds_state_two_sentences() -> None:
 
 
 async def test_a_plan_case_whose_planner_was_sent_another_message_states_the_planners_sentence() -> None:
-    fixture = off_loop(ops_fixture)
+    fixture = off_loop(planner_fixture)
     storage = fixture.host.eval_host.storage
     off_loop(storage.save_template, reporter_template())
     await planned_generation(fixture)

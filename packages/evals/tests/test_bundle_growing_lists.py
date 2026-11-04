@@ -12,13 +12,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from threetears.evals.analysis import prepare_analysis_generation, run_analysis_generation
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.insights import superseding_insights
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.kernel.campaign import EvalInsight
-from threetears.evals.kernel.host import EvalHost
+from threetears.evals.ops import OpsHost
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import (
     TOYHOST_SCOPE,
@@ -27,10 +26,9 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_batch,
     toyhost_measurements,
 )
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import PROMPT_ID
-from packages.evals.tests.toyhost_plan import PlanWriter
+from packages.evals.tests.ops_support import ops_fixture
+from packages.evals.tests.writer_host_support import stored_doc_analysis
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.factories import make_campaign
 
@@ -151,28 +149,14 @@ class TestARestatedInsightReplacesTheOneItRestates:
         assert [insight.id for insight in written] == ["i-098"]
 
 
-def _corpus_host() -> tuple[EvalHost, str, str]:
-    host = toyhost_host(clients=lambda role, model, *, temperature=None: PlanWriter())
-    campaign, corpus = toyhost_campaign()
-    for run in corpus.load_eval_runs(campaign.run_ids, campaign.scope_id):
-        host.storage.save_eval_run(run)
-        for result in corpus.query_eval_results_by_run(run.id, campaign.scope_id):
-            host.storage.save_eval_result(result)
-    host.storage.save_campaign(campaign)
-    return host, campaign.id, campaign.scope_id
+def _corpus_host() -> tuple[OpsHost, str, str]:
+    fixture = ops_fixture()
+    return fixture.host, fixture.campaign.id, fixture.campaign.scope_id
 
 
-async def _prompt() -> str:
-    return "Write the analysis."
-
-
-async def _generate_once(host: EvalHost, campaign_id: str, scope_id: str) -> Any:
-    prepared = await prepare_analysis_generation(
-        host, campaign_id, scope_id, model=None, resolve_prompt=_prompt, out_of_run_cap_usd=None
-    )
-    # The planner's one durable claim, stated the same way over the same evidence each time.
-    prepared.client.report_input = prepared.report_input  # type: ignore[attr-defined]
-    return await run_analysis_generation(host, prepared, prompt_id=PROMPT_ID, max_output_tokens=4000)
+async def _generate_once(host: OpsHost, campaign_id: str, scope_id: str) -> Any:
+    # The writer's one durable claim, stated the same way over the same evidence each time.
+    return await stored_doc_analysis(host, campaign_id, scope_id)
 
 
 class TestRegeneratingLeavesTheLedgerItsSize:
@@ -181,9 +165,9 @@ class TestRegeneratingLeavesTheLedgerItsSize:
         subject = TOYHOST_SUBJECT.subject_id
 
         first, _ = await _generate_once(host, campaign_id, scope_id)
-        after_first = off_loop(host.storage.query_insights, scope_id, subject_id=subject)
+        after_first = off_loop(host.eval_host.storage.query_insights, scope_id, subject_id=subject)
         second, _ = await _generate_once(host, campaign_id, scope_id)
-        after_second = off_loop(host.storage.query_insights, scope_id, subject_id=subject)
+        after_second = off_loop(host.eval_host.storage.query_insights, scope_id, subject_id=subject)
 
         assert len(after_first) == len(after_second) == 1
         (insight,) = after_second
@@ -202,12 +186,14 @@ class TestRegeneratingLeavesTheLedgerItsSize:
     async def test_archiving_the_minting_analysis_lets_a_restatement_mint_afresh(self) -> None:
         host, campaign_id, scope_id = off_loop(_corpus_host)
         first, (minted,) = await _generate_once(host, campaign_id, scope_id)
-        off_loop(host.storage.save_analysis, first.model_copy(update={"archived": True}))
+        off_loop(host.eval_host.storage.save_analysis, first.model_copy(update={"archived": True}))
 
         _second, (again,) = await _generate_once(host, campaign_id, scope_id)
 
         assert again.id != minted.id
-        assert len(off_loop(host.storage.query_insights, scope_id, subject_id=TOYHOST_SUBJECT.subject_id)) == 2
+        assert (
+            len(off_loop(host.eval_host.storage.query_insights, scope_id, subject_id=TOYHOST_SUBJECT.subject_id)) == 2
+        )
 
 
 class TestTheWriterIsNotBilledForTheEnginesBookkeeping:

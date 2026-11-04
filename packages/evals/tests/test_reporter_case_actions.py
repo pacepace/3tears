@@ -8,7 +8,8 @@ through the operations and through :meth:`MountedTool.call`, the one path every 
   stored case, the fingerprint of the bundle it froze and the limits the freeze recorded, and labels are
   stamped with the template's criterion. A second identical freeze answers with the same case.
 - **Every refusal fires**: an unknown template, a template of another kind (before anything is stored),
-  a template or campaign of another scope, labels with no memo to be about.
+  a template or campaign of another scope, labels with no memo to be about. Freezing a planned analysis whose
+  bundle or plan no longer reads is refused 422 at the source, never by the dispatcher's backstop.
 - **The bank is curatable**: a listing says which case each pair launches, what superseded or retired the
   rest, which cases this build cannot read (listed, never refused) and which pairs hold two live cases; a
   case is retired and restored through its own action.
@@ -21,13 +22,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import Any
 
 import pytest
 
-from threetears.evals.actions import Caller, eval_catalogue, standard_tools
+from threetears.evals.actions import ActionOutcome, Caller, MountedTool, Refusal, eval_catalogue, standard_tools
 from threetears.evals.analysis import REPORTER_KIND, ReporterKind, assemble_campaign_bundle, assemble_context_bundle
 from threetears.evals.analysis.reporter_kind import REPORTER_CASE_KEY, LabelCriterion, reporter_case_of
+from threetears.evals.analysis.service import get_report_plan
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.providers import ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
@@ -50,7 +53,8 @@ from threetears.evals.run.runner import (
 )
 from packages.evals.tests.factories import make_campaign, make_eval_run
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture
+from packages.evals.tests.toyhost_plan import planned_generation, planner_fixture
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import stored_memo_analysis
@@ -175,7 +179,7 @@ def test_a_campaign_of_another_scope_does_not_resolve() -> None:
 
 
 def test_a_template_of_another_scope_does_not_resolve() -> None:
-    fixture = ops_fixture()
+    fixture = planner_fixture()
     storage = fixture.host.eval_host.storage
     storage.save_template(reporter_template(ELSEWHERE))
     assert storage.load_template(reporter_template().id, ELSEWHERE) is not None, "it exists — in its own scope"
@@ -612,3 +616,83 @@ async def test_a_generator_repair_past_the_runs_cap_is_sent_and_both_calls_keep_
     assert result.candidate_error is not None, "the memo failed validation, the candidate's own failure"
     assert result.infra_error is None, "the cap refused nothing, so there is no apparatus fault to record"
     assert cap.accumulated_usd == pytest.approx(0.30), "the cap counts both calls once the cell has landed"
+
+
+# =============================================================================
+# Freezing a planned analysis that no longer reads: translated at the source, through the dispatcher
+# =============================================================================
+
+#: The bundle shape v0.75.0 and v0.76.0 froze analyses over, which this build no longer reads.
+SHIPPED_SHAPE = 60
+
+#: The catalogue's module, whose logger the backstop's WARNING is written to.
+CATALOGUE_LOGGER = "threetears.evals.actions.catalogue"
+
+
+@pytest.fixture
+def evals() -> MountedTool:
+    return eval_catalogue().mount_all(standard_tools())[0]
+
+
+def _backstop_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == CATALOGUE_LOGGER and record.levelno == logging.WARNING and "untranslated" in record.message
+    ]
+
+
+async def _planned_case_freeze(
+    evals: MountedTool, fixture: OpsFixture, analysis_id: str, caplog: pytest.LogCaptureFixture
+) -> ActionOutcome:
+    """``reporter_case_freeze`` of the planned analysis ``analysis_id``, through the dispatcher."""
+    caplog.set_level(logging.WARNING, logger=CATALOGUE_LOGGER)
+    return await evals.call(
+        {
+            "action": "reporter_case_freeze",
+            "template_id": reporter_template().id,
+            "campaign_id": fixture.campaign.id,
+            "recorded_analysis_id": analysis_id,
+        },
+        host=fixture.host,
+        caller=CALLER,
+    )
+
+
+async def test_freezing_a_planned_analysis_frozen_at_another_shape_is_refused_422(
+    evals: MountedTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fixture = off_loop(planner_fixture)
+    storage = fixture.host.eval_host.storage
+    off_loop(storage.save_template, reporter_template())
+    (planned, _) = await planned_generation(fixture)
+    assert planned.report_plan_id is not None
+    # The planner's own analysis, its plan still readable, its first aspect's bundle frozen at the shipped shape.
+    (first, *rest) = planned.aspects
+    old = first.model_copy(update={"bundle": {**first.bundle, "schema_version": SHIPPED_SHAPE}})
+    off_loop(storage.save_analysis, planned.model_copy(update={"aspects": [old, *rest]}))
+
+    outcome = await _planned_case_freeze(evals, fixture, planned.id, caplog)
+
+    assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
+    assert f"shape {SHIPPED_SHAPE}" in outcome.text and "analysis_generate" in outcome.text
+    assert _backstop_warnings(caplog) == [], "translated by the freeze, not by the backstop"
+
+
+async def test_freezing_a_planned_analysis_whose_plan_no_longer_validates_is_refused_422(
+    evals: MountedTool, caplog: pytest.LogCaptureFixture
+) -> None:
+    fixture = off_loop(planner_fixture)
+    storage = fixture.host.eval_host.storage
+    off_loop(storage.save_template, reporter_template())
+    (planned, _) = await planned_generation(fixture)
+    stored = off_loop(get_report_plan, storage, planned)
+    assert stored is not None
+    moved = {key: value for key, value in stored.plan.items() if key != "headline"}
+    off_loop(storage.save_report_plan, stored.model_copy(update={"plan": moved}))
+
+    outcome = await _planned_case_freeze(evals, fixture, planned.id, caplog)
+
+    assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
+    assert "report plan this build cannot read" in outcome.text and "analysis_generate" in outcome.text
+    assert _backstop_warnings(caplog) == [], "translated by the freeze, not by the backstop"

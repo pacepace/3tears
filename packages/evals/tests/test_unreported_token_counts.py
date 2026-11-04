@@ -13,19 +13,14 @@ reports, so the rollup's sums are the candidate's alone and say so through
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass
 
 from threetears.evals.analysis import TokenRollup
-from threetears.evals.analysis.generator import GenerationTally, generate_analysis
 from threetears.evals.schema.completion import StopReason
 from threetears.evals.kernel.provider import describe_incomplete_completion
-from threetears.evals.schema.models import EvalResult, RoleUsage, utc_now_iso
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
+from threetears.evals.schema.models import EvalResult, RoleUsage
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.factories import make_eval_result
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
     TOY_JUDGE_COST_USD,
@@ -36,7 +31,6 @@ from packages.evals.tests.fixtures.toyhost.judge import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import ToyhostRunPath, execute_toyhost_run, toyhost_run_bundle
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -142,27 +136,3 @@ def test_a_truncation_with_no_reported_count_says_so_rather_than_printing_none()
     assert description is not None
     assert "output token count unreported" in description
     assert "None" not in description
-
-
-async def test_the_generation_log_names_an_unreported_count(caplog) -> None:
-    """Driven through the generator: the provider returns a well-formed memo and omits both counts."""
-    bundle = toyhost_bundle(profile=toyhost_profile())
-    client = FixturedClient(json.dumps(memo_payload(bundle)))
-    client.completion.input_tokens = None
-    client.completion.output_tokens = None
-
-    caplog.set_level(logging.INFO, logger="threetears.evals.analysis.generator")
-    tally = GenerationTally()
-    await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        tally=tally,
-        profile=toyhost_profile(),
-    )
-    (record,) = [r for r in caplog.records if "eval analysis generated" in r.getMessage()]
-    assert "prompt_tokens=unreported completion_tokens=unreported" in record.getMessage()
-    assert tally.returned == 1

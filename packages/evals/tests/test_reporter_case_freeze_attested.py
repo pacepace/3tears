@@ -56,7 +56,8 @@ from threetears.evals.schema import EvalTestCase
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import stored_memo_analysis
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture
+from packages.evals.tests.toyhost_plan import planner_fixture
 from packages.evals.tests.reporter_case_support import GROUNDED, USEFUL, reporter_fixture, reporter_template
 
 PERSON = "ana@example.com"
@@ -343,7 +344,7 @@ def _frozen_store() -> tuple[OpsFixture, EvalTestCase, str]:
 
     frozen = json.loads(_FROZEN_V16_0.read_text(encoding="utf-8"))
     local_store = InMemoryDocumentStore()
-    local = ops_fixture(store=local_store)
+    local = planner_fixture(store=local_store)
     local.host.eval_host.storage.save_template(reporter_template())
     local_store.upsert(frozen["analysis"])
     here = freeze_reporter_case(
@@ -359,7 +360,7 @@ def _frozen_store() -> tuple[OpsFixture, EvalTestCase, str]:
         document["host_payload"]["reporter_case"][name] = here.host_payload["reporter_case"][name]
 
     store = InMemoryDocumentStore()
-    fixture = ops_fixture(store=store)
+    fixture = planner_fixture(store=store)
     fixture.host.eval_host.storage.save_template(reporter_template())
     store.upsert(frozen["analysis"])
     store.upsert(document)

@@ -19,13 +19,12 @@ import json
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, TOYHOST_WIDE, toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import cell_at
+from packages.evals.tests.toyhost_cells import cell_at
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from threetears.evals.analysis.report import build_code_only_report, report_markdown
@@ -77,10 +76,6 @@ class TestTheWritersCellsFollowTheRule:
             cell_at(bundle, TOYHOST_WIDE),
             cell_at(bundle, TOYHOST_NARROW),
         ]
-
-    def test_the_writer_prompt_states_the_rule(self) -> None:
-        """The writer's table is each aspect's ``cells``, and the seed prompt says what its order is and is not."""
-        assert "(`cells`, control first; its order is not a ranking)" in EVAL_ANALYSIS_GEN_DEFAULT
 
     def test_the_frozen_surface_keeps_the_order(self) -> None:
         bundle = _bundle(control=TOYHOST_NARROW)

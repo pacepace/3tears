@@ -28,7 +28,6 @@ from dataclasses import replace
 import pytest
 
 from threetears.evals.analysis import (
-    EVAL_ANALYSIS_GEN_DEFAULT,
     AnalysisContextBundle,
     ComparisonFamily,
     assemble_context_bundle,
@@ -255,11 +254,6 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
             "the raw p stays on the bundle for audit; only the writer's view drops it"
         )
 
-    def test_the_prompt_tells_the_writer_to_quote_only_the_adjusted_p(self) -> None:
-        assert "`contrasts`" in EVAL_ANALYSIS_GEN_DEFAULT
-        assert "quote only its `p_adjusted`" in EVAL_ANALYSIS_GEN_DEFAULT
-        assert "`family_size`" in EVAL_ANALYSIS_GEN_DEFAULT
-
 
 class TestVerdicts:
     def test_a_clear_improvement_survives_a_family_of_ten(self) -> None:
@@ -389,17 +383,6 @@ class TestWhatAFamilyCovers:
         assert bundle.multiple_comparisons.families == []
         assert bundle.multiple_comparisons.withheld is not None
         assert "No control resolved" in bundle.multiple_comparisons.withheld
-
-    def test_the_writer_is_not_licensed_to_separate_arms_without_a_family(self) -> None:
-        """The prompt once let a no-family campaign separate arms on a dimension's own sem, with no correction."""
-        assert "in a campaign with no family, where it clears that dimension's own noise floor" not in (
-            EVAL_ANALYSIS_GEN_DEFAULT
-        )
-        assert (
-            "Where an aspect carries no contrast family (`contrasts_withheld` says why), no comparison between arms is "
-            "separated" in (EVAL_ANALYSIS_GEN_DEFAULT)
-        )
-        assert "with no question asked, on every merit-axis reading as one family" in (EVAL_ANALYSIS_GEN_DEFAULT)
 
     def test_a_contrast_is_paired_with_the_control_on_its_own_rig_only(self) -> None:
         """Two rigs: each contrast cell meets the control cell of its rig, never the other's."""

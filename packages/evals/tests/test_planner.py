@@ -10,7 +10,13 @@ Contracts held here (``threetears.evals.analysis.planner``, ``threetears.evals.a
 - a refused structure is repaired once before any prose is asked for, and a second refusal surfaces naming both; a
   refused prose reply (a key missing, a typed digit) repairs only the prose call; a call cut short is never repaired;
 - the host's allowed writers refuse a model before any call, and every call, each repair included, is put to ``admit``
-  first, so a spend cap refuses a call before it is sent.
+  first, so a spend cap refuses a call before it is sent;
+- on the toy operations host (:func:`~packages.evals.tests.toyhost_plan.planner_fixture`), held to the host's
+  out-of-run cap: the first call is priced before it is sent (over the cap, or unpriceable under it, refused with
+  nothing spent and the client released); every later call, the prose and any repair, is priced when it exists and
+  refused before it is sent when it would pass what is left; every call is ledgered, under no cap with enforcement off;
+  the logged input size counts what the first call sends; the estimate prices the first call and makes none;
+- the planner's preparation over a view past its budget refuses 422 (``ValidationFailedError``).
 
 The model is the one non-production part: :class:`_Replies` hands back prepared bodies in order.
 """
@@ -19,12 +25,24 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
+from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import TOYHOST_SCOPE
+from packages.evals.tests.toyhost_plan import PLAN_CALLS, planned_generation, planner_fixture
+from packages.evals.tests.toyhost_memo import FIXTURED_CALL_CEILING_USD
+import threetears.evals.analysis.report_input_build as report_input_build
+from threetears.evals.analysis import estimate_analysis_generation, prepare_analysis_generation
+from threetears.evals.analysis.service import APPROX_INPUT_TOKENS_BASIS, CHARS_PER_TOKEN
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
+from threetears.evals.ops import scope_out_of_run_spend
 from packages.evals.tests.report_plan_support import (
     planned_reply,
     prose_reply,
@@ -396,3 +414,180 @@ class TestTheHostsLimits:
             await _generate(client, admit=admit, tally=tally)
 
         assert len(client.calls) == 2 and tally.calls == 2, "the refused repair was neither sent nor counted"
+
+
+#: The out-of-run cap the toy host holds the planner to.
+CAP = TOYHOST_LAUNCH_SETTINGS.max_out_of_run_cost_usd
+
+
+async def _planner_prompt() -> str:
+    return EVAL_REPORT_PLAN_DEFAULT
+
+
+def _ledger(fixture: Any) -> list[Any]:
+    return scope_out_of_run_spend(fixture.host.eval_host, TOYHOST_SCOPE, purpose="analysis").rows
+
+
+def _attempts(fixture: Any) -> list[Any]:
+    return off_loop(
+        fixture.host.eval_host.storage.list_analysis_attempts_by_campaign, fixture.campaign.id, TOYHOST_SCOPE
+    )
+
+
+# =============================================================================
+# The planner's spend on the operations host (the reporter kind's path): each call priced before it is sent
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "said"),
+    [(CAP + 1.0, "above the out-of-run cap"), (None, "cannot be priced before they are made")],
+    ids=["over-the-cap", "unpriceable"],
+)
+async def test_a_planned_generation_over_the_cap_is_refused_before_any_call(ceiling: float | None, said: str) -> None:
+    fixture = off_loop(planner_fixture, ceiling_usd=ceiling)
+
+    with pytest.raises(ValidationFailedError, match=said):
+        await planned_generation(fixture)
+
+    (writer,) = fixture.writers
+    assert writer.calls == [], "nothing was sent"
+    assert writer.closed == 1, "the client it built was released"
+    assert off_loop(_ledger, fixture) == []
+
+
+async def test_a_planned_generation_within_the_cap_ledgers_every_call() -> None:
+    fixture = off_loop(planner_fixture)
+    await planned_generation(fixture)
+
+    # The planner's two calls, its structure and its prose, each priced, admitted and ledgered.
+    rows = off_loop(_ledger, fixture)
+    assert len(rows) == PLAN_CALLS
+    for row in rows:
+        assert (row.purpose, row.campaign_id, row.subject_id, row.outcome) == (
+            "analysis",
+            fixture.campaign.id,
+            fixture.campaign.subject_id,
+            "completed",
+        )
+        assert (row.priced_ceiling_usd, row.cap_usd) == (FIXTURED_CALL_CEILING_USD, CAP)
+        assert row.cost_usd is not None and row.cost_usd > 0
+
+
+async def test_the_logged_input_size_is_a_ballpark_over_the_exact_first_request_sent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The size a planned generation discloses before its first call counts what it actually sends (#827): the system
+    prompt, user message and response schema, at two characters a token, and the line says so.
+
+    The old figure was ``chars/4`` over a differently rendered bundle, half or less of what a JSON-heavy call bills.
+    """
+    fixture = off_loop(planner_fixture)
+    with caplog.at_level(logging.INFO, logger="threetears.evals"):
+        await planned_generation(fixture)
+
+    (writer,) = [each for each in fixture.writers if each.calls]
+    sent, response_format = writer.calls[0], writer.response_formats[0]
+    assert sent["user"].startswith(f"{REPORT_INPUT_HEADING}\n") and response_format is not None
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("eval.generate_analysis campaign=")]
+    logged = int(line.split("approx_input_tokens=")[1].split(" ", 1)[0])
+
+    sent_chars = len(sent["system"]) + len(sent["user"]) + len(json.dumps(response_format))
+    assert logged == sent_chars // CHARS_PER_TOKEN
+    assert f"({APPROX_INPUT_TOKENS_BASIS})" in line
+
+
+async def test_with_enforcement_off_a_planned_generation_is_still_ledgered_under_no_cap() -> None:
+    off = TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False})
+    fixture = off_loop(planner_fixture, ceiling_usd=None, settings=off)
+    await planned_generation(fixture)
+
+    rows = off_loop(_ledger, fixture)
+    assert [(row.cap_usd, row.priced_ceiling_usd) for row in rows] == [(None, None)] * PLAN_CALLS
+
+
+async def test_a_prose_call_that_would_pass_the_cap_is_refused_before_it_is_sent() -> None:
+    """The structure call fits and is accepted; its prose call would pass what is left, so it is never sent."""
+    fixture = off_loop(planner_fixture, ceiling_usd=CAP * 0.6)
+    with pytest.raises(ValidationFailedError) as refused:
+        await planned_generation(fixture)
+
+    (writer,) = fixture.writers
+    assert len(writer.calls) == 1, "the prose call was refused before it was sent"
+    assert "call 2 of the plan was refused before it was sent" in str(refused.value)
+    assert "above the out-of-run cap" in str(refused.value)
+    (attempt,) = off_loop(_attempts, fixture)
+    assert (attempt.outcome, attempt.calls, attempt.analysis_id) == ("failed", 1, None)
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"]
+    assert off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE) == []
+
+
+async def test_a_repair_that_would_pass_the_cap_is_refused_before_it_is_sent() -> None:
+    """The first call fits; its output is refused; the repair would pass what is left, so it is never sent."""
+    fixture = off_loop(planner_fixture, ceiling_usd=CAP * 0.6, first_output="not json at all")
+    with pytest.raises(ValidationFailedError, match="call 2 of the plan was refused before it was sent"):
+        await planned_generation(fixture)
+
+    (writer,) = fixture.writers
+    assert len(writer.calls) == 1, "the repair was refused before it was sent"
+    (attempt,) = off_loop(_attempts, fixture)
+    assert attempt.calls == 1 and attempt.unpriced_calls == 0, "only the call that was made is counted"
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"]
+
+
+async def test_a_repair_within_what_is_left_is_sent_and_every_call_is_ledgered() -> None:
+    """A refused structure buys its repair; the repaired structure's prose follows: three calls, all within the cap."""
+    fixture = off_loop(planner_fixture, ceiling_usd=CAP * 0.3, first_output="not json at all")
+    await planned_generation(fixture)
+
+    assert len(fixture.writers[0].calls) == PLAN_CALLS + 1
+    assert [row.outcome for row in off_loop(_ledger, fixture)] == ["completed"] * (PLAN_CALLS + 1)
+
+
+@pytest.mark.parametrize(("ceiling", "would_start"), [(FIXTURED_CALL_CEILING_USD, True), (CAP + 1.0, False)])
+async def test_the_planners_estimate_prices_the_first_call_against_the_cap_and_makes_no_call(
+    ceiling: float, would_start: bool
+) -> None:
+    fixture = off_loop(planner_fixture, ceiling_usd=ceiling)
+
+    estimate = await estimate_analysis_generation(
+        fixture.host.eval_host,
+        fixture.campaign.id,
+        TOYHOST_SCOPE,
+        model=None,
+        resolve_prompt=_planner_prompt,
+        out_of_run_cap_usd=fixture.host.out_of_run_cap(),
+    )
+
+    assert (estimate.first_call_ceiling_usd, estimate.cap_usd, estimate.would_start) == (ceiling, CAP, would_start)
+    assert (estimate.refusal is None) is would_start
+    assert estimate.max_calls == MAX_GENERATION_CALLS == 4
+    (writer,) = fixture.writers
+    assert writer.calls == [] and writer.closed == 1, "priced, released, never called"
+    assert off_loop(_ledger, fixture) == []
+
+
+# =============================================================================
+# The planner's view: over its budget, its preparation refuses 422
+# =============================================================================
+
+
+async def test_the_planners_preparation_over_its_view_budget_refuses_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = off_loop(planner_fixture)
+    monkeypatch.setattr(report_input_build, "CAMPAIGN_MESSAGE_CHARS_PER_ASPECT", 10)
+
+    async def prompt() -> str:
+        return EVAL_REPORT_PLAN_DEFAULT
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await prepare_analysis_generation(
+            fixture.host.eval_host,
+            fixture.campaign.id,
+            TOYHOST_SCOPE,
+            model=None,
+            resolve_prompt=prompt,
+            out_of_run_cap_usd=fixture.host.out_of_run_cap(),
+        )
+    assert refused.value.status_code == 422
+    assert "after every trim, over its budget of 10" in refused.value.message
+    assert refused.value.remedy is not None and "raise the planner's budget" in refused.value.remedy

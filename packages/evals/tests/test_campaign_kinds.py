@@ -8,7 +8,8 @@ a candidate or keeps the control, and only confirmatory evidence — an aspect t
 There is no "no control, so anything goes": that exemption is gone.
 
 Driven through :func:`~threetears.evals.analysis.generator.generate_analysis` over the toy host's campaign: its narrow
-width the control for a change, no control for a choice, one arm alone for a measurement.
+width the control for a change, no control for a choice, one arm alone for a measurement. What the writer is told of
+each kind is pinned in ``test_campaign_kind_view.py``; this file leaves with the memo writer.
 """
 
 from __future__ import annotations
@@ -32,7 +33,6 @@ from packages.evals.tests.toyhost_memo import (
     memo_payload,
 )
 from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle, generate_analysis
-from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
 from threetears.evals.analysis.campaign_readings import AspectReading, BarStatus, PairReading
 from threetears.evals.analysis.cells import variant_of_cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal
@@ -97,12 +97,6 @@ def _measurement() -> CampaignBundle:
 
 
 class TestAMeasurementRecommendsNothing:
-    def test_one_arm_is_a_measurement_and_its_writer_is_told_so(self) -> None:
-        bundle = _measurement()
-        assert bundle.kind == "measurement"
-        view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-        assert view["kind"] == "measurement" and "recommends no arm" in view["kind_means"]
-
     async def test_a_measurement_refuses_a_recommendation(self) -> None:
         bundle = _measurement()
         with pytest.raises(SoundnessRefusal, match="this campaign measures one arm, so there is no arm to choose"):
@@ -170,15 +164,6 @@ def _bar(bundle: CampaignBundle, level: int, status: str = "missed") -> BarStatu
 
 
 class TestAChoicePicksOrFindsNoClearWinner:
-    def test_several_arms_and_no_control_are_a_choice_and_its_pairs_come_first(self) -> None:
-        bare = _choice()
-        bundle = _choice(pairs=[_pair(bare, ahead=TOYHOST_WIDE)], bars=[_bar(bare, TOYHOST_NARROW)])
-        assert bundle.kind == "choice" and bundle.control() is None
-        view = json.loads(build_campaign_user_message(bundle).split("\n", 1)[1])
-        assert list(view)[:5] == ["campaign", "kind", "kind_means", "pairs", "bars"]
-        assert view["pairs"][0]["ahead"] == arm_at(bundle, TOYHOST_WIDE)
-        assert view["bars"][0]["status"] == "missed" and "bar_warning" in view
-
     async def test_no_clear_winner_recommends_no_arm(self) -> None:
         bundle = _choice(pairs=[_pair(_choice(), ahead=None)])
         analysis = await _generate(bundle, _recommending(bundle, None))

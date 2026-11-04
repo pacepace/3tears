@@ -49,7 +49,8 @@ from threetears.evals.schema.models import EvalTemplate, JudgedArtifact, RubricD
 from threetears.evals.schema.subject import SubjectSnapshot
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
 from packages.evals.tests.fixtures.toyhost.host import with_registry
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, MemoWriter, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
+from packages.evals.tests.toyhost_plan import MemoWriter, planner_fixture
 from packages.evals.tests.toyhost_memo import MODEL, PROMPT
 from packages.evals.tests.off_loop import off_loop
 
@@ -79,7 +80,7 @@ class _ReporterCampaign:
     """The toy host launching the analysis reporter over one frozen case, its generator priced per request."""
 
     def __init__(self) -> None:
-        self.fixture: OpsFixture = ops_fixture(ceiling_usd=_GENERATOR_CEILING_USD)
+        self.fixture: OpsFixture = planner_fixture(ceiling_usd=_GENERATOR_CEILING_USD)
         self.launched: list[str] = []
         self.eval_host = self.fixture.host.launch.eval_host
         self.eval_host.storage.save_template(

@@ -20,17 +20,14 @@ import pytest
 
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.campaign_bundle import build_campaign_user_message
-from threetears.evals.analysis.generator import generate_analysis
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from threetears.evals.analysis.references import cell_aliases
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
-from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.kernel.surface import TimeAxis, TimePosition
 from packages.evals.tests.aspect_support import with_aspect
 from packages.evals.tests.fixtures.toyhost.campaign import (
     TOYHOST_NARROW,
     TOYHOST_WIDE,
-    toyhost_bundle,
     toyhost_campaign,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import (
@@ -39,7 +36,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
     toyhost_measurements,
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.writer_host_support import doc_analysis_over
 
 _NAMESPACE = uuid.UUID("0b8e6a52-41d7-4f0e-9c3a-7d25e1f4a9b6")
 
@@ -316,36 +313,14 @@ class TestTheReleaseLabelIsARegisteredLabel:
 
 
 # =============================================================================
-# The generator
+# The stored analysis
 # =============================================================================
 
 
-async def _generate(bundle: Any, payload: dict[str, Any]) -> Any:
-    client = FixturedClient(json.dumps(payload))
-    analysis, _ = await generate_analysis(
-        campaign_bundle(bundle),
-        prompt=PROMPT,
-        model=MODEL,
-        client=client,
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at=utc_now_iso(),
-        profile=toyhost_profile(),
-    )
-    return analysis
-
-
 def _generated(bundle: Any) -> Any:
-    """A generation over ``bundle`` of the toy memo, written over the committed toy bundle.
-
-    A re-run campaign pools the same two arms under the same rig, so its cells, their aliases and its declared
-    question are the committed bundle's.
-    """
-    import asyncio
-
-    assert list(cell_aliases(bundle.cell_measures).values()) == list(
-        cell_aliases(toyhost_bundle().cell_measures).values()
-    )
-    return asyncio.run(_generate(bundle, memo_payload(toyhost_bundle())))
+    """The analysis a generation stores over ``bundle``: the report writer's, its aspects frozen as code reads them."""
+    analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
+    return analysis
 
 
 class TestTheGenerationFreezesTheAxis:

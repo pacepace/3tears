@@ -28,7 +28,6 @@ from threetears.evals.analysis.depth import (
     unmeasured_sentence,
 )
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_provenance_blocks
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, TableBlock
@@ -165,14 +164,6 @@ def test_the_writer_reads_each_arm_s_depth_the_common_depth_and_what_limits_each
     assert set(reading["precision"]["own_half_width"]) == {"A", "B"}
     # What a between-case share means is defined once, for the whole view.
     assert view["precision_means"] == REPEATS_FLOOR
-
-
-def test_the_writer_prompt_states_the_depth_rule() -> None:
-    assert "`depth.said`" in EVAL_ANALYSIS_GEN_DEFAULT
-    assert (
-        "never compare arms on pass^k above a `depth.pass_k` `common_depth`, or at all where null (`shares_no_case`)"
-        in EVAL_ANALYSIS_GEN_DEFAULT
-    )
 
 
 def test_the_frontier_text_states_each_contestant_s_depth_and_the_common_depth() -> None:

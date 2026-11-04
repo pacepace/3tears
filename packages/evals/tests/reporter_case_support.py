@@ -13,7 +13,8 @@ from threetears.evals.analysis import REPORTER_KIND
 from threetears.evals.ops import FrozenReporterCase, ReporterCaseFreeze, reporter_case_freeze
 from threetears.evals.schema.models import EvalTemplate, RubricDim
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture
+from packages.evals.tests.toyhost_plan import planner_fixture
 
 GROUNDED = "reporter.groundedness"
 USEFUL = "reporter.usefulness"
@@ -57,7 +58,7 @@ def scaled_reporter_template(scope_id: str = TOYHOST_SCOPE) -> EvalTemplate:
 
 def reporter_fixture() -> OpsFixture:
     """The toy host's operations fixture with :func:`reporter_template` stored beside its own template."""
-    fixture = ops_fixture()
+    fixture = planner_fixture()
     fixture.host.eval_host.storage.save_template(reporter_template())
     return fixture
 

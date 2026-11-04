@@ -18,7 +18,8 @@ from threetears.evals.analysis import AnalysisContextBundle, campaign_report, re
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.storage import InMemoryDocumentStore
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, OpsFixture, planned_generation
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, OpsFixture
+from packages.evals.tests.report_support import stored_plan_analysis
 from packages.evals.tests.off_loop import off_loop
 
 #: When every archived copy was written: before the generated analysis, so the live one is the newest.
@@ -87,8 +88,7 @@ class _CountingStore(InMemoryDocumentStore):
 async def _generated(store: InMemoryDocumentStore) -> tuple[OpsFixture, EvalAnalysis]:
     """The toy campaign over ``store``, and the one analysis generated of it."""
     fixture = off_loop(ops_fixture, store=store)
-    await planned_generation(fixture)
-    (analysis,) = off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE)
+    analysis, _ = await stored_plan_analysis(fixture.host.eval_host, fixture.campaign)
     return fixture, analysis
 
 

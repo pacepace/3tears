@@ -63,12 +63,12 @@ from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import analyses_list, analysis_delete, report_read
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, settled
+from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name, planned_generation, planner_fixture
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
 from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
 from packages.evals.tests.static_page_support import assert_static, less_drawings, less_what_static_leaves_out
-from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
 from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
 
@@ -350,7 +350,7 @@ class TestBuildingTheAnalysis:
 
 class TestStoredMemos:
     async def test_a_memo_analysis_lists_reads_and_renders_as_it_did(self) -> None:
-        fixture = off_loop(ops_fixture)
+        fixture = off_loop(planner_fixture)
         memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
         assert memo.document is not None
 
@@ -380,7 +380,7 @@ class TestAStoredPlanThisBuildCannotRead:
     regeneration."""
 
     async def _unreadable(self) -> tuple[Any, str]:
-        fixture = off_loop(ops_fixture)
+        fixture = off_loop(planner_fixture)
         analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
@@ -428,7 +428,7 @@ class TestThePlanIsDerived:
         assert off_loop(host.storage.load_report_plan, analysis.report_plan_id, analysis.scope_id) is None
 
     async def test_deleting_its_analysis_deletes_it_and_keeps_the_insights(self) -> None:
-        fixture = off_loop(ops_fixture)
+        fixture = off_loop(planner_fixture)
         analysis_id = (await planned_generation(fixture))[0].id
         storage = fixture.host.eval_host.storage
         analysis = off_loop(storage.load_analysis, analysis_id, TOYHOST_SCOPE)
@@ -445,7 +445,7 @@ class TestThePlanIsDerived:
 async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:
     """Generate, poll, list and read through the mounted tool: ``analysis_generate`` reaches the report writer, never
     the planner, so the listing and the read say a report document wrote it."""
-    fixture = off_loop(ops_fixture)
+    fixture = off_loop(planner_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
 
     started = await evals.call(

@@ -13,7 +13,6 @@ disclosure the cost surfaces carry, read off the host's sweepable declarations a
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
@@ -24,20 +23,19 @@ from pydantic import BaseModel, Field
 from threetears.evals.analysis import DisclosureBlock, build_code_only_report
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.analysis.reads import run_summary
 from threetears.evals.analysis.lenses.frontier import FrontierPoint, compute_frontier
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, Sweepable
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.host.sweepables import RegistrationError
 from threetears.evals.schema.values import PooledProductionFooting, ProductionFooting
-from threetears.evals.schema.models import EvalResult, EvalRun, utc_now_iso
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals import Answer, Eval
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import as_listed, make_eval_run
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.off_loop import off_loop
 
 _INHERITED = {"candidate": "inherited"}
@@ -223,18 +221,10 @@ class TestEverySurfaceThatShowsTheFigureCarriesIt:
             assert "chunk_tokens" in summary.production_footing.unchecked, summary.production_footing
 
     async def _key_metrics(self, bundle: AnalysisContextBundle) -> list[dict[str, Any]]:
-        analysis, _insights = await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=MODEL,
-            client=FixturedClient(json.dumps(memo_payload(bundle))),
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=toyhost_profile(),
-        )
+        analysis, _insights = doc_analysis_over(campaign_bundle(bundle))
         return [entry.key_metrics for entry in analysis.aspects[0].run_index]
 
-    async def test_the_generators_key_metrics_name_it_beside_the_prod_cost(self) -> None:
+    async def test_the_stored_analysis_key_metrics_name_it_beside_the_prod_cost(self) -> None:
         for metrics in await self._key_metrics(self._bundle()):
             assert "mean_prod_cost_usd" in metrics
             assert "chunk_tokens" in metrics["prod_cost_unchecked_against_production"]
