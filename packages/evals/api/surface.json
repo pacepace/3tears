@@ -2016,11 +2016,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.EvalReportPlan": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.EvalReportSession": {
       "kind": "model",
       "signature": "",
@@ -2853,11 +2848,6 @@
     },
     "threetears.evals.kernel.report_snapshot_id": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.ReportPlanProvenance": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -5193,7 +5183,7 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None, plan_page: PlannedPage | None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None, plan_page: None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {
@@ -6331,11 +6321,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PageAnswer": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PageArmsKey": {
       "kind": "model",
       "signature": "",
@@ -6356,11 +6341,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PageExplore": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PageFlag": {
       "kind": "model",
       "signature": "",
@@ -6376,17 +6356,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PageSection": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PageSlot": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PageTerm": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -6436,22 +6406,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.planned_page_html": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.planned_page_markdown": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PlannedCost": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.PlannedPage": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

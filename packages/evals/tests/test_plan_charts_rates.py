@@ -1,4 +1,4 @@
-"""The rate, cell and table charts a planned page draws: dot strips, range bars, the frontier scatter, heatmaps,
+"""The rate, cell and table charts the chart resolver draws: dot strips, range bars, the frontier scatter, heatmaps,
 difference heatmaps, confusion matrices and the plain table.
 
 Held over every r1–r5 anchor and current run, and the Kairo reference plan, each against its own input; kinds no
@@ -30,9 +30,10 @@ import pytest
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
+from packages.evals.tests.plan_charts_support import anchor_look, charts_html, charts_markdown, drawn_charts
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.static_page_support import assert_static
-from threetears.evals.analysis import ChartBlock, TableBlock, planned_page_html, planned_page_markdown
+from threetears.evals.analysis import ChartBlock, TableBlock
 from threetears.evals.analysis.errors import PlanRefusal, UnresolvableReference
 from threetears.evals.kernel.report_plan import plan_recommended_arm
 from threetears.evals.analysis.report.charts import (
@@ -45,18 +46,16 @@ from threetears.evals.analysis.report.charts import (
     RangeBarsChart,
     ScatterChart,
 )
-from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.plan_page.charting import COMPUTED, figure_unit, misses_line
-from threetears.evals.analysis.report.plan_page.look import PageLook, page_look, quantity
+from threetears.evals.analysis.report.plan_page.look import PageLook, quantity
 from threetears.evals.analysis.report.plan_page.model import PageChart
 from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.words import COMPUTED_NOTE
-from threetears.evals.analysis.report_decision import control_arm, surviving_options
+from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_gates import gate_check
 from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import validate_plan
-from threetears.evals.analysis.report_plan_facts import plan_facts
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report_plan_facts import fact_arms
 from threetears.evals.analysis.analyst.snapshot import frozen_input
@@ -154,16 +153,7 @@ def _look(name: str) -> PageLook:
     campaign, which has no anchor plan, the look one block is drawn with."""
     if name in SHAPE_NAMES:
         return block_look(_variant(name), fact_arms(_variant(name)))
-    plan, report_input = _anchor(name.partition("+")[0].partition("-")[0]), _variant(name)
-    facts = plan_facts(report_input)
-    return page_look(
-        facts.arms,
-        {arm.id: arm.color_slot for arm in plan.arms},
-        order=[row.option for row in plan.options.rows],
-        survivors=surviving_options(report_input),
-        recommended=plan_recommended_arm(plan),
-        names=facts.names,
-    )
+    return anchor_look(_anchor(name.partition("+")[0].partition("-")[0]), _variant(name))
 
 
 def _draw(name: str, spec: ChartSpec) -> PageChart:
@@ -306,10 +296,10 @@ def test_the_stored_plans_draw_each_of_this_modules_kinds_they_use() -> None:
 
 
 @pytest.mark.parametrize(("name", "path", "spec"), _STORED)
-def test_every_stored_chart_of_this_modules_kinds_resolves_on_its_page(name: str, path: Path, spec: ChartSpec) -> None:
-    (section,) = plan_page(_one_section(_plan(path), spec), _input(name)).sections
-    data = _data(section.chart)
-    assert section.chart.chart.chart == spec.kind  # type: ignore[union-attr]
+def test_every_stored_chart_of_this_modules_kinds_resolves_on_its_input(name: str, path: Path, spec: ChartSpec) -> None:
+    ((_, drawn),) = drawn_charts(_one_section(_plan(path), spec), _input(name))
+    data = _data(drawn)
+    assert drawn.chart.chart == spec.kind  # type: ignore[union-attr]
     assert isinstance(data, KIT_CHARTS[spec.kind])
 
 
@@ -825,7 +815,7 @@ def _hostile_r3() -> ReportInput:
     return ReportInput.model_validate(data)
 
 
-def test_markup_in_input_names_is_text_on_a_page_of_this_modules_kinds() -> None:
+def test_markup_in_input_names_is_text_where_a_page_lays_out_this_modules_kinds() -> None:
     plan = _anchor("r3")
     report_input = _hostile_r3()
     arms = [arm.id for arm in report_input.arms[:2]]
@@ -839,12 +829,14 @@ def test_markup_in_input_names_is_text_on_a_page_of_this_modules_kinds() -> None
     sections = [
         plan.sections[0].model_copy(update={"id": f"s{index}", "chart": spec}) for index, spec in enumerate(specs)
     ]
-    page = plan_page(plan.model_copy(update={"summary": [], "sections": sections}), report_input)
-    html = planned_page_html(page)
+    charts = [
+        drawn for _, drawn in drawn_charts(plan.model_copy(update={"summary": [], "sections": sections}), report_input)
+    ]
+    html = charts_html(charts)
     assert what_runs(html) == []
     assert HOSTILE_LINE not in html, "no name is written into the page as markup"
-    assert_static(planned_page_html(page, static=True))
-    assert planned_page_markdown(page)
+    assert_static(charts_html(charts, static=True))
+    assert charts_markdown(charts)
 
 
 # --- the legend, the clipped interval, a config's colour and the labels -------------------------------------------

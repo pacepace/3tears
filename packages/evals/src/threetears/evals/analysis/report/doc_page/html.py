@@ -2,7 +2,7 @@
 chart) or the static mode (nothing runs or loads; every chart is drawn on the server as inline SVG above its table of
 values).
 
-The page is the kit's, as the planned page lays it out (:mod:`~threetears.evals.analysis.report.plan_page.html`),
+The page is the kit's, as the retired planned page laid it out,
 with no class, style or script of its own:
 
 - ``.page`` > ``.mast``; on a draft, code's one line saying its editor's review left findings open, as a

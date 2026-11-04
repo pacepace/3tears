@@ -52,6 +52,7 @@ __all__ = [
     "NO_CALL",
     "NO_LONGER_READS",
     "NO_RECOMMENDATION",
+    "RETIRED_GENERATION",
     "aspect_summary_blocks",
     "behind_on_blocks",
     "call_blocks",
@@ -59,6 +60,7 @@ __all__ = [
     "memo_summary_blocks",
     "recommendation_blocks",
     "report_doc_blocks",
+    "retired_generation",
     "unread_analysis_blocks",
 ]
 
@@ -80,9 +82,20 @@ DOC_WRITTEN = (
 #: print it differently there.
 NO_LONGER_READS = "written in a shape this version no longer reads; regenerate with analysis_generate"
 
+#: The one line every surface prints where the campaign's reported analysis was written by a report writer this
+#: package has retired, in place of :data:`NO_LONGER_READS`: worded once, here, and printed byte for byte by the page's
+#: first screen, ``ReportDocument.needs_regeneration`` and the analysis listing's ``needs_regeneration``. ``{writer}``
+#: names the writer (:func:`retired_generation`).
+RETIRED_GENERATION = (
+    "written by a retired report writer ({writer}); regenerate with analysis_generate to read a report over it"
+)
+
+#: Each retired writer, by what it stored (``EvalAnalysis.basis``), as :data:`RETIRED_GENERATION` names it.
+_RETIRED_WRITERS: dict[str, str] = {"plan": "the report planner"}
+
 #: The first screen's line on the code-only page that stands in for an analysis this version no longer reads, in place
-#: of "no analysis has been generated".
-_UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was " + NO_LONGER_READS + "."
+#: of "no analysis has been generated"; ``{line}`` is :data:`NO_LONGER_READS` or the retired writer's line.
+_UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was {line}."
 
 #: The same line where the code-only page stands in for one report document read by its id.
 _UNREAD_REPORT_DOC = "Report document {report_doc_id} was " + NO_LONGER_READS + "."
@@ -118,20 +131,38 @@ def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
     return [DisclosureBlock(section="answer", source="memo", text=DOC_WRITTEN.format(report_doc_id=report_doc_id))]
 
 
-def unread_analysis_blocks(analysis_id: str | None, report_doc_id: str | None = None) -> list[ReportBlock]:
+def retired_generation(basis: str) -> str | None:
+    """The one line for an analysis a retired report writer wrote (:data:`RETIRED_GENERATION`, naming the writer);
+    None for one a writer this version reads.
+
+    :param basis: What wrote the analysis (``EvalAnalysis.basis``).
+    :ptype basis: str
+    :return: The line, or None.
+    :rtype: str | None
+    """
+    writer = _RETIRED_WRITERS.get(basis)
+    return RETIRED_GENERATION.format(writer=writer) if writer is not None else None
+
+
+def unread_analysis_blocks(
+    analysis_id: str | None, report_doc_id: str | None = None, *, line: str = NO_LONGER_READS
+) -> list[ReportBlock]:
     """The one line saying what the code-only page stands in for is one this version no longer reads: the campaign's
-    analysis, or a report document read by its id, each in its own words around :data:`NO_LONGER_READS`; nothing for
-    any other page.
+    analysis, or a report document read by its id, each in its own words around :data:`NO_LONGER_READS`, or around
+    the retired writer's line (:func:`retired_generation`) for an analysis a retired writer wrote; nothing for any
+    other page.
 
     :param analysis_id: The analysis the code-only page stands in for, or None.
     :ptype analysis_id: str | None
     :param report_doc_id: The report document it stands in for, read by its id, or None.
     :ptype report_doc_id: str | None
+    :param line: What the analysis was: :data:`NO_LONGER_READS`, or the retired writer's line.
+    :ptype line: str
     :return: The line, or nothing.
     :rtype: list[ReportBlock]
     """
     if analysis_id is not None:
-        text = _UNREAD_ANALYSIS.format(analysis_id=analysis_id)
+        text = _UNREAD_ANALYSIS.format(analysis_id=analysis_id, line=line)
     elif report_doc_id is not None:
         text = _UNREAD_REPORT_DOC.format(report_doc_id=report_doc_id)
     else:

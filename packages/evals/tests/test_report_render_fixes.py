@@ -21,8 +21,8 @@ from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.charts import ExampleField, ExamplesChart
 from threetears.evals.analysis.report.figure_keys import reader_name, render, resolve
-from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.charting import measure_words
+from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
@@ -45,17 +45,23 @@ def _r5() -> ReportInput:
 # --- 1. the examples' details ---------------------------------------------------------------------------------------
 
 
+def _examples_drawn(path: object, report_input: ReportInput) -> list[ExamplesChart]:
+    """Every examples chart a stored plan names, drawn by the chart resolver on ``report_input``."""
+    plan = dataset.load_plan(path)
+    look = block_look(report_input, fact_arms(report_input))
+    specs = [*plan.summary, *(section.chart for section in plan.sections)]
+    drawn = [resolve_chart(spec, report_input, look, title=spec.title) for spec in specs if spec.kind == "examples"]
+    return [one.chart.data for one in drawn if isinstance(one.chart.data, ExamplesChart)]
+
+
 def _input_fields(text: str) -> list[ExampleField]:
-    """What an example card on a planned page holds for an input ``text`` with no expected answer, every r5 example
-    given it."""
+    """What an example card holds for an input ``text`` with no expected answer, every r5 example given it."""
     held = _r5()
     moved = held.model_copy(
         update={"examples": [example.model_copy(update={"input": text, "expected": ""}) for example in held.examples]}
     )
     _, _, path = _plans_with_examples()[0]
-    page = plan_page(dataset.load_plan(path), moved)
-    blocks = [*(one.chart for one in page.summary), *(section.chart.chart for section in page.sections)]
-    (chart, *_) = [block.data for block in blocks if isinstance(block.data, ExamplesChart)]
+    (chart, *_) = _examples_drawn(path, moved)
     return chart.cards[0].fields or []
 
 
@@ -88,9 +94,7 @@ def test_the_examples_table_details_column_holds_no_json() -> None:
     ]
     moved = held.model_copy(update={"examples": examples})
     for name, label, path in _plans_with_examples():
-        page = plan_page(dataset.load_plan(path), moved)
-        blocks = [*(one.chart for one in page.summary), *(section.chart.chart for section in page.sections)]
-        charts = [block.data for block in blocks if isinstance(block.data, ExamplesChart)]
+        charts = _examples_drawn(path, moved)
         assert charts, (name, label)
         for chart in charts:
             headers, rows = chart.table([])

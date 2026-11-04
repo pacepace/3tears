@@ -7,7 +7,7 @@ Contracts held here (``analysis.report.block_spec``, ``analysis.analyst.blocks``
   refused, and never raises anything else; a line drawn on any block that renders does the same;
 - **each anchor plan's charts**, completed by today's code (a stored plan keeps the level code filled when it was
   stored; only that may move), read the same values table, level, unit, axis and reference line through
-  ``block_render`` as through the planned page built from the plan;
+  ``block_render`` as through the chart resolver under the plan's look;
 - **a values table says what the input holds**: a plain table over several measures is a row per arm with a column
   per measure; every figure's interval the input holds is printed beside it, at the block's level; a scatter names
   every point by its reader name, never by an id the input names otherwise;
@@ -33,6 +33,7 @@ from typing import Any, get_args
 
 import pytest
 
+from packages.evals.tests.plan_charts_support import anchor_look
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
@@ -47,9 +48,9 @@ from threetears.evals.analysis.report.block_spec import BLOCK_SOURCES, complete_
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.charts import KIT_CHARTS, even_precision
 from threetears.evals.analysis.report.figure_keys import figure_key_grammar, resolve
-from threetears.evals.analysis.report.plan_page.build import plan_page
 from threetears.evals.analysis.report.plan_page.charting import figure_unit, held_means, money_words
 from threetears.evals.analysis.report.plan_page.look import quantity_of
+from threetears.evals.analysis.report.plan_page.resolve import resolve_chart
 from threetears.evals.analysis.report.plan_page.words import ASPECT_MEASURE_TEMPLATE
 from threetears.evals.analysis.report_input import Cell, Contrast, ReportInput, Stratum, Task
 from threetears.evals.analysis.report_plan_checks import raised_warnings
@@ -169,7 +170,7 @@ def _completed_now(spec: ChartSpec, held: ReportInput) -> ChartSpec:
 
 
 @pytest.mark.parametrize("name", ANCHORS)
-def test_each_anchor_plans_charts_read_the_same_through_block_render_as_on_the_planned_page(name: str) -> None:
+def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_the_resolver(name: str) -> None:
     stored = dataset.load_plan(dataset.HERE / name / "anchor.plan.json")
     held = dataset.report_input_of(name)
     plan = stored.model_copy(
@@ -180,9 +181,12 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_on_the_p
             ],
         }
     )
-    page = plan_page(plan, held)
-    charts = [*zip(plan.summary, page.summary, strict=True)]
-    charts += [(section.chart, shown.chart) for section, shown in zip(plan.sections, page.sections, strict=True)]
+    look = anchor_look(plan, held)
+    charts = [(spec, resolve_chart(spec, held, look, title=spec.title, summary=True)) for spec in plan.summary]
+    charts += [
+        (section.chart, resolve_chart(section.chart, held, look, title=section.chart.title))
+        for section in plan.sections
+    ]
     assert charts
     for spec, shown in charts:
         block = block_render(

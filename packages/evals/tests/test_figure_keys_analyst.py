@@ -15,6 +15,8 @@ Contracts held here (``threetears.evals.analysis.report.figure_keys``, the analy
   input holds no record for (keyed by the aspect its read names, with no aspect record invented), each of an arm's
   settings as the input holds it (a number or text), one aspect's cases and repeats and each arm's depth on it, each
   late criterion's own date, and any contrast family by its place in the input's families;
+- a key's subjects (the arms and aspects it names, and whether it reads against the control) are read off its one
+  reading of the input, and a key naming nothing is refused;
 - the grammar lists every family, each with an example rendered on its made-up input.
 """
 
@@ -870,3 +872,31 @@ class TestTheGrammarTeachesTheAnalystsFamilies:
             assert '` reads "' in line, form
             key = line.rsplit(" `{", 1)[1].split("}` reads", 1)[0]
             assert key.split("|")[0].count(".") >= form.count("."), form
+
+
+class TestKeySubjects:
+    """A key's subjects (the arms and aspects it names) are read off its one reading of the input."""
+
+    @pytest.fixture
+    def report(self) -> ReportInput:
+        return report_input_of("r5")
+
+    def test_a_reading_names_its_arm_the_asked_aspect_and_the_control(self, report: ReportInput) -> None:
+        subjects = key_subjects("reading.qwen3.8-flash.change", report)
+        assert (subjects.arms, subjects.aspects, subjects.against_control) == (
+            ("qwen3.8-flash",),
+            ("character adherence (v2)",),
+            True,
+        )
+
+    def test_an_arm_is_its_own_subject(self, report: ReportInput) -> None:
+        subjects = key_subjects("arm:1017", report)
+        assert (subjects.arms, subjects.aspects, subjects.against_control) == (("1017",), (), False)
+
+    def test_a_per_arm_figure_names_its_arm_and_no_aspect(self, report: ReportInput) -> None:
+        subjects = key_subjects("cost_per_1k.September", report)
+        assert (subjects.arms, subjects.aspects, subjects.against_control) == (("September",), (), False)
+
+    def test_a_key_that_names_nothing_is_refused(self, report: ReportInput) -> None:
+        with pytest.raises(UnresolvableReference, match="names no figure"):
+            key_subjects("reading.nobody.change", report)

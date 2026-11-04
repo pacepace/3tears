@@ -4,9 +4,9 @@ The input's by-arm maps hold the lead aspect's figures alone (``report_input``'s
 read them would show one aspect of three. Here a three-aspect input, built off the r5 fixture with two more aspects
 beside its own (each its own scoreboard, cost figures and a measure of its own), is held to:
 
-- the arms table and the options table: one column group per aspect, in the input's aspect order, of its pass rate
-  (its passes over its usable trials beside it), its cost and, in the arms table, its usable trials, each head naming
-  its aspect, every cost column in one form;
+- the arms table: one column group per aspect, in the input's aspect order, of its pass rate (its passes over its
+  usable trials beside it), its cost and its usable trials, each head naming its aspect, every cost column in one
+  form;
 - every arm by measure: a row per aspect and arm, the aspect named, each figure the aspect's own;
 - the arms key: each aspect's usable trials.
 
@@ -24,10 +24,9 @@ from threetears.evals.analysis.report.blocks import TableBlock, TableCell
 from threetears.evals.analysis.report.figure_keys import aspect_costs_per_thousand, render, resolve
 from threetears.evals.analysis.report.plan_page.full_results import every_table
 from threetears.evals.analysis.report.plan_page.look import figure_text, quantity
-from threetears.evals.analysis.report.plan_page.tables import arms_key, arms_table, options_table
+from threetears.evals.analysis.report.plan_page.tables import arms_key, arms_table
 from threetears.evals.analysis.report_input import Aspect, Measure, ReportInput, ScoreboardRow, Stat
 from threetears.evals.analysis.report_plan_facts import fact_arms
-from threetears.evals.kernel.report_plan import OptionRow, Options, ReportPlan
 
 #: The cost measure the r5 input's cost is read from, and the measure only the second aspect reads.
 _COST = "production_replicating_cost"
@@ -137,27 +136,6 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
     assert _row(table, held, "qwen3.8-flash")["cost_per_1k@arrival"].value == "$2.60"
     # The cells' figures are ones prose can cite: their keys render.
     assert render("{aspects.arrival.scoreboard.September.passed}", held, {}) == "127"
-
-
-def test_the_options_table_lays_out_the_plans_pass_rate_and_cost_per_aspect() -> None:
-    held = _three_aspects()
-    plan = ReportPlan.model_construct(
-        options=Options(
-            rows=[OptionRow(option="September", role="recommended"), OptionRow(option="1017", role="alternative")],
-            columns=["pass_rate", "cost_per_1k"],
-        )
-    )
-    table = options_table(plan, held, block_look(held, fact_arms(held))).table
-    aspects = [aspect.id for aspect in held.aspects]
-    keys = [column.key for column in table.columns]
-    assert [key for key in keys if "@" in key] == [
-        *(f"pass_rate@{aspect}" for aspect in aspects),
-        *(f"cost_per_1k@{aspect}" for aspect in aspects),
-    ], "each family the plan names, a column per aspect, where the plan places it"
-    first = table.rows[0]
-    assert first["pass_rate@arrival"].value == _pass_rate_text(127, 180)
-    assert first["pass_rate@arrival"].flag == "127 of 180"
-    assert first["cost_per_1k@queue discipline"].value == "$0.90"
 
 
 def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_figures() -> None:

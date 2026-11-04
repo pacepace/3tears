@@ -1,10 +1,9 @@
-"""The words code writes on a planned page: every line the plan has no prose for, one template each.
+"""The words code writes on a page that has no prose for them, one template each.
 
-The planner writes the page's sentences; code writes its frame: the decision's confidence (GENERATOR §2.5's three forms,
-verbatim), the decision slots' titles by mode and kind, the options table's role words and column heads, each
-warning an answer answers, the arms key's eyebrow and takeaway, an example card's missing reason, the captions a
-chart needs that no planner sentence holds, the explore part's flip table, and the Full results tables' titles,
-heads and status words. Held here so a translation replaces them in one place.
+A report document's page and the analyst's blocks write their frame from here: the confidence's three forms, the
+options table's column heads, the arms key's eyebrow and takeaway, an example card's missing reason, the captions a
+chart needs, the explore table and the Full results tables' titles, heads and status words. Held here so a
+translation replaces them in one place.
 """
 
 from __future__ import annotations
@@ -35,8 +34,6 @@ __all__ = [
     "LEVERS_READ_NOTE",
     "COMPARE_NOTE",
     "BASIS_NOTE",
-    "ANSWER_TEMPLATES",
-    "WEAKEST_INTERVAL_TEMPLATE",
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
     "ARM_HEADERS",
@@ -53,10 +50,8 @@ __all__ = [
     "CONTRAST_VERDICT_WORDS",
     "EXPECTED_TERM",
     "EXPLORE_HEADERS",
-    "EXPLORE_HOLDS",
     "EXPLORE_TITLE",
     "FULL_RESULTS_HEADERS",
-    "FULL_RESULTS_TITLE",
     "FULL_RESULTS_TITLES",
     "GATE_UNKNOWN",
     "GATE_WORDS",
@@ -66,8 +61,6 @@ __all__ = [
     "LINE_TEMPLATES",
     "CRITERION_LINE_TEMPLATE",
     "CRITERION_LINE_WHERE",
-    "MADE_TEMPLATE",
-    "MARGIN_STATUS_WORDS",
     "MISSING_TEMPLATE",
     "NO_FIGURE",
     "NO_REASON",
@@ -79,7 +72,6 @@ __all__ = [
     "REFERENCE_TEMPLATE",
     "REPEAT_TEMPLATE",
     "RECOMMENDED_MARK",
-    "ROLE_WORDS",
     "SERVED_BY_TEMPLATE",
     "TOOL_SPEND_TEMPLATE",
     "UPLIFT_NOT_COMPARABLE",
@@ -106,7 +98,6 @@ __all__ = [
     "TASK_SHARE_TEMPLATE",
     "change_words",
     "reading_words",
-    "slot_title",
     "FLOOR_STRIP_NOTE",
     "MISSES_TEMPLATE",
     "LOG_X_NOTE",
@@ -139,48 +130,6 @@ CONFIDENCE_WORDS: dict[str, str] = {
 
 #: What the confidence box's first line opens with.
 CONFIDENCE_LABEL = "Confidence"
-
-#: GENERATOR §2.5: each slot's title. A decide plan's second slot depends on the kind (:func:`slot_title`).
-_SLOT_TITLES: dict[str, str] = {
-    "recommendation": "Recommendation",
-    "watch": "Watch",
-    "next": "Next",
-    "the_trade": "The trade",
-    "where_it_flips": "Where the answer flips",
-    "our_lean": "Our lean",
-    "what_settles_it": "What would settle it",
-}
-
-#: Code's line under a Watch that cites the weakest margin read on an interval: which interval its worst case is.
-WEAKEST_INTERVAL_TEMPLATE = "The worst case is read on {interval}."
-
-#: The second decide slot's title: why not the candidates against a control, why not the others in a choice.
-_WHY_NOT_TITLES: dict[bool, str] = {True: "Why not the candidates", False: "Why not the others"}
-
-
-def slot_title(key: str, *, change: bool) -> str:
-    """A decision slot's title (GENERATOR §2.5).
-
-    :param key: The slot's key.
-    :ptype key: str
-    :param change: Whether the campaign measures candidates against a control.
-    :ptype change: bool
-    :return: The title.
-    :rtype: str
-    """
-    return _WHY_NOT_TITLES[change] if key == "why_not" else _SLOT_TITLES[key]
-
-
-#: GENERATOR §2.6: why an option is in the options table, as its role column says it.
-ROLE_WORDS: dict[str, str] = {
-    "recommended": "Recommended",
-    "lean": "Our lean",
-    "control": "Control",
-    "near_miss": "Near miss",
-    "most_accurate": "Most accurate",
-    "cheapest": "Cheapest",
-    "alternative": "Alternative",
-}
 
 #: The mark beside an arm's role in a report document's options table where the document recommends it.
 RECOMMENDED_MARK = "recommended"
@@ -253,22 +202,11 @@ ARM_HEADERS: dict[str, str] = {
 #: GENERATOR §3: an arm's status against the gates, as its pill says it.
 GATE_WORDS: dict[str, str] = {"pass": "Passes", "borderline": "Borderline", "fail": "Fails"}
 
-#: Each warning code raised on the recommended arm, as the answer to it names it: one template per warning kind.
-ANSWER_TEMPLATES: dict[str, str] = {
-    "floor_broken": "The {name} floor on {aspect} is broken.",
-    "floor_unclear": "The {name} floor on {aspect} is unclear.",
-    "behind_on": "{name} is shown ahead on {aspect}.",
-    "bar_missed": "The bar on {name} is missed on {aspect}.",
-}
-
 #: The arms key's eyebrow (GENERATOR §2.8): the plan writes no prose for it.
 ARMS_EYEBROW = "The arms"
 
 #: The arms key's one-line takeaway, in code's words.
 ARMS_TAKEAWAY = "Each arm's full configuration, once. The rest of the page names an arm by its letter tag and name."
-
-#: The Full results part's title (GENERATOR §2.11).
-FULL_RESULTS_TITLE = "Full results"
 
 #: Each Full results table's title, by the plan's name for it (GENERATOR §2.11); ``tasks`` is the strata table's
 #: second part, where the input holds tasks.
@@ -348,21 +286,6 @@ EXPLORE_HEADERS: dict[str, str] = {
     "flip": "Holds at any margin above",
     "declared": "At the declared margin",
 }
-
-#: A reading at its declared margin, as its pill says it.
-MARGIN_STATUS_WORDS: dict[bool, str] = {True: "Within the margin", False: "Outside the margin"}
-
-#: Whether the call holds at every margin, as the line under the flip table says it.
-EXPLORE_HOLDS: dict[bool, str] = {
-    True: "The call holds at every margin.",
-    False: "The call changes at some margin: a reading is within any margin above the point it flips at.",
-}
-
-#: How a stored analysis's planned page was made, in its one line at the foot (GENERATOR §2: the made line).
-MADE_TEMPLATE = (
-    "Planned by {model} on {date} as analysis {analysis}; code drew every figure and chart from the campaign's "
-    "evidence as frozen with it."
-)
 
 #: The closed appendix's title: the evidence record a page built from a plan keeps below Method.
 APPENDIX_TITLE = "Evidence record"

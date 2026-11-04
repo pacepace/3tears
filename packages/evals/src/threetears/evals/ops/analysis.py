@@ -50,12 +50,10 @@ from threetears.evals.analysis.service import (
     campaign_report,
     describe_insight_id_filters,
     get_analysis,
-    get_report_plan,
     list_insights,
     record_campaign_call,
     record_written_generation,
     report_doc_report,
-    report_plan_of,
     running_analysis_attempt,
 )
 from threetears.evals.analysis.campaign_title import (
@@ -66,7 +64,7 @@ from threetears.evals.analysis.campaign_title import (
     title_arm_name,
 )
 from threetears.evals.analysis.style import arm_name
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.declaration import (
@@ -83,7 +81,6 @@ from threetears.evals.kernel.campaign import (
     EvalAnalysis,
     EvalCampaign,
     EvalInsight,
-    EvalReportPlan,
 )
 from threetears.evals.kernel.errors import (
     ConflictError,
@@ -465,9 +462,9 @@ class AnalysisLine(EvalBaseModel):
     basis: AnalysisBasis = Field(
         description=(
             "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings), `plan` (the "
-            "report planner, whose analyses report_read renders code-only; findings count the plan's evidence "
-            "sections) or `doc` (the report writer; findings count the document's claims, report_doc_id names it, "
-            "and report_read carries it)."
+            "report planner, a retired writer, whose analyses report_read renders code-only; findings count none) or "
+            "`doc` (the report writer; findings count the document's claims, report_doc_id names it, and report_read "
+            "carries it)."
         )
     )
     report_plan_id: str | None = Field(
@@ -486,8 +483,8 @@ class AnalysisLine(EvalBaseModel):
     findings: int = Field(
         ge=0,
         description=(
-            "How many findings the memo holds, how many evidence sections the plan holds, or how many claims the "
-            "report document holds."
+            "How many findings the memo holds, or how many claims the report document holds; 0 for a plan, which "
+            "is never read."
         ),
     )
     recommendations: int = Field(
@@ -512,10 +509,11 @@ class AnalysisLine(EvalBaseModel):
     needs_regeneration: str | None = Field(
         default=None,
         description=(
-            "Why this build cannot read the analysis, and what to do. Every report plan, and a report document that "
-            "no longer reads (its shape moved, or it was deleted apart from it), is rendered code-only by report_read: "
-            "its line is the one regenerate line, then why in parentheses where there is more to say, and a plan or "
-            "document it cannot read counts no findings. A memo written over a bundle of another shape says why, and "
+            "Why this build cannot read the analysis, and what to do. A report document that no longer reads (its "
+            "shape moved, or it was deleted apart from it) is rendered code-only by report_read: its line is the one "
+            "regenerate line, then why in parentheses where there is more to say, and it counts no findings. Every "
+            "report plan is rendered code-only too, its line the retired writer's (which writer wrote it, and to "
+            "regenerate). A memo written over a bundle of another shape says why, and "
             "report_read renders it code-only too, led by the regenerate line with the bundle's shape "
             "(analysis_generate). None when it reads."
         ),
@@ -564,9 +562,10 @@ class ReportDocument(EvalBaseModel):
         default=None,
         description=(
             "Set where the report stands in, code-only, for an analysis or report document this version no longer "
-            "reads (every report-plan analysis; a document that no longer validates, or whose snapshot is gone): the "
-            "one regenerate line, which the page's first screen prints too, then why in parentheses. The JSON body "
-            "carries it too. None otherwise."
+            "reads (a document that no longer validates, or whose snapshot is gone): the one regenerate line, which "
+            "the page's first screen prints too, then why in parentheses. For an analysis a retired writer wrote "
+            "(every report-plan analysis), the retired writer's line in its place. The JSON body carries it too. None "
+            "otherwise."
         ),
     )
     draft: bool = Field(
@@ -1225,10 +1224,11 @@ def _analysis_title(host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampai
 def _analysis_line(
     host: EvalHost, analysis: EvalAnalysis, campaign: EvalCampaign | None = None, read: _Frozen | None = None
 ) -> AnalysisLine:
-    # One analysis frozen over a bundle this build cannot read or that does not read back together, or whose plan or
-    # document no longer reads, is listed as needing regeneration, never allowed to refuse the listing of every other
-    # one. Every plan, and a document that no longer reads, is one the report read renders code-only: its line leads
-    # with the one regenerate line. The frozen bundle is put back together once (``read``, where the caller has).
+    # One analysis frozen over a bundle this build cannot read or that does not read back together, or whose document
+    # no longer reads, is listed as needing regeneration, never allowed to refuse the listing of every other one. A
+    # document that no longer reads is one the report read renders code-only: its line leads with the one regenerate
+    # line. One a retired writer wrote (every plan) leads with that writer's line, and its plan is never loaded. The
+    # frozen bundle is put back together once (``read``, where the caller has).
     read = read if read is not None else _frozen(analysis)
     needs_regeneration: str | None = read.unreadable
     if read.bundle is not None:
@@ -1238,26 +1238,18 @@ def _analysis_line(
             needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
     if needs_regeneration is not None:
         verdict = f"Needs regeneration: {needs_regeneration}"
-    plan: EvalReportPlan | None = None
     unread: str | None = None
-    try:
-        plan = get_report_plan(host.storage, analysis)
-    except NotFoundError as missing:
-        unread = missing.message
-    except RefusedInput as unreadable:
-        # NOSILENT: the stored plan no longer validates; the line names why and the regeneration, and the report of
-        # this analysis is the code-only page saying the same, so nothing reads it as if it were whole.
-        unread = unreadable.fault
     draft = False
+    findings = 0
     if analysis.document is not None:
         findings = len(analysis.document.findings)
     elif analysis.report_doc_id is not None:
         findings, draft, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
-    else:
-        findings = len(report_plan_of(plan).sections) if plan is not None else 0
-    if analysis.report_plan_id is not None or unread is not None:
+    if (retired := retired_generation(analysis.basis)) is not None:
+        needs_regeneration = f"{retired} ({needs_regeneration})" if needs_regeneration is not None else retired
+    elif unread is not None:
         why = "; ".join(reason for reason in (unread, needs_regeneration) if reason is not None)
-        needs_regeneration = f"{NO_LONGER_READS} ({why})" if why else NO_LONGER_READS
+        needs_regeneration = f"{NO_LONGER_READS} ({why})"
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
@@ -2344,8 +2336,8 @@ def report_read(
       own snapshot, its made line at its foot, read as a stored document is (a figure that no longer resolves prints
       ``—``, a block that no longer draws prints its values or its caption, with one note to regenerate); ``doc`` is
       the document, as ``report-doc/1`` JSON;
-    - ``plan`` (the report planner): the code-only page, its first screen saying in one line that the analysis is
-      written in a shape this version no longer reads, and to regenerate it with ``analysis_generate``;
+    - ``plan`` (the report planner, a retired writer): the code-only page, its first screen saying in one line which
+      retired writer wrote the analysis, and to regenerate it with ``analysis_generate``;
     - ``memo`` (an analysis stored before the report planner): laid out as written.
 
     A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a

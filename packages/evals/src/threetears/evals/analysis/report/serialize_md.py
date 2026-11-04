@@ -46,7 +46,6 @@ from threetears.evals.analysis.report.md_parts import (
     table_lines,
 )
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
-from threetears.evals.analysis.report.plan_page.markdown import planned_page_markdown
 from threetears.evals.analysis.report.verdict import cause_short
 from threetears.evals.analysis.style import GLOSSARY
 
@@ -89,10 +88,6 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     any disclosure the campaign states once for every aspect; its headings a level down, its trials' ids prefixed with
     the aspect's), then how the page was made, then the one glossary.
 
-    A planned analysis's page (``plan_page`` set) is the page its report plan draws
-    (:func:`~threetears.evals.analysis.report.plan_page.markdown.planned_page_markdown`), with each aspect's fold and
-    the glossary as its appendix after Method.
-
     A report document's page (``doc_page`` set) is the page its stored document draws
     (:func:`~threetears.evals.analysis.report.doc_page.markdown.doc_page_markdown`), written whole, with each aspect's
     fold and the glossary after it as its evidence record where ``doc_trials`` asks for every trial's record.
@@ -105,8 +100,6 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     if report.doc_page is not None:
         record = [*_fold_lines(report), *_glossary_lines(report.terms)] if report.doc_trials else []
         return doc_page_markdown(report.doc_page, record=record)
-    if report.plan_page is not None:
-        return planned_page_markdown(report.plan_page, appendix=[*_fold_lines(report), *_glossary_lines(report.terms)])
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
     lines = [f"# {one_line(report.title)}"]
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
