@@ -50,3 +50,19 @@ A stronger model read the eleven pairs with the arm key sealed (`20261103-blind-
 `20261103-blind-read-key.json`): shipped better in 6 cases, hollow in 5, no ties; weighted by the reader's own
 confidence (sure 1.0, lean 0.6, coin flip 0.2) 3.2 to 3.4. The reader found statistical slips in both arms' pages
 that the editor had passed. These are an agent's verdicts, recorded as such; no label or profile is derived from them.
+
+## 2026-11-04: the `no-editor` variant (`20261104-sonnet-no-editor.json`, `.log`)
+
+Same command with `--variant no-editor` (the shipped skill, `revisions=0`: the editor reviews once and never sends a
+report back). The first attempt (`20261104-sonnet-no-editor-attempt1-520.log`) ended after $0.67: one turn in each arm
+failed with an Anthropic 520, the result's cost read as unpriced, and the cap rule stopped both runs; that is a bug,
+fixed on `reset/failed-turn-cost`. The second attempt completed for $5.39 ($3.14 shipped, $2.16 no-editor, $0.09 pass).
+
+| Reading | Figure |
+|---|---|
+| Primary, preferred side by side | not separated; difference -0.45, interval -1 to 0.25 |
+| Cases with both pages | 7 of 11; order consistency 6 of 7 |
+| Held-out cases that would settle the primary | 25 |
+| Pass criterion | FAIL: the primary did not separate |
+
+The direction is the expected one (the arm without an editor loop reads worse); the size is not enough to call it.
