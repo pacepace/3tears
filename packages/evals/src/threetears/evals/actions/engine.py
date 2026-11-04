@@ -56,7 +56,6 @@ from threetears.evals.ops import (
     CampaignListing,
     LaunchEstimate,
     EvalSummary,
-    FrozenReporterCase,
     FrontierResult,
     HistoryResult,
     InsightDeleted,
@@ -76,8 +75,6 @@ from threetears.evals.ops import (
     JudgeProfileListing,
     JudgeProfileRecording,
     JudgeProfilesRecord,
-    ReporterCaseFreeze,
-    ReporterCaseListing,
     ResultDetail,
     ResultListing,
     ResultPart,
@@ -120,15 +117,12 @@ from threetears.evals.ops import (
     judge_temperature_estimate,
     launch_estimate,
     report_read,
-    reporter_case_archive,
     judge_case_author,
     judge_cases_freeze,
     judge_configs_list,
     judge_template_create,
     judge_profiles_list,
     judge_profiles_record,
-    reporter_case_freeze,
-    reporter_cases_list,
     result_get,
     result_rate,
     result_rate_person,
@@ -216,13 +210,9 @@ Confirm = Annotated[str, Field(description="Must echo the id of what is destroye
 ArchiveReason = Annotated[
     str | None,
     Field(
-        description="Why the record is archived (an analysis shown false or superseded, a reporter or writer case "
+        description="Why the record is archived (an analysis shown false or superseded, a writer case "
         "that can no longer measure anything); cleared on restore."
     ),
-]
-ReporterCaseId = Annotated[
-    str,
-    Field(min_length=1, description="A reporter case's id, as reporter_case_freeze or reporter_cases_list returns it."),
 ]
 WriterCaseId = Annotated[
     str,
@@ -256,7 +246,7 @@ GeneratorModel = Annotated[
 Format = Annotated[
     Literal["markdown", "json", "html"],
     Field(
-        description="The report's form: markdown (the memo), json (the schema's form), html (one page; its one "
+        description="The report's form: markdown, json (the schema's form), html (one page; its one "
         "script is the kit's, which draws its charts)."
     ),
 ]
@@ -702,29 +692,6 @@ class JudgeProfilesListParams(EvalBaseModel):
     criterion_dim: str | None = Field(
         default=None, min_length=1, description="Only the profiles of this criterion's dim; omitted lists every one."
     )
-
-
-class ReporterCaseFreezeParams(ReporterCaseFreeze):
-    """``reporter_case_freeze`` — the freeze's own arguments, declared once on :class:`~threetears.evals.ops.ReporterCaseFreeze`.
-
-    Derived rather than restated, as :class:`RunLaunchParams` is, so a field the operation gains is a parameter
-    the action offers.
-    """
-
-
-class ReporterCasesListParams(EvalBaseModel):
-    """``reporter_cases_list``."""
-
-    template_id: TemplateId
-    include_archived: IncludeArchived = False
-
-
-class ReporterCaseArchiveParams(EvalBaseModel):
-    """``reporter_case_archive``."""
-
-    reporter_case_id: ReporterCaseId
-    archived: Archived = True
-    archive_reason: ArchiveReason = None
 
 
 class WriterTemplateCreateParams(WriterTemplateCreate):
@@ -1431,43 +1398,6 @@ async def _judge_profiles_list(host: OpsHost, caller: Caller, params: JudgeProfi
     )
 
 
-async def _reporter_case_freeze(host: OpsHost, caller: Caller, params: ReporterCaseFreezeParams) -> FrozenReporterCase:
-    eval_host = host.eval_host
-    freeze = ReporterCaseFreeze.model_validate(params.model_dump())
-    # The caller relays each label's verdict, its own or a reader's it names; the host attests which.
-    return await run_blocking(
-        eval_host.blocking_executor,
-        partial(reporter_case_freeze, collected_by=caller.identity),
-        eval_host,
-        freeze,
-        caller.scope_id,
-    )
-
-
-async def _reporter_cases_list(host: OpsHost, caller: Caller, params: ReporterCasesListParams) -> ReporterCaseListing:
-    eval_host = host.eval_host
-    return await run_blocking(
-        eval_host.blocking_executor,
-        partial(reporter_cases_list, include_archived=params.include_archived),
-        eval_host,
-        params.template_id,
-        caller.scope_id,
-    )
-
-
-async def _reporter_case_archive(
-    host: OpsHost, caller: Caller, params: ReporterCaseArchiveParams
-) -> FrozenReporterCase:
-    eval_host = host.eval_host
-    return await run_blocking(
-        eval_host.blocking_executor,
-        partial(reporter_case_archive, archived=params.archived, reason=params.archive_reason),
-        eval_host,
-        params.reporter_case_id,
-        caller.scope_id,
-    )
-
-
 async def _writer_template_create(host: OpsHost, caller: Caller, params: WriterTemplateCreateParams) -> TemplateLine:
     create = WriterTemplateCreate.model_validate(params.model_dump())
     return await run_blocking(host.eval_host.blocking_executor, writer_template_create, host, create, caller.scope_id)
@@ -1990,7 +1920,6 @@ def engine_actions() -> tuple[Action, ...]:
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
-    reporter_template_id, reporter_case_id = "tmpl-reporter", "0193a1b2-reporter-case"
     writer_template_id, writer_case_id = "tmpl-writer", "0193a1b2-writer-case"
     return (
         Action(
@@ -2411,7 +2340,7 @@ def engine_actions() -> tuple[Action, ...]:
             detail=(
                 "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
                 "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
-                "It is read against the readings of the page it will appear on, never the memo's words: with "
+                "It is read against the readings of the page it will appear on, never the report's words: with "
                 "analysis_id, that analysis's (it must be the one the campaign's page reports), else the evidence as "
                 "it stands. An arm with a broken floor is recorded only when floors_overridden names each such "
                 "floor's key, and an arm that missed an absolute bar only when bars_overridden names each such bar; "
@@ -2678,59 +2607,6 @@ def engine_actions() -> tuple[Action, ...]:
                 "vacuous with why; every reading nothing could be proposed on is named with why. Nothing is "
                 "registered: a person adopts a bar by writing it into the host's registrations. A campaign of more "
                 "than one cell is refused, since which arm is the incumbent is a person's choice."
-            ),
-        ),
-        Action(
-            name="reporter_case_freeze",
-            summary="Freeze a campaign's analysis bundle, and the memo it got, into a case of a reporter template.",
-            workflow=ANALYSE,
-            permission="write",
-            params=ReporterCaseFreezeParams,
-            result=FrozenReporterCase,
-            handler=_reporter_case_freeze,
-            render=render.render_model,
-            example={
-                "template_id": reporter_template_id,
-                "campaign_id": campaign_id,
-                "recorded_analysis_id": analysis_id,
-                "labels": [{"dimension": "reporter.groundedness", "direction": "high", "quote": "every number checks"}],
-            },
-            detail=(
-                "A reporter run measures the analysis writer, and its cases are never generated: each is one "
-                "campaign's bundle, frozen with its fingerprint, and a reporter template launches nothing until one "
-                "is frozen. With recorded_analysis_id the case also pins that analysis's memo, which the as-recorded "
-                "candidate replays and labels are written about; without it only a generating candidate can run "
-                "the case. An analysis the report planner wrote freezes as a plan case (kind_version 2), of a "
-                "campaign of any number of aspects: its plan with every figure written out, as the page writes it, "
-                "is what is judged and what a memo_excerpt quotes, and only as-recorded runs it. "
-                "One campaign and memo is one case: a freeze matching the pair's live case returns it, and "
-                "one that differs (other labels, or evidence that moved) is refused unless supersedes names the live "
-                "case. Each label is a reader's verdict in its dimension's form: a direction on an ordinal "
-                "dimension, pass or fail on a pass_fail one, and a mismatch is refused. A memo_excerpt quotes the "
-                "passage it is about and must be in the recorded memo. Its reader is named in the label or, omitted, "
-                "you; the host must vouch that you relay each reader's verdict, or the freeze is refused and nothing "
-                "is written. Who gave or relayed a verdict is not part of the case's identity: re-freezing the same "
-                "verdicts returns the stored case. One quoting other memo passages is refused unless supersedes names "
-                "the live case. limits states what the frozen evidence cannot "
-                "support. Then run_launch the template; reporter_cases_list reads its bank, reporter_case_archive "
-                "retires a case. Calls no model."
-            ),
-        ),
-        Action(
-            name="reporter_cases_list",
-            summary="List a reporter template's cases: which each campaign and memo launches, superseded or retired.",
-            workflow=ANALYSE,
-            permission="read",
-            params=ReporterCasesListParams,
-            result=ReporterCaseListing,
-            handler=_reporter_cases_list,
-            render=render.render_model,
-            example={"template_id": reporter_template_id},
-            detail=(
-                "Each case with whether a launch runs it and what superseded it. A case this build cannot read is "
-                "listed rather than refused, since this is where it is found; while one is listed, which case is "
-                "live cannot be decided. A pair holding more than one live case is named, since every launch of the "
-                "template refuses until one freeze supersedes them all."
             ),
         ),
         Action(
@@ -3226,25 +3102,6 @@ def engine_actions() -> tuple[Action, ...]:
             handler=_analysis_archive,
             render=render.render_model,
             example={"analysis_id": analysis_id, "archived": True, "archive_reason": "superseded"},
-        ),
-        Action(
-            name="reporter_case_archive",
-            summary="Retire a reporter case (or restore it): no launch runs it again, nothing destroyed.",
-            workflow=CURATE,
-            permission="write",
-            params=ReporterCaseArchiveParams,
-            result=FrozenReporterCase,
-            handler=_reporter_case_archive,
-            render=render.render_model,
-            example={
-                "reporter_case_id": reporter_case_id,
-                "archived": True,
-                "archive_reason": "its bundle no longer re-assembles",
-            },
-            detail=(
-                "For a case that can no longer measure anything. It stays readable for every run measured against "
-                "it. A restore is refused when it would give its campaign and memo a second live case."
-            ),
         ),
         Action(
             name="writer_case_archive",

@@ -226,21 +226,9 @@ declaration, so it stays, and no between-cells stop is read from it.
 3. **Refuse.** First, it refuses an arm whose largest call is reserved above its run's cap on its own
    (`ArmPlan.call_ceiling`): the run could never make that call, whatever the arm is predicted to cost in
    all. The kind prices it right after planning (`LaunchableKind.price_largest_call`), on the clients the
-   cells will call through, exactly as a cell reserves it. Two kinds price their largest call exactly, each
-   over every case, keeping the largest:
-   - **The judge kind** prices each case's judge call. What lowers it: a cheaper judge model, shorter frozen
+   cells will call through, exactly as a cell reserves it:
+   - **The judge kind** prices each case's judge call exactly and keeps the largest. What lowers it: a cheaper judge model, shorter frozen
      evidence on the largest case, or a judge-role client priced at the output cap the judge asks for.
-   - **The analysis reporter** prices each case's first generator request, built from the frozen bundle, the
-     preset's text and the admitted model exactly as its cell builds it. What lowers it: a cheaper generator
-     model, a smaller bundle on the largest case, or a generator-role client that retries less or prices a
-     smaller output cap. The engine ships no ready reporter entry, so a host wires it into its own:
-     `price_largest_call=lambda request: price_largest_reporter_call(eval_host, request, prompts=..., resolve_model=...)`
-     (from `threetears.evals.ops`), with the same hooks as its `plan_arm` and the `eval_host` its launcher
-     builds the generator client on. That client comes from the host's factory in the `analysis` role. Two
-     calls stay unpriced: the memo's judge call, which judges a memo that does not exist yet, and the
-     generation's repair round-trip, which carries the first call's output. The replay
-     (`AS_RECORDED_MODEL`) calls no generator and prices nothing.
-
    - **A subject kind** (a persona, a classifier, any kind whose launcher builds its judge with
      `build_judge_service`) cannot price its largest call: its judge and simulator prompts carry a transcript
      that does not exist yet. It prices a **floor** under it instead, with `price_subject_call_floor` (from

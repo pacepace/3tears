@@ -3,7 +3,7 @@
 The bundle's intervals and multipliers come from C maths (``math.lgamma``, ``math.exp``, ``NormalDist().inv_cdf``)
 whose last bits differ between two builds of one Python: a uv-managed CPython 3.14.6 and Debian's give
 ``NormalDist().inv_cdf(0.975)`` as ``...0534`` and ``...0536``. Hashed in full, one evidence fingerprinted
-differently on a laptop and in a container, and a reporter case re-frozen on the other was refused as moved evidence.
+differently on a laptop and in a container, and a frozen case re-frozen on the other was refused as moved evidence.
 Pinned here:
 
 - **The helper**: :func:`identity_json` is canonical JSON with every float, at any depth, to twelve significant
@@ -20,7 +20,7 @@ Pinned here:
   a guardrail's interval, each from an existing fixture, reach the message rounded as every other figure does.
 - **A real difference still moves it**: a statistic changed in its tenth figure is another fingerprint.
 - **A fingerprint stored before the rounding still matches**: an unprefixed (version 1) fingerprint is compared as it
-  was taken, by a frozen case's own bundle, by a re-freeze of the same evidence, by the limits and by an inspection.
+  was taken, by a bundle, a campaign's frame and an inspection.
 """
 
 from __future__ import annotations
@@ -52,8 +52,6 @@ from threetears.evals.analysis.campaign_bundle import (
 )
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock, TableBlock
-from threetears.evals.analysis.reporter_bank import case_limits
-from threetears.evals.analysis.reporter_kind import rebuild_bundle, reporter_case_of, reporter_case_payload
 from threetears.evals.run import rate_result
 from threetears.evals.schema.hashing import (
     UnhashableContentError,
@@ -69,10 +67,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle, toyho
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
-from packages.evals.tests.ops_support import TOYHOST_SCOPE
 from packages.evals.tests.report_shapes_support import s1_change
 from packages.evals.tests.report_support import toy_campaign_host
-from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture, reporter_template
 from packages.evals.tests.test_package_matrix import REPO_ROOT
 from packages.evals.tests.test_viz_timeseries import timeseries_batches
 
@@ -512,28 +508,7 @@ def test_a_frame_stored_with_unprefixed_fingerprints_still_names_its_bundles() -
     assert CampaignBundle.from_frame(stored, bundle.aspects).fingerprint() == bundle.fingerprint()
     v1 = _v1_campaign(bundle.to_dict())
     assert bundle.fingerprint(like=v1) == v1
-    assert not [limit for limit in case_limits(bundle, recorded_fingerprint=v1) if "does not reproduce" in limit]
-    assert [limit for limit in case_limits(bundle, recorded_fingerprint=_another(v1)) if "does not reproduce" in limit]
-
-
-def test_a_reporter_case_frozen_before_the_rounding_still_holds_its_bundle_and_is_its_evidences_case() -> None:
-    fixture = reporter_fixture()
-    storage = fixture.host.eval_host.storage
-    receipt = freeze_corpus_campaign(fixture)
-    assert receipt.bundle_fingerprint.startswith("v3:"), (
-        "a fresh freeze takes the current version, 3, which leaves the campaign's name out"
-    )
-    (stored,) = storage.query_test_cases(TOYHOST_SCOPE, template_id=reporter_template().id)
-    case = reporter_case_of(stored)
-    assert case is not None
-    # As a build before the rounding froze it: the same case, its fingerprint unprefixed.
-    before = case.model_copy(update={"bundle_fingerprint": _v1_campaign(case.bundle)})
-    storage.save_test_case(stored.model_copy(update={"host_payload": reporter_case_payload(before)}))
-
-    assert rebuild_bundle(before).fingerprint() == case.bundle_fingerprint
-    again = freeze_corpus_campaign(fixture)
-    assert again.test_case_id == stored.id, "the same evidence re-frozen on the same machine is its live case"
-    assert again.bundle_fingerprint == before.bundle_fingerprint
+    assert bundle.fingerprint(like=_another(v1)) != _another(v1), "another bundle's v1 fingerprint does not match"
 
 
 def _another(fingerprint: str) -> str:

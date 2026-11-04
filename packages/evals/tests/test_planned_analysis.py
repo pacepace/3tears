@@ -9,8 +9,7 @@ Contracts held here (``threetears.evals.analysis.planned_analysis``, ``threetear
   the arms and aspects the claim's keys name;
 - ``recommended_variant_key`` is the variant key of the plan's recommended option;
 - an analysis the memo writer wrote, as every analysis stored before the planner was, still lists, reads and renders
-  as it did, and says it is a memo; a reporter case freezes it as a memo case, and a planned analysis as a plan case
-  (``test_reporter_plan_cases.py`` holds the plan case);
+  as it did, and says it is a memo;
 - a model or storage bug building the analysis from an accepted plan is recorded as a failure and raised as one,
   never as the planner's refusal;
 - the plan is regenerable: ``drop_derived`` sweeps it, and deleting its analysis deletes it (its insights stay);
@@ -66,7 +65,6 @@ from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, ops_fixture, planned_generation, settled
 from packages.evals.tests.report_plan_support import r5_input
 from packages.evals.tests.report_support import stored_memo_analysis, toy_campaign_host
-from packages.evals.tests.reporter_case_support import freeze_corpus_campaign, reporter_fixture
 from packages.evals.tests.static_page_support import assert_static, less_drawings, less_what_static_leaves_out
 from packages.evals.tests.toyhost_plan import PLAN_CALLS, PlanWriter, contract_name
 from threetears.evals.kernel.inner_ceilings import MAX_GENERATION_CALLS
@@ -363,14 +361,6 @@ class TestStoredMemos:
         assert "**Recommended:**" in read.body, "the memo's recommendation, as written"
         assert off_loop(get_report_plan, fixture.host.eval_host.storage, memo) is None
         assert build_report(memo).basis == "analysis"
-
-    async def test_a_reporter_case_pins_a_memo_as_a_memo_case_and_a_plan_as_a_plan_case(self) -> None:
-        fixture = off_loop(reporter_fixture)
-        planned = (await planned_generation(fixture))[0].id
-        memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
-
-        assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=memo.id).kind_version == 1
-        assert off_loop(freeze_corpus_campaign, fixture, recorded_analysis_id=planned).kind_version == 2
 
 
 class TestAStoredPlanThisBuildCannotRead:

@@ -165,16 +165,11 @@ pass it to every entrypoint. It holds:
   makes an agent's verdict a person's**: its cases then count in judge campaigns and judge profiles as people's
   labels, which is exactly what the check exists to stop. The case's author is the name you return, and the case
   records the caller (`collected_by`), which is not part of the case, so the same case relayed by two callers, or
-  seeded, is one case under one id. The `reporter_case_freeze` action asks it for each reader its labels name (a
-  label naming no `reader` is the caller's own), since each label is a reader's verdict on a memo and the judge's
-  agreement with readers reads it as a person's: one refused reader refuses the freeze, each label is stored under
-  the name you return with the caller as its `collected_by`, and neither is part of what makes two freezes the same
-  case, so re-freezing the same verdicts returns the stored case. A freeze with no labels asks nothing. Every action
-  that records a verdict as a person's asks you. The check guards the operations themselves, not only the actions:
-  without one, `judge_case_author` and `reporter_case_freeze` (with labels) refuse every call, your own code's direct
-  call included. Your own code that names its people itself asks no attestation: the seed corpus's `judge_cases`, an
-  `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, `freeze_reporter_case` with labels
-  naming their `reader` (or none), and `rate_result` with `rater_kind="person"`.
+  seeded, is one case under one id. Every action that records a verdict as a person's asks you. The check guards
+  the operations themselves, not only the actions: without one, `judge_case_author` refuses every call, your own
+  code's direct call included. Your own code that names its people itself asks no attestation: the seed corpus's
+  `judge_cases`, an `AuthoredJudgeCase` you build and freeze with `freeze_judge_cases(authored=)`, and `rate_result`
+  with `rater_kind="person"`.
 
 Nothing is ambient: there is no installed or default host, so two hosts in one process never meet.
 
@@ -1674,65 +1669,15 @@ would refuse the copy (`contract` is `outdated` or `undeclared`). Pass a templat
 `SeedTemplate.from_dict(payload)` and a text prompt's as its string. A host that keeps no copies has nothing to
 check.
 
-### Launching the analysis reporter
+### The analysis reporter is retired
 
-The analysis reporter (`REPORTER_KIND`) evaluates the analysis writer itself. Its cases are frozen campaign
-bundles (see [Serving](serving.md#reporter-runs-evaluating-the-analysis-writer-itself)). A
-candidate is a preset of the memo writer's `ANALYSIS_GEN_PROMPT` prompt on a generator model, or `AS_RECORDED_MODEL`,
-which replays the memo or planned report each campaign got. The analyst's report is not yet one of its subjects
-([open problems](open-problems.md#reporter-cases-judge-memos-and-planned-reports-not-the-analysts-report)).
-
-The kind is declared by the engine, so your host supplies only two things:
-
-- **Your prompt registry**, as a `ReporterPrompts`: `resolve(preset)` returns that preset's text, or the
-  system default for `None`. It returns `None` for a preset you do not hold, never the default in its
-  place. A registry that fell back would bill the incumbent prompt under the candidate's name.
-- **Your model resolution**, as a `ReporterModelResolver`: `(role, named)` returns the provider model,
-  or the role's default when `named` is `None`. The roles are `generator` and `judge`. Raise
-  `ValidationFailedError` for a name you do not know.
-
-Declare `REPORTER_KIND_CONTRACT` (from `threetears.evals.analysis`) on your profile's `kinds`. Its one
-overlay is `prompt_preset`, and it seats the judge and the spend ceiling. If the profile refuses it for
-leaving one of your own apparatus dimensions unseated, build it with
-`reporter_kind_contract(host_seats=[...])`. On a reporter template, your `refuse_undeliverable_template`
-hook calls `refuse_undeliverable_reporter_template`.
-
-Then register the kind's launch entry, a `LaunchableKind` (from `threetears.evals.run`) whose arguments come from
-`threetears.evals.ops` (`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `plan_reporter_arm`, `price_largest_reporter_call`):
-
-```python
-LaunchableKind(
-    launch=your_reporter_launcher,
-    resolve_subject=your_reporter_subject,  # admits the one subject id your reporter launches label
-    unhonoured_launch_arguments=REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
-    plan_arm=lambda request: plan_reporter_arm(eval_host, request, prompts=load_prompts(), resolve_model=resolve),
-    price_largest_call=lambda request: price_largest_reporter_call(
-        eval_host, request, prompts=load_prompts(), resolve_model=resolve
-    ),
-)
-```
-
-`price_largest_reporter_call` prices each case's first generator request before anything is spent, built as
-the cell builds it, on the client your factory builds in the `analysis` role for the arm's model. The
-estimate and the launch then refuse an arm whose largest generator call is reserved above its cap. Without
-it, that call is refused only when the run reaches it, after the cases before it were paid for. Pass the
-`eval_host` your launcher builds the generator client on, so the price is that client's. The memo's judge
-call stays unpriced, since the memo it judges does not exist yet.
-
-`plan_reporter_arm` and `admit_reporter_launch` make every refusal before the arm is priced, in this order:
-
-1. a template asking for apparatus a memo writer cannot honour, or with no rubric;
-2. a preset you do not hold, or no default;
-3. a model named by alias (a name you resolve to another model), since the run records the name and an
-   alias's target moves;
-4. a template with no live case, or a campaign-and-memo pair holding two live cases. When the launch
-   names a case set, its cases run instead, and each must carry a reporter case;
-5. the replay over a case with no recorded memo, and a generator model over a plan case (a case judging a report
-   plan, which only the replay runs).
-
-Your launcher calls `admit_reporter_launch` again, off the event loop. It builds `ReporterKind` (prompt id
-`ANALYSIS_GEN_PROMPT`) or `AsRecordedReporterKind` from what that returns, and wires its client, subject,
-cell ceiling (`reporter_cell_timeout_s`) and judge as for any kind.
+The analysis reporter kind measured the memo writer and the report planner, which are retired, so its cases and
+actions are gone. Its contract and launch names (`REPORTER_KIND_CONTRACT`, `reporter_kind_contract`,
+`ReporterOverlays`, `refuse_undeliverable_reporter_template` from `threetears.evals.analysis`;
+`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `admit_reporter_launch`, `plan_reporter_arm`, `price_largest_reporter_call`
+and their types from `threetears.evals.ops`) still import for one minor, warn on every read, and refuse every launch.
+Delete the reporter kind's registration, its launch entry and its template check. The report writer is measured by
+a writer campaign instead ([Serving](serving.md#writer-campaigns-evaluating-the-report-writer)).
 
 ## A world, through the cell's session
 

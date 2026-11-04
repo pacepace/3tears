@@ -124,7 +124,7 @@ MEMO_CASE_VERSION: Final = 1
 #: The reporter kind's version for a case judging a PLAN: the report planner's output, its figure keys written out
 #: against the report input the case froze (:func:`render_plan_for_judge`), judged against what the planner read
 #: (:func:`~threetears.evals.analysis.planner.plan_user_message`). The subject changed, so the version did: a plan
-#: case's scores are never pooled with a memo case's (:func:`~threetears.evals.analysis.reporter_bank.read_calibration`).
+#: case's scores are never pooled with a memo case's.
 PLAN_CASE_VERSION: Final = 2
 
 #: Every reporter kind version this build reads, oldest first.
@@ -269,10 +269,9 @@ class ReporterLabel(BaseModel):
     holds a direction and reads as it did. Plain ``BaseModel`` because ``quote`` and ``memo_excerpt`` are words
     verbatim.
 
-    A verdict is read as a person's (the judge's agreement with readers), so the ``reporter_case_freeze``
-    operation names its ``reader`` only as the host attests them (``EvalHost.attests_person``) and records the caller
-    that relayed it (``collected_by``). A host's own code freezing through ``freeze_reporter_case`` is trusted to
-    name its readers, or none. Neither field is part of what makes two freezes the same case, and neither is written
+    A verdict is read as a person's (the judge's agreement with readers): the freeze, retired with the reporter cases,
+    named its ``reader`` only as the host attested them (``EvalHost.attests_person``) and recorded the caller that
+    relayed it (``collected_by``). Neither field is part of what makes two freezes the same case, and neither is written
     to the stored payload while None, so a label stored before them reads, and is stored, as it was.
     """
 
@@ -1062,7 +1061,7 @@ class ReporterKind:
         """The ceiling :meth:`invoke` reserves for ``test_case``'s first generator call, built and priced as it is.
 
         What a launch prices an arm's largest call by before anything is spent
-        (:func:`~threetears.evals.ops.price_largest_reporter_call`): a call whose ceiling is above the run's cap
+        (the retired ``price_largest_reporter_call``): a call whose ceiling is above the run's cap
         on its own is one the run could never make. The request is the one the generation sends first
         (:func:`~threetears.evals.analysis.generator.first_request`, over the bundle :meth:`invoke` reads), priced
         on this kind's client as :class:`~threetears.evals.kernel.capped_completion.CappedCompletion` prices it.
