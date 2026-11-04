@@ -47,7 +47,7 @@ from L3 whole. Now:
 - **One whole read left.** In a snapshot whose every table names a version column, a scope is read whole from L3 only
   to rebuild what L2 holds no copy of: the cold rebuild (NATS lost the snapshot, or never held it), and a scope
   neither L2 nor this L1 holds. Each says so at ERROR (`rebuilding <scope> whole from L3: L2 holds no copy`). Any
-  other whole read raises the new `WholeReadRefused`: `stage_from_l3` refuses, a staged publish whose pointer is
+  other whole read raises a refusal (an internal error, never reaching a caller that stays inside the rule): `stage_from_l3` refuses, a staged publish whose pointer is
   behind with no record to bridge it leaves the scope to the recovery (its stage kept), and a scope whose chunks
   cannot be applied is brought forward from the diff over this L1's rows. A snapshot with a table that names no
   version column keeps the earlier behaviour, whole reads included.

@@ -5329,7 +5329,7 @@ async def test_a_snapshot_that_recovers_from_the_diff_reads_a_scope_whole_only_w
     caplog.set_level(logging.ERROR)
     writer, replica, pointers, _, l3 = await _diffed_pair()
     assert "rebuilding every scope whole from L3: L2 holds no copy" in caplog.text, "the cold rebuild said nothing"
-    with pytest.raises(scoped_snapshot_module.WholeReadRefused):
+    with pytest.raises(RuntimeError, match="was to be read whole from L3 outside the rebuild"):
         await writer.stage_from_l3("TX", 2)
     # a scope new to L3, with no copy anywhere: rebuilt whole, and said so
     l3.tables["results"].append({"county": "c7", "state": "CA", "votes": 7, "source_version": 2})

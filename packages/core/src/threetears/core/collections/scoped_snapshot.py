@@ -51,7 +51,7 @@ never brought forward by reading a scope whole: a writer keeps its stages as rec
 (:meth:`ScopedSnapshot.record_staged`), carried on by any replica up to L3's epoch; a writer whose copy is behind
 reads the rows it needs from L2 (:meth:`ScopedSnapshot.rows_at`); and the catch-up lays the groups of rows L3
 changed since over the rows a copy holds, each scope judged on its own. A scope is read whole from L3 only where L2
-holds no copy of it, said at ERROR; any other whole read raises :class:`WholeReadRefused`
+holds no copy of it, said at ERROR; any other whole read raises :class:`_WholeReadRefused`
 (``docs/design-scoped-snapshot.md``, "Recovery from the diff").
 
 **L3 stays the truth.** NATS buckets are memory-backed, so a NATS restart loses the snapshot. A
@@ -161,7 +161,6 @@ __all__ = [
     "StagedPartitions",
     "StagedScope",
     "VersionedRead",
-    "WholeReadRefused",
     "decode_chunk",
     "encode_chunk",
     "open_tool_pod_snapshot",
@@ -1187,7 +1186,7 @@ _WHOLE_READ: Final[contextvars.ContextVar[str | None]] = contextvars.ContextVar(
 )
 
 
-class WholeReadRefused(RuntimeError):
+class _WholeReadRefused(RuntimeError):
     """a scope was to be read whole from L3 outside the cold rebuild, in a snapshot that recovers from the diff."""
 
 
@@ -3971,7 +3970,7 @@ class ScopedSnapshot:
         running. Every table is staged whole, so the stage carries nothing from the scope's current chunks.
 
         Only in a snapshot that does not recover from the diff (a table names no
-        :attr:`SnapshotTable.version_column`): in one that does it raises :class:`WholeReadRefused`, and a writer
+        :attr:`SnapshotTable.version_column`): in one that does it raises :class:`_WholeReadRefused`, and a writer
         whose copy is behind stages from :meth:`rows_at` or leaves the scope to the recovery.
 
         :param scope: the scope
@@ -3980,7 +3979,7 @@ class ScopedSnapshot:
         :ptype epoch: int
         :return: the staged chunks
         :rtype: StagedScope
-        :raises WholeReadRefused: in a snapshot that recovers from the diff
+        :raises _WholeReadRefused: in a snapshot that recovers from the diff
         """
         read = await self._read_scope(scope)
         rows = {part.table: part.arrow if part.arrow is not None else [] for part in read}
@@ -5389,11 +5388,11 @@ class ScopedSnapshot:
         :return: one replacement per table, its rows an Arrow table (``None`` for none)
         :rtype: list[PartitionReplacement]
         :raises _WriteBegan: when ``moved`` says a write began
-        :raises WholeReadRefused: in a snapshot that recovers from the diff (every table names its
+        :raises _WholeReadRefused: in a snapshot that recovers from the diff (every table names its
             :attr:`SnapshotTable.version_column`), anywhere but the cold rebuild of what L2 holds no copy of
         """
         if self._diffable and _WHOLE_READ.get() is None:
-            raise WholeReadRefused(
+            raise _WholeReadRefused(
                 f"scoped snapshot {self._name}: scope {scope!r} was to be read whole from L3 outside the rebuild of "
                 "what L2 holds no copy of; a write and a catch-up bring a scope forward from the diff instead"
             )

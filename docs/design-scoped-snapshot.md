@@ -179,7 +179,7 @@ scope's whole night from L3, tens of minutes a scope. A copy now recovers from w
   cannot take a change now never holds L2 back.
 - **One whole read.** A scope is read whole from L3 only when L2 holds no copy of it (the cold rebuild,
   or a scope neither L2 nor this L1 holds), said at ERROR; any other whole read raises
-  `WholeReadRefused`. It is NULL-safe: a key column the L1 does not hold NOT NULL is read apart for
+  `_WholeReadRefused`. It is NULL-safe: a key column the L1 does not hold NOT NULL is read apart for
   each pattern of NULLs, paged by the columns left (a keyset page compares every paged column, and a
   NULL makes the comparison NULL), and a NULL partition value from the rows where it is NULL.
 - **The stall breaker** watches a catch-up by what it lands (a scope committed or judged, a pointer
