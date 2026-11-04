@@ -1,9 +1,8 @@
 """One chart's rules, apart from any plan (``threetears.evals.analysis.report.block_spec``): what code completes a
 chart with, and what refuses it on its input. ``block_render`` and the document page's evidence blocks run both.
 
-Re-pointed from the retired plan checks' chart cases, each on the same chart: one the report planner's stored plans
-hold (``fixtures/plan_charts/``: the Kairo reference plan, and the r1 to r5 anchors), edited as the case says and
-read against its own input through :func:`complete_chart` (a chart as chosen, completed) or :func:`chart_faults` and
+Each case takes a chart a stored plan holds (``fixtures/plan_charts/``: the Kairo reference plan, and the r1 to r5
+anchors), edits it as the case says, and reads it against its own input through :func:`complete_chart` (a chart as chosen, completed) or :func:`chart_faults` and
 :func:`small_multiple_faults` (a completed chart, refused), each fault at the chart's own field path.
 
 - **A reference line** sits at the asked aspect's margin, or at the one criterion that reads the chart's one measure

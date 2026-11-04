@@ -156,8 +156,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import criterion_figures, flip_margin
 
-#: ``report_kind`` left ``__all__`` with the plan checks, its last caller outside this module (P4-6); it stays as this
-#: module's own step.
+#: ``report_kind`` is this module's own step: nothing outside it reads it.
 __all__ = [
     "AskedStanding",
     "Caveat",

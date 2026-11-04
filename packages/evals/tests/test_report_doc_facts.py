@@ -123,8 +123,7 @@ def _warnings(facts: list[EditorFact]) -> list[str]:
     return [fact.fact.split("Code raises ", 1)[1].split(" ", 1)[0] for fact in _of(facts, "warning_unanswered")]
 
 
-# Re-pointed from the retired plan checks' raised warnings: each warning code raises on an arm, read through the
-# editor's fact on the arm a document recommends.
+# Each warning code raises on an arm, read through the editor's fact on the arm a document recommends.
 
 
 @pytest.mark.parametrize(("status", "kind"), [("broken", "floor_broken"), ("unclear", "floor_unclear")])

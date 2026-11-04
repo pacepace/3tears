@@ -141,8 +141,7 @@ def _report_wide(report_input: ReportInput) -> list[str]:
 
 
 class TestReportWideCaveats:
-    """Re-pointed from the retired plan checks' disclosures (their ``no_rule`` half left with the planner): which
-    caveats reach the whole report, as :func:`report_caveats` scopes them."""
+    """Which caveats reach the whole report, as :func:`report_caveats` scopes them."""
 
     def test_kairo_holds_its_open_late_criteria_and_the_judge(self):
         """The late margin and floor were proved immaterial, so they are not report-wide caveats left open; the

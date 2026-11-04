@@ -1,8 +1,8 @@
 """A unit written right after a figure key that prints it, read by the prose checks every report document's prose goes
 through (``threetears.evals.analysis.report_prose_checks.unit_faults``, invariant 1 of the report document's checks).
 
-Re-pointed from the retired plan checks' unit cases, each on the same text: a field of the stored plans the report
-planner left (``fixtures/plan_charts/``), edited as the case says, and read against its own input.
+Each case edits a field of a stored report plan (``fixtures/plan_charts/``) as the case says, and reads it against
+its own input.
 
 - **A unit after a key that prints it is refused**, named with what the key prints: milliseconds, seconds, a percent,
   money's sign or words, a count, the words of a cost's own unit, and a unit outside the package's vocabulary that

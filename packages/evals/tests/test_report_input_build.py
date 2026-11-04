@@ -617,7 +617,7 @@ def test_an_input_frozen_before_the_contrast_counts_carries_no_key_for_them() ->
     assert report_input_digest(ReportInput.model_validate(dumped)) == report_input_digest(held)
 
 
-# --- the Kairo bundle against r5 (re-pointed from the retired plan dataset) -----------------------------------------------------------------------------------------------------------
+# --- the Kairo bundle against r5 ---------------------------------------------------------------------------------
 
 
 def _significant(value: float) -> int:

@@ -124,8 +124,7 @@ from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, Char
 if TYPE_CHECKING:  # an arm's facts are read by type only: the module that defines them sits above the page's parts.
     from threetears.evals.analysis.report_arms import FactArm
 
-#: ``bare_key_faults`` and ``contrast_level`` left ``__all__`` with the plan checks, their last caller outside this
-#: module (P4-6); they stay as this module's own steps.
+#: ``bare_key_faults`` and ``contrast_level`` are this module's own steps: nothing outside it reads them.
 __all__ = [
     "BLOCK_SOURCES",
     "INTERVAL_KINDS",
