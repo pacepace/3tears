@@ -33,7 +33,6 @@ from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
 from packages.evals.tests.plan_charts_support import (
     StoredCharts,
-    StoredSection,
     anchor_look,
     charts_html,
     charts_markdown,
@@ -821,7 +820,7 @@ def test_markup_in_input_names_is_text_where_a_page_lays_out_this_modules_kinds(
         _spec("dot_interval", _query("measures", measures=["balanced_accuracy"])),
         _spec("table", _query("cells", arms=arms)),
     ]
-    sections = [StoredSection(plan.sections[0].headline, spec) for spec in specs]
+    sections = [replace(plan.sections[0], id=f"s{index}", chart=spec) for index, spec in enumerate(specs)]
     charts = [drawn for _, drawn in drawn_charts(replace(plan, summary=[], sections=sections), report_input)]
     html = charts_html(charts)
     assert what_runs(html) == []

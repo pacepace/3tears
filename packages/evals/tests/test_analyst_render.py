@@ -34,7 +34,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.plan_charts_support import StoredSection, anchor_look, stored_charts
+from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
 from packages.evals.tests.analyst_support import KAIRO, aspect_tagged, budget_inputs, fixture_inputs, fixture_snapshots
 from packages.evals.tests.fixtures.report_plans import dataset
 from packages.evals.tests.off_loop import off_loop
@@ -173,10 +173,10 @@ def test_each_anchor_plans_charts_read_the_same_through_block_render_as_through_
     plan = replace(
         stored,
         summary=[_completed_now(spec, held) for spec in stored.summary],
-        sections=[StoredSection(section.headline, _completed_now(section.chart, held)) for section in stored.sections],
+        sections=[replace(section, chart=_completed_now(section.chart, held)) for section in stored.sections],
     )
     look = anchor_look(plan, held)
-    charts = [(spec, resolve_chart(spec, held, look, title=spec.title, summary=True)) for spec in plan.summary]
+    charts = [(spec, resolve_chart(spec, held, look, title=spec.title)) for spec in plan.summary]
     charts += [
         (section.chart, resolve_chart(section.chart, held, look, title=section.chart.title))
         for section in plan.sections

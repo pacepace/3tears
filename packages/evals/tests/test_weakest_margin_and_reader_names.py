@@ -19,7 +19,6 @@ Contracts held here (``threetears.evals.analysis.report_margins``, ``report.figu
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import pytest
 
@@ -30,6 +29,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_margins import criterion_figures, margins, weakest_margin
 from threetears.evals.analysis.report_prose_checks import typed_ids
+
 
 def _input(name: str) -> ReportInput:
     return dataset.report_input_of(name)

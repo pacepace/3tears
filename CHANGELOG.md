@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report plan's checks, facts and models are retired; a stored plan is held verbatim
+
+**Removed:** the plan checks (`analysis/report_plan_checks.py`: `validate_plan`, `classify`, `spine`,
+`raised_warnings`, `implied_disclosures`, `OPTION_COLUMN_FAMILIES`), the planner's facts
+(`analysis/report_plan_facts.py`: `plan_facts`, `complete_plan`, `PlanFacts`, `FactCaveat`), `PlanRefusal`, and every
+plan model in `kernel/report_plan.py` (`ReportPlan`, `PlannedReport`, `PlanStructure`, `PlanProse` and their parts).
+None shipped in a final release, and no public root exported them. The planner's fixtures, rubric, calibration
+records and scoring dataset go too, and `docs/eval-report-kit/schema/report-plan.schema.json` with them.
+
+**Changed:** `kernel/report_plan.py` holds only the chart vocabulary a block and a report document's evidence read
+(`ChartQuery`, `ChartReference`, `PlannedChart`, `ChartSpec`, `PlanChartKind`, `ReferenceKind`). `FactArm` and
+`fact_arms` move unchanged to `analysis/report_arms.py`; the document page computes its masthead itself, with the
+same words. `EvalReportPlan.plan` is held verbatim and no longer checked as a plan on read, so a stored plan still
+reads and `drop_derived` still sweeps it; nothing stored changes shape or version.
+
+**Hosts:** nothing to change.
+
 ### evals: the planned page is retired; a planned analysis reads as code's page with the retired writer's line
 
 **Removed:** the planned page and its two forms (`PlannedPage`, `PageAnswer`, `PageClause`, `PageConfidence`,

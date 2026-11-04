@@ -222,17 +222,15 @@ class PageLook:
     """Every arm's look on one planned page, the order the page lists arms in, and the names it writes for ids.
 
     :ivar arms: Each arm's look, by id, in the input's order.
-    :ivar order: The options table's order, then every other arm in the input's order: the order a summary chart's
-        rows take (GENERATOR §5.3).
-    :ivar survivors: The arms that pass every gate (:func:`~threetears.evals.analysis.report_decision.surviving_options`):
-        a summary chart fades the rest.
-    :ivar recommended: The arm the plan recommends, which a summary chart bolds; None for none.
+    :ivar order: The arms in the page's order, then every other arm in the input's order: the order a chart's rows
+        take where its query lists none.
+    :ivar recommended: The arm the page recommends, whose point a scatter labels and a difference heatmap compares;
+        None for none.
     :ivar names: Each id's one reader name, by kind (aspect, measure, judged, stratum, task, criterion), then id.
     """
 
     arms: Mapping[str, ArmLook]
     order: tuple[str, ...]
-    survivors: frozenset[str]
     recommended: str | None
     names: Mapping[str, Mapping[str, str]]
 
@@ -283,7 +281,6 @@ def page_look(
     slots: Mapping[str, int],
     *,
     order: Sequence[str],
-    survivors: Iterable[str],
     recommended: str | None,
     names: Mapping[str, Mapping[str, str]],
 ) -> PageLook:
@@ -296,8 +293,6 @@ def page_look(
     :ptype slots: Mapping[str, int]
     :param order: The options table's arms, in its order.
     :ptype order: Sequence[str]
-    :param survivors: The arms that pass every gate.
-    :ptype survivors: Iterable[str]
     :param recommended: The arm the plan recommends; None for none.
     :ptype recommended: str | None
     :param names: Each id's reader name, by kind, then id.
@@ -320,7 +315,6 @@ def page_look(
     return PageLook(
         arms=looks,
         order=tuple(dict.fromkeys([*listed, *looks])),
-        survivors=frozenset(survivors),
         recommended=recommended,
         names=names,
     )

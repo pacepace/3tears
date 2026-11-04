@@ -31,7 +31,7 @@ one axis, on which measures drawn alike (a share beside a percent) are each draw
 **scatter_frontier** plots two measures that trade off, an arm (or config) per point, with the Pareto line: the
 query's two measures, else the two its rows hold; up is the one where higher is better, across the other. Over tasks,
 a panel per task. A point that fails a gate (:func:`~threetears.evals.analysis.report_gates.gate_check`, in the task
-a panel draws) is hollow; on a summary, an arm that does not survive is faded. Each axis carries its criterion's line
+a panel draws) is hollow. Each axis carries its criterion's line
 (the stored line and domain are the y axis's). An x axis spanning more than ten times is logarithmic, which a
 caption says. A config takes its first factor's colour, which a legend names
 (:func:`~threetears.evals.analysis.report.parts.charting.factor_token`); a panel of more than eight points labels
@@ -209,8 +209,7 @@ def _dot(
     if drawn.unit == MONEY and arm and (share := priced_in_part(context.report_input, arm)) is not None:
         # A cost over part of the arm's calls is a smaller total, never stated bare.
         tip[1] += f" ({share})"
-    strong = True if context.summary and arm and arm == context.look.recommended else None
-    return _Dot(id=row_id, label=label, arm=arm, value=value, interval=interval, tip=tip, strong=strong)
+    return _Dot(id=row_id, label=label, arm=arm, value=value, interval=interval, tip=tip)
 
 
 def _change_strips(context: ChartContext) -> tuple[list[_Strip], str, tuple[str, ...], bool]:
@@ -831,7 +830,6 @@ def _scatter(context: ChartContext) -> Drawn:
                     color=colour or (look.token if look is not None else None),
                     shape=look.shape if look is not None and colour is None else None,
                     hollow=True if fails else None,
-                    muted=True if context.summary and point.arm not in context.look.survivors else None,
                     tip=[
                         _arm_name(context, point.arm),
                         f"{money_words(context.report_input, x_key, x_drawn)} {figure_text(x_value, x_drawn)}"

@@ -73,6 +73,7 @@ _SmallMultiplesBy = Literal["none", "arm", "aspect", "task"]
 #: chart or a report document's evidence block.
 ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
 
+
 class _Plan(BaseModel):
     """A closed object: the schema sent is strict, the check on return is strict, and so is a stored read."""
 

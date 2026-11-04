@@ -105,7 +105,7 @@ from threetears.evals.analysis.report.parts.charting import (
     unit_refusal,
 )
 from threetears.evals.analysis.report.parts.look import PageLook, page_look
-from threetears.evals.analysis.report_decision import control_arm, surviving_options
+from threetears.evals.analysis.report_decision import control_arm
 from threetears.evals.analysis.report_input import Cell, Contrast, Criterion, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import criterion_aspect, criterion_place, lead_aspect
 from threetears.evals.analysis.report_rows import (
@@ -253,7 +253,7 @@ def contrast_level(report_input: ReportInput, contrast: Contrast) -> str:
 
 def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
     """The look one chart is drawn with when no plan stands behind it: each arm's tag, name, colour and mark as code's
-    facts give them, the arms in the input's order, the survivors, the reader names, and no arm recommended.
+    facts give them, the arms in the input's order, the reader names, and no arm recommended.
 
     It is :func:`~threetears.evals.analysis.report.parts.look.page_look`, the planned page's own, with nothing a
     plan chooses: a chart whose query lists its arms draws them in that order on both.
@@ -270,7 +270,6 @@ def block_look(report_input: ReportInput, arms: Sequence[FactArm]) -> PageLook:
         arms,
         {arm.id: arm.color_slot for arm in arms},
         order=(),
-        survivors=surviving_options(report_input),
         recommended=None,
         names={str(kind): found for kind, found in reader_names(report_input).items()},
     )

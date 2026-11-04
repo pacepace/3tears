@@ -27,7 +27,6 @@ from threetears.evals.analysis.report.parts.look import PageLook, page_look
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.report_decision import surviving_options
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.report_plan import ChartSpec
 
@@ -49,8 +48,9 @@ PLAN_CHARTS = Path(__file__).resolve().parent / "fixtures" / "plan_charts"
 
 @dataclass(frozen=True)
 class StoredSection:
-    """One evidence section's chart, beside the headline that titles it where the chart has no title of its own."""
+    """One evidence section's chart, beside its id and the headline that titles it where the chart has no title."""
 
+    id: str
     headline: str
     chart: ChartSpec
 
@@ -71,7 +71,7 @@ class StoredCharts:
 
     def with_one_section(self, chart: ChartSpec) -> StoredCharts:
         """The same look with no summary chart and one section, its first section's headline, drawing ``chart``."""
-        return replace(self, summary=[], sections=[StoredSection(self.sections[0].headline, chart)])
+        return replace(self, summary=[], sections=[replace(self.sections[0], chart=chart)])
 
 
 def stored_charts(name: str) -> StoredCharts:
@@ -88,7 +88,7 @@ def stored_charts(name: str) -> StoredCharts:
         recommended=next((row["option"] for row in rows if row["role"] == "recommended"), None),
         summary=[ChartSpec.model_validate(chart) for chart in plan["summary"]],
         sections=[
-            StoredSection(section["headline"], ChartSpec.model_validate(section["chart"]))
+            StoredSection(section["id"], section["headline"], ChartSpec.model_validate(section["chart"]))
             for section in plan["sections"]
         ],
     )
@@ -96,7 +96,7 @@ def stored_charts(name: str) -> StoredCharts:
 
 def anchor_look(stored: StoredCharts, report_input: ReportInput) -> PageLook:
     """The look a stored plan's charts draw with on ``report_input``: each arm's tag, name, colour and mark, the
-    options' order, the survivors and the recommended arm.
+    options' order and the recommended arm.
 
     :param stored: The stored plan's charts and look.
     :param report_input: The input it is drawn on.
@@ -106,7 +106,6 @@ def anchor_look(stored: StoredCharts, report_input: ReportInput) -> PageLook:
         fact_arms(report_input),
         stored.slots,
         order=stored.order,
-        survivors=surviving_options(report_input),
         recommended=stored.recommended,
         names={str(kind): found for kind, found in reader_names(report_input).items()},
     )
@@ -127,10 +126,7 @@ def drawn_charts(stored: StoredCharts, report_input: ReportInput) -> list[tuple[
     def written(text: str) -> str:
         return render(text, report_input, names)
 
-    drawn = [
-        (spec, resolve_chart(spec, report_input, look, title=written(spec.title), summary=True))
-        for spec in stored.summary
-    ]
+    drawn = [(spec, resolve_chart(spec, report_input, look, title=written(spec.title))) for spec in stored.summary]
     drawn += [
         (
             section.chart,

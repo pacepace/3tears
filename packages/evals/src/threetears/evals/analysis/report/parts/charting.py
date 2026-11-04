@@ -47,8 +47,7 @@ here, once:
   each by its first factor's level, the kit's series in that factor's order, and its legend names the levels.
 - **A scatter's labels** (:func:`point_labels`): every point's name where a chart draws at most eight, else only the
   stressed and the recommended one's, so labels never bury the points; narrow, the arm's letter tag.
-- **Row order** (:meth:`ChartContext.arm_order`): a summary chart's rows in the options table's order (GENERATOR
-  §5.3); a section's in its query's order, else the page's.
+- **Row order** (:meth:`ChartContext.arm_order`): a chart's rows in its query's order, else the page's.
 - **The descriptive rule** (:func:`separated`): a change code computes from two point figures is bold where it lies
   beyond 1.96 times the two standard errors' hypotenuse (a half-width counts as 1.96 standard errors), muted
   otherwise, and uncorrected (GENERATOR §5.2).
@@ -148,14 +147,12 @@ class ChartContext:
     :ivar report_input: The report input the plan was written against.
     :ivar look: The page's look: arm colours, tags, names, order, survivors and the recommended arm.
     :ivar title: The chart's title as its block carries it: the plan's, else the section's headline.
-    :ivar summary: Whether it is a summary chart, whose rows follow the options table (GENERATOR §5.3).
     """
 
     spec: ChartSpec
     report_input: ReportInput
     look: PageLook
     title: str
-    summary: bool = False
 
     @property
     def query(self) -> ChartQuery:
@@ -183,8 +180,7 @@ class ChartContext:
         )
 
     def arm_order(self, arm_ids: Iterable[str]) -> list[str]:
-        """``arm_ids`` in the order the chart shows arms: a summary chart's the options table's, a section's its
-        query's arms where it lists them, else the page's.
+        """``arm_ids`` in the order the chart shows arms: its query's arms where it lists them, else the page's.
 
         :param arm_ids: The arms the chart draws.
         :ptype arm_ids: Iterable[str]
@@ -192,7 +188,7 @@ class ChartContext:
         :rtype: list[str]
         """
         given = list(dict.fromkeys(arm_ids))
-        if self.summary or not self.spec.query.arms:
+        if not self.spec.query.arms:
             return self.look.ordered(given)
         place = {arm: index for index, arm in enumerate(self.spec.query.arms)}
         return sorted(given, key=lambda arm: (place.get(arm, len(place)), given.index(arm)))
