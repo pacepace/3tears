@@ -127,13 +127,10 @@ MEMO_CASE_VERSION: Final = 1
 #: case's scores are never pooled with a memo case's.
 PLAN_CASE_VERSION: Final = 2
 
-#: Every reporter kind version this build reads, oldest first.
-ReporterKindVersion = Literal[1, 2]
-
 #: The limit a case states when the message it freezes is not the one its recorded writer was sent, by what the case
 #: judges (``ReporterCase.kind_version``): a memo's writer read a rendered bundle, a plan's planner its report input's
 #: view. ``{recorded}`` is the digest the generation recorded.
-WRITER_MESSAGE_DIFFERS: Mapping[ReporterKindVersion, str] = types.MappingProxyType(
+WRITER_MESSAGE_DIFFERS: Mapping[Literal[1, 2], str] = types.MappingProxyType(
     {
         MEMO_CASE_VERSION: (
             "The bundle reproduces the one the recorded memo was written from, but the writer message frozen here "
@@ -426,7 +423,7 @@ class ReporterCase(BaseModel):
             "against it still read it, and no launch runs it again."
         ),
     )
-    kind_version: ReporterKindVersion = Field(
+    kind_version: Literal[1, 2] = Field(
         default=MEMO_CASE_VERSION,
         description=(
             "What the case judges: 1, a memo (every case stored before plans were judged); 2, a report plan. A plan "
@@ -1515,9 +1512,6 @@ class AsRecordedReporterKind:
 __all__ = [
     "AS_RECORDED_MODEL",
     "LABEL_BANDS",
-    "MEMO_CASE_VERSION",
-    "PLAN_CASE_VERSION",
-    "WRITER_MESSAGE_DIFFERS",
     "REPLAY_NOTES_HEADING",
     "REPORTER_CASE_KEY",
     "REPORTER_KIND",
@@ -1528,7 +1522,6 @@ __all__ = [
     "PreparedReporter",
     "ReporterCase",
     "ReporterKind",
-    "ReporterKindVersion",
     "ReporterLabel",
     "WriterMessageCheck",
     "judge_case_material",
@@ -1536,7 +1529,6 @@ __all__ = [
     "rebuild_bundle",
     "render_case_material",
     "render_memo_as_written",
-    "render_plan_for_judge",
     "replay_case_material",
     "reporter_case_of",
     "reporter_case_payload",

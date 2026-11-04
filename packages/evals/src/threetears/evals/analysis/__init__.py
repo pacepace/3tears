@@ -50,6 +50,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from threetears.evals.analysis import _retired
+from threetears.evals.kernel.retired import served_retired
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
     InterJudgeAgreement,
@@ -428,7 +430,6 @@ from threetears.evals.analysis.reporter_kind import (
     LabelVerdict,
     PreparedReporter,
     ReporterCase,
-    ReporterKindVersion,
     WriterMessageCheck,
 )
 from threetears.evals.analysis.reporting import (
@@ -865,7 +866,6 @@ __all__ = [
     "VerdictOrder",
     "WholeSwing",
     "WriterMessageCheck",
-    "ReporterKindVersion",
     "add_runs_to_campaign",
     "analysis_report",
     "build_code_only_report",
@@ -960,7 +960,4 @@ else:
 
     def __getattr__(name: str) -> object:
         """Serve a name a retired generation left, warning that it leaves in the next minor."""
-        from threetears.evals.analysis._retired import RETIRED
-        from threetears.evals.kernel.retired import served_retired
-
-        return served_retired(__name__, name, RETIRED)
+        return served_retired(__name__, name, _retired.RETIRED)

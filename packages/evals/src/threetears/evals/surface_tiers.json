@@ -1340,7 +1340,6 @@
 "threetears.evals.analysis.reporter_kind_contract": "stable",
 "threetears.evals.analysis.ReporterCase": "provisional",
 "threetears.evals.analysis.ReporterKind": "stable",
-"threetears.evals.analysis.ReporterKindVersion": "provisional",
 "threetears.evals.analysis.ReporterLabel": "stable",
 "threetears.evals.analysis.ReporterOverlays": "stable",
 "threetears.evals.analysis.ReportFile": "provisional",

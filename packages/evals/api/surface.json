@@ -6696,11 +6696,6 @@
       "signature": "ReporterKind(*, prompt: str, prompt_id: str, prompt_version: str | None, client: Any, model: str, host: EvalHost) -> None",
       "tier": "stable"
     },
-    "threetears.evals.analysis.ReporterKindVersion": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.ReporterLabel": {
       "kind": "model",
       "signature": "ReporterLabel(dimension: DimName, direction: LabelDirection | None = None, verdict: LabelVerdict | None = None, quote: str, memo_excerpt: str | None = None, note: str | None = None, reader: str | None = None, collected_by: str | None = None, criterion: LabelCriterion | None = None)",

@@ -47,6 +47,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from threetears.evals.ops import _retired
+from threetears.evals.kernel.retired import served_retired
 from threetears.evals.ops.analysis import (
     AnalysisDeleted,
     AnalysisGenerationEstimate,
@@ -457,7 +459,4 @@ else:
 
     def __getattr__(name: str) -> object:
         """Serve a name a retired generation left, warning that it leaves in the next minor."""
-        from threetears.evals.kernel.retired import served_retired
-        from threetears.evals.ops._retired import RETIRED
-
-        return served_retired(__name__, name, RETIRED)
+        return served_retired(__name__, name, _retired.RETIRED)
