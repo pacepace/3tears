@@ -22,7 +22,7 @@ one the runs disagree on; accepting one on a core measure.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pytest
@@ -33,6 +33,15 @@ from threetears.evals.analysis import report_markdown
 from threetears.evals.kernel import RUN_MARGIN_MEASURES, ValidationFailedError, run_margin_refusal
 from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 #: Enough cases for two arms that agree on every one to be shown within 0.1 of each other. Each expects the answer
 #: ``right``, which a classifier's field grader reads.

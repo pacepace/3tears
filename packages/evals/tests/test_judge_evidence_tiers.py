@@ -36,6 +36,8 @@ And, for the review fixes (each applied to a scratch-backed copy and restored fr
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import typing
 from typing import Any
 
@@ -76,6 +78,15 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.writer_host_support import doc_analysis_over
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 TONE = "conversation.tone"
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 import pytest
@@ -40,6 +40,14 @@ from packages.evals.tests.g2_support import (
     g2_report,
     g2_ruled_report,
 )
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 @pytest.fixture

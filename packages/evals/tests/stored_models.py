@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 import threetears.evals
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.factories import (
     make_analysis,
     make_analysis_attempt,
@@ -421,12 +422,15 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
 def stored_sample(model: type[EvalBaseModel]) -> dict[str, Any]:
     """A stored document of ``model``, as the store hands it back, after checking it loads untampered.
 
+    Its timestamps are read off a frozen clock (:func:`~packages.evals.tests.clock_support.frozen_clock`), not the wall.
+
     :param model: A stored model (one :func:`stored_models` returns).
     :ptype model: type[EvalBaseModel]
     :return: A valid document of it, as ``to_dict`` writes one.
     :rtype: dict[str, Any]
     """
-    sample = _SAMPLES[model.__name__]()
+    with frozen_clock():
+        sample = _SAMPLES[model.__name__]()
     assert type(sample) is model, f"the sample for {model.__name__} is a {type(sample).__name__}"
     document = sample.to_dict()
     assert model.from_dict(document) == sample, "the control: an untampered document reads back whole"

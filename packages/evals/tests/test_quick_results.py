@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pytest
@@ -21,6 +21,15 @@ from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.analysis import summarize_run
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "quick-results-tests"
 

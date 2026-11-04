@@ -19,7 +19,7 @@ Beside them sit the refusals the same work added where a ``None`` was a guess:
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -51,6 +51,15 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 _RESET = "call prompt_reset for the slot"
 

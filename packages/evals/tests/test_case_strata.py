@@ -20,7 +20,7 @@ assembled through a real store and read back:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
@@ -64,6 +64,15 @@ from packages.evals.tests.factories import (
     make_template,
 )
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 _SCOPE = "uni-1"
 _PROFILE = HostProfile(host_id="strata", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))

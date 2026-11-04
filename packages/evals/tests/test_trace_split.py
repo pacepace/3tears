@@ -12,7 +12,7 @@ real storage would confirm but not localize.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
@@ -32,6 +32,14 @@ from threetears.evals.ops import result_get
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 class _RecordingRepo:

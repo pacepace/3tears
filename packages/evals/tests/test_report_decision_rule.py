@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 import re
 from collections import Counter
-from collections.abc import Callable, Coroutine, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -59,6 +59,14 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.g2_support import G2_FLOORS, G2_QUESTION, g2_ruled_report
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
 
 
 #: The arms by the names a page gives them, which every reason says.

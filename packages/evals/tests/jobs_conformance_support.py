@@ -42,6 +42,7 @@ from threetears.evals.schema import (
 )
 from threetears.evals.testing import CompletionGuard, JobsConformanceHost
 from threetears.evals.schema.turns import TurnText
+from packages.evals.tests.clock_support import FIXED_AT
 from packages.evals.tests.doc_writer_support import FakeAnalystClient, scripted_reply
 from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.off_loop import off_loop
@@ -149,6 +150,8 @@ def conformance_host(
         intent="Answer the case.",
         candidate_kind=JUDGED_CALLABLE_KIND,
         rubric=list(judge.dims),
+        created_at=FIXED_AT,
+        updated_at=FIXED_AT,
     )
     cases = [
         EvalTestCase(
@@ -157,6 +160,7 @@ def conformance_host(
             template_id=_TEMPLATE,
             variation_params={"n": str(n)},
             host_payload={"case": {"n": n}},
+            created_at=FIXED_AT,
         )
         for n in range(2)
     ]

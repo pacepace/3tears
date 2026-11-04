@@ -17,7 +17,7 @@ import dataclasses
 import functools
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 import pydantic
@@ -36,6 +36,15 @@ from threetears.evals.run import get_result_trace, list_results, list_runs, list
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 SCOPE = "eval-run-tests"
 CASES = [{"n": 1}, {"n": 2}, {"n": 3}]

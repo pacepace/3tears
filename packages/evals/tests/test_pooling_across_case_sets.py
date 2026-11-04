@@ -10,6 +10,8 @@ on the page and in the frontier's text. No run leaves the counts unsaid.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from typing import Any, Literal
 
 import pytest
@@ -25,6 +27,15 @@ from threetears.evals.schema.values import NominalScale, SweepableValue
 from packages.evals.tests.factories import DEFAULT_SUBJECT, make_campaign, make_eval_run, make_scored_result
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.clock_support import frozen_clock
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock() -> Iterator[None]:
+    """Nothing here asserts on the time, so every stamp the code under test makes reads a frozen clock, not the wall's."""
+    with frozen_clock():
+        yield
+
 
 PROFILE = toyhost_profile()
 

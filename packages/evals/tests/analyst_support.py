@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import Any
 
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
@@ -207,29 +208,36 @@ def fixture_inputs() -> Mapping[str, ReportInput]:
 @cache
 def _kairo_snapshot(scope_id: str) -> EvalReportSnapshot:
     bundle = kairo_bundle()
-    return report_snapshot(
-        analyst_input(bundle),
-        scope_id=scope_id,
-        campaign_id=bundle.campaign_id,
-        source="campaign",
-        created_by=_FROZEN_BY,
-        bundle=bundle,
-        assembled_at=_KAIRO_ASSEMBLED_AT,
-    )
+    with frozen_clock():
+        return report_snapshot(
+            analyst_input(bundle),
+            scope_id=scope_id,
+            campaign_id=bundle.campaign_id,
+            source="campaign",
+            created_by=_FROZEN_BY,
+            bundle=bundle,
+            assembled_at=_KAIRO_ASSEMBLED_AT,
+        )
 
 
 def fixture_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
     """A snapshot of every fixture input in one scope, by name, and of the Kairo round 2 campaign last.
+
+    Each is frozen at :data:`~packages.evals.tests.clock_support.FIXED_INSTANT`, not now: several test modules build
+    them at import, to parametrize over, and a clock read there makes every later test in the process uncacheable.
 
     :param scope_id: The scope they live in.
     :ptype scope_id: str
     :return: The snapshots, unsaved.
     :rtype: dict[str, EvalReportSnapshot]
     """
-    snapshots = {
-        name: report_snapshot(held, scope_id=scope_id, campaign_id=None, source="report_input", created_by=_FROZEN_BY)
-        for name, held in fixture_inputs().items()
-    }
+    with frozen_clock():
+        snapshots = {
+            name: report_snapshot(
+                held, scope_id=scope_id, campaign_id=None, source="report_input", created_by=_FROZEN_BY
+            )
+            for name, held in fixture_inputs().items()
+        }
     snapshots[KAIRO] = _kairo_snapshot(scope_id)
     return snapshots
 
@@ -260,18 +268,19 @@ def shape_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
     :return: The snapshots, unsaved.
     :rtype: dict[str, EvalReportSnapshot]
     """
-    return {
-        name: report_snapshot(
-            analyst_input(shape_bundle(name)),
-            scope_id=scope_id,
-            campaign_id=shape_bundle(name).campaign_id,
-            source="campaign",
-            created_by=_FROZEN_BY,
-            bundle=shape_bundle(name),
-            assembled_at=_KAIRO_ASSEMBLED_AT,
-        )
-        for name in SHAPE_NAMES
-    }
+    with frozen_clock():
+        return {
+            name: report_snapshot(
+                analyst_input(shape_bundle(name)),
+                scope_id=scope_id,
+                campaign_id=shape_bundle(name).campaign_id,
+                source="campaign",
+                created_by=_FROZEN_BY,
+                bundle=shape_bundle(name),
+                assembled_at=_KAIRO_ASSEMBLED_AT,
+            )
+            for name in SHAPE_NAMES
+        }
 
 
 #: The wide input's name among the budget inputs.
