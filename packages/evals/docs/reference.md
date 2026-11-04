@@ -603,7 +603,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Functions**
 
-- **`analysis_gen_request_settings_for`** · *host contract* · function · The generator role's request settings as ONE value, from the host's answer budget, effort and headroom.
+- **`analysis_gen_request_settings_for`** · *host contract* · function · Retired: the memo writer's client settings, answered as they were; nothing in the package builds that client.
   <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`assemble_campaign_bundle`** · function · Assemble the campaign bundle a generation launched right now would read, without generating.
   <br>`assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle`
@@ -615,8 +615,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
   <br>`dollars_text(amount: float | None) -> str`
-- **`first_request`** · function · The exact first request a generation sends: system prompt, user message and the contract.
-  <br>`first_request(bundle: CampaignBundle, prompt: str, profile: HostProfile) -> tuple[str, str, dict[str, Any]]`
 - **`format_number`** · *host contract* · function · Spell a number for a reader, the same way on every analysis surface.
   <br>`format_number(value: float | None, *, prefix: str = '') -> str`
 - **`format_signed`** · *host contract* · function · Spell a change, carrying its sign — the direction is half of what a delta says.
@@ -625,8 +623,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
-- **`generate_analysis`** · *host contract* · async function · Generate one campaign's analysis from its campaign bundle, in one LLM call or two.
-  <br>`generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: CallAdmission | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
+- **`generate_analysis`** · *host contract* · async function · Retired: the memo writer. Every call refuses before anything is sent, naming what writes a report now.
+  <br>`generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: Callable[[str, str, dict[str, Any] | None], None] | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
@@ -647,8 +645,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`judge_self_agreement(results: Iterable[ResultView]) -> JudgeSelfAgreement`
 - **`lint_prose`** · function · Every rule `text` breaks.
   <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
-- **`prompt_content_version`** · function · The version a generation records for its prompt — a short hash of what the model is told.
-  <br>`prompt_content_version(prompt: str, profile: HostProfile) -> str`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
 - **`refuse_undeliverable_reporter_template`** · function · Retired: refuses every analysis reporter template, naming the writer kind that replaces it.

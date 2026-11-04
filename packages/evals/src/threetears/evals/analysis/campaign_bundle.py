@@ -139,8 +139,7 @@ _CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
 _DERIVED_READINGS = frozenset({"aggregate"})
 
 #: The most characters one aspect's part of the writer's user message may take, as compact JSON. A campaign's message
-#: grows with its aspects, at most this much each, and the system prompt is budgeted apart
-#: (:data:`~threetears.evals.analysis.gen_prompt.PROMPT_CHAR_BUDGET`). Like that budget, it only falls.
+#: grows with its aspects, at most this much each. It only falls.
 CAMPAIGN_MESSAGE_CHARS_PER_ASPECT = 24_500
 
 #: What opens the writer's user message.

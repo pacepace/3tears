@@ -338,9 +338,8 @@ class HostProfile:
     """The model ids this host allows to write a campaign's analysis. Empty: any model.
 
     An allow-list, not a deny-list: once a host opts in, a model nobody has measured writing the strict
-    analysis contract is refused rather than admitted by default. ``analysis_generate`` (and
-    :func:`~threetears.evals.analysis.generator.generate_analysis`) check the requested model against it
-    before the first provider request, so a writer known unable to produce the contract costs nothing,
+    analysis contract is refused rather than admitted by default. ``analysis_generate`` checks the requested model
+    against it before the first provider request, so a writer known unable to produce the contract costs nothing,
     not a billed call and its billed repair. A reporter run measuring writers is exempt: it exists to
     find out which models belong here. Ids are compared exactly, as the host's client is asked for them.
     """

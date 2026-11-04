@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 
 from threetears.evals.analysis.cells import cell_ref
-from threetears.evals.analysis.prose_refs import render_reference
 from threetears.evals.analysis.report.figures import measure_rulers
 from threetears.evals.analysis.report.words import evidence_rows
 from threetears.evals.analysis.summary import EvalSummary, RunMeasureSummary
@@ -130,12 +129,6 @@ class TestTheRulerIsChosenOverEveryFigureTheReportStates:
 
 
 class TestWordsAndEvidenceReadOnTheRuler:
-    def test_a_figure_in_prose_states_the_measures_ruler(self) -> None:
-        surface = _surface(threshold=1500.0)
-        alias = "c1" if surface.cells[0].variant_key == entry(INCUMBENT).variant_key else "c2"
-        assert render_reference(surface, f"{alias}|{LATENCY}|measure|mean") == "0.9 s"
-        assert render_reference(_surface(), f"{alias}|{LATENCY}|measure|mean") == "900 ms"
-
     def test_an_evidence_row_states_its_value_and_spread_on_the_ruler(self) -> None:
         surface = _surface(threshold=1500.0)
         # What evidence_rows reads of an analysis: the decision surface it was resolved under, and the frozen

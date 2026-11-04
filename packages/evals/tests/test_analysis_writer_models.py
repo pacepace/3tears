@@ -4,27 +4,20 @@ A model measured unable to write the strict analysis contract used to fail its f
 repair, fail again and be refused: two billed calls for nothing. A host now declares the writers it allows
 (``HostProfile.analysis_writer_models``), and a writer outside the list is refused with nothing spent:
 no provider request, and for a requested model, no client built. An empty list is today's behaviour.
-A reporter run measuring writers is exempt, since it is how a host learns which writers to list.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 
 import pytest
 
-from threetears.evals.analysis.errors import GenerationError
-from threetears.evals.analysis.generator import generate_analysis
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import HostProfile
-from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.ops import analysis_estimate
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, generate, ops_fixture, settled
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient, memo_payload
+from packages.evals.tests.fixtured_client import MODEL
 from packages.evals.tests.off_loop import off_loop
 
 #: A writer the host has not measured, so does not allow.
@@ -80,42 +73,13 @@ class TestAnalysisGenerate:
         assert (await settled(fixture.host, job.job_id)).state == "completed"
 
 
-class TestGenerateAnalysis:
-    async def _generate(self, profile: HostProfile, *, model: str, measuring_writers: bool = False) -> FixturedClient:
-        bundle = toyhost_bundle(profile=profile)
-        client = FixturedClient(json.dumps(memo_payload(bundle)))
-        await generate_analysis(
-            campaign_bundle(bundle),
-            prompt=PROMPT,
-            model=model,
-            client=client,
-            prompt_id=PROMPT_ID,
-            bundle_assembled_at=utc_now_iso(),
-            profile=profile,
-            measuring_writers=measuring_writers,
-        )
-        return client
+class TestTheHostsWriterList:
+    """The one check every door asks: the host's own answer for a writer it does or does not allow."""
 
-    async def test_a_writer_the_host_does_not_allow_is_refused_before_the_first_call(self) -> None:
-        bundle = toyhost_bundle(profile=_allowing(MODEL))
-        client = FixturedClient(json.dumps(memo_payload(bundle)))
+    def test_a_writer_the_host_does_not_allow_is_refused_before_the_first_call(self) -> None:
+        refusal = _allowing(MODEL).analysis_writer_refusal(UNLISTED)
 
-        with pytest.raises(GenerationError, match="nothing was spent"):
-            await generate_analysis(
-                campaign_bundle(bundle),
-                prompt=PROMPT,
-                model=UNLISTED,
-                client=client,
-                prompt_id=PROMPT_ID,
-                bundle_assembled_at=utc_now_iso(),
-                profile=_allowing(MODEL),
-            )
+        assert refusal is not None and "nothing was spent" in refusal
 
-        assert client.calls == []
-
-    async def test_an_allowed_writer_is_sent(self) -> None:
-        assert len((await self._generate(_allowing(MODEL), model=MODEL)).calls) == 1
-
-    async def test_a_reporter_run_measuring_writers_is_not_held_to_the_list(self) -> None:
-        client = await self._generate(_allowing(MODEL), model=UNLISTED, measuring_writers=True)
-        assert len(client.calls) == 1
+    def test_an_allowed_writer_is_sent(self) -> None:
+        assert _allowing(MODEL).analysis_writer_refusal(MODEL) is None

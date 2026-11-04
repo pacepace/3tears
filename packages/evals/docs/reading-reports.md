@@ -18,7 +18,8 @@ evidence, so none adds, drops or reorders anything. Which page that is depends o
 - **The code-only page**, before one is: everything countable — who ran, what got lost and why, which case failed,
   what the judge said — written by code. It opens on the campaign's first screen, the whole decision at a glance, and
   then holds one fold per aspect, each that aspect's own page. The rest of this section describes it. A campaign
-  whose analysis is an older memo reads as this page with the memo's summary, findings and recommendation set in it.
+  whose analysis a retired writer wrote (an older memo or plan) reads as this page, its first screen saying so
+  ([memos and planned reports](#memos-and-planned-reports)).
 
 ```python
 page = result.page                                           # the quick path
@@ -753,10 +754,10 @@ grouped and ranked, each group as text ready to file as an issue ([serving](serv
 
 ### Memos and planned reports
 
-Earlier writers left two kinds of analysis. A **memo** (`generate_analysis`) read one campaign bundle in one call and
-wrote a summary, findings and one recommendation, every figure a reference code resolved; its page is the code-only
-page with the memo's parts set in it, and the reporter kind still evaluates memo writers. A **planned report** chose
-a page from a fixed vocabulary of sections and charts; it now reads as the code-only page with the regenerate line.
+Earlier writers, both retired, left two kinds of analysis. A **memo** read one campaign bundle in one call and wrote a
+summary, findings and one recommendation, every figure a reference code resolved. A **planned report** chose a page
+from a fixed vocabulary of sections and charts. Each now reads as the code-only page, its first screen naming the
+retired writer and saying to regenerate with `analysis_generate`.
 
 Either one carries the bundles it was written over (`EvalAnalysis.bundle`). A bundle's fingerprint is `v2:` and the
 sha256 of its canonical JSON with every float rounded to twelve significant figures, so the same evidence

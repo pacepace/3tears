@@ -41,7 +41,6 @@ from threetears.evals.analysis import (
     build_code_only_report,
     build_report,
     campaign_report,
-    campaign_report_html,
     report_html,
     report_markdown,
     set_campaign_control,
@@ -452,11 +451,14 @@ class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
 
 
 async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:
+    """The campaign's newest analysis is its report, through either door: a memo, a retired writer's, is stood in for
+    by code's page naming it (its own page is laid out by its id over what was frozen with it, not over the evidence
+    now), and its aspect's page is the memo's."""
     host, analysis, report = toy
     resolved = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
-    assert campaign_report_html(resolved) == campaign_report_html(stored)
-    assert resolved.basis == "analysis" and resolved.analysis_id == analysis.id
+    assert (resolved.basis, resolved.unread_analysis_id) == ("code_only", analysis.id)
+    assert (stored.basis, stored.unread_analysis_id) == ("code_only", analysis.id)
     assert report.basis == "analysis" and report.source.analysis_id == analysis.id
 
 
@@ -467,8 +469,9 @@ async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalH
 
     report = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
     assert report.basis == "code_only" and report.analysis_id is None
+    assert report.unread_analysis_id is None, "the campaign has no report standing in for the archived analysis"
     # The archived analysis is still readable by its id.
-    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).analysis_id == analysis.id
+    assert off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id).unread_analysis_id == analysis.id
 
 
 async def test_a_next_step_on_a_lever_no_comparison_exercised_is_not_on_the_page(

@@ -37,14 +37,13 @@ that cries wolf gets switched off.
   unguarded: ``test_host_vocabulary_ceiling.py`` counts host terms in every module's full source against
   the per-module, per-term ceilings in ``host_vocabulary_register.py``, which only fall. That scope-out is also why a string
   counts only when it is **token-shaped** — no whitespace, at most
-  :data:`_MAX_TOKEN_LENGTH` characters. ``EVAL_ANALYSIS_GEN_DEFAULT`` in
-  ``analysis/gen_prompt.py`` is the live demonstration: a module-level assignment whose
-  value is the whole shipped generation prompt, so without the token-shape rule every
-  sentence of it is scanned as a "field default". It contains ``research.research_model``
+  :data:`_MAX_TOKEN_LENGTH` characters. The retired memo writer's prompt was the demonstration: a
+  module-level assignment whose value was a whole shipped generation prompt, so without the token-shape
+  rule every sentence of it was scanned as a "field default". It contained ``research.research_model``
   — whole-word ``research``, a registered host noun — in a sentence teaching a model NOT to
-  compare one role's value with another's. So the constant would register as a violation
-  on prose alone, and the same constant demonstrates the whole-word rule below: it contains
-  ``dj`` as a substring, inside ``adjective``, and ``dj`` is a registered host noun. (Derive a claim like this one from
+  compare one role's value with another's, so it would have registered as a violation on prose alone;
+  and it showed the whole-word rule below: it contained ``dj`` as a substring, inside ``adjective``, and
+  ``dj`` is a registered host noun. (Derive a claim like this one from
   :data:`~packages.evals.tests.host_vocabulary.HOST_NOUNS` rather than from a hand-typed noun
   list: a recalled list is how an example of this kind goes false.)
 - *Every string outside the three surfaces that carry one.* A string value is scanned when it is
@@ -231,7 +230,6 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # Which stored documents are kept and how an old one is upgraded: the engine's own version policy.
     "schema/versioning.py",
     "analysis/bundle/assemble.py",
-    "analysis/gen_prompt.py",
     # What the writer of a campaign's one memo reads: every host's campaign is rendered through it alike.
     "analysis/campaign_bundle.py",
     # The gen package's public root, its exports scanned. Declared module by module, like

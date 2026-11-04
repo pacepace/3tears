@@ -254,10 +254,6 @@ _KIT_FORMAT = (
 #: a moved line keeps its exemption and a rewritten expression loses it. Each reason says why the
 #: fixed spelling is the right one there; an entry no site matches any more fails the suite.
 _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
-    # A figure inside a memo's sentence is read once, not compared down a column: two significant
-    # figures below 10 are what a sentence can use, and the tables beside it keep the one rule.
-    ("threetears/evals/analysis/prose_refs.py", "value", ".2g"): "a figure in a sentence",
-    ("threetears/evals/analysis/prose_refs.py", "value", ".{}f"): "a figure in a sentence below 1e-4, written out",
     # Money's spelling (cents from ten cents up, three significant figures below) is numbers.spell_dollars, in the
     # rule's own module.
     # A static page's chart is the kit's drawing made on the server: its ticks and notes are the kit's named formats

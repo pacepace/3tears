@@ -1,10 +1,11 @@
 """An analysis a retired report writer stored reads, through every door, as code's page with one line saying so.
 
-The report planner no longer writes analyses (``analysis_generate`` runs the report writer), and its planned page is
-retired with it. A host still holds the planned analyses it stored: the one the planner stored over the toy corpus
-campaign (``report_support.stored_plan_analysis``), its plan written beside it as the host's document store holds it
-(``report_support.stored_plan_document``). Contracts held here (``threetears.evals.analysis.service``,
-``threetears.evals.ops``):
+The report planner and the memo writer no longer write analyses (``analysis_generate`` runs the report writer), and
+the planned page is retired with the planner. A host still holds the analyses they stored: the one the planner stored
+over the toy corpus campaign (``report_support.stored_plan_analysis``), its plan written beside it as the host's
+document store holds it (``report_support.stored_plan_document``), and the one the memo writer stored over it
+(``report_support.stored_memo_analysis``), its memo inside the analysis. Contracts held here
+(``threetears.evals.analysis.service``, ``threetears.evals.ops``):
 
 - **every door reads it**, never refusing and never blank: ``report_read`` in its four forms, ``campaign_report``,
   ``analysis_report`` by its id and ``analyses_list``. Each is code's page (``basis="code_only"``) standing in for the
@@ -17,8 +18,10 @@ campaign (``report_support.stored_plan_analysis``), its plan written beside it a
 - **the plan is never read**: the reads are the same whether the plan stored beside it is the planner's own, a host's
   plan the planned page could not draw, a plan no model reads, or no plan at all;
 - **the plan is still swept**: ``drop_derived`` deletes it, and deleting its analysis deletes it (its insights stay);
+- **a memo analysis reads the same way through every door**, the line naming the memo writer, its memo never read:
+  ``report_read`` in its four forms, ``campaign_report``, ``analysis_report`` by its id and ``analyses_list``, which
+  counts no findings;
 - an aspect's page of a planned analysis is refused, as it holds no memo;
-- an analysis the memo writer stored still lists, reads and renders as written;
 - the actions round-trip a generated analysis as a report document, with no plan member.
 """
 
@@ -57,6 +60,11 @@ _LINE: Final = (
     "over it"
 )
 
+#: The line every door prints for a memo analysis.
+_MEMO_LINE: Final = (
+    "written by a retired report writer (the memo writer); regenerate with analysis_generate to read a report over it"
+)
+
 #: What the store holds beside the analysis: the planner's own plan, the host's, a plan no model reads, or none.
 _STORED_PLANS = ("planners", "hosts", "unreadable", "none")
 
@@ -90,19 +98,19 @@ def _first_screen(body: str, form: str) -> str:
     return said
 
 
-def _said(analysis: EvalAnalysis, form: str) -> str:
+def _said(analysis: EvalAnalysis, form: str, line: str = _LINE) -> str:
     if form == "json":
-        return _LINE
-    said = f"This campaign's analysis {analysis.id} was {_LINE}."
+        return line
+    said = f"This campaign's analysis {analysis.id} was {line}."
     return escape(said) if form == "html" else said
 
 
-def _assert_stands_in(page: CampaignReport, analysis: EvalAnalysis) -> None:
+def _assert_stands_in(page: CampaignReport, analysis: EvalAnalysis, line: str = _LINE) -> None:
     assert (page.basis, page.analysis_id, page.unread_analysis_id) == ("code_only", None, analysis.id)
-    assert page.needs_regeneration is not None and page.needs_regeneration.startswith(_LINE)
+    assert page.needs_regeneration is not None and page.needs_regeneration.startswith(line)
     assert page.plan_page is None and page.doc_page is None
     for form in ("markdown", "html", "json"):
-        assert _said(analysis, form) in _first_screen(serialize_report(page, form), form), form
+        assert _said(analysis, form, line) in _first_screen(serialize_report(page, form), form), form
 
 
 # -- every door ---------------------------------------------------------------------------------------------------
@@ -156,7 +164,7 @@ async def test_the_listing_leads_its_line_with_the_line_and_counts_no_findings(s
     planned = lines[analysis.id]
     assert (planned.basis, planned.report_plan_id, planned.findings) == ("plan", analysis.report_plan_id, 0)
     assert planned.needs_regeneration == _LINE
-    assert lines[memo.id].needs_regeneration is None, "a retired writer's analysis flags no other line"
+    assert lines[memo.id].needs_regeneration == _MEMO_LINE, "each retired writer's line names its own writer"
 
 
 async def test_the_line_is_said_once_and_every_form_s_page_reads_the_same_whatever_plan_is_stored() -> None:
@@ -176,7 +184,8 @@ def _without_instants(body: str) -> str:
 
 def test_the_line_is_worded_once_and_names_only_a_retired_writer() -> None:
     assert retired_generation("plan") == _LINE
-    assert retired_generation("memo") is None and retired_generation("doc") is None, "a writer this version reads"
+    assert retired_generation("memo") == _MEMO_LINE
+    assert retired_generation("doc") is None, "the writer this version reads"
 
 
 async def test_by_its_id_a_planned_analysis_frozen_over_a_bundle_shape_no_longer_read_is_the_stated_refusal() -> None:
@@ -233,19 +242,58 @@ async def test_an_aspect_page_of_a_planned_analysis_is_refused() -> None:
         build_report(analysis)
 
 
-async def test_a_memo_analysis_lists_reads_and_renders_as_it_did() -> None:
+# -- a memo analysis ----------------------------------------------------------------------------------------------
+
+
+async def _memo() -> tuple[OpsFixture, EvalAnalysis]:
+    """The toy campaign's host holding the analysis the memo writer stored over it, its memo inside it."""
     fixture = off_loop(ops_fixture)
     memo, _ = await stored_memo_analysis(fixture.host.eval_host, fixture.campaign)
-    assert memo.document is not None
+    assert memo.document is not None and memo.document.findings, "the stored record holds a memo with findings"
+    return fixture, memo
+
+
+async def test_report_read_of_a_memo_is_code_s_page_with_the_memo_writer_s_line_in_every_form() -> None:
+    fixture, memo = await _memo()
+    host = fixture.host.eval_host
+
+    for form, static in (("markdown", False), ("html", False), ("html", True), ("json", False)):
+        read = off_loop(report_read, host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
+
+        assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("code_only", memo.id, "memo", None)
+        assert read.needs_regeneration == f"{_MEMO_LINE} (analysis {memo.id})", form
+        assert _said(memo, form, _MEMO_LINE) in _first_screen(read.body, form), form
+        assert "**Recommended:**" not in read.body and "Recommended:" not in read.body, "the memo is never read"
+        if form == "json":
+            assert json.loads(read.body)["needs_regeneration"] == read.needs_regeneration
+
+
+async def test_the_campaign_s_page_and_the_page_by_id_stand_in_for_a_memo_with_its_line() -> None:
+    fixture, memo = await _memo()
+    host = fixture.host.eval_host
+
+    campaigns = off_loop(campaign_report, host, fixture.campaign.id, TOYHOST_SCOPE)
+    by_id = off_loop(analysis_report, host.storage, memo.id, TOYHOST_SCOPE)
+
+    _assert_stands_in(campaigns, memo, _MEMO_LINE)
+    _assert_stands_in(by_id, memo, _MEMO_LINE)
+    assert by_id.needs_regeneration == _MEMO_LINE, "by its id, the line alone: the page names the analysis"
+    assert [fold.aspect for fold in by_id.aspects] == [
+        bundle.aspect for bundle in analysis_campaign_bundle(memo).aspects
+    ]
+    for page in (campaigns, by_id):
+        markdown = serialize_report(page, "markdown")
+        assert markdown.count(_MEMO_LINE) == 1, "said once"
+        assert memo.document is not None and memo.document.summary not in markdown, "the memo is never read"
+
+
+async def test_the_listing_leads_a_memo_s_line_with_the_memo_writer_s_line_and_counts_no_findings() -> None:
+    fixture, memo = await _memo()
 
     (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
-    assert (line.id, line.basis, line.report_plan_id) == (memo.id, "memo", None)
-    assert (line.findings, line.recommendations, line.needs_regeneration) == (len(memo.document.findings), 1, None)
-    read = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
-    assert (read.basis, read.analysis_id, read.analysis_basis, read.doc) == ("analysis", memo.id, "memo", None)
-    assert read.needs_regeneration is None
-    assert "**Recommended:**" in read.body, "the memo's recommendation, as written"
-    assert build_report(memo).basis == "analysis"
+
+    assert (line.id, line.basis, line.report_plan_id, line.report_doc_id) == (memo.id, "memo", None, None)
+    assert (line.findings, line.needs_regeneration) == (0, _MEMO_LINE)
 
 
 async def test_the_actions_round_trip_a_generated_analysis_as_a_report_document() -> None:

@@ -43,7 +43,7 @@ from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.doc_analysis import DocAnalysis, doc_analysis
-from threetears.evals.analysis.generator import GenerationTally
+from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
     WrittenAttempt,
@@ -441,9 +441,9 @@ class CampaignChanges(EvalBaseModel):
     control_from_run_id: str | None = Field(default=None, min_length=1, description=CONTROL_RUN_DESCRIPTION)
 
 
-#: What wrote a stored analysis: ``memo``, the memo writer (every analysis stored before the report planner); ``plan``,
-#: the report planner; or ``doc``, the report writer (the analyst and the report editor), which writes every analysis
-#: ``analysis_generate`` generates now.
+#: What wrote a stored analysis: ``memo``, the memo writer (every analysis stored before the report planner), and
+#: ``plan``, the report planner, both retired writers; or ``doc``, the report writer (the analyst and the report
+#: editor), which writes every analysis ``analysis_generate`` generates now.
 AnalysisBasis = Literal["memo", "plan", "doc"]
 
 
@@ -461,10 +461,9 @@ class AnalysisLine(EvalBaseModel):
     )
     basis: AnalysisBasis = Field(
         description=(
-            "What wrote the analysis: `memo` (the memo writer; findings count the memo's findings), `plan` (the "
-            "report planner, a retired writer, whose analyses report_read renders code-only; findings count none) or "
-            "`doc` (the report writer; findings count the document's claims, report_doc_id names it, and report_read "
-            "carries it)."
+            "What wrote the analysis: `memo` (the memo writer) or `plan` (the report planner), retired writers whose "
+            "analyses report_read renders code-only and whose findings count none, or `doc` (the report writer; "
+            "findings count the document's claims, report_doc_id names it, and report_read carries it)."
         )
     )
     report_plan_id: str | None = Field(
@@ -476,16 +475,13 @@ class AnalysisLine(EvalBaseModel):
     verdict: str = Field(
         description=(
             "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
-            "headline the memo wrote. It leads, as the report does, with every bar an arm misses and then every floor "
+            "headline a writer wrote. It leads, as the report does, with every bar an arm misses and then every floor "
             "a candidate breaks, each in the report's own words; with neither, it is the verdict alone."
         )
     )
     findings: int = Field(
         ge=0,
-        description=(
-            "How many findings the memo holds, or how many claims the report document holds; 0 for a plan, which "
-            "is never read."
-        ),
+        description=("How many claims the report document holds; 0 for a memo or a plan, which is never read."),
     )
     recommendations: int = Field(
         ge=0,
@@ -512,10 +508,8 @@ class AnalysisLine(EvalBaseModel):
             "Why this build cannot read the analysis, and what to do. A report document that no longer reads (its "
             "shape moved, or it was deleted apart from it) is rendered code-only by report_read: its line is the one "
             "regenerate line, then why in parentheses where there is more to say, and it counts no findings. Every "
-            "report plan is rendered code-only too, its line the retired writer's (which writer wrote it, and to "
-            "regenerate). A memo written over a bundle of another shape says why, and "
-            "report_read renders it code-only too, led by the regenerate line with the bundle's shape "
-            "(analysis_generate). None when it reads."
+            "memo and every report plan is rendered code-only too, its line the retired writer's (which writer wrote "
+            "it, and to regenerate). None when it reads."
         ),
     )
 
@@ -547,8 +541,9 @@ class ReportDocument(EvalBaseModel):
     analysis_basis: AnalysisBasis | None = Field(
         default=None,
         description=(
-            "What wrote that analysis: `memo`, `plan` (the report planner, whose analyses this version renders "
-            "code-only) or `doc` (the report writer, whose stored document is `doc`); None with no analysis."
+            "What wrote that analysis: `memo` (the memo writer) or `plan` (the report planner), retired writers whose "
+            "analyses this version renders code-only, or `doc` (the report writer, whose stored document is `doc`); "
+            "None with no analysis."
         ),
     )
     doc: dict[str, Any] | None = Field(
@@ -1227,8 +1222,8 @@ def _analysis_line(
     # One analysis frozen over a bundle this build cannot read or that does not read back together, or whose document
     # no longer reads, is listed as needing regeneration, never allowed to refuse the listing of every other one. A
     # document that no longer reads is one the report read renders code-only: its line leads with the one regenerate
-    # line. One a retired writer wrote (every plan) leads with that writer's line, and its plan is never loaded. The
-    # frozen bundle is put back together once (``read``, where the caller has).
+    # line. One a retired writer wrote (every memo and every plan) leads with that writer's line, counts no findings,
+    # and its memo or plan is never read. The frozen bundle is put back together once (``read``, where the caller has).
     read = read if read is not None else _frozen(analysis)
     needs_regeneration: str | None = read.unreadable
     if read.bundle is not None:
@@ -1241,9 +1236,7 @@ def _analysis_line(
     unread: str | None = None
     draft = False
     findings = 0
-    if analysis.document is not None:
-        findings = len(analysis.document.findings)
-    elif analysis.report_doc_id is not None:
+    if analysis.report_doc_id is not None:
         findings, draft, unread = _doc_claims(host, analysis.report_doc_id, analysis.scope_id)
     if (retired := retired_generation(analysis.basis)) is not None:
         needs_regeneration = f"{retired} ({needs_regeneration})" if needs_regeneration is not None else retired
@@ -2336,13 +2329,12 @@ def report_read(
       own snapshot, its made line at its foot, read as a stored document is (a figure that no longer resolves prints
       ``—``, a block that no longer draws prints its values or its caption, with one note to regenerate); ``doc`` is
       the document, as ``report-doc/1`` JSON;
-    - ``plan`` (the report planner, a retired writer): the code-only page, its first screen saying in one line which
-      retired writer wrote the analysis, and to regenerate it with ``analysis_generate``;
-    - ``memo`` (an analysis stored before the report planner): laid out as written.
+    - ``memo`` (the memo writer) or ``plan`` (the report planner), retired writers: the code-only page, its first
+      screen saying in one line which retired writer wrote the analysis, and to regenerate it with
+      ``analysis_generate``.
 
     A report document that no longer reads (its version, its model, or a snapshot gone or holding no bundle) reads as a
-    plan does, and so is a memo written over a bundle of another shape (the why names that shape). None is ever
-    refused, and ``needs_regeneration`` carries that one line, as the page prints it, then why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
+    retired writer's analysis does. None is ever refused, and ``needs_regeneration`` carries that one line, as the page prints it, then why in parentheses; the JSON body carries it too, so a stand-in never reads as a campaign never analysed.
 
     **The trials.** By default each aspect's trials section is the census line, the table of its failed and lost
     trials, each row naming its stored result (read one with ``result_get``), and the table of its passed trials;
@@ -2393,9 +2385,8 @@ def report_read(
     :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
-    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or a memo's page refuses what
-        it is laid out over (an aspect with no page, readings of another campaign), which no regeneration line stands
-        in for.
+    :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or the page refuses what it is
+        laid out over, which no regeneration line stands in for.
     """
     if include_sessions and format != "json":
         raise ValidationFailedError(
@@ -2410,8 +2401,8 @@ def report_read(
             else:
                 report = report_doc_report(host, campaign_id, scope_id, report_doc_id, trials=trials)
         except RefusedInput as refused:
-            # Not a page this version no longer reads (that reads code-only): a memo's page refusing what it is laid
-            # out over, which is the caller's to hear as the refusal it is.
+            # Not a page this version no longer reads (that reads code-only): a page refusing what it is laid out over,
+            # which is the caller's to hear as the refusal it is.
             raise ValidationFailedError.refusing(refused) from refused
         analysis_id = report.analysis_id or report.unread_analysis_id
         analysis = get_analysis(host.storage, analysis_id, scope_id) if analysis_id is not None else None

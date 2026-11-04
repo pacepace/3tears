@@ -1,7 +1,7 @@
 """The package's own prompts, declared once: each id as a constant, and the catalogue a host registers them from.
 
-The engine steers three LLM calls of its own with a prompt — the memo writer, the capability proposer and the
-boundary proposer — and each prompt is store-master: a host seeds an empty slot of its
+The engine steers two LLM calls of its own with a prompt — the capability proposer and the boundary proposer — and
+each prompt is store-master: a host seeds an empty slot of its
 prompt registry from the shipped default, and an operator tunes the stored copy with no deploy. So a
 host needs two things from the engine for each one: the id its registry keys the slot by, and where
 the shipped default lives. :data:`SEED_PROMPTS` is both, as
@@ -25,12 +25,11 @@ are prefixed ``eval_`` so a host's own need not avoid any other name.
 
 from __future__ import annotations
 
-from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, KIND_TEXT, SeedPrompt
+from threetears.evals.kernel.prompts.seed import KIND_TEMPLATE, SeedPrompt
 
-#: The memo writer's system prompt slot. No analysis generation resolves it: ``analysis_generate`` runs the report
-#: writer, whose words are the analyst skill the package ships. Its seed is the root's retired one-line text (read
-#: with a ``DeprecationWarning``), never the memo writer's prompt; the slot leaves with the memo writer. The report planner's slot, ``eval_report_plan``, is retired already: nothing seeds or reads it.
-ANALYSIS_GEN_PROMPT = "eval_analysis_gen"
+# The report writer has no prompt slot: its words are the analyst skill the package ships. The retired writers' slots,
+# eval_analysis_gen (the memo writer) and eval_report_plan (the report planner), are neither declared nor seeded here;
+# a host still declaring one resolves the root's retired one-line constant.
 
 #: The capability-rubric proposer's prompt — a sectioned template, seeded into a template registry.
 PROPOSER_PROMPT = "eval_proposer"
@@ -41,12 +40,6 @@ BOUNDARY_GEN_PROMPT = "eval_boundary_gen"
 #: Every prompt the engine ships a default for, in the order a registry seeds them. A host seeds an empty
 #: slot from each entry's :attr:`~SeedPrompt.seed_ref` and never overwrites a stored one.
 SEED_PROMPTS: tuple[SeedPrompt, ...] = (
-    SeedPrompt(
-        kind=KIND_TEXT,
-        prompt_type=ANALYSIS_GEN_PROMPT,
-        seed_module="threetears.evals.analysis",
-        constant="EVAL_ANALYSIS_GEN_DEFAULT",
-    ),
     SeedPrompt(
         kind=KIND_TEMPLATE,
         prompt_type=PROPOSER_PROMPT,
@@ -63,7 +56,6 @@ SEED_PROMPTS: tuple[SeedPrompt, ...] = (
 
 
 __all__ = [
-    "ANALYSIS_GEN_PROMPT",
     "BOUNDARY_GEN_PROMPT",
     "PROPOSER_PROMPT",
     "SEED_PROMPTS",

@@ -25,7 +25,7 @@ from threetears.evals.kernel.numbers import format_number, format_signed
 _DURATION_LADDER: tuple[tuple[str, str, float], ...] = (("ms", "s", 1000.0),)
 
 #: Units written against the number with no space (``42%``), where every other unit takes one (``42 ms``).
-#: Public so a figure stated in prose (:mod:`threetears.evals.analysis.prose_refs`) spaces its unit the same way.
+#: Public so a figure stated in prose spaces its unit the same way.
 UNSPACED_UNITS: tuple[str, ...] = ("%", "°")
 
 #: The unit a share on 0–1 (a pass rate, an accuracy, a precision) is stated in, and the unit a CHANGE in one is

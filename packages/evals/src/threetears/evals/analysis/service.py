@@ -34,7 +34,7 @@ from threetears.evals.analysis.campaign_bundle import (
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
-from threetears.evals.analysis.generator import GenerationTally
+from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.report.model import TrialDetail
@@ -1157,12 +1157,10 @@ def _analysis_page(
     campaign: EvalCampaign | None,
     *,
     trials: TrialDetail,
-    bundle: CampaignBundle | None = None,
 ) -> CampaignReport:
-    """A stored analysis laid out as its campaign's page, over everything frozen with it (``bundle``, where the caller
-    has put it back together already). One a retired writer wrote is code's page over that bundle, standing in for it
-    with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`)."""
-    bundle = bundle if bundle is not None else analysis_campaign_bundle(analysis)
+    """A stored analysis laid out as its campaign's page, over everything frozen with it. One a retired writer wrote is
+    code's page over that bundle, standing in for it with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`)."""
+    bundle = analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
     entries = analysis.campaign_bundle.get("aspects")
@@ -1204,10 +1202,11 @@ def analysis_report(
     its frozen bundle, the memo once on the first screen. The person's call is the campaign's as recorded now. Derived
     on every read and never written back, so a stored analysis stays pivotable.
 
-    An analysis a retired report writer wrote (the report planner's, ``basis="plan"``) is laid out as code's page over
-    the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
+    An analysis a retired report writer wrote (the memo writer's, ``basis="memo"``, or the report planner's,
+    ``basis="plan"``) is laid out as code's page over the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
     which writer wrote it and to regenerate
-    (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`); its stored plan is never read.
+    (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`); its stored memo or plan is
+    never read.
 
     :param storage: Where the analysis is read.
     :ptype storage: AnalysisStore
@@ -1246,17 +1245,15 @@ def campaign_report(
       document is, so it degrades rather than refuses
       (:func:`~threetears.evals.analysis.report_doc_store.read_report_doc`), its made line at its foot; the campaign's
       readings and folds are read off that snapshot's bundle, as the JSON form carries them;
-    - a report plan's (``plan``, the report planner's, a retired writer): the code-only page with the retired writer's
-      line on its first screen
+    - a retired writer's (``memo``, the memo writer's, or ``plan``, the report planner's): the code-only page with the
+      retired writer's line on its first screen
       (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`,
-      :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). Its stored plan is never read;
-    - a memo's: laid out over what was frozen with it, as :func:`analysis_report` lays it out; where it was frozen
-      over a bundle of another shape this version no longer reads, as a plan's is (the code-only page, the regenerate
-      line saying the bundle's shape).
+      :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). Its stored memo or plan is never
+      read.
 
     A report document this version no longer reads — its record does not validate, its snapshot is gone, holds no
-    bundle or no longer reads, or the campaign no longer lays out over it — is laid out as a plan is: the code-only page
-    with the one regenerate line. Neither is ever refused. Either way the page is the campaign's
+    bundle or no longer reads, or the campaign no longer lays out over it — is laid out as a retired writer's is: the
+    code-only page with the one regenerate line. Neither is ever refused. Either way the page is the campaign's
     (:class:`~threetears.evals.analysis.report.CampaignReport`).
 
     Costs no model call: every page is storage reads and arithmetic. It reads one analysis however many the campaign
@@ -1278,8 +1275,6 @@ def campaign_report(
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
-    :raises RefusedInput: A memo's page refuses what it is laid out over: an aspect with no page, a page keyed by a label
-        the campaign does not hold, readings of another campaign. A bundle of another shape is never refused.
     """
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
@@ -1293,19 +1288,12 @@ def campaign_report(
         except RefusedInput as unread:
             return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
         return _doc_page(host, campaign, read, analysis_id=reported.id, trials=trials)
-    if (retired := retired_generation(reported.basis)) is not None:
-        return _stands_in(
-            host, campaign, f"analysis {reported.id}", trials=trials, unread_analysis_id=reported.id, line=retired
-        )
-    try:
-        frozen = analysis_campaign_bundle(reported)
-    except RefusedInput as unread:
-        # A memo frozen over a bundle of another shape is read as a plan is: the code-only page, led by the one
-        # regenerate line, and why (the shape the bundle was frozen at) after it. Only putting the bundle back
-        # together is caught: a page that refuses what it is laid out over (an aspect with no page, readings of
-        # another campaign) is a fault, and reaches the caller.
-        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
-    return _analysis_page(reported, campaign, trials=trials, bundle=frozen)
+    # An analysis that links no report document was written by a retired writer (EvalAnalysis holds exactly one of a
+    # memo, a plan and a document), so nothing of what it stored is read: code's page stands in for it.
+    line = retired_generation(reported.basis) or NO_LONGER_READS
+    return _stands_in(
+        host, campaign, f"analysis {reported.id}", trials=trials, unread_analysis_id=reported.id, line=line
+    )
 
 
 def report_doc_report(

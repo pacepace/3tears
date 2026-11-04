@@ -1,5 +1,11 @@
 """A finding's trace: from what the memo says to the figures and trials behind it, drawn by code, on both pages.
 
+The memo writer is retired, and no door lays a memo out any more (a stored memo reads as code's page with the retired
+writer's line), but the memo renderer stays until it leaves: the aspect page (``build_report``) and the campaign page
+(``build_campaign_report``) each lay a stored memo out. A memo here is stored as the memo writer stored one, its
+cells resolved and its figures filled by code (:func:`stored_memo`), and the campaign page is built over the bundles
+frozen with it, as ``analysis_report`` built it while it read memos (:func:`_memo_campaign_page`).
+
 Each figure in a finding's readings table links to a cell printing the same figure of the same reading at the same
 cell: a contrast's arm or control, a guardrail's mean, a one-arm page's reading, an arm's cost per reply; or, where
 that cell sits in a table shown closed (the bars), to the table's fold. Never to another number: a contrast's paired
@@ -13,7 +19,6 @@ page model refuses a link to a place it does not hold.
 from __future__ import annotations
 
 from html import escape
-import json
 import re
 from collections.abc import Mapping, Sequence
 from html.parser import HTMLParser
@@ -30,26 +35,37 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    analysis_report,
+    build_campaign_report,
+    build_code_only_report,
     build_report,
-    campaign_report,
     campaign_report_html,
-    generate_analysis,
     report_html,
 )
+from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.references import campaign_cell_aliases, cell_aliases, resolve_reading
+from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.model import fold_ids, reading_anchor
-from threetears.evals.analysis.report.words import UNTRACED
+from threetears.evals.analysis.report.words import (
+    UNTRACED,
+    campaign_arm_tags,
+    declared_arm_names,
+    printed_arm_labels,
+)
 from threetears.evals.kernel.authored import EvidenceRef, Finding
-from threetears.evals.kernel.campaign import EvalAnalysis, EvidenceRow, FindingResolution
+from threetears.evals.kernel.campaign import (
+    EvalAnalysis,
+    EvalCampaign,
+    EvidenceRow,
+    FindingResolution,
+)
+from threetears.evals.kernel.storage import EvalStorage
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.campaign_bundle_support import memo as authored_memo
 from packages.evals.tests.g2_support import CANDIDATE, PRODUCTION, answering
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.report_support import toy_report
-from packages.evals.tests.toyhost_memo import MODEL, PROMPT, PROMPT_ID, FixturedClient
+from packages.evals.tests.report_support import memo_analysis_over, toy_report
 from packages.evals.tests.page_contract_support import without_kit_script
 
 #: Production passes 30 of its 36 trials, the candidate 6: a contrast on accuracy the page tests and states.
@@ -81,23 +97,84 @@ def _finding(title: str, measure: str, cells: Mapping[str, str], trials: tuple[s
 async def _generated(
     comparison: Result, bundle: CampaignBundle | AnalysisContextBundle, findings: Sequence[dict[str, Any]] = ()
 ) -> EvalAnalysis:
-    """A stored analysis of ``findings`` over ``bundle``, written by a fixtured writer; a campaign of one arm
-    recommends nothing."""
+    """A stored memo analysis of ``findings`` over ``bundle``; a campaign of one arm recommends nothing."""
     campaign = bundle if isinstance(bundle, CampaignBundle) else campaign_bundle(bundle)
     memo = authored_memo(campaign, list(findings), means="Keep production.")
     if len(campaign.arms) == 1:
         memo["recommendation"] = []
-    analysis, _ = await generate_analysis(
-        campaign,
-        prompt=PROMPT,
-        model=MODEL,
-        client=FixturedClient(json.dumps(memo)),
-        prompt_id=PROMPT_ID,
-        bundle_assembled_at="2026-10-14T19:23:41+00:00",
-        profile=comparison.host.profile,
-    )
+    analysis = memo_analysis_over(campaign, memo, generated_at="2026-10-14T19:23:41+00:00")
     off_loop(comparison.host.storage.save_analysis, analysis)
     return analysis
+
+
+def _memo_campaign_page(storage: EvalStorage, analysis: EvalAnalysis) -> CampaignReport:
+    """The campaign page the memo renderer lays a stored memo out on, over the bundles frozen with it, as
+    ``analysis_report`` laid it out while it read memos: the campaign as the analysis declared it, each aspect's fold
+    its code-only page over its frozen bundle, the memo once."""
+    bundle = analysis_campaign_bundle(analysis)
+    declared = analysis.design_snapshot
+    fields = {
+        "question": declared.question,
+        "declared_at": declared.declared_at,
+        "declared_by": declared.declared_by or "",
+        "arms": list(declared.arms),
+        "aspects": list(declared.aspects),
+        "floors": list(declared.floors),
+    }
+    stored = storage.load_campaign(analysis.campaign_id, analysis.scope_id)
+    campaign = (
+        stored.model_copy(update=fields)
+        if stored is not None
+        else EvalCampaign.model_validate(
+            {
+                "id": analysis.campaign_id,
+                "scope_id": analysis.scope_id,
+                "name": analysis.campaign_id,
+                "subject_id": analysis.subject_id,
+                "subject_kind": analysis.subject_kind,
+                "behavior": analysis.behavior,
+                "created_by": declared.declared_by or "unknown",
+                **fields,
+            }
+        )
+    )
+    entries = analysis.campaign_bundle.get("aspects")
+    fingerprints = {
+        str(entry["aspect"]): str(entry["fingerprint"])
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict) and str(entry.get("fingerprint", "")).startswith(FINGERPRINT_PREFIX)
+    }
+    readings = bundle.readings.relabelled(printed_arm_labels(bundle))
+    labels = readings.arm_labels()
+    tags = campaign_arm_tags(bundle.aspects, readings.control)
+    names = declared_arm_names(bundle.arms)
+    writer = analysis_writer(analysis)
+    reports = {
+        aspect.aspect: build_code_only_report(
+            aspect,
+            assembled_at=analysis.generation.bundle_assembled_at,
+            campaign_name=campaign.name,
+            arm_labels=labels,
+            arm_tags=tags,
+            arm_short_names=names,
+            writer=writer,
+            bundle_fingerprint=fingerprints.get(aspect.aspect),
+            trials="table",
+        )
+        for aspect in bundle.aspects
+    }
+    page = build_campaign_report(
+        campaign,
+        readings,
+        reports,
+        analysis.document,
+        call=campaign.call,
+        recommended_variant_key=analysis.recommended_variant_key,
+        resolutions=analysis.resolutions,
+        trial_ids=bundle.trial_ids(),
+        arms=bundle.arms,
+    )
+    return page.model_copy(update={"analysis_id": analysis.id})
 
 
 async def _analysed() -> tuple[Result, EvalAnalysis]:
@@ -320,7 +397,7 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     assert 'href="#cases"' in nav and "-body" not in nav
     assert 'href="#glossary"' in html and 'href="#g-' not in html
     _trace_links_land_in_sight(html)
-    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    campaign = off_loop(_memo_campaign_page, host.storage, analysis)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
     nav = campaign_html[campaign_html.index("<nav>") : campaign_html.index("</nav>")]
@@ -350,7 +427,7 @@ async def test_a_link_keeps_its_exact_target_where_the_reader_sees_it() -> None:
         "methods",
         "glossary",
     ]
-    campaign = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    campaign = off_loop(_memo_campaign_page, host.storage, analysis)
     campaign_html = campaign_report_html(campaign)
     (fold_id,) = campaign.fold_ids
     folded = campaign_html[campaign_html.index(f'id="a-{fold_id}--trials"') :]
@@ -471,7 +548,7 @@ async def test_a_cost_figure_lands_on_the_scoreboard_where_no_contrast_prints_it
 
 async def test_the_campaign_page_states_each_figure_and_links_the_aspect_s_fold() -> None:
     comparison, analysis = await _analysed()
-    page = off_loop(analysis_report, comparison.host.storage, analysis.id, analysis.scope_id)
+    page = off_loop(_memo_campaign_page, comparison.host.storage, analysis)
     (fold_id,) = page.fold_ids
     (tested,) = _tables(page.blocks, "trace", finding=0)
     assert [column.key for column in tested.columns] == ["arm", "reading", "value"], "one aspect needs no column"
@@ -506,7 +583,7 @@ async def test_a_campaign_of_two_aspects_traces_each_figure_and_trial_to_its_own
     named = f"T{len(billing.trials) + 1}"
     finding = _finding("The candidate answers more requests right", "accuracy", on_tone, (named,))
     analysis = await _generated(first, bundle, [finding])
-    page = off_loop(analysis_report, first.host.storage, analysis.id, analysis.scope_id)
+    page = off_loop(_memo_campaign_page, first.host.storage, analysis)
     assert page.fold_ids[1] == "tone"
     (trace,) = _tables(page.blocks, "trace", finding=0)
     assert trace.columns[0].key == "aspect", "two aspects name each row's"
@@ -532,7 +609,7 @@ async def test_a_campaign_of_two_aspects_traces_each_figure_and_trial_to_its_own
 
 async def test_a_campaign_page_finding_citing_nothing_its_folds_print_says_so() -> None:
     host, analysis, _ = await toy_report()
-    page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    page = off_loop(_memo_campaign_page, host.storage, analysis)
     (trace,) = _tables(page.blocks, "trace", finding=0)
     assert trace.rows and all(row["value"].ref is None for row in trace.rows)
     assert _untraced(page.blocks) == [0]
@@ -575,7 +652,7 @@ async def test_a_report_refuses_one_id_on_two_cells() -> None:
 
 async def test_a_campaign_page_refuses_a_link_anywhere_but_a_fold() -> None:
     host, analysis, _ = await toy_report()
-    page = off_loop(campaign_report, host, analysis.campaign_id, analysis.scope_id)
+    page = off_loop(_memo_campaign_page, host.storage, analysis)
     (trace,) = _tables(page.blocks, "trace", finding=0)
     place = reading_anchor("v:r", "total_ms", "measure")
     stray = trace.model_copy(update={"rows": [{**trace.rows[0], "value": TableCell(value=1, ref=place)}]})

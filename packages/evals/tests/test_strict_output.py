@@ -1,12 +1,13 @@
 """A role whose output must bind says so in its request settings, and the run records it (#686).
 
-The generator sends its contract as a strict ``response_format`` and the judge a reasoning effort, and a
+The memo writer sent its contract as a strict ``response_format`` and the judge a reasoning effort, and a
 router whose default routing reaches a provider that ignores either returns free text (a paid repair, or a
 lost generation) or an unbounded judge. ``ClientRequestSettings.strict_output`` is how the engine says
 "route only to a provider honouring every parameter sent"; a host's client builder reads it from the
 settings it is handed. Pinned here:
 
-- the generator's settings and the judge's carry it, so a refactor that drops it fails;
+- the retired memo writer's settings (a one-minor shim a host still builds a client from, read through the analysis
+  root with its warning) and the judge's carry it, so a refactor that drops it fails;
 - a host's builder reads it off the value it is handed, and it survives a store round trip;
 - a stamp stored before the flag reads False, and its recorded apparatus level is unchanged, while a strict
   stamp reads as a different level, so two runs differing only in it are told apart.
@@ -18,10 +19,6 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis.generator import (
-    DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS,
-    analysis_gen_request_settings_for,
-)
 from threetears.evals.schema.subject import SubjectSnapshot
 from threetears.evals.kernel.host.sweepables import SHARED_CORE
 from threetears.evals.schema.models import ClientRequestSettings, EvalRun
@@ -33,7 +30,10 @@ _SUBJECT = SubjectSnapshot(
 
 
 def _generator_settings() -> ClientRequestSettings:
-    return analysis_gen_request_settings_for(answer_budget_tokens=DEFAULT_ANALYSIS_GEN_ANSWER_BUDGET_TOKENS)
+    with pytest.warns(DeprecationWarning, match="analysis_gen_request_settings_for is retired"):
+        from threetears.evals.analysis import analysis_gen_request_settings_for
+    settings: ClientRequestSettings = analysis_gen_request_settings_for(answer_budget_tokens=32768)
+    return settings
 
 
 def _level(name: str, settings: ClientRequestSettings) -> Any:

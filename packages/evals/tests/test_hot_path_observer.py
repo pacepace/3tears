@@ -28,14 +28,12 @@ import time
 import pytest
 
 from threetears.evals.analysis import assemble_campaign_bundle
-from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel import NotFoundError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.kernel.phase_log import charged, phase_logged, took_in
 from threetears.evals.ops import report_read
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
-from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
 from packages.evals.tests.hot_path_support import HOT_PATH_SCOPE, hot_path_corpus
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, ops_fixture
@@ -295,21 +293,11 @@ class TestTheCallSites:
     def test_a_report_read_that_raises_is_logged_naming_the_refusal(self, caplog: pytest.LogCaptureFixture) -> None:
         fixture = off_loop(ops_fixture)
         host = fixture.host.eval_host
-        campaign_id = fixture.campaign.id
-        # A memo laid out over another campaign's readings: its page refuses, and the read raises that refusal.
-        other = empty_bundle(campaign_id="another-campaign")
-        held = make_analysis(
-            campaign_id=campaign_id,
-            scope_id=TOYHOST_SCOPE,
-            aspects=[analysed_aspect(other)],
-            campaign_bundle=campaign_bundle(other).frame(),
-        )
-        off_loop(host.storage.save_analysis, held)
-
-        with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(ValidationFailedError):
-            report_read(host, campaign_id, TOYHOST_SCOPE, format="markdown")
+        # A campaign the scope does not hold: finding its report refuses, and the read raises that refusal.
+        with caplog.at_level(logging.INFO, logger=LOGGER), pytest.raises(NotFoundError):
+            report_read(host, "no-such-campaign", TOYHOST_SCOPE, format="markdown")
 
         (_, lens, fields) = _lines(caplog)[-1]
         assert lens == "report_read"
-        assert fields["raised"] == "ValidationFailedError"
+        assert fields["raised"] == "NotFoundError"
         assert fields["render_ms"] == "", "it raised before rendering"

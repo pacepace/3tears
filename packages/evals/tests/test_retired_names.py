@@ -23,6 +23,14 @@ The report planner's generation path is retired too, and the memo writer's promp
   but not in ``__all__``.
 - **The memo writer's client settings** still answer what they did, warning that the report writer runs on the host's
   analyst client under ``AnalysisGeneration.limits``.
+
+The memo writer itself is retired:
+
+- **Its prompt, its first request and its prompt version are gone** (``first_request``, ``prompt_content_version``,
+  ``CallAdmission``, and the kernel's ``ANALYSIS_GEN_PROMPT`` slot id), and no ``SEED_PROMPTS`` entry seeds
+  ``eval_analysis_gen`` (``test_prompt_catalogue``).
+- **``generate_analysis`` still imports**, warning that ``analysis_generate`` writes a campaign's report now, and every
+  call refuses with ``ValidationFailedError`` naming ``analysis_generate`` before its client is asked anything.
 """
 
 from __future__ import annotations
@@ -65,13 +73,16 @@ REMOVED = {
         "ReporterCaseStore",
         "ReporterLabel",
         "BudgetedGenerator",
+        "CallAdmission",
         "PreparedGeneration",
         "WriterMessageCheck",
         "estimate_analysis_generation",
+        "first_request",
         "freeze_reporter_case",
         "frozen_case_receipt",
         "live_reporter_cases",
         "prepare_analysis_generation",
+        "prompt_content_version",
         "render_memo_as_written",
         "reporter_calibration",
         "reporter_case_bank",
@@ -90,6 +101,7 @@ REMOVED = {
         "reporter_case_freeze",
         "reporter_cases_list",
     ],
+    "threetears.evals.kernel": ["ANALYSIS_GEN_PROMPT"],
 }
 
 #: Each root's names kept for one minor: what a host binds at import.
@@ -254,6 +266,7 @@ GENERATION_SHIMS = {
     "EVAL_ANALYSIS_GEN_DEFAULT": "drop the eval_analysis_gen slot",
     "EVAL_REPORT_PLAN_DEFAULT": "drop the eval_report_plan slot",
     "analysis_gen_request_settings_for": "AnalysisGeneration.limits (WriterLimits)",
+    "generate_analysis": "analysis_generate writes a campaign's report",
 }
 
 
@@ -270,7 +283,7 @@ def test_a_retired_generation_s_name_warns_naming_its_replacement(name: str) -> 
 def test_the_planner_s_prompt_constant_is_served_but_not_exported_and_the_memo_writer_s_stays_exported() -> None:
     root = importlib.import_module("threetears.evals.analysis")
     assert "EVAL_REPORT_PLAN_DEFAULT" not in root.__all__, "no final release exported it"
-    assert {"EVAL_ANALYSIS_GEN_DEFAULT", "analysis_gen_request_settings_for"} <= set(root.__all__)
+    assert {"EVAL_ANALYSIS_GEN_DEFAULT", "analysis_gen_request_settings_for", "generate_analysis"} <= set(root.__all__)
 
 
 @pytest.mark.parametrize(("name", "slot"), [("EVAL_REPORT_PLAN_DEFAULT", "eval_report_plan"),
@@ -294,3 +307,35 @@ def test_the_memo_writer_s_settings_still_answer_what_they_did() -> None:
     settings = _read("threetears.evals.analysis", "analysis_gen_request_settings_for")
     built = settings(answer_budget_tokens=4000, reasoning_headroom_tokens=2000)
     assert (built.max_tokens, built.reasoning_effort, built.strict_output) == (6000, "medium", True)
+
+
+class _UntouchedClient:
+    """A client the retired memo writer is handed, recording any request it is asked to make."""
+
+    def __init__(self) -> None:
+        self.asked: list[dict[str, Any]] = []
+
+    async def generate(self, **request: Any) -> Any:
+        self.asked.append(request)
+        raise AssertionError("the retired memo writer asked its client for a completion")
+
+
+def test_the_memo_writer_refuses_every_call_naming_analysis_generate_before_its_client_is_asked() -> None:
+    generate_analysis = _read("threetears.evals.analysis", "generate_analysis")
+    client = _UntouchedClient()
+
+    with pytest.raises(ValidationFailedError, match="the memo writer is retired") as refused:
+        asyncio.run(
+            generate_analysis(
+                cast(Any, SimpleNamespace()),
+                prompt="any prompt",
+                model="any-model",
+                client=client,
+                prompt_id="eval_analysis_gen",
+                bundle_assembled_at="2026-11-04T00:00:00+00:00",
+                profile=cast(Any, SimpleNamespace()),
+            )
+        )
+
+    assert "analysis_generate" in str(refused.value) and "analysis_generate" in (refused.value.remedy or "")
+    assert client.asked == []

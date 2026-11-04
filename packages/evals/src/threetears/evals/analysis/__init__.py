@@ -17,12 +17,11 @@ not here. The pipeline:
 - ``bundle`` — :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle`
   composes the reporting lenses into a deterministic, fingerprintable context bundle; the bundle's schema
   and each family of derivation it composes are modules of that package.
-- ``gen_prompt`` + ``generator`` — the memo writer's prompt and the closed, one-shot
-  :func:`~threetears.evals.analysis.generator.generate_analysis` that turns a bundle into a schema-valid
-  ``EvalAnalysis`` + extracted insights. Kept for reading old memos; no generation of an analysis runs it. A new
-  analysis is the report writer's (``analysis_generate``).
-- ``errors`` — ``GenerationError`` / ``SoundnessRefusal``, raised by ``generator`` and
-  caught by ``service``.
+- ``doc_analysis`` — the stored analysis a report document is linked by, and the insights it mints, built once the
+  report writer (``analysis_generate``) has stored the document; ``generation_tally`` — what one generation sent,
+  spent and was refused, which an attempt's record is stored from.
+- ``errors`` — ``UnresolvableReference``, raised where a reference names nothing the decision surface holds, and the
+  generation refusals beside it.
 - ``report`` — the :class:`~threetears.evals.analysis.report.Report` a campaign is read through: one page,
   verdict first, written by code from the evidence bundle beside it, as Markdown and as HTML (the kit's one
   script drawing its charts, or a static page that runs and loads nothing).
@@ -42,7 +41,8 @@ inside the package imports its own modules directly.
 from ``_retired`` with a ``DeprecationWarning`` naming its replacement
 (:func:`~threetears.evals.kernel.retired.served_retired`): the analysis reporter kind's names a host binds, its
 contract, its two kinds and its cell ceiling; the two retired generations' prompt constants, which a host seeds a
-prompt slot from by name, each now one line saying it is retired; and the memo writer's client settings.
+prompt slot from by name, each now one line saying it is retired; the memo writer's client settings; and the memo
+writer's entry point, which refuses every call.
 ``EVAL_REPORT_PLAN_DEFAULT`` is served but not in ``__all__``: no final release exported it.
 """
 
@@ -150,12 +150,6 @@ from threetears.evals.analysis.campaigns import (
 )
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.analysis.depth import Depth, ModelPassHatK, Precision
-from threetears.evals.analysis.generator import (
-    CallAdmission,
-    first_request,
-    generate_analysis,
-    prompt_content_version,
-)
 from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
 from threetears.evals.analysis.reads import (
     BUNDLE_READ_BUDGET,
@@ -392,7 +386,7 @@ from threetears.evals.analysis.cells import (
 )
 from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
 from threetears.evals.analysis.references import CellAddress
-from threetears.evals.analysis.generator import GenerationTally
+from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
@@ -774,7 +768,6 @@ __all__ = [
     "SentSettingsState",
     "SimpsonsFlag",
     "AnalysisGenerationEstimate",
-    "CallAdmission",
     "ProjectionExclusions",
     "LateCriterion",
     "QuestionScope",
@@ -823,7 +816,6 @@ __all__ = [
     "describe_insight_id_filters",
     "difference_was_declared_at_launch",
     "export_results",
-    "first_request",
     "format_number",
     "format_signed",
     "format_significance",
@@ -865,7 +857,6 @@ __all__ = [
     "orphaned_runs",
     "pivot",
     "program_budget",
-    "prompt_content_version",
     "propose_bars",
     "remove_runs_from_campaign",
     "refuse_undeliverable_reporter_template",
@@ -894,12 +885,13 @@ if TYPE_CHECKING:
         ReporterKind,
         ReporterOverlays,
         analysis_gen_request_settings_for,
+        generate_analysis,
         refuse_undeliverable_reporter_template,
         reporter_cell_timeout_s,
         reporter_kind_contract,
     )
 else:
-    # Imported last: the memo writer's settings it serves are the generator's, which the root has loaded by now.
+    # Imported last, beside the module __getattr__ that serves it.
     from threetears.evals.analysis import _retired
 
     def __getattr__(name: str) -> object:

@@ -294,7 +294,6 @@ from threetears.evals.kernel.out_of_run import (
     plan_variation_calls,
 )
 from threetears.evals.kernel.prompts.catalogue import (
-    ANALYSIS_GEN_PROMPT,
     BOUNDARY_GEN_PROMPT,
     PROPOSER_PROMPT,
     SEED_PROMPTS,
@@ -521,7 +520,6 @@ __all__ = [
     "INCOMPLETE_STOP_REASONS",
     "FRONTIER_RANKING_MEASURE",
     "HOST_PRODUCED_MEASURES",
-    "ANALYSIS_GEN_PROMPT",
     "BOUNDARY_GEN_PROMPT",
     "KIND_TEMPLATE",
     "KIND_TEXT",

@@ -11,16 +11,17 @@ template declares, and :func:`reporter_cell_timeout_s` still answers the ceiling
 :data:`EVAL_ANALYSIS_GEN_DEFAULT` by name, through ``importlib``, so each still resolves: to one line saying the
 generation it steered is retired, never to the prompt it was. No generation reads either slot. The memo writer's
 client settings (:func:`analysis_gen_request_settings_for`) still answer what they did, for a host that builds a
-client from them; nothing in the package builds one.
+client from them; nothing in the package builds one. The memo writer itself (:func:`generate_analysis`) keeps its
+signature and refuses every call, naming ``analysis_generate``.
 
 The next minor removes them all.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,10 +30,22 @@ from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s
-from threetears.evals.analysis.generator import analysis_gen_request_settings_for
 from threetears.evals.kernel.retired import REPORTER_RETIRED, Retired
 from threetears.evals.schema.completion import RequestCeiling
-from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
+from threetears.evals.schema.models import (
+    ClientRequestSettings,
+    EvalTemplate,
+    EvalTestCase,
+    JudgedArtifact,
+    KnownReasoningEffort,
+)
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.campaign_bundle import CampaignBundle
+    from threetears.evals.analysis.generation_tally import GenerationTally
+    from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
+    from threetears.evals.kernel.host.profile import HostProfile
+    from threetears.evals.schema.completion import CompletionGenerator
 
 #: Retired: the ``candidate_kind`` a reporter template declares. A stored one still declares it, and no host
 #: registers it now, so its launch is refused as a kind the host has no launcher for.
@@ -191,11 +204,81 @@ MEMO_PROMPT_RETIRED = (
     "the eval_analysis_gen slot"
 )
 
+#: Why the memo writer retired, and what writes a report now, as its warning and its refusal say it.
+MEMO_WRITER_RETIRED = (
+    "the memo writer is retired; analysis_generate writes a campaign's report with the report writer (the analyst and "
+    "the report editor)"
+)
+
+#: What a call to the retired memo writer is told to do instead.
+_MEMO_WRITER_REMEDY = "generate the campaign's report with analysis_generate (threetears.evals.ops.analysis_generate)"
+
 #: Why the memo writer's client settings retired, and what bounds the report writer, as their warning says it.
 MEMO_SETTINGS_RETIRED = (
     "the memo writer's client role is retired; the report writer runs on the host's analyst client, its turns bounded "
     "by AnalysisGeneration.limits (WriterLimits)"
 )
+
+#: The least reasoning headroom :func:`analysis_gen_request_settings_for` takes, as it took it.
+_MIN_MEMO_WRITER_HEADROOM_TOKENS = 1024
+
+
+def analysis_gen_request_settings_for(
+    *,
+    answer_budget_tokens: int,
+    reasoning_effort: KnownReasoningEffort = "medium",
+    reasoning_headroom_tokens: int = 8192,
+) -> ClientRequestSettings:
+    """Retired: the memo writer's client settings, answered as they were; nothing in the package builds that client.
+
+    The output cap is the answer budget plus the reasoning headroom, the request asks for reasoning by effort, and
+    strict output is always set.
+
+    :param answer_budget_tokens: Output room for the memo itself.
+    :ptype answer_budget_tokens: int
+    :param reasoning_effort: How hard the writer reasoned, as an effort word.
+    :ptype reasoning_effort: KnownReasoningEffort
+    :param reasoning_headroom_tokens: Output room left for reasoning, which sizes the cap; at least 1,024.
+    :ptype reasoning_headroom_tokens: int
+    :return: The settings the memo writer's client was built with.
+    :rtype: ClientRequestSettings
+    :raises ValueError: ``reasoning_headroom_tokens`` is below 1,024.
+    """
+    if reasoning_headroom_tokens < _MIN_MEMO_WRITER_HEADROOM_TOKENS:
+        raise ValueError(
+            f"reasoning_headroom_tokens={reasoning_headroom_tokens} leaves the analysis generator too little room to "
+            f"think at any effort: the least is {_MIN_MEMO_WRITER_HEADROOM_TOKENS} (a host's old "
+            "*_reasoning_budget_tokens setting is this headroom now)"
+        )
+    return ClientRequestSettings(
+        max_tokens=answer_budget_tokens + reasoning_headroom_tokens,
+        reasoning_effort=reasoning_effort,
+        strict_output=True,
+    )
+
+
+async def generate_analysis(
+    bundle: CampaignBundle,
+    *,
+    prompt: str,
+    model: str,
+    client: CompletionGenerator,
+    prompt_id: str,
+    bundle_assembled_at: str,
+    prompt_version: str | None = None,
+    tally: GenerationTally | None = None,
+    admit: Callable[[str, str, dict[str, Any] | None], None] | None = None,
+    profile: HostProfile,
+    measuring_writers: bool = False,
+) -> tuple[EvalAnalysis, list[EvalInsight]]:
+    """Retired: the memo writer. Every call refuses before anything is sent, naming what writes a report now.
+
+    :raises ValidationFailedError: Always: the memo writer is retired.
+    """
+    del bundle, prompt, model, client, prompt_id, bundle_assembled_at, prompt_version, tally, admit, profile
+    del measuring_writers
+    raise ValidationFailedError(f"generate_analysis: {MEMO_WRITER_RETIRED}", remedy=_MEMO_WRITER_REMEDY)
+
 
 #: Retired: what the report planner's prompt slot is seeded from now, one line, never the planner's prompt.
 EVAL_REPORT_PLAN_DEFAULT = (
@@ -218,6 +301,7 @@ RETIRED: Mapping[str, Retired] = MappingProxyType(
         "ReporterKind": Retired(ReporterKind, REPORTER_RETIRED),
         "ReporterOverlays": Retired(ReporterOverlays, REPORTER_RETIRED),
         "analysis_gen_request_settings_for": Retired(analysis_gen_request_settings_for, MEMO_SETTINGS_RETIRED),
+        "generate_analysis": Retired(generate_analysis, MEMO_WRITER_RETIRED),
         "refuse_undeliverable_reporter_template": Retired(refuse_undeliverable_reporter_template, REPORTER_RETIRED),
         "reporter_cell_timeout_s": Retired(reporter_cell_timeout_s, REPORTER_RETIRED),
         "reporter_kind_contract": Retired(reporter_kind_contract, REPORTER_RETIRED),
@@ -229,6 +313,7 @@ __all__ = [
     "EVAL_REPORT_PLAN_DEFAULT",
     "MEMO_PROMPT_RETIRED",
     "MEMO_SETTINGS_RETIRED",
+    "MEMO_WRITER_RETIRED",
     "PLANNER_PROMPT_RETIRED",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",
@@ -237,6 +322,7 @@ __all__ = [
     "ReporterKind",
     "ReporterOverlays",
     "analysis_gen_request_settings_for",
+    "generate_analysis",
     "refuse_undeliverable_reporter_template",
     "reporter_cell_timeout_s",
     "reporter_kind_contract",

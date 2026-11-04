@@ -9,8 +9,8 @@ defect to the host (a 500 over MCP or REST), so a refusal of what the caller ask
   that raised it. Anything else a handler raises, a bare ``ValueError`` among them, still propagates.
 - **Translated at the source.** ``campaign_record`` over an analysis frozen at a bundle shape this build no longer
   reads refuses 422 before any result is read and before any aspect's bundle is put back together; ``report_read``
-  over one reads code-only, the shape checked before the evidence is assembled; a memo's page that refuses what it is
-  laid out over is a 422. None of them logs the backstop's WARNING.
+  over one (a memo, a retired writer's) reads code-only, its writer read before the evidence is assembled. Neither
+  logs the backstop's WARNING.
 - **The estimate's view.** ``analysis_estimate`` reads no run and no result, so no refusal over the evidence can
   arise there.
 """
@@ -42,7 +42,7 @@ from threetears.evals.analysis.lenses.export import ExportError
 from threetears.evals.analysis.lenses.frontier import FrontierError
 from threetears.evals.analysis.lenses.history import HistoryError
 from threetears.evals.analysis.lenses.pivot import PivotError
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS
+from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import DesignRefused, UndeclarableAxisError
 from threetears.evals.kernel.status_filter import StatusFilterError
@@ -299,7 +299,7 @@ async def test_a_call_over_an_analysis_frozen_at_another_shape_is_refused_422_be
     assert _backstop_warnings(caplog) == [], "translated by the operation, not by the backstop"
 
 
-async def test_the_report_of_an_analysis_frozen_at_another_shape_reads_code_only_its_shape_checked_before_assembly(
+async def test_the_report_of_an_analysis_frozen_at_another_shape_reads_code_only_its_writer_read_before_assembly(
     evals: MountedTool, caplog: pytest.LogCaptureFixture
 ) -> None:
     store = ReadCountingStore()
@@ -317,36 +317,11 @@ async def test_the_report_of_an_analysis_frozen_at_another_shape_reads_code_only
     assert not outcome.is_error, outcome.text
     assert outcome.structured is not None
     assert (outcome.structured["basis"], outcome.structured["analysis_id"]) == ("code_only", analysis_id)
+    # A memo, which a retired writer wrote: it reads code-only by its writer, its frozen bundle never put back together.
     needs = outcome.structured["needs_regeneration"]
-    assert needs.startswith(f"{NO_LONGER_READS} (") and f"shape {SHIPPED_SHAPE}" in needs
+    assert needs == f"{retired_generation('memo')} (analysis {analysis_id})"
     first_evidence = store.reads.index(store.evidence_reads()[0])
-    assert "eval_analysis" in store.reads[:first_evidence], "the analysis's shape is read before the evidence is"
-    assert _backstop_warnings(caplog) == []
-
-
-async def test_a_memo_page_refusing_what_it_is_laid_out_over_is_a_422_refusal(
-    evals: MountedTool, caplog: pytest.LogCaptureFixture
-) -> None:
-    fixture = off_loop(ops_fixture)
-    # A bundle of this build's shape, so it is put back together, but read off another campaign: the page refuses it.
-    other = empty_bundle(campaign_id="another-campaign")
-    held = make_analysis(
-        campaign_id=fixture.campaign.id,
-        scope_id=TOYHOST_SCOPE,
-        aspects=[analysed_aspect(other)],
-        campaign_bundle=campaign_bundle(other).frame(),
-    )
-    off_loop(fixture.host.eval_host.storage.save_analysis, held)
-    caplog.set_level(logging.WARNING, logger=CATALOGUE_LOGGER)
-
-    outcome = await evals.call(
-        {"action": "report_read", "campaign_id": fixture.campaign.id, "format": "json"},
-        host=fixture.host,
-        caller=CALLER,
-    )
-
-    assert outcome.is_error and outcome.refusal == Refusal(kind="validation_failed", status=422), outcome.text
-    assert "another-campaign" in outcome.text and "\nremedy: " in outcome.text
+    assert "eval_analysis" in store.reads[:first_evidence], "the analysis is read before the evidence is"
     assert _backstop_warnings(caplog) == []
 
 
