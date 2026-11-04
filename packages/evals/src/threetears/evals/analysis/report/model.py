@@ -290,7 +290,7 @@ CAMPAIGN_JSON_SHAPE = 5
 
 
 class CampaignAspectFold(EvalDocumentModel):
-    """One aspect's fold of a campaign's page: the writer's summary of the aspect, then that aspect's own page."""
+    """One aspect's fold of a campaign's page: a retired memo's summary of the aspect, if any, then its own page."""
 
     aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
     shows: str = Field(
@@ -300,7 +300,7 @@ class CampaignAspectFold(EvalDocumentModel):
     summary: list[ReportBlock] = Field(
         default_factory=list,
         description=(
-            "The writer's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
+            "A retired memo's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
             "with no memo, or none for this aspect."
         ),
     )
@@ -329,12 +329,12 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next
+    """A campaign's page: the decision first, then what code read across its aspects, the findings and next
     steps, how the campaign was set up, then one fold per aspect.
 
     **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
-    sections), under the title: the question, or the line saying none was asked; the writer's summary across every
-    aspect; the writer's recommendation and its whys, or a line saying none was written; what warns, one plain line
+    sections), under the title: the question, or the line saying none was asked; a retired memo's summary across
+    every aspect and its recommendation with its whys, or a line saying none was written; what warns, one plain line
     per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
     caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
     the title.
