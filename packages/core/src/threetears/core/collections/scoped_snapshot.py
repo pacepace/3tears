@@ -5591,7 +5591,7 @@ class ScopedSnapshot:
             if not nulls or any(column not in where for column in rest):
                 await self._read_keyset(table, scope, columns, types, where, rest, moved, parts, derived)
             else:
-                await self._read_unpaged(table, scope, columns, where, parts, derived)
+                await self._read_unpaged(table, scope, columns, where, moved, parts, derived)
 
     async def _read_unpaged(
         self,
@@ -5599,15 +5599,20 @@ class ScopedSnapshot:
         scope: str,
         columns: tuple[str, ...],
         where: Mapping[str, Any],
+        moved: Callable[[], Awaitable[bool]] | None,
         parts: list[Any],
         source: str | None,
     ) -> None:
         """the rows ``where`` names that no column is left to page by (each NULL, or pinned): one statement, which
         must hold them all.
 
+        :param moved: asked once the statement answers, as between keyset pages: whether a write has begun since the
+            read started, which stops it
+        :ptype moved: Callable[[], Awaitable[bool]] | None
         :return: nothing
         :rtype: None
         :raises ValueError: when they are more than a page
+        :raises _WriteBegan: when ``moved`` says a write began
         """
         conditions, values = equality_conditions(where)
         select = (
@@ -5616,6 +5621,8 @@ class ScopedSnapshot:
             f"{f' WHERE {conditions}' if conditions else ''} LIMIT {DEFAULT_PAGE_SIZE + 1}"
         )
         rows = [dict(row) for row in await self._l3.fetch(select, *values)]
+        if moved is not None and await moved():
+            raise _WriteBegan(f"a write began while {table.name} of scope {scope!r} was read")
         if len(rows) > DEFAULT_PAGE_SIZE:
             raise ValueError(
                 f"scoped snapshot {self._name}: {table.name} of scope {scope!r} holds more than {DEFAULT_PAGE_SIZE} "

@@ -5917,3 +5917,73 @@ async def test_a_cold_rebuild_a_value_at_a_time_reads_the_rows_whose_value_is_nu
 
     assert _held(snapshot, "TX") == l3.rows("TX"), "the rows whose partition value is NULL were lost"
     await snapshot.stop()
+
+
+_ONE_GEO = SnapshotTable(name="geos", scope_column="state", key=("geo",))
+
+
+async def test_a_row_null_in_every_column_it_is_paged_by_is_read_in_one_statement() -> None:
+    """a key of one column the L1 holds nullable: its NULL row has no column left to page by, and is read by one
+    statement of its own."""
+    rows = [_geo("TX", "g1", "t0", 1), _geo("TX", "g2", "t1", 1), _geo("TX", None, "n0", 1)]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    snapshot = await _geos_snapshot(l3, _ONE_GEO)
+
+    assert _held(snapshot, "TX") == l3.rows("TX"), "the row with no column to page by was lost"
+    unpaged = [sql for sql, _ in l3.statements if "IS NULL" in sql and "ORDER BY" not in sql]
+    assert len(unpaged) == 1 and "LIMIT" in unpaged[0], unpaged
+    await snapshot.stop()
+
+
+async def test_more_than_a_page_of_rows_with_no_column_to_page_by_fails_the_read_and_says_why(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rows NULL in every paged column cannot be read a page at a time: more than a page of them fails the read,
+    loudly, and nothing is published short of them."""
+    monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 3)
+    rows = [_geo("TX", "g1", "t0", 1), *(_geo("TX", None, f"n{i}", 1) for i in range(5))]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(_ONE_GEO,), backend=_geos_backend())
+    l3.epochs = {"TX": 1}
+    caplog.set_level(logging.ERROR)
+
+    await snapshot.start()
+    await _until(lambda: "no column left to page them by" in caplog.text, what="the read to fail and say why")
+
+    assert not snapshot.is_ready
+    assert "enr.s.TX" not in pointers.entries, "a scope was published without its rows"
+    await snapshot.stop()
+
+
+async def test_a_write_beginning_during_a_read_with_no_column_to_page_by_stops_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """the one-statement read is asked whether a write began, as every keyset page is: it stops there, and the read
+    goes no further while the write runs."""
+    rows = [_geo(s, None, f"{s}n", 1) for s in ("TX", "WY")] + [_geo(s, "g1", f"{s}g", 1) for s in ("TX", "WY")]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    snapshot, _, _, _ = _snapshot(
+        l3=l3, tables=(_ONE_GEO,), backend=_geos_backend(), l3_concurrency=1, write_check=timedelta(0)
+    )
+    l3.epochs = {"TX": 1, "WY": 1}
+
+    began: list[str] = []
+
+    def a_write_begins(sql: str, args: tuple[Any, ...]) -> float:
+        # the write begins once, while TX's row with no column to page by is read
+        if not began and "IS NULL" in sql and "ORDER BY" not in sql and args[:1] == ("TX",):
+            began.append("TX")
+            l3.writing = True
+        return 0.0
+
+    l3.delay = a_write_begins
+    caplog.set_level(logging.INFO)
+    await snapshot.start()
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.WAITING, what="the rebuild waits on the write")
+
+    assert "a write began while geos of scope 'TX' was read" in caplog.text, "the read went on past the write"
+    assert not [args for _, args in l3.statements if args[:1] == ("WY",)], "WY was read while the write ran"
+    l3.writing = False
+    await snapshot.wait_ready(timeout=10)
+    assert _held(snapshot, "WY") == l3.rows("WY")
+    await snapshot.stop()

@@ -71,14 +71,18 @@ the next one says how long it has waited from its own start.
 
 ### core: a scope a host no longer announces can be forgotten
 
-**Added:** `VersionedAnswers.forget(scope)` removes a scope's announced-version record, its versions row and every
-answer the row still names. A host whose scopes come and go (reports announces one a deploy) left a record and a
-versions row per scope that nothing removed, so they grew by the scopes of every release. Every change is a
-compare-and-set through the index. The record is deleted only as the call read it: an `announce` that lands between
-the read and the delete is newer and wins, and nothing of the scope is touched (`False`). Answers are retired below
-the order the forgotten record held, so a version answered past it is kept; the versions row goes once it names no
-version. Forgetting a scope with nothing left answers `True`, as many times as it is called; deleted keys are purged
-as a retirement's are.
+**Added:** `VersionedAnswers.forget(scope)` retires a scope a host no longer announces: its announced-version record
+and every answer its versions row names go, and the row stays naming no version, holding its floor. A host whose
+scopes come and go (reports announces one a deploy) left a record, a versions row and the answers per scope that
+nothing removed, so they grew by the scopes of every release; a forgotten scope now leaves one row of a few bytes.
+The floor is what keeps it so: a replica still reading at a retired version is answered and stores nothing, where
+with no floor it wrote the row and its answers back. Every change is a compare-and-set through the index, and the
+record's key is the call's gate: the record is deleted only as the call read it, or, with none, the key taken with
+a marker of the call's own. An `announce` landing before the call is done replaces either and wins: the call puts
+the floor back where it found it and answers `False`, and since the gate is looked at again after the floor rises
+and before any answer is deleted, an announce before then loses no answer. Answers are retired below the order the
+forgotten record held (with no record, the row's newest). Forgetting a retired scope answers `True`, as many times
+as it is called; deleted keys are purged as a retirement's are.
 
 ### core: a whole read of a scope never loses a row to a NULL in a column it is paged by
 

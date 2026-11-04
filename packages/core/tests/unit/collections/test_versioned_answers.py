@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid7
@@ -569,9 +570,10 @@ def _index_key(name: str) -> str:
 
 
 class TestForgettingAScope:
-    async def test_a_scope_forgotten_leaves_no_record_no_versions_row_and_no_answer(self) -> None:
-        """each deploy announces a scope of its own, and nothing removed one: the records and versions rows grew by
-        the scopes of every release. A scope forgotten leaves nothing; another scope is untouched."""
+    async def test_a_scope_forgotten_leaves_no_record_no_answer_and_only_its_floor(self) -> None:
+        """each deploy announces a scope of its own, and nothing removed one: the records, versions rows and answers
+        grew by the scopes of every release. A scope forgotten leaves only its versions row's floor, naming no
+        version; another scope is untouched."""
         nats = FakeNatsClient()
         answers = _replica(nats)
         for order, version in ((1, "v1"), (2, "v2")):
@@ -585,7 +587,8 @@ class TestForgettingAScope:
 
         assert await answers.announced("r1") is None
         assert _index_key("announced_r1") not in bucket.keys()
-        assert _index_key("versions_r1") not in bucket.keys()
+        floor = json.loads(await bucket.get(key=_index_key("versions_r1")) or b"{}")
+        assert floor.get("members") == {} and floor.get("floor") == 2, floor
         assert (_entry_keys(bucket, "v1"), _entry_keys(bucket, "v2")) == ([], [])
         assert (_shard_keys(bucket, "v1"), _shard_keys(bucket, "v2")) == ([], [])
         recorded = await answers.announced("r2")
@@ -622,3 +625,60 @@ class TestForgettingAScope:
         recorded = await announcing.announced("r1")
         assert recorded is not None and recorded.latest.version == "v2", "the newer announce was erased"
         assert len(_entry_keys(bucket, "v2")) == 1, "the newer announce's answers were retired"
+
+
+class _HeldWrite:
+    """holds the next ``update`` of one key until ``release`` is set; ``arrived`` is set when it is held."""
+
+    def __init__(self, bucket: FakeKvBucket, key: str) -> None:
+        self.arrived, self.release = asyncio.Event(), asyncio.Event()
+        update = bucket.update
+
+        async def held(*args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("key") == key and not self.release.is_set():
+                self.arrived.set()
+                await self.release.wait()
+            return await update(*args, **kwargs)
+
+        bucket.update = held  # type: ignore[method-assign]
+
+
+class TestForgettingAScopeNoAnnounceLoses:
+    async def test_an_announce_while_a_scope_with_no_record_is_forgotten_keeps_its_answers(self) -> None:
+        """no record yet: the forget takes the record's key with a marker. Another replica announces the version it
+        answered while the forget raises the floor: the announce replaces the marker and wins. No answer of it is
+        retired, the floor is put back so it stores again, and the forget says it left the scope."""
+        nats = FakeNatsClient()
+        forgetting, announcing = _replica(nats), _replica(nats)
+        await announcing.answer("v5", "a", _Computer("v5"), order=5, scope="r1")
+        bucket = await _bucket(nats)
+        held = _HeldWrite(bucket, _index_key("versions_r1"))
+
+        forget = asyncio.create_task(forgetting.forget("r1"))
+        await asyncio.wait_for(held.arrived.wait(), timeout=2)
+        await announcing.announce("v5", 5, scope="r1")
+        held.release.set()
+
+        assert await asyncio.wait_for(forget, timeout=2) is False
+        recorded = await announcing.announced("r1")
+        assert recorded is not None and recorded.latest.version == "v5", "the announce was erased"
+        assert len(_entry_keys(bucket, "v5")) == 1, "the announced version's answers were retired"
+        compute = _Computer("v5b")
+        await announcing.answer("v5", "b", compute, order=5, scope="r1")
+        assert len(_entry_keys(bucket, "v5")) == 2, "the floor the forget raised still refuses the announced version"
+
+    async def test_a_replica_still_reading_a_forgotten_version_never_writes_it_back(self) -> None:
+        """a pod still serving the release before is answered at its version, and stores nothing: the floor the
+        forget keeps refuses it. With the row gone, it wrote the row and its answers back, never retired again."""
+        nats = FakeNatsClient()
+        current, lagging = _replica(nats), _replica(nats)
+        await current.answer("v1", "a", _Computer("v1"), order=1, scope="r1")
+        await current.announce("v1", 1, scope="r1")
+        assert await current.forget("r1") is True
+
+        assert _text(await lagging.answer("v1", "b", _Computer("late"), order=1, scope="r1")) == "late"
+
+        bucket = await _bucket(nats)
+        assert _entry_keys(bucket, "v1") == [] and _shard_keys(bucket, "v1") == [], "a forgotten version came back"
+        row = json.loads(await bucket.get(key=_index_key("versions_r1")) or b"{}")
+        assert row.get("members") == {}, row
