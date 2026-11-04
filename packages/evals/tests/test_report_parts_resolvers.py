@@ -22,7 +22,7 @@ figure keys (:func:`~threetears.evals.analysis.report.figure_keys.resolve`), the
   place it is read, an arm failing (or borderline on) a row exactly where the gate check fails it (or holds it
   borderline) somewhere; every configuration. A pill says its status in words.
 
-These tests held the planned page until it retired (P4-5); the resolvers they hold survive it.
+These tests held the planned page until it retired; the resolvers they hold survive it.
 """
 
 from __future__ import annotations
