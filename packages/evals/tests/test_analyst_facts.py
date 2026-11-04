@@ -36,7 +36,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.analyst_support import ANALYST_CALLS, KAIRO, TEXT_BUDGET, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from packages.evals.tests.report_shapes_support import SHAPES

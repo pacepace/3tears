@@ -42,7 +42,7 @@ from threetears.evals.analysis.lenses.export import ExportError
 from threetears.evals.analysis.lenses.frontier import FrontierError
 from threetears.evals.analysis.lenses.history import HistoryError
 from threetears.evals.analysis.lenses.pivot import PivotError
-from threetears.evals.analysis.report.campaign.memo_blocks import retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import retired_generation
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import DesignRefused, UndeclarableAxisError
 from threetears.evals.kernel.status_filter import StatusFilterError

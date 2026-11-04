@@ -1,6 +1,6 @@
-"""What a report plan's chart query selects from the report input: the one owner of that selection.
+"""What a chart's query selects from the report input: the one owner of that selection.
 
-A chart's :class:`~threetears.evals.kernel.report_plan.ChartQuery` names a source and filters on it. The chart checks
+A chart's :class:`~threetears.evals.kernel.chart_query.ChartQuery` names a source and filters on it. The chart checks
 (:func:`~threetears.evals.analysis.report.block_spec.chart_faults`) refuse a query that selects nothing, or a forest
 whose rows carry no interval, and a page draws the rows the query selects. Both read the selection here, so what the
 checks pass is what the page draws.
@@ -63,7 +63,7 @@ So a lattice of a factorial campaign draws whether or not the snapshot recorded 
 block draws one, named in ``measures``): its price per point a month at the declared volume, else per 1,000 of what the
 cost counts, each figure read through the key that states it. ``arms`` keeps the steps both of whose options it keeps.
 
-**The filters.** An empty filter keeps everything (:class:`~threetears.evals.kernel.report_plan.ChartQuery`).
+**The filters.** An empty filter keeps everything (:class:`~threetears.evals.kernel.chart_query.ChartQuery`).
 ``arms`` keeps the rows of those arms, where a row is of one arm (an example with no arm is kept; a preference slice
 is of the arm rated against the control); ``measures`` the contrasts, figures, floors and confusion axes on those
 keys; ``strata`` the slices, examples and cells by id; ``aspect`` the contrasts, floors and examples on it (an example
@@ -111,7 +111,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 __all__ = [
     "OVERALL",

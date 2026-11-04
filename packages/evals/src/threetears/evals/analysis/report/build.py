@@ -505,7 +505,7 @@ def _page(
             names,
             source=source,
             writer=writer,
-            memo_disclosures=notes,
+            left_disclosures=notes,
         ),
         # When each criterion set after its readings was set: the detail the first screen's one line points at.
         *aspect_provenance_blocks(bundle),
@@ -3216,10 +3216,10 @@ def _method_blocks(
     *,
     source: ReportSource,
     writer: str | None,
-    memo_disclosures: Sequence[ReportBlock] = (),
+    left_disclosures: Sequence[ReportBlock] = (),
 ) -> list[ReportBlock]:
     """How everything on the page was measured and made: a table, then the engine's disclosures and those the
-    contrasts and charts left for the methods (``memo_disclosures``) in one closed fold."""
+    contrasts and charts left for the methods (``left_disclosures``) in one closed fold."""
     blocks: list[ReportBlock] = [_methods_table(bundle, names, source=source, writer=writer)]
 
     def say(source_of: DisclosureSource, text: str | None) -> None:
@@ -3267,7 +3267,7 @@ def _method_blocks(
         say("measurement", footing)
     _design_disclosures(bundle, say, arm)
     _time_axis_disclosures(surface.time_axis, bundle.time_axis_withheld, say)
-    blocks.extend(memo_disclosures)
+    blocks.extend(left_disclosures)
     return blocks
 
 

@@ -1293,7 +1293,7 @@ def resolve_bar_name(
         :class:`UnreadableBarName`.
     :rtype: BarName | UnreadableBarName
     """
-    # A check's published measure name reads as the check itself: the bundle and a memo cite a check
+    # A check's published measure name reads as the check itself: the bundle and a report cite a check
     # as `goal_state:<check>`, and a bar declared by that name holds the same check to the threshold.
     if (check := goal_check_of(name)) is not None:
         name = check

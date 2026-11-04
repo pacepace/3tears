@@ -20,8 +20,8 @@ review of each round's page. This script turns those reviews into judge-kind cas
 The labels are an agent's (owner ruling R3). The readout calls κ "agreement with the Opus editor", and this script
 never records a judge profile from it: no campaign's judge tier reads ``calibrated`` from these cases::
 
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_calibration --dry
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_calibration --cap-usd 10 --out <dir>
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --dry
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_calibration --cap-usd 10 --out <dir>
 
 ``--dry`` runs every step on a scripted judge that calls no model; its scores carry no signal. The live run needs
 an owner's approval. It reads ``OPENROUTER_API_KEY`` for a judge named ``vendor/model`` and ``ANTHROPIC_API_KEY`` for a
@@ -46,9 +46,9 @@ from typing import Any, Final
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.factories import make_eval_run
-from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY
-from packages.evals.tests.fixtures.report_plans.writer_smoke import JUDGE as SMOKE_JUDGE
-from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER as SMOKE_WRITER
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import RECORDING, REPLAY
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import ToyJudgeCompletion

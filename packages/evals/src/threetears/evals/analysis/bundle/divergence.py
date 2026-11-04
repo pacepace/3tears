@@ -68,7 +68,7 @@ if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime i
 # `not_separated` or `equivalent`, but it is context: no verdict on one movement decides a divergence.
 
 # The distinguishing clause of each reason a cross-scope difference is withheld. The reason
-# reaches the generator as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
+# reaches the writer as a SENTENCE (see ``ScopeDivergence.unattributed_withheld``), and that
 # prose gets tuned for its reader — so the clause that identifies WHICH condition fired is named
 # here and shared with the tests. Rewording the sentence around it is then free, while changing
 # what a test actually pins takes editing this line.

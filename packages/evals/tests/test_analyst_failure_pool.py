@@ -34,7 +34,7 @@ from packages.evals.tests.analyst_support import (
     fixture_snapshots,
     shape_bundle,
 )
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.facts import campaign_overview, examples_list
 from threetears.evals.analysis.analyst.keys import figure_keys_check
@@ -45,7 +45,7 @@ from threetears.evals.analysis.report_input import report_input_digest, report_i
 from threetears.evals.analysis.report.figure_keys import OVERLAP_WORDS, reader_name, resolve
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 
 def _bundles() -> dict[str, CampaignBundle]:

@@ -36,7 +36,7 @@ from threetears.evals.analysis.report_gates import GateCheck, gate_check, routin
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import weakest_margin
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 
 
 def _data(name: str) -> dict[str, Any]:

@@ -46,7 +46,7 @@ from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
 #: Every query field, empty: no filter, no limit.
 _EMPTY: dict[str, Any] = {

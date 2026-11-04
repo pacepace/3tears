@@ -29,7 +29,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import DEFAULT_KIND, make_eval_run, make_template, make_test_case
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle, campaign_over, result_of, run_of

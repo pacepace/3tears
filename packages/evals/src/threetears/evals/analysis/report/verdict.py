@@ -1,4 +1,4 @@
-"""The report's first screen in words: the arms line and the verdict line, both written by code, never by a memo.
+"""The report's first screen in words: the arms line and the verdict line, both written by code, never by the writer.
 
 **The verdict is the first rule that fires**, in this order, and it leads with the result, never a method caveat:
 

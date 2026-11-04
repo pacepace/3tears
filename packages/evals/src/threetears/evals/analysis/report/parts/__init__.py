@@ -1,8 +1,7 @@
 """The parts a page draws with: each chart's resolver, the arms' look, the words code writes, and the tables.
 
 The report document's page (:mod:`~threetears.evals.analysis.report.doc_page`) and the analyst's blocks
-(:mod:`~threetears.evals.analysis.analyst.blocks`) draw with them; the planned page they were written for is retired
-with the report planner. The parts, each its own module:
+(:mod:`~threetears.evals.analysis.analyst.blocks`) draw with them. The parts, each its own module:
 
 - :mod:`~threetears.evals.analysis.report.parts.model`: the parts as documents (the masthead, a decision slot, a
   chart, the arms key), model prose typed, code's lines plain text.

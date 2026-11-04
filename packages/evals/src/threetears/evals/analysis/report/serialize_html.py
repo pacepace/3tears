@@ -8,7 +8,7 @@ as package data, inlined verbatim as the last element of the body. It draws each
 data reaches the page only as JSON escaped into its ``data-chart`` attribute, every string in it text the kit sets as
 text. The one thing the page loads is the package's own too: the kit's fonts (IBM Plex Sans, Sans Condensed and
 Mono), two preconnects and one stylesheet link to the Google Fonts hosts, the same three links the kit's reference
-memos carry. Where a host's policy blocks those hosts the page reads the same in the system faces the kit names after
+pages carry. Where a host's policy blocks those hosts the page reads the same in the system faces the kit names after
 each Plex face. Every other link is a ``#`` link to a place on the page itself. Drill-down is ``<details>``; moving
 between the screens is ``#`` anchors; neither needs the script.
 
@@ -53,7 +53,7 @@ glossary is a ``.method`` list. Light and dark follow the reader's setting, and 
 overrides it (light and dark values) in its own stylesheet, and the series, status and sequential colours stay
 fixed, so a brand colour can never make a fail look like a pass.
 
-The author's words are Markdown; this renders the part of it a memo uses — paragraphs, bullet lists, ``**bold**``
+The author's words are Markdown; this renders the part of it a report uses — paragraphs, bullet lists, ``**bold**``
 and ``code`` — over text escaped first, so nothing an author wrote can become markup.
 """
 
@@ -152,7 +152,7 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     question, the answer, what warns, set apart but never announced over the title). The sections the page reads
     before its folds follow, open (the findings, the next steps, Design & provenance); then one closed ``<section>``
     per aspect, its summary the aspect's label and what code read there, its
-    body the writer's summary of the aspect and the aspect's own page laid out as its page lays it out, a heading
+    body a retired memo's summary of the aspect, where one is held, and the aspect's own page laid out as its page lays it out, a heading
     level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
 
@@ -237,7 +237,7 @@ _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 
 def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[str]:
-    """One aspect's closed fold: the writer's summary of it, then its page's first screen and sections, a heading level
+    """One aspect's closed fold: a retired memo's summary of it where one is held, then its page's first screen and sections, a heading level
     down, every id in it prefixed ``a-<slug>--``.
 
     Ids derived from the slug join it with ``--``, which :func:`~threetears.evals.analysis.report.blocks.fold_ids`

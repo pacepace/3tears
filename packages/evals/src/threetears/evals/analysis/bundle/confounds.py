@@ -46,7 +46,7 @@ _UNEXPLAINED_SURFACE_CONFOUNDS = (
 # Why a surface folded into a FIXED knob without a check still qualifies the comparison. The surface is
 # in the variant key, so every run of an arm resolves one surface; with one arm per level of the knob the
 # fold holds by construction, and a second change made exactly where the knob changed would fold with it.
-# Named on every comparison that folds it that way, so a memo cannot present it as a checked non-confound.
+# Named on every comparison that folds it that way, so a report cannot present it as a checked non-confound.
 _UNVERIFIED_FOLD_CONFOUNDS = (
     "folded, unverified: {surface} is the resolved surface {knob} is written into, and it moved with {knob} "
     "here — but every level of {knob} in these runs was run by one arm only, so nothing in them could have "

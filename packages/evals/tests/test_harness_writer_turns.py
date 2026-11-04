@@ -19,7 +19,7 @@ from typing import ClassVar, Final, get_args
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER
 from packages.evals.tests.report_writer_support import HAND_RECORDINGS, MODEL, kairo_id, written
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals import providers

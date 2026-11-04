@@ -35,7 +35,7 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import StoredCharts, anchor_look, drawn_charts, stored_charts
 from threetears.evals.analysis import (
     BarsChart,
@@ -64,7 +64,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_rows import query_rows
-from threetears.evals.kernel.report_plan import ChartSpec
+from threetears.evals.kernel.chart_query import ChartSpec
 
 #: The Kairo reference plan.
 REFERENCE_PLAN = "r5-reference"

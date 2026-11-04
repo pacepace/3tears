@@ -19,15 +19,15 @@ from packages.evals.tests.test_package_matrix import REPO_ROOT
 #: The writer's path, by module under ``packages.evals.tests``.
 WRITER_PATH: Final = (
     "test_rung_five_writer",
-    "fixtures.report_plans.export_writer_cases",
+    "fixtures.writer_cases.export_writer_cases",
     "writer_host_support",
     "writer_case_support",
     "writer_eval_support",
     "report_writer_support",
-    "fixtures.report_plans.analyst_cli",
-    "fixtures.report_plans.writer_smoke",
-    "fixtures.report_plans.writer_calibration",
-    "fixtures.report_plans.writer_acceptance",
+    "fixtures.writer_cases.analyst_cli",
+    "fixtures.writer_cases.writer_smoke",
+    "fixtures.writer_cases.writer_calibration",
+    "fixtures.writer_cases.writer_acceptance",
 )
 
 #: The planner's and the memo's fixtures, which the writer's path never loads.

@@ -1,7 +1,6 @@
 """The parts a page draws a chart, a table or a decision with: each already resolved, every figure written out.
 
-These were the planned page's parts; the planned page is retired with the report planner, and the report document's
-page (:mod:`~threetears.evals.analysis.report.doc_page`) and the analyst's blocks
+The report document's page (:mod:`~threetears.evals.analysis.report.doc_page`) and the analyst's blocks
 (:mod:`~threetears.evals.analysis.analyst.blocks`) draw with the ones left: the masthead, a decision slot, a chart
 and the arms key. Nothing here reads the input: every figure is already written out, every chart already resolved.
 
@@ -11,7 +10,7 @@ and the arms key. Nothing here reads the input: every figure is already written 
 **Charts and tables are the report's blocks.** A chart is a :class:`~threetears.evals.analysis.report.blocks.ChartBlock`
 carrying the kit's data, a table a :class:`~threetears.evals.analysis.report.blocks.TableBlock`, so each prints as its
 values table, carries the kit's JSON and is laid out by the writers every page shares. A block's ``section`` is
-required of it; a part sets it to :data:`PLANNED_SECTION`, which the page that lays the part out ignores, since that
+required of it; a part sets it to :data:`WRITER_SECTION`, which the page that lays the part out ignores, since that
 page's own order is fixed by its model.
 """
 
@@ -26,15 +25,16 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
 __all__ = [
-    "PLANNED_SECTION",
+    "WRITER_SECTION",
     "PageArmsKey",
     "PageChart",
     "PageMasthead",
     "PageSlot",
 ]
 
-#: The ``section`` every block on a planned page carries: required of a block, ignored by the planned page's writers.
-PLANNED_SECTION: ReportSection = "memo"
+#: The ``section`` every block a writer's page draws carries: required of a block, ignored by that page's serializers.
+#: Its value is the stored and served section literal ``"memo"``, kept as it is on every page and document.
+WRITER_SECTION: ReportSection = "memo"
 
 
 class PageMasthead(EvalDocumentModel):

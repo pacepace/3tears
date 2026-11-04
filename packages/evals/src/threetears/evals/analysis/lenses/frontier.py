@@ -385,7 +385,7 @@ class PassHatKCellReading(EvalBaseModel):
 
 
 #: What "kept out" covers, said once before a contestant's cell lines wherever they are shown (the frontier's text,
-#: the report page's run disclosures, the memo writer's view): only the frontier's pass^k, its interval, its bar and its
+#: the report page's run disclosures): only the frontier's pass^k, its interval, its bar and its
 #: verdict leave a kept-out run out; every other figure of the arm still counts it.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "

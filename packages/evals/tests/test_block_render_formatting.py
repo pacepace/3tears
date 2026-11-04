@@ -51,7 +51,7 @@ from threetears.evals.analysis.report_margins import criterion_place
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 #: Every query field, empty: no filter, no limit.
 _EMPTY: dict[str, Any] = {

@@ -25,9 +25,9 @@ and the code measures stay comparable. Then:
 
 Commands::
 
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_acceptance --dry --variant minimal
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --variant minimal
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
@@ -65,8 +65,8 @@ from pathlib import Path
 from typing import Any, Final, get_args
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
-from packages.evals.tests.fixtures.report_plans.writer_smoke import JUDGE as SMOKE_JUDGE
-from packages.evals.tests.fixtures.report_plans.writer_smoke import WRITER as SMOKE_WRITER
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
+from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
 from packages.evals.tests.report_writer_support import reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import lay_recording

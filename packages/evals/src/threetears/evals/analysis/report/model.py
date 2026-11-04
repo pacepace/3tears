@@ -4,7 +4,7 @@
 campaign compares, its name a qualifier —, the question declared quoted, each criterion set after the readings it judges, and the subhead under
 it, the arms line, the verdict line, the scoreboard and the caveats under it that change how the verdict is read, in normal weight; every other
 qualification is a step down, in the sections), the floors clause by clause where any is declared, what it
-means (the memo's findings, each a table code built and one sentence, then the contrasts against the control), the
+means (the findings, each a table code built and one sentence, then the contrasts against the control), the
 cases, the trials (the census in a line, then a row and a record per failed or lost trial, the passed ones one closed
 table), what was not tested, the methods (a table, then the engine's disclosures folded), and the glossary
 of every term of art the page linked. Every count, rate, interval and cost in it is code's, computed from the
@@ -290,7 +290,7 @@ CAMPAIGN_JSON_SHAPE = 5
 
 
 class CampaignAspectFold(EvalDocumentModel):
-    """One aspect's fold of a campaign's page: the writer's summary of the aspect, then that aspect's own page."""
+    """One aspect's fold of a campaign's page: a retired memo's summary of the aspect, if any, then its own page."""
 
     aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
     shows: str = Field(
@@ -300,7 +300,7 @@ class CampaignAspectFold(EvalDocumentModel):
     summary: list[ReportBlock] = Field(
         default_factory=list,
         description=(
-            "The writer's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
+            "A retired memo's summary of the aspect (what changed, how sure, what it means), as text blocks; empty "
             "with no memo, or none for this aspect."
         ),
     )
@@ -329,12 +329,12 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next
+    """A campaign's page: the decision first, then what code read across its aspects, the findings and next
     steps, how the campaign was set up, then one fold per aspect.
 
     **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
-    sections), under the title: the question, or the line saying none was asked; the writer's summary across every
-    aspect; the writer's recommendation and its whys, or a line saying none was written; what warns, one plain line
+    sections), under the title: the question, or the line saying none was asked; the line saying where the
+    campaign's report is, or that none was written; what warns, one plain line
     per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
     caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
     the title.

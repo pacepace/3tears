@@ -8,12 +8,12 @@ The seam is two operations, and everything else in the runner is subject-agnosti
 This module is the engine half of that seam: the protocol, the object a kind hands
 back, and the two failures the dispatch site has to tell apart. **It is not where a
 kind lives.** A kind is implemented by whoever owns its subject — a host's in its own
-adapter, the reporter kind in analysis — and reaches the runner as a factory, so this
+adapter, the judge kind in run, the report writer kind in ops — and reaches the runner as a factory, so this
 module imports nothing host-side and travels with the engine.
 
 **Which engine package it travels in is a separate question, and the answer is the kernel,
 by elimination.** The extraction is four packages, and a kind is implemented on both sides of
-the run/analysis line: a host's kinds in its adapter, and the reporter kind in analysis. A
+the run/analysis line: a host's kinds in its adapter, and the engine's own above run (the report writer kind). A
 Protocol living in run would give analysis an edge into run, which the package matrix forbids;
 the kernel is the one package every implementer may import beside the schema (a judgement call, recorded here).
 The cost is that the lingua franca UIs and

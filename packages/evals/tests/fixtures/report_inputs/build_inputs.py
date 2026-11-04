@@ -1,6 +1,6 @@
 """Build the five report-plan fixtures' report inputs from the eval report kit's reference data.
 
-Run from the repository root: ``uv run python packages/evals/tests/fixtures/report_plans/build_inputs.py``. It writes
+Run from the repository root: ``uv run python packages/evals/tests/fixtures/report_inputs/build_inputs.py``. It writes
 ``r1/input.json`` to ``r5/input.json`` beside this file, each a valid
 :class:`~threetears.evals.analysis.report_input.ReportInput`, and running it again writes the same bytes.
 

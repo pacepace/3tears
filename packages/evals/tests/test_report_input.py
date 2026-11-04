@@ -5,7 +5,7 @@
 
 - the model and the schema name the same fields, require the same ones, close the same objects and allow the same
   enum values, object by object;
-- each fixture input (``tests/fixtures/report_plans/r1..r5/input.json``) validates as the model and against the
+- each fixture input (``tests/fixtures/report_inputs/r1..r5/input.json``) validates as the model and against the
   schema, and r5's is the kit's real Kairo input, byte for byte;
 - ``build_inputs.py`` reproduces the committed inputs byte for byte, so they never drift from the references or the
   model;
@@ -24,11 +24,11 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 
-from packages.evals.tests.fixtures.report_plans.build_inputs import REFERENCES, build_inputs
+from packages.evals.tests.fixtures.report_inputs.build_inputs import REFERENCES, build_inputs
 from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.report_input import ReportInput
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 SCHEMA = KIT / "schema" / "report-input.schema.json"
 NAMES = ["r1", "r2", "r3", "r4", "r5"]
 
@@ -128,7 +128,7 @@ def test_building_the_inputs_reproduces_the_committed_files(tmp_path: Path) -> N
         assert one.read_bytes() == two.read_bytes()
         committed = FIXTURES / one.relative_to(tmp_path / "first")
         assert one.read_bytes() == committed.read_bytes(), (
-            f"{committed} is stale: rerun packages/evals/tests/fixtures/report_plans/build_inputs.py"
+            f"{committed} is stale: rerun packages/evals/tests/fixtures/report_inputs/build_inputs.py"
         )
 
 

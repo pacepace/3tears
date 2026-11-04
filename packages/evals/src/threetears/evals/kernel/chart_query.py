@@ -9,6 +9,9 @@ words (:data:`PlanChartKind`, :data:`ReferenceKind`).
 
 The report planner's plan, which these charts were first written for, is retired: a stored plan is read only as
 verbatim JSON (:class:`~threetears.evals.kernel.campaign.EvalReportPlan`), never validated against a model here.
+The models' own docstrings still say "planner": they are the JSON schema's descriptions, served in the report
+document's schema (``docs/eval-report-kit/schema/report-doc.schema.json`` holds it byte for byte), so they change only
+with that schema, never in a rename.
 **Field-level constraints only**: whether a chart names things its input holds is
 :func:`~threetears.evals.analysis.report.block_spec.chart_faults`.
 """
@@ -23,9 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from threetears.evals.schema.prose import ModelProse
 
 #: An id a chart names something by: never empty.
-_PlanId = Annotated[str, StringConstraints(min_length=1)]
+_ChartId = Annotated[str, StringConstraints(min_length=1)]
 
-#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a plan's chart
+#: The kit's chart kinds (``analysis.report.charts.KIT_CHARTS``, one name each) plus a plain table: what a chart
 #: and a report document's evidence block (:mod:`threetears.evals.kernel.report_doc`) may be drawn as.
 PlanChartKind = Literal[
     "forest",
@@ -69,7 +72,7 @@ _ChartSource = Literal[
 _ChartTransform = Literal["none", "per_1k", "arm_minus_control"]
 #: What a chart repeats its panel by.
 _SmallMultiplesBy = Literal["none", "arm", "aspect", "task"]
-#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``), on a plan's
+#: What a reference line is: the kit's reference kinds (``analysis.report.charts.ChartReference.kind``), on a
 #: chart or a report document's evidence block.
 ReferenceKind = Literal["floor", "budget", "margin", "no_preference"]
 
@@ -107,7 +110,7 @@ class ChartReference(_PlannedChartReference):
     """A reference line on a chart: what kind of line it is, and the figure it sits at. The planner picks the kind;
     code fills the key from the chart's aspect, and the renderer reads the value from it and writes the label."""
 
-    key: _PlanId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
+    key: _ChartId = Field(description="The figure key of the line's value, e.g. aspect.margin.")
 
 
 class PlannedChart(_Plan):

@@ -1,21 +1,21 @@
-"""Figure keys: the report plan's prose names a figure by its place in the report input, and code writes the number.
+"""Figure keys: a report document's prose names a figure by its place in the report input, and code writes the number.
 
-The planner never types a figure into a sentence (GENERATOR.md §6.2). It writes a **figure key** —
+The analyst never types a figure into a sentence (GENERATOR.md §6.2). It writes a **figure key** —
 ``{<path>|<filter>|<filter>}`` — and :func:`render` replaces each with the value read from the
 :class:`~threetears.evals.analysis.report_input.ReportInput`, spelled by the package's number rule
 (:mod:`threetears.evals.kernel.numbers`, :mod:`threetears.evals.analysis.quantities`). ``{arm:<id>}`` prints an
 arm's short name with its letter tag.
 
 **Separate from the retired memo's figure references.** The memo writer wrote
-``{{<cell>|<measure>|<reading>|<stat>}}`` against a decision surface. A plan writes single braces against the report
-input. The two never mix: a double brace in plan prose is refused, not read as a key.
+``{{<cell>|<measure>|<reading>|<stat>}}`` against a decision surface. A report document writes single braces against
+the report input. The two never mix: a double brace in its prose is refused, not read as a key.
 
 **A path is matched, never split.** Ids carry dots (an arm ``qwen3.8-flash``, a dimension
 ``tone.kept``) and spaces, so a path is matched against a closed vocabulary built from the input: a family keyword,
 then the ids that family takes (arms, aspects, measures, dimensions, strata, read from the input), then a statistic
 from a fixed set. Every complete reading of the path is found. One is the figure. Two are an ambiguity, refused
 naming both. None is refused naming the valid continuations at the point the path stopped matching. Each refusal is
-an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the planner's repair round can correct it.
+an :class:`~threetears.evals.analysis.errors.UnresolvableReference`, so the analyst, told why, can correct it.
 
 **Derived values are descriptive.** ``cost.uplift.<arm>``, ``cost.uplift_range``, every ``loss_share``, every
 ``flip_margin``, ``weakest.*``, a slice's ``vs_control``, a floor's ``held_above`` and ``broken_at`` and a criterion
@@ -64,7 +64,7 @@ derived, and refused, as unstated with why, wherever the figure does not qualify
 many failed trials the snapshot froze as examples and how many the run had; ``overlap.<aspect>.<aspect>.`` whether
 two aspects ran the same cases; ``confusion.<axis>.<arm>.<expected>.<predicted>`` one cell of a classifier's
 confusion; ``cost.gap.<arm>.<arm>.`` two arms' costs apart, per 1,000, per month and as a multiple. A count the input
-does not hold (a planner's input counts no failures, a bare one holds no case ids) is refused as unstated, never read
+does not hold (an uncounted input counts no failures, a bare one holds no case ids) is refused as unstated, never read
 as none.
 
 **Calls that went unanswered, beside the cost.** ``calls.unanswered.<arm>`` (and ``aspects.<aspect>.`` before it)
@@ -87,17 +87,16 @@ per case, ``.control_n_cases`` the control's where they differ, ``.paired`` the 
 more than one aspect, the unqualified form is refused, naming the qualified key for each aspect, rather than reading
 one of them.
 
-**Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that plan prose types outside a key,
+**Digits only inside keys (D3).** :func:`literal_numbers` finds every digit that report prose types outside a key,
 outside a name the input holds, outside a percentile's name (``p95``) and outside one of the package's own unit
 phrases (``per 1,000 replies``, and ``per 1,000 conversations`` where the input's costs count conversations). A
 number a reader sees is code's.
 
-**The grammar is taught by this module.** :func:`figure_key_grammar` writes the planner prompt's section from the
-module's own families, statistics and filters, with examples rendered on a synthetic input, so the prompt can never
+**The grammar is taught by this module.** :func:`figure_key_grammar` writes the analyst's reference section from the
+module's own families, statistics and filters, with examples rendered on a synthetic input, so the section can never
 teach a form this parser refuses. A reader that takes the grammar a page at a time reads the same lines:
 :func:`figure_key_index` (the rules and filters, and a line per group of families) and :func:`figure_key_pages` (each
-group's forms). The planner's section (``planner=True``) leaves out the statistics only an analyst's input states (a
-pass rule's, a contrast's counts), which a planner's input never holds.
+group's forms).
 """
 
 from __future__ import annotations
@@ -128,8 +127,6 @@ from threetears.evals.analysis.report.cost_unit import (
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report.words import arm_tags
 from threetears.evals.analysis.report_input import (
-    ANALYST_ASPECT_FIELDS,
-    ANALYST_CONTRAST_FIELDS,
     Arm,
     Aspect,
     Cell,
@@ -267,13 +264,13 @@ PERCENTILE_NAMES: tuple[str, ...] = ("p50", "p90", "p95", "p99")
 #: An input adds the phrases of what its own costs count (:func:`_input_unit_phrases`: ``per 1,000 conversations``).
 _UNIT_PHRASES: tuple[str, ...] = (PER_THOUSAND_REPLIES, PER_THOUSAND_LABEL, PER_MILLION_REPLIES)
 
-#: A key, as plan prose holds it: one pair of single braces around anything but braces.
+#: A key, as report prose holds it: one pair of single braces around anything but braces.
 _KEY = re.compile(r"\{([^{}]*)\}")
 
 #: The arm form's prefix, ``{arm:<id>}``.
 _ARM_PREFIX = "arm:"
 
-#: A run of digits plan prose typed, with any decimal or thousands separators inside it. ``\d`` is every Unicode
+#: A run of digits report prose typed, with any decimal or thousands separators inside it. ``\d`` is every Unicode
 #: decimal digit (category Nd), so an Arabic-Indic or Devanagari figure is caught as surely as an ASCII one.
 _DIGITS = re.compile(r"\d(?:[.,]?\d)*")
 
@@ -283,7 +280,8 @@ _CONTINUATIONS_SHOWN = 24
 
 @dataclass(frozen=True)
 class FigureKey:
-    """One key as plan prose wrote it: its path, its filters, and where it sits in the text (None when parsed alone)."""
+    """One key as report prose wrote it: its path, its filters, and where it sits in the text (None when parsed
+    alone)."""
 
     path: str
     filters: tuple[str, ...] = ()
@@ -350,15 +348,10 @@ class _Ids:
 
 @dataclass(frozen=True)
 class _Statistic:
-    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar.
-
-    ``analyst_only`` names the options only an analyst's input holds: the planner's grammar does not list them, since
-    its input states none of them, so its prompt reads as it did before they existed.
-    """
+    """A slot a statistic (or a field) from a fixed set fills, and its name in the grammar."""
 
     options: tuple[str, ...]
     name: str = "<statistic>"
-    analyst_only: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -623,13 +616,6 @@ def _n_candidates(report_input: ReportInput, _: tuple[str, ...], path: str) -> F
 
 
 _ASPECT_FIELDS = ("id", "name", "margin", "description", "graded_by", "pass_rule", "pass_threshold", "no_criterion")
-
-#: The aspect fields read off its pass rule, which an input states where it states the rule.
-_PASS_RULE_FIELDS = frozenset({"pass_threshold", "no_criterion"})
-
-#: The aspect fields a planner's grammar leaves out: those only an analyst's input states (the input contract's
-#: ``ANALYST_ASPECT_FIELDS``) and those read off its pass rule.
-_ANALYST_ASPECT_FIELDS = ANALYST_ASPECT_FIELDS | _PASS_RULE_FIELDS
 
 
 def _aspect_field(aspect: Aspect, field: str, path: str) -> Figure:
@@ -2687,7 +2673,7 @@ def _levels_count(report_input: ReportInput, values: tuple[str, ...], path: str)
 
 def _failures_held(report_input: ReportInput, aspects: Sequence[str], path: str) -> list[FailedTrials]:
     """The input's failed-trial counts on ``aspects``, refused as unstated where it counts none on one of them: an input
-    built without them (a planner's, a bare one), or an aspect whose bundle left failures out, reads as not known,
+    built without them (an uncounted one, a bare one), or an aspect whose bundle left failures out, reads as not known,
     never as none."""
     held = report_input.failed_trials
     counted = {row.aspect for row in held} if held is not None else set()
@@ -5244,14 +5230,14 @@ _FAMILIES: tuple[_Family, ...] = (
     _family_of(_Word("n_candidates"), what="how many candidates ran", resolve=_n_candidates),
     _family_of(
         _Word("aspect"),
-        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
+        _Statistic(_ASPECT_FIELDS, "<field>"),
         what="the one asked aspect",
         resolve=_asked_aspect_field,
     ),
     _family_of(
         _Word("aspects"),
         _Ids("<aspect>", _aspects),
-        _Statistic(_ASPECT_FIELDS, "<field>", _ANALYST_ASPECT_FIELDS),
+        _Statistic(_ASPECT_FIELDS, "<field>"),
         what="any aspect, by id",
         resolve=_named_aspect_field,
     ),
@@ -5275,7 +5261,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _keyed("<arm>", lambda ri: dict.fromkeys(c.arm for c in ri.contrasts)),
         _Ids("<measure>", _contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
+        _Statistic(_CONTRAST_STATISTICS),
         what="a corrected contrast of an arm against the control on a measure or judged dimension",
         resolve=_contrast,
         compares=lambda ri, values: _means_of(ri, values[1]),
@@ -5441,7 +5427,7 @@ _FAMILIES: tuple[_Family, ...] = (
         _Word("contrast"),
         _Ids("<arm>", _aspect_contrast_arms),
         _Ids("<measure>", _aspect_contrasted),
-        _Statistic(_CONTRAST_STATISTICS, analyst_only=ANALYST_CONTRAST_FIELDS),
+        _Statistic(_CONTRAST_STATISTICS),
         what="a corrected contrast on one aspect, where `contrast.` reads an arm and measure the input holds on more "
         "than one",
         resolve=_aspect_contrast,
@@ -6196,14 +6182,14 @@ def parse_key(inner: str, span: tuple[int, int] | None = None) -> FigureKey:
 
 
 def keys_in(text: str) -> list[FigureKey]:
-    """Every figure key in a piece of plan prose, in order.
+    """Every figure key in a piece of report prose, in order.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :return: Each key with its span.
     :rtype: list[FigureKey]
-    :raises UnresolvableReference: The text holds a double brace (the memo's grammar, never a plan's), a brace that
-        opens or closes no key, or a key :func:`parse_key` refuses.
+    :raises UnresolvableReference: The text holds a double brace (the memo's grammar, never a report document's), a
+        brace that opens or closes no key, or a key :func:`parse_key` refuses.
     """
     if "{{" in text or "}}" in text:
         raise UnresolvableReference(
@@ -6275,8 +6261,8 @@ def held_figure(key: str, report_input: ReportInput) -> Figure | None:
     """The figure a key built by code names, or None where the input holds none for it.
 
     For a table's cell, whose key code builds from an id the input holds and a family it reads, so a key that does
-    not resolve means the input holds no such figure there, which the cell says with a dash. Never for a key a planner
-    or an analyst wrote, which is refused by name (:func:`resolve`).
+    not resolve means the input holds no such figure there, which the cell says with a dash. Never for a key an analyst
+    wrote, which is refused by name (:func:`resolve`).
 
     :param key: The path, without braces or filters.
     :ptype key: str
@@ -6848,9 +6834,9 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
 
 
 def render(text: str, report_input: ReportInput, arm_names: Mapping[str, str]) -> str:
-    """Replace every figure key in plan prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
+    """Replace every figure key in report prose with its value, and every ``{arm:<id>}`` with the arm's name and tag.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :param report_input: The report input the plan was written against.
     :ptype report_input: ReportInput
@@ -6908,7 +6894,7 @@ def _allowed_names(report_input: ReportInput) -> set[str]:
 
 
 def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int]]:
-    """Every number plan prose typed itself (GENERATOR §6.2's D3 rule), as ``(start, end)`` offsets into ``text``.
+    """Every number report prose typed itself (GENERATOR §6.2's D3 rule), as ``(start, end)`` offsets into ``text``.
 
     Keys are set aside first; then every name the input holds that carries digits (arm ids and names, served models,
     settings as displayed, aspect, measure, dimension, stratum, task and factor ids and names, the campaign's name,
@@ -6917,7 +6903,7 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
     bounds it on both sides. Any Unicode decimal digit left is an offence (``95 percent``, ``1,000 cases``). An id
     made only of digits (an arm ``1017``) is never set aside: prose writes ``{arm:1017}``.
 
-    :param text: Plan prose.
+    :param text: Report prose.
     :ptype text: str
     :param report_input: The report input the plan was written against.
     :ptype report_input: ReportInput
@@ -6942,9 +6928,9 @@ def literal_numbers(text: str, report_input: ReportInput) -> list[tuple[int, int
     return [match.span() for match in _DIGITS.finditer("".join(masked))]
 
 
-# --- the grammar, as the planner prompt teaches it -----------------------------------------------------------------
+# --- the grammar, as the analyst's reference section teaches it ----------------------------------------------------
 
-#: The heading the planner prompt's figure-key section opens with.
+#: The heading the figure-key section opens with.
 GRAMMAR_HEADING = "Figure keys"
 
 
@@ -7169,16 +7155,11 @@ _FILTER_EXAMPLES: dict[str, str] = {
 }
 
 
-def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str], *, planner: bool = False) -> str:
-    """One family's line in the grammar: its form, what it reads, its statistics (a planner's without those only an
-    analyst's input states), what of it is derived, and its example rendered on the made-up input."""
+def _family_line(family: _Family, example: ReportInput, names: Mapping[str, str]) -> str:
+    """One family's line in the grammar: its form, what it reads, its statistics, what of it is derived, and its example
+    rendered on the made-up input."""
     statistic = family.statistic()
-    offered = (
-        [option for option in statistic.options if not (planner and option in statistic.analyst_only)]
-        if statistic
-        else []
-    )
-    listed = f" ({statistic.name}: {', '.join(offered)})" if statistic else ""
+    listed = f" ({statistic.name}: {', '.join(statistic.options)})" if statistic else ""
     tag = (
         (f" {family.derived_note}" if family.derived_note else " Derived: descriptive, no interval.")
         if family.derived
@@ -7246,17 +7227,14 @@ def _grammar_filters(example: ReportInput, names: Mapping[str, str]) -> list[str
 _EXAMPLE_NAMES: Mapping[str, str] = {"base": "Baseline", "fast.v2": "fast.v2"}
 
 
-def figure_key_grammar(*, planner: bool = False) -> str:
+def figure_key_grammar() -> str:
     """Write the section that teaches figure keys, from this module's own families and filters: the whole grammar, as
-    the analyst's reference pages hold it, or the planner prompt's.
+    the analyst's reference pages hold it.
 
     Each family's form and statistics, each filter and every example come from the code that parses and renders
     them; the examples are rendered on a made-up input, so a change to a family, a filter or a spelling reaches the
-    planner with the code.
+    analyst with the code.
 
-    :param planner: Write the planner prompt's section, without the statistics only an analyst's input states (a pass
-        rule's, a contrast's counts), which a planner's input never holds.
-    :ptype planner: bool
     :return: The section, heading first.
     :rtype: str
     :raises UnresolvableReference: An example no longer resolves: the grammar changed under this function, and every
@@ -7264,7 +7242,7 @@ def figure_key_grammar(*, planner: bool = False) -> str:
     """
     example = _example_input()
     lines = [f"## {GRAMMAR_HEADING}", *_grammar_rules(), "Paths:"]
-    lines += [_family_line(family, example, _EXAMPLE_NAMES, planner=planner) for family in _FAMILIES]
+    lines += [_family_line(family, example, _EXAMPLE_NAMES) for family in _FAMILIES]
     lines += _grammar_filters(example, _EXAMPLE_NAMES)
     return "\n".join(lines)
 

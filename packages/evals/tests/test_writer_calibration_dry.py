@@ -1,6 +1,6 @@
 """The writer calibration set, in its dry mode: the Opus editor's reviews as judge cases, and a judge arm that reads them.
 
-``fixtures/report_plans/writer_calibration.py`` is run live only with an owner's approval (reset P2, chunk B). Its dry
+``fixtures/writer_cases/writer_calibration.py`` is run live only with an owner's approval (reset P2, chunk B). Its dry
 mode builds everything the live run judges, on a scripted judge that calls no model. These tests hold that:
 
 - every page comes from a replay through the writer kind at revisions 0, 1 or 2, paired with its own round's review;
@@ -22,7 +22,7 @@ from math import comb
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.writer_calibration import (
+from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
     ABSOLUTE_SET,
     DRY_JUDGE,
     PAIR_SET,

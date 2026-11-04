@@ -149,7 +149,7 @@ def doc_analysis_over(bundle: CampaignBundle) -> tuple[EvalAnalysis, list[EvalIn
         report_input(bundle),
         stored,
         input_digest="held-in-hand",
-        generator_model=ANALYST_MODEL,
+        writer_model=ANALYST_MODEL,
         skill_digest=load_skill().digest,
         bundle_assembled_at=utc_now_iso(),
         token_cost=None,

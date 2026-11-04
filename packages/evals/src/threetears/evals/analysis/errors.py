@@ -2,8 +2,9 @@
 
 This module is their one import path: callers (the eval service, the REST and MCP layers, tests)
 name them from here. :mod:`threetears.evals.analysis.references`, which resolves a reference against the decision
-surface, raises :class:`UnresolvableReference`. The memo writer that raised the other two is retired; the report
-planner's completion (:mod:`threetears.evals.analysis.report_plan_facts`) still names them until it leaves.
+surface, raises :class:`UnresolvableReference`, and so do the figure keys and the analyst's tools. The writers that
+raised :class:`GenerationError` and :class:`SoundnessRefusal` themselves (the memo writer and the report planner) are
+retired; both stay as the bases a caller catches.
 """
 
 from __future__ import annotations

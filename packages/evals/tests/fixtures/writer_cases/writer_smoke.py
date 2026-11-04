@@ -7,8 +7,8 @@ family scores the stored page on the editor rubric's seven items. The two runs t
 promotion read answers on it. This proves the pipeline runs; it decides nothing, and the skill ledger is never
 written::
 
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_smoke --dry
-    uv run python -m packages.evals.tests.fixtures.report_plans.writer_smoke --cap-usd 5 --out <dir>
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_smoke --dry
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_smoke --cap-usd 5 --out <dir>
 
 ``--dry`` drives the same path on scripted models that write nothing, so every refusal before a model is called shows
 up for free. The live run reads ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (the judge) from the

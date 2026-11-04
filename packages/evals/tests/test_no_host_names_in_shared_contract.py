@@ -200,8 +200,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "kernel/carried_measures.py",
     "kernel/surface.py",
     "kernel/authored.py",
-    # The report plan the planner writes and the renderer draws: the engine's vocabulary for a campaign page.
-    "kernel/report_plan.py",
+    # The chart vocabulary a report document's charts are asked in and drawn by: the engine's vocabulary for a page.
+    "kernel/chart_query.py",
     # The snapshot every analyst tool reads: one report input frozen whole, in the engine's vocabulary.
     "kernel/report_snapshot.py",
     # The report document the analyst writes from a snapshot, and its stored form: the engine's vocabulary too.

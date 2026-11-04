@@ -668,7 +668,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`AsRecordedReporterKind`** · class · Retired: a case's recorded memo replayed. Building one refuses, naming the writer kind that replaces it.
 - **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
-- **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next steps, how the campaign was set up, then one fold per aspect.
+- **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the findings and next steps, how the campaign was set up, then one fold per aspect.
 - **`ChartBlock`** · *host contract* · model · One of the charts a report draws, with every value it draws, so it prints as a table too.
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
@@ -1732,7 +1732,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |
 | `min_relative_change` | `number` | The smallest move from the baseline a flag counts, as a fraction; 0 lets the test decide. |
-| `model` | `string` or `null` | The analysis generator's model; omitted for the host's. A model outside the host's allowed writers is refused before anything is spent. |
+| `model` | `string` or `null` | The report writer's model; omitted for the host's. A model outside the host's allowed writers is refused before anything is spent. |
 | `models` | array of `string` | Candidate models, one arm and one run each; empty runs the kind's own default. |
 | `n_test_cases` | `integer` or `null` | A case count to price each planned arm at in place of its plan's, for a what-if grid. |
 | `n_variations` | `integer` | New cases to generate from the template's variation axes; 0 runs its stored cases. |

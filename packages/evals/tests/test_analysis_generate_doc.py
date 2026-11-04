@@ -476,7 +476,7 @@ def _minted(
         report_input,
         stored,
         input_digest="0" * 64,
-        generator_model=ANALYST_MODEL,
+        writer_model=ANALYST_MODEL,
         skill_digest="skill",
         bundle_assembled_at=assembled_at,
         token_cost=None,

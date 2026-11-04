@@ -1,6 +1,6 @@
 """Resolve the model's references against the decision surface — the one place a number is filled.
 
-The generating model names WHERE a number lives — a cell and a measure (or a judged dimension) —
+A model names WHERE a number lives — a cell and a measure (or a judged dimension) —
 and this module reads the figure off the analysis's :class:`~threetears.evals.kernel.surface.DecisionSurface`.
 Every code-filled number on an analysis goes through :func:`resolve_reading`: its evidence rows, and the
 interval rows the report draws under a finding. One
@@ -8,13 +8,12 @@ resolver rather than one per consumer, because two lookups of "the value of this
 cell" are two answers to one question, and the input that separates them is the one nobody wrote a
 fixture for.
 
-A reference that names nothing the surface holds is an :class:`UnresolvableReference`, which the
-generator's repair round feeds back — the message names what the cell DOES hold, so the model can
-pick a real reading instead of guessing again.
+A reference that names nothing the surface holds is an :class:`UnresolvableReference`, whose
+message names what the cell DOES hold, so the model told of it can pick a real reading instead of guessing again.
 
 **The writer names a cell by a short alias** (``c1``, ``c2``, …) that :func:`cell_aliases` mints and
 :func:`cell_of_alias` reads back — one mapping for evidence rows, decisions and prose alike.
-The generator translates every alias to the cell's full ``cell_ref`` before resolving or storing
+Every alias is translated to the cell's full ``cell_ref`` before resolving or storing
 anything, so everything below this seam, and every stored analysis, carries the full identity.
 
 **The point estimate is the cell's MEAN**, over its non-faulted observations — the population every

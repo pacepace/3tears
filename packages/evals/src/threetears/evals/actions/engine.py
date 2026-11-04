@@ -236,10 +236,10 @@ RunIds = Annotated[
     list[str],
     Field(description="Runs, by id, as runs_list names them; every one in the caller's scope."),
 ]
-GeneratorModel = Annotated[
+WriterModel = Annotated[
     str | None,
     Field(
-        description="The analysis generator's model; omitted for the host's. A model outside the host's allowed "
+        description="The report writer's model; omitted for the host's. A model outside the host's allowed "
         "writers is refused before anything is spent."
     ),
 ]
@@ -569,7 +569,7 @@ class CampaignRecordParams(EvalBaseModel):
             )
         ),
     ] = []
-    # The analysis whose memo the call was made over; omitted for a call on code's readings alone. One name, one
+    # The analysis whose report the call was made over; omitted for a call on code's readings alone. One name, one
     # meaning across the tool: described as every other action's analysis_id is.
     analysis_id: Annotated[
         str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
@@ -609,7 +609,7 @@ class AnalysisGenerateParams(EvalBaseModel):
     """``analysis_generate`` and ``analysis_estimate``."""
 
     campaign_id: CampaignId
-    model: GeneratorModel = None
+    model: WriterModel = None
 
 
 class ReportReadParams(EvalBaseModel):

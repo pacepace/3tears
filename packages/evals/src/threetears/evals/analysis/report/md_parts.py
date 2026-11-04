@@ -1,7 +1,7 @@
 """The pieces of a report's Markdown every writer shares: a table, a chart as the table of its values, and the
 escapes that keep someone else's words from becoming structure.
 
-One owner for each, so a campaign's memo page and a page built from a report plan print a table or a chart alike,
+One owner for each, so a campaign's page and a report document's page print a table or a chart alike,
 line for line. Nothing quoted is structure: a line of someone else's words opens no block of its own (:func:`inert`),
 a quoted string is a code span or a fence no run of backticks inside it can close (:func:`code_span`,
 :func:`fenced`), and a table cell is one line with its pipes escaped.

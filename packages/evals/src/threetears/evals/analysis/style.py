@@ -14,8 +14,8 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
 - :func:`lint_prose` holds a sentence to the rules. The package's own tests apply them to the text code writes (the
   page, whole); a host may apply them to its own. Nothing here reads, rewrites or drops what a model wrote; the
-  writer's prompt states the same rules, and a host's reporter eval can measure whether a memo keeps them, on the
-  dimensions its rubric declares.
+  writer's skill states the same rules, and a host's report_writer eval can measure whether a report keeps them, on
+  the dimensions its rubric declares.
 """
 
 from __future__ import annotations

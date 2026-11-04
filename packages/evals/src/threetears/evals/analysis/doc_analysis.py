@@ -83,7 +83,7 @@ def doc_analysis(
     stored: EvalReportDoc,
     *,
     input_digest: str,
-    generator_model: str,
+    writer_model: str,
     skill_digest: str,
     bundle_assembled_at: str,
     token_cost: float | None,
@@ -100,8 +100,8 @@ def doc_analysis(
     :param input_digest: The digest of the snapshot's report input (``EvalReportSnapshot.report_input_digest``): what
         the writer read, recorded as the analysis's ``user_message_digest``.
     :ptype input_digest: str
-    :param generator_model: The model the report was written with, as the client names it.
-    :ptype generator_model: str
+    :param writer_model: The model the report was written with, as the client names it.
+    :ptype writer_model: str
     :param skill_digest: The analyst skill's digest (``load_skill().digest``), the provenance.
     :ptype skill_digest: str
     :param bundle_assembled_at: When the bundle was assembled (ISO-8601), the cutoff a re-assembly reads the insight
@@ -126,7 +126,7 @@ def doc_analysis(
     provenance = GenerationProvenance(
         prompt_id=skill_digest,
         prompt_version=skill_digest,
-        generator_model=generator_model,
+        generator_model=writer_model,
         bundle_fingerprint=bundle.fingerprint(),
         generated_at=stored.created_at,
         bundle_assembled_at=bundle_assembled_at,

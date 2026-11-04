@@ -25,7 +25,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaign_over, result_of, run_of
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.analyst.snapshot import analyst_input

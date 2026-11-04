@@ -1,6 +1,6 @@
 # W3 acceptance: the report writer's live runs (2026-10-28)
 
-The fourth prototype, and the first one the report writer made itself: `write_report`, run live through the dev CLI (`tests/fixtures/report_plans/analyst_cli.py write`) on `claude-opus-5-5` with the first-party key, priced at Anthropic's published rates. Each directory is one run on one fixture snapshot: Kairo round 2, and the six misfits. The analyst and the report editor are sessions of one loop, and the editor reviewed the strict page. Each run was blind: it withheld its own source note (`replay.json`'s `withhold`) and the INDEX line, as in prototype 3. `test_report_docs_accepted.py` holds the stored records to the plan's bar, and `test_report_writer_replay.py` replays every recording.
+The fourth prototype, and the first one the report writer made itself: `write_report`, run live through the dev CLI (`tests/fixtures/writer_cases/analyst_cli.py write`) on `claude-opus-5-5` with the first-party key, priced at Anthropic's published rates. Each directory is one run on one fixture snapshot: Kairo round 2, and the six misfits. The analyst and the report editor are sessions of one loop, and the editor reviewed the strict page. Each run was blind: it withheld its own source note (`replay.json`'s `withhold`) and the INDEX line, as in prototype 3. `test_report_docs_accepted.py` holds the stored records to the plan's bar, and `test_report_writer_replay.py` replays every recording.
 
 ## Cost per report
 

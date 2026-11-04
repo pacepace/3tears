@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host, snapshot_ids
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host, snapshot_ids
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_doc_support import converted_doc
 from packages.evals.tests.writer_host_support import CALLER

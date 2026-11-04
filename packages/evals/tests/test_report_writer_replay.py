@@ -29,7 +29,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.analyst_cli import RECORDING, REPLAY, snapshot_ids
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import RECORDING, REPLAY, snapshot_ids
 from packages.evals.tests.report_writer_support import RecordedModel, replay_cases, written
 from threetears.evals.actions.report_writing import ReportNotStored, ReportWritten
 from threetears.evals.testing import RecordedTurns

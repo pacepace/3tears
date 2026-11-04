@@ -1186,7 +1186,7 @@ class EvalReportPlan(EvalDocumentModel):
 #: Where one generation attempt stands. ``running``: started and not yet ended — the record a background
 #: generation writes as it starts, so its job is answerable from the store. How one ended: ``stored``: an
 #: analysis was produced and persisted.
-#: ``refused``: the generator finished and its output was refused, and so was the repair's.
+#: ``refused``: the writer finished and its output was refused, and so was the repair's.
 #: ``failed``: anything else that ended the attempt with an error — a call the provider cut short,
 #: a precondition refused before any call, a provider call that raised, a failed write.
 #: ``cancelled``: the attempt was cancelled mid-flight, by a caller's budget or disconnect, or by a shutdown —

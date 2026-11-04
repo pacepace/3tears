@@ -1,5 +1,5 @@
 """A unit written right after a figure key that prints it, read by the prose checks every report document's prose goes
-through (``threetears.evals.analysis.report_prose_checks.unit_faults``, invariant 1 of the report document's checks).
+through (``threetears.evals.analysis.report_doc_prose.unit_faults``, invariant 1 of the report document's checks).
 
 Each case edits a field of a stored report plan (``fixtures/plan_charts/``) as the case says, and reads it against
 its own input.
@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import PLAN_CHARTS
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report_prose_checks import unit_faults
+from threetears.evals.analysis.report_doc_prose import unit_faults
 
 #: The Kairo reference plan's fields the cases edit.
 _RECOMMENDATION = ("r5-reference", "decision.slots[0].text")

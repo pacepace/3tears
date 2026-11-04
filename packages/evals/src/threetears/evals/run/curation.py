@@ -179,11 +179,11 @@ _ARCHIVE_THE_RUN_INSTEAD = (
 
 #: Why an insight has no archive to be pointed at, said rather than implied.
 #:
-#: Not an oversight and not a gap to close. An insight is fed back to the generator
+#: Not an oversight and not a gap to close. An insight is fed back to the writer
 #: as PRIOR CONTEXT on every later generation over the same subject, so a wrong one
 #: keeps steering analyses until it is gone. Marking it archived without every reader
 #: honouring the mark — the bundle's ``prior_insights`` read included — would leave
-#: the falsehood in the generator's input while *looking* handled, which is strictly
+#: the falsehood in the writer's input while *looking* handled, which is strictly
 #: worse than either deleting it or leaving it alone. So the ANALYSIS is archived, and
 #: the insights it minted are deleted. The asymmetry is the rule, not a shortfall against it.
 #:

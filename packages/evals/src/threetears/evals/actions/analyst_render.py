@@ -20,7 +20,7 @@ from pydantic import BeforeValidator, Field, ValidationError, field_validator, m
 from threetears.evals.actions.catalogue import Action, Caller
 from threetears.evals.actions.params import ARM_FORMS, Limit, Offset, SnapshotId, written_arm
 from threetears.evals.actions.render import page_fits, render_cited
-from threetears.evals.kernel.report_plan import ChartQuery, ChartReference, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, ChartReference, PlannedChart
 from threetears.evals.ops.analyst_blocks import BLOCK_ROWS, BlockCatalog, RenderedBlock, block_catalog, block_render
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel

@@ -1,7 +1,7 @@
 """The fixture snapshots every analyst tool is held to, and the calls each tool is held to them with.
 
 The inputs are the reference inputs r1 to r5 (bare report inputs, as a local analyst server seeds them), the misfit
-inputs (:mod:`packages.evals.tests.fixtures.report_plans.misfits`), and the Kairo round 2 campaign frozen from its
+inputs (:mod:`packages.evals.tests.fixtures.report_inputs.misfits`), and the Kairo round 2 campaign frozen from its
 bundle with the analyst's example pool, so a snapshot holding a bundle is held to the same contract as a bare one.
 
 :data:`ANALYST_CALLS` says how each analyst action is called on one input. An action it does not name is called with
@@ -16,8 +16,8 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import Any
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle
-from packages.evals.tests.fixtures.report_plans.misfits import MISFITS, NAMES, reference_data
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.actions import Action, analyst_actions
@@ -32,7 +32,7 @@ from threetears.evals.analysis.report_decision import every_caveat
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 __all__ = [
     "ANALYST_CALLS",

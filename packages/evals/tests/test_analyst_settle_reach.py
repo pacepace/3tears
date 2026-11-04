@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.analyst_support import budget_inputs, fixture_inputs
-from packages.evals.tests.fixtures.report_plans.misfits import gates_in_each_task, reference_data
+from packages.evals.tests.fixtures.report_inputs.misfits import gates_in_each_task, reference_data
 from threetears.evals.analysis.analyst.compare import arms_compare
 from threetears.evals.analysis.analyst.settle import SettleRow, settle_cases
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure

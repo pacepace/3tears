@@ -30,7 +30,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import memory_storage
-from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.report_doc_support import snapshot_of

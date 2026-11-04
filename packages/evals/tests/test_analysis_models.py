@@ -43,7 +43,7 @@ from packages.evals.tests.factories import (
     make_campaign,
     memory_storage,
 )
-from packages.evals.tests.fixtures.report_plans.misfits import reference_data
+from packages.evals.tests.fixtures.report_inputs.misfits import reference_data
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> dict[str, Any]:

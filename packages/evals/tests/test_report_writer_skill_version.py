@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.analyst_cli import seeded_host
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER
 from packages.evals.tests.report_writer_support import (

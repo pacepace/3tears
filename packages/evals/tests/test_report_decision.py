@@ -34,7 +34,7 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 ASPECT = "character adherence (v2)"
 FLOOR = "character adherence (v2)/rate_drop/*"
 RUNS = ("01a170ab-d2da-750d-a1e3-f4b43716844d", "01a17121-6e85-732d-ab3a-cf86aed8cdc6")

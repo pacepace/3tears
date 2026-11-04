@@ -43,7 +43,7 @@ from threetears.evals.kernel.campaign import EvalReportPlan, ReportPlanProvenanc
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap, GapToolCall
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession, report_session_id
 from packages.evals.tests.report_doc_support import converted_doc
-from packages.evals.tests.fixtures.report_plans.dataset import report_input_of
+from packages.evals.tests.fixtures.report_inputs.dataset import report_input_of
 from threetears.evals.analysis.analyst.snapshot import report_snapshot
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel

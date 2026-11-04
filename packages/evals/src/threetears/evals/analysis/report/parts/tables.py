@@ -53,7 +53,7 @@ from threetears.evals.analysis.report.figure_keys import (
     held_figure,
 )
 from threetears.evals.analysis.report.parts.look import ArmLook, PageLook, figure_text, quantity
-from threetears.evals.analysis.report.parts.model import PLANNED_SECTION, PageArmsKey
+from threetears.evals.analysis.report.parts.model import WRITER_SECTION, PageArmsKey
 from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
@@ -177,7 +177,7 @@ def arms_table(report_input: ReportInput, look: PageLook, recommends: Collection
             row[_PRICED] = priced[arm.id]
         rows.append(row)
     return TableBlock(
-        section=PLANNED_SECTION,
+        section=WRITER_SECTION,
         name="options",
         title=OPTIONS_TITLE,
         columns=columns,
@@ -459,7 +459,7 @@ def arms_key(report_input: ReportInput, look: PageLook) -> PageArmsKey:
         }
         rows.append({**{key: cells[key] for key in keys}, **by_aspect[arm.id]})
     table = TableBlock(
-        section=PLANNED_SECTION,
+        section=WRITER_SECTION,
         name="arms_key",
         title=ARMS_EYEBROW,
         columns=columns,

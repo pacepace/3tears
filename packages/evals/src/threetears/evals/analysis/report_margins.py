@@ -2,8 +2,8 @@
 
 A report's Watch slot opens with the weakest margin under the call (GENERATOR §2.5): the reading nearest to changing
 what the page decides. Which reading that is, is a fact, so code finds it (owner, 2026-10-25: code computes facts)
-and the planner cites it by figure key (``weakest.*``,
-:mod:`~threetears.evals.analysis.report.figure_keys`); the plan checks refuse a decide plan whose Watch cites none.
+and the analyst cites it by figure key (``weakest.*``,
+:mod:`~threetears.evals.analysis.report.figure_keys`).
 
 **The lines a figure is read against**, each with the figure it reads:
 

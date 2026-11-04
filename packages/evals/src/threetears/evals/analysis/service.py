@@ -10,7 +10,7 @@ with its own store and its own bindings; a host's service delegates to them.
 **What arrives as an argument.** An operation that reads the host's vocabulary — assembling a
 bundle or generating over one — takes the
 :class:`~threetears.evals.kernel.host.EvalHost`: its storage, its profile, the client factory the
-generator is built from and the describer that says what a provider failure may keep. An operation
+writer's clients are built from and the describer that says what a provider failure may keep. An operation
 that reads documents alone takes storage, through :class:`AnalysisStore`, which a host's store
 satisfies by having the methods; campaigns and runs are loaded through it, a missing one refused
 with ``NotFoundError``.
@@ -40,7 +40,7 @@ from threetears.evals.analysis.report import CampaignReport, Verdict, build_camp
 from threetears.evals.analysis.report.model import TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names, printed_arm_labels
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report_doc_store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalAnalysisAttempt, EvalCampaign
@@ -644,7 +644,7 @@ def _record_analysis_attempt(
     leases: JobLeases | None,
     refusal: JobRefusal | None = None,
 ) -> _AttemptRecorded:
-    """Store how one generation attempt ended, from the tally the generator kept.
+    """Store how one generation attempt ended, from the tally the writer kept.
 
     A write that fails is logged at ERROR with the whole record and NOT raised: this runs on the
     way out of every ending, including a failure the caller must still be shown, and a second
@@ -660,9 +660,9 @@ def _record_analysis_attempt(
     :ptype scope_id: str
     :param outcome: How it ended.
     :ptype outcome: AttemptOutcome
-    :param tally: What the generator sent, spent and was refused.
+    :param tally: What the writer sent, spent and was refused.
     :ptype tally: GenerationTally
-    :param generator_model: The model the generator client was built for.
+    :param generator_model: The model the writer's client was built for.
     :ptype generator_model: str
     :param prompt_id: The registry key the prompt was resolved under.
     :ptype prompt_id: str
@@ -816,8 +816,8 @@ def list_analysis_attempts(storage: AnalysisStore, campaign_id: str, scope_id: s
 # The bundle is where the deterministic judgements live: which subtraction is
 # unsound, which swing the containment default withholds, which divergences the
 # cap dropped, what the campaign's design actually derived to. All of it used to
-# reach a reader only if the generator chose to write it into prose, which made a
-# rule the generator could ignore out of a rule that was moved out of the prompt
+# reach a reader only if the writer chose to write it into prose, which made a
+# rule the writer could ignore out of a rule that was moved out of the prompt
 # precisely so it could not be. Both entry points below RE-ASSEMBLE rather than
 # read a stored copy: the bundle's fingerprint is the invariant the prompt-tuning
 # A/B loop rests on, and a second persisted copy is a second thing to keep true.
@@ -1063,7 +1063,7 @@ def _campaign_page(
     :param unread_report_doc_id: On a code-only page, the report document read by its id that it stands in for.
     :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as the page's first screen says it: ``NO_LONGER_READS``, or
-        the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`).
+        the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
     :ptype unread_line: str
     :return: The page.
     :rtype: CampaignReport
@@ -1154,7 +1154,7 @@ def _analysis_page(
     trials: TrialDetail,
 ) -> CampaignReport:
     """A stored analysis laid out as its campaign's page, over everything frozen with it. One a retired writer wrote is
-    code's page over that bundle, standing in for it with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`)."""
+    code's page over that bundle, standing in for it with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`)."""
     bundle = analysis_campaign_bundle(analysis)
     # Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
     # fingerprint in the entry's version, so an entry in the current version is the one each fold's source names.
@@ -1200,7 +1200,7 @@ def analysis_report(
     An analysis a retired report writer wrote (the memo writer's, ``basis="memo"``, or the report planner's,
     ``basis="plan"``) is laid out as code's page over the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
     which writer wrote it and to regenerate
-    (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`); its stored memo or plan is
+    (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`); its stored memo or plan is
     never read.
 
     :param storage: Where the analysis is read.
@@ -1242,7 +1242,7 @@ def campaign_report(
       readings and folds are read off that snapshot's bundle, as the JSON form carries them;
     - a retired writer's (``memo``, the memo writer's, or ``plan``, the report planner's): the code-only page with the
       retired writer's line on its first screen
-      (:func:`~threetears.evals.analysis.report.campaign.memo_blocks.retired_generation`,
+      (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`,
       :attr:`~threetears.evals.analysis.report.CampaignReport.unread_analysis_id`). Its stored memo or plan is never
       read.
 

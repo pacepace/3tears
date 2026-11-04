@@ -1,6 +1,6 @@
 """What a chart query selects from the report input (``threetears.evals.analysis.report_rows``).
 
-Contracts held here, over the r1–r5 fixture inputs (``fixtures/report_plans/rN/input.json``):
+Contracts held here, over the r1–r5 fixture inputs (``fixtures/report_inputs/rN/input.json``):
 
 - each source's rows are the input's own records, labelled, with the arm, key and interval the module's table names,
   in the input's order, and every filter (arms, measures, strata, aspect) keeps what it says;
@@ -19,13 +19,13 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans import dataset
+from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.plan_charts_support import stored_charts
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_rows import SourceRow, query_aspect, query_rows
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_inputs"
 ASPECT = "character adherence (v2)"
 FLOOR = "character adherence (v2)/rate_drop/*"
 

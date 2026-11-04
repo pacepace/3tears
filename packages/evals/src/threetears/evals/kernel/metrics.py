@@ -230,7 +230,7 @@ AttributionScope = Literal["subsystem", "end_to_end"]
 
 #: The merit axes a measure can serve. **Engine-owned and closed**; which axis a given measure
 #: serves is the host's declaration. Generic slot, host-declared content — the same split the
-#: sweepables registry draws over levers. "Best" is never unqualified: a memo states position
+#: sweepables registry draws over levers. "Best" is never unqualified: a report states position
 #: along these, and a measure that names none contributes to no verdict.
 #:
 #: The same object as :data:`~threetears.evals.schema.models.DeclaredMeritAxis`, which a stored declaration

@@ -44,7 +44,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_rows import config_grid, lever_arms, query_rows
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery, PlannedChart
+from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
 _EMPTY: dict[str, Any] = {
     "aspect": "",

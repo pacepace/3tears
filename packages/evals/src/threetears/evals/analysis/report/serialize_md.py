@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 #: How an answer's resolution leads it.
 RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}
 
-#: How the writer's summary of an aspect leads each of its three parts, on a campaign's page.
+#: How a retired memo's summary of an aspect leads each of its three parts, where a page still holds one.
 SUMMARY_LEADS: dict[str, str] = {"what_changed": "What changed:", "how_sure": "How sure:", "means": "What it means:"}
 
 

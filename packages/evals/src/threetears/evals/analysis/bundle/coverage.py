@@ -550,7 +550,7 @@ def _coverage_map(
         if lever not in declared and folds.folds_away(lever, cohort):
             continue
         # A cohort with no records is emitted, not skipped: the lever exists in this campaign,
-        # and dropping its row would tell the generator it does not. It comes out at cells=0
+        # and dropping its row would tell the writer it does not. It comes out at cells=0
         # / n=0 / unswept, which is the honest reading — nothing here measured it.
         cohort_records = [record for record in records if record.run_id in cohort]
         composite_records = [r for r in cohort_records if r.metric == METRIC_COMPOSITE and r.value is not None]
@@ -571,7 +571,7 @@ def _coverage_map(
         k = _lever_k_floor(lever, cohort_records, k_by_arm, group_of_run, effective_by_run)
         # A declared axis is asked the authoring gate's own question. A campaign stored past that gate, or
         # before its host moved the axis's role, can still declare an apparatus or label input, and its row is then
-        # `unswept` for a reason no run could change — said here, in the host's words, so the memo
+        # `unswept` for a reason no run could change — said here, in the host's words, so the report
         # can state the cause rather than report a sweep that never happened (#675).
         controllable = profile.controllable(lever) if lever in declared else None
         if cells <= 1:
@@ -592,7 +592,7 @@ def _coverage_map(
                 # Read from the same predicate the cohort was built with, never inferred from
                 # its size: a single-lever star has every cell moving the one lever, so the
                 # cohort spans every run while still being the contrast the campaign exists to
-                # draw. Sizing it would label that row 'campaign' and tell the generator, two
+                # draw. Sizing it would label that row 'campaign' and tell the writer, two
                 # paragraphs after "compare each cell to the control", that no contrast exists.
                 cohort_scope="control_referenced" if _is_control_referenced(lever, design) else "campaign",
                 declared_levels=(

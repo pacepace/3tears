@@ -26,8 +26,8 @@ from typing import Any
 
 import pytest
 
-from packages.evals.tests.fixtures.report_plans.dataset import kairo_bundle, report_input_of
-from packages.evals.tests.fixtures.report_plans.misfits import only_bars, reference_data
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle, report_input_of
+from packages.evals.tests.fixtures.report_inputs.misfits import only_bars, reference_data
 from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure

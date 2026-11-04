@@ -12,7 +12,7 @@ digest alone.
 
 **Held as JSON.** The kernel cannot read the report input's model, which is the analysis package's, so the input is
 kept as its JSON by alias, and the bundle it was built from as ``CampaignBundle.to_dict()``. The analysis side
-validates the input and re-checks its digest on every read, as a reporter plan case does, and refuses a snapshot
+validates the input and re-checks its digest on every read, and refuses a snapshot
 whose input no longer reads: the remedy is to freeze again (:data:`FREEZE_AGAIN_REMEDY`), and a freeze writes the
 fresh snapshot in place of a stored one of the same id that a read refuses.
 

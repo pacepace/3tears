@@ -27,7 +27,7 @@ from threetears.evals.analysis.report.figure_keys import cost_basis, cost_ruler,
 from threetears.evals.analysis.report_gates import task_costs
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.report_plan import ChartQuery
+from threetears.evals.kernel.chart_query import ChartQuery
 
 #: Every query field, empty: no filter, no limit.
 _EMPTY: dict[str, Any] = {

@@ -64,7 +64,7 @@ from threetears.evals.analysis.campaign_title import (
     title_arm_name,
 )
 from threetears.evals.analysis.style import arm_name
-from threetears.evals.analysis.report.campaign.memo_blocks import NO_LONGER_READS, retired_generation
+from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.kernel.report_doc import EvalReportDoc, ReportDoc
 from threetears.evals.schema.base import EvalBaseModel, VerbatimText
 from threetears.evals.kernel.declaration import (
@@ -1847,7 +1847,7 @@ async def analysis_generate(
     )
 
 
-def _attempt_tally(tally: Tally, *, prompt_version: str, refusals: Sequence[str] = ()) -> GenerationTally:
+def _attempt_tally(tally: Tally, *, skill_digest: str, refusals: Sequence[str] = ()) -> GenerationTally:
     """What the attempt keeps of the turns sent: each turn sent a call, its reply back or not; each reply that
     reported no cost an unpriced call (a turn whose reply never came adds nothing and is not one); the priced turns'
     cost (a floor whenever a reply is unpriced); and the model each reply named."""
@@ -1859,7 +1859,7 @@ def _attempt_tally(tally: Tally, *, prompt_version: str, refusals: Sequence[str]
         token_cost=math.fsum(turn.cost_usd for turn in turns if turn.cost_usd is not None),
         reported_models=[turn.served_model or turn.model for turn in turns],
         refusals=list(refusals),
-        prompt_version=prompt_version,
+        prompt_version=skill_digest,
     )
 
 
@@ -1984,7 +1984,7 @@ async def _write_doc_analysis(
                 eval_host,
                 attempt,
                 outcome=outcome,
-                tally=_attempt_tally(tally, prompt_version=attempt.prompt_id, refusals=refusals),
+                tally=_attempt_tally(tally, skill_digest=attempt.prompt_id, refusals=refusals),
                 bundle_fingerprint="",
                 error=error,
                 refused_by=refused_by,
@@ -2092,7 +2092,7 @@ async def _write_doc_analysis(
         eval_host,
         attempt,
         outcome="stored",
-        tally=_attempt_tally(tally, prompt_version=attempt.prompt_id),
+        tally=_attempt_tally(tally, skill_digest=attempt.prompt_id),
         bundle_fingerprint=minted.analysis.generation.bundle_fingerprint,
         stored=(minted.analysis, minted.insights),
     )
@@ -2127,7 +2127,7 @@ async def _minted_doc_analysis(
         await snapshot_input(host, attempt.scope_id, snapshot_id),
         stored,
         input_digest=snapshot.report_input_digest,
-        generator_model=attempt.generator_model,
+        writer_model=attempt.generator_model,
         skill_digest=attempt.prompt_id,
         bundle_assembled_at=snapshot.bundle_assembled_at,
         token_cost=tally.spent_usd(),
@@ -2141,7 +2141,7 @@ async def link_written_report(
     *,
     campaign_id: str,
     scope_id: str,
-    generator_model: str,
+    writer_model: str,
     started_at: str,
     tally: Tally,
 ) -> EvalAnalysis:
@@ -2162,8 +2162,8 @@ async def link_written_report(
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param generator_model: The model the report was written with.
-    :ptype generator_model: str
+    :param writer_model: The model the report was written with.
+    :ptype writer_model: str
     :param started_at: When the writing started (ISO-8601).
     :ptype started_at: str
     :param tally: The tally every turn of the writing was counted in.
@@ -2181,7 +2181,7 @@ async def link_written_report(
         attempt_id=str(uuid.uuid7()),
         campaign_id=campaign_id,
         scope_id=scope_id,
-        generator_model=generator_model,
+        generator_model=writer_model,
         prompt_id=await run_blocking(eval_host.blocking_executor, _skill_digest),
         started_at=started_at,
         leases=None,
@@ -2191,7 +2191,7 @@ async def link_written_report(
         eval_host,
         attempt,
         outcome="stored",
-        tally=_attempt_tally(tally, prompt_version=attempt.prompt_id),
+        tally=_attempt_tally(tally, skill_digest=attempt.prompt_id),
         bundle_fingerprint=minted.analysis.generation.bundle_fingerprint,
         stored=(minted.analysis, minted.insights),
     )
