@@ -254,19 +254,8 @@ class LostOnStoreStore(ClockedStore):
                 settle_job_record(storage, ANALYSIS_JOB, attempt.id, scope_id)
 
 
-async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import packages.evals.tests.ops_support as support
-
-    memo = support.memo_payload
-
-    def durable_memo(bundle: Any) -> dict[str, Any]:
-        payload = memo(bundle)
-        payload["findings"][0]["durable"] = "the wide chunk is slower per document than the narrow one"
-        return payload
-
-    monkeypatch.setattr(support, "memo_payload", durable_memo)
+async def test_a_generation_whose_attempt_is_lost_while_it_stores_withdraws_what_it_stored() -> None:
+    # The toy document's one claim is durable, so each stored analysis mints an insight.
     store = LostOnStoreStore()
     fixture = off_loop(ops_fixture, store=store)
     storage = fixture.host.eval_host.storage
