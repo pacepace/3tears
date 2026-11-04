@@ -17,7 +17,6 @@ from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
 from packages.evals.tests.fixtures.courierhost import courier_profile
-from packages.evals.tests.fixtures.report_plans.plan_eval import PROFILE as PLAN_EVAL_PROFILE
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 
@@ -87,7 +86,7 @@ def test_every_in_tree_declaration_types_each_directed_or_diagnostic_measure() -
     The fixture hosts are built through their registries, which refuse a breach at construction; the core and
     the judge kind's measures are never registered by a host, so they are read here directly.
     """
-    hosts = [toyhost_profile().measures, courier_profile().measures, PLAN_EVAL_PROFILE.measures]
+    hosts = [toyhost_profile().measures, courier_profile().measures]
     declared = [d for registry in hosts for name in registry.names if (d := registry.get(name)) is not None]
     declared += [*METRIC_DESCRIPTORS.values(), *JUDGE_KIND_MEASURES]
     assert len(declared) > len(METRIC_DESCRIPTORS)

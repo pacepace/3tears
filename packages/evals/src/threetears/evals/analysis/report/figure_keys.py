@@ -6562,8 +6562,7 @@ def key_subjects(key: str, report_input: ReportInput) -> KeySubjects:
     """The arms and aspects one key's path names, read off its one reading of the input.
 
     What a durable claim rests on is read from its keys: the runs behind each arm the key names on each aspect it
-    names (each insight a planned analysis mints,
-    :func:`~threetears.evals.analysis.planned_analysis.generate_planned_analysis`).
+    names (each insight an analysis mints from a durable claim).
 
     :param key: The path, without braces or filters.
     :ptype key: str

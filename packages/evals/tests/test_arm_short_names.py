@@ -15,7 +15,6 @@ ahead of the label the campaign gives the arm and of any short name the page wou
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -32,7 +31,7 @@ from threetears.evals.analysis.campaigns import create_campaign, update_campaign
 from threetears.evals.analysis.report.blocks import ChartBlock
 from threetears.evals.analysis.report.figure_keys import render
 from threetears.evals.analysis.report.model import CampaignReport
-from threetears.evals.analysis.report_input_build import planner_view, report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.errors import ValidationFailedError
@@ -296,9 +295,6 @@ class TestTheReportInputCarriesIt:
             "v3": "Third",
             "v4": None,
         }
-        viewed = {arm["id"]: arm for arm in json.loads(planner_view(built))["arms"]}
-        assert viewed["v2"]["short_name"] == "Second try"
-        assert "short_name" not in viewed["v4"], "the planner's view carries no key for an arm naming none"
 
     def test_an_arm_key_prints_the_declared_name_ahead_of_a_computed_one(self) -> None:
         shape = _named(s1_change(), NAMED)

@@ -24,7 +24,7 @@ sections, and a strict schema naming each slot outgrew what strict-schema writer
 (:data:`~threetears.evals.kernel.authored.SLOT_BUDGET`). So the planner first writes the page's
 :class:`PlanStructure` (every choice, no prose: :func:`structure_response_format`), then its :class:`PlanProse`, a
 flat list of ``{key, text}`` pairs addressing the prose slots that structure created (:func:`prose_response_format`),
-and code assembles :class:`PlannedReport` from the two (:mod:`threetears.evals.analysis.plan_assembly`). Nothing in
+and code assembled :class:`PlannedReport` from the two (the planner is retired; a stored plan is read only). Nothing in
 either contract is nullable or a union: an optional part is a list of at most one and an optional scalar an empty
 string. Prose refers to figures by key (``{reading.<arm>.change|pts}``, GENERATOR §6.2), never by typed numbers.
 
@@ -670,7 +670,6 @@ __all__ = [
     "Decision",
     "DecisionConfidence",
     "DecisionSlot",
-    "DurableClaim",
     "Explore",
     "ExploreControl",
     "Flag",
@@ -680,18 +679,13 @@ __all__ = [
     "Options",
     "PlanArm",
     "PlanChartKind",
-    "PlanProse",
-    "PlanStructure",
     "PlannedChart",
     "PlannedReport",
     "ReferenceKind",
     "ReportPlan",
     "Section",
     "Signals",
-    "StructureChart",
     "WarningAnswer",
     "WarningRef",
     "plan_recommended_arm",
-    "prose_response_format",
-    "structure_response_format",
 ]

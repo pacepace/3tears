@@ -1,7 +1,7 @@
-"""The memo writer's prompt is retired as the default: the planner's is what a host seeds and a generation runs.
+"""No generation runs the memo writer: ``analysis_generate`` writes with the report writer and names no prompt.
 
-A new analysis is written by the report planner under ``eval_report_plan``. The writer's ``eval_analysis_gen`` stays
-registered until the memo writer itself leaves the package.
+The memo writer's ``eval_analysis_gen`` stays registered until the memo writer itself leaves the package. The report
+planner's slot, ``eval_report_plan``, is retired already (``test_retired_names``).
 """
 
 from __future__ import annotations
@@ -11,48 +11,32 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals import analysis
-from threetears.evals.analysis import plan_prompt
-from threetears.evals.analysis.gen_prompt import EVAL_ANALYSIS_GEN_DEFAULT
 from threetears.evals.kernel import ANALYSIS_GEN_PROMPT, SEED_PROMPTS
-from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
 from threetears.evals.ops import AnalysisGeneration
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
 
-#: The modules a generation runs through: from the ``analysis_generate`` action to the stored document's analysis, and
-#: the planner's path to its two calls.
+#: The modules a generation runs through: from the ``analysis_generate`` action to the stored document's analysis.
 GENERATION_PATH = (
     "ops/analysis.py",
     "ops/host.py",
     "analysis/doc_analysis.py",
     "analysis/service.py",
-    "analysis/planned_analysis.py",
-    "analysis/planner.py",
 )
 
 #: What only the memo writer's path names.
 WRITER_NAMES = frozenset({"ANALYSIS_GEN_PROMPT", "EVAL_ANALYSIS_GEN_DEFAULT", "generate_analysis", "gen_prompt"})
 
 
-def test_the_planners_default_is_exported_beside_the_writers():
-    assert analysis.EVAL_REPORT_PLAN_DEFAULT is plan_prompt.EVAL_REPORT_PLAN_DEFAULT
-    assert "EVAL_REPORT_PLAN_DEFAULT" in analysis.__all__
-    assert analysis.EVAL_ANALYSIS_GEN_DEFAULT is EVAL_ANALYSIS_GEN_DEFAULT
-
-
-def test_the_planners_seed_ref_is_the_exported_constant():
-    (entry,) = [entry for entry in SEED_PROMPTS if entry.prompt_type == REPORT_PLAN_PROMPT]
-    module, attribute = entry.seed_ref
-    assert getattr(__import__(module, fromlist=[attribute]), attribute) is analysis.EVAL_REPORT_PLAN_DEFAULT
-
-
 def test_a_generation_names_no_prompt_of_its_own():
-    """``analysis_generate`` writes with the analyst skill the package ships, so its settings name no prompt at all:
-    neither the writer's nor the planner's."""
+    """``analysis_generate`` writes with the analyst skill the package ships, so its settings name no prompt at all."""
     generation = AnalysisGeneration(budget_s=1.0)
 
     assert not any(hasattr(generation, name) for name in ("prompt_id", "resolve_prompt", "max_output_tokens", "prompt"))
+    # A host still passing the planner's prompt settings is refused by name, never read.
+    for retired in ("prompt_id", "resolve_prompt"):
+        with pytest.raises(TypeError, match=retired):
+            AnalysisGeneration(budget_s=1.0, **{retired: None})
 
 
 @pytest.mark.parametrize("relative", GENERATION_PATH)

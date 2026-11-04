@@ -16,7 +16,7 @@ Contracts held here (``threetears.evals.ops.analysis_generate``, ``analysis_esti
   the two methods a wrapper forwards, the client released;
 - **``writer_ceiling_s`` bounds the worst case**: every round, revision, bounce and review used sends exactly the turns
   it counts, so one fewer would not bound it;
-- **no planner call** is reachable from this path;
+- **no client of another role** is built on this path: the writer runs on the ``analyst`` client alone;
 - **readers**: the listing, the campaign's page and a later snapshot's ``campaign_overview`` read a ``doc`` analysis.
 """
 
@@ -36,7 +36,6 @@ from typing import Any, Literal
 
 import pytest
 
-import threetears.evals.analysis.planned_analysis as planned_analysis
 import threetears.evals.analysis.service as analysis_service
 import threetears.evals.ops.analysis as analysis_ops
 from packages.evals.tests.doc_writer_support import (
@@ -937,21 +936,15 @@ async def test_the_estimate_counts_the_report_budget_s_turn_cap_where_it_is_fewe
     assert "7-turn" in estimate.bound and "$" in estimate.bound
 
 
-# -- no planner ---------------------------------------------------------------------------------------------------------
+# -- one client ---------------------------------------------------------------------------------------------------------
 
 
-async def test_no_planner_call_is_reachable_from_this_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    def planner(*_: Any, **__: Any) -> Any:
-        raise AssertionError("analysis_generate reached the report planner")
-
-    monkeypatch.setattr(planned_analysis, "generate_report_plan", planner)
-    monkeypatch.setattr(analysis_service, "generate_planned_analysis", planner)
-    monkeypatch.setattr(analysis_service, "prepare_analysis_generation", planner)
+async def test_no_client_of_another_role_is_built_on_this_path() -> None:
     fixture = off_loop(ops_fixture)
     _scripted(fixture)
     status = await _generated(fixture)
     assert status.status == "stored"
-    assert fixture.writers == [], "no client of the planner's role was built"
+    assert fixture.writers == [], "no client of the retired analysis role, or any other, was built"
 
 
 # -- readers --------------------------------------------------------------------------------------------------------------

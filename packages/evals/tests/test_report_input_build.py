@@ -1,7 +1,6 @@
-"""The report input built from a campaign's bundle, and the planner's budgeted view of it.
+"""The report input built from a campaign's bundle.
 
-``report_input(bundle)`` ports the report kit's adapter onto the bundle's typed objects, and ``planner_view(input)``
-is what the planner reads. Contracts held here, on the four shape campaigns (``report_shapes_support``) and on the
+``report_input(bundle)`` ports the report kit's adapter onto the bundle's typed objects. Contracts held here, on the four shape campaigns (``report_shapes_support``) and on the
 kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
 
 - the input validates, as the model and against the docs schema, for a change, a choice and a measurement;
@@ -16,10 +15,7 @@ kit's real Kairo input (``fixtures/report_plans/r5/input.json``):
   its bundle comparison, and a planner's states none; an input frozen before they existed carries no key for them;
 - an analyst's aspect states its pass rule off the bundle (a planner's states none): the criteria in force, the threshold, the judged dimensions that
   count and those that do not, the checks, and the trials with nothing to fail them; an input frozen before the rule
-  existed digests as it did;
-- the planner's view stays within its budget, trims in the design's order and says what it cut, never cuts the arms,
-  readings, floors, caveats or the asked aspects' and judged dimensions' contrasts, and refuses when what it may not
-  cut is over the budget alone.
+  existed digests as it did.
 """
 
 from __future__ import annotations
@@ -38,9 +34,8 @@ from packages.evals.tests.fixtures.report_plans.dataset import KAIRO_BUNDLE, kai
 from packages.evals.tests.report_kit_support import KIT
 from packages.evals.tests.report_shapes_support import SHAPES, Shape
 from threetears.evals.analysis.bundle.schema import LateCriterion as BundleLateCriterion
-from threetears.evals.analysis.planned_analysis import report_input_digest
+from threetears.evals.analysis.report_input import report_input_digest
 from threetears.evals.analysis.campaign_bundle import (
-    CAMPAIGN_MESSAGE_CHARS_PER_ASPECT,
     CampaignBundle,
     build_campaign_bundle,
 )
@@ -49,12 +44,9 @@ from threetears.evals.analysis.report_input import (
     ANALYST_CONTRAST_FIELDS,
     Example,
     ReportInput,
-    Stat,
-    Stratum,
 )
-from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, planner_view, report_input
+from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS, report_input
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.kernel.errors import RefusedInput
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
 SCHEMA = KIT / "schema" / "report-input.schema.json"
@@ -388,98 +380,6 @@ def test_a_failure_excerpt_with_no_quote_found_is_the_texts_end_and_a_short_one_
     assert len(excerpt) == EXAMPLE_EXCERPT_CHARS and excerpt.startswith("…") and text.endswith(excerpt[1:])
     short, case = _with_excerpt(bundles["s3"], "a short reply", "It fails: \u201ca short reply\u201d.")
     assert _shown(short, case) == "a short reply"
-
-
-# --- the planner's view -------------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", list(SHAPES))
-def test_the_planners_view_of_a_shape_fits_its_budget_whole(bundles: dict[str, CampaignBundle], name: str) -> None:
-    built = report_input(bundles[name])
-    text = planner_view(built)
-    assert len(text) <= CAMPAIGN_MESSAGE_CHARS_PER_ASPECT * len(built.aspects)
-    view = _view(text)
-    assert "trimmed" not in view
-    assert len(view["contrasts"]) == len(built.contrasts)
-    assert len(view["examples"]) == len(built.examples)
-
-
-def _protected(report: ReportInput, view: dict[str, Any]) -> None:
-    """The view keeps every arm, reading, floor and caveat, and every contrast on an asked aspect or judged dimension."""
-    assert [arm["id"] for arm in view["arms"]] == [arm.id for arm in report.arms]
-    assert [[r["arm"] for r in a["readings"]] for a in view["aspects"]] == [
-        [r.arm for r in a.readings] for a in report.aspects
-    ]
-    assert len(view.get("floors", [])) == len(report.floors)
-    assert len(view["caveats"].get("late_criteria", [])) == len(report.caveats.late_criteria)
-    assert len(view["caveats"].get("short_runs", [])) == len(report.caveats.short_runs)
-    lead = report.aspects[0].id
-    asked = {aspect.id for aspect in report.aspects if aspect.asked} or {lead}
-    kept = {(c.get("aspect", lead), c["arm"], c["measure"], c.get("kind")) for c in view["contrasts"]}
-    for contrast in report.contrasts:
-        where = contrast.aspect or lead
-        if contrast.kind == "judged" or where in asked:
-            assert (where, contrast.arm, contrast.measure, contrast.kind) in kept
-
-
-def test_the_planners_view_of_kairo_fits_its_budget_and_says_what_it_cut() -> None:
-    report = _kairo()
-    text = planner_view(report)
-    assert len(text) <= CAMPAIGN_MESSAGE_CHARS_PER_ASPECT
-    view = _view(text)
-    note = view["trimmed"]
-    assert "examples past the first 4" in note and "strata past the 12 largest" in note
-    assert len(view["examples"]) == 4 and all(len(e.get("excerpt", "")) <= 200 for e in view["examples"])
-    assert [s["id"] for s in view["strata"]] == [s.id for s in report.strata[:12]]
-    assert view["strata"][0]["id"] == max(report.strata, key=lambda s: s.n_cases or 0).id
-    _protected(report, view)
-
-
-def _inflated(report: ReportInput) -> ReportInput:
-    """``report`` with many long examples and strata, and every aspect but the first no longer asked."""
-    arms = [arm.id for arm in report.arms]
-    examples = [
-        Example(trial=f"T{i}", case=f"case-{i}", arm=arms[-1], reason="r" * 150, excerpt="x" * 400) for i in range(30)
-    ]
-    strata = [
-        Stratum(
-            id=f"stratum-{i}",
-            n_cases=100 - i,
-            per_arm={arm: {"a.one": Stat(mean=0.5, n=9), "a.two": Stat(mean=3.5, n=9)} for arm in arms},
-        )
-        for i in range(40)
-    ]
-    aspects = [report.aspects[0], *(aspect.model_copy(update={"asked": False}) for aspect in report.aspects[1:])]
-    return report.model_copy(
-        update={"examples": examples, "strata": strata, "aspects": aspects, "primary_judged": "a.one"}
-    )
-
-
-def test_the_planners_view_trims_in_order_within_budget(bundles: dict[str, CampaignBundle]) -> None:
-    report = _inflated(report_input(bundles["s1"]))
-    whole = len(planner_view(report, budget=10**9))
-    steps = []
-    for budget in (whole - 2_000, whole - 14_000, whole - 23_000, whole - 30_000, whole - 32_000):
-        text = planner_view(report, budget=budget)
-        assert len(text) <= budget
-        view = _view(text)
-        _protected(report, view)
-        steps.append(view)
-    notes = [view["trimmed"] for view in steps]
-    assert "excerpts" in notes[0] and "examples past" not in notes[0]
-    assert "examples past the first 4" in notes[1] and "strata past" not in notes[1]
-    assert "strata past the 12 largest" in notes[2] and "contrasts outside" not in notes[2]
-    assert len(steps[2]["strata"]) >= 12
-    assert "contrasts outside the asked aspects" in notes[3]
-    assert {c["aspect"] for c in steps[3]["contrasts"]} >= {report.aspects[0].id}
-    assert "strata's figures on anything but a.one" in notes[4]
-    assert all(set(figures) == {"a.one"} for figures in steps[4]["strata"][-1]["per_arm"].values())
-
-
-def test_the_planners_view_refuses_what_it_may_not_cut(bundles: dict[str, CampaignBundle]) -> None:
-    report = report_input(bundles["s1"])
-    with pytest.raises(RefusedInput, match="never trimmed"):
-        planner_view(report, budget=5_000)
 
 
 # --- how a trial passes ---------------------------------------------------------------------------------------------

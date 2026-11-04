@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report planner's generation path is retired; a generation is the report writer's
+
+**Removed:** `prepare_analysis_generation`, `run_analysis_generation`, `estimate_analysis_generation`,
+`PreparedGeneration` and `BudgetedGenerator` (`threetears.evals.analysis`), the planner's modules and the report
+input's planner view. `analysis_generate` already ran the report writer; nothing else generated with the planner.
+
+**Deprecated:** `EVAL_REPORT_PLAN_DEFAULT` and `EVAL_ANALYSIS_GEN_DEFAULT` (`threetears.evals.analysis`) still resolve
+by name, as a host's prompt registry seeds a slot, but each is now one line saying its generation is retired, never
+the old prompt. `analysis_gen_request_settings_for` still answers the settings it did. Every read warns with a
+`DeprecationWarning`, and the next minor removes all three.
+
+**Changed:** the `eval_report_plan` prompt slot is retired: `SEED_PROMPTS` no longer seeds it and no generation
+reads it. A stored planned analysis still reads, as the code-only page with the regenerate line, and nothing stored
+changes shape or version.
+
+**Hosts:** drop the `eval_report_plan` and `eval_analysis_gen` slot declarations; a stored override of either is
+inert. Drop the memo writer's client policy. Delete any call to the five removed names.
+
 ### evals: the analysis reporter kind is retired; a stored reporter template reads as data and is refused at launch
 
 **Removed:** the analysis reporter kind's module, and with it `AS_RECORDED_MODEL`, `ReporterLabel`, `ReporterCase`,

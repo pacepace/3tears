@@ -34,8 +34,7 @@ import pytest
 from pydantic import BaseModel
 
 from packages.evals.tests.report_kit_support import KIT
-from packages.evals.tests.report_plan_support import planned_reply, structure_reply
-from threetears.evals.analysis.plan_assembly import check_structure
+from packages.evals.tests.report_plan_support import planned_reply
 from threetears.evals.analysis.report_plan_facts import complete_plan, plan_facts
 from threetears.evals.analysis.errors import PlanRefusal, SoundnessRefusal
 from threetears.evals.analysis.report_input import ReportInput
@@ -49,7 +48,7 @@ from threetears.evals.analysis.report_plan_checks import (
     validate_plan,
 )
 from threetears.evals.kernel import report_plan
-from threetears.evals.kernel.report_plan import PlannedReport, PlanStructure, ReportPlan
+from threetears.evals.kernel.report_plan import PlannedReport, ReportPlan
 from threetears.evals.schema.prose import field_is_prose
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "report_plans"
@@ -305,19 +304,20 @@ def _latency_question() -> dict[str, Any]:
 
 
 def _first_chart_faults(report: ReportInput, aspect: str, measures: list[str]) -> list[tuple[str, str]]:
-    """The faults the structure check finds at the first section's chart when it is a forest of contrasts on
-    ``aspect`` over ``measures``: code's facts complete it there, its one unit and one level among them."""
-    structure = structure_reply(_plan())
-    structure["sections"][0]["chart"] = {
+    """The faults completing the reference plan finds at the first section's chart when it is a forest of contrasts
+    on ``aspect`` over ``measures``: code's facts complete it there, its one unit and one level among them."""
+    plan = _plan()
+    # The plan's answers name warnings raised on the reference input; this input raises others, faulted elsewhere.
+    plan["answers"] = []
+    plan["sections"][0]["chart"] = {
+        **plan["sections"][0]["chart"],
         "kind": "forest",
         "query": {"source": "contrasts", "aspect": aspect, "measures": measures, "arms": [], "strata": [],
                   "limit": 0, "transform": "none", "small_multiples_by": "none"},
         "reference": [],
-        "emphasis": "",
     }  # fmt: skip
-    facts = plan_facts(report)
     try:
-        check_structure(PlanStructure.model_validate(structure), report, facts, facts.allowed_modes)
+        complete_plan(PlannedReport.model_validate(planned_reply(plan)), report, plan_facts(report))
     except PlanRefusal as refused:
         return [(path, why) for path, why in refused.faults if path.startswith("sections[0].chart")]
     return []
@@ -1705,9 +1705,12 @@ class TestD3:
         is walked with every model its fields hold that the module does not export, a field named by its place in the
         exported one; the stored plan's completions of the planner's parts aside (their prose is the parts')."""
         stored = (report_plan.ReportPlan, report_plan.ChartSpec, report_plan.Section)
+        # The planner's call contracts left __all__ when the planner retired (nothing in src names them); they stay
+        # walked as exported until the plan models leave.
+        retired = ("DurableClaim", "PlanProse", "PlanStructure", "StructureChart")
         exported = [
             model
-            for name in report_plan.__all__
+            for name in (*report_plan.__all__, *retired)
             if isinstance(model := getattr(report_plan, name), type) and issubclass(model, BaseModel)
         ]
         prose: set[tuple[str, str]] = set()

@@ -31,7 +31,7 @@ from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmPricing, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
-from threetears.evals.analysis.planned_analysis import report_input_digest
+from threetears.evals.analysis.report_input import report_input_digest
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.plan_page.tables import arms_table
 from threetears.evals.analysis.report.plan_page.words import (

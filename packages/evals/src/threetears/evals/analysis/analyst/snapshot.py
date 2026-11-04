@@ -26,8 +26,7 @@ from collections.abc import Mapping
 from pydantic import ValidationError
 
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.planned_analysis import report_input_document_digest
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import ReportInput, report_input_document_digest
 from threetears.evals.analysis.report_input_build import report_input as built_input
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.report_snapshot import (

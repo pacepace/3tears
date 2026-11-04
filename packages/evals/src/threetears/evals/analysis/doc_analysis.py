@@ -1,8 +1,8 @@
 """A campaign's analysis written as a report document: the stored analysis that links it, and the insights it mints.
 
 :func:`doc_analysis` is what ``analysis_generate``'s job builds once the report writer has stored a document
-(:func:`~threetears.evals.ops.analysis_generate`). Code builds what is stored beside the document, as the planner's
-analysis is built (:mod:`~threetears.evals.analysis.planned_analysis`) in every part the writer does not write:
+(:func:`~threetears.evals.ops.analysis_generate`). Code builds what is stored beside the document, in every part the
+writer does not write:
 
 - **the analysis** (:class:`~threetears.evals.kernel.campaign.EvalAnalysis`): the campaign's frozen bundle (each
   aspect's, and the frame across them, read back from the snapshot the document was written from), its declaration,

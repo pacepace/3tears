@@ -401,8 +401,8 @@ async def generate_analysis(
     :param admit: Asked with each call's system prompt, user message and contract BEFORE the call is counted
         or sent — the repair round-trip's included, whose prompt exists only once the first output is
         refused. It raises to refuse the call, and the refusal propagates with nothing sent and nothing
-        counted for that call. ``None`` admits every call; a caller that prices calls against a cap
-        (:func:`~threetears.evals.analysis.service.run_analysis_generation`) passes its budget's.
+        counted for that call. ``None`` admits every call; a caller that prices calls against a cap passes its
+        budget's.
     :ptype admit: CallAdmission | None
     :param profile: The host whose vocabulary this reads, and whose allowed writer models
         (:attr:`~threetears.evals.kernel.host.profile.HostProfile.analysis_writer_models`) ``model`` is

@@ -23,7 +23,7 @@ from threetears.evals.kernel import (
     SeedPrompt,
     SeedTemplate,
 )
-from threetears.evals.kernel.prompts.catalogue import REPORT_PLAN_PROMPT
+from threetears.evals.kernel.prompts import catalogue
 
 #: The repository root.
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -43,11 +43,29 @@ def _entry(prompt_type: str) -> SeedPrompt:
 def test_the_catalogue_declares_each_of_the_packages_prompts_once():
     assert [entry.prompt_type for entry in SEED_PROMPTS] == [
         ANALYSIS_GEN_PROMPT,
-        REPORT_PLAN_PROMPT,
         PROPOSER_PROMPT,
         BOUNDARY_GEN_PROMPT,
     ]
     assert len({entry.prompt_type for entry in SEED_PROMPTS}) == len(SEED_PROMPTS)
+
+
+def test_the_memo_writers_slot_seeds_the_retired_line_the_root_serves():
+    """One shipped default per slot: ``eval_analysis_gen`` seeds from the root's constant, the one retired line, never
+    the memo writer's prompt."""
+    (entry,) = [entry for entry in SEED_PROMPTS if entry.prompt_type == ANALYSIS_GEN_PROMPT]
+    assert entry.seed_ref == ("threetears.evals.analysis", "EVAL_ANALYSIS_GEN_DEFAULT")
+    with pytest.warns(DeprecationWarning, match="drop the eval_analysis_gen slot"):
+        seed = getattr(importlib.import_module(entry.seed_module), entry.constant)
+    assert seed.startswith("Retired: ") and "\n" not in seed
+
+
+def test_the_retired_planners_slot_is_neither_seeded_nor_declared():
+    """The report planner is retired: no entry seeds ``eval_report_plan`` and the catalogue declares no id for it, so a
+    fresh deployment never fills the slot. A host that still declares the slot itself resolves the root's constant,
+    one line saying it is retired (``test_retired_names``)."""
+    assert "eval_report_plan" not in {entry.prompt_type for entry in SEED_PROMPTS}
+    assert not hasattr(catalogue, "REPORT_PLAN_PROMPT")
+    assert all("plan_prompt" not in entry.seed_module for entry in SEED_PROMPTS)
 
 
 @pytest.mark.parametrize("entry", SEED_PROMPTS, ids=lambda entry: entry.prompt_type)

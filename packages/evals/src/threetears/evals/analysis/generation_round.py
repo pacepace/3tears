@@ -1,7 +1,7 @@
-"""The parts every one-call-plus-one-repair document generation shares: the analysis writer's and the report planner's.
+"""The parts a one-call-plus-one-repair document generation shares: the memo writer's, and the retired report planner's.
 
-Both generators (:func:`~threetears.evals.analysis.generator.generate_analysis` and
-:func:`~threetears.evals.analysis.planner.generate_report_plan`) send one request with a strict contract, read the
+Both generators (:func:`~threetears.evals.analysis.generator.generate_analysis`, and the report planner while it
+lived) send one request with a strict contract, read the
 reply into a typed document, and buy exactly ONE repair round-trip for anything a FINISHED call got wrong. The
 boundary is "did the call finish?" (:class:`~threetears.evals.analysis.errors.SoundnessRefusal` says why), and these
 helpers are where both generators draw it, so the two cannot draw it differently:

@@ -1,11 +1,19 @@
-"""The analysis reporter kind's names a host binds, kept for one minor after the kind retired.
+"""The names the retired generations left that a host binds, kept for one minor after each retired.
 
-A host declared, registered and launched the reporter kind with these, and binds them at import, so each stays
+**The analysis reporter kind.** A host declared, registered and launched the reporter kind with these, and binds them at import, so each stays
 importable from :mod:`threetears.evals.analysis` and warns on every read
 (:func:`~threetears.evals.kernel.retired.served_retired`). None of them makes the kind launchable: the contract holds
 no overlay and seats nothing, the template check refuses every reporter template, and building either reporter kind
 refuses, each naming the writer kind that replaces it. :data:`REPORTER_KIND` still names the kind a stored reporter
-template declares, and :func:`reporter_cell_timeout_s` still answers the ceiling it did. The next minor removes them.
+template declares, and :func:`reporter_cell_timeout_s` still answers the ceiling it did.
+
+**The report planner and the memo writer.** A host seeds a prompt slot from :data:`EVAL_REPORT_PLAN_DEFAULT` and
+:data:`EVAL_ANALYSIS_GEN_DEFAULT` by name, through ``importlib``, so each still resolves: to one line saying the
+generation it steered is retired, never to the prompt it was. No generation reads either slot. The memo writer's
+client settings (:func:`analysis_gen_request_settings_for`) still answer what they did, for a host that builds a
+client from them; nothing in the package builds one.
+
+The next minor removes them all.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.kinds import KindContract
 from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s
+from threetears.evals.analysis.generator import analysis_gen_request_settings_for
 from threetears.evals.kernel.retired import REPORTER_RETIRED, Retired
 from threetears.evals.schema.completion import RequestCeiling
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, JudgedArtifact
@@ -170,14 +179,45 @@ class AsRecordedReporterKind(_RetiredReporterKind):
         raise _refused("AsRecordedReporterKind")
 
 
+#: Why the report planner's prompt constant retired, and what writes a report now, as its warning says it.
+PLANNER_PROMPT_RETIRED = (
+    "the report planner is retired; analysis_generate writes with the report writer, which reads no prompt slot: "
+    "drop the eval_report_plan slot"
+)
+
+#: Why the memo writer's prompt constant retired, and what writes a report now, as its warning says it.
+MEMO_PROMPT_RETIRED = (
+    "the memo writer is retired; analysis_generate writes with the report writer, which reads no prompt slot: drop "
+    "the eval_analysis_gen slot"
+)
+
+#: Why the memo writer's client settings retired, and what bounds the report writer, as their warning says it.
+MEMO_SETTINGS_RETIRED = (
+    "the memo writer's client role is retired; the report writer runs on the host's analyst client, its turns bounded "
+    "by AnalysisGeneration.limits (WriterLimits)"
+)
+
+#: Retired: what the report planner's prompt slot is seeded from now, one line, never the planner's prompt.
+EVAL_REPORT_PLAN_DEFAULT = (
+    "Retired: the report planner no longer writes analyses, and no generation reads this eval_report_plan slot."
+)
+
+#: Retired: what the memo writer's prompt slot is seeded from by name now, one line, never the memo writer's prompt.
+EVAL_ANALYSIS_GEN_DEFAULT = (
+    "Retired: the memo writer no longer writes analyses, and no generation reads this eval_analysis_gen slot."
+)
+
 #: Each retired name :mod:`threetears.evals.analysis` serves, with why it retired.
 RETIRED: Mapping[str, Retired] = MappingProxyType(
     {
         "AsRecordedReporterKind": Retired(AsRecordedReporterKind, REPORTER_RETIRED),
+        "EVAL_ANALYSIS_GEN_DEFAULT": Retired(EVAL_ANALYSIS_GEN_DEFAULT, MEMO_PROMPT_RETIRED),
+        "EVAL_REPORT_PLAN_DEFAULT": Retired(EVAL_REPORT_PLAN_DEFAULT, PLANNER_PROMPT_RETIRED),
         "REPORTER_KIND": Retired(REPORTER_KIND, REPORTER_RETIRED),
         "REPORTER_KIND_CONTRACT": Retired(REPORTER_KIND_CONTRACT, REPORTER_RETIRED),
         "ReporterKind": Retired(ReporterKind, REPORTER_RETIRED),
         "ReporterOverlays": Retired(ReporterOverlays, REPORTER_RETIRED),
+        "analysis_gen_request_settings_for": Retired(analysis_gen_request_settings_for, MEMO_SETTINGS_RETIRED),
         "refuse_undeliverable_reporter_template": Retired(refuse_undeliverable_reporter_template, REPORTER_RETIRED),
         "reporter_cell_timeout_s": Retired(reporter_cell_timeout_s, REPORTER_RETIRED),
         "reporter_kind_contract": Retired(reporter_kind_contract, REPORTER_RETIRED),
@@ -185,12 +225,18 @@ RETIRED: Mapping[str, Retired] = MappingProxyType(
 )
 
 __all__ = [
+    "EVAL_ANALYSIS_GEN_DEFAULT",
+    "EVAL_REPORT_PLAN_DEFAULT",
+    "MEMO_PROMPT_RETIRED",
+    "MEMO_SETTINGS_RETIRED",
+    "PLANNER_PROMPT_RETIRED",
     "REPORTER_KIND",
     "REPORTER_KIND_CONTRACT",
     "RETIRED",
     "AsRecordedReporterKind",
     "ReporterKind",
     "ReporterOverlays",
+    "analysis_gen_request_settings_for",
     "refuse_undeliverable_reporter_template",
     "reporter_cell_timeout_s",
     "reporter_kind_contract",

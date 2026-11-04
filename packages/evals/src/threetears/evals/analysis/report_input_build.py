@@ -1,7 +1,7 @@
-"""The report input built from a campaign's own bundle, and the planner's budgeted view of it.
+"""The report input built from a campaign's own bundle.
 
 :func:`report_input` reads a :class:`~threetears.evals.analysis.campaign_bundle.CampaignBundle` and returns the
-:class:`~threetears.evals.analysis.report_input.ReportInput` the report planner and the renderer read. It is the
+:class:`~threetears.evals.analysis.report_input.ReportInput` the analyst and the renderer read. It is the
 package's port of the report kit's adapter (``docs/eval-report-kit/adapters/bundle_to_report.py``), reading the
 bundle's typed objects where the kit read a writer's message: no figure is parsed out of prose.
 
@@ -25,7 +25,8 @@ capped before every failure was kept, a pair of aspects either of which left tri
 counted, never as none. Each aspect also states how a trial on it passes (``Aspect.pass_rule``, with ``graded_by``
 and ``description`` read from it), and each contrast what its test counted, copied off its comparison: the cases each
 side read, whether it paired them and the arms' correlation across them, so an analyst can say "paired over 60
-cases". A planner's input carries none of them, so its view is unchanged.
+cases". An uncounted input (the retired report planner's) carries none of them, so a snapshot frozen without them
+digests as it did.
 
 **Every arm, reading, contrast and caveat the bundle holds reaches the input.** An arm is named by its campaign label
 everywhere, and carries the short name it declares (``Arm.short_name``), which ``{arm:<id>}`` prints. A choice's pair readings sit on their aspect, a measurement's readings on its measures, and a contrast
@@ -45,16 +46,11 @@ it prints as a percent and a point of it is a percentage point.
 **What the input does not carry.** A categorical or free-text measure is described, with no figure: it has none to
 copy. Where one arm ran an aspect under more than one rig, its figures are its first rig's, and ``caveats.unreported``
 says so.
-
-:func:`planner_view` is what the planner reads instead of the whole input: the input as compact JSON, held to a
-budget of :data:`~threetears.evals.analysis.campaign_bundle.CAMPAIGN_MESSAGE_CHARS_PER_ASPECT` per aspect. Over it,
-code trims in a fixed order and says what it cut (``trimmed``); figure keys still resolve against the whole input.
 """
 
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import partial
@@ -69,7 +65,7 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
     TrialRow,
 )
-from threetears.evals.analysis.campaign_bundle import CAMPAIGN_MESSAGE_CHARS_PER_ASPECT, KIND_MEANS, CampaignBundle
+from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
@@ -116,7 +112,6 @@ from threetears.evals.analysis.report.words import declared_arm_names, printed_a
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
-from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.metrics import (
@@ -128,7 +123,7 @@ from threetears.evals.kernel.metrics import (
 )
 from threetears.evals.kernel.surface import CellFacts
 
-__all__ = ["planner_view", "report_input"]
+__all__ = ["report_input"]
 
 #: How many failed trials the input shows as examples, at most.
 EXAMPLES = 12
@@ -164,18 +159,6 @@ MEANING_CHARS = 200
 #: The id of the stratum holding the cases that declare none.
 UNSTRATIFIED = "unstratified"
 
-#: What a planner's view cuts each shown trial's excerpt to, first of all its trims.
-PLANNER_EXCERPT_CHARS = 200
-
-#: The examples a planner's view keeps once it has to cut them.
-PLANNER_EXAMPLES = 4
-
-#: The strata a planner's view keeps once it has to cut them, the largest first.
-PLANNER_STRATA = 12
-
-#: The significant figures a figure in the planner's view keeps: the planner cites figures by key, never by value.
-PLANNER_FIGURES = 4
-
 #: A JSON escape left in a transcript's text, where a tool call's arguments were written as JSON: a surrogate pair, one
 #: code point, or a one-character escape.
 _ESCAPE = re.compile(r'\\u[dD][89abAB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\[nrt"\\/]')
@@ -208,7 +191,7 @@ def report_input(
     :ptype excerpt: ExcerptAt
     :param counted: Whether the input also carries what is counted off the bundle's trials for an analyst (this
         module's Counted): each slice's failed trials, each example's case input, and which cases each two aspects
-        share. A planner's input carries none of them, so its view is unchanged.
+        share. An uncounted input carries none of them, so it digests as it did.
     :ptype counted: bool
     :return: The input.
     :rtype: ReportInput
@@ -1259,131 +1242,6 @@ def _confounds_named(aspect: AnalysisContextBundle) -> Iterable[str]:
     for family in aspect.multiple_comparisons.families:
         for comparison in family.comparisons:
             yield from (confound.dimension for confound in comparison.mechanism_confounds)
-
-
-# ---------------------------------------------------------------------- the planner's view
-
-
-def planner_view(report: ReportInput, *, budget: int | None = None) -> str:
-    """The report input as the planner reads it: compact JSON within ``budget`` characters, saying what it cut.
-
-    Each figure is kept to :data:`PLANNER_FIGURES` significant figures (the planner cites a figure by its key, which
-    resolves against the whole input), and on one aspect no entry names it. Over budget, code trims in a fixed order, each step only as far as it must:
-    every shown trial's excerpt to :data:`PLANNER_EXCERPT_CHARS` characters; the examples past the first
-    :data:`PLANNER_EXAMPLES`; the strata past the :data:`PLANNER_STRATA` largest; the contrasts outside the asked
-    aspects, least separated last aspect first; then, smallest stratum first, each kept stratum's figures on anything
-    but the primary judged dimension, the one its examples fail on. Never trimmed: the arms, the readings and pair
-    readings, the floors, the caveats, and every contrast on an asked aspect or on a judged dimension. What was cut is
-    said in ``trimmed``, which counts toward the budget.
-
-    :param report: The report input.
-    :ptype report: ReportInput
-    :param budget: The most characters the view may take; None for
-        :data:`~threetears.evals.analysis.campaign_bundle.CAMPAIGN_MESSAGE_CHARS_PER_ASPECT` per aspect.
-    :ptype budget: int | None
-    :return: The view, as compact JSON text.
-    :rtype: str
-    :raises RefusedInput: The view is still over budget once every trim is made: what is left is never trimmed.
-    """
-    limit = budget if budget is not None else CAMPAIGN_MESSAGE_CHARS_PER_ASPECT * max(1, len(report.aspects))
-    view: dict[str, Any] = _rounded(report.model_dump(mode="json", by_alias=True, exclude_none=True))
-    if len(report.aspects) == 1:
-        # One aspect: every contrast, family, stratum and example is on it, so naming it on each says nothing.
-        for section in ("contrasts", "contrast_families", "strata", "examples"):
-            for entry in view.get(section, []):
-                entry.pop("aspect", None)
-    if len(_compact(view)) <= limit:
-        return _compact(view)
-    cut = {"excerpts": 0, "examples": 0, "strata": 0, "contrasts": 0, "stratum figures": 0}
-    view["trimmed"] = _trim_note(dict.fromkeys(cut, 10**6), limit, report.primary_judged)
-
-    def over() -> bool:
-        return len(_compact(view)) > limit
-
-    examples: list[dict[str, Any]] = view.get("examples", [])
-    shortened: list[int] = []
-    for index, example in enumerate(examples):
-        if not over():
-            break
-        excerpt = example.get("excerpt")
-        if excerpt is not None and len(excerpt) > PLANNER_EXCERPT_CHARS:
-            example["excerpt"] = capped_text(excerpt, PLANNER_EXCERPT_CHARS)
-            shortened.append(index)
-    while over() and len(examples) > PLANNER_EXAMPLES:
-        examples.pop()
-        cut["examples"] += 1
-    # Counted over the examples kept, so the note never counts an excerpt whose example it then left out.
-    cut["excerpts"] = sum(1 for index in shortened if index < len(examples))
-    strata: list[dict[str, Any]] = view.get("strata", [])
-    if over() and len(strata) > PLANNER_STRATA:
-        strata.sort(key=lambda stratum: -int(stratum.get("n_cases", 0)))
-        while over() and len(strata) > PLANNER_STRATA:
-            strata.pop()
-            cut["strata"] += 1
-    asked = {aspect.id for aspect in report.aspects if aspect.asked} or {aspect.id for aspect in report.aspects[:1]}
-    contrasts: list[dict[str, Any]] = view.get("contrasts", [])
-    for index in reversed(range(len(contrasts))):
-        if not over():
-            break
-        contrast = contrasts[index]
-        if contrast.get("kind") == "judged" or "aspect" not in contrast or contrast["aspect"] in asked:
-            continue
-        del contrasts[index]
-        cut["contrasts"] += 1
-    primary = report.primary_judged
-    for stratum in reversed(strata) if primary is not None else ():
-        if not over():
-            break
-        held: dict[str, dict[str, Any]] = stratum.get("per_arm", {})
-        if any(set(figures) - {primary} for figures in held.values()):
-            stratum["per_arm"] = {
-                arm: {name: figure for name, figure in figures.items() if name == primary}
-                for arm, figures in held.items()
-            }
-            cut["stratum figures"] += 1
-    if over():
-        never = ("schema", "meta", "arms", "aspects", "floors", "caveats")
-        protected: dict[str, Any] = {key: view[key] for key in never if key in view} | {"contrasts": contrasts}
-        raise RefusedInput(
-            f"the planner's view of campaign {report.meta.campaign!r} is {len(_compact(view))} characters after "
-            f"every trim, over its budget of {limit}; what is never trimmed (arms, readings, floors, caveats, the "
-            f"asked aspects' and judged dimensions' contrasts) takes {len(_compact(protected))} of them",
-            remedy="raise the planner's budget for this campaign, or split it into campaigns of fewer arms or aspects",
-        )
-    view["trimmed"] = _trim_note(cut, limit, primary)
-    return _compact(view)
-
-
-def _trim_note(cut: Mapping[str, int], limit: int, primary: str | None) -> str:
-    """What the planner's view says it cut to fit its budget."""
-    said = {
-        "excerpts": f"{cut['excerpts']} example excerpts cut to {PLANNER_EXCERPT_CHARS} characters",
-        "examples": f"{cut['examples']} examples past the first {PLANNER_EXAMPLES}",
-        "strata": f"{cut['strata']} strata past the {PLANNER_STRATA} largest",
-        "contrasts": f"{cut['contrasts']} contrasts outside the asked aspects",
-        "stratum figures": f"{cut['stratum figures']} strata's figures on anything but {primary}",
-    }
-    return (
-        f"To fit the planner's budget of {limit} characters, this view leaves out: "
-        + "; ".join(said[what] for what, count in cut.items() if count)
-        + ". Every figure key still resolves against the whole report input."
-    )
-
-
-def _compact(node: Any) -> str:
-    """The compact JSON a budget is counted in and the view is sent as."""
-    return json.dumps(node, separators=(",", ":"), ensure_ascii=False)
-
-
-def _rounded(node: Any) -> Any:
-    """``node`` with every float kept to :data:`PLANNER_FIGURES` significant figures; integers as they are."""
-    if isinstance(node, dict):
-        return {key: _rounded(value) for key, value in node.items()}
-    if isinstance(node, list):
-        return [_rounded(value) for value in node]
-    if isinstance(node, float) and math.isfinite(node) and node != 0:
-        return round(node, PLANNER_FIGURES - 1 - math.floor(math.log10(abs(node))))
-    return node
 
 
 def _pricing(held: ArmPricing | None) -> Pricing | None:
