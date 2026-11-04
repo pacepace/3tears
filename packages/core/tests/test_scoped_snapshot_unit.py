@@ -6725,6 +6725,119 @@ async def test_the_recheck_of_a_scope_whose_chunks_keep_failing_waits_out_its_ba
     await replica.stop()
 
 
+def _read_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """the progress lines a read under way said."""
+    return [
+        r.getMessage() for r in caplog.records if " from L3, " in r.getMessage() and " s in: scope " in r.getMessage()
+    ]
+
+
+async def _slow_geos(monkeypatch: pytest.MonkeyPatch) -> tuple[_SqlL3, _Clock, list[Any], dict[str, int]]:
+    """TX's 50 rows of geos, read 5 to a page, on a clock the test moves; where a status taken mid-read goes, and a
+    count of pages."""
+    monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 5)
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+    l3 = _SqlL3(
+        "geos",
+        ["state", "geo", "item", "votes", "source_version"],
+        [_geo("TX", "g1", f"t{i:02d}", 1) for i in range(50)],
+    )
+    taken: list[Any] = []
+    pages = {"n": 0}
+    return l3, clock, taken, pages
+
+
+async def test_a_read_from_l3_that_runs_minutes_says_once_a_minute_how_far_it_is_and_about_how_long_is_left(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """prod rebuilt 43 states from L3 for 13 minutes and said nothing between the start and the first scope done. A
+    read that runs a minute or more says, once a minute, the scope of how many, the table's rows of its count, the
+    rows read of the total, the rate over the last minute and about how long is left; the status carries the same,
+    and the read's rows are counted once, a minute in."""
+    l3, clock, taken, pages = await _slow_geos(monkeypatch)
+    snapshot_ref: list[ScopedSnapshot] = []
+
+    def page_takes(sql: str, args: tuple[Any, ...]) -> float:
+        if "ORDER BY" in sql and args[:1] == ("TX",):
+            pages["n"] += 1
+            if pages["n"] == 8 and snapshot_ref:
+                taken.append(snapshot_ref[0].status())
+            # the diff's group comes in one page, a minute and more
+            clock.ahead += 70 if pages["n"] > 100 else 20
+        return 0.0
+
+    l3.delay = page_takes
+    caplog.set_level(logging.INFO)
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(table,), backend=_geos_backend())
+    snapshot_ref.append(snapshot)
+    l3.epochs = {"TX": 1}
+    await _started(snapshot, pointers)
+
+    lines = _read_lines(caplog)
+    assert [line.split(" s in:")[0].rsplit(" ", 1)[1] for line in lines] == ["60", "120", "180"], lines
+    assert "rebuild from L3, 60 s in: scope 1 of 1 ('TX'), geos rows 15 of 50; 15 of 50 rows read" in lines[0]
+    assert "0.25 rows/s over the last minute, about 2 min left (estimate)" in lines[0]
+    assert "geos rows 30 of 50; 30 of 50 rows read, 0.25 rows/s" in lines[1]
+    assert "geos rows 45 of 50; 45 of 50 rows read" in lines[2]
+    counts = [args for sql, args in l3.statements if "AS rows_total" in sql]
+    assert counts == [("TX",)], f"the read's rows were not counted once: {counts}"
+    assert any("read scope 'TX' (1 of 1): 50 rows in" in r.getMessage() for r in caplog.records)
+    # the status, taken mid-read, says the same: 35 of 50 read, 0.25 a second, a minute left
+    reading = taken[0].reading
+    assert reading is not None and reading.phase == "rebuild" and (reading.scope, reading.table) == ("TX", "geos")
+    assert (reading.scopes_done, reading.scopes_total) == (0, 1)
+    assert (reading.table_rows_done, reading.table_rows_total, reading.rows_done, reading.rows_total) == (
+        35,
+        50,
+        35,
+        50,
+    )
+    # the fake clock rides on the real one: a few ms of real time in a minute
+    assert reading.rows_per_second == pytest.approx(0.25, rel=1e-3)
+    assert reading.eta_seconds == pytest.approx((50 - 35) / reading.rows_per_second, rel=1e-6)
+    assert reading.eta_seconds == pytest.approx(60, rel=1e-3)
+    assert reading.partitions_total is None
+    assert snapshot.status().reading is None, "a read that ended was still shown under way"
+
+    # a long diff: its progress is said from its own counts, and nothing more is counted
+    l3.add([_geo("TX", "g2", f"u{i:02d}", 2) for i in range(50)])
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+    caplog.clear()
+    pages["n"] = 100
+    assert (await snapshot.catch_up()).caught == ("TX",)
+    diff = _read_lines(caplog)
+    assert (
+        diff and "diff from L3, 70 s in: scope 1 of 1 ('TX'), geos partition 0 of 1; 50 of 50 rows read" in diff[0]
+    ), diff
+    assert not [sql for sql, _ in l3.statements if "AS rows_total" in sql], "a diff counted rows"
+    await snapshot.stop()
+
+
+async def test_a_read_from_l3_under_a_minute_says_no_progress_and_counts_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """a read done inside a minute says no progress line, and sends no count."""
+    l3, clock, _, _ = await _slow_geos(monkeypatch)
+
+    def page_takes(sql: str, args: tuple[Any, ...]) -> float:
+        if "ORDER BY" in sql and args[:1] == ("TX",):
+            clock.ahead += 2
+        return 0.0
+
+    l3.delay = page_takes
+    caplog.set_level(logging.INFO)
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot = await _geos_snapshot(l3, table)
+
+    assert _read_lines(caplog) == []
+    assert not any("read scope 'TX'" in r.getMessage() for r in caplog.records)
+    assert not [sql for sql, _ in l3.statements if "AS rows_total" in sql]
+    await snapshot.stop()
+
+
 def test_partial_groups_without_retained_or_named_partitions_is_refused() -> None:
     async def named(l3: Any, scope: str) -> list[str]:
         return []

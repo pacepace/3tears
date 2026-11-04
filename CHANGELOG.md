@@ -152,6 +152,16 @@ rows was of another count and read again whole. Now:
   skipped. A recovery that raises (a publish into a full store, a lost claim) backs off alike, said at ERROR with
   the error and the next try, and the stuck-chunk recheck waits out a scope's backoff too, taking no claim for a
   scope the recovery would not try.
+- **A read from L3 says how far it is.** A step's reads from L3 (a rebuild, a diff, a catch-up beside a write) that
+  run a minute or more say at INFO, once a minute: `<phase> from L3, <s> s in: scope <n> of <m> (<scope>), <table>
+  partition <p> of <P>` (or `<table> rows <r> of <R>`) `; <done> of <total> rows read, <rate> rows/s over the last
+  minute, about <N> min left (estimate)`, saying "total not yet counted" until it is; and, once a scope that took a
+  minute is read, `read scope <scope> (<n> of <m>): <rows> rows in <s> s, <rate> rows/s`. A whole read still under way
+  a minute in counts its table and scope's rows once (`SELECT count(*) AS rows_total`, the named partitions only for
+  a `partition_values` table); a diff counts nothing more, its own counts saying what it reads. `SnapshotStatus.reading`
+  (the new `L3ReadProgress`) carries the same: `phase`, `started_at`, `scope`, `table`, `scopes_done`/`scopes_total`,
+  `partitions_done`/`partitions_total`, `table_rows_done`/`table_rows_total`, `rows_done`/`rows_total`,
+  `rows_per_second` and `eta_seconds`, kept a page at a time with no statement of its own.
 - **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
   L1's stored form, from the one conversion the L1 writes through, now public as
   `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID

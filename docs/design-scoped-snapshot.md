@@ -241,6 +241,14 @@ raises (its publish into a full store, a lost claim) is backed off alike, its er
 before it raised, and would read them again at every catch-up. The recheck that rebuilds a scope whose chunks keep
 failing to apply waits out the same backoff, so a backed-off scope takes no claim and logs nothing between tries.
 
+**A read from L3 says how far it is.** A reload that read 43 states from L3 for 13 minutes said nothing between
+its start and its first scope done. Every step that reads from L3 keeps its progress a page at a time (rows read,
+partitions read of those it reads, a rate over the last minute) and, once it has run a minute, says it at INFO once
+a minute (the rate-limited wait reporter) with the scope of how many and about how long is left; the status carries
+the same as `SnapshotStatus.reading`. The total behind the estimate costs no statement on a read under a minute: a
+whole read still under way a minute in counts its table and scope's rows once, a read done counts its rows read,
+and a diff's own counts say what it reads. Until a read under way is counted, the line says so rather than guess.
+
 **Why a flag on the table, not a second table.** A separate table holding only the kept runs would make the
 writer write each run twice and L3 hold it twice, and moving a run out of the kept set would be a delete in L3
 the diff would then have to see. The flag keeps L3's one table as the record and the thinning in the copy,
