@@ -1,0 +1,46 @@
+{
+ "booking": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "invoices": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "kairo": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "misfit-concierge-model-selection-1": {
+  "A": "hollow",
+  "B": "shipped"
+ },
+ "misfit-concierge-model-selection-2": {
+  "A": "hollow",
+  "B": "shipped"
+ },
+ "misfit-query-planner-config-sweep-1": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "misfit-query-planner-config-sweep-2": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "misfit-query-planner-config-sweep-3": {
+  "A": "hollow",
+  "B": "shipped"
+ },
+ "misfit-turn-router-classifier-sweep-1": {
+  "A": "hollow",
+  "B": "shipped"
+ },
+ "support-replies": {
+  "A": "shipped",
+  "B": "hollow"
+ },
+ "support-triage": {
+  "A": "shipped",
+  "B": "hollow"
+ }
+}

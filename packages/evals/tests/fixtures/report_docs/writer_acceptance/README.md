@@ -43,3 +43,10 @@ Three $0 refusals preceded the run: the reserve; the judge output cap; the job b
 ## Open question
 
 Do the skill files hurt Sonnet, or are the judge and the editor blind to them? The blind read is pending.
+
+## The blind read (2026-11-04)
+
+A stronger model read the eleven pairs with the arm key sealed (`20261103-blind-read.md`, `.json`; the key in
+`20261103-blind-read-key.json`): shipped better in 6 cases, hollow in 5, no ties; weighted by the reader's own
+confidence (sure 1.0, lean 0.6, coin flip 0.2) 3.2 to 3.4. The reader found statistical slips in both arms' pages
+that the editor had passed. These are an agent's verdicts, recorded as such; no label or profile is derived from them.
