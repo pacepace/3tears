@@ -1,9 +1,8 @@
-"""Seed default for the ``eval_analysis_gen`` prompt type, the memo writer's.
+"""The memo writer's system prompt, kept only while the memo writer itself is.
 
-**Retired as the default; kept for memo reporter cases.** A new analysis is written by the report writer
-(``analysis_generate``), and no generation resolves this prompt. It stays registered because a
-memo reporter case (kind version 1) that generates a memo candidate still needs the writer's prompt, and old memos
-are still read. It will be removed in a future minor release.
+**Retired.** A new analysis is written by the report writer (``analysis_generate``), and no generation resolves
+this prompt. No registry is seeded from it either: the ``eval_analysis_gen`` slot seeds from the root's retired
+one-line text (:data:`threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT`). It leaves with the memo writer.
 
 The system prompt that steers the analysis generator
 (:func:`threetears.evals.analysis.generator.generate_analysis`) when it turns a campaign's

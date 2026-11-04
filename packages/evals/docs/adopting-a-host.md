@@ -1628,7 +1628,7 @@ against the acceptance campaigns and the editor's scores. Each report records th
 
 The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`) and the boundary
 proposer (`BOUNDARY_GEN_PROMPT`). The memo writer's slot (`eval_analysis_gen`) is still listed until the memo writer
-leaves, and no call reads it. The report planner's slot (`eval_report_plan`) is retired: nothing seeds or reads it,
+leaves, seeded with the same retired line, and no call reads it. The report planner's slot (`eval_report_plan`) is retired: nothing seeds or reads it,
 and `EVAL_REPORT_PLAN_DEFAULT` and `EVAL_ANALYSIS_GEN_DEFAULT` are each one line saying so, kept for one minor so a
 host seeding a slot by name still starts. Drop both slot declarations; a stored override of either is inert.
 **A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
