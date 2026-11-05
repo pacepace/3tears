@@ -3634,7 +3634,23 @@ class ScopedSnapshot:
             )
         finally:
             await claim.release()
-        if not set(left) <= set(rebuilt or ()):
+        del rebuilt
+        if not set(left) <= set(self._applied):
+            # a scope the rebuild could not bring into this L1 (its pointer past L3's epoch, so its publish was refused;
+            # a store refusing it): the copy is not ready without it, and it is tried again after the backoff, never
+            # at every recheck
+            wait = self._reload_backoff[min(self._reload_failures, len(self._reload_backoff) - 1)]
+            self._reload_failures += 1
+            self._reload_at = time.monotonic() + wait
+            missing = sorted(set(left) - set(self._applied))
+            log.warning(
+                "scoped snapshot %s: scopes %s could not be rebuilt from L3; tried again in %.0f s (attempt %d)",
+                self._name,
+                missing,
+                wait,
+                self._reload_failures,
+                extra={"extra_data": {"scopes": missing}},
+            )
             return False
         self._become_ready(SnapshotSource.L2)
         return True
@@ -4067,8 +4083,13 @@ class ScopedSnapshot:
         finally:
             await claim.release()
         # a scope the rebuild brought current left `behind` at its commit (_commit); one it could not
-        # (L3 below its pointer, or a pointer of other columns it may not load) stays behind
+        # (L3 below its pointer, or a pointer of other columns it may not load) stays behind, and is tried again after
+        # its backoff, never at every recheck
         log.info("scoped snapshot %s: rebuilt %s from L3", self._name, sorted(rebuilt or ()))
+        # a recovery from the diff records its own backoff (_recover_scopes); a rebuild records it here
+        for scope in sorted(scopes & set(self._behind)) if not self._diffable else ():
+            why = self._behind[scope][1]
+            self._left_behind(scope, why, _Saw(epoch=await self._held_epoch(scope)), self._unrecovered.get(scope))
 
     async def _apply_pointers(
         self,
