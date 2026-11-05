@@ -72,6 +72,7 @@ from threetears.evals.kernel import (
     agreement_statistic,
     calibration_criterion,
     confusion_cell,
+    confusion_of,
     separation_criterion,
     tier_of,
 )
@@ -201,7 +202,10 @@ class Result:
     :ivar factors: The factors each arm name names a level of, in order: ``("candidate",)`` when the arms are named
         plainly on the arm lever, ``("model",)`` when the one arm or the arms are named as models.
     :ivar store: Where the runs are stored, in words: the file, or that they are held in memory.
-    :ivar fields: The eval's field graders, the classifier first.
+    :ivar fields: The eval's field graders, in the order listed; the classifier is the first not declared a guardrail.
+    :ivar grader_readings: The measure each grader reads, in the order the eval lists its graders: the classifier's
+        ``accuracy``, any other field's or function's own name, a judge's every dimension. A comparison's first line
+        leads on the first of these the contrasts tested; empty when the result was built without them.
     :ivar judge: The eval's judge, or ``None``.
     :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
         made, a logged runner's file.
@@ -238,6 +242,7 @@ class Result:
     guardrail_readings: GuardrailReadings = field(default_factory=GuardrailReadings, repr=False, compare=False)
     arm_variants: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     labelled_arms: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
+    grader_readings: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     # --- one arm, or the arm named ----------------------------------------------------------------------------------
 
@@ -448,20 +453,24 @@ class Result:
 
         A scored result whose classifier label did not match carries that reason first
         (:meth:`~threetears.evals.analysis.summary.CaseResult.of`); every other reason is printed as the summary has it.
+        The label is the one the run graded, read off the result's confusion cell; an answer it read no label off is
+        shown cut to :data:`_MISS_ANSWER_CHARS`, as is a label that runs past it.
         """
         reasons = list(miss.missed_because)
         field_name, answer = self._classifier, miss.answer
         if field_name is None or miss.outcome != "scored" or miss.scores.get(MATCH_MEASURE) is not False or not reasons:
             return reasons
-        if not isinstance(answer, Mapping):
-            # The answer is its own label: printing it is printing the graded value.
-            return reasons
-        expected = "" if miss.expected is None else f", expected {miss.expected!r}"
-        label = predicted_label(answer, field_name)
+        cell = miss.scores.get(CONFUSION_CELL_MEASURE)
+        read = confusion_of(cell) if isinstance(cell, str) else None
+        label = read[1] if read is not None else predicted_label(answer, field_name)
         if label == UNUSABLE_ANSWER:
             graded = f"answered no {field_name} it can be graded on: {_compact(answer)}"
+        elif isinstance(answer, Mapping):
+            graded = f"answered {field_name} {_cut(repr(label))}"
         else:
-            graded = f"answered {field_name} {label!r}"
+            # The answer is its own label, so the label is what is shown.
+            graded = f"answered {_cut(repr(label))}"
+        expected = "" if miss.expected is None else f", expected {miss.expected!r}"
         return [f"{graded}{expected}", *reasons[1:]]
 
     def _page_order(self) -> Callable[[str, CaseResult], tuple[str, int, str, int, int]]:
@@ -507,8 +516,8 @@ class Result:
     def _verdict_line(self) -> str:
         """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`).
 
-        A comparison's line leads on the question it was built to answer: the classifier's accuracy where the eval
-        classifies, else the first grader as each arm's readings list them (:meth:`_lead_measure`). What else separated
+        A comparison's line leads on the question it was built to answer: its first grader, a field, a function or a
+        judged dimension (:meth:`_lead_measure`). What else separated
         follows it, and a cost reading is never the lead on its own. A guardrail an arm breached, or is undecided on,
         is said after the lead, never in its place.
         """
@@ -546,13 +555,17 @@ class Result:
         return f"{self.name}: " + "; ".join(said)
 
     def _lead_measure(self, rows: Sequence[Mapping[str, Any]]) -> str | None:
-        """The measure a comparison's first line leads on: the classifier's accuracy where the eval classifies, else
-        the first grader the control's readings list that the contrasts tested and that is no cost; ``None`` when
-        no such measure was tested."""
+        """The measure a comparison's first line leads on: the first grader, whatever its kind, that the contrasts
+        tested and that is no cost (:attr:`grader_readings`); ``None`` when none was tested, as for a comparison graded
+        by guardrails alone, which are decided apart from the contrasts.
+
+        A result built without its graders' order reads the classifier's accuracy, else the control's readings in the
+        order they are listed."""
         tested = {row["measure_id"] for row in rows}
-        if ACCURACY_MEASURE in tested:
-            return ACCURACY_MEASURE
-        listed = [line.name for line in self.arms[self.control].measure_lines]
+        listed = list(self.grader_readings) or [
+            ACCURACY_MEASURE,
+            *(line.name for line in self.arms[self.control].measure_lines),
+        ]
         return next((name for name in listed if name in tested and not self._a_cost(name)), None)
 
     def _a_cost(self, measure: str | None) -> bool:
@@ -817,6 +830,7 @@ class Result:
                 again,
                 store=self.store,
                 fields=self.fields,
+                grader_readings=self.grader_readings,
                 judge=self.judge,
                 disclosures=self.disclosures,
                 calibrations=self.calibrations,
@@ -883,10 +897,19 @@ def _cases_verdict(
     return text + "".join(f"; {count} excluded: {cause}" for cause, count in excluded.items())
 
 
-def _compact(answer: Mapping[str, Any]) -> str:
-    """An answer whose graded field cannot be read off it, as a miss line shows it: compact JSON without its ``id``,
-    cut at :data:`_MISS_ANSWER_CHARS` with an ellipsis marking the cut."""
-    text = json.dumps({key: value for key, value in answer.items() if key != "id"}, separators=(",", ":"), default=str)
+def _compact(answer: Any) -> str:
+    """An answer the graded field cannot be read off, as a miss line shows it, cut by :func:`_cut`: a mapping as
+    compact JSON without its ``id``, the text an answer JSON could not hold was stored as (its ``repr``) as it is, and
+    any other value as compact JSON."""
+    if isinstance(answer, str):
+        return _cut(answer)
+    if isinstance(answer, Mapping):
+        answer = {key: value for key, value in answer.items() if key != "id"}
+    return _cut(json.dumps(answer, separators=(",", ":"), default=str))
+
+
+def _cut(text: str) -> str:
+    """``text`` cut at :data:`_MISS_ANSWER_CHARS`, an ellipsis marking the cut."""
     return text if len(text) <= _MISS_ANSWER_CHARS else text[: _MISS_ANSWER_CHARS - 1] + "…"
 
 

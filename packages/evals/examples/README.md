@@ -127,7 +127,7 @@ expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail d
 fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
 as `k=v` pairs, read against another control with `result.against()`.
 
-What the recorded run said: nothing separated v2 from v1, and it exits 4, its last line saying why in the report's words
+What the recorded run said: accuracy did not separate v2 from v1, nothing else did, and the guardrail is undecided for v2, so it exits 4, its last line saying why in the report's words
 (`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen opens on the guardrail's warning and reads v2 against v1 in one row
 

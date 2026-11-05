@@ -284,6 +284,31 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
     assert any(text.startswith("  queue: mean") for text in result.render().splitlines())
     matrix, _ = result.labels()
     assert {(cell.expected, cell.predicted) for cell in matrix} >= {("billing", "bug")}
+    # The guardrail field, named, is counted as itself: every answer said safe, as every case expected.
+    guarded, _ = result.labels("safe")
+    assert {(cell.expected, cell.predicted) for cell in guarded} == {("true", "true")}
+
+
+@dataclass(frozen=True)
+class Routing:
+    """An app's own answer that JSON cannot hold, so the run stores its repr."""
+
+    queue: str
+    note: str
+
+
+async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
+    async def as_dataclass(case: Mapping[str, Any]) -> Routing:
+        return Routing(queue="billing", note="routed after reading " + "the whole ticket " * 20)
+
+    result = await Eval(CASES, as_dataclass, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
+    (miss, *_) = result.misses()
+    assert isinstance(miss.answer, str) and len(miss.answer) > 300, "stored as its repr"
+    line = _miss_lines(result.render())[0]
+    said = line.split("): ", 1)[1]
+    shown = said.removeprefix("answered no queue it can be graded on: ").rsplit(", expected ", 1)[0]
+    assert said.startswith("answered no queue it can be graded on: Routing(queue='billing'")
+    assert len(shown) == 120 and shown.endswith("…")
 
 
 async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_without_its_id() -> None:
@@ -413,6 +438,23 @@ async def test_total_spend_splits_by_role_when_more_than_one_role_spent() -> Non
     assert line == "total spend: $0.00300, the results' cost", "one role's total is not split"
 
 
+# parity-with: threetears.evals.schema.CompletionClient
+class FakeUnpricedJudge(FakeJudge):
+    """:class:`FakeJudge`, whose provider prices none of its calls."""
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Verdict:
+        verdict = await super().generate(system=system, user=user, response_format=response_format)
+        return _Verdict(verdict.content, cost_usd=None, price_source=None)
+
+
+async def test_an_unpriced_role_leaves_the_total_unsplit_and_never_sums_it_as_zero() -> None:
+    result = await Eval(CASES, priced_hasty, [QUEUE, Judge(FakeUnpricedJudge(), RUBRIC)], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    (line,) = [line.strip() for line in result.render().splitlines() if "total spend" in line]
+    assert line == "total spend: unknown in full: $0.00300 over the priced calls, plus 6 call(s) unpriced"
+
+
 #: Enough cases for a contrast to be tested, each priced by its length so the spend varies case to case.
 PAIRED = [{"text": f"refund number {'x' * n}", "queue": "billing", "safe": n % 4 != 0} for n in range(12)]
 
@@ -465,3 +507,67 @@ async def test_with_no_classifier_a_comparison_leads_on_its_first_grader() -> No
     assert result.render().splitlines()[0] == (
         f"{result.name}: {first['reading']}: {first['verdict']}; also {cost['reading']}: {cost['verdict']}"
     )
+
+
+def _worded(rows: list[dict[str, Any]]) -> str:
+    return "; ".join(f"{row['reading']}: {row['verdict']}" for row in rows)
+
+
+async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [no_leak], k=2).run(store=":memory:", scope=SCOPE)
+    (cost,) = result.contrasts("production_replicating_cost")
+    assert cost["outcome"] == "improved"
+    (guarded,) = result.guardrails("cheap")
+    assert result.render().splitlines()[0] == (
+        f"{result.name}: nothing separated cheap from dear but cost; {_worded([cost])}; "
+        f"guardrail {guarded['guardrail']} {guarded['outcome']} for cheap"
+    )
+
+
+async def test_a_judge_only_comparison_leads_on_its_first_judged_dimension() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC)], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("answer.billing")
+    (cost,) = result.contrasts("production_replicating_cost")
+    assert first["outcome"] != "improved" and cost["outcome"] == "improved"
+    assert result.render().splitlines()[0] == f"{result.name}: {_worded([first])}; also {_worded([cost])}"
+
+
+async def test_a_judge_listed_first_leads_before_a_function_listed_after_it() -> None:
+    def short(case: Mapping[str, Any], out: Any) -> bool:
+        return len(str(out)) < 1000
+
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [Judge(FakeJudge(), RUBRIC), short], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("answer.billing")
+    assert result.render().splitlines()[0].startswith(f"{result.name}: {_worded([first])}; ")
+
+
+async def cheapest(case: Mapping[str, Any]) -> Answer:
+    """``cheap``'s answers, at a tenth of its price."""
+    answered = await cheap(case)
+    assert answered.cost_usd is not None
+    return Answer(answered.value, model="m-3", cost_usd=answered.cost_usd / 10)
+
+
+async def test_three_arms_lead_on_the_classifier_for_every_arm_tested() -> None:
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap, "cheapest": cheapest}, [QUEUE], k=2).run(
+        store=":memory:", scope=SCOPE
+    )
+    accuracy = result.contrasts("accuracy")
+    cost = [row for row in result.contrasts("production_replicating_cost") if row["outcome"] == "improved"]
+    assert sorted(row["arm"] for row in accuracy) == ["cheap", "cheapest"]
+    assert cost, "the cost separated, and follows the lead"
+    assert result.render().splitlines()[0] == f"{result.name}: {_worded(accuracy)}; also {_worded(cost)}"
+
+
+async def test_a_lead_with_nothing_else_separated_says_so() -> None:
+    async def twin(case: Mapping[str, Any]) -> Answer:
+        return await cheap(case)
+
+    result = await Eval(PAIRED, {"cheap": cheap, "twin": twin}, [QUEUE], k=2).run(store=":memory:", scope=SCOPE)
+    (accuracy,) = result.contrasts("accuracy")
+    assert not [row for row in result.contrasts() if row["outcome"] in ("improved", "regressed")]
+    assert result.render().splitlines()[0] == f"{result.name}: {_worded([accuracy])}; nothing else separated"
