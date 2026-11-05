@@ -35,7 +35,9 @@ triage: 16/30 cases passed; 14 misses: gdpr-delete, nonprofit, phish-suspend, ph
 ```
 
 Below it come each field's pass rate, each `category` label's precision and recall, the top misses with why each
-missed, and where its report page is. Then climb [the ladder](docs/ladder.md), one idea per rung:
+missed, and where its report page is. The runner also takes your app's system message, its prompt file, `max_tokens`
+and effort: [the keys a TOML file takes](examples/README.md#the-keys-a-toml-file-takes). Then climb
+[the ladder](docs/ladder.md), one idea per rung:
 
 | Rung | Example | Climb it when |
 |---|---|---|

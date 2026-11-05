@@ -20,6 +20,29 @@ the shorter line. The ladder's rung 3 shows the new first screen and says what t
 **Hosts:** a host reading the first screen sees the lead on the pass rate first, then the guardrail's warning with its
 counts. A host matching the old warning exactly finds it as the start of the new sentence, up to the colon.
 
+### evals: a rung file imports the modules beside it
+
+**Changed:** `python -m threetears.evals FILE` (and `python -m threetears.evals.harness FILE`, which loads through it)
+puts a Python eval file's directory first on `sys.path` before the file loads, as `python FILE` does, and leaves it
+there for the process, so `from router_adapter import ...` beside a rung file works at module level and inside a
+runner that imports when it is called. `load_evals` called as a library function does the same to its caller's
+process. A directory already on `sys.path` is not added again, nothing is taken off it, and a TOML file is unchanged.
+A module is imported once per process, so siblings in two directories need distinct names.
+`tests/test_quick_eval_files.py` holds it.
+
+**Hosts:** nothing to change. App code pasted into several rung files can move to one module beside them.
+
+### evals: a TOML eval's runner sends the app's system message, prompt file, `max_tokens` and effort
+
+**Added:** `[runner]` takes `prompt_file` (a file beside the TOML whose text is the prompt, in place of `prompt`),
+`system` or `system_file` (the system message, sent as written), `max_tokens` and `effort` (as `Model` takes them, and
+refused as it refuses them, naming the file). A file's text is read each time the eval loads; the placeholder check,
+the first line a judge reads, and the recording's key all see that text, so an edit to the app's prompt file is a
+prompt the recording does not hold, as an edit to an inline prompt is. A refusal of `[runner]` names every key it
+takes. The keys are listed as a table in the examples' README, rung 0, linked from the package README.
+
+**Hosts:** nothing to change.
+
 ### evals: the page's models and serializers stop laying out a memo
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
