@@ -31,6 +31,7 @@ A factor's effect at another level of another factor is read against a second co
 from __future__ import annotations
 
 import csv
+import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -59,12 +60,14 @@ from threetears.evals.analysis import (
     variant_key_of_run,
 )
 from threetears.evals.kernel import (
+    ACCURACY_MEASURE,
     CALIBRATION_MIN_RESULTS,
     CONFUSION_CELL_MEASURE,
     MATCH_MEASURE,
     ArmGuardrails,
     GuardrailMargin,
     GuardrailReadings,
+    METRIC_DESCRIPTORS,
     TierCriterion,
     agreement_statistic,
     calibration_criterion,
@@ -78,10 +81,11 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
-from threetears.evals.analysis.summary import CaseResult, EvalSummary
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, dollars_text
 from threetears.evals.analysis.report.build import contrast_rows, report_cell_labels
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
@@ -116,11 +120,8 @@ LABEL_COLUMNS: tuple[str, ...] = (
     "criterion_fingerprint",
 )
 
-#: What an uncalibrated judge's line ends with: the step that calibrates it, at the calibrated tier's floor of labels.
-_NEXT_STEP = (
-    f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs in the {TO_LABEL} the report writes, without "
-    "looking at the judge's verdict"
-)
+#: How many characters of an answer a miss line shows where the graded field cannot be read off it.
+_MISS_ANSWER_CHARS = 120
 
 #: What a label is read as, on a pass/fail dimension.
 _PASS_FAIL = {"pass": 1, "fail": 0, "1": 1, "0": 0, "true": 1, "false": 0}
@@ -298,6 +299,13 @@ class Result:
         _refuse_an_unknown_arm(self.arms, arm)
         return self.arms[arm]
 
+    @property
+    def _classifier(self) -> str | None:
+        """The field the eval classifies on: the first field graded as no measure of its own name, since every other
+        field (one listed after it, or a guardrail listed before it) is graded as a pass/fail of its name."""
+        graded = {measure.name for summary in self.arms.values() for measure in summary.measures}
+        return next((name for name in self.fields if name not in graded), None)
+
     # --- labels and calibration --------------------------------------------------------------------------------------
 
     def labels(
@@ -305,7 +313,7 @@ class Result:
     ) -> tuple[list[ConfusionCount], list[LabelStatistics]]:
         """One field grader's confusion matrix and each label's precision, recall and F1.
 
-        The classifier's (the first field) are the run's own, as its summary carries them; any other field's are
+        The classifier's (the first field not declared a guardrail) are the run's own, as its summary carries them; any other field's are
         counted the same way, over the same results, from each answer's label in that field.
 
         :param grader: The field, by name; ``None`` for the classifier.
@@ -319,10 +327,11 @@ class Result:
         summary = self._arm(arm)
         if not self.fields:
             raise ValueError("this eval grades no field, so it has no labels; a field grader is one named by a string")
-        name = self.fields[0] if grader is None else grader
+        classifier = self._classifier
+        name = (classifier or self.fields[0]) if grader is None else grader
         if name not in self.fields:
             raise ValueError(f"{name!r} is no field grader of this eval; its fields are {', '.join(self.fields)}")
-        if name == self.fields[0] and summary.confusion:
+        if name == classifier and summary.confusion:
             return list(summary.confusion), list(summary.labels)
         cells: dict[str, int] = {}
         observations: list[tuple[str, str]] = []
@@ -341,13 +350,37 @@ class Result:
         if judge is None:
             return []
         if judge.labels is None:
-            return [f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){_NEXT_STEP}"]
+            return [
+                f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){self._next_step()}"
+            ]
         if not judge.labels.is_file():
-            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet){_NEXT_STEP}"]
+            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet){self._next_step()}"]
         read = self.calibrations
         if not read:
-            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated{_NEXT_STEP}"]
+            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated{self._next_step()}"]
         return [f"judge against {judge.labels}: {entry.line()}" for entry in read]
+
+    def _next_step(self) -> str:
+        """What an uncalibrated judge's line ends with: the step that calibrates it, read off the sheet it is taken on.
+
+        The calibrated tier's floor is :data:`~threetears.evals.kernel.CALIBRATION_MIN_RESULTS` labelled results per
+        dimension, and :data:`TO_LABEL` holds one row per judged answer per dimension, so the step says how many rows
+        the sheet holds for each, and, where the fewest fall short of the floor, how many more judged answers it needs.
+        """
+        rows = {dim.name: 0 for dim in self.judge.dims} if self.judge is not None else {}
+        for row in self.to_label:
+            rows[row["dimension"]] = rows.get(row["dimension"], 0) + 1
+        fewest, most = min(rows.values(), default=0), max(rows.values(), default=0)
+        held = f"{fewest}" if fewest == most else f"{fewest} to {most}"
+        sheet = f"the {TO_LABEL} the report writes, which holds {held} per dimension"
+        unseen = "without looking at the judge's verdict"
+        if fewest >= CALIBRATION_MIN_RESULTS:
+            return f"; next step: rate about {CALIBRATION_MIN_RESULTS} outputs of each dimension in {sheet}, {unseen}"
+        return (
+            f"; next step: rate every output in {sheet}, {unseen}; the calibrated tier's floor is "
+            f"{CALIBRATION_MIN_RESULTS} per dimension, so it needs {CALIBRATION_MIN_RESULTS - fewest} more judged "
+            "answers per dimension"
+        )
 
     # --- the report --------------------------------------------------------------------------------------------------
 
@@ -388,7 +421,7 @@ class Result:
             lines += [f"  {one_line(line)}" for line in summary.dimension_lines]
             lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
-            for line in (summary.total_spend_text, summary.self_judging_warning, summary.model_identity_warning):
+            for line in (_total_spend(summary), summary.self_judging_warning, summary.model_identity_warning):
                 if line is not None:
                     lines.append(f"  {one_line(line)}")
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
@@ -404,10 +437,32 @@ class Result:
             lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)}):")
             for arm, miss in misses[:QUIET_MISSES]:
                 who = "" if len(self.arms) == 1 else f"{arm}, "
-                lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {'; '.join(miss.missed_because)}")
+                lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
         lines += self.disclosures
         lines.append(f"stored in {self.store}, scope {self.scope_id!r}")
         return "\n".join(lines)
+
+    def _why(self, miss: CaseResult) -> list[str]:
+        """Why a miss missed, as the quiet print says it: a classifier's wrong label as the graded field's value, never
+        the whole answer it was read from (a runner's answer object can run to hundreds of characters).
+
+        A scored result whose classifier label did not match carries that reason first
+        (:meth:`~threetears.evals.analysis.summary.CaseResult.of`); every other reason is printed as the summary has it.
+        """
+        reasons = list(miss.missed_because)
+        field_name, answer = self._classifier, miss.answer
+        if field_name is None or miss.outcome != "scored" or miss.scores.get(MATCH_MEASURE) is not False or not reasons:
+            return reasons
+        if not isinstance(answer, Mapping):
+            # The answer is its own label: printing it is printing the graded value.
+            return reasons
+        expected = "" if miss.expected is None else f", expected {miss.expected!r}"
+        label = predicted_label(answer, field_name)
+        if label == UNUSABLE_ANSWER:
+            graded = f"answered no {field_name} it can be graded on: {_compact(answer)}"
+        else:
+            graded = f"answered {field_name} {label!r}"
+        return [f"{graded}{expected}", *reasons[1:]]
 
     def _page_order(self) -> Callable[[str, CaseResult], tuple[str, int, str, int, int]]:
         """Where an arm's result stands in the page's Trials order (:func:`trial_order`), so the console lists misses
@@ -442,25 +497,68 @@ class Result:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
             text = measure.text
-            if measure.name == MATCH_MEASURE and self.fields:
-                text = f"{self.fields[0]}{text.removeprefix(MATCH_MEASURE)}"
+            if measure.name == MATCH_MEASURE and (classifier := self._classifier) is not None:
+                text = f"{classifier}{text.removeprefix(MATCH_MEASURE)}"
             texts.append(text)
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
 
     def _verdict_line(self) -> str:
-        """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`)."""
+        """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`).
+
+        A comparison's line leads on the question it was built to answer: the classifier's accuracy where the eval
+        classifies, else the first grader as each arm's readings list them (:meth:`_lead_measure`). What else separated
+        follows it, and a cost reading is never the lead on its own. A guardrail an arm breached, or is undecided on,
+        is said after the lead, never in its place.
+        """
         if len(self.arms) == 1:
             (arm,) = self.arms
             order = self._page_order()
             return f"{self.name}: {_cases_verdict(self.summary, order=lambda result: order(arm, result))}"
-        decided = [row for row in self.contrasts() if row["outcome"] in SEPARATED_VERDICTS]
-        if not decided:
-            others = " or ".join(arm for arm in self.arms if arm != self.control)
-            return f"{self.name}: nothing separated {others} from {self.control}"
+        rows = self.contrasts()
+        lead = self._lead_measure(rows)
+        led = [row for row in rows if lead is not None and row["measure_id"] == lead]
+        # What else separated, any cost after every other reading, so a cost reads after what the arms were for.
+        others = sorted(
+            (row for row in rows if row not in led and row["outcome"] in SEPARATED_VERDICTS),
+            key=lambda row: self._a_cost(row["measure_id"]),
+        )
         # The report's words, which name both arms: ``Accuracy: v2 better than v1``.
-        return f"{self.name}: " + "; ".join(f"{row['reading']}: {row['verdict']}" for row in decided)
+        worded = [f"{row['reading']}: {row['verdict']}" for row in others]
+        said = [f"{row['reading']}: {row['verdict']}" for row in led]
+        if said:
+            if worded:
+                said.append("also " + "; ".join(worded))
+            elif len(rows) > len(led):
+                said.append("nothing else separated")
+        elif others and not self._a_cost(others[0]["measure_id"]):
+            said = worded
+        else:
+            compared = " or ".join(arm for arm in self.arms if arm != self.control)
+            said.append(f"nothing separated {compared} from {self.control}" + (" but cost" if worded else ""))
+            said += worded
+        said += [
+            f"guardrail {row['guardrail']} {row['outcome']} for {row['arm'] or row['contrast']}"
+            for row in self.guardrails()
+            if row["outcome"] != "held"
+        ]
+        return f"{self.name}: " + "; ".join(said)
+
+    def _lead_measure(self, rows: Sequence[Mapping[str, Any]]) -> str | None:
+        """The measure a comparison's first line leads on: the classifier's accuracy where the eval classifies, else
+        the first grader the control's readings list that the contrasts tested and that is no cost; ``None`` when
+        no such measure was tested."""
+        tested = {row["measure_id"] for row in rows}
+        if ACCURACY_MEASURE in tested:
+            return ACCURACY_MEASURE
+        listed = [line.name for line in self.arms[self.control].measure_lines]
+        return next((name for name in listed if name in tested and not self._a_cost(name)), None)
+
+    def _a_cost(self, measure: str | None) -> bool:
+        """Whether a measure is a cost: money, or on the cost merit axis, as the report's catalog describes it."""
+        described = self.report.bundle.measure_catalog.get(measure or "") or METRIC_DESCRIPTORS.get(measure or "")
+        return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
@@ -783,6 +881,25 @@ def _cases_verdict(
         if len(missed) > QUIET_MISSES:
             text += f", and {len(missed) - QUIET_MISSES} more"
     return text + "".join(f"; {count} excluded: {cause}" for cause, count in excluded.items())
+
+
+def _compact(answer: Mapping[str, Any]) -> str:
+    """An answer whose graded field cannot be read off it, as a miss line shows it: compact JSON without its ``id``,
+    cut at :data:`_MISS_ANSWER_CHARS` with an ellipsis marking the cut."""
+    text = json.dumps({key: value for key, value in answer.items() if key != "id"}, separators=(",", ":"), default=str)
+    return text if len(text) <= _MISS_ANSWER_CHARS else text[: _MISS_ANSWER_CHARS - 1] + "…"
+
+
+def _total_spend(summary: EvalSummary) -> str | None:
+    """The total-spend line, split by role where more than one role the total counts spent, each role's dollars read
+    off its usage rows (:attr:`~threetears.evals.analysis.summary.EvalSummary.spend`): ``total spend: $0.00327, the
+    results' cost (candidate $0.00200, judge $0.00127)``. One role, or a total unknown in full, as the summary says it.
+    """
+    said = summary.total_spend_text
+    spent = [role for role in summary.spend if role.counted and role.cost_usd]
+    if said is None or summary.total_cost_usd is None or len(spent) < 2:
+        return said
+    return f"{said} ({', '.join(f'{role.role} {dollars_text(role.cost_usd)}' for role in spent)})"
 
 
 def _exclusion_causes(summary: EvalSummary) -> list[str]:

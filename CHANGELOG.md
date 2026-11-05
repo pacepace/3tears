@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the quick print leads on the question, and its miss, judge and spend lines say what a host needs
+
+**Changed:** four lines of an eval's quiet print. A comparison's first line leads on its classifier's accuracy, else
+on its first grader, followed by what else separated, cost last; a cost reading never leads on its own, and a
+guardrail an arm breached or is undecided on is named after the lead (`invoices: Accuracy: v2 and v1 not separated;
+nothing else separated; guardrail No invented total score undecided for v2`). A classifier miss prints the graded
+field's value (`answered label 'in_character', expected 'out_of_character'`), not the whole answer object; an answer
+without the field prints as compact JSON without its `id`, cut at 120 characters; a reason spanning lines prints on
+one. An uncalibrated judge's next step says how many rows `to_label.csv` holds per dimension and, below the calibrated
+tier's floor of 20, how many more judged answers each dimension needs. `total spend` splits by role when more than one
+role spent (`total spend: $0.0168, the results' cost (candidate $0.00175, judge $0.0151)`), each role's dollars read
+off its usage rows. A guardrail field listed before the classifier no longer takes its name: the classifier's
+reading line, its misses and `Result.labels()` read the classifier. Nothing stored changes, and no page changes.
+
+**Hosts:** a script that parses the first line of a comparison reads the new lead; a test asserting a rung's first
+line (or the judge's next-step line) takes the new words.
+
 ### evals: the page's models and serializers stop laying out a memo
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the

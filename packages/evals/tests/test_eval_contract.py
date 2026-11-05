@@ -466,8 +466,9 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate about 20 outputs in the "
-        "to_label.csv the report writes, without looking at the judge's verdict"
+        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate every output in the "
+        "to_label.csv the report writes, which holds 4 per dimension, without looking at the judge's verdict; the "
+        "calibrated tier's floor is 20 per dimension, so it needs 16 more judged answers per dimension"
     ]
     written = first.write(tmp_path / "report")
     assert written["to_label"].name == TO_LABEL

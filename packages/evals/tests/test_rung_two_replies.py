@@ -36,8 +36,9 @@ RUNG = EXAMPLES / "2-replies"
 
 #: What the honest first run prints about its judge: no labels, and the step that calibrates it.
 UNCALIBRATED = (
-    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs in the "
-    "to_label.csv the report writes, without looking at the judge's verdict"
+    "judge: 0 labels: judge uncalibrated (labels.csv is not there yet); next step: rate about 20 outputs of each "
+    "dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's "
+    "verdict"
 )
 
 #: The columns of a ``to_label.csv`` row that are the same whichever run wrote it. The ids are each run's own, and a
