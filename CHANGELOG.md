@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a rung file imports the modules beside it
+
+**Changed:** `python -m threetears.evals FILE` (and `python -m threetears.evals.harness FILE`, which loads through it)
+puts a Python eval file's directory first on `sys.path` before the file loads, as `python FILE` does, and leaves it
+there for the process, so `from router_adapter import ...` beside a rung file works at module level and inside a
+runner that imports when it is called. `load_evals` called as a library function does the same to its caller's
+process. A directory already on `sys.path` is not added again, nothing is taken off it, and a TOML file is unchanged.
+A module is imported once per process, so siblings in two directories need distinct names.
+`tests/test_quick_eval_files.py` holds it.
+
+**Hosts:** nothing to change. App code pasted into several rung files can move to one module beside them.
+
 ### evals: the page's models and serializers stop laying out a memo
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
