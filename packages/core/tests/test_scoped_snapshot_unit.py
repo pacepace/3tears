@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import gc
 import asyncio
 import json
 import linecache
@@ -19,6 +20,7 @@ import sqlite3
 import sys
 import threading
 import time
+import tracemalloc
 from dataclasses import replace
 from types import FrameType
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -471,24 +473,29 @@ async def test_a_tool_pods_snapshot_refuses_an_option_it_wires_itself(option: st
     assert client.sent == [], "the hub was asked before the options were checked"
 
 
-async def test_a_catch_up_on_a_replica_whose_watch_ended_leaves_it_failed() -> None:
-    """the watch ends while the buckets still answer (a consumer lost, the client fine): a catch-up
-    that really rebuilds a scope must not make the replica, which no longer applies changes, look ready."""
-    snapshot, pointers, _, l3 = _snapshot()
+async def test_a_replica_whose_watch_ended_says_so_watches_again_and_applies_changes_once_more() -> None:
+    """the watch ends while the buckets still answer (a consumer lost, the client fine). The replica says so, a
+    catch-up does not make it look ready meanwhile, and it follows the pointers again by itself: a replica whose watch
+    ended was FAILED for good until its process restarted (Pace, 2026-11-05: no failure parks the system)."""
+    snapshot, pointers, _, l3 = _snapshot(rewatch_backoff=(0.3,))
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     # the first rebuild declares the copy ready before it lets go of its claim
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     pointers.end_watch()
-    await _until(lambda: snapshot.status().phase is SnapshotPhase.FAILED, what="the watch's end")
+    await _until(lambda: snapshot.status().phase is not SnapshotPhase.READY, what="the watch's end said")
+    assert "watch" in snapshot.status().detail
     l3.rows[0]["votes"] = 7
     l3.epochs["TX"] = 2
 
     caught = await snapshot.catch_up_from_l3()
 
     assert caught == ["TX"], "the catch-up did not rebuild the scope L3 moved"
-    assert snapshot.status().phase is SnapshotPhase.FAILED, "a catch-up hid a replica that no longer applies changes"
-    assert "watch" in snapshot.status().detail
+    assert snapshot.status().phase is not SnapshotPhase.READY or "watch" not in snapshot.status().detail
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.READY, what="the pointers watched again")
+    l3.epochs["TX"] = 3
+    await snapshot.publish("TX", 3, {"results": [{"county": "c1", "state": "TX", "votes": 9}]})
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="a change applied once the watch was back")
     await snapshot.stop()
 
 
@@ -5453,6 +5460,132 @@ async def test_a_writer_killed_mid_write_is_recovered_from_the_diff_with_no_whol
     await replica.stop()
 
 
+async def test_a_recovery_whose_later_tables_ask_fails_reads_no_base_and_no_diff_before_leaving_the_scope_behind() -> (
+    None
+):
+    """cobalt dev 2026-11-05: a recovery read the scope's base from L2 (every table) and diffed its earlier tables
+    (FL: 102k rows of result_snapshots_by_id) before the lsf_projections ask timed out, at every retry, and pods died
+    of it at 20 GiB. Every table is asked first: an ask that fails leaves the scope behind having read nothing."""
+
+    fails = [False]
+
+    async def failing(l3: Any, scope: str) -> list[Any]:
+        if fails[0]:
+            raise ConnectionError("L3 query failed: QUERY_TIMEOUT")
+        return sorted({r["county"] for r in l3.tables["results"] if r["state"] == scope})
+
+    tables = (
+        _DIFFED[1],
+        SnapshotTable(
+            name="results",
+            scope_column="state",
+            key=("county",),
+            version_column="source_version",
+            partition_by="county",
+            partition_values=failing,
+        ),
+    )
+    writer, replica, pointers, store, l3 = await _diffed_pair(tables=tables)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    fails[0] = True
+    gets, reads = store.gets, (l3.whole_reads, l3.diff_reads)
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == () and "could not be asked" in outcome.left["TX"], outcome
+    assert (l3.whole_reads, l3.diff_reads) == reads, "an earlier table was diffed before the ask failed"
+    assert store.gets == gets, "the scope's base was read before the ask failed"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_recovery_reads_its_base_a_table_at_a_time_each_after_the_one_before_is_diffed() -> None:
+    """cobalt dev 2026-11-05: a recovery read the scope's every table from L2 before diffing any, and held it beside
+    the composed rows: the scope twice, and pods OOMKilled at 20 GiB. Each table's base is read when its diff runs and
+    let go once composed, so the next table's chunk is read only after the table before it was diffed."""
+    events: list[str] = []
+
+    class _Logged(_VersionedL3):
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            table = re.search(r'FROM "(\w+)"', sql)
+            if table is not None and args and args[0] == "TX":
+                events.append(f"l3 {table.group(1)}")
+            return await super().fetch(sql, *args)
+
+    class _LoggedStore(_Store):
+        async def get(self, name: str) -> bytes:
+            if "/TX/" in name:
+                events.append(f"chunk {name.rsplit('/', 1)[1].split('.', 1)[0]}")
+            return await super().get(name)
+
+    l3 = _Logged()
+    pointers, store = _Pointers(), _LoggedStore()
+    writer, _, _, _ = _snapshot(tables=_DIFFED, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await _started(writer, pointers)
+    replica, _, _, _ = _snapshot(tables=_DIFFED, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    events.clear()
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    chunk_totals = events.index("chunk totals")
+    assert "l3 results" in events[:chunk_totals], f"the totals' base was read before the results were diffed: {events}"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_whose_ask_keeps_failing_with_l3_unchanged_is_not_asked_again_until_its_backoff_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cobalt dev 2026-11-05: catch-up attempts 32-36 in minutes, each of a scope whose ask timed out. An ask that fails
+    the same way with L3 unchanged waits out the scope's backoff: catch-ups meanwhile leave it behind, asking nothing."""
+    fails = [False]
+    asks = [0]
+
+    async def failing(l3: Any, scope: str) -> list[Any]:
+        asks[0] += 1
+        if fails[0]:
+            raise ConnectionError("L3 query failed: QUERY_TIMEOUT")
+        return sorted({r["county"] for r in l3.tables["results"] if r["state"] == scope})
+
+    tables = (
+        _DIFFED[1],
+        SnapshotTable(
+            name="results",
+            scope_column="state",
+            key=("county",),
+            version_column="source_version",
+            partition_by="county",
+            partition_values=failing,
+        ),
+    )
+    writer, replica, _, _, l3 = await _diffed_pair(tables=tables)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    fails[0] = True
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+
+    first = await replica.catch_up()
+    asked = asks[0]
+    for _ in range(5):
+        clock.ahead += 5
+        again = await replica.catch_up()
+        assert "TX" in again.left, again
+    assert asks[0] == asked, f"a scope in its backoff was asked again {asks[0] - asked} times"
+    clock.ahead += 61
+    await replica.catch_up()
+    assert asks[0] > asked, "the scope was not tried again once its backoff ended"
+    assert "could not be asked" in first.left["TX"], first
+    await writer.stop()
+    await replica.stop()
+
+
 class _SlowGroupsL3(_VersionedL3):
     """:class:`_VersionedL3` whose every read of groups (counties, one or many at once) takes ``delay`` seconds; it
     counts those statements, and the most in flight at once."""
@@ -5965,6 +6098,30 @@ async def test_a_diff_of_hundreds_of_groups_reads_them_in_a_few_statements_and_h
     ]
     # the 301 groups that fit a page in one statement; "big" a statement a page; the NULL group alone
     assert len(reads) <= 6, f"the diff read 303 groups in {len(reads)} statements"
+    await snapshot.stop()
+
+
+async def test_a_diff_of_a_scope_of_many_held_rows_makes_no_python_object_a_held_row() -> None:
+    """cobalt dev 2026-11-05: a recovery listed a state's every held row's group in Python (``to_pylist`` and a key
+    a row), beside the rows themselves, and pods were OOMKilled at 20 GiB. The groups are counted by Arrow: a diff of
+    200,000 held rows of which one group changed allocates a few Python objects a group, never a row."""
+    rows = [_geo("TX", f"g{i % 20:02d}", f"i{i:06d}", 1) for i in range(200_000)]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot = await _geos_snapshot(l3, table)
+    l3.db.execute('UPDATE "geos" SET votes = 2, source_version = 2 WHERE item = ?', ("i000000",))
+    l3.epochs["TX"] = 2
+    gc.collect()
+    tracemalloc.start()
+    try:
+        outcome = await snapshot.catch_up()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert outcome.caught == ("TX",), outcome
+    # a Python object a held row is 200,000 of them, over 10 MB; Arrow's buffers are not Python's to count
+    assert peak < 8 << 20, f"the diff held {peak / (1 << 20):.1f} MiB of Python objects for 200,000 rows"
     await snapshot.stop()
 
 

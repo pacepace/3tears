@@ -177,6 +177,7 @@ log = get_logger(__name__)
 try:
     import duckdb
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.ipc as ipc
 
     _SNAPSHOT_EXTRA: ImportError | None = None
@@ -208,6 +209,14 @@ _DEFAULT_RECHECK: Final = timedelta(seconds=2)
 #: timeout, a slow consumer cut off) leaves the copy in L2, and a whole rebuild from L3 in its place ran at 4 rows a
 #: second on cobalt prod (2026-11-05: two new pods cut off as slow consumers mid-load, each rebuilding every scope)
 _L2_RELOAD_BACKOFF: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
+
+#: the waits before a pointer watch that ended is followed again, the last repeated: a replica whose watch ended was
+#: FAILED for good, serving a copy no change reached, until its process restarted (Pace, 2026-11-05: no failure parks
+#: the system)
+_REWATCH_BACKOFF: Final = (1.0, 2.0, 5.0, 10.0, 30.0)
+
+#: a watch that ran this long before it ended is followed again from the backoff's first wait
+_REWATCH_RESET_SECONDS: Final = 60.0
 
 #: how long a holder of the rebuild claim may go without progress -- a page read from L3, a chunk read or
 #: written, scopes committed here, a pointer or the index moved -- before it lets the claim go and its run (a
@@ -1530,6 +1539,61 @@ class _Tally:
             self.by[str(value)] = self.by.get(str(value), 0) + 1
 
 
+class _HeldGroups:
+    """the groups of a table's rows a copy holds, counted by Arrow: each distinct value of the group column as a
+    diff compares it (:func:`_group_key`), its rows, and masks over the rows by group. No Python object is made a held
+    row (cobalt dev 2026-11-05: a recovery's per-row lists of a state's rows, beside the rows, OOMKilled pods).
+
+    :ivar counts: group -> the rows the copy holds of it
+    :ivar raw: group -> one value of it as the column holds it
+    """
+
+    def __init__(self, held: Any, group: str | None, code: str) -> None:
+        self._column = None if group is None else held.column(group)
+        self._rows = held.num_rows
+        self._raws: dict[Any, list[Any]] = {}
+        self.counts: dict[Any, int] = {}
+        self.raw: dict[Any, Any] = {}
+        counted = ([{"values": None, "counts": self._rows}] if self._column is None and self._rows else []) + (
+            [] if self._column is None else pc.value_counts(self._column).to_pylist()
+        )
+        for item in counted:
+            key = _group_key(item["values"], code)
+            self.counts[key] = self.counts.get(key, 0) + int(item["counts"])
+            self._raws.setdefault(key, []).append(item["values"])
+            self.raw.setdefault(key, item["values"])
+
+    def rows_of(self, keys: Iterable[Any]) -> Any:
+        """a mask over the held rows: True for each row of one of ``keys``.
+
+        :param keys: the groups
+        :ptype keys: Iterable[Any]
+        :return: the mask
+        :rtype: pyarrow.ChunkedArray | pyarrow.BooleanArray
+        """
+        raws = [raw for key in keys for raw in self._raws.get(key, ())]
+        if self._column is None:
+            return pa.array([bool(raws)] * self._rows, type=pa.bool_())
+        present = [raw for raw in raws if raw is not None]
+        mask = (
+            pc.fill_null(pc.is_in(self._column, value_set=pa.array(present, type=self._column.type)), False)
+            if present
+            else pc.is_in(self._column, value_set=pa.array([], type=self._column.type))
+        )
+        mask = pc.fill_null(mask, False)
+        return pc.or_(mask, pc.is_null(self._column)) if None in raws else mask
+
+    def keeping(self, drop: Iterable[Any]) -> Any:
+        """a mask over the held rows: True for each row of no group in ``drop``.
+
+        :param drop: the groups let go
+        :ptype drop: Iterable[Any]
+        :return: the mask
+        :rtype: pyarrow.ChunkedArray | pyarrow.BooleanArray
+        """
+        return pc.invert(self.rows_of(drop))
+
+
 def _array_of(values: Sequence[Any]) -> str | None:
     """the array type a set of group values is bound as in one ``= ANY($n)`` parameter; ``None`` when they are not
     all text or all whole numbers (read a value at a time).
@@ -2396,6 +2460,9 @@ class ScopedSnapshot:
     :ptype chunk_reads: int
     :param chunk_read_bytes: the bytes of chunks read from the object store at once (:data:`_DEFAULT_CHUNK_READ_BYTES`)
     :ptype chunk_read_bytes: int
+    :param rewatch_backoff: the waits, in seconds, before a pointer watch that ended is followed again, the last
+        repeated (:data:`_REWATCH_BACKOFF`)
+    :ptype rewatch_backoff: Sequence[float]
     :param groups_per_read: the group values one statement of a diff, or of a read a partition value at a time,
         names (:data:`_DEFAULT_GROUPS_PER_READ`)
     :ptype groups_per_read: int
@@ -2444,6 +2511,7 @@ class ScopedSnapshot:
         apply_batch: int = _DEFAULT_APPLY_BATCH,
         chunk_reads: int = _DEFAULT_CHUNK_READS,
         chunk_read_bytes: int = _DEFAULT_CHUNK_READ_BYTES,
+        rewatch_backoff: Sequence[float] = _REWATCH_BACKOFF,
         groups_per_read: int = _DEFAULT_GROUPS_PER_READ,
         l2_reload_backoff: Sequence[float] = _L2_RELOAD_BACKOFF,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
@@ -2476,6 +2544,7 @@ class ScopedSnapshot:
         #: the chunk reads in flight, across every scope fetched ahead
         self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
         self._chunk_bytes = _ByteBudget(chunk_read_bytes)
+        self._rewatch_backoff = tuple(rewatch_backoff) or _REWATCH_BACKOFF
         self._groups_per_read = max(1, groups_per_read)
         # a cold load whose chunk reads failed: how many times running, and when it is tried again
         self._reload_failures = 0
@@ -2589,7 +2658,8 @@ class ScopedSnapshot:
         """
         phase: SnapshotPhase
         if self._watch_ended is not None:
-            phase, detail = SnapshotPhase.FAILED, self._watch_ended
+            # the copy is served as it is while the watch is followed again: waiting, never failed for good
+            phase, detail = SnapshotPhase.WAITING, self._watch_ended
         elif self._activity is not None:
             phase, detail = self._activity
         elif self._waiting:
@@ -3286,16 +3356,27 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        try:
-            await self._follow(self._layout.watch_prefix)
-            ended = "the pointer watch ended"
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged and stated in the status rather than lost with the task
-            contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
-            ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
-        self._watch_ended = f"{ended}; changes are no longer applied"
-        self._settle()
+        attempt = 0
+        while True:
+            began = time.monotonic()
+            try:
+                await self._follow(self._layout.watch_prefix)
+                ended = "the pointer watch ended"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged, stated in the status, and the watch followed again
+                contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
+                ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
+            if time.monotonic() - began >= _REWATCH_RESET_SECONDS:
+                attempt = 0
+            wait = self._rewatch_backoff[min(attempt, len(self._rewatch_backoff) - 1)]
+            attempt += 1
+            self._watch_ended = (
+                f"{ended}; the copy is served as it is, and the pointers are watched again in {wait:.0f} s"
+            )
+            log.warning("scoped snapshot %s: %s (attempt %d)", self._name, self._watch_ended, attempt)
+            self._settle()
+            await asyncio.sleep(wait)
 
     async def _follow(self, prefix: str) -> None:
         """consume the pointer watch, recording what it delivers.
@@ -3307,9 +3388,23 @@ class ScopedSnapshot:
         :raises KvError: when the NATS connection is closed
         """
         # sender-posture: own-consumer -- a pointer counts only with the watch consumer's own ack reply
+        replayed: set[str] = set()
+        replaying = True
         async with aclosing(self._pointers_bucket.watch_prefix(prefix=prefix, heartbeat=self._heartbeat)) as watch:
             async for update in watch:
+                if update is not None and replaying:
+                    replayed.add(update.key)
                 if update is None:
+                    if replaying and self._watch_ended is not None:
+                        # followed again: a pointer deleted while the watch was gone is gone here too, and the copy
+                        # applies changes again
+                        for scope in [s for s in self._seen if self._layout.pointer_key(s) not in replayed]:
+                            del self._seen[scope]
+                            self._removing.add(scope)
+                        self._watch_ended = None
+                        log.info("scoped snapshot %s: the pointers are watched again", self._name)
+                        self._settle()
+                    replaying = False
                     self._caught_up = True
                 elif update.key == self._layout.index_key:
                     body = None if update.value is None else json.loads(update.value)
@@ -3358,7 +3453,7 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        while self._watch_ended is None:
+        while True:
             try:
                 await asyncio.wait_for(self._changed.wait(), self._recheck.total_seconds())
             except TimeoutError:
@@ -5912,6 +6007,36 @@ class ScopedSnapshot:
             raise unread
         return None
 
+    async def _base_sources(self, scope: str) -> list[tuple[int, str, _Pointer | None]]:
+        """the copies of a scope this replica can read, newest first: its pointer's chunks in L2 and this L1's rows,
+        each as (epoch, ``"l2"`` or ``"l1"``, the pointer for L2). Nothing is read.
+
+        :return: the copies
+        :rtype: list[tuple[int, str, _Pointer | None]]
+        """
+        raw = await self._pointers_bucket.get(key=self._layout.pointer_key(scope))
+        pointer = None if raw is None else _readable_pointer(raw)
+        applied = self._applied.get(scope)
+        sources: list[tuple[int, str, _Pointer | None]] = []
+        if pointer is not None and self._loadable(pointer):
+            sources.append((pointer.epoch, "l2", pointer))
+        if applied is not None:
+            sources.append((applied.epoch, "l1", None))
+        return sorted(sources, key=lambda s: (s[0], s[1] == "l2"), reverse=True)
+
+    async def _base_table(self, scope: str, source: str, pointer: _Pointer | None, epoch: int, name: str) -> Any | None:
+        """one table's rows of a scope's copy at ``epoch``: from L2's chunks, or this L1's rows.
+
+        :return: the rows; ``None`` when this L1 no longer holds them at that epoch
+        :rtype: pyarrow.Table | None
+        :raises _Lost: when L2's chunks cannot be read
+        """
+        if source == "l2":
+            assert pointer is not None  # noqa: S101 - a copy in L2 is a pointer's
+            return (await self._chain_rows(pointer, [name]))[name]
+        rows = await self._local_rows(scope, epoch, [name])
+        return None if rows is None else rows.get(name)
+
     async def _retry_due(self, scope: str, tried: _Unrecovered) -> bool:
         """whether a scope a recovery left behind is to be tried now: its wait is over, or L3's epoch for it moved.
 
@@ -5963,33 +6088,63 @@ class ScopedSnapshot:
         seen = self._seen.get(scope)
         if seen is not None and seen.epoch >= epoch and self._loadable(seen):
             return None
-        try:
-            base = await self._base_of(scope)
-        except _Lost as exc:
-            if not exc.unread:
-                raise
-            # its copy is in L2 and the read failed: tried again after the backoff, never read whole meanwhile
-            return f"its copy in L2 could not be read ({exc}); it is read from L2 again"
-        if base is None:
+        # every table's partition values asked before anything is read: an ask that fails leaves the scope behind
+        # at once, never after the base and the earlier tables' diffs were read (cobalt dev 2026-11-05: FL's base and
+        # 102k rows of result_snapshots_by_id read, then the lsf_projections ask timed out, at every retry)
+        asked: dict[str, list[Any] | None] = {}
+        for table in self._tables:
+            got = await self._ask_named(table, scope)
+            if isinstance(got, str):
+                return f"{table.name}: {got}"
+            asked[table.name] = got
+        sources = await self._base_sources(scope)
+        if not sources:
             return _NO_COPY
-        held_at, held = base
-        if held_at > epoch:
-            return f"the copy holds it at epoch {held_at}, past L3's {epoch}"
         composed: dict[str, Any] = {}
         changed: dict[str, int] = {}
         # what each table's diff read, kept for the next diff only once this one publishes at an unchanged L3: a diff
         # that failed or a write raced published nothing, so its reads are no evidence the L1 failed to keep them
         passed: dict[str, _GroupReads] = {}
-        with self._scope_read(scope):
-            for table in self._tables:
-                if held_at == epoch:
-                    composed[table.name] = held[table.name]
-                    continue
-                passed[table.name] = {}
-                outcome = await self._diffed_table(table, scope, held_at, held[table.name], passed[table.name], saw)
-                if isinstance(outcome, str):
-                    return f"{table.name}: {outcome}"
-                composed[table.name], changed[table.name] = outcome
+        unread: _Lost | None = None
+        held_at = -1
+        for held_at, source, pointer in sources:
+            if held_at > epoch:
+                return f"the copy holds it at epoch {held_at}, past L3's {epoch}"
+            composed, changed, passed = {}, {}, {}
+            whole = True
+            with self._scope_read(scope):
+                for table in self._tables:
+                    # one table's base at a time, let go once composed: the peak is one table's base and its
+                    # composed rows, never the whole scope twice (cobalt dev 2026-11-05: pods OOMKilled at 20 GiB)
+                    try:
+                        base = await self._base_table(scope, source, pointer, held_at, table.name)
+                    except _Lost as exc:
+                        log.info(
+                            "scoped snapshot %s: scope %r's %s copy cannot be read: %s", self._name, scope, source, exc
+                        )
+                        if exc.unread:
+                            unread = exc
+                        whole = False
+                        break
+                    if base is None:
+                        whole = False
+                        break
+                    if held_at == epoch:
+                        composed[table.name] = base
+                        continue
+                    passed[table.name] = {}
+                    outcome = await self._diffed_table(table, scope, held_at, base, passed[table.name], saw, asked)
+                    del base
+                    if isinstance(outcome, str):
+                        return f"{table.name}: {outcome}"
+                    composed[table.name], changed[table.name] = outcome
+            if whole:
+                break
+        else:
+            if unread is not None:
+                # its copy is in L2 and the read failed: tried again after the backoff, never read whole meanwhile
+                return f"its copy in L2 could not be read ({unread}); it is read from L2 again"
+            return _NO_COPY
         if await self._held_epoch(scope) != epoch:
             return _Pending(f"scope {scope!r} was written while its diff was read")
         seen = self._seen.get(scope)
@@ -6097,39 +6252,17 @@ class ScopedSnapshot:
             )
         return times > _REREADS
 
-    async def _diffed_table(
-        self, table: SnapshotTable, scope: str, held_at: int, held: Any, passed: _GroupReads, saw: _Saw | None = None
-    ) -> tuple[Any, int] | str:
-        """one table's rows of a scope at its epoch in L3, from the rows held at ``held_at`` and what L3 changed since.
+    async def _ask_named(self, table: SnapshotTable, scope: str) -> list[Any] | None | str:
+        """the partition values a table names for a scope (:attr:`SnapshotTable.partition_values`), asked of L3.
 
-        The table's rows are grouped by its partition column, or else the first column it is read in after the
-        scope (a geography, a run): one statement counts each group's rows in L3 and those a write after
-        ``held_at`` stamped (:attr:`SnapshotTable.version_column`). A group a write stamped, one the copy does not
-        hold (that it keeps: :attr:`SnapshotTable.partition_values`), and one whose count is not the copy's (rows
-        removed) is read from L3 whole, pinned to its value (a NULL one from the rows where it is NULL, paged by the
-        other key columns); a group L3 holds no more is dropped; every other group
-        is the copy's. So only what moved is read. Then, unless the copy keeps only some of the table
-        (:attr:`SnapshotTable.retained`), its rows must number L3's. A table whose copy keeps some rows of the
-        groups it names (:attr:`SnapshotTable.partial_groups`) is diffed by :meth:`_partly_diffed`. A group read on
-        diffs in a row with L3 unchanged is not read again (:meth:`_breaks`).
-
-        :param passed: where each group read goes, by L3's count and newest stamp of it
-        :ptype passed: _GroupReads
-        :param saw: where the groups it counted go, with their counts and newest stamps
-        :ptype saw: _Saw | None
-        :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
-        :rtype: tuple[pyarrow.Table, int] | str
+        :return: the values; ``None`` when the table names none, or a retained table's ask failed (judged as one the
+            copy keeps part of); or why the scope stays behind (an ask that failed for a table that waits on it, or
+            named a value its column cannot hold)
+        :rtype: list[Any] | None | str
         """
-        version = table.version_column
-        if version is None:
-            return "it names no version column"
-        group = table.partition_by or next((c for c in table.paged_by if c != table.scope_column), None)
-        code = self._backend.column_types(table.name).get(group or "", "VARCHAR")
-        values = [None] * held.num_rows if group is None else held.column(group).to_pylist()
-        keys = [_group_key(value, code) for value in values]
-        held_counts: dict[Any, int] = {}
-        for key in keys:
-            held_counts[key] = held_counts.get(key, 0) + 1
+        if table.partition_values is None:
+            return None
+        code = self._backend.column_types(table.name).get(table.partition_by or "", "VARCHAR")
         named: list[Any] | None = None
         if table.partition_values is not None:
             # a partial_groups table, and any table not retained, waits for an ask that answers: without the values,
@@ -6172,8 +6305,55 @@ class ScopedSnapshot:
                         extra={"extra_data": {"table": table.name, "scope": scope, "value": repr(value)}},
                     )
                     return f"the partition values of {table.partition_by} named {value!r}, which it cannot hold"
+        return named
+
+    async def _diffed_table(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        held_at: int,
+        held: Any,
+        passed: _GroupReads,
+        saw: _Saw | None = None,
+        asked: Mapping[str, list[Any] | None] | None = None,
+    ) -> tuple[Any, int] | str:
+        """one table's rows of a scope at its epoch in L3, from the rows held at ``held_at`` and what L3 changed since.
+
+        The table's rows are grouped by its partition column, or else the first column it is read in after the
+        scope (a geography, a run): one statement counts each group's rows in L3 and those a write after
+        ``held_at`` stamped (:attr:`SnapshotTable.version_column`). A group a write stamped, one the copy does not
+        hold (that it keeps: :attr:`SnapshotTable.partition_values`), and one whose count is not the copy's (rows
+        removed) is read from L3 whole, pinned to its value (a NULL one from the rows where it is NULL, paged by the
+        other key columns); a group L3 holds no more is dropped; every other group
+        is the copy's. So only what moved is read. Then, unless the copy keeps only some of the table
+        (:attr:`SnapshotTable.retained`), its rows must number L3's. A table whose copy keeps some rows of the
+        groups it names (:attr:`SnapshotTable.partial_groups`) is diffed by :meth:`_partly_diffed`. A group read on
+        diffs in a row with L3 unchanged is not read again (:meth:`_breaks`).
+
+        :param passed: where each group read goes, by L3's count and newest stamp of it
+        :ptype passed: _GroupReads
+        :param saw: where the groups it counted go, with their counts and newest stamps
+        :ptype saw: _Saw | None
+        :param asked: table -> the partition values already asked of it (:meth:`_ask_named`); asked here when absent
+        :ptype asked: Mapping[str, list[Any] | None] | None
+        :return: the rows as this L1 types them and how many were read from L3; or why the table cannot be diffed
+        :rtype: tuple[pyarrow.Table, int] | str
+        """
+        version = table.version_column
+        if version is None:
+            return "it names no version column"
+        group = table.partition_by or next((c for c in table.paged_by if c != table.scope_column), None)
+        code = self._backend.column_types(table.name).get(group or "", "VARCHAR")
+        groups = _HeldGroups(held, group, code)
+        held_counts = groups.counts
+        got: list[Any] | None | str = (
+            asked[table.name] if asked is not None and table.name in asked else await self._ask_named(table, scope)
+        )
+        if isinstance(got, str):
+            return got
+        named = got
         if table.partial_groups and named is not None and group is not None:
-            return await self._partly_diffed(table, scope, held_at, held, group, named, keys, held_counts, passed, saw)
+            return await self._partly_diffed(table, scope, held_at, held, group, named, groups, passed, saw)
         wanted = None if named is None else {_group_key(value, code) for value in named}
         in_l3 = await self._group_counts(table, scope, held_at, group, code, saw=saw)
         # the copy keeps only some of the table's groups, and which is unknown: a retained table with no values named
@@ -6202,7 +6382,7 @@ class ScopedSnapshot:
         if gone and some:
             return f"{len(gone)} groups of {group} it keeps went from L3, so rows it let go may count again"
         drop |= gone
-        mask = pa.array([key not in drop for key in keys], type=pa.bool_())
+        mask = groups.keeping(drop)
         parts: list[Any] = [held.filter(mask)]
         read = 0
         if reread:
@@ -6289,8 +6469,7 @@ class ScopedSnapshot:
         held: Any,
         group: str,
         named: Sequence[Any],
-        keys: Sequence[Any],
-        held_counts: Mapping[Any, int],
+        groups: _HeldGroups,
         passed: _GroupReads,
         saw: _Saw | None = None,
     ) -> tuple[Any, int] | str:
@@ -6314,10 +6493,8 @@ class ScopedSnapshot:
         :ptype group: str
         :param named: the groups the ask named
         :ptype named: Sequence[Any]
-        :param keys: each held row's group, as a diff compares it (:func:`_group_key`)
-        :ptype keys: Sequence[Any]
-        :param held_counts: each held group's rows
-        :ptype held_counts: Mapping[Any, int]
+        :param groups: the groups the copy holds, counted (:class:`_HeldGroups`)
+        :ptype groups: _HeldGroups
         :param passed: where each group read goes, by L3's count and newest stamp of it
         :ptype passed: _GroupReads
         :param saw: where the groups it counted go, with their counts and newest stamps
@@ -6332,7 +6509,8 @@ class ScopedSnapshot:
         # run L3 holds yet (reports' lsf_runs records a run once every state's rows are written), and a group the ask
         # does not name is the L1 retention's to let go, never the diff's. So the count is bounded by the named
         # groups and the copy's, never by every group L3 holds
-        held_values = {key: value for key, value in zip(keys, held.column(group).to_pylist(), strict=True)}
+        held_counts = groups.counts
+        held_values = groups.raw
         counted = [*named, *(value for key, value in held_values.items() if key not in named_keys)]
         wanted = named_keys | set(held_counts)
         in_l3 = await self._group_counts(table, scope, held_at, group, code, counted, saw=saw)
@@ -6375,7 +6553,6 @@ class ScopedSnapshot:
                 expected += stamped
         parts: list[Any] = []
         replaced: set[tuple[Any, ...]] = set()
-        held_rows: list[tuple[Any, ...]] | None = None
         overlaid: list[Any] = []
         read = 0
         if whole or stamped_only:
@@ -6395,9 +6572,10 @@ class ScopedSnapshot:
             read += tally.rows
             # the stamped rows as this L1 types them, keyed as the copy's rows are
             seen = {row for page in pages for row in _key_tuples(page, table.key, codes)}
-            if held_rows is None:
-                held_rows = _key_tuples(held, table.key, codes)
-            kept = sum(1 for at, row in zip(keys, held_rows, strict=True) if at == key and row not in seen)
+            # the copy's rows of this group alone, keyed: never a key a held row of the table
+            kept = sum(
+                1 for row in _key_tuples(held.filter(groups.rows_of([key])), table.key, codes) if row not in seen
+            )
             if sum(page.num_rows for page in pages) != tally.rows or kept > unchanged:
                 # the retention let a stamped row go (the copy's row of its key cannot be told), or the copy holds
                 # more of the group than L3 holds unchanged (rows it holds went from L3): read whole
@@ -6440,14 +6618,18 @@ class ScopedSnapshot:
             )
         if not (parts or drop):
             return held, read
-        if replaced and held_rows is not None:
-            mask = pa.array(
-                [at not in drop and row not in replaced for at, row in zip(keys, held_rows, strict=True)],
-                type=pa.bool_(),
-            )
-        else:
-            mask = pa.array([at not in drop for at in keys], type=pa.bool_())
-        return await self._export(table, scope, _concatenated([held.filter(mask), *parts])), read
+        keep = groups.keeping(drop)
+        if not replaced:
+            return await self._export(table, scope, _concatenated([held.filter(keep), *parts])), read
+        # the overlaid groups' rows alone are keyed, to let go of those a stamped row replaced; every other kept row is
+        # taken by its group, with no Python object a row
+        over = groups.rows_of([_group_key(value, code) for value in overlaid])
+        rest = held.filter(pc.and_(keep, pc.invert(over)))
+        overlaid_rows = held.filter(pc.and_(keep, over))
+        unreplaced = pa.array(
+            [row not in replaced for row in _key_tuples(overlaid_rows, table.key, codes)], type=pa.bool_()
+        )
+        return await self._export(table, scope, _concatenated([rest, overlaid_rows.filter(unreplaced), *parts])), read
 
     async def _read_group(
         self,
