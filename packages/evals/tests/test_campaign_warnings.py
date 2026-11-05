@@ -17,9 +17,11 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.names import AspectNames
+
+from threetears.evals.analysis.report.campaign.scorecard import READING_WORDS
 from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
-from threetears.evals.analysis.report.campaign_page import NO_CALL, campaign_warnings
+from threetears.evals.analysis.report.campaign_page import NO_CALL, build_campaign_report, campaign_warnings
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
@@ -36,7 +38,7 @@ from packages.evals.tests.campaign_page_support import (
     kind_page_of,
     page_of,
 )
-from packages.evals.tests.report_shapes_support import SHAPES
+from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, shape_of
 
 
 def _warned(blocks: list[object], source: str) -> list[str]:
@@ -221,25 +223,85 @@ async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -
     page = await _guarded(current=_answering(misses=10, leaks=0), slip=_answering(misses=10, leaks=2))
     (line,) = _warned(page.blocks, "guardrails")
     assert line.endswith(
-        ": slip failed it on 2 of 30 cases and current on 0, too few cases to show slip within its 5-point margin or "
-        "beyond it."
+        ": slip failed it on 2 of 30 cases and current on 0, a case counted once however many of its trials failed "
+        "it, too few cases to show slip within its 5-point margin or beyond it."
     )
 
 
-async def test_the_page_leads_on_the_pass_rate_and_the_guardrail_warns_beside_it_never_in_its_place() -> None:
-    """The one rule: the first bold line is what code read on the aspect's pass rate, as the aspect's fold heads it;
-    the guardrail's warning is the next."""
+async def test_with_no_question_and_no_classifier_the_lead_is_the_pass_rate_and_the_guardrail_warns_beside_it() -> None:
+    """The one rule with no question asked and a function grader first, whose order no page can read: the first bold
+    line is the pass rate, naming both arms and marked a lead; the guardrail's warning is the next, never in its
+    place."""
     page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=4, leaks=0))
-    (fold,) = page.aspects
+    (row,) = [reading for reading in page.readings.readings]
     lead, warning = _bold(page)
-    assert lead == f"**On {fold.aspect}, {fold.shows}.**"
+    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}, a lead.**"
     assert warning.startswith("**same is not yet shown safe on the no leak guardrail")
-    (verdict,) = _warned(page.blocks, "verdict")
-    assert page.blocks.index(next(b for b in page.blocks if isinstance(b, DisclosureBlock) and b.text == verdict)) < (
-        page.blocks.index(next(b for b in page.blocks if isinstance(b, DisclosureBlock) and b.source == "guardrails"))
-    )
     html = header_html(page)
     assert html.index('<p class="verdict" data-tone="open">') < html.index('<p class="flag warning">')
+
+
+async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_aspect_page_s_words() -> None:
+    """A field grader listed first is the classifier: the lead reads its accuracy, as the aspect's contrasts table
+    words it, both arms named, never the pass rate of every grader together."""
+
+    def labelled(miss: int) -> Any:
+        async def answer(case: dict[str, int]) -> dict[str, str]:
+            return {"label": "a" if case["n"] >= miss else "b", "note": "SECRET" if case["n"] < 0 else ""}
+
+        return answer
+
+    def no_secret(case: dict[str, Any], answer: dict[str, str]) -> bool:
+        """Whether the answer keeps the customer's secret."""
+        return "SECRET" not in answer["note"]
+
+    cases = [{"n": index, "label": "a"} for index in range(30)]
+    result = await Eval(
+        cases, {"current": labelled(10), "same": labelled(4)}, ["label", grader(no_secret, guard=0.05)], k=1
+    ).run(store=":memory:")
+    (accuracy,) = [
+        verdict
+        for verdict in result.page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "accuracy"
+    ]
+    lead, warning = _bold(result.page)
+    assert lead == f"**{accuracy.heading}: {accuracy.words}, a lead.**" and accuracy.heading == "Accuracy"
+    assert "same" in accuracy.words and "current" in accuracy.words
+    assert warning.startswith("**same is not yet shown safe on the no secret guardrail")
+
+
+def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_guardrail() -> None:
+    """A campaign asking its aspect a question leads on the question's measure, the pass rate, unmarked as a lead and
+    set in the decided tone, with the guardrail the candidate is undecided on warned beside it."""
+    shape = shape_of(
+        "asked",
+        [AspectTrials("billing", [ArmTrials("production", passing=6), ArmTrials("v2", passing=19)])],
+        control=True,
+    )
+    v2 = shape.key("v2")
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={
+                        "guardrails": GuardrailReadings(
+                            dimensions=["reply.polite"], checks=[_guardrail(report.bundle, "reply.polite", v2)]
+                        )
+                    }
+                )
+            }
+        )
+        for label, report in shape.reports.items()
+    }
+    assert all(report.bundle.question_declared for report in reports.values())
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
+    (row,) = shape.readings.readings
+    assert row.confirmatory
+    lead, warning = _bold(page)
+    assert lead == f"**Pass rate: v2 against production {READING_WORDS[row.reading]}.**"
+    assert warning == "**v2 is not yet shown safe on the reply polite guardrail on billing.**"
+    html = header_html(page)
+    assert html.index('<p class="verdict" data-tone="decided">') < html.index('<p class="flag warning">')
 
 
 async def test_a_page_no_guardrail_warns_on_leads_on_its_scorecard_with_no_lead_line() -> None:

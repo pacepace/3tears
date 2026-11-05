@@ -49,7 +49,8 @@ def guardrail_warnings(
     the polite guardrail on tone.`` Each guardrail is paired with its own aspects, never with another's. A guardrail
     only warns: no line says an arm is not adopted. A line naming one undecided pass/fail check says what leaves it
     undecided (:func:`_undecided_bound`): ``v2 is not yet shown safe on the no invented total guardrail on classify:
-    v2 failed it on 1 of 30 cases and v1 on 1, too few cases to show v2 within its 2-point margin or beyond it.``
+    v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few
+    cases to show v2 within its 2-point margin or beyond it.``
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -151,9 +152,10 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
             }
         )
 
+    # A count of cases, never of trials: with repeats it can run against the per-trial rates the tables show.
     return (
         f"{arm} failed it on {failed(check.contrast.variant_key)} of {cases} cases and {control} on "
-        f"{failed(check.control.variant_key)}, {tail}"
+        f"{failed(check.control.variant_key)}, a case counted once however many of its trials failed it, {tail}"
     )
 
 

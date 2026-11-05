@@ -135,7 +135,7 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     assert again.control == "v2" and again.run_ids == result.run_ids
 
 
-async def test_its_campaign_page_leads_on_the_pass_rate_with_the_guardrail_v2_is_not_shown_safe_on_beside_it(
+async def test_its_campaign_page_leads_on_accuracy_with_the_guardrail_v2_is_not_shown_safe_on_beside_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     offline_copy("3-invoices", tmp_path, monkeypatch)
@@ -143,16 +143,17 @@ async def test_its_campaign_page_leads_on_the_pass_rate_with_the_guardrail_v2_is
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
     first_screen = lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
-    # The page leads on what the comparison was built to answer, the pass rate on its aspect; the guardrail warns as
-    # loudly as a broken floor, beside the lead and never in its place, and picks no arm.
+    # With no question declared the page leads on the first grader, the classifier's accuracy, as the printed line
+    # does; the guardrail warns as loudly as a broken floor, beside the lead and never in its place, and picks no arm.
     assert lines[0] == "# v1 vs v2 · classify (invoices)"
     bold = [line for line in first_screen if line.startswith("**")]
     # The guardrail says what leaves it undecided: one noisy invoice each, and too few cases to bound two points.
     warning = (
         "v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and "
-        "v1 on 1, too few cases to show v2 within its 2-point margin or beyond it."
+        "v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its "
+        "2-point margin or beyond it."
     )
-    assert bold == ["**On classify, v2 unclear, a lead.**", f"**{warning}**"]
+    assert bold == ["**Accuracy: v2 and v1 not separated, a lead.**", f"**{warning}**"]
     html = campaign_report_html(result.page)
     assert (
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html

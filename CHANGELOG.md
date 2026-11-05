@@ -6,19 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: a campaign page leads on its pass rate, and an undecided guardrail says what leaves it undecided
+### evals: a campaign page leads on its question's reading, and an undecided guardrail says what leaves it undecided
 
-**Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question:
-what code read on each aspect's pass rate, as the aspect's fold heads it (`On classify, v2 unclear, a lead.`), set as
-the verdict line. The guardrail's warning follows it and no longer takes its place, and no cost reading ever leads. A
-page no guardrail warns on is unchanged and leads on its scorecard. An undecided guardrail on one pass/fail check says
-how many cases each arm failed it on and that the cases are too few to decide it: `v2 is not yet shown safe on the no
-invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, too few cases to show v2 within its
-2-point margin or beyond it.` The counts are read off the trials. A judged guardrail, or a line naming several, keeps
-the shorter line. The ladder's rung 3 shows the new first screen and says what the no-question line means.
+**Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question,
+as the verdict line: one sentence per candidate, naming the reading and both arms. Where the campaign asks the aspect a
+question, the lead is its pass rate (`Pass rate: v2 against v1 shown better.`, set as decided). Where it asks none,
+the lead is the classifier's accuracy where the aspect reads one, in the aspect page's words (`Accuracy: v2 and v1 not
+separated, a lead.`), the reading the quick path's printed line leads on; with no classifier it is the pass rate,
+marked a lead. Cost never leads, and the guardrail's warning follows the lead rather than taking its place. A page no
+guardrail warns on is unchanged and leads on its scorecard.
 
-**Hosts:** a host reading the first screen sees the lead on the pass rate first, then the guardrail's warning with its
-counts. A host matching the old warning exactly finds it as the start of the new sentence, up to the colon.
+An undecided guardrail says how many cases each arm failed it on, and that the cases are too few to decide it: `v2 is
+not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case
+counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.`
+Where neither arm failed it, the line says so. The counts print only where the arm's line names one guardrail check
+(one guardrail, on one aspect, under one test setup), the guardrail is a pass/fail measure with a declared margin read
+on a bounded interval, and, where an arm failed it, the evidence holds every trial, none left out past its cap. Every
+other guardrail line is as it was. The ladder's rung 3 shows the new first screen and says what the no-question line
+means.
+
+**Hosts:** a host reading the first screen sees the lead first, then the guardrail's warning with its counts. A host
+matching the old warning exactly finds it as the start of the new sentence, up to the colon.
 
 ### evals: a rung file imports the modules beside it
 
