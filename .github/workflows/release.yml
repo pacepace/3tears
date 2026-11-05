@@ -111,10 +111,61 @@ jobs:
             exit 1
           fi
 
-  check:
+  # The unit + enforcement suite as the same six parallel shards ci.yml runs (see
+  # scripts/ci-unit-tests.sh): one after another they were ~25 minutes of the release's critical
+  # path. No doc-only skip here: a release always runs the whole suite.
+  unit:
+    name: unit (${{ matrix.shard }})
     needs: tag-on-main
     runs-on: ubuntu-latest
+    strategy:
+      # every shard reports, so one failure does not hide another's
+      fail-fast: false
+      matrix:
+        shard: [evals-1, evals-2, evals-3, core, tests, rest]
     steps:
+      # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
+      # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual
+      # dispatch's shallow checkout carries no tags at all.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --extra vision
+
+      # integration is excluded because it is its own suite (./scripts/test-integration.sh), not because
+      # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
+      - name: Test (unit + enforcement; the integration suite runs separately)
+        # the same sessions CI runs (see the script's header): one session over the whole suite
+        # outgrew the runner's memory under xdist
+        run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v
+
+  # `build` needs this job by name, so it waits for lint, typecheck and every unit shard.
+  check:
+    needs: [tag-on-main, unit]
+    # always(), so the gate step below states why when a shard failed instead of the job
+    # silently showing `skipped`; `build` then sees `check` fail and publishes nothing.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every unit shard passed
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+        run: |
+          if [ "$UNIT_RESULT" != "success" ]; then
+            echo "::error::the unit shards finished '$UNIT_RESULT'; see the failing unit (...) job."
+            exit 1
+          fi
+          echo "every unit shard passed."
+
       # fetch-depth 0: the API-growth gate in tests/enforcement compares against the latest
       # vX.Y.Z tag and refuses, rather than skips, when it cannot see one -- a manual
       # dispatch's shallow checkout carries no tags at all.
@@ -141,13 +192,6 @@ jobs:
         env:
           MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/identity/src:packages/agent/intention/src:packages/agent/skills/src:packages/agent/tools/src:packages/agent/wake/src:packages/datasources/src
         run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.identity -p threetears.agent.intention -p threetears.agent.skills -p threetears.agent.tools -p threetears.agent.wake -p threetears.datasources
-
-      # integration is excluded because it is its own suite (./scripts/test-integration.sh), not because
-      # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
-      - name: Test (unit + enforcement; the integration suite runs separately)
-        # the same sessions CI runs (see the script's header): one session over the whole suite
-        # outgrew the runner's memory under xdist
-        run: ./scripts/ci-unit-tests.sh -v
 
   # docs/releasing.md, step 4: real structured calls through the real Claude CLI and the session
   # pool's live proofs, on the exact commit being released. Every other test of the subscription
