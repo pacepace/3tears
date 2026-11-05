@@ -259,16 +259,23 @@ exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecide
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
-title, warning and reading, the contrast row for `number`, the guardrail's row, and the trials' census:
+title, the line in the question's place, the lead and the guardrail's warning beside it, the reading, the contrast
+row for `number`, the guardrail's row, and the trials' census:
 
 ```text
 # v1 vs v2 · classify (invoices)
-**v2 is not yet shown safe on the no invented total guardrail on classify.**
+No question was declared, so every reading is a lead.
+**On classify, v2 unclear, a lead.**
+**v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, too few cases to show v2 within its 2-point margin or beyond it.**
 | classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.2, 34.8] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
+
+The page leads on the pass rate on its aspect, the reading the comparison was built for, and says beside it what
+leaves the guardrail undecided. "No question was declared, so every reading is a lead" means nothing was asked before
+the readings were seen, so each one is a lead for a comparison that asks, not an answer.
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,

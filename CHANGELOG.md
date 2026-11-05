@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a campaign page leads on its pass rate, and an undecided guardrail says what leaves it undecided
+
+**Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question:
+what code read on each aspect's pass rate, as the aspect's fold heads it (`On classify, v2 unclear, a lead.`), set as
+the verdict line. The guardrail's warning follows it and no longer takes its place, and no cost reading ever leads. A
+page no guardrail warns on is unchanged and leads on its scorecard. An undecided guardrail on one pass/fail check says
+how many cases each arm failed it on and that the cases are too few to decide it: `v2 is not yet shown safe on the no
+invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, too few cases to show v2 within its
+2-point margin or beyond it.` The counts are read off the trials. A judged guardrail, or a line naming several, keeps
+the shorter line. The ladder's rung 3 shows the new first screen and says what the no-question line means.
+
+**Hosts:** a host reading the first screen sees the lead on the pass rate first, then the guardrail's warning with its
+counts. A host matching the old warning exactly finds it as the start of the new sentence, up to the colon.
+
 ### evals: the page's models and serializers stop laying out a memo
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the

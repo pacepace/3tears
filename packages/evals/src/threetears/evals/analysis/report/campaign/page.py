@@ -4,11 +4,13 @@ then one fold per aspect.
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. This page is code's: the
 writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
 The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
-(:mod:`.provenance`); one line on where the campaign's report is: the report document it is stored as, the analysis
-this version no longer reads or a retired writer wrote, or that no recommendation was written (:mod:`.answer_blocks`);
-then **what warns**, one line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
-safe on (:mod:`.warnings`), and each report-wide caveat once (:mod:`.provenance`); then the person's call (a
-measurement's only once one is recorded).
+(:mod:`.provenance`); where a guardrail warns, **the lead** under it: what code read on each aspect's pass rate, the
+measure a campaign's question is asked on, as each aspect's fold heads it, so the guardrail's warning sits beside the
+lead and never in its place (a page no guardrail warns on leads on its scorecard); one line on where the campaign's
+report is: the report document it is stored as, the analysis this version no longer reads or a retired writer wrote,
+or that no recommendation was written (:mod:`.answer_blocks`); then **what warns**, one line per arm for the bars it
+misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`), and each report-wide caveat
+once (:mod:`.provenance`); then the person's call (a measurement's only once one is recorded).
 
 Then, under **Scorecard**, code's readings by the campaign's kind (:mod:`.scorecard`), the figures across aspects
 (:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then **Design &
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import declared_title, named_title
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
@@ -121,10 +124,12 @@ def build_campaign_report(
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
-    # The first screen is the decision: the question, then where the campaign's report is, then what warns, one line
-    # per arm, and each report-wide caveat once.
+    # The first screen is the decision: the question, the lead where a guardrail warns, then where the campaign's report
+    # is, then what warns, one line per arm, and each report-wide caveat once.
+    guardrails = guardrail_warnings(campaign, readings, reports, names=names)
     blocks: list[ReportBlock] = [
         *question_blocks(campaign),
+        *(_lead_blocks(campaign, readings, bundles, names=names) if guardrails else []),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
     ]
@@ -134,7 +139,7 @@ def build_campaign_report(
     blocks += [
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names),
-        *guardrail_warnings(campaign, readings, reports, names=names),
+        *guardrails,
         *caveat_blocks(bundles, section="warnings"),
     ]
     if kind == "change":
@@ -179,6 +184,29 @@ def build_campaign_report(
         call=call,
         unread_analysis_id=unread_analysis_id,
     )
+
+
+def _lead_blocks(
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    bundles: Sequence[AnalysisContextBundle],
+    *,
+    names: AspectNames,
+) -> list[ReportBlock]:
+    """The page's lead, its verdict line: what code read on each aspect's pass rate, the measure the campaign's question
+    is asked on, as the aspect's fold heads it (``On classify, v2 unclear, a lead.``), aspect by aspect in the
+    campaign's order. Never a cost reading, and never a guardrail's, whose warning follows it. Decided where every
+    aspect is asked a question, else open."""
+    said = "; ".join(f"on {names(aspect.label)}, {aspect_shows(readings, aspect.label)}" for aspect in campaign.aspects)
+    rule = "declared" if bundles and all(bundle.question_declared for bundle in bundles) else "exploratory"
+    return [
+        DisclosureBlock(
+            section="answer",
+            source="verdict",
+            text=f"{said[:1].upper()}{said[1:]}.",
+            tone=DisclosureBlock.verdict_tone(rule),
+        )
+    ]
 
 
 def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:

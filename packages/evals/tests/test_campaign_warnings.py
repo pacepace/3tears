@@ -5,11 +5,14 @@ what it means for the arm."""
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
+from threetears.evals import Eval, grader
 from threetears.evals.analysis import (
     CampaignReadings,
+    CampaignReport,
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
@@ -166,3 +169,82 @@ def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
     assert line.text == (
         "v2 is not yet shown safe on the reply polite guardrail on billing and the reply on brand guardrail on tone."
     )
+
+
+#: Thirty cases, as a first comparison holds: at thirty, a pass/fail guardrail's bounded interval is wider than five
+#: points even where both arms pass it on every case, so one guarded at five is undecided for the sample's size.
+_THIRTY = [{"n": index} for index in range(30)]
+
+
+def _right(case: dict[str, int], answer: str) -> bool:
+    """Whether the answer is right."""
+    return answer.startswith("right")
+
+
+def _no_leak(case: dict[str, int], answer: str) -> bool:
+    """Whether the answer keeps the customer's secret."""
+    return "SECRET" not in answer
+
+
+def _answering(*, misses: int, leaks: int) -> Any:
+    async def answer(case: dict[str, int]) -> str:
+        return ("wrong" if case["n"] < misses else "right") + (" SECRET" if case["n"] < leaks else "")
+
+    return answer
+
+
+async def _guarded(**arms: Any) -> CampaignReport:
+    """The campaign page of ``arms`` (the first the control) over thirty cases, graded by ``_right`` and the
+    ``_no_leak`` guardrail at five points."""
+    result = await Eval(_THIRTY, arms, [_right, grader(_no_leak, guard=0.05)], k=1).run(store=":memory:")
+    return result.page
+
+
+def _bold(page: CampaignReport) -> list[str]:
+    return [line for line in first_screen_markdown(page).splitlines() if line.startswith("**")]
+
+
+async def test_an_undecided_guardrail_no_arm_failed_says_the_cases_are_too_few_to_decide_it() -> None:
+    """Both arms pass the guardrail on every case, and thirty cases cannot show the candidate within five points: the
+    line says so, so the sample's size never reads as a defect of the arm."""
+    page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=10, leaks=0))
+    (line,) = _warned(page.blocks, "guardrails")
+    aspect = page.aspects[0].aspect
+    assert line == (
+        f"same is not yet shown safe on the no leak guardrail on {aspect}: neither arm failed it on any of 30 cases, "
+        "too few cases to show same within its 5-point margin or beyond it."
+    )
+
+
+async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -> None:
+    """The counts are read off the trials: the candidate leaked on two cases, once each, and the control on none."""
+    page = await _guarded(current=_answering(misses=10, leaks=0), slip=_answering(misses=10, leaks=2))
+    (line,) = _warned(page.blocks, "guardrails")
+    assert line.endswith(
+        ": slip failed it on 2 of 30 cases and current on 0, too few cases to show slip within its 5-point margin or "
+        "beyond it."
+    )
+
+
+async def test_the_page_leads_on_the_pass_rate_and_the_guardrail_warns_beside_it_never_in_its_place() -> None:
+    """The one rule: the first bold line is what code read on the aspect's pass rate, as the aspect's fold heads it;
+    the guardrail's warning is the next."""
+    page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=4, leaks=0))
+    (fold,) = page.aspects
+    lead, warning = _bold(page)
+    assert lead == f"**On {fold.aspect}, {fold.shows}.**"
+    assert warning.startswith("**same is not yet shown safe on the no leak guardrail")
+    (verdict,) = _warned(page.blocks, "verdict")
+    assert page.blocks.index(next(b for b in page.blocks if isinstance(b, DisclosureBlock) and b.text == verdict)) < (
+        page.blocks.index(next(b for b in page.blocks if isinstance(b, DisclosureBlock) and b.source == "guardrails"))
+    )
+    html = header_html(page)
+    assert html.index('<p class="verdict" data-tone="open">') < html.index('<p class="flag warning">')
+
+
+async def test_a_page_no_guardrail_warns_on_leads_on_its_scorecard_with_no_lead_line() -> None:
+    """With nothing to take the lead's place the first screen is as it was, the scorecard its first reading."""
+    result = await Eval(
+        _THIRTY, {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)}, [_right], k=1
+    ).run(store=":memory:")
+    assert _warned(result.page.blocks, "verdict") == [] and _bold(result.page) == []

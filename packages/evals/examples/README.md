@@ -108,12 +108,14 @@ as `k=v` pairs, read against another control with `result.against()`.
 
 What the recorded run said: nothing separated v2 from v1, and it exits 4, its last line saying why in the report's words
 (`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
-screen opens on the guardrail's warning and reads v2 against v1 in one row
+screen leads on the pass rate, with the guardrail's warning beside it, and reads v2 against v1 in one row
 
 ```text
 # v1 vs v2 · classify (invoices)
 ...
-**v2 is not yet shown safe on the no invented total guardrail on classify.**
+**On classify, v2 unclear, a lead.**
+...
+**v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, too few cases to show v2 within its 2-point margin or beyond it.**
 ...
 | Aspect | Cases | ▸ v1 (%) | v2 (pts) |
 |---|---|---|---|
