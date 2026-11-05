@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a TOML eval's runner sends the app's system message, prompt file, `max_tokens` and effort
+
+**Added:** `[runner]` takes `prompt_file` (a file beside the TOML whose text is the prompt, in place of `prompt`),
+`system` or `system_file` (the system message, sent as written), `max_tokens` and `effort` (as `Model` takes them, and
+refused as it refuses them, naming the file). A file's text is read each time the eval loads; the placeholder check,
+the first line a judge reads, and the recording's key all see that text, so an edit to the app's prompt file is a
+prompt the recording does not hold, as an edit to an inline prompt is. A refusal of `[runner]` names every key it
+takes. The keys are listed as a table in the examples' README, rung 0, linked from the package README.
+
+**Hosts:** nothing to change.
+
 ### evals: the page's models and serializers stop laying out a memo
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
