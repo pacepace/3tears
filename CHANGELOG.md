@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.1 -- 2026-11-05
+
+### core: a cold load bounds the chunk bytes it reads at once, under NATS's pending bound
+
+**Fixed:** `ScopedSnapshot` bounded the chunks it read from the object store at once (`chunk_reads`), not their bytes:
+a few large chunks together passed the server's pending bound for a connection (64 MiB), and NATS cut the pod off as
+a slow consumer (cobalt prod 2026-11-05). The chunk bytes in flight are now held to `chunk_read_bytes` (32 MiB by
+default); a chunk larger than that is read alone. A chunk's bytes come from its pointer, or from the store's object
+info when the pointer records none.
+
+### core: a cold load whose chunk reads fail loads from L2 again, never rebuilds whole from L3
+
+**Fixed:** `ScopedSnapshot` took any chunk it could not read for a lost snapshot and rebuilt every scope whole from
+L3. On cobalt prod (2026-11-05) NATS cut two new pods off as slow consumers mid-load; each rebuilt the snapshot from
+L3 at about 4 rows a second while L2 held the copy. A read that failed (`ObjectStoreError`) now leaves the copy in L2:
+the load is tried again after 5, 10, 20, 40, then every 60 s, and the replica stays not ready meanwhile. A chunk that
+is gone, or holds another count, is still rebuilt from L3.
+
+### core: a diff recovery's partition reads count as progress and run eight at a time
+
+**Fixed:** `ScopedSnapshot`'s stall bound (`rebuild_stall`) watched a catch-up by what it landed, and a diff
+recovery lands nothing until a scope is done. On cobalt dev (2026-11-05) a recovery of 45,113 rows over 940
+partitions was let go at the bound, 39,026 rows in, and the next replica began it again from the start, without end.
+A partition read now counts as a landing: the partitions are a finite count, so a run that keeps finishing them is
+getting through, and one stuck on a read is still let go. The diff's group reads run `_DIFF_READS_AT_ONCE` (8) at a
+time, answered in order, where one after another took about four partitions a second.
+
 ### nats: a put the Object Store has no room for is refused before any chunk is written
 
 **Fixed:** `NatsObjectStore.put` wrote its chunks before its metadata, and a store at its `max_bytes` refused it part
