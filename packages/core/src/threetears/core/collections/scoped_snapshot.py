@@ -202,6 +202,11 @@ _DEFAULT_CLAIM_TTL: Final = timedelta(minutes=2)
 #: how often a replica waiting on another's rebuild, or on a write in progress, looks again
 _DEFAULT_RECHECK: Final = timedelta(seconds=2)
 
+#: the waits before a cold load whose chunk reads failed is tried again, the last repeated: a read NATS failed (a
+#: timeout, a slow consumer cut off) leaves the copy in L2, and a whole rebuild from L3 in its place ran at 4 rows a
+#: second on cobalt prod (2026-11-05: two new pods cut off as slow consumers mid-load, each rebuilding every scope)
+_L2_RELOAD_BACKOFF: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
+
 #: how long a holder of the rebuild claim may go without progress -- a page read from L3, a chunk read or
 #: written, scopes committed here, a pointer or the index moved -- before it lets the claim go and its run (a
 #: rebuild, a catch-up) ends with a TimeoutError; a writer's hold across its commit and publish
@@ -233,6 +238,11 @@ _DEFAULT_L2_CONCURRENCY: Final = 16
 #: pending than the server holds for a client (MaxPending, 64 MiB), so the server dropped the pod as a slow consumer
 #: (cobalt dev, 2026-10-29)
 _DEFAULT_CHUNK_READS: Final = 4
+
+#: the bytes of chunks the snapshot reads from the object store at once: half the server's pending bound for a
+#: connection (NATS ``max_pending``, 64 MiB), so a load whose loop falls behind is not cut off as a slow consumer
+#: (cobalt prod 2026-11-05: two new pods cut off mid-load). A chunk larger than this is read alone
+_DEFAULT_CHUNK_READ_BYTES: Final = 32 << 20
 
 #: the moved scopes a publish compacts at once
 _SWEEPS_AT_ONCE: Final = 8
@@ -1477,8 +1487,45 @@ class _WriteBegan(Exception):
     """a write began while a rebuild read a scope: what it read is not the scope at its epoch, and the read stops."""
 
 
+class _ByteBudget:
+    """bytes in flight, at most ``limit`` at once; one request larger than the limit is admitted alone."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = max(1, limit)
+        self._held = 0
+        self._freed = asyncio.Condition()
+
+    @asynccontextmanager
+    async def holding(self, size: int) -> AsyncIterator[None]:
+        """hold ``size`` bytes of the budget while the block runs.
+
+        :param size: the bytes
+        :ptype size: int
+        :return: a context holding them
+        :rtype: AsyncIterator[None]
+        """
+        size = max(0, size)
+        async with self._freed:
+            await self._freed.wait_for(lambda: self._held == 0 or self._held + size <= self._limit)
+            self._held += size
+        try:
+            yield
+        finally:
+            async with self._freed:
+                self._held -= size
+                self._freed.notify_all()
+
+
 class _Lost(Exception):
-    """the snapshot in L2 is incomplete or unreadable; L3 must rebuild it."""
+    """the snapshot in L2 is incomplete or unreadable; L3 must rebuild it.
+
+    :ivar unread: the chunk is there and its read failed (NATS timed out or dropped the connection): the copy in L2 is
+        not lost, and the load is tried again rather than the snapshot rebuilt whole from L3
+    """
+
+    def __init__(self, message: str, *, unread: bool = False) -> None:
+        super().__init__(message)
+        self.unread = unread
 
 
 def _on_an_event_loop() -> bool:
@@ -2264,6 +2311,11 @@ class ScopedSnapshot:
         fetches ahead: each read is the server pushing the chunk's messages to this connection, and too many pending
         has the server drop the pod as a slow consumer
     :ptype chunk_reads: int
+    :param chunk_read_bytes: the bytes of chunks read from the object store at once (:data:`_DEFAULT_CHUNK_READ_BYTES`)
+    :ptype chunk_read_bytes: int
+    :param l2_reload_backoff: the waits, in seconds, before a cold load whose chunk reads failed is tried again, the
+        last repeated (:data:`_L2_RELOAD_BACKOFF`)
+    :ptype l2_reload_backoff: Sequence[float]
     :param l3_concurrency: scopes a rebuild holds at once: read from L3 beside the one it publishes
     :ptype l3_concurrency: int
     :param write_check: how often a rebuild reading a scope asks whether a write has begun, which stops the read
@@ -2305,6 +2357,8 @@ class ScopedSnapshot:
         l2_concurrency: int = _DEFAULT_L2_CONCURRENCY,
         apply_batch: int = _DEFAULT_APPLY_BATCH,
         chunk_reads: int = _DEFAULT_CHUNK_READS,
+        chunk_read_bytes: int = _DEFAULT_CHUNK_READ_BYTES,
+        l2_reload_backoff: Sequence[float] = _L2_RELOAD_BACKOFF,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
         write_check: timedelta = _WRITE_CHECK,
         claim_ttl: timedelta = _DEFAULT_CLAIM_TTL,
@@ -2334,6 +2388,11 @@ class ScopedSnapshot:
         self._l2_concurrency = l2_concurrency
         #: the chunk reads in flight, across every scope fetched ahead
         self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
+        self._chunk_bytes = _ByteBudget(chunk_read_bytes)
+        # a cold load whose chunk reads failed: how many times running, and when it is tried again
+        self._reload_failures = 0
+        self._reload_at = 0.0
+        self._reload_backoff = tuple(l2_reload_backoff) or _L2_RELOAD_BACKOFF
         self._apply_batch = max(1, apply_batch)
         self._l3_concurrency = l3_concurrency
         self._write_check = write_check
@@ -3248,10 +3307,31 @@ class ScopedSnapshot:
         )
         loaded = False
         if not self._ready.is_set() and complete and not mismatched:
+            if time.monotonic() < self._reload_at:
+                # a load whose reads failed waits out its backoff: the copy is in L2, never rebuilt whole meanwhile
+                self._end_run("sync")
+                return
             try:
                 await self._load({scope: self._seen[scope] for scope in index or ()}, cold=True)
                 loaded = True
+                self._reload_failures = 0
             except _Lost as exc:
+                if exc.unread:
+                    wait = self._reload_backoff[min(self._reload_failures, len(self._reload_backoff) - 1)]
+                    self._reload_failures += 1
+                    self._reload_at = time.monotonic() + wait
+                    log.warning(
+                        "scoped snapshot %s: a chunk of the snapshot in L2 could not be read; the load is tried "
+                        "again in %.0f s (attempt %d), never rebuilt whole from L3 while L2 holds the copy: %s",
+                        self._name,
+                        wait,
+                        self._reload_failures,
+                        exc,
+                    )
+                    self._failure = f"loading from NATS failed ({exc}); trying again in {wait:.0f} s"
+                    self._settle()
+                    self._end_run("sync")
+                    return
                 log.warning("scoped snapshot %s: the snapshot in L2 is not loadable: %s", self._name, exc)
                 # chunks a pointer names are gone: what a rebuild here published is no longer known to stand
                 self._rebuilt.clear()
@@ -3369,10 +3449,10 @@ class ScopedSnapshot:
                 if held_base == base and pieces[: len(held_pieces)] == held_pieces:
                     fetch = pieces[len(held_pieces) :]
             if fetch is not None:
-                parts = [await self._read_chunk(piece.name, piece.rows) for piece in fetch]
+                parts = [await self._read_chunk(piece.name, piece.rows, piece.size) for piece in fetch]
             else:
                 parts = [await self._read_chunk(name, pointer.rows.get(table.name))]
-                parts += [await self._read_chunk(piece.name, piece.rows) for piece in pieces]
+                parts += [await self._read_chunk(piece.name, piece.rows, piece.size) for piece in pieces]
             replacements.append(
                 PartitionReplacement(
                     table=table.name,
@@ -3384,24 +3464,32 @@ class ScopedSnapshot:
             )
         return replacements
 
-    async def _read_chunk(self, name: str, rows: int | None) -> Any:
-        """one chunk's rows, checked against the count its pointer gives.
+    async def _read_chunk(self, name: str, rows: int | None, size: int = 0) -> Any:
+        """one chunk's rows, checked against the count its pointer gives; its bytes held against the budget of
+        chunk bytes in flight (:data:`_DEFAULT_CHUNK_READ_BYTES`) while it is read.
 
         :param name: the chunk
         :ptype name: str
         :param rows: the rows its pointer says it holds
         :ptype rows: int | None
+        :param size: its bytes when the pointer records them; asked of the store when 0
+        :ptype size: int
         :return: the rows
         :rtype: pyarrow.Table
         :raises _Lost: when it is gone, unreadable, or holds another count
         """
         try:
             async with self._chunk_reads:
-                data = await self._store.get(name)
+                if size <= 0:
+                    # a chunk the store has not is still read, and the read says it is gone
+                    info = await self._store.info(name)
+                    size = 0 if info is None else info.size
+                async with self._chunk_bytes.holding(size):
+                    data = await self._store.get(name)
         except ObjectNotFoundError as exc:
             raise _Lost(f"chunk {name} is gone") from exc
         except ObjectStoreError as exc:
-            raise _Lost(f"chunk {name} could not be read: {exc}") from exc
+            raise _Lost(f"chunk {name} could not be read: {exc}", unread=True) from exc
         arrow = await asyncio.to_thread(decode_chunk, data)
         if arrow.num_rows != rows:
             raise _Lost(f"chunk {name} holds {arrow.num_rows} rows where its pointer says {rows}")
@@ -4828,7 +4916,7 @@ class ScopedSnapshot:
             writes: dict[str, _Write] = {}
             for table in due:
                 parts = [await self._read_chunk(current.objects[table.name], current.rows[table.name])]
-                parts += [await self._read_chunk(p.name, p.rows) for p in current.pieces[table.name]]
+                parts += [await self._read_chunk(p.name, p.rows, p.size) for p in current.pieces[table.name]]
                 writes[table.name] = _Write(_concatenated(parts))
             base, held = await self._write_scope(scope, current.epoch, writes, base=current, move_from=entry[1])
             written = [base.objects[t.name] for t in due]
@@ -5389,7 +5477,7 @@ class ScopedSnapshot:
             if base is None:
                 raise _Lost(f"scope {pointer.scope!r} names no chunk for {name}")
             parts = [await self._read_chunk(base, pointer.rows.get(name))]
-            parts += [await self._read_chunk(piece.name, piece.rows) for piece in pieces]
+            parts += [await self._read_chunk(piece.name, piece.rows, piece.size) for piece in pieces]
             rows[name] = _concatenated(parts)
         return rows
 

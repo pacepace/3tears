@@ -1147,6 +1147,44 @@ async def test_a_rebuild_repoints_a_same_epoch_scope_of_other_columns_so_the_nex
     await later.stop()
 
 
+class _CutOffStore(_Store):
+    """an Object Store whose reads fail as NATS fails them when it cuts a slow consumer off, ``failing`` times."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing = 0
+
+    async def get(self, name: str) -> bytes:
+        from threetears.nats import ObjectStoreError
+
+        if self.failing > 0:
+            self.failing -= 1
+            raise ObjectStoreError(f"reading {name} stalled after 66 of 67 messages")
+        return await super().get(name)
+
+
+async def test_a_cold_load_whose_chunk_reads_fail_loads_from_l2_again_and_never_rebuilds_whole_from_l3() -> None:
+    """cobalt prod 2026-11-05: two new pods were cut off by NATS as slow consumers mid-load; each took the failed reads
+    for a lost snapshot and rebuilt every scope whole from L3, at 4 rows a second. The copy was in L2 all along: the
+    load is tried again after a wait, and L3 is not read."""
+    store = _CutOffStore()
+    first, pointers, _, l3 = _snapshot(store=store)
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    statements = l3.statements
+    store.failing = 3
+
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3, l2_reload_backoff=(0.05,))
+    await later.start()
+    await later.wait_ready(timeout=5)
+
+    assert later.status().source is SnapshotSource.L2, "a failed read rebuilt the snapshot from L3"
+    assert l3.statements == statements, "L3 was read while L2 held the copy"
+    assert store.failing == 0
+    await later.stop()
+
+
 async def test_a_scope_removed_before_it_was_ever_applied_leaves_nothing_behind() -> None:
     snapshot, pointers, _, l3 = _snapshot()
     await snapshot.start()
@@ -3829,6 +3867,46 @@ async def test_a_cold_load_reads_at_most_a_few_chunks_at_once_however_many_scope
 
     assert cold.status().source is SnapshotSource.L2
     assert 1 < most <= 3, f"{most} chunks read at once, against a bound of 3"
+    await cold.stop()
+
+
+async def test_a_cold_load_holds_no_more_chunk_bytes_in_flight_than_its_budget() -> None:
+    """cobalt prod 2026-11-05: two new pods were cut off by NATS as slow consumers mid-load, a few large chunks at once
+    passing the server's pending bound. The bytes read at once are bounded, not only the chunks."""
+    sizes = {state: 50 for state in ("AK", "AL", "AR", "AZ", "CA", "CO", "CT", "DE", "FL", "GA")}
+    builder, pointers, store, l3, _ = _paged(sizes)
+    await builder.start()
+    await builder.wait_ready(timeout=10)
+    await builder.stop()
+    largest = max(len(data) for data in store.objects.values())
+    budget = 2 * largest
+    held = 0
+    most = 0
+
+    class _Slow(_Store):
+        async def get(self, name: str) -> bytes:
+            nonlocal held, most
+            size = len(self.objects.get(name, b""))
+            held += size
+            most = max(most, held)
+            try:
+                await asyncio.sleep(0.01)
+                return await super().get(name)
+            finally:
+                held -= size
+
+    slow = _Slow()
+    slow.objects = store.objects
+    cold, _, _, _ = _snapshot(
+        l3=l3, pointers=pointers, store=slow, l2_concurrency=16, chunk_reads=8, chunk_read_bytes=budget
+    )
+    l3.epochs = dict.fromkeys(sizes, 1)
+
+    await cold.start()
+    await cold.wait_ready(timeout=10)
+
+    assert cold.status().source is SnapshotSource.L2
+    assert most <= budget, f"{most} chunk bytes read at once, against a budget of {budget}"
     await cold.stop()
 
 

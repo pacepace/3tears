@@ -8,6 +8,22 @@ packages (bumped in lock-step).
 
 ## v0.91.1 -- 2026-11-05
 
+### core: a cold load bounds the chunk bytes it reads at once, under NATS's pending bound
+
+**Fixed:** `ScopedSnapshot` bounded the chunks it read from the object store at once (`chunk_reads`), not their bytes:
+a few large chunks together passed the server's pending bound for a connection (64 MiB), and NATS cut the pod off as
+a slow consumer (cobalt prod 2026-11-05). The chunk bytes in flight are now held to `chunk_read_bytes` (32 MiB by
+default); a chunk larger than that is read alone. A chunk's bytes come from its pointer, or from the store's object
+info when the pointer records none.
+
+### core: a cold load whose chunk reads fail loads from L2 again, never rebuilds whole from L3
+
+**Fixed:** `ScopedSnapshot` took any chunk it could not read for a lost snapshot and rebuilt every scope whole from
+L3. On cobalt prod (2026-11-05) NATS cut two new pods off as slow consumers mid-load; each rebuilt the snapshot from
+L3 at about 4 rows a second while L2 held the copy. A read that failed (`ObjectStoreError`) now leaves the copy in L2:
+the load is tried again after 5, 10, 20, 40, then every 60 s, and the replica stays not ready meanwhile. A chunk that
+is gone, or holds another count, is still rebuilt from L3.
+
 ### core: a diff recovery's partition reads count as progress and run eight at a time
 
 **Fixed:** `ScopedSnapshot`'s stall bound (`rebuild_stall`) watched a catch-up by what it landed, and a diff
