@@ -226,6 +226,24 @@ Keep each rung's directory together: a rung reads its cases and replays its `rec
 `python -m threetears.evals 1-triage/triage.py`, or with `export OPENROUTER_API_KEY=...` and `RECORD=1` first, any
 rung live.
 
+**A rung file imports the modules beside it.** While it loads and runs, its directory is first on `sys.path`, as
+`python FILE` puts it, so app code several rung files share (an adapter like the one below) is written once, in a
+module beside them, and each imports it (`from router_adapter import RecordedClient`). A module is imported once per
+process, so helpers in two rung directories need distinct names.
+
+**Exit codes.** The command exits with the worst code of the evals the file declares:
+
+| Code | Meaning |
+|---|---|
+| 0 | Every run completed |
+| 1 | A run did not complete |
+| 2 | Refused before it ran: the file, or what it declares |
+| 3 | An error nothing anticipated, its traceback printed |
+| 4 | A comparison's gate failed, with a line saying why |
+
+A test of a rung asserts the code its recording produces, and 4 is a verdict, not a crash: a recorded comparison
+whose gate fails exits 4 on every replay.
+
 **Your own client.** A client of your own, for another provider or a gateway, is anything with an async
 `generate(*, system, user, response_format=None)` that returns an object carrying ten attributes: `content`,
 `input_tokens`, `output_tokens`, `reasoning_tokens`, `cost_usd`, `price_source`, `model`, `served_model`,
@@ -236,6 +254,45 @@ missing and a `stop_reason` the engine does not know (`end_turn`, `max_tokens`, 
 `error`). An absent or unknown finish reason is `truncated` (output that stopped early, cause unnamed); `error` is for
 a provider that reported a failure in place of a completion. When to keep your own rather than the shipped client:
 [Adopting the engine](../docs/adopting-a-host.md#bringing-a-provider).
+
+**The package's `Model` inside your app's client.** The other way round: your app owns a client protocol (a class
+its own code calls, handed in through a constructor), and the recording `Model` goes inside it, so every call is
+recorded once and replayed after while the app's code stays the app's. An adapter for an app whose client takes a
+list of messages, built with the app's own model, `max_tokens` and effort, which the recording is keyed by:
+
+```python
+from threetears.evals import Model
+
+model = Model("openai/gpt-5-nano", max_tokens=600, effort="minimal", recording="recordings/router.jsonl")
+
+
+class RecordedClient:
+    """The app's client protocol over the package's Model: each call recorded once, replayed after."""
+
+    async def complete(self, request):  # the app's own call and its own request type
+        system = "\n\n".join(m.content for m in request.messages if m.role == "system")
+        # The app sends two user messages (the table, then the player's); Model takes one, so they are joined, and
+        # the eval measures a request that differs from production by this join.
+        user = "\n\n".join(m.content for m in request.messages if m.role == "user")
+        reply = await model.generate(system=system, user=user)
+        return AppReply(text=reply.content, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens)
+
+    async def aclose(self):
+        await model.aclose()
+
+
+router = Router(MeteredClient(RecordedClient(), ...))  # the app's own code, unchanged, handed this client
+```
+
+`recording=` is read relative to the rung file, as every path an eval file hands `Model` is; `RECORD=1` records it
+again. `generate` returns the completion with the attributes above, and a structured reply passes the app's
+`json_schema` directive as `response_format=`. Where the app wants only the reply's text, or a pydantic object
+validated from it, `Model.text(user, system=...)` and `Model.json(user, Schema, system=...)` are the shorter calls.
+A call made inside a runner counts as the runner's spend.
+
+The limit: `Model.generate` takes one system message and one user message. An app that sends more joins them, as
+above, and says so. A multi-message turn with tool calls is recorded by the harness's turn recording
+(`Model(turn_recording=...)` and its `turn_session`, on Anthropic only), not by this adapter.
 
 ## Recording
 

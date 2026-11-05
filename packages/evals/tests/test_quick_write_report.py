@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -117,6 +118,12 @@ RUNG_ONE_DOC: Final[dict[str, Any]] = {
     "next": [],
     "method": [{"term": "Arms", "text": "One triage function.", "caveats": []}],
 }
+
+
+@pytest.fixture(autouse=True)
+def _own_sys_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading a Python file puts its directory on ``sys.path`` for the process; the test's process gets its own back."""
+    monkeypatch.setattr(sys, "path", [*sys.path])
 
 
 def _session(snapshot: str) -> dict[str, list[TurnReply]]:
