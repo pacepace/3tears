@@ -477,7 +477,7 @@ async def test_a_replica_whose_watch_ended_says_so_watches_again_and_applies_cha
     """the watch ends while the buckets still answer (a consumer lost, the client fine). The replica says so, a
     catch-up does not make it look ready meanwhile, and it follows the pointers again by itself: a replica whose watch
     ended was FAILED for good until its process restarted (Pace, 2026-11-05: no failure parks the system)."""
-    snapshot, pointers, _, l3 = _snapshot(rewatch_backoff=(0.3,))
+    snapshot, pointers, _, l3 = _snapshot(rewatch_backoff=(0.3, 0.3))
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     # the first rebuild declares the copy ready before it lets go of its claim

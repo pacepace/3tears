@@ -134,7 +134,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
-from threetears.observe import contain, contained, get_logger
+from threetears.observe import contain, contained, get_logger, retry_with_backoff
 
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
@@ -210,13 +210,10 @@ _DEFAULT_RECHECK: Final = timedelta(seconds=2)
 #: second on cobalt prod (2026-11-05: two new pods cut off as slow consumers mid-load, each rebuilding every scope)
 _L2_RELOAD_BACKOFF: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
 
-#: the waits before a pointer watch that ended is followed again, the last repeated: a replica whose watch ended was
-#: FAILED for good, serving a copy no change reached, until its process restarted (Pace, 2026-11-05: no failure parks
-#: the system)
-_REWATCH_BACKOFF: Final = (1.0, 2.0, 5.0, 10.0, 30.0)
-
-#: a watch that ran this long before it ended is followed again from the backoff's first wait
-_REWATCH_RESET_SECONDS: Final = 60.0
+#: the first and the longest wait, in seconds, before a pointer watch that ended is followed again
+#: (:func:`~threetears.observe.retry_with_backoff`): a replica whose watch ended was FAILED for good, serving a copy no
+#: change reached, until its process restarted (Pace, 2026-11-05: no failure parks the system)
+_REWATCH_BACKOFF: Final = (1.0, 30.0)
 
 #: how long a holder of the rebuild claim may go without progress -- a page read from L3, a chunk read or
 #: written, scopes committed here, a pointer or the index moved -- before it lets the claim go and its run (a
@@ -1551,17 +1548,14 @@ class _HeldGroups:
     def __init__(self, held: Any, group: str | None, code: str) -> None:
         self._column = None if group is None else held.column(group)
         self._rows = held.num_rows
-        self._raws: dict[Any, list[Any]] = {}
-        self.counts: dict[Any, int] = {}
-        self.raw: dict[Any, Any] = {}
         counted = ([{"values": None, "counts": self._rows}] if self._column is None and self._rows else []) + (
             [] if self._column is None else pc.value_counts(self._column).to_pylist()
         )
-        for item in counted:
-            key = _group_key(item["values"], code)
-            self.counts[key] = self.counts.get(key, 0) + int(item["counts"])
-            self._raws.setdefault(key, []).append(item["values"])
-            self.raw.setdefault(key, item["values"])
+        keyed = [(_group_key(item["values"], code), item["values"], int(item["counts"])) for item in counted]
+        # a group's distinct values, its rows, one value as held: a few per group, never one a row
+        self._raws = {key: [value for k, value, _ in keyed if k == key] for key, _, _ in keyed}
+        self.counts = {key: sum(n for k, _, n in keyed if k == key) for key, _, _ in keyed}
+        self.raw = {key: values[0] for key, values in self._raws.items()}
 
     def rows_of(self, keys: Iterable[Any]) -> Any:
         """a mask over the held rows: True for each row of one of ``keys``.
@@ -1661,6 +1655,10 @@ class _ByteBudget:
             async with self._freed:
                 self._held -= size
                 self._freed.notify_all()
+
+
+class _WatchEnded(Exception):
+    """the pointer watch ended; it is followed again (:meth:`ScopedSnapshot._watch`)."""
 
 
 class _Lost(Exception):
@@ -2460,9 +2458,9 @@ class ScopedSnapshot:
     :ptype chunk_reads: int
     :param chunk_read_bytes: the bytes of chunks read from the object store at once (:data:`_DEFAULT_CHUNK_READ_BYTES`)
     :ptype chunk_read_bytes: int
-    :param rewatch_backoff: the waits, in seconds, before a pointer watch that ended is followed again, the last
-        repeated (:data:`_REWATCH_BACKOFF`)
-    :ptype rewatch_backoff: Sequence[float]
+    :param rewatch_backoff: the first and the longest wait, in seconds, before a pointer watch that ended is followed
+        again (:data:`_REWATCH_BACKOFF`)
+    :ptype rewatch_backoff: tuple[float, float]
     :param groups_per_read: the group values one statement of a diff, or of a read a partition value at a time,
         names (:data:`_DEFAULT_GROUPS_PER_READ`)
     :ptype groups_per_read: int
@@ -2511,7 +2509,7 @@ class ScopedSnapshot:
         apply_batch: int = _DEFAULT_APPLY_BATCH,
         chunk_reads: int = _DEFAULT_CHUNK_READS,
         chunk_read_bytes: int = _DEFAULT_CHUNK_READ_BYTES,
-        rewatch_backoff: Sequence[float] = _REWATCH_BACKOFF,
+        rewatch_backoff: tuple[float, float] = _REWATCH_BACKOFF,
         groups_per_read: int = _DEFAULT_GROUPS_PER_READ,
         l2_reload_backoff: Sequence[float] = _L2_RELOAD_BACKOFF,
         l3_concurrency: int = _DEFAULT_L3_CONCURRENCY,
@@ -2544,7 +2542,7 @@ class ScopedSnapshot:
         #: the chunk reads in flight, across every scope fetched ahead
         self._chunk_reads = asyncio.Semaphore(max(1, chunk_reads))
         self._chunk_bytes = _ByteBudget(chunk_read_bytes)
-        self._rewatch_backoff = tuple(rewatch_backoff) or _REWATCH_BACKOFF
+        self._rewatch_backoff = rewatch_backoff
         self._groups_per_read = max(1, groups_per_read)
         # a cold load whose chunk reads failed: how many times running, and when it is tried again
         self._reload_failures = 0
@@ -3356,9 +3354,9 @@ class ScopedSnapshot:
         :return: nothing
         :rtype: None
         """
-        attempt = 0
-        while True:
-            began = time.monotonic()
+        initial, most = self._rewatch_backoff
+
+        async def follow() -> None:
             try:
                 await self._follow(self._layout.watch_prefix)
                 ended = "the pointer watch ended"
@@ -3367,16 +3365,18 @@ class ScopedSnapshot:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged, stated in the status, and the watch followed again
                 contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
                 ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
-            if time.monotonic() - began >= _REWATCH_RESET_SECONDS:
-                attempt = 0
-            wait = self._rewatch_backoff[min(attempt, len(self._rewatch_backoff) - 1)]
-            attempt += 1
-            self._watch_ended = (
-                f"{ended}; the copy is served as it is, and the pointers are watched again in {wait:.0f} s"
-            )
-            log.warning("scoped snapshot %s: %s (attempt %d)", self._name, self._watch_ended, attempt)
+            self._watch_ended = f"{ended}; the copy is served as it is, and the pointers are watched again"
             self._settle()
-            await asyncio.sleep(wait)
+            raise _WatchEnded(self._watch_ended)
+
+        # followed again for as long as the replica runs, with a bounded backoff: never FAILED for good
+        await retry_with_backoff(
+            follow,
+            f"scoped snapshot {self._name}: the pointer watch",
+            max_attempts=None,
+            initial_backoff=initial,
+            max_backoff=most,
+        )
 
     async def _follow(self, prefix: str) -> None:
         """consume the pointer watch, recording what it delivers.
@@ -3388,9 +3388,9 @@ class ScopedSnapshot:
         :raises KvError: when the NATS connection is closed
         """
         # sender-posture: own-consumer -- a pointer counts only with the watch consumer's own ack reply
-        replayed: set[str] = set()
-        replaying = True
         async with aclosing(self._pointers_bucket.watch_prefix(prefix=prefix, heartbeat=self._heartbeat)) as watch:
+            replayed: set[str] = set()
+            replaying = True
             async for update in watch:
                 if update is not None and replaying:
                     replayed.add(update.key)
