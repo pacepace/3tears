@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.1 -- 2026-11-05
+
+### core: a diff recovery's partition reads count as progress and run eight at a time
+
+**Fixed:** `ScopedSnapshot`'s stall bound (`rebuild_stall`) watched a catch-up by what it landed, and a diff
+recovery lands nothing until a scope is done. On cobalt dev (2026-11-05) a recovery of 45,113 rows over 940
+partitions was let go at the bound, 39,026 rows in, and the next replica began it again from the start, without end.
+A partition read now counts as a landing: the partitions are a finite count, so a run that keeps finishing them is
+getting through, and one stuck on a read is still let go. The diff's group reads run `_DIFF_READS_AT_ONCE` (8) at a
+time, answered in order, where one after another took about four partitions a second.
+
 ### nats: a put the Object Store has no room for is refused before any chunk is written
 
 **Fixed:** `NatsObjectStore.put` wrote its chunks before its metadata, and a store at its `max_bytes` refused it part
