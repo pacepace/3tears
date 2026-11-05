@@ -5201,6 +5201,52 @@ async def test_a_writer_killed_mid_write_is_recovered_from_the_diff_with_no_whol
     await replica.stop()
 
 
+class _SlowGroupsL3(_VersionedL3):
+    """:class:`_VersionedL3` whose every read of one group (a county) takes ``delay`` seconds; it counts the most
+    group reads in flight at once."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.in_flight = 0
+        self.most_in_flight = 0
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if '"county" = $' not in sql:
+            return await super().fetch(sql, *args)
+        self.in_flight += 1
+        self.most_in_flight = max(self.most_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self.delay)
+            return await super().fetch(sql, *args)
+        finally:
+            self.in_flight -= 1
+
+
+async def test_a_diff_over_many_slow_groups_finishes_past_the_stall_bound_and_reads_them_side_by_side() -> None:
+    """cobalt dev 2026-11-05: a writer killed mid-write left a diff of 45k rows over 940 partitions; read one group
+    after another at about 4 a second, it landed nothing for the stall bound, was let go 39k rows in, and the next
+    replica began it again from zero, without end. Each group read is a landing, and the reads run side by side:
+    40 groups at 0.1 s each finish, and no read pauses the bound's clock."""
+    l3 = _SlowGroupsL3(delay=0.1)
+    writer, replica, pointers, _, l3 = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=0.3))
+    # a write at 2 added 40 TX counties; its writer was killed before it staged anything
+    for county in range(10, 50):
+        l3.write(2, "results", {"county": f"c{county}", "state": "TX", "votes": county})
+    l3.write(2, "totals", {"state": "TX", "total": 4 + sum(range(10, 50))})
+    l3.epochs["TX"] = 2
+
+    outcome = await asyncio.wait_for(replica.catch_up(), timeout=10)
+
+    assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
+    assert l3.whole_reads == 0, "a scope with a copy held was read whole from L3"
+    assert l3.most_in_flight > 1, "the diff read its groups one after another"
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
+    assert _l3_holds(replica, l3)
+    await writer.stop()
+    await replica.stop()
+
+
 async def test_a_write_whose_copy_is_a_version_behind_reads_its_base_from_l2_with_no_l3_read() -> None:
     """election night: AP began right after LSF's commit, before it reached AP's copy; its copy was a version behind
     and it staged the state whole from L3. The rows at the epoch it needs come from the pointer, or the pointer

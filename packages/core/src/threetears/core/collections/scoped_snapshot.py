@@ -215,6 +215,9 @@ _DEFAULT_REBUILD_STALL: Final = timedelta(minutes=10)
 #: the longest a stuck run's watchdog looks away between checks
 _STALL_LOOK_SECONDS: Final = 5.0
 
+#: how many of a diff's group reads from L3 are in flight at once (:meth:`ScopedSnapshot._read_groups`)
+_DIFF_READS_AT_ONCE: Final = 8
+
 #: how many scopes a rebuild holds at once: read from L3 beside each other and the one being published.
 #: What a rebuild holds is these scopes' rows (typed, as the L1 keeps them) and a page of L3's each,
 #: never every scope's. Measured on 3 million rows in 50 scopes (Linux): 4 rebuilt in 24 to 31 s at a
@@ -2574,9 +2577,16 @@ class ScopedSnapshot:
         :rtype: None
         """
         reading = self._reading
+        done = None
         if reading is not None:
-            reading.tables.setdefault((table, scope), _TableRead()).partitions_done += 1
+            part = reading.tables.setdefault((table, scope), _TableRead())
+            part.partitions_done += 1
+            done = part.partitions_done
             self._show_reading()
+        # a partition read is a landing: its table and scope name a finite count of them, so a run that keeps
+        # finishing partitions is getting through its reads, not stuck on one (cobalt dev 2026-11-05: a diff of 45k
+        # rows over 940 partitions was let go at the stall bound 39k rows in, and the next replica began it again)
+        _headway(f"read partition {done or '?'} of {table} in scope {scope!r} from L3", landed=True)
 
     @contextmanager
     def _scope_read(self, scope: str) -> Iterator[None]:
@@ -5817,11 +5827,9 @@ class ScopedSnapshot:
         if reread:
             # what it reads, from its own counts: no other statement
             self._table_read(table.name, scope, rows_total=expected, partitions_total=len(reread))
-        for value in reread:
-            pages = await self._read_group(table, scope, group, value)
+        for pages, _ in await self._read_groups(table, scope, group, reread):
             if isinstance(pages, str):
                 return pages
-            self._partition_read(table.name, scope)
             read += sum(page.num_rows for page in pages)
             parts += pages
         if reread:
@@ -5989,13 +5997,13 @@ class ScopedSnapshot:
         if whole or stamped_only:
             # what it reads, from its own counts: no other statement
             self._table_read(table.name, scope, rows_total=expected, partitions_total=len(whole) + len(stamped_only))
-        for key, value, unchanged, _ in stamped_only:
-            tally = _Tally()
-            pages = await self._read_group(table, scope, group, value, after=held_at, tally=tally)
+        stamped_reads = await self._read_groups(
+            table, scope, group, [value for _, value, _, _ in stamped_only], after=held_at
+        )
+        for (key, value, unchanged, _), (pages, tally) in zip(stamped_only, stamped_reads, strict=True):
             if isinstance(pages, str):
                 return pages
             read += tally.rows
-            self._partition_read(table.name, scope)
             # the stamped rows as this L1 types them, keyed as the copy's rows are
             seen = {row for page in pages for row in _key_tuples(page, table.key, codes)}
             if held_rows is None:
@@ -6010,11 +6018,9 @@ class ScopedSnapshot:
             parts += pages
             replaced |= seen
             overlaid.append(value)
-        for value in whole:
-            pages = await self._read_group(table, scope, group, value)
+        for pages, _ in await self._read_groups(table, scope, group, whole):
             if isinstance(pages, str):
                 return pages
-            self._partition_read(table.name, scope)
             read += sum(page.num_rows for page in pages)
             parts += pages
         if whole or stamped_only:
@@ -6108,6 +6114,43 @@ class ScopedSnapshot:
                 tally.rows = 0
             await self._read_pages(table, scope, columns, None, where, paged, None, pages, derived, tally=tally)
         return pages
+
+    async def _read_groups(
+        self,
+        table: SnapshotTable,
+        scope: str,
+        group: str | None,
+        values: Sequence[Any],
+        *,
+        after: int | None = None,
+    ) -> list[tuple[list[Any] | str, _Tally]]:
+        """:meth:`_read_group` for each value, :data:`_DIFF_READS_AT_ONCE` at a time, answered in the order given;
+        each read counted as a partition read the moment it ends. One read after another, a diff over hundreds of
+        partitions took minutes of round trips (cobalt dev 2026-11-05: about 4 partitions a second).
+
+        :param values: the group values
+        :ptype values: Sequence[Any]
+        :param after: as :meth:`_read_group`
+        :ptype after: int | None
+        :return: per value, in order: its pages, or why it cannot be read, and its tally
+        :rtype: list[tuple[list[pyarrow.Table] | str, _Tally]]
+        :raises BaseException: the first read's failure, once every read has ended
+        """
+        gate = asyncio.Semaphore(_DIFF_READS_AT_ONCE)
+
+        async def one(value: Any) -> tuple[list[Any] | str, _Tally]:
+            tally = _Tally()
+            async with gate:
+                pages = await self._read_group(table, scope, group, value, after=after, tally=tally)
+            if not isinstance(pages, str):
+                self._partition_read(table.name, scope)
+            return pages, tally
+
+        results = await asyncio.gather(*(one(value) for value in values), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return [result for result in results if not isinstance(result, BaseException)]
 
     async def _publish_rows(self, scope: str, epoch: int, rows: Mapping[str, Any]) -> _Pointer | None:
         """write a scope's chunks at ``epoch`` from rows this L1 typed and move its pointer; this L1 applies it from
