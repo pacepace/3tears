@@ -4,11 +4,14 @@ then one fold per aspect.
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. This page is code's: the
 writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
 The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
-(:mod:`.provenance`); one line on where the campaign's report is: the report document it is stored as, the analysis
-this version no longer reads or a retired writer wrote, or that no recommendation was written (:mod:`.answer_blocks`);
-then **what warns**, one line per arm for the bars it misses, the floors it breaks and the guardrails it is not shown
-safe on (:mod:`.warnings`), and each report-wide caveat once (:mod:`.provenance`); then the person's call (a
-measurement's only once one is recorded).
+(:mod:`.provenance`); where a guardrail warns, **the lead** under it: one sentence per candidate on the question's
+measure, the aspect's pass rate, or with no question asked on the first grader as far as the evidence names it (the
+classifier's accuracy), so the guardrail's warning sits beside the lead and never in its place (a page no guardrail
+warns on leads on its scorecard); one line on where the campaign's
+report is: the report document it is stored as, the analysis this version no longer reads or a retired writer wrote,
+or that no recommendation was written (:mod:`.answer_blocks`); then **what warns**, one line per arm for the bars it
+misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`), and each report-wide caveat
+once (:mod:`.provenance`); then the person's call (a measurement's only once one is recorded).
 
 Then, under **Scorecard**, code's readings by the campaign's kind (:mod:`.scorecard`), the figures across aspects
 (:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then **Design &
@@ -45,6 +48,7 @@ from threetears.evals.analysis.report.campaign.provenance import (
     question_blocks,
 )
 from threetears.evals.analysis.report.campaign.scorecard import (
+    READING_WORDS,
     aspect_shows,
     bar_blocks,
     frontier_blocks,
@@ -64,6 +68,7 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE
 
 __all__ = ["build_campaign_report"]
 
@@ -121,10 +126,12 @@ def build_campaign_report(
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
-    # The first screen is the decision: the question, then where the campaign's report is, then what warns, one line
-    # per arm, and each report-wide caveat once.
+    # The first screen is the decision: the question, the lead where a guardrail warns, then where the campaign's report
+    # is, then what warns, one line per arm, and each report-wide caveat once.
+    guardrails = guardrail_warnings(campaign, readings, reports, names=names)
     blocks: list[ReportBlock] = [
         *question_blocks(campaign),
+        *(_lead_blocks(campaign, readings, reports, names=names) if guardrails else []),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
     ]
@@ -134,7 +141,7 @@ def build_campaign_report(
     blocks += [
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names),
-        *guardrail_warnings(campaign, readings, reports, names=names),
+        *guardrails,
         *caveat_blocks(bundles, section="warnings"),
     ]
     if kind == "change":
@@ -179,6 +186,56 @@ def build_campaign_report(
         call=call,
         unread_analysis_id=unread_analysis_id,
     )
+
+
+def _lead_blocks(
+    campaign: EvalCampaign,
+    readings: CampaignReadings,
+    reports: Mapping[str, Report],
+    *,
+    names: AspectNames,
+) -> list[ReportBlock]:
+    """The page's lead, its verdict line, one sentence per candidate on each aspect in the campaign's order, naming
+    the reading and both arms: never a cost reading, and never a guardrail's, whose warning follows it.
+
+    Where the campaign asks the aspect a question, the lead is the question's measure, the aspect's pass rate
+    (``Pass rate: v2 against v1 shown better.``). Where it asks none, the lead is the first grader, as far as the
+    evidence names it: the classifier's accuracy where the aspect reads one, in the aspect page's own words
+    (``Accuracy: v2 and v1 not separated, a lead.``), the reading the quick path's printed line leads on too. The
+    order a host listed its other graders in is stored nowhere a page reads (a bundle sorts its measures), so with no
+    classifier the lead is the pass rate, every grader's reading together. An aspect with no candidate read against
+    a control says what its fold heads it with. The tone is decided where every aspect is asked a question, else
+    open."""
+    several = len(campaign.aspects) > 1
+    sentences: list[str] = []
+    for aspect in campaign.aspects:
+        bundle = reports[aspect.label].bundle
+        on = f" on {names(aspect.label)}" if several else ""
+        accuracy = [
+            verdict
+            for verdict in reports[aspect.label].verdicts
+            if verdict.kind == "contrast" and verdict.reading == "measure" and verdict.name == ACCURACY_MEASURE
+        ]
+        if accuracy and not bundle.question_declared:
+            sentences += [
+                f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None else ', a lead'}."
+                for verdict in accuracy
+            ]
+        elif rows := readings.on_aspect(aspect.label):
+            sentences += [
+                f"Pass rate{on}: {row.arm_label} against {readings.control_label} {READING_WORDS[row.reading]}"
+                f"{'' if row.confirmatory else ', a lead'}."
+                for row in rows
+            ]
+        else:
+            sentences.append(f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}.")
+    bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
+    rule = "declared" if bundles and all(bundle.question_declared for bundle in bundles) else "exploratory"
+    return [
+        DisclosureBlock(
+            section="answer", source="verdict", text=" ".join(sentences), tone=DisclosureBlock.verdict_tone(rule)
+        )
+    ]
 
 
 def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:
