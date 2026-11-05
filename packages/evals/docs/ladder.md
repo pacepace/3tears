@@ -157,12 +157,12 @@ What it printed:
 
 ```text
 replies: 20/20 cases passed; 0 misses
-judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs in the to_label.csv the report writes, without looking at the judge's verdict
+judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
 40 result(s): 40 scored, 0 excluded
   answer.grounded (judged pass/fail): mean 1 (n=40, min 1, max 1)
   answer.answers (judged pass/fail): mean 1 (n=40, min 1, max 1)
   answer.safe (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  total spend: $0.0168, the results' cost
+  total spend: $0.0168, the results' cost (candidate $0.00175, judge $0.0151)
 stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
 ```
@@ -246,7 +246,7 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: nothing separated v2 from v1
+invoices: Accuracy: v2 and v1 not separated; nothing else separated; guardrail No invented total score undecided for v2
 v1 (control): 90 result(s): 90 scored
   number: mean 0.8333 (n=90, min 0, max 1)
   ...

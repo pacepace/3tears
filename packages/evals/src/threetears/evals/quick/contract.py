@@ -461,6 +461,7 @@ class Eval:
                 result,
                 store=where,
                 fields=tuple(self.plan.fields),
+                grader_readings=tuple(self.plan.readings),
                 judge=judge,
                 disclosures=disclosures,
                 calibrations=tuple(calibrate(judge, host, keyed, scope_id)),

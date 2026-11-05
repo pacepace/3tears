@@ -257,6 +257,8 @@ class GraderPlan:
     :ivar ranges: Each numeric scorer's range, by name.
     :ivar guardrails: Each scorer declared a guardrail, by name.
     :ivar classifier_margin: The classifier's accuracy margin, declared on the runs; ``None`` for none.
+    :ivar readings: The measure each grader reads, in the order the graders are listed: the classifier's
+        ``accuracy``, any other field's or function's own name, a judge's every dimension, an expression as written.
     """
 
     scorers: list[GraderFunction] = field(default_factory=list)
@@ -268,6 +270,7 @@ class GraderPlan:
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     guardrails: dict[str, Guardrail] = field(default_factory=dict)
     classifier_margin: float | None = None
+    readings: list[str] = field(default_factory=list)
 
     @property
     def run_margins(self) -> dict[str, float] | None:
@@ -301,6 +304,7 @@ def plan_graders(graders: Any) -> GraderPlan:
             if plan.judge is not None:
                 raise ValueError("an eval is graded by one judge; list one Judge, with every dimension in its rubric")
             plan.judge = target
+            plan.readings += [dimension.name for dimension in target.dims]
             continue
         if isinstance(target, str):
             if not target.isidentifier():
@@ -309,6 +313,7 @@ def plan_graders(graders: Any) -> GraderPlan:
                         f"grader() declares a reading on a function or a field, not the expression {target!r}"
                     )
                 plan.goal_checks.append(target)
+                plan.readings.append(target)
                 continue
             if target in METRIC_DESCRIPTORS:
                 raise ValueError(
@@ -322,6 +327,7 @@ def plan_graders(graders: Any) -> GraderPlan:
             if plan.classifier is None and guard is None:
                 plan.classifier = target
                 plan.classifier_margin = margin
+                plan.readings.append(ACCURACY_MEASURE)
                 continue
             target = field_scorer(target)
         elif not callable(target):
@@ -339,6 +345,7 @@ def plan_graders(graders: Any) -> GraderPlan:
             seen.append(name)
         plan.scorers.append(target)
         name = target.__name__
+        plan.readings.append(name)
         if declared is not None:
             if declared.margin is not None:
                 plan.margins[name] = declared.margin

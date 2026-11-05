@@ -28,6 +28,27 @@ means.
 **Hosts:** a host reading the first screen sees the lead first, then the guardrail's warning with its counts. A host
 matching the old warning exactly finds it as the start of the new sentence, up to the colon.
 
+### evals: the quick print leads on the question, and its miss, judge and spend lines say what a host needs
+
+**Changed:** four lines of an eval's quiet print. A comparison's first line leads on its first grader, whatever its kind
+(a field, the classifier's accuracy, a function, a judged dimension), followed by what else separated, cost last; with
+no grader tested (guardrails alone) it says `nothing separated v2 from v1 but cost` before the cost reading. A cost
+reading never leads on its own, and a guardrail an arm breached or is undecided on is named after the lead (`invoices:
+Accuracy: v2 and v1 not separated; nothing else separated; guardrail No invented total score undecided for v2`). A
+classifier miss prints the graded field's value (`answered label 'in_character', expected 'out_of_character'`), not the
+whole answer object; an answer without the field, or one JSON could not hold (stored as its repr), prints cut at 120
+characters, a mapping as compact JSON without its `id`; a reason spanning lines prints on one. An uncalibrated judge's
+next step says how many rows `to_label.csv` holds per dimension and, below the calibrated tier's floor of 20, how many
+more judged answers each dimension needs. `total spend` splits by role when more than one role spent (`total spend:
+$0.0168, the results' cost (candidate $0.00175, judge $0.0151)`), each role's dollars read off its usage rows. A
+guardrail field listed before the classifier no longer takes its name: the classifier's reading line, its misses and
+`Result.labels()` read the classifier, and `Result.labels("<guardrail field>")` counts that field rather than returning
+the classifier's matrix. `Result` gains a defaulted field, `grader_readings`: each grader's measure in the order listed.
+Nothing stored changes, and no page changes.
+
+**Hosts:** a script that parses the first line of a comparison reads the new lead; a test asserting a rung's first
+line (or the judge's next-step line) takes the new words.
+
 ### evals: a rung file imports the modules beside it
 
 **Changed:** `python -m threetears.evals FILE` (and `python -m threetears.evals.harness FILE`, which loads through it)
