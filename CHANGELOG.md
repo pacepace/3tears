@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.2 -- 2026-11-05
+
 ### core: one scope's bad copy in L2 never rebuilds the snapshot
 
 **Fixed:** `ScopedSnapshot` rebuilt every scope whole from L3 when one scope's copy in L2 could not be used. On cobalt
