@@ -25,7 +25,18 @@ How the file is read:
   array of tables (``[[cases]]``).
 - **``runner``** is a prompt: ``model`` answers ``prompt`` for each case. ``{field}`` in the prompt is filled from
   the case; a field a case lacks is refused by name before anything runs, and ``{{`` ``}}`` give a literal brace. The
-  prompt's first line is what each case asks, which a judge reads.
+  prompt's first line is what each case asks, which a judge reads. Its keys:
+
+  - ``model``: the model's id, as :class:`~threetears.evals.providers.Model` takes it.
+  - ``prompt``: the prompt, written here; or ``prompt_file``: a file beside this one whose text is the prompt.
+  - ``system`` or ``system_file``, optionally: the system message, sent as written (no ``{field}`` is filled).
+  - ``max_tokens``, optionally: the output cap, a positive number of tokens.
+  - ``effort``, optionally: the reasoning effort, a word (``none`` to ``max``) or a token budget below ``max_tokens``.
+  - ``output``, optionally: the answer's fields, below.
+
+  A file's text is read each time the file is loaded, its leading and trailing blank lines dropped as an inline
+  prompt's are, so the recording sees the text the app's own file holds now: an edit to it is a prompt the recording
+  does not hold, refused by name as an edit to an inline prompt is.
 - **``output``** has two rules: a type name (``str``, ``int``, ``float``, ``bool``) gives that type, and a list of
   strings gives the values allowed. The answer is that model, sent as a strict schema and validated on return. With
   no ``output`` the answer is the reply's text.
@@ -57,6 +68,18 @@ OUTPUT_TYPES: Mapping[str, type] = {"str": str, "int": int, "float": float, "boo
 
 #: The keys a file may hold.
 _KEYS = frozenset({"cases", "runner", "grader", "recording", "name", "k"})
+
+#: The keys ``[runner]`` may hold, in the order its refusals name them.
+_RUNNER_KEYS = ("model", "prompt", "prompt_file", "system", "system_file", "max_tokens", "effort", "output")
+
+#: What each text ``[runner]`` takes is, inline or from a file.
+_WHAT: Mapping[str, str] = {"prompt": "prompt", "system": "system message"}
+
+#: What ``[runner]`` takes, as each of its refusals says it.
+_RUNNER_TAKES = (
+    "runner is a table of model and prompt (or prompt_file) and, optionally, system (or system_file), max_tokens, "
+    "effort and output"
+)
 
 
 def _refuse(path: Path, problem: str) -> ValueError:
@@ -112,27 +135,70 @@ def _output_model(path: Path, output: Any) -> type[BaseModel]:
     return model
 
 
-def _prompt_runner(path: Path, runner: Any, recording: Path | None) -> Any:
-    """The runner ``[runner]`` declares: the model answering the prompt, filled from each case.
+def _runner_table(path: Path, runner: Any) -> Mapping[str, Any]:
+    """``[runner]``, its keys checked.
 
-    :raises ValueError: A runner that is not a table of ``model``, ``prompt`` and, optionally, ``output``.
+    :raises ValueError: A runner that is not a table, or holds a key it does not take, naming every key it takes.
     """
-    if not isinstance(runner, Mapping) or set(runner) - {"model", "prompt", "output"}:
-        raise _refuse(path, "runner is a table of model, prompt and, optionally, output")
-    model_id, prompt = runner.get("model"), runner.get("prompt")
+    if not isinstance(runner, Mapping):
+        raise _refuse(path, _RUNNER_TAKES)
+    if unknown := sorted(set(runner) - set(_RUNNER_KEYS)):
+        raise _refuse(path, f"runner takes no key {', '.join(unknown)}; {_RUNNER_TAKES}")
+    return runner
+
+
+def _runner_text(path: Path, runner: Mapping[str, Any], key: str) -> str | None:
+    """The text ``key`` gives, inline (``prompt``) or as a file beside ``path`` (``prompt_file``), or ``None``.
+
+    :raises ValueError: Both forms given, a value that is not a non-blank string, or a file that cannot be read or is
+        blank.
+    """
+    from_file = f"{key}_file"
+    if key in runner and from_file in runner:
+        raise _refuse(path, f"runner takes {key} or {from_file}, not both; {_RUNNER_TAKES}")
+    if key in runner:
+        text = runner[key]
+        if not isinstance(text, str) or not text.strip():
+            raise _refuse(path, f"runner.{key} is the {_WHAT[key]}, a non-blank string")
+        return text.strip("\n")
+    if from_file not in runner:
+        return None
+    named = runner[from_file]
+    if not isinstance(named, str) or not named.strip():
+        raise _refuse(path, f"runner.{from_file} is a file beside this one, named by a non-blank string")
+    try:
+        text = (path.parent / named).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as unreadable:
+        raise _refuse(path, f"runner.{from_file} {named!r} cannot be read: {unreadable}") from unreadable
+    if not text.strip():
+        raise _refuse(path, f"runner.{from_file} {named!r} is blank")
+    return text.strip("\n")
+
+
+def _prompt_runner(
+    path: Path, runner: Mapping[str, Any], prompt: str, system: str | None, recording: Path | None
+) -> Any:
+    """The runner ``[runner]`` declares: the model answering the prompt, filled from each case, under its settings.
+
+    :raises ValueError: A model id that is not a non-blank string, a malformed output, or a ``max_tokens`` or
+        ``effort`` the model refuses, each naming the file.
+    """
+    model_id = runner.get("model")
     if not isinstance(model_id, str) or not model_id.strip():
         raise _refuse(path, "runner.model is the model's id, a non-blank string")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise _refuse(path, "runner.prompt is the prompt, a non-blank string")
-    prompt = prompt.strip("\n")
     schema = _output_model(path, runner["output"]) if "output" in runner else None
     from threetears.evals.providers import Model  # the completion client, loaded only when a file names a model
 
-    model = Model(model_id, recording=recording)
+    try:
+        model = Model(model_id, max_tokens=runner.get("max_tokens"), effort=runner.get("effort"), recording=recording)
+    except ValueError as refused:
+        raise _refuse(path, f"runner: {refused}") from refused
 
     async def answer(case: Mapping[str, Any]) -> Any:
         asked = prompt.format_map(dict(case))
-        return await model.text(asked) if schema is None else await model.json(asked, schema)
+        if schema is None:
+            return await model.text(asked, system=system)
+        return await model.json(asked, schema, system=system)
 
     answer.__name__ = path.stem
     answer.__doc__ = prompt.strip().splitlines()[0]
@@ -196,11 +262,15 @@ def load_toml(path: str | Path) -> Eval:
     cases: Sequence[Mapping[str, Any]] | Path = here / given_cases if isinstance(given_cases, str) else given_cases
     loaded = load_cases(cases)
     recording = here / table["recording"] if isinstance(table.get("recording"), str) else None
-    runner = _prompt_runner(path, table["runner"], recording)
-    prompt = table["runner"]["prompt"]
+    runner_table = _runner_table(path, table["runner"])
+    prompt = _runner_text(path, runner_table, "prompt")
+    if prompt is None:
+        raise _refuse(path, f"runner lacks prompt; {_RUNNER_TAKES}")
+    system = _runner_text(path, runner_table, "system")
     for field in _placeholders(path, prompt):
         if lacking := [str(case.get("id", index)) for index, case in enumerate(loaded) if field not in case]:
             raise _refuse(path, f"the prompt fills {{{field}}}, which case(s) {', '.join(lacking)} lack")
+    runner = _prompt_runner(path, runner_table, prompt, system, recording)
     k = table.get("k")
     return Eval(
         loaded,

@@ -18,6 +18,13 @@ imported, every relative path ``Eval``, ``Model``, ``World``, ``Judge`` and ``Lo
 never by changing directory. A path the file's own code opens is its own to place
 (``Path(__file__).with_name("policy.md")``). The store and the reports stay under the working directory.
 
+**A Python file imports the modules beside it**, as ``python FILE`` lets it: its directory goes first on
+``sys.path`` before it loads and stays there for the process, so ``from router_adapter import ...`` works at module
+level and inside a runner that imports at call time alike. The door is a command, so the process is the file's;
+:func:`load_evals` called as a library function does the same to its caller's process. A directory already on
+``sys.path`` is not added again, and nothing is ever taken off it. A module is imported once per process, so two
+files in two directories that each hold a ``helper.py`` both get the first one loaded; give siblings distinct names.
+
 Each eval runs into its default store, prints its result quietly (``--verbose`` prints it whole), and writes its
 report to ``.evals/reports/<name>/``. The exit code is the worst of the evals': 0 done, 1 a run did not complete,
 2 refused (the file, or what it declares), 3 an error nothing anticipated (its traceback printed), 4 a comparison's
@@ -119,8 +126,18 @@ def _say(line: str) -> None:
     sys.stdout.write(f"{line}\n")
 
 
+def _importable_beside(path: Path) -> None:
+    """Put ``path``'s directory first on ``sys.path``, as ``python FILE`` does, unless it is already there."""
+    directory = str(path.resolve().parent)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+
+
 def load_evals(path: Path) -> list[Runnable]:
     """Every eval a file declares: a TOML file's one, or a Python module's module-level runnable values, in order.
+
+    A Python file's directory is put first on ``sys.path`` for the rest of the process, so the file and its runners
+    import the modules beside it (see the module docstring).
 
     :param path: The ``.py`` or ``.toml`` file.
     :ptype path: Path
@@ -137,6 +154,7 @@ def load_evals(path: Path) -> list[Runnable]:
     if spec is None or spec.loader is None:
         raise ValueError(f"{path} cannot be imported as a module")
     module = importlib.util.module_from_spec(spec)
+    _importable_beside(path)
     with loading_eval_file(path):  # the paths it names are read beside it, as a TOML file's are
         spec.loader.exec_module(module)
     found = [value for value in vars(module).values() if runnable(value)]

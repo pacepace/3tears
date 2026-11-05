@@ -51,6 +51,27 @@ each stratum apart.
 `category` is graded as a label, so it gets a confusion matrix and each label's precision and recall; `urgent` and
 `needs_human` are pass rates. Each email is triaged three times (`k = 3`).
 
+#### The keys a TOML file takes
+
+Every path is read relative to the TOML file.
+
+| Key | What it holds |
+|---|---|
+| `cases` | A case file (`.jsonl`, `.json`, `.csv`, `.toml`), or the cases inline as `[[cases]]` |
+| `grader` | Field names, expressions, and judges (`{judge = {model = "...", rubric = {...}}}`) |
+| `recording` | The runner model's recording; each judge's sits beside it (`triage.judge.jsonl`, `triage.judge2.jsonl`) |
+| `name`, `k` | The eval's name (the file's stem if not given) and how many times each case is asked |
+| `[runner] model` | The model's id |
+| `[runner] prompt` or `prompt_file` | The prompt, or a file holding it; `{field}` is filled from each case |
+| `[runner] system` or `system_file` | The system message, or a file holding it, sent as written; optional |
+| `[runner] max_tokens` | The output cap, a positive number of tokens; optional |
+| `[runner] effort` | The reasoning effort, a word (`none` to `max`) or a token budget below `max_tokens`; optional |
+| `[runner.output]` | The answer's fields: a type name (`str`, `int`, `float`, `bool`) or the list of values allowed |
+
+Point `prompt_file` and `system_file` at the files your app sends, and set `max_tokens` and `effort` as your app does,
+so rung 0 measures the request your app makes. The files are read each time the eval loads, and the recording is
+keyed by the text sent, so an edit to either file replays as a prompt the recording does not hold, by name.
+
 **Rung 1, [`triage.py`](1-triage/triage.py)**, is the same eval with your own function as the runner, in 15 lines.
 `Eval(cases, runner, grader)` takes the three slots. The new grader is `escalates`, a plain function: it fails only
 an email a person must see that the triage left alone. That rule is asymmetric, which a field name cannot say. In
