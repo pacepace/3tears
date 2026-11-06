@@ -100,7 +100,7 @@ def test_every_candidate_holds_the_shipped_skills_file_set() -> None:
 def test_headline_answers_differs_only_in_the_files_its_readme_names() -> None:
     shipped, candidate = load_skill(), AnalystSkill.at(HEADLINE_ANSWERS)
     named = re.findall(r"^\| `([^`]+)` \|", _readme_section("Files changed"), re.M)
-    assert sorted(named) == files_differing(shipped, candidate) == ["README.md", "SKILL.md", "editor.md"]
+    assert sorted(named) == files_differing(shipped, candidate) == ["README.md", "SKILL.md", "editor.md", "stories.md"]
     # Both texts a session reads changed; the editor is no longer the control's instrument, and the door allows it.
     assert candidate.analyst().digest != shipped.analyst().digest
     assert candidate.editor().digest != shipped.editor().digest
@@ -119,7 +119,7 @@ def test_the_readmes_diff_and_digests_are_the_files_own() -> None:
                 f"b/{name}",
             )
         )
-        for name in ("SKILL.md", "editor.md")
+        for name in ("SKILL.md", "editor.md", "stories.md")
     )
     assert [line.rstrip() for line in pasted.splitlines()] == [line.rstrip() for line in diff.splitlines()]
     digests = _readme_section("Digests")
@@ -192,7 +192,7 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     }
     assert record["skills"] == {SHIPPED: load_skill().digest, "headline-answers": digest}
     assert record["readout"] == printed.rstrip("\n")
-    assert f"| headline-answers | candidate | {digest[:12]} | README.md, SKILL.md, editor.md | " in printed
+    assert f"| headline-answers | candidate | {digest[:12]} | README.md, SKILL.md, editor.md, stories.md | " in printed
     assert (
         "The headline-answers arm's editor.md differs, so each arm's reports are reviewed by its own editor." in printed
     )

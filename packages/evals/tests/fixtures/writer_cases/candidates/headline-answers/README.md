@@ -2,7 +2,8 @@
 
 A copy of the shipped analyst skill whose editor raises five more must_fix findings, each from the owner's reading of
 the rung-5 pages on 2026-11-06 (findings H1 to H14 in the reset's presentation review), and whose `SKILL.md` tells the
-analyst the same rules where it says what the first screen holds.
+analyst the same rules where it says what the first screen holds. `stories.md` changes where it told the analyst to
+state an absence as a sentence of its own, so the analyst writes the page the editor reviews it for.
 
 ## Files changed
 
@@ -10,6 +11,7 @@ analyst the same rules where it says what the first screen holds.
 |---|---|
 | `SKILL.md` | the headline and decision rows, and a paragraph on the first screen |
 | `editor.md` | five must_fix findings |
+| `stories.md` | the tradeoff form's absences, each one caveat line in the confidence |
 | `README.md` | this record, in place of the shipped skill's notes for its maintainers; no session reads it |
 
 Every other file is the shipped skill's, byte for byte.
@@ -19,7 +21,7 @@ Every other file is the shipped skill's, byte for byte.
 | Rule | Findings it answers |
 |---|---|
 | The headline answers the question asked, in one sentence of at most 25 words, with the answer's figure | H1, H9 |
-| An absence is a caveat, never headline matter and never a sentence of its own | H5, H9, H10, H12 |
+| An absence is a caveat line, never headline matter and never a sentence of its own | H5, H9, H10, H12 |
 | Watch lists only what could change the call; when every alternative read worse and cost more, it says so in one line | H3 |
 | A rate on the first screen carries its count | H11 |
 | A term the reader did not bring is defined at first use or replaced | H2 |
@@ -29,7 +31,7 @@ Every other file is the shipped skill's, byte for byte.
 | Skill | Skill digest | Analyst text digest | Editor text digest |
 |---|---|---|---|
 | shipped | `4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8` | `063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b` | `07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611` |
-| headline-answers | printed by the run | `1487881bcf1ab92bbf270a831a7fa4ce9019ab9c5b9ff04c4679382b9165b4b2` | `e14e57db525bafabcd88da4b1a3cbeef7b95e4ba4c095c0b21974c8352253edf` |
+| headline-answers | printed by the run | `f0be24e1cc01650ebe017ec9505b9cfe3c3905853bf01e1cc5f628ad3ca29aa8` | `e14e57db525bafabcd88da4b1a3cbeef7b95e4ba4c095c0b21974c8352253edf` |
 
 The candidate's skill digest covers this file, so this file cannot hold it: the acceptance readout prints it, and
 `acceptance.json` records it under `candidate_skill`. The analyst's text is read with no note withheld.
@@ -88,4 +90,15 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  - **`should_fix`**: the page would be clearer, tighter or better supported, but a reader acting on it now would not be misled.
  
  What sends the report back, while revisions remain:
+--- a/stories.md
++++ b/stories.md
+@@ -22,7 +22,7 @@
+ 
+ **Slots:** the_trade, where_it_flips (the price bands where the best option changes), our_lean (labelled yours, with the band it holds for), what_settles_it.
+ 
+-**What it owes:** one axis priced in the other at real volume (`price_tradeoff`), over the two to four options a decider would actually weigh. Too many variants make the bands too thin to act on. If the loss concentrates in one stratum, a mix that avoids it (route that stratum to the stronger option) may be the most useful option, but nobody ran it, so no figure states its cost or gain. Never price it. Recommend running it as a next step, say what its measurement would settle, and name the seam that suggests it. Show any evidence of what users notice. If there is none, say so in Watch. Say plainly that nothing was declared in advance, and name who makes the call.
++**What it owes:** one axis priced in the other at real volume (`price_tradeoff`), over the two to four options a decider would actually weigh. Too many variants make the bands too thin to act on. If the loss concentrates in one stratum, a mix that avoids it (route that stratum to the stronger option) may be the most useful option, but nobody ran it, so no figure states its cost or gain. Never price it. Recommend running it as a next step, say what its measurement would settle, and name the seam that suggests it. Show any evidence of what users notice. Where there is none, and where nothing declared in advance ranks the axes, each is one caveat line in the confidence, never a sentence of its own, a Watch item or the headline. Name who makes the call.
+ 
+ **Usual failure:** deciding anyway. A lean presented as a recommendation hides the fact that the call is a business choice.
+ 
 ```
