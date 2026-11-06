@@ -14,10 +14,11 @@ memo's `behind_on` field. The meaning is unchanged.
 
 **Removed:** `analysis_bundle`, `cell_label`, `get_campaign_view`, `list_analyses` and `list_analysis_attempts`
 (`threetears.evals.analysis`); `CONFIDENCE_TIERS`, `CampaignView` and `HOST_PRODUCED_MEASURES`
-(`threetears.evals.kernel`); `ObligationRow` and `obligation_rows` (`threetears.evals.kernel.host`); and six no root
-exported: `campaign_evidence_digest`, `in_writer_terms`, `analysis_rulers`, `REFERENCE_MARK`, `read_as_declared` and
-`MIN_PAIRS_FOR_DETERMINISTIC_GAP`. Nothing in the package called any of them. `MIGRATIONS.toml` says where a host goes
-for each.
+(`threetears.evals.kernel`); `ObligationRow` and `obligation_rows` (`threetears.evals.kernel.host`); and six that no
+root exported: `campaign_evidence_digest`, `in_writer_terms`, `analysis_rulers`, `REFERENCE_MARK`, `read_as_declared`
+and `MIN_PAIRS_FOR_DETERMINISTIC_GAP`. Nothing in the package called any of them. `MIGRATIONS.toml` says where a host
+goes for each of the ten a root exported, and for `campaign_evidence_digest`, which the 0.75.0 notes taught; the other
+five leave with the snapshot.
 
 **Hosts:** a report snapshot frozen from now has a new content address (`report_input_digest`, and so a new snapshot
 id) for the same evidence, since `kind_means` is part of the input. A stored snapshot keeps its text and its id, and

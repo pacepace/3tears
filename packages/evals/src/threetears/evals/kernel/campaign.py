@@ -127,8 +127,9 @@ class CampaignWindow(EvalDocumentModel):
     """The [start, end] time span a campaign's runs cover — DERIVED, never stored.
 
     Produced by :func:`derive_window` from the member runs' ``created_at`` values, and
-    carried on a context bundle (``AnalysisContextBundle.window``). Not a field on :class:`EvalCampaign`: deriving it at read time is what keeps it from
-    drifting as runs join or leave the campaign.
+    carried on a context bundle (``AnalysisContextBundle.window``). Not a field on
+    :class:`EvalCampaign`: deriving it at read time is what keeps it from drifting as runs join
+    or leave the campaign.
     """
 
     start: str = Field(description="Earliest member-run created_at (ISO-8601).")

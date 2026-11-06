@@ -303,7 +303,7 @@ def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
     so a dimension with none still owes the check and records ``nothing_to_observe``.
 
     ``ambient_isolation`` and ``vocabulary_completeness`` are absent here and are not thereby
-    optional: both are the ``every_dimension`` row's obligations, and each asks one question of
+    optional: every dimension owes both, and each asks one question of
     the whole registry rather than one per dimension, so the kit discharges each once. Reporting
     N copies of a single answer would be a lie told by repetition.
 

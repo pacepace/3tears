@@ -6,7 +6,8 @@ The analyst never types a figure into a sentence (GENERATOR.md §6.2). It writes
 (:mod:`threetears.evals.kernel.numbers`, :mod:`threetears.evals.analysis.quantities`). ``{arm:<id>}`` prints an
 arm's short name with its letter tag.
 
-**Single braces only.** A double brace (``{{…}}``, the retired figure reference's grammar) is refused, never read as a key.
+**Single braces only.** A double brace (``{{…}}``, the retired figure reference's grammar) is refused, never read
+as a key.
 
 **A path is matched, never split.** Ids carry dots (an arm ``qwen3.8-flash``, a dimension
 ``tone.kept``) and spaces, so a path is matched against a closed vocabulary built from the input: a family keyword,

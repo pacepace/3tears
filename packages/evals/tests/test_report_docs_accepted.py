@@ -91,7 +91,7 @@ def _inputs() -> dict[str, ReportInput]:
 #: input's id and none of its evidence, so the document is still checked against what it was written on. Each with
 #: its reason; any other move of the input still fails, and is recorded again.
 _REPINNED: dict[str, str] = {
-    # 2026-11-06 (removal wave R2): `meta.kind_means` names the report where it named the retired memo. Its meaning,
+    # 2026-11-06: `meta.kind_means` names the report where it named the retired memo. Its meaning,
     # every figure, arm, aspect and id are unchanged, and the run's recording replays to the same document on it.
     "report-snapshot:7f4771294a60ba16d58f771e91533101": "report-snapshot:983c28aa6bfbed1f3e99c2753cae103d",
 }
