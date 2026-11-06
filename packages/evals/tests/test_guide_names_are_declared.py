@@ -86,10 +86,13 @@ def _taught_names(paragraph: str) -> dict[str, int]:
     return found
 
 
-def taught_names(page: Path = GUIDE) -> dict[str, int]:
-    """Every public name one page teaches, spelled qualified or attributed, with the first line that does."""
+def taught_names(page: Path = GUIDE, *, text: str | None = None) -> dict[str, int]:
+    """Every public name one page teaches, spelled qualified or attributed, with the first line that does.
+
+    ``text``, when given, is read in place of the page's own (the hold-back ledger reads a page with the lines that
+    only list the declared names blanked)."""
     recorded = surface.load_snapshot()
-    text = page.read_text(encoding="utf-8")
+    text = page.read_text(encoding="utf-8") if text is None else text
     taught: dict[str, int] = {}
     for name, offset in sorted(_taught_names(_prose(text)).items(), key=lambda item: item[1]):
         if name in recorded:
@@ -97,11 +100,11 @@ def taught_names(page: Path = GUIDE) -> dict[str, int]:
     return taught
 
 
-def bare_names(page: Path) -> dict[str, int]:
+def bare_names(page: Path, *, text: str | None = None) -> dict[str, int]:
     """Every bare name one page spells in its prose (`` `name` ``, `` `name(...)` ``, `` `name.attr` ``), with the
     first line that does. It is a word, not yet a public name: :func:`test_no_declared_name_a_page_names_goes_provisional`
-    resolves it."""
-    text = page.read_text(encoding="utf-8")
+    resolves it. ``text``, when given, is read in place of the page's own."""
+    text = page.read_text(encoding="utf-8") if text is None else text
     found: dict[str, int] = {}
     for span in _SPAN.finditer(_prose(text)):
         if (bare := _BARE_SPELLING.match(span[1])) and not _MODULE.match(span[1]):
