@@ -59,7 +59,7 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.90.0"
+since = "v0.92.0"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
@@ -383,6 +383,54 @@ why = """
 They named the rows of the world conformance kit's obligations table for a package test, and the kit read neither:
 it derives each dimension's checks from its declared shape (obligations). Port: call obligations, or read the
 dimension's verdicts on WorldConformanceReport.for_dimension.
+"""
+
+[[release]]
+version = "0.92.0"
+since = "v0.91.4"
+summary = """
+Memory switches, the public cut-off-fire undo, descending index declarations and Date/Time cache columns: no
+3tears-evals name has moved or been removed since 0.91.4, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.4"
+since = "v0.91.3"
+summary = """
+Large objects are hashed and many L1 keys evicted off the event loop, and a job lease logs a sub-second lease as it
+is: no 3tears-evals name has moved or been removed since 0.91.3, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.3"
+since = "v0.91.2"
+summary = """
+A diff names its groups in one array only when the group column's type allows it: no 3tears-evals name has moved or
+been removed since 0.91.2, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.2"
+since = "v0.91.1"
+summary = """
+One scope's bad copy in L2 never rebuilds a scoped snapshot, and a diff reads its groups in a few statements: no
+3tears-evals name has moved or been removed since 0.91.1, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.1"
+since = "v0.91.0"
+summary = """
+A diff recovery's partition reads count as progress and run eight at a time: no 3tears-evals name has moved or been
+removed since 0.91.0, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.0"
+since = "v0.90.0"
+summary = """
+A scoped snapshot recovers a behind copy from the diff and reads a table one partition value at a time: no
+3tears-evals name has moved or been removed since 0.90.0, and no judge wording changed.
 """
 
 [[release]]

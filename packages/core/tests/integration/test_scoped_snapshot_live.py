@@ -646,8 +646,9 @@ async def test_a_scope_published_before_any_rebuild_is_not_loaded_as_the_whole_s
     replica, _ = await platform.replica()
     await replica.start()
     await replica.wait_ready(timeout=_WAIT)
-    assert replica.status().source is SnapshotSource.L3, "an index naming one scope was loaded as the snapshot"
-    assert _count(replica, "results") == 1580
+    # the index names DE alone, partial: DE loads from L2 and each scope it does not name is rebuilt from L3 on its own
+    # (0.91.2, Pace 2026-11-05: one scope's state in L2 never rebuilds the snapshot), and nothing is missing
+    assert _count(replica, "results") == 1580, "an index naming one scope was loaded as the snapshot"
     await replica.stop()
 
 
@@ -876,9 +877,12 @@ async def test_a_replica_that_waited_on_a_rebuild_is_ready_again(platform: _Plat
     whole = await pointers.get_entry(key="enr.index")
     assert whole is not None
     # another replica holds the rebuild claim, and the index says it names only scopes published
-    # since NATS lost the snapshot: the ready replica must wait on that rebuild
-    claim = await pointers.create(key="enr.rebuild", value=b"another-replica")
-    assert claim is not None
+    # since NATS lost the snapshot: the ready replica must wait on that rebuild. A replica becomes ready
+    # before its own run lets the claim go, so the claim is taken once that release has landed
+    deadline = asyncio.get_running_loop().time() + _WAIT
+    while (claim := await pointers.create(key="enr.rebuild", value=b"another-replica")) is None:
+        assert asyncio.get_running_loop().time() < deadline, "the replica never released its own rebuild claim"
+        await asyncio.sleep(0.05)
     partial = json.dumps(json.loads(whole[0]) | {"partial": True}).encode("utf-8")
     revision = await pointers.update(key="enr.index", value=partial, revision=whole[1])
     assert revision is not None

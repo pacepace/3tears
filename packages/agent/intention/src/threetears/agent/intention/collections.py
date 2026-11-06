@@ -177,14 +177,13 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         indexes=(
             # the deliberation hot path: rank a user's open wants by
             # salience. Partial on status='open' so the index stays small.
-            # (Column order / DESC live in the raw v001 DDL; the DSL only
-            # needs the column set + WHERE for parity + L1 parity.)
             SchemaIndex(
                 "idx_intentions_open_ranked",
                 "agent_id",
                 "user_id",
                 "salience",
                 where=f"status = '{IntentionStatus.OPEN.value}'",
+                desc="salience",
             ),
             # the cooldown filter reads by last-surfaced recency.
             SchemaIndex(

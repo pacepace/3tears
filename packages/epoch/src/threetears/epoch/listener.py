@@ -64,6 +64,12 @@ persist.
 
 **must not be epoch-deduped.** a consumer that receives this reloads,
 unconditionally.
+
+a consumer that registers none is reset through its ``on_bump`` instead,
+called with ``(0, None)``: a bump callback already reloads, and one that
+reloads whatever the epoch (the common shape) needs nothing more. a bump
+callback that dedupes on the epoch it is handed would discard that call,
+so such a consumer registers an ``on_reset``.
 """
 
 
@@ -248,9 +254,11 @@ class EpochListener:
         :ptype primed_epoch: int | None
         :param on_reset: invoked when the counter this listener tracks is
             REPLACED rather than advanced, with no epoch -- see
-            :data:`ResetCallback`. omitting it means this consumer is not
-            told, which is a choice rather than a default: after a reset its
-            state is stale with nothing scheduled to correct it.
+            :data:`ResetCallback`. omitted, the reset reaches ``on_bump``
+            instead, as ``(0, None)``: a replaced counter lost every bump it
+            held, including any this pod missed the broadcast of, so a
+            consumer that heard of none would keep that state stale until
+            its subject happened to bump again.
         :ptype on_reset: ResetCallback | None
         :return: nothing
         :rtype: None
@@ -457,8 +465,13 @@ class EpochListener:
         into CDN cache keys, so re-issuing it is the one thing this family
         cannot afford.
 
-        A consumer that registered no ``on_reset`` is skipped: it chose that at
-        :meth:`subscribe`.
+        A consumer that registered no ``on_reset`` is reset through its
+        ``on_bump``, called with ``(0, None)`` (see :data:`ResetCallback`). It
+        used to be skipped, and every consumer in the family registered none:
+        a counter replaced by a broker restart then lost whatever bump a pod
+        had missed the broadcast of, and the catch-up that should repair it
+        compares against a last-seen this method has just cleared, so nothing
+        did.
 
         **One raising callback does not deprive the rest.** A bump callback
         propagates because it harms only its own consumer, and that precedent
@@ -487,28 +500,17 @@ class EpochListener:
             # permanently while every ephemeral consumer reloaded on every tick
             # because the condition never cleared.
             self._last_seen.pop(subject.path, None)
-            scoped_error: BaseException | None = None
-            for _s, _on_bump, on_reset in list(self._registrations.get(subject.path, [])):
-                if on_reset is None:
-                    continue
-                try:
-                    await on_reset()
-                # prawduct:allow prawduct/broad-except -- same contract as the
-                # bucket-wide path below: one consumer's bug must not deprive
-                # the others of a reset. re-raised after the loop.
-                except Exception as exc:  # noqa: BLE001
-                    contain(
-                        exc,
-                        log=log,
-                        what="epoch reset callback raised; continuing to the remaining consumers",
-                        extra={"subject": subject.path},
-                        level="error",
-                    )
-                    if scoped_error is None:
-                        scoped_error = exc
+            scoped = list(self._registrations.get(subject.path, []))
+            through_bump, scoped_error = await _reset_each(scoped)
             log.warning(
                 "epoch counter for one subject read backwards; that subject reset",
-                extra={"extra_data": {"subject": subject.path}},
+                extra={
+                    "extra_data": {
+                        "subject": subject.path,
+                        "consumers": len(scoped),
+                        "through_bump_callback": through_bump,
+                    }
+                },
             )
             if scoped_error is not None:
                 raise scoped_error
@@ -531,31 +533,15 @@ class EpochListener:
         registrations = [
             entry for entries in self._registrations.values() for entry in entries if not _is_durable(entry[0])
         ]
-        notified = 0
-        first_error: BaseException | None = None
-        for subject, _on_bump, on_reset in registrations:
-            if on_reset is None:
-                continue
-            try:
-                await on_reset()
-                notified += 1
-            # prawduct:allow prawduct/broad-except -- a consumer bug must not
-            # deprive the remaining consumers of a reset they cannot otherwise
-            # learn about. re-raised below, never swallowed.
-            except Exception as exc:  # noqa: BLE001
-                contain(
-                    exc,
-                    log=log,
-                    what="epoch reset callback raised; continuing to the remaining consumers",
-                    extra={"subject": subject.path},
-                    level="error",
-                )
-                if first_error is None:
-                    first_error = exc
+        through_bump, first_error = await _reset_each(registrations)
+        # WARNING: a replaced counter means the broker restarted on memory storage, which an
+        # operator wants to know of; the consumers are reloaded either way.
         log.warning(
-            "epoch counter replaced; last-seen cleared"
-            + (f" and {notified} consumer(s) notified" if notified else " but NO consumer registered a reset callback"),
-            extra={"extra_data": {"registrations": len(registrations), "notified": notified}},
+            "epoch counter replaced (the broker restarted); last-seen cleared and %d consumer(s) told to "
+            "reload, %d of them through their bump callback",
+            len(registrations),
+            through_bump,
+            extra={"extra_data": {"registrations": len(registrations), "through_bump_callback": through_bump}},
         )
         if first_error is not None:
             raise first_error
@@ -671,3 +657,42 @@ class EpochListener:
         if echoed_epoch <= last_seen:
             return
         await self.catch_up(subject, on_bump)
+
+
+async def _reset_each(
+    registrations: list[tuple[Subject, BumpCallback, ResetCallback | None]],
+) -> tuple[int, BaseException | None]:
+    """tell every registration its counter was replaced: its ``on_reset``, or else its ``on_bump`` with ``(0, None)``.
+
+    **One raising callback does not deprive the rest.** This runs after last-seen is cleared, with
+    nothing scheduled to retry it, so an early raise would leave every consumer after it un-told AND
+    un-primed. Each failure is contained at ERROR and the first is handed back for the caller to
+    raise once all were attempted, so a consumer bug still surfaces.
+
+    :param registrations: the registrations to reset
+    :ptype registrations: list[tuple[Subject, BumpCallback, ResetCallback | None]]
+    :return: how many were reset through their bump callback, and the first exception any raised
+    :rtype: tuple[int, BaseException | None]
+    """
+    through_bump = 0
+    first_error: BaseException | None = None
+    for subject, on_bump, on_reset in registrations:
+        try:
+            if on_reset is not None:
+                await on_reset()
+            else:
+                through_bump += 1
+                await on_bump(0, None)
+        # prawduct:allow prawduct/broad-except -- a consumer bug must not deprive the remaining
+        # consumers of a reset they cannot otherwise learn about. handed back, never swallowed.
+        except Exception as exc:  # noqa: BLE001
+            contain(
+                exc,
+                log=log,
+                what="epoch reset callback raised; continuing to the remaining consumers",
+                extra={"subject": subject.path},
+                level="error",
+            )
+            if first_error is None:
+                first_error = exc
+    return through_bump, first_error

@@ -871,8 +871,13 @@ def test_a_job_asks_whether_it_still_holds_its_record_before_it_spends_again() -
     require_held(storage, SWEEP_JOB, "never-stored", TOYHOST_SCOPE)
 
 
-async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
-    holder = off_loop(_sweeping_host, InMemoryDocumentStore(), job_lease_s=0.3)
+async def test_a_sweep_another_process_runs_is_cancelled_from_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The first arm runs until the cancel stops it, so the cancel lands before any further arm whatever the lease;
+    # and the lease is not 0.3 s: a loaded machine left a renewal's store call unreturned that long, and the holder
+    # rightly fenced the sweep as lost before the cancel reached it. The holder acts on the cancel at its next
+    # renewal, a third of the lease.
+    held_extraction(monkeypatch)
+    holder = off_loop(_sweeping_host, InMemoryDocumentStore(), job_lease_s=3.0)
     elsewhere = other_process(holder)
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _first_arm_running(elsewhere, job.job_id)
@@ -884,6 +889,9 @@ async def test_a_sweep_another_process_runs_is_cancelled_from_there() -> None:
     arms = ended.progress["arms"]
     assert arms[STYLES[2]] == "not_launched", "the holder stopped the sweep before its last arm"
     assert set(arms.values()) <= {"completed", "cancelled", "not_launched"}
+    assert arms == {STYLES[0]: "cancelled", STYLES[1]: "not_launched", STYLES[2]: "not_launched"}, (
+        "the cancel stopped the arm it found running and launched no other"
+    )
 
 
 async def test_a_sweep_whose_lease_lapsed_reads_lost_and_launches_nothing_more() -> None:
