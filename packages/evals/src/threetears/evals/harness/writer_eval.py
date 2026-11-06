@@ -154,7 +154,6 @@ from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, W
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
-from threetears.evals.providers import AnthropicPublishedRates, Provider
 from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.analyse import TURN_CAP
@@ -876,6 +875,9 @@ class WriterEval:
     def _first_turn_floor(self, model: str, text: str, max_tokens: int) -> TurnCeiling | None:
         """A floor of a first turn's ceiling on ``model``: its system ``text`` and output cap at Anthropic's published
         rates, or ``None`` when they do not list the model on the writer's provider."""
+        # The client's own table, loaded once per launch: importing the harness loads no client (test_providers_boundary).
+        from threetears.evals.providers import AnthropicPublishedRates, Provider
+
         provider = next((known for known in get_args(Provider) if known == self.writer_provider), None)
         rated = None if provider is None else AnthropicPublishedRates().rates_for(model, provider=provider)
         if rated is None:
