@@ -187,19 +187,6 @@ class TestTheReportsRefusals:
     def test_the_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
         assert [block.kind for block in _report(bundle).blocks] == ["disclosure"]
 
-    @pytest.mark.parametrize(
-        "block",
-        [
-            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "finding": 1},
-            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "rests_on": [3]},
-        ],
-        ids=["finding", "rests_on"],
-    )
-    def test_a_block_linked_to_a_finding_is_refused(self, bundle: AnalysisContextBundle, block: dict[str, Any]) -> None:
-        linked = r"is linked to finding position\(s\) \[\d\], and the report holds no finding"
-        with pytest.raises(ValueError, match=linked):
-            _report(bundle, blocks=[block])
-
     def test_a_table_showing_more_rows_than_it_has_is_refused(self) -> None:
         with pytest.raises(ValueError, match="shows 2 rows but says it has 1"):
             _table(rows=[table_row({"arm": "a"}), table_row({"arm": "b"})])

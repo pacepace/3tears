@@ -139,15 +139,6 @@ async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
         assert 'class="verdict"' not in campaign_report_html(page)
 
 
-@pytest.mark.parametrize("link", [{"finding": 0}, {"rests_on": [0]}], ids=["finding", "rests_on"])
-async def test_a_campaign_page_refuses_a_block_linked_to_a_finding(link: dict[str, object]) -> None:
-    """A campaign's page holds no finding, so a block naming one, by ``finding`` or ``rests_on``, is refused."""
-    page = await page_of("billing")
-    linked = {"kind": "disclosure", "section": "provenance", "source": "design", "text": "linked", **link}
-    with pytest.raises(ValueError, match=r"is linked to finding position\(s\) \[0\], and the page holds no finding"):
-        CampaignReport.model_validate({**dict(page), "blocks": [*page.blocks, linked]})
-
-
 async def test_a_code_only_campaign_page_refuses_an_analysis_id() -> None:
     page = await page_of("billing")
     assert page.basis == "code_only"

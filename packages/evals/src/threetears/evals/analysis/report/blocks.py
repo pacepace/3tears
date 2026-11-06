@@ -331,17 +331,9 @@ class Verdict(EvalDocumentModel):
 
 
 class _Block(EvalDocumentModel):
-    """What every block carries: where it sits, and which findings it belongs to or rests on."""
+    """What every block carries: where it sits, the id a link names, and the fold it sits in."""
 
     section: ReportSection = Field(description="The section the block sits in.")
-    finding: int | None = Field(
-        default=None,
-        ge=0,
-        description="The finding this block belongs to, by its position (0 is the first); None when it belongs to none.",
-    )
-    rests_on: list[int] = Field(
-        default_factory=list, description="Positions of the findings this block rests on, as the author linked them."
-    )
     anchor: str | None = Field(
         default=None, description="The id a link to this block names (`F1`, `case-3`, `T7`); None when none does."
     )
@@ -352,16 +344,6 @@ class _Block(EvalDocumentModel):
             "it. None for a block shown open."
         ),
     )
-
-    @property
-    def finding_number(self) -> int | None:
-        """``finding`` counted from one, as a reader counts findings; None when the block names none."""
-        return None if self.finding is None else self.finding + 1
-
-    @property
-    def rests_on_numbers(self) -> list[int]:
-        """``rests_on`` counted from one, as a reader counts findings."""
-        return [position + 1 for position in self.rests_on]
 
 
 class TableColumn(EvalDocumentModel):
