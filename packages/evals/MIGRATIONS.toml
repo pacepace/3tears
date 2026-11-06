@@ -59,7 +59,7 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.92.0"
+since = "v0.91.4"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
