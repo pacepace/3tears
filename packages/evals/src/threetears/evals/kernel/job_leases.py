@@ -1177,7 +1177,7 @@ class JobLeases:
                     log=log,
                     what=(
                         f"eval.job_lease renewal failed {held.kind.name}={record_id} scope={held.scope_id} "
-                        f"— retried in {self.renew_every_s:.0f}s"
+                        f"— retried in {self.renew_every_s:g}s"
                     ),
                     level="error",
                 )
@@ -1278,7 +1278,7 @@ class JobLeases:
             else f"every renewal lost its race to another writer, {LEASE_WRITE_ATTEMPTS} times each"
         )
         log.error(
-            "eval.job_lease %s=%s scope=%s could not be renewed for %.0fs, its whole lease — stopping it as lost (%s)",
+            "eval.job_lease %s=%s scope=%s could not be renewed for %gs, its whole lease — stopping it as lost (%s)",
             held.kind.name,
             held.record_id,
             held.scope_id,

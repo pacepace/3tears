@@ -534,6 +534,21 @@ class TestPartitions:
         with pytest.raises(duckdb.ConstraintException, match="NOT NULL"):
             backend.export_rows("results", "state", "TX", [nameless], primary_key=key, order_by=key)
 
+    def test_an_export_keeps_a_null_in_a_key_column_the_table_holds_nullable(self) -> None:
+        """a scoped snapshot's key may name a column outside the table's own key (a geography that is NULL for a
+        state's own rows): the table holds a NULL there, so the export does too, and says which columns it refuses."""
+        pytest.importorskip("pyarrow")
+
+        backend = _partitioned_backend()
+        key = ("race", "votes", "county")
+        uncounted = {**_result("r1", "c1", "TX", 1), "votes": None}
+
+        exported = backend.export_rows("results", "state", "TX", [uncounted], primary_key=key, order_by=key)
+
+        assert exported.column("votes").to_pylist() == [None]
+        assert backend.not_null_columns("results") == frozenset({"race", "county"})
+        assert backend.not_null_columns("nowhere") == frozenset()
+
     def test_replacing_partitions_swaps_each_scope_whole_and_leaves_the_rest(self) -> None:
         pytest.importorskip("pyarrow")
         from threetears.core.cache.duckdb import PartitionReplacement

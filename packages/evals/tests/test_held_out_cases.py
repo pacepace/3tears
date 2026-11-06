@@ -5,7 +5,7 @@ An acceptance run reads one directory holding rung 5's eleven cases and these fo
 (the directory's ``README.md``). These tests hold what that run relies on: every file reads as a writer case, no name
 is two cases, no two files freeze one source (the mint would count them as one case), every group lands held-out at
 0.99, and the cases the export rebuilds from the package's fixtures are the ones committed: every figure the same to
-twelve places, and every snapshot id the same but where :data:`PLATFORM_BOUND` says.
+twelve places and without the build's ``package_version``, and every snapshot id the same but where :data:`PLATFORM_BOUND` says.
 """
 
 from __future__ import annotations
@@ -110,7 +110,17 @@ def _figures(case: WriterCaseFile) -> str:
     document = json.loads(case.to_json())
     for derived in ("id", "report_input_digest"):
         del document["snapshot"][derived]
-    return identity_json(document)
+    return identity_json(_without_build_identity(document))
+
+
+def _without_build_identity(value: object) -> object:
+    """``value`` with every ``package_version`` dropped: a bundle names the build that assembled it, which moves at
+    every version bump and says nothing about the case (the hot-path oracle leaves it out the same way)."""
+    if isinstance(value, dict):
+        return {key: _without_build_identity(item) for key, item in value.items() if key != "package_version"}
+    if isinstance(value, list):
+        return [_without_build_identity(item) for item in value]
+    return value
 
 
 async def test_the_reproducible_cases_are_the_committed_ones() -> None:

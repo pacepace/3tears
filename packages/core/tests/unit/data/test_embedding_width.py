@@ -446,3 +446,13 @@ class TestAResizeKeepsTheIndexOptions:
         store = _FakeCatalogueStore(_YB_INDEXDEF + " WHERE (body IS NOT NULL)", ["m=16"])
         await resize_embedding_columns(store, embedding_columns(_SCHEMA), 6)
         assert _created(store)[0].endswith("(embedding vector_cosine_ops) WITH (m=16) WHERE (body IS NOT NULL)")
+
+
+async def test_a_declared_desc_column_is_recreated_descending() -> None:
+    """an index a resize creates from its declaration keeps a ``desc`` column descending."""
+    store = _FakeCatalogueStore(_PG_INDEXDEF, None)
+    recent = Index("ix_notes_recent", "embedding", "date_created", desc="date_created")
+    await resize_embedding_columns(store, [EmbeddingColumn("notes", "embedding", (recent,))], 6)
+    assert store.executed[-1] == (
+        'CREATE INDEX IF NOT EXISTS "ix_notes_recent" ON "zz"."notes" ("embedding", "date_created" DESC)'
+    )

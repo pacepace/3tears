@@ -157,7 +157,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 where=f"status = '{IdentityVersionStatus.ACTIVE.value}'",
                 unique=True,
             ),
-            # a block variant's version history, most-recent-first (DESC lives in DDL).
+            # a block variant's version history, most-recent-first.
             SchemaIndex(
                 "idx_identity_variant_history",
                 "agent_id",
@@ -165,6 +165,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 "block_key",
                 "variant",
                 "date_created",
+                desc="date_created",
             ),
             # the pending consent / veto queue: proposed versions per user.
             SchemaIndex(
