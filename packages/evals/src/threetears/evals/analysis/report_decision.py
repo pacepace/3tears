@@ -39,9 +39,10 @@ one.
                                           which needs every one so, is not raised
 ``no_control``                            more than one arm and none is the control: no reading or contrast is paired
                                           against a baseline
-``nothing_declared``                      no gate, guardrail or floor criterion, no margin and no floor read: nothing
-                                          says what is good enough, so code ranks options on cost alone (a bar only
-                                          warns)
+``nothing_declared``                      no gate, guardrail or floor criterion, no margin, no floor read and no aspect
+                                          a question asks of a control (one with no margin declares shown better
+                                          than the control as good enough): nothing says what is good enough, so code
+                                          ranks options on cost alone (a bar only warns)
 ``point_estimate:<criterion>``            a gate or guardrail a surviving option clears only on a point estimate:
                                           the figure it reads holds no interval there, stated or derived from its
                                           cells (:mod:`~threetears.evals.analysis.cell_mean`; a percentile never
@@ -556,7 +557,10 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
         for aspect in report_input.aspects
     )
     deciding = any(criterion.kind in _DECIDING for criterion in report_input.criteria)
-    if not deciding and not margins and not report_input.floors:
+    # A question of a control is a declaration: asked with no margin it is a superiority question, shown better than
+    # the control its bar. A choice has no control to be shown better than, so its question declares no bar.
+    superiority = bool(_asked(report_input)) and control_arm(report_input) is not None
+    if not deciding and not margins and not report_input.floors and not superiority:
         found.append(
             ImpliedCaveat(
                 "nothing_declared",
@@ -758,9 +762,14 @@ def _shown_no_worse(report_input: ReportInput, arm: str, overrides: _Overrides) 
         return False
     for aspect in asked:
         for reading in aspect.readings:
-            if reading.arm == arm and _margin(aspect, reading, overrides) is not None:
-                if not _within(aspect, reading, overrides):
+            if reading.arm != arm:
+                continue
+            if _margin(aspect, reading, overrides) is None:
+                # A superiority question (asked, no margin) reads the drop against zero: shown worse is never no worse.
+                if reading.reading == "worse":
                     return False
+            elif not _within(aspect, reading, overrides):
+                return False
     return True
 
 

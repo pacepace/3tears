@@ -325,12 +325,19 @@ def test_a_floor_key_names_its_aspect_kind_and_reading() -> None:
 # =============================================================================
 
 
-async def test_an_aspect_with_no_margin_compares_no_pass_rate_yet_its_floors_and_reading_have_its_values() -> None:
+async def test_an_asked_aspect_with_no_margin_compares_its_pass_rate_and_its_floors_and_reading_have_its_values() -> (
+    None
+):
+    """Owner, 2026-11-06: a question with no margin is a superiority question, and its pass rate is a hypothesis it
+    asks, so the family holds it beside the label check's rate, Holm-corrected as a pair."""
     bundle, control, candidate = await _shape(5, floors=(RateDrop(max_points=10, reading="match"), CostLower()))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
     assert family.aspect == bundle.aspect
-    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert family.family_size == 2 and compared.verdict == "not_separated"
+    assert compared.delta == pytest.approx(-0.05) and compared.p_raw is not None
+    assert compared.p_adjusted == pytest.approx(2 * compared.p_raw)
     (trial,) = [contrast for contrast in bundle.floor_contrasts if contrast.reading == "trial"]
     assert (trial.control.variant_key, trial.contrast.variant_key, trial.test) == (control, candidate, "paired")
     rate = aspect_pass_rate(bundle, control, candidate)

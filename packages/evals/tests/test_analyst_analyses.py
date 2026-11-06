@@ -52,6 +52,7 @@ from threetears.evals.analysis.report_decision import (
     control_arm,
     decision_at,
     dominant_options,
+    implied_caveats,
     surviving_options,
     weighed_axes,
 )
@@ -152,6 +153,62 @@ def test_the_asked_standing_of_a_change_and_a_choice() -> None:
     assert all(
         held.level is None and held.standing in ("behind", "not_behind") for held in asked_standing(choice).values()
     )
+
+
+def _superiority(reading: str, *, asked: bool = True, floors: bool = True) -> ReportInput:
+    """r5 asked with no margin (a superiority question), qwen3.8-flash its control, so September, the cheapest arm,
+    is the candidate a cost tie would favour: September reads ``reading``, 1017 unclear, each floor held."""
+    held = fixture_inputs()["r5"]
+    roles = {"qwen3.8-flash": "control", "September": "challenger", "1017": "challenger"}
+    arms = [arm.model_copy(update={"role": roles[arm.id]}) for arm in held.arms]
+    (aspect,) = held.aspects
+    readings = [
+        row.model_copy(
+            update={
+                "arm": "September" if row.arm == "qwen3.8-flash" else row.arm,
+                "reading": reading if row.arm == "qwen3.8-flash" else "unclear",
+                "margin": None,
+                "within_interval": None,
+            }
+        )
+        for row in aspect.readings
+    ]
+    swapped = [
+        floor.model_copy(update={"arm": "September" if floor.arm == "qwen3.8-flash" else floor.arm})
+        for floor in held.floors
+    ]
+    return held.model_copy(
+        update={
+            "arms": arms,
+            "aspects": [aspect.model_copy(update={"margin": None, "readings": readings, "asked": asked})],
+            "floors": swapped if floors else [],
+        }
+    )
+
+
+def test_a_superiority_candidate_shown_worse_is_never_shown_no_worse_nor_dominant_however_cheap() -> None:
+    """Owner, 2026-11-06: a question asked with no margin reads the drop against zero. September, the cheapest arm with
+    every floor held, stands shown no worse and dominates while its row is unclear; shown worse, it does neither."""
+    unclear = _superiority("unclear")
+    assert asked_standing(unclear)["September"].standing == "shown_no_worse"
+    assert dominant_options(unclear) == ["September"]
+    worse = _superiority("worse")
+    assert asked_standing(worse)["September"].standing == "not_shown_no_worse"
+    assert "September" not in dominant_options(worse)
+
+
+def test_a_question_with_no_margin_floor_or_gate_is_a_declaration_and_raises_no_nothing_declared() -> None:
+    """A superiority question of a control declares what is good enough (shown better than it); the same input asking
+    nothing does not, nor does a choice asking it, which has no control."""
+    asked = _superiority("unclear", floors=False)
+    assert not asked.criteria and not asked.floors and asked.aspects[0].margin is None
+    assert "nothing_declared" not in [caveat.id for caveat in implied_caveats(asked)]
+    unasked = _superiority("unclear", asked=False, floors=False)
+    assert "nothing_declared" in [caveat.id for caveat in implied_caveats(unasked)]
+    # A choice (no control) has nothing to be shown better than, so its question declares no bar.
+    choice = asked.model_copy(update={"arms": [arm.model_copy(update={"role": "challenger"}) for arm in asked.arms]})
+    assert control_arm(choice) is None
+    assert "nothing_declared" in [caveat.id for caveat in implied_caveats(choice)]
 
 
 # =============================================================================

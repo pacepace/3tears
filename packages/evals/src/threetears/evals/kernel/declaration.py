@@ -985,9 +985,10 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
         allow_inf_nan=False,
         description=(
             "How far, in points of a 0-100 pass rate, a candidate may fall below the control here before it is "
-            "shown worse. None = no margin declared, which only an aspect upgraded from a campaign stored without "
-            "one holds: its readings are shown better or unclear, never shown worse, and the page says no margin "
-            "was declared."
+            "shown worse: the author's own, which a non-inferiority question declares. None = no margin declared: "
+            "under a question a superiority one, its drop read against zero (shown better, shown worse or not "
+            "separated); asked nothing, its readings are shown better or unclear, never shown worse, and the page "
+            "says no margin was declared."
         ),
     )
     design: AspectDesign | None = Field(

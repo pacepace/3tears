@@ -150,7 +150,7 @@ campaign = await run_blocking(  # a store write, so it runs off the event loop t
 |---|---|---|
 | `question` | The one thing the campaign asks of its arms, in your words: what would make a candidate the one to adopt. Empty, it asks nothing, and every reading is [exploratory](reading-reports.md#readings-no-question-asked-about-exploratory) though a design is declared. | a confirmatory answer |
 | `arms` | `{label, role, from_run_ids}` each, the control first. The server reads each arm's variant key from its runs and refuses runs of one arm that carry two keys, naming each. The arms decide the [kind](concepts.md#campaign-kind): one arm is a measurement, several with no control a choice (every pair read both ways), a control and candidates a change. | A/B, single changes, grid |
-| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. A declared aspect states one when the campaign asks a question and names a control; with no control a margin is refused, and the remedy is an absolute bar. | a change |
+| `aspects[].margin` | How far, in points of the pass rate, a candidate may fall below the control on this aspect before it is shown worse. Optional, and never assumed: a question with one is a non-inferiority question, and a question with none a superiority question, its drop read against zero; with no control a margin is refused, and the remedy is an absolute bar. | a change |
 | `aspects[].design.axes` (required) | The levers and levels you meant to compare. Each declared axis gets a row in `bundle.coverage`, `unswept` if it held one level; compare the row's `levels` with yours. | every declared aspect |
 | `aspects[].design.held_fixed` (required) | Whether the cases held the stimulus fixed, and whether the rig was commissioned or found. | every declared aspect |
 | `aspects[].design.merit_axes` | Which axes the question asks about on this aspect: they set the aspect's Holm family. Omitted, the question asks about every axis. | a scoped question |
@@ -351,7 +351,8 @@ checks the 12-case row at 1,000 replicates: about 14% on the t interval, none on
 
 **A campaign over several aspects tests each candidate once per aspect, so it corrects across them.** Each
 candidate's rows, one per aspect, are one family at α = 0.05, with gains (the change against zero) and drops (the
-change against the aspect's margin) corrected apart by Holm's step-down. Each direction's claim is one-sided, read off
+change against the aspect's margin, or against zero where a question declares none) corrected apart by Holm's
+step-down. Each direction's claim is one-sided, read off
 a two-sided bounded interval, so a candidate's gains and its drops are each shown wrongly at most 2.5% of the time.
 A choice's pairs have no direction, so every pair on every aspect is one family.
 

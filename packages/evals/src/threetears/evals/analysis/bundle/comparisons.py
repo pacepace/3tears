@@ -802,10 +802,11 @@ def _multiple_comparisons(
     The guardrails are read over the same pairs and the same per-case values, and kept out of every
     family: each is decided on its own (:func:`_guardrails`), so no capability gain can offset one.
 
-    **The overall pass rate joins the question's family when a question is asked and the aspect declares a
-    margin**: the margin is how far the pass rate may fall, so the pass rate is a hypothesis the question
-    asks and its family grows by one, every adjusted p in it moving with it. It never joins the exploratory family,
-    whose size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
+    **The overall pass rate joins the question's family whenever a question is asked**, with a margin (how far the
+    pass rate may fall) or with none (a superiority question, its drop read against zero): either way the pass rate is
+    a hypothesis the question asks and its family grows by one, every adjusted p in it moving with it, so a gate and a
+    campaign's verdicts read the question's pass rate as its page does. It never joins the exploratory family, whose
+    size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_counts`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
     **The floors read their own values, whatever the family compares** (:class:`FloorContrast`): each arm against the
@@ -863,9 +864,10 @@ def _multiple_comparisons(
     # An aspect that asked nothing is not thereby licensed to report chance differences: its family is every
     # comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
-    # The pass rate is a hypothesis only of an asked question with a margin to fall by (never the exploratory
-    # family's: it would move every other reading's adjusted p there over unchanged runs).
-    pass_rate_asked = axes_asked is not None and declared is not None and declared.margin is not None
+    # The pass rate is a hypothesis of every asked question, with a margin to fall by or none (a superiority question
+    # reads its drop against zero), and never of the exploratory family: it would move every other reading's adjusted
+    # p there over unchanged runs.
+    pass_rate_asked = axes_asked is not None
     control_variant = realized.control_arm.variant_key
     # The control's cells under an earlier identity predicate are the control, not a rival arm: compared with the
     # control they would read the control against itself under another digest, so they are in no pair.

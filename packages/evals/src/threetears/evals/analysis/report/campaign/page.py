@@ -49,12 +49,12 @@ from threetears.evals.analysis.report.campaign.provenance import (
     question_blocks,
 )
 from threetears.evals.analysis.report.campaign.scorecard import (
-    READING_WORDS,
     aspect_shows,
     bar_blocks,
     frontier_blocks,
     measure_blocks,
     pair_blocks,
+    row_words,
     settle_blocks,
     table_blocks,
 )
@@ -224,7 +224,7 @@ def _lead_blocks(
             ]
         elif rows := readings.on_aspect(aspect.label):
             sentences += [
-                f"Pass rate{on}: {row.arm_label} against {readings.control_label} {READING_WORDS[row.reading]}"
+                f"Pass rate{on}: {row.arm_label} against {readings.control_label} {row_words(row)}"
                 f"{'' if row.confirmatory else ', a lead'}."
                 for row in rows
             ]

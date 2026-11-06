@@ -16,7 +16,7 @@ editor's own model. ``await WriterEval(...).run()``:
    ``max_cost_usd`` (below). A replayed writer prices nothing, and the engine admits an unpriced arm only because its
    launch names that part, so the part is the ceiling every arm runs under;
 5. **files the campaign**: the control is the first arm, one design axis per lever the arms differ on (the skill, the
-   effort, the revisions, the editor's model, the model), the eval's ``question`` and the declared ``margin``;
+   effort, the revisions, the editor's model, the model), the eval's ``question`` and its ``margin``, if it declares one;
 6. **runs the pairwise pass** (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`) for each
    candidate against the control, on the eval's own host over the same store: the eval's judge reads each case's two
    pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
@@ -560,7 +560,7 @@ class WriterEval:
         pairwise_share: float = PAIRWISE_SHARE,
         turns: int = TURN_CAP,
         request_s: float = 120.0,
-        margin: float = 5.0,
+        margin: float | None = None,
         writer_provider: str = "anthropic",
         store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
@@ -602,8 +602,9 @@ class WriterEval:
         :param request_s: The ceiling for one request on the writer's client, in seconds.
         :ptype request_s: float
         :param margin: How far, in points of a 0-100 rate, a candidate may fall below the control before it is shown
-            worse.
-        :ptype margin: float
+            worse: the author's own, a non-inferiority question's. ``None`` declares none, and the question is a
+            superiority one, a candidate's drop read against zero.
+        :ptype margin: float | None
         :param writer_provider: The provider every writer (and editor) is built on to record, whose key a recording run
             reads, and which tells a writer's family to the judge's check.
         :ptype writer_provider: str

@@ -553,8 +553,8 @@ def test_a_blank_question_is_refused_where_the_eval_is_written() -> None:
 
 async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campaign_asks_it() -> None:
     """The question is filed on the campaign whole: the result carries it, the page quotes it in place of the line
-    saying none was asked, the aspect reads it as asked (never "names no axis"), and a question asked of a control
-    declares the margin its pass rate is read against. The same eval with none keeps that line."""
+    saying none was asked, the aspect reads it as asked (never "names no axis"), and a question with no margin files
+    none: it is a superiority question, its pass rate read against zero. The same eval with none keeps that line."""
     question = "Does crash_first label tickets right more often than keywords?"
     arms = {"keywords": keywords, "crash_first": crash_first}
     asked = await Eval(TICKETS, arms, ["label", short_label], k=1, question=question).run(store=":memory:")
@@ -568,10 +568,42 @@ async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campa
     (bundle,) = [fold.report.bundle for fold in asked.page.aspects]
     assert bundle.question_declared and bundle.reading_scope.disclosure is None
     (row,) = asked.page.readings.readings
-    assert row.margin == 5.0 and row.confirmatory
+    assert row.margin is None and row.confirmatory
+    assert [
+        aspect.margin
+        for aspect in off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id).aspects
+    ] == [None]
     # The graders' order is filed on the aspect's design, so the page can lead on the first, as the printed line does.
     assert asked.grader_readings == ("accuracy", "short_label")
     campaign = off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id)
     assert [aspect.design.measure_order for aspect in campaign.aspects if aspect.design] == [
         ["accuracy", "short_label"]
     ]
+
+
+#: The one line a page says where criteria on the eval's aspect were set once its results existed.
+_SET_LATE = "Criteria on classify were set after the results there existed, so they were not fixed in advance."
+
+
+async def test_a_question_declared_over_finished_runs_reads_as_asked_with_the_late_disclosure_once() -> None:
+    """Owner, 2026-11-06: a question may sharpen once its runs are read, never refused. Declared over finished runs
+    (an exploratory run read again asking it), it reads as asked, not as a lead, and the first screen says once that
+    its criteria were set after the results existed; declared before its runs, as ``Eval(question=)`` is, it says
+    nothing of the kind."""
+    question = "Does crash_first label tickets right more often than keywords?"
+    arms = {"keywords": keywords, "crash_first": crash_first}
+    explored = await Eval(TICKETS, arms, ["label"], k=1).run(store=":memory:")
+    sharpened = await explored.against("keywords", question=question)
+    first = campaign_report_markdown(sharpened.page).split("\n## ", 1)[0]
+    assert first.splitlines()[1] == f'"{question}"' and sharpened.question == question
+    assert first.count(_SET_LATE) == 1
+    assert "a lead" not in first and "No question was declared" not in first
+    (bundle,) = [fold.report.bundle for fold in sharpened.page.aspects]
+    assert bundle.question_declared
+    assert "aspect" in [late.criterion for late in bundle.reading_scope.late_criteria]
+    assert all(row.confirmatory for row in sharpened.page.readings.readings)
+
+    asked = await Eval(TICKETS, arms, ["label"], k=1, question=question).run(store=":memory:")
+    assert _SET_LATE not in campaign_report_markdown(asked.page)
+    (timely,) = [fold.report.bundle for fold in asked.page.aspects]
+    assert timely.reading_scope.late_criteria == []

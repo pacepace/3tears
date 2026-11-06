@@ -14,6 +14,7 @@ from threetears.evals.analysis import (
     CampaignReadings,
     get_campaign,
     CampaignReport,
+    campaign_report_markdown,
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
@@ -345,6 +346,44 @@ def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_g
     assert warning == "**v2 is not yet shown safe on the reply polite guardrail on billing.**"
     html = header_html(page)
     assert html.index('<p class="verdict" data-tone="decided">') < html.index('<p class="flag warning">')
+
+
+@pytest.mark.parametrize(
+    ("passing", "words"),
+    [(19, "shown better"), (0, "shown worse"), (6, "not separated")],
+    ids=["shown-better", "shown-worse", "not-separated"],
+)
+def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int, words: str) -> None:
+    """A superiority question (asked, no margin, owner 2026-11-06): the lead reads the pass rate against zero, shown
+    better, shown worse or not separated, decided rather than a lead, and never "no worse than the margin"."""
+    shape = shape_of(
+        "superiority",
+        [AspectTrials("billing", [ArmTrials("production", passing=6), ArmTrials("v2", passing=passing)], margin=None)],
+        control=True,
+    )
+    (row,) = shape.readings.readings
+    assert row.confirmatory and row.margin is None
+    # A guardrail v2 is undecided on, so the first screen leads before warning of it, as above.
+    v2 = shape.key("v2")
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={
+                        "guardrails": GuardrailReadings(
+                            dimensions=["reply.polite"], checks=[_guardrail(report.bundle, "reply.polite", v2)]
+                        )
+                    }
+                )
+            }
+        )
+        for label, report in shape.reports.items()
+    }
+    page = build_campaign_report(shape.campaign, shape.readings, reports)
+    lead, _ = _bold(page)
+    assert lead == f"**Pass rate: v2 against production {words}.**"
+    markdown = campaign_report_markdown(page)
+    assert "no worse than the margin" not in markdown and "No margin was declared" not in markdown
 
 
 async def test_a_page_no_guardrail_warns_on_leads_on_its_scorecard_with_no_lead_line() -> None:

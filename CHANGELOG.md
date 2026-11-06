@@ -82,10 +82,13 @@ reads as before.
 
 **Added:** `Eval(question=...)`, the one sentence a comparison answers, as `WriterEval(question=)` takes it (a blank one
 is refused). It is filed as the campaign's question: the page quotes it under the title in place of `No question was
-declared, so every reading is a lead.`, the readings it asks about read as asked (no ", a lead"), and the aspect
-declares a 5-point margin on the pass rate, which a question asked of a control needs, so a pass rate can now read
-shown worse or no worse than the margin. Its measure is the first grader. `Result.question` carries it, and
-`Result.against(...)` asks it again. `AspectDesign.measure_order` (durable v16.8, written only when stated) holds the
+declared, so every reading is a lead.`, and the readings it asks about read as asked (no ", a lead"). Its measure is
+the first grader. `Eval(margin=...)`, optional and only beside a question, is the author's own margin in the measure's
+units, as `grader(margin=)` is (`0.05` is 5 points of the pass rate): it makes the question a non-inferiority one, so
+the pass rate reads shown worse, no worse than the margin, or neither. A margin with no question, or outside 0 to 1, is
+refused where the eval is written. `Result.question` and `Result.margin` carry them; `Result.against(...)` asks them
+again, or asks a `question=` (and `margin=`) of runs already read, which is never refused: the page then says once that
+its criteria were set after the results there existed. `AspectDesign.measure_order` (durable v16.8, written only when stated) holds the
 measures an eval's graders read, in the order listed; `Eval` files it from `Result.grader_readings`.
 
 **Changed:** where a guardrail warns, a campaign page's lead reads the first measure in the design's `measure_order`
@@ -95,11 +98,23 @@ one filed before this version, leads on the classifier's accuracy where the aspe
 else on its pass rate (one asking a question leads on its pass rate). This sentence is the lead rule; the two entries below describe the surfaces it reads on. A measurement's scorecard prints each money
 measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
 `$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
+A question alone is a superiority question and files no margin: the package never picks one. `create_campaign` no
+longer refuses a declared aspect with no margin under a question of a control; such an aspect's pass rate is read
+against zero both ways (shown better, shown worse, or `not separated` on the page), its drop Holm-corrected as a gain
+is across the candidate's aspects; the pass rate joins every asked question's family, margin or none, so `gate()`,
+`campaign_verdicts` and a writer promotion read it as the page does. An aspect asked nothing with no margin is still
+never shown worse, and a question asked of a control with no margin counts as a declared criterion (no `nothing_declared` caveat), whose candidate shown worse never stands shown no worse. `WriterEval(margin=)` defaults
+to `None` (was 5.0): its question is a superiority question unless its author writes a margin; the recorded writer
+runs replay to the same verdicts.
 
 **Hosts:** declaring a question on an existing eval moves its figures: the question is unscoped, so every reading
-joins the question's family, its intervals are corrected together and a verdict can change (rung 3's `Number score`
-interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts); and the pass rate gains a "no worse than the margin" reading,
-at a fixed 5-point margin for now, which nothing on `Eval` sets yet. A design's `measure_order` naming a measure no
+joins the question's family with the pass rate, its intervals are corrected together and a verdict can change (rung
+3's `Number score` interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts). A campaign asking a question with no
+margin can now read a candidate "shown worse" on its pass rate where before it could not (its drop is read against
+zero), and an undecided row there reads "not separated", so a host's stored page text pinned on that may move; its
+pass rate now joins its family, so its adjusted figures move and `gate()` can fail on a pass rate shown worse. A host wanting a
+non-inferiority reading writes the margin itself: `margin` on the aspect, in points, or
+`Eval(question=..., margin=0.05)`. A design's `measure_order` naming a measure no
 grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing
 the first line of a comparison reads the lead on the first grader (the printed-lines entry below); a host
 matching a page's first screen sees the question in place of the no-question line where one is declared, and the lead

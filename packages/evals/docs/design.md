@@ -13,8 +13,9 @@ against one private host; the campaigns they summarise are not published.
 ### Purpose and design
 
 **Every eval declares its purpose before it runs: to decide, to learn, or to watch.**
-A decision is one campaign asking one question of its arms, before the runs, measured on each aspect it rests on,
-each with the margin a candidate may fall below the control by there. A campaign that asks no question is passive,
+A decision is one campaign asking one question of its arms, before the runs, measured on each aspect it rests on:
+asked alone it asks whether a candidate does better, and where its author writes the margin a candidate may fall below
+the control by on an aspect, whether it is no worse by more than that. A campaign that asks no question is passive,
 and its report leads with what the evidence taught. A watch re-runs a fixed suite against an earlier
 measurement; its value is the regression it catches, so most of its runs change nothing.
 
