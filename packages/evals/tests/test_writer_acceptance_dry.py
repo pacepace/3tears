@@ -11,7 +11,8 @@ from the control's; the minimal variant keeping a module, a note or the index's 
 withhold; the no-editor arm given a revision; ``--variant`` ignored, or a variant's readout not naming it; the pass
 asking one order; the read made without the pass; the criterion passing on
 ``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
-short; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
+short or with a case it stored no page on; the readout's first table not counting the cases with two pages; a
+report budget under two first-turn ceilings launched; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
 directory; the doc's commands drifting from the script's.
 """
 
@@ -173,6 +174,7 @@ def test_each_variant_runs_dry_offline_and_its_readout_names_it(variant: str) ->
     passed = pass_criterion(
         _shaped(found.read, decision="keep", outcome="regressed", reason="separated", high=-0.1),
         found.result.arms,
+        found.report,
         variant=chosen,
     )
     assert passed.verdict() == f"PASS: the gate reads {chosen.noun} as writing worse reports, on the primary reading."
@@ -249,7 +251,7 @@ def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_
     )
     assert found.criterion.passed is expected
     holds = {requirement.asks: requirement.holds for requirement in found.criterion.requirements}
-    assert holds["both arms ran every case"] is True
+    assert holds["both arms stored a page on every case"] is True
     assert holds["the read answers keep"] is (read.decision == "keep")
 
 
@@ -259,6 +261,12 @@ def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
     found, _ = dry
     text = "\n".join(found.readout())
     assert writer_acceptance.QUESTION in text
+    # The first table counts the pages the judge had to compare, before any other.
+    first = text[text.index("| ") :]
+    assert first.startswith(
+        f"| Pages | Cases |\n|---|---|\n| Cases with two pages to compare | {DEFAULT_CASES} of {DEFAULT_CASES} |"
+    )
+    assert "| No page on either side, so a tie | 0 |" in text
     assert found.read.readout in text
     assert found.read.why in text
     assert "| Pass criterion | Reads | Holds |" in text
@@ -294,28 +302,54 @@ def _shaped(read: WriterPromotion, *, decision: str, outcome: str, reason: str, 
 def test_the_criterion_passes_only_on_keep_with_a_separated_regressed_primary(
     dry: tuple[Acceptance, list[object]],
 ) -> None:
-    read, runs = dry[0].read, dry[0].result.arms
-    passed = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), runs)
+    read, runs, report = dry[0].read, dry[0].result.arms, dry[0].report
+    passed = pass_criterion(
+        _shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), runs, report
+    )
     assert passed.passed
     assert passed.verdict() == "PASS: the gate reads the hollow skill as writing worse reports, on the primary reading."
     # A keep reached through a gated reading, beside a primary that did not separate, fails.
-    gated = pass_criterion(_shaped(read, decision="keep", outcome="not_separated", reason="no_margin", high=0.2), runs)
+    gated = pass_criterion(
+        _shaped(read, decision="keep", outcome="not_separated", reason="no_margin", high=0.2), runs, report
+    )
     assert not gated.passed
     assert "the primary reading reads regressed" in gated.verdict()
     # A regression on too few cases keeps the control, and is no acceptance.
-    few = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="too_few_cases", high=-0.1), runs)
+    few = pass_criterion(
+        _shaped(read, decision="keep", outcome="regressed", reason="too_few_cases", high=-0.1), runs, report
+    )
     assert not few.passed
     undecided = _shaped(read, decision="undecided", outcome="not_separated", reason="no_margin", high=0.2)
-    settled = pass_criterion(undecided.model_copy(update={"cases_to_settle": 23}), runs)
+    settled = pass_criterion(undecided.model_copy(update={"cases_to_settle": 23}), runs, report)
     assert not settled.passed
     assert "About 23 held-out cases like these would settle the primary" in settled.verdict()
     void = _shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1)
-    assert not pass_criterion(void.model_copy(update={"void": "order consistency below 0.7"}), runs).passed
+    assert not pass_criterion(void.model_copy(update={"void": "order consistency below 0.7"}), runs, report).passed
     # An arm stopped before its last case reads no acceptance, whatever the read says.
     stopped = {**runs, HOLLOW: runs[HOLLOW].model_copy(update={"status": "budget_stopped", "n_results": 3})}
-    cut = pass_criterion(_shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), stopped)
+    cut = pass_criterion(
+        _shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), stopped, report
+    )
     assert not cut.passed
-    assert "both arms ran every case" in cut.verdict()
+    assert "both arms stored a page on every case" in cut.verdict()
+    # Every cell completed, and the candidate stored no page on two cases: the criterion counts pages, not cells.
+    blank = report.model_copy(
+        update={
+            "pairs": [
+                pair.model_copy(update={"missing": "candidate" if index == 0 else "both"}) if index < 2 else pair
+                for index, pair in enumerate(report.pairs)
+            ]
+        }
+    )
+    paged = pass_criterion(
+        _shaped(read, decision="keep", outcome="regressed", reason="separated", high=-0.1), runs, blank
+    )
+    first = paged.requirements[0]
+    assert (first.asks, first.holds) == ("both arms stored a page on every case", False)
+    assert (
+        first.reads
+        == f"{SHIPPED} {DEFAULT_CASES - 1} of {DEFAULT_CASES}; {HOLLOW} {DEFAULT_CASES - 2} of {DEFAULT_CASES}"
+    )
 
 
 @pytest.mark.parametrize("outcome", ["regressed", "improved"])
@@ -328,7 +362,7 @@ def test_bounces_that_separate_either_way_void_the_acceptance(
         for verdict in read.verdicts
     ]
     assert any(verdict.name == BOUNCES_MEASURE for verdict in verdicts)
-    found = pass_criterion(read.model_copy(update={"verdicts": verdicts}), dry[0].result.arms)
+    found = pass_criterion(read.model_copy(update={"verdicts": verdicts}), dry[0].result.arms, dry[0].report)
     assert not found.passed
     assert "bounces do not separate" in found.verdict()
 
@@ -352,7 +386,39 @@ def test_main_reads_a_case_directory_and_prints_the_readout(
     assert f"| {len(names)} | completed |" in printed
     # r1 and r2 have no prototype 5 document, so their dry pages are missing on both sides and their pairs tie.
     assert f"Dry: 3 of {len(names)} cases have a scripted document; the other 2 write no page" in printed
+    assert f"| Cases with two pages to compare | 3 of {len(names)} |" in printed
+    assert "| No page on either side, so a tie | 2 |" in printed
+    # Every cell completed, and the criterion still reads the two cases with no page as unmet.
+    assert (
+        f"| both arms stored a page on every case | {SHIPPED} 3 of {len(names)}; {HOLLOW} 3 of {len(names)} | no |"
+        in printed
+    )
     assert re.search(r"^(PASS|FAIL): ", printed, re.M)
+
+
+def test_a_report_budget_that_cannot_admit_a_report_is_refused_before_anything_runs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The 2026-11-06 run's budget: Sonnet's first turn alone can cost over half of $0.75, and a report takes two.
+    attempts = _offline(monkeypatch)
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^the writer eval was not launched, and nothing was sent or spent: the first turn of arm 'shipped' on "
+            r"claude-sonnet-5-5, priced at its 32,000-token output cap and its skill's text before any snapshot is "
+            r"read, can cost up to \$0\.5\d, and a report takes at least 2 turns, so the report's \$0\.75 budget "
+            r"cannot admit one at that ceiling; a budget of \$1\.0\d or more can: raise budget_usd$"
+        ),
+    ):
+        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.75"])
+    assert attempts == []
+    assert capsys.readouterr().out == ""
+    # The second run's $1.50 is admitted, and the dry run goes through.
+    assert (
+        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "1.5", "--cap-usd", "30"])
+        == 0
+    )
+    assert attempts == []
 
 
 def test_a_live_run_names_its_cap_and_its_directory() -> None:

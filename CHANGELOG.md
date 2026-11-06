@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a report budget that cannot admit a report is refused before any turn is bought
+
+**Added:** a report takes at least two turns (the analyst's submission and the editor's review,
+`ops.report_writer.tally.MIN_TURNS_FOR_A_REPORT`), and a dollar budget admits each turn on its ceiling, so a budget
+under two of the first turn's ceiling is refused at $0: `WriterEval` refuses it once, before the store opens, pricing
+each arm's first turn at the writer's output cap and its skill's text on the rates Anthropic publishes; and every
+report's budget refuses its first turn on the real ceiling (`ReportBudget.fewest_turns_refusal`), so `report_write`
+ends `over_budget` with nothing sent. Each refusal names the budget asked, the ceiling, the fewest turns and the budget
+that admits them: on Sonnet 5.5, a $0.75 budget is refused and a budget of about $1.06 (at launch) to $1.34 (a $0.67
+first turn) admits a report. The 2026-11-06 acceptance run spent about $0.10 on each of 36 reports that could never
+finish.
+
+**Changed:** a report that still runs out ends saying how many turns it was admitted and how many turns its whole
+budget admits at the ceiling that stopped it, and a writer eval adds, for an arm whose reports ended over budget with
+no page, how many did and what the reports of its run that stored a page spent. The writer acceptance's first
+criterion is now "both arms stored a page on every case", read off the pairwise pass's pairs rather than off cells that
+completed, and its readout's first table counts the cases with two pages to compare and the ties a page missing on
+both sides made.
+
+**No soft budget.** The cap stays a cap: no turn is admitted on an average of what turns have cost, and none is
+reserved at one. Only the launch moved: a budget the ceilings say cannot finish is refused before it spends.
+
+**Hosts:** a host launching a report with a small dollar budget is refused before spending, naming the budget that
+admits one; raise it to the named figure. A budget in tokens and turns is unchanged.
+
 ### evals: 26 declared names only Discodon's tests import go provisional
 
 **Changed:** the declared surface (`host-contract` and `stable`) drops from 514 names to 488. The 24 names the hold-back

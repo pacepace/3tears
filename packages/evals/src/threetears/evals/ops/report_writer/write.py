@@ -31,6 +31,11 @@ from the key it holds. Nothing here reads an environment variable.
 every turn on its price ceiling, so before anything is frozen or sent the model is asked whether its turns can be
 priced (:meth:`~threetears.evals.ops.report_writer.loop.TurnModel.turn_pricing_refusal`); one that cannot is refused
 by name, with nothing frozen, sent or spent. The budget's own refusal of a turn it cannot bound stays as the backstop.
+A dollar budget under :data:`~threetears.evals.ops.report_writer.tally.MIN_TURNS_FOR_A_REPORT` of the first turn's
+ceiling cannot be sure of admitting a finished report, so the budget refuses that first turn by name, naming the budget
+that would admit one, and the report ends ``over_budget`` with nothing sent or spent
+(:meth:`~threetears.evals.ops.report_writer.tally.ReportBudget.fewest_turns_refusal`): the first turn's ceiling, its
+brief and the snapshot's overview included, is the first price that can be read.
 A token and turn budget admits turns by their tokens and the turns sent, so it asks for no price: a model nothing
 prices writes its report under it, tallied unpriced.
 """
