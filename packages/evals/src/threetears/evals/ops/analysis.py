@@ -317,8 +317,9 @@ ASPECTS_DESCRIPTION = (
     "(required when uncontrolled), apparatus: commissioned|witnessed}), and optionally merit_axes, bars "
     "([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and "
     "intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control "
-    "there before it is shown worse, which a declared aspect states when the campaign asks a question and names a "
-    "control, and a campaign naming no control never states (it holds its arms to bars). template_id "
+    "there before it is shown worse: optional and never assumed, it makes a question of a control a non-inferiority "
+    "one, a question without it is a superiority question read against zero, and a campaign naming no control never "
+    "states one (it holds its arms to bars). template_id "
     "omitted is the one template every "
     "run of the aspect ran. Labels are unique, and a run belongs to one aspect."
 )

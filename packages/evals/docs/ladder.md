@@ -280,7 +280,7 @@ guardrail's row, and the trials' census:
 **Accuracy: v2 and v1 not separated.**
 **v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.**
 | classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | not separated |
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.2, 34.8] pts | v2 and v1 not separated | 30 paired |
+| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.8, 35.4] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
@@ -459,7 +459,6 @@ writer_eval = WriterEval(
     max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
     pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
     held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
-    margin=5.0,  # a 5-point fall in the pass rate is the most a candidate may lose: the recorded run declared it
     name="writer",
 )
 ```
@@ -471,8 +470,6 @@ writer_eval = WriterEval(
   notes the analyst is not given: the one reasoned on that same campaign.
 - **Cases are split before anything runs.** A case's split group (related cases share one) lands on the dev side,
   where a change is tuned, or the held-out side, where it is decided. The promotion is read on held-out cases only.
-- **`margin=5.0`** is the author's: lead-first's pass rate may fall 5 points below shipped's before it is shown worse.
-  Left out, the question is a superiority one, read against zero, and no margin is assumed.
 - **`Writer(model, skill=, effort=)`** is an arm. A writer can also differ in its revisions or its editor's own model
   (`editor_model=`); each lever the arms differ in becomes an axis of the campaign's design.
 - **The control is a copy, frozen.** A recording is keyed by the skill's digest, so a recording made over the skill

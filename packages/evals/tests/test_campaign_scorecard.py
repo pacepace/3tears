@@ -581,6 +581,10 @@ async def test_an_asked_aspect_with_no_margin_reads_its_drop_against_zero_and_ne
         row_words(billing)
         == {"better": "shown better", "worse": "shown worse", "unclear": "not separated"}[billing.reading]
     )
+    # A superiority row that read no interval, or too few cases, separated nothing either way: it stays unclear.
+    unread = billing.model_copy(update={"reading": "unclear", "gain_interval": None})
+    few = billing.model_copy(update={"reading": "unclear", "control_cases": 2, "arm_cases": 2})
+    assert row_words(unread) == row_words(few) == "unclear"
 
 
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:

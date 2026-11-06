@@ -404,7 +404,7 @@ async def _ruled(
     """Two arms over ``len(control_passes)`` cases × 3 repeats, each passing its cases' counts, with G2's floors.
 
     The floors are on the campaign before its bundle is assembled, so its family is one a floor can read: the label
-    check's pass rate (compared as ``accuracy``) and, with a margin declared, the overall pass rate.
+    check's pass rate (compared as ``accuracy``) and the overall pass rate, which every asked question's family holds.
     """
     cases = [{"text": f"queue request {index}", "label": "queued"} for index in range(len(control_passes))]
     # Each arm at one cost per reply: a gap with no spread on a measure with no declared range, which no test reads, so
@@ -444,11 +444,14 @@ async def test_the_overall_pass_rate_joins_the_family_when_the_aspect_declares_a
     assert passed.bounded_interval is not None and passed.case_values is not None
 
 
-async def test_an_aspect_with_no_margin_does_not_compare_the_overall_pass_rate() -> None:
+async def test_an_asked_aspect_with_no_margin_compares_the_overall_pass_rate() -> None:
+    """Owner, 2026-11-06: a superiority question asks its pass rate, so its family holds it, margin or none."""
     bundle, _, _ = await _ruled([0] * 7, [3] * 7, floors=(RateDrop(max_points=10, reading="match"),))
     assert bundle.declared is not None and bundle.declared.margin is None
     (family,) = bundle.multiple_comparisons.families
-    assert not [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    (compared,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert family.family_size == 2 and (compared.verdict, compared.delta) == ("improved", 1.0)
+    assert compared.p_raw is not None and compared.p_adjusted == pytest.approx(2 * compared.p_raw)
 
 
 async def test_seven_cases_with_the_bounded_interval_inside_the_margin_hold_the_rate_floor() -> None:

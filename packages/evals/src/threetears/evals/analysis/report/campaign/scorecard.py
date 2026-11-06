@@ -61,7 +61,7 @@ from threetears.evals.analysis.report.model import (
     interval_text,
     table_row,
 )
-from threetears.evals.analysis.stats import INTERVAL_LEVEL
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
@@ -141,14 +141,17 @@ def _against_zero(row: AspectReading) -> bool:
 
 def row_words(row: AspectReading) -> str:
     """What a row shows in the page's words (:data:`READING_WORDS`), unmarked as a lead; under a superiority question
-    (asked with no margin) an unclear row reads ``not separated``, as a contrast neither side of zero does.
+    (asked with no margin) an unclear row whose interval was read on enough cases reads ``not separated``, as a
+    contrast neither side of zero does. One with no interval, or under the case floor, stays ``unclear``: nothing was
+    read to separate, and its reason says why.
 
     :param row: The row.
     :ptype row: AspectReading
     :return: The words.
     :rtype: str
     """
-    if row.reading == "unclear" and _against_zero(row):
+    read = row.gain_interval is not None and min(row.control_cases, row.arm_cases) >= SMALL_N_BAND_FLOOR
+    if row.reading == "unclear" and _against_zero(row) and read:
         return _CONTRAST_WORDS["not_separated"]
     return READING_WORDS[row.reading]
 

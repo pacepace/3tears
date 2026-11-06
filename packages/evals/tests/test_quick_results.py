@@ -36,7 +36,7 @@ from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import campaign_report_markdown, get_campaign, summarize_run
+from threetears.evals.analysis import campaign_report_markdown, campaign_verdicts, get_campaign, summarize_run
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 
@@ -684,3 +684,21 @@ async def test_a_margin_read_again_with_no_question_is_refused_naming_why() -> N
     )
     with pytest.raises(ValueError, match="asks no question for it to apply to"):
         await result.against("v1", margin=0.05)
+
+
+async def test_a_no_margin_question_whose_candidate_reads_shown_worse_fails_the_gate_and_its_verdicts_carry_it() -> (
+    None
+):
+    """The question's pass rate is in its family whether or not a margin is written, so the page, the gate and the
+    campaign's verdicts read it alike: v2, missing every case where v1 misses half, is shown worse on the row, its
+    pass-rate contrast regressed in the verdicts, and the gate fails."""
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(30)}, ["label"], k=1, question=_BETTER).run(
+        store=":memory:", scope=SCOPE
+    )
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin) == ("worse", None)
+    verdicts = off_loop(campaign_verdicts, result.host, result.campaign_id, result.scope_id)
+    (pass_rate,) = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading == "trial"]
+    assert (pass_rate.outcome, pass_rate.arm) == ("regressed", "v2")
+    assert pass_rate.aspect is not None, "read as asked, in the question's family"
+    assert result.gate().failed

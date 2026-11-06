@@ -208,8 +208,12 @@ def test_an_undirected_boolean_and_a_categorical_or_text_measure_get_no_contrast
     family = _family(bundle)
     names = {comparison.name for comparison in family.comparisons}
 
-    assert names == {"top_up_never"}, "no better end, or no order: nothing to improve or regress on"
-    assert family.family_size == 1, "the boolean's contrast is the family's one tested comparison"
+    # The question's pass rate is the family's other member (owner, 2026-11-06: every asked question's family holds
+    # it); the undirected boolean and the categorical and text measures are none.
+    assert names == {"top_up_never", "passed"}, "no better end, or no order: nothing to improve or regress on"
+    assert family.family_size == 2, "the boolean's contrast and the question's pass rate are the family's two tested"
+    (passed,) = [comparison for comparison in family.comparisons if comparison.reading == "trial"]
+    assert passed.verdict == "regressed" and passed.delta == pytest.approx(-29 / 36)
 
 
 def test_the_report_states_the_boolean_s_contrast_in_points_of_a_share(bundle: AnalysisContextBundle) -> None:

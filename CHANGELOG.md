@@ -47,15 +47,18 @@ measure (`Measuring spend, all roles`, `Production cost`) in one form chosen fro
 A question alone is a superiority question and files no margin: the package never picks one. `create_campaign` no
 longer refuses a declared aspect with no margin under a question of a control; such an aspect's pass rate is read
 against zero both ways (shown better, shown worse, or `not separated` on the page), its drop Holm-corrected as a gain
-is across the candidate's aspects. An aspect asked nothing with no margin is still never shown worse. `WriterEval(margin=)` defaults to `None` (was 5.0): its question is a superiority
-question unless its author writes a margin, and with none the pass rate leaves its family. Rung 5 (`examples/5-writer/writer.py`) and the acceptance script pass `margin=5.0`, the margin their records were made under, so both replay to the same verdicts.
+is across the candidate's aspects; the pass rate joins every asked question's family, margin or none, so `gate()`,
+`campaign_verdicts` and a writer promotion read it as the page does. An aspect asked nothing with no margin is still
+never shown worse, and a question asked with no margin counts as a declared criterion. `WriterEval(margin=)` defaults
+to `None` (was 5.0): its question is a superiority question unless its author writes a margin; the recorded writer
+runs replay to the same verdicts.
 
-**Hosts:** a question is unscoped, so every reading joins the question's family; with a margin the pass rate joins it
-too, its intervals are corrected together and a verdict can change (rung 3 with `margin=0.05` would move its `Number
-score` interval from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts; asked alone, as it is, it stays at `[-7.2, 34.8]`). A
-campaign asking a question with no margin can now read a candidate "shown worse" on its pass rate where before it could
-not (its drop is read against zero), and an unclear row there reads "not separated", so a host's stored page text
-pinned on that may move; its contrast family is unchanged. A host wanting a
+**Hosts:** declaring a question on an existing eval moves its figures: the question is unscoped, so every reading
+joins the question's family with the pass rate, its intervals are corrected together and a verdict can change (rung
+3's `Number score` interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts). A campaign asking a question with no
+margin can now read a candidate "shown worse" on its pass rate where before it could not (its drop is read against
+zero), and an undecided row there reads "not separated", so a host's stored page text pinned on that may move; its
+pass rate now joins its family, so its adjusted figures move and `gate()` can fail on a pass rate shown worse. A host wanting a
 non-inferiority reading writes the margin itself: `margin` on the aspect, in points, or
 `Eval(question=..., margin=0.05)`. A design's `measure_order` naming a measure no
 grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing

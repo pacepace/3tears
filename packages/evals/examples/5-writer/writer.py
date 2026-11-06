@@ -35,6 +35,5 @@ writer_eval = WriterEval(
     max_cost_usd=39.0,  # the whole eval's, judge and pairwise pass included
     pairwise_share=0.05,  # of max_cost_usd, for the pairwise pass: $1.95; each arm gets half the rest, $18.52
     held_out_fraction=0.35,  # 7 held-out cases of 11: the 0.3 default leaves 4, under the 5 a rate needs
-    margin=5.0,  # a 5-point fall in the pass rate is the most a candidate may lose: the recorded run declared it
     name="writer",
 )
