@@ -7,13 +7,14 @@ refused), the clone's ``src`` on ``PYTHONPATH`` so its rungs import the ``dow`` 
 
 The clone is dungeons-of-wagons on branch ``evals-ladder``; the environment is this worktree's, not the clone's.
 
-Fifteen cases, each a :class:`~threetears.evals.harness.WriterCaseFile`, none of them a rung-5 case
+Fourteen cases, each a :class:`~threetears.evals.harness.WriterCaseFile`, none of them a rung-5 case
 (``examples/5-writer/cases/``, :mod:`~packages.evals.tests.fixtures.writer_cases.export_writer_cases`) and none of them
 dev: they are the acceptance run's held-out cases.
 
-- **the five reference inputs** r1 to r5 of ``fixtures/report_inputs/``, as the rung-5 export builds Kairo and the
-  misfits: each in its :data:`~packages.evals.tests.writer_case_support.SEED` group, withholding its note (r5
-  withholds none), in stratum ``reference``;
+- **four reference inputs** r1 to r4 of ``fixtures/report_inputs/``, as the rung-5 export builds Kairo and the
+  misfits: each in its :data:`~packages.evals.tests.writer_case_support.SEED` group, withholding its note, in stratum
+  ``reference``. Not r5: it is the Kairo round 2 campaign's report input, copied byte for byte, so it would be rung
+  5's Kairo case a second time, and, withholding nothing, read the skill's own note on that campaign;
 - **the four report shapes** s1 to s4 (``report_shapes_support``), each frozen with its bundle, in its own group and
   stratum ``shape``;
 - **three dungeons-of-wagons rungs**, from the clone ``--dow`` names: rung 3 (``router_prompts.py``, router-v1 against
@@ -49,7 +50,6 @@ from pathlib import Path
 from typing import Final
 
 from packages.evals.tests.analyst_support import fixture_snapshots, shape_snapshots
-from packages.evals.tests.fixtures.report_inputs.misfits import NAMES as REFERENCES
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import (
     FROZEN_AT,
     FROZEN_BY,
@@ -68,6 +68,9 @@ from threetears.evals.ops import OpsHost
 
 #: Where the held-out case files are written.
 HELD_OUT_DIR: Final = Path(__file__).resolve().parent / "held_out"
+
+#: The reference inputs minted: r1 to r4 (r5 is the Kairo round 2 campaign, rung 5's already; see the docstring).
+REFERENCES: Final = ("r1", "r2", "r3", "r4")
 
 #: The report shapes minted, by short name.
 SHAPES: Final = ("s1", "s2", "s3", "s4")

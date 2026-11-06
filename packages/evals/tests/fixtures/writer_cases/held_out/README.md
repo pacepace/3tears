@@ -10,7 +10,6 @@ These are held-out acceptance cases: never dev, and never rung-5 replays.
 | r2 | reference input r2 | reference | r2 | 4,577 | r2-config-sweep.md |
 | r3 | reference input r3 | reference | r3 | 3,495 | r3-classifier.md |
 | r4 | reference input r4 | reference | r4 | 2,943 | r4-tradeoff.md |
-| r5 | reference input r5 | reference | r5 | 13,546 | none |
 | s1 | shape s1, three aspects | shape | s1 | 44,402 | none |
 | s2 | shape s2, a choice | shape | s2 | 17,921 | none |
 | s3 | shape s3, a measurement | shape | s3 | 19,920 | none |
@@ -22,15 +21,19 @@ These are held-out acceptance cases: never dev, and never rung-5 replays.
 | courierhost | the courier's planner bake-off | host | courier-planner | 9,900 | none |
 | hot-path-scaled | the hot-path `scaled` campaign, 41 runs | host | hot-path-scaled | 248,822 | none |
 
+There is no r5. Reference input r5 is the Kairo round 2 campaign's report input, copied byte for byte. It would be rung 5's Kairo case a second time, and it would read the skill's own note on that campaign. `test_held_out_cases.py` refuses two cases that report on one campaign unless they share a group and withhold the same notes.
+
 The export rewrites every case to the same bytes except the three dungeons-of-wagons cases. A replay mints a new campaign id, so those three are frozen once and kept. The export's docstring explains why.
 
 The cases were minted on aarch64 (glibc 2.39). On another platform, s1 and hot-path-scaled rebuild under other snapshot ids: their report inputs hold statistics whose last digits differ by platform, and a snapshot id hashes them in full.
 
 The dungeons-of-wagons cases need the clone's `src` on `PYTHONPATH`, as the export's docstring shows.
 
+The host cases are rebuilt from the toy host's operations fixture (`ops_support`), which the export and the test import only when they build them. Deleting the planner's fixtures breaks both. Before that deletion, freeze the host cases once and keep them, as the dungeons-of-wagons cases are kept, and drop their rebuild check.
+
 ## The acceptance run
 
-The acceptance script reads one `--cases` directory and none of its subdirectories. So put rung 5's eleven cases and these fifteen in one directory under `.prawduct/`, from the repository root:
+The acceptance script reads one `--cases` directory and none of its subdirectories. So put rung 5's eleven cases and these fourteen in one directory under `.prawduct/`, from the repository root:
 
 ```bash
 mkdir .prawduct/acceptance-cases
@@ -42,11 +45,11 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
   --budget-usd 0.75 --turns 30 --request-s 50 --cap-usd 56
 ```
 
-At 0.99, all 26 cases are held-out.
+At 0.99, all 25 cases are held-out.
 
 ### The job budget
 
-The plan refuses an arm when its cells could outlast the arm's job. Cells run 2 at a time. Each cell's ceiling is (turns + 14) × request ceiling, where 14 counts the request ceilings of the judge phase. The job's budget is capped at 28,800 s. So 26 cases run as 13 rounds, and each cell must fit in 28,800 / 13 = 2,215 s.
+The plan refuses an arm when its cells could outlast the arm's job. Cells run 2 at a time. Each cell's ceiling is (turns + 14) × request ceiling, where 14 counts the request ceilings of the judge phase. The job's budget is capped at 28,800 s. So 25 cases run as 13 rounds, and each cell must fit in 28,800 / 13 = 2,215 s.
 
 | Turns | Request ceiling | Cell ceiling | 13 rounds | Admitted |
 |---|---|---|---|---|
@@ -55,6 +58,21 @@ The plan refuses an arm when its cells could outlast the arm's job. Cells run 2 
 | 30 | 50 s | 2,200 s | 28,600 s | yes |
 | 22 | 60 s | 2,160 s | 28,080 s | yes |
 
-At 30 turns and 60 s, the arm admits 20 cases at most (10 rounds × 2,640 s = 26,400 s), so the 25 the run needs are refused. The command above keeps 30 turns and lowers the request ceiling to 50 s. The other admitted choice is 22 turns at 60 s.
+At 30 turns and 60 s, the arm admits 20 cases at most (10 rounds × 2,640 s = 26,400 s), so 25 cases are refused. The command above keeps 30 turns and lowers the request ceiling to 50 s. The other admitted choice is 22 turns at 60 s.
 
-The cap of $56 gives the pairwise pass a fifth ($11.20) and each arm $22.40. Each arm's 26 reports are budgeted at 26 × $0.75 = $19.50, which leaves $2.90 for its judge calls.
+### The cap
+
+Before launch, each arm's reports and its judge calls, each priced at its ceiling, must fit the arm's part of the cap.
+
+| Item | Figure |
+|---|---|
+| Cap | $56.00 |
+| Pairwise pass, a fifth | $11.20 |
+| Each arm, two fifths | $22.40 |
+| Reports, 25 × $0.75 | $18.75 |
+| Judge calls, 25 cases × 7 rubric items × 2 attempts | 350 |
+| Each call at its ceiling, 2,048 tokens in and 2,048 out | $0.0092 |
+| Judge calls at their ceiling | $3.23 |
+| Reports and judging | $21.98 |
+
+$21.98 fits the arm's $22.40. The judge's rates are those rung 5's recordings imply for gemini-3.8-flash: $0.75 per million tokens in, $3.75 per million out.

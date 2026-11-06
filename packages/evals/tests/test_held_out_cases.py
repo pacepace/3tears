@@ -1,7 +1,7 @@
 """The held-out writer cases (``tests/fixtures/writer_cases/held_out/``) read, stay apart from rung 5's, and all sit
 on the held-out side.
 
-An acceptance run reads one directory holding rung 5's eleven cases and these fifteen, at a held-out share of 0.99
+An acceptance run reads one directory holding rung 5's eleven cases and these fourteen, at a held-out share of 0.99
 (the directory's ``README.md``). These tests hold what that run relies on: every file reads as a writer case, no name
 is two cases, no two files freeze one source (the mint would count them as one case), every group lands held-out at
 0.99, and the cases the export rebuilds from the package's fixtures are the ones committed: every figure the same to
@@ -39,9 +39,10 @@ MINTED_ON = "aarch64-glibc-2.39"
 #: This platform, as :data:`MINTED_ON` names one.
 PLATFORM_KEY = f"{platform.machine()}-{'-'.join(platform.libc_ver())}"
 
-#: The cases whose snapshot id holds only where they were minted. A snapshot's id hashes its report input with every
-#: float in full (``report_input_document_digest``), and these two inputs hold statistics whose last digits the
-#: platform's maths library decides (the hot-path oracle's platform note); every other figure agrees to twelve.
+#: The cases whose snapshot id may move off the platform that minted them. A snapshot's id hashes its report input with
+#: every float in full (``report_input_document_digest``), and these two inputs hold statistics whose last digits the
+#: platform's maths library decides (the hot-path oracle's platform note); every other figure agrees to twelve. Another
+#: platform's library may agree with the minting one's, so they may move there, and no other case may.
 PLATFORM_BOUND = frozenset({"s1", "hot-path-scaled"})
 
 
@@ -55,7 +56,7 @@ def _union() -> tuple[WriterCaseFile, ...]:
 
 def test_every_held_out_file_reads_as_a_writer_case_under_its_own_name() -> None:
     cases = _held_out()
-    assert len(cases) == 15
+    assert len(cases) == 14
     assert {case.format for case in cases} == {"writer-case/1"}
     assert sorted(path.name for path in HELD_OUT_DIR.glob("*.json.gz")) == sorted(
         held_out_path(case.name).name for case in cases
@@ -72,6 +73,20 @@ def test_no_two_cases_freeze_one_source() -> None:
     # be minted as one case, and the run would read fewer cases than the directory holds.
     sources = [case.snapshot.campaign_id or case.snapshot.report_input_digest for case in _union()]
     assert len(sources) == len(set(sources))
+
+
+def test_cases_of_one_campaign_are_one_group_withholding_one_note() -> None:
+    # The mint's key misses a bare input copied from a campaign (it keys one by campaign id, the other by digest), so
+    # the campaign each report input names is read too. Cases naming one campaign are a reference and its reshapings:
+    # they sit in one group, so one side, and withhold the same notes, so none reads the note reasoned on its campaign.
+    seen: dict[str, WriterCaseFile] = {}
+    clashes = []
+    for case in _union():
+        campaign = str(case.snapshot.report_input["meta"]["campaign"])
+        first = seen.setdefault(campaign, case)
+        if (first.group or first.name, sorted(first.withhold)) != (case.group or case.name, sorted(case.withhold)):
+            clashes.append(f"{first.name!r} and {case.name!r} both report on {campaign!r}")
+    assert clashes == []
 
 
 def test_every_held_out_group_lands_held_out_and_the_union_holds_enough() -> None:
@@ -109,8 +124,8 @@ async def test_the_reproducible_cases_are_the_committed_ones() -> None:
         if case.snapshot.id != committed.snapshot.id:
             ids_moved.append(case.name)
     assert moved == [], "rebuilt differently: run export_held_out_cases.py and review the diff"
-    expected = [] if PLATFORM_KEY == MINTED_ON else sorted(PLATFORM_BOUND)
-    assert sorted(ids_moved) == expected
+    may_move = frozenset() if PLATFORM_KEY == MINTED_ON else PLATFORM_BOUND
+    assert set(ids_moved) <= may_move
 
 
 @pytest.mark.parametrize("rung", DOW_RUNGS, ids=[rung.name for rung in DOW_RUNGS])
