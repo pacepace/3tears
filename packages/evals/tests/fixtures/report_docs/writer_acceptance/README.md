@@ -66,3 +66,37 @@ fixed on `reset/failed-turn-cost`. The second attempt completed for $5.39 ($3.14
 | Pass criterion | FAIL: the primary did not separate |
 
 The direction is the expected one (the arm without an editor loop reads worse); the size is not enough to call it.
+
+# Writer acceptance: no-editor against the shipped skill over 25 held-out cases, 2026-11-06
+
+Files: `20261106-sonnet-no-editor-25.json` (the result), `20261106-sonnet-no-editor-25-run.txt` (the printed run). The turn
+recordings and the store are not kept.
+
+## What ran
+
+`uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --variant no-editor --cases <25 case files>
+--held-out-fraction 0.99 --writer claude-sonnet-5-5 --effort medium --budget-usd 0.75 --turns 30 --request-s 50 --cap-usd 56
+--out <dir>`, 2026-11-06 19:06 to 19:16 UTC, over rung 5's 11 case files plus the 14 held-out cases of
+`tests/fixtures/writer_cases/held_out/` (the command the held-out README gives). The scoring judge is `google/gemini-3.8-flash`.
+
+## Result
+
+| Reading | Figure |
+|---|---|
+| Cases both arms completed | 25 of 25 |
+| Cases with a stored page in both arms, so paired for the judge | 7 of 25 |
+| Primary (preferred by the judge, side by side) | not separated |
+| Interval at 0.95 | -0.044 to 0.504 |
+| Candidate's share of the 7 pairs | 0.605 |
+| Order consistency | 7 of 7 |
+| Held-out cases like these that would settle the primary | 43 |
+| Spend | shipped $2.58, no-editor $2.58, pairwise pass $0.05 |
+
+## What the run found about itself
+
+36 of the 50 reports ended `over_budget with no report` after 1 to 5 turns, each at about $0.10: a report's budget reserves
+the next turn at its worst-case price (`the next turn can cost up to $0.67, and $0.11 of the report's $0.75 budget is spent`),
+so a $0.75 budget admits a few turns and then refuses. Rung 5's finished reports cost $0.49 to $0.73 under a $2.50 budget.
+The pass criterion `both arms ran every case` read yes because every cell completed, and the pairwise pass counted each
+both-missing pair as a tie, so the primary read on 7 pairs. The budget rule and the criterion are filed as W6 and W7 in
+the reset's backlog. The 25 cases themselves are sound (their Critic verified them before the run).
