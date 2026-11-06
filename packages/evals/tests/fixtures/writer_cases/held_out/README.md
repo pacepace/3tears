@@ -24,6 +24,10 @@ These are held-out acceptance cases: never dev, and never rung-5 replays.
 
 The export rewrites every case to the same bytes except the three dungeons-of-wagons cases. A replay mints a new campaign id, so those three are frozen once and kept. The export's docstring explains why.
 
+The cases were minted on aarch64 (glibc 2.39). On another platform, s1 and hot-path-scaled rebuild under other snapshot ids: their report inputs hold statistics whose last digits differ by platform, and a snapshot id hashes them in full.
+
+The dungeons-of-wagons cases need the clone's `src` on `PYTHONPATH`, as the export's docstring shows.
+
 ## The acceptance run
 
 The acceptance script reads one `--cases` directory and none of its subdirectories. So put rung 5's eleven cases and these fifteen in one directory under `.prawduct/`, from the repository root:

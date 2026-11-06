@@ -1,9 +1,11 @@
 """Write the held-out writer case files (``tests/fixtures/writer_cases/held_out/``): minted offline, no model called.
 
 Run from the repository root, with no key set (every replay reads its recordings, and a call they do not answer is
-refused)::
+refused), the clone's ``src`` on ``PYTHONPATH`` so its rungs import the ``dow`` package::
 
-    uv run python -m packages.evals.tests.fixtures.writer_cases.export_held_out_cases --dow <dungeons-of-wagons clone>
+    PYTHONPATH=<clone>/src uv run python -m packages.evals.tests.fixtures.writer_cases.export_held_out_cases --dow <clone>
+
+The clone is dungeons-of-wagons on branch ``evals-ladder``; the environment is this worktree's, not the clone's.
 
 Fifteen cases, each a :class:`~threetears.evals.harness.WriterCaseFile`, none of them a rung-5 case
 (``examples/5-writer/cases/``, :mod:`~packages.evals.tests.fixtures.writer_cases.export_writer_cases`) and none of them
@@ -25,7 +27,9 @@ dev: they are the acceptance run's held-out cases.
 
 **Which runs reproduce their bytes.** The reference, shape and host cases are pure functions of the package's
 fixtures: every host campaign is stored under fixed ids (the courier's from its capture), and each case's freeze time
-is fixed, so every run rewrites them to the same bytes, and ``test_held_out_cases.py`` holds that. The
+is fixed, so every run on one platform rewrites them to the same bytes, and ``test_held_out_cases.py`` holds that. On
+another platform the last digits of some statistics differ, and two cases (s1, hot-path-scaled) hash those into their
+snapshot ids, so there they rebuild under other ids: commit what the minting platform wrote. The
 dungeons-of-wagons cases are frozen once and kept: a replay mints a new campaign id, so its snapshot id would move with
 every export. This export writes one only when its file is missing (it refuses to overwrite one); to freeze one again,
 delete its file on purpose. ``--dow`` is needed only while a dungeons-of-wagons case is missing. A directory holding a
@@ -37,6 +41,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import importlib.util
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -167,9 +172,12 @@ def synthetic_cases() -> list[WriterCaseFile]:
 
 
 async def dow_case(clone: Path, rung: DowRung) -> WriterCaseFile:
-    """One dungeons-of-wagons rung replayed from its recordings, its ``dow`` package imported from the clone."""
-    if str(clone / "src") not in sys.path:
-        sys.path.insert(0, str(clone / "src"))
+    """One dungeons-of-wagons rung replayed from its recordings, in the clone's ``evals/`` directory.
+
+    :raises ValueError: The ``dow`` package does not import: the clone's ``src`` is not on ``PYTHONPATH``.
+    """
+    if importlib.util.find_spec("dow") is None:
+        raise ValueError(f"the dow package does not import: run with PYTHONPATH={clone / 'src'}")
     with contextlib.chdir(clone / "evals"):
         return await replayed_case(
             clone / "evals" / rung.file, name=rung.name, group=rung.group, stratum=DOW, scope=DOW
