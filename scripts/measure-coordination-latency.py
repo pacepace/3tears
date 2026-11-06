@@ -205,8 +205,8 @@ def main() -> None:
         asyncio.run(_measure(args.nats, args.db))
         return
 
-    from testcontainers.nats import NatsContainer  # noqa: PLC0415 - only needed without live URLs
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.community.nats import NatsContainer  # noqa: PLC0415 - only needed without live URLs
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
 
     # jetstream=True, not the container default: every bucket these primitives open is a
     # JetStream KV, so a plain server refuses the first connect.

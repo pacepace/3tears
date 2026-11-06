@@ -4,7 +4,7 @@ integration tests for the canonical migration runner against real Postgres.
 rollback semantics cannot be proven against the in-memory
 :class:`FakeDataStore`: rollback on failure, drift after hand-DDL, and
 downgrade DDL all need a real PG engine. these tests spin up a
-``testcontainers.postgres.PostgresContainer`` and drive the runner
+``testcontainers.community.postgres.PostgresContainer`` and drive the runner
 through three scenarios end-to-end:
 
 scenario A — fresh apply + re-apply idempotency

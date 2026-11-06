@@ -3,8 +3,10 @@
 - :class:`L1Backend`, the protocol every L1 backend implements.
 - :data:`MISSING`, the cache-miss sentinel (distinct from a cached ``None``).
 - :func:`build_select_clause` and :func:`bulk_columns`, shared SQL construction.
-- :func:`exact_decimal_type`, :func:`stored_decimal` and :class:`UnsupportedL1ColumnError`, how
-  an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
+- :func:`exact_decimal_type`, :func:`stored_decimal`, :class:`UnsupportedL1ColumnError` and
+  :class:`NonFiniteNumericError`, how an exact ``NUMERIC`` column keeps its ``Decimal``, or is refused.
+- :func:`stored_time`, the ISO text a ``TIME`` column keeps a ``datetime.time`` as.
+- :func:`stored_date`, the ISO text a ``DATE`` column keeps a ``datetime.date`` as.
 
 Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 (the collection broadcasts and their tables' write generations).
@@ -13,6 +15,7 @@ Nothing cached in L1 ages: a row stays until a write that reaches it is heard
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime, time
 from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any, Protocol, runtime_checkable
 
@@ -25,9 +28,12 @@ __all__ = [
     "MISSING",
     "build_select_clause",
     "bulk_columns",
+    "NonFiniteNumericError",
     "UnsupportedL1ColumnError",
     "exact_decimal_type",
     "stored_decimal",
+    "stored_date",
+    "stored_time",
     # released here (v0.66.0) before it moved to threetears.core.sql_fragments; still importable
     "quote_identifier",
 ]
@@ -145,6 +151,14 @@ def exact_decimal_type(
     return result
 
 
+class NonFiniteNumericError(ValueError):
+    """a ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold as a scaled integer.
+
+    Postgres stores ``'NaN'`` (and, from 14, ``'Infinity'``) in a ``NUMERIC(p, s)`` column. A
+    collection serves such a row from L3 and keeps no L1 copy of it.
+    """
+
+
 def stored_decimal(value: Any, scale: int) -> Decimal:
     """``value`` as the ``Decimal`` a ``NUMERIC`` column of ``scale`` stores and L3 answers.
 
@@ -159,13 +173,55 @@ def stored_decimal(value: Any, scale: int) -> Decimal:
     :ptype scale: int
     :return: the value as stored
     :rtype: Decimal
-    :raises ValueError: when ``value`` is ``NaN`` or infinite, which no L1 holds at a scale
+    :raises NonFiniteNumericError: when ``value`` is ``NaN`` or infinite, which no L1 holds at a scale
     :raises decimal.InvalidOperation: when ``value`` is not a number
     """
     number = value if isinstance(value, Decimal) else Decimal(repr(value) if isinstance(value, float) else str(value))
     if not number.is_finite():
-        raise ValueError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
+        raise NonFiniteNumericError(f"{number} has no value at scale {scale}; an L1 holds only finite NUMERIC values")
     return number.quantize(Decimal(1).scaleb(-scale), context=_NUMERIC_CONTEXT)
+
+
+def stored_date(value: date) -> str:
+    """``value`` as the ISO text (``YYYY-MM-DD``) a ``DATE`` column keeps, read back by
+    :meth:`datetime.date.fromisoformat` as the ``date`` L3 answers.
+
+    A ``datetime`` keeps its date only, as asyncpg writes a ``datetime`` to a Postgres ``date``.
+
+    :param value: the date written
+    :ptype value: datetime.date
+    :return: the ISO text stored
+    :rtype: str
+    """
+    day = value.date() if isinstance(value, datetime) else value
+    return day.isoformat()
+
+
+def stored_time(value: time, *, zoned: bool) -> str:
+    """``value`` as the ISO text (``HH:MM:SS[.ffffff][+HH:MM]``) a ``TIME`` column keeps, read back
+    by :meth:`datetime.time.fromisoformat` as the ``time`` L3 answers.
+
+    A ``TIME`` column (``zoned`` false) keeps the wall clock and no zone, as Postgres ``time`` does:
+    asyncpg writes the hour, minute, second and microsecond of an aware value and answers it naive,
+    so the zone is dropped here too. A ``TIME WITH TIME ZONE`` column keeps the value's fixed offset;
+    a naive value, or one whose zone has no offset without a date (a ``ZoneInfo``), is refused, as
+    asyncpg refuses it before L3 writes it.
+
+    :param value: the time written
+    :ptype value: datetime.time
+    :param zoned: True for a ``TIME WITH TIME ZONE`` column
+    :ptype zoned: bool
+    :return: the ISO text stored
+    :rtype: str
+    :raises ValueError: for a zoned column, when ``value`` has no fixed UTC offset
+    """
+    if not zoned:
+        return value.replace(tzinfo=None).isoformat()
+    if value.utcoffset() is None:
+        raise ValueError(
+            f"{value!r} has no fixed UTC offset; a TIME WITH TIME ZONE column keeps a time with one",
+        )
+    return value.isoformat()
 
 
 @runtime_checkable
@@ -309,6 +365,31 @@ class L1Backend(Protocol):
         :ptype entity_id: Any
         :param primary_key: pk column name (single-PK) or tuple of pk
             column names in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+    def delete_many_by_id(
+        self,
+        table: str,
+        entity_ids: Sequence[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete many rows by primary key, as ``delete_by_id`` would one by one.
+
+        For the callers that evict many keys at once (a commit settling): a backend
+        that pays a lock and a commit per write pays them once here, not once a row.
+        A failure raises as ``delete_by_id``'s would.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: pk values (single-PK) or tuples of pk values in declared
+            column order (composite-PK); nothing named deletes nothing
+        :ptype entity_ids: Sequence[Any]
+        :param primary_key: pk column name (single-PK) or tuple of pk column names
+            in declared order (composite-PK)
         :ptype primary_key: str | tuple[str, ...]
         :return: nothing
         :rtype: None

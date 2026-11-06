@@ -54,6 +54,7 @@ class IdentityProposedEvent(FrameworkEvent):
     :ivar version_id: string-form uuid of the proposed version
     :ivar block_key: which identity block (``personality`` / ...)
     :ivar user_id: string-form uuid of the owning user, or ``None``
+    :ivar variant: which variant of the block (``""`` = the block itself)
     :ivar rationale_preview: first ~120 chars of the change rationale
     """
 
@@ -62,6 +63,7 @@ class IdentityProposedEvent(FrameworkEvent):
     version_id: str
     block_key: str
     user_id: str | None = None
+    variant: str = ""
     rationale_preview: str = ""
 
 
@@ -74,6 +76,7 @@ class IdentityConsentedEvent(FrameworkEvent):
     :ivar version_id: string-form uuid of the consented version
     :ivar block_key: which identity block
     :ivar user_id: string-form uuid of the consenting user, or ``None``
+    :ivar variant: which variant of the block (``""`` = the block itself)
     """
 
     type: Literal["identity_consented"] = "identity_consented"
@@ -81,20 +84,23 @@ class IdentityConsentedEvent(FrameworkEvent):
     version_id: str
     block_key: str
     user_id: str | None = None
+    variant: str = ""
 
 
 class IdentityAppliedEvent(FrameworkEvent):
     """fired when a version becomes the active one for its block.
 
     Emitted on tier-1 consent AND tier-2 auto-apply (``auto_applied``
-    distinguishes). The consumer re-reads ``resolve_active(block_key)`` and
-    writes the content back to its prompt cache so the next turn picks it
-    up. One event per applied version.
+    distinguishes). The consumer re-reads ``resolve_active(block_key=...,
+    variant=...)`` with this event's ``variant`` and writes the content back
+    to its prompt cache so the next turn picks it up. One event per applied
+    version.
 
     :ivar agent_id: string-form uuid of the owning agent
     :ivar version_id: string-form uuid of the now-active version
     :ivar block_key: which identity block
     :ivar user_id: string-form uuid of the owning user, or ``None``
+    :ivar variant: which variant of the block (``""`` = the block itself)
     :ivar auto_applied: ``True`` for a tier-2 auto-apply, ``False`` for a
         tier-1 consent-gated apply
     """
@@ -104,6 +110,7 @@ class IdentityAppliedEvent(FrameworkEvent):
     version_id: str
     block_key: str
     user_id: str | None = None
+    variant: str = ""
     auto_applied: bool = False
 
 
@@ -118,6 +125,7 @@ class IdentityRestoredEvent(FrameworkEvent):
     :ivar version_id: string-form uuid of the NEW active (clone) version
     :ivar block_key: which identity block
     :ivar user_id: string-form uuid of the owning user, or ``None``
+    :ivar variant: which variant of the block (``""`` = the block itself)
     :ivar target_version_id: string-form uuid of the restored prior version
     """
 
@@ -126,6 +134,7 @@ class IdentityRestoredEvent(FrameworkEvent):
     version_id: str
     block_key: str
     user_id: str | None = None
+    variant: str = ""
     target_version_id: str = ""
 
 

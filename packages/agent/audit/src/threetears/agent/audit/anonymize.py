@@ -324,6 +324,8 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
     {
         # sandbox root named in operator configuration (default "bind") (3tears)
         "workspace.materialize": frozenset({"root_name"}),
+        # counts of access shapes an operator's prewarm found, derived, held and could not derive (hub)
+        "customer.access_shapes_prewarm": frozenset({"shapes", "derived", "held", "unavailable"}),
         # "mfa_enforcement", and its MfaEnforcement enum value (identity)
         "identity.tenant_policy.change": frozenset({"field", "new_value"}),
         # ScopeReason enum, and a code-supplied operation label such as "principal.export" (identity)
@@ -394,8 +396,11 @@ _BUILT_IN_FAMILY_SAFE_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyTy
                 "updates",
             }
         ),
-        # federated / password (hub)
-        "user.create": frozenset({"credential"}),
+        # federated / password / emailed_link, and whether the invitation email went: emailed / not_emailed /
+        # not_sent, never the address or the link (hub)
+        "user.create": frozenset({"credential", "invitation"}),
+        # whether a waiting invite's email went: emailed / not_emailed / not_sent (hub)
+        "user.invite": frozenset({"invitation"}),
         # a fixed failure stage label (hub)
         "schema.introspect": frozenset({"stage"}),
         "schema.introspect_refresh": frozenset({"stage"}),

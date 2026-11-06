@@ -8,11 +8,14 @@ What :class:`DeclaredTableCollection` gives a host, each pinned here through a r
 - a ``NUMERIC`` column reads back from L1 as the ``Decimal`` L3 gives, at the column's scale;
 - a write that leaves a column to the database caches the row read back from L3, not the row sent;
 - a natural-key upsert that lands on a row stored under another key evicts that row and caches
-  nothing under the key it sent.
+  nothing under the key it sent;
+- an ``immutable`` column a write names is read back, since an update keeps the stored value;
+- a row holding a ``NUMERIC`` ``NaN``, which an exact L1 cannot hold, is served from L3 uncached.
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -197,3 +200,86 @@ class TestTheRowCachedIsTheRowStored:
         assert prices.get_row_sync("b") is None
         reread = await prices.get("a")
         assert reread is not None and reread.price == Decimal("2.2500")
+
+
+_IMMUTABLE_SCHEMA = TableSchema(
+    name="price_rows",
+    primary_key="code",
+    columns=[
+        Column("code", STRING_TYPE),
+        Column("sku", STRING_TYPE),
+        Column("price", NUMERIC_TYPE, precision=12, scale=4),
+        Column("tier", INT_TYPE, server_default="3"),
+        Column("date_created", DATETIMETZ_TYPE, immutable=True),
+        Column("date_updated", DATETIMETZ_TYPE),
+    ],
+)
+
+
+class _StampedPrices(_Prices):
+    """``price_rows`` with ``date_created`` declared ``immutable``: an update keeps the first stamp."""
+
+    schema: ClassVar[TableSchema] = _IMMUTABLE_SCHEMA
+
+
+class TestAnImmutableColumnIsReadBack:
+    """an update keeps an ``immutable`` column's stored value, so the caches must hold that, not the one sent.
+
+    The defect, found on the hub's ``gateway_credit_rates``: after a second save, L3 ``date_created``
+    was the first stamp and L1/L2 held the second.
+    """
+
+    def test_an_immutable_column_the_row_names_is_decided_by_the_store(self, l1: SQLiteBackend) -> None:
+        table = _PriceTable()
+        registry = CollectionRegistry()
+        registry.configure(l1_backend=l1, l3_pool=table)
+        config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        stamped = _StampedPrices(registry=registry, config=config, nats_client=None)
+        row = {**_row("a", "sku-1", "1.5"), "tier": 3}
+        assert stamped.columns_decided_by_store(row) == ("date_created",)
+
+    def test_a_mutable_column_the_row_names_is_not(self, l1: SQLiteBackend) -> None:
+        prices, _ = _prices(l1)
+        assert prices.columns_decided_by_store({**_row("a", "sku-1", "1.5"), "tier": 3}) == ()
+
+
+class TestANonFiniteNumericIsServedFromL3:
+    """Postgres stores ``'NaN'`` in a ``NUMERIC(p, s)``; an exact L1 cannot hold it as a scaled integer."""
+
+    async def test_a_nan_row_is_read_from_l3_kept_out_of_l1_and_logged_once(
+        self, l1: SQLiteBackend, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        prices, table = _prices(l1)
+        now = datetime.now(UTC)
+        for code in ("a", "b"):
+            table.rows[code] = {
+                "code": code,
+                "sku": f"sku-{code}",
+                "price": Decimal("NaN"),
+                "tier": 3,
+                "date_created": now,
+                "date_updated": now,
+            }
+
+        with caplog.at_level(logging.WARNING):
+            first = await prices.get("a")
+            second = await prices.get("b")
+            again = await prices.get("a")
+
+        for entity in (first, second, again):
+            assert entity is not None and entity.price.is_nan()
+        assert prices.get_row_sync("a") is None and prices.get_row_sync("b") is None
+        logged = [record for record in caplog.records if "an exact L1 cannot hold" in record.getMessage()]
+        assert len(logged) == 1, [record.getMessage() for record in caplog.records]
+
+    async def test_a_write_of_nan_drops_the_copy_l1_held_under_its_key(self, l1: SQLiteBackend) -> None:
+        prices, _ = _prices(l1)
+        await prices.save_entity(prices.create(_row("a", "sku-1", "1.5")))
+        assert prices.get_row_sync("a") is not None
+        entity = await prices.get("a")
+        assert entity is not None
+        entity.price = Decimal("NaN")
+        await prices.save_entity(entity)
+        assert prices.get_row_sync("a") is None
+        reread = await prices.get("a")
+        assert reread is not None and reread.price.is_nan()

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from threetears.evals import Result
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     campaign_report_html,
@@ -89,8 +90,10 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**"
     )
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
-    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies.
-    assert lines[7] == (
+    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost, so
+    # the report-wide line on provider routing sits between the result and the scoreboard (owner, 2026-10-25).
+    assert lines[5] == COST_ROUTING_CAVEAT
+    assert lines[9] == (
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
@@ -137,11 +140,12 @@ async def test_its_campaign_page_opens_on_the_guardrail_v2_is_not_shown_safe_on(
     module = load(Path("extract.py"), "extract", monkeypatch)
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
-    # A guardrail warns as loudly as a broken floor, above the title, and picks no arm.
-    assert lines[0] == "**Not yet shown safe on classify: v2 on no invented total.**"
-    assert lines[2] == "# invoices"
+    # A guardrail warns as loudly as a broken floor, under the title and the question, and picks no arm.
+    assert lines[0] == "# invoices"
+    warning = "v2 is not yet shown safe on the no invented total guardrail on classify."
+    assert f"**{warning}**" in lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
     html = campaign_report_html(result.page)
-    assert '<p class="floor" role="alert"><strong>Not yet shown safe on classify: v2 on no invented total.' in html
+    assert f'<p class="warning"><strong>{warning}' in html and 'role="alert"' not in html[: html.index("</header>")]
     assert "not adopted" not in "\n".join(lines)
     # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
     assert "No margin was declared on classify, so no arm is ever shown worse there." in lines

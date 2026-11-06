@@ -8,8 +8,14 @@ lost, only superseded.
 
 An identity block (persona, reinforcement, anti-sycophancy guard, self-improvement
 scratch, presence voice) is a **linear parent-pointer version chain**. Exactly one
-`active` version exists per `(agent_id, customer_id, user_id, block_key)`; each
+`active` version exists per `(agent_id, customer_id, user_id, block_key, variant)`; each
 version carries its `content`, a `rationale`, a `content_hash`, and its lineage.
+
+A block can have **variants**: copies named by the consumer, each with its own chain and
+its own active version, at the block's tier. `""` is the block itself and the default
+everywhere, so a consumer that names no variant sees one chain per block. The package
+gives a name no meaning; which variant applies where, and which one a proposer may write,
+is the consumer's rule (`load_identity_propose_tool(..., variants=...)` binds the tool's).
 
 Lifecycle: **propose (agent) → consent (user) → apply**, with non-destructive
 rollback. Consent is **tiered** — tier-1 (identity-shaping) blocks require human

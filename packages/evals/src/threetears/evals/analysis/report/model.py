@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal, Self, get_args
 
 from pydantic import Field, model_validator
 
@@ -56,6 +56,7 @@ from threetears.evals.analysis.report.blocks import (
     ChartBlock,
     ChartKind,
     ContrastOutcome,
+    CostQualityPoint,
     DisclosureBlock,
     DisclosureSource,
     Fact,
@@ -72,9 +73,11 @@ from threetears.evals.analysis.report.blocks import (
     TextBlock,
     TextRole,
     TrialBlock,
+    TrialDetail,
     Verdict,
     VerdictKind,
     VerdictReason,
+    fold_anchor,
     fold_ids,
     interval_text,
     interval_value_text,
@@ -83,6 +86,18 @@ from threetears.evals.analysis.report.blocks import (
 )
 from threetears.evals.analysis.report.serialize_html import campaign_report_html, report_html
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown, report_markdown
+
+
+#: Each of a campaign's own sections' heading, three words or fewer; a first screen's carries none
+#: (:attr:`CampaignReport.section_titles`).
+_CAMPAIGN_SECTION_TITLES: dict[str, str] = {
+    "answer": "",
+    "warnings": "",
+    "scorecard": "Scorecard",
+    "findings": "Findings",
+    "next": "Next steps",
+    "provenance": "Design & provenance",
+}
 
 
 class ReportSource(EvalDocumentModel):
@@ -170,6 +185,23 @@ class Report(EvalDocumentModel):
         return self
 
     @model_validator(mode="after")
+    def _every_block_sits_where_the_page_lays_it_out(self) -> Self:
+        """Refuse a block in a section an aspect's page has no place for: a campaign's own, or the glossary, which the
+        serializers write from the terms the page links. A block no serializer lays out would vanish from the page.
+
+        :raises ValueError: A block sits in a campaign's own section or in the glossary.
+        """
+        if stray := sorted(
+            {
+                block.section
+                for block in self.blocks
+                if block.section in _CAMPAIGN_SECTION_TITLES or block.section == "glossary"
+            }
+        ):
+            raise ValueError(f"an aspect's page lays out no section {', '.join(stray)}, and blocks sit in it")
+        return self
+
+    @model_validator(mode="after")
     def _the_basis_matches_what_the_report_holds(self) -> Self:
         """Refuse a report whose basis disagrees with its source or its blocks.
 
@@ -249,8 +281,10 @@ class Report(EvalDocumentModel):
 
 #: The shape of a campaign page's JSON (:meth:`CampaignReport.json_document`), raised whenever a reader of the old
 #: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`. 4: each
-#: reading and pair in `readings` states both arms' depth and what limits its interval.
-CAMPAIGN_JSON_SHAPE = 4
+#: reading and pair in `readings` states both arms' depth and what limits its interval. 5: the page's model gains a
+#: campaign's own sections, a cell's `flag` and the `cost_quality` chart, and the JSON what the page reads across
+#: aspects as it lands; one unreleased shape holds them all.
+CAMPAIGN_JSON_SHAPE = 5
 
 
 class CampaignAspectFold(EvalDocumentModel):
@@ -293,16 +327,20 @@ class CampaignAspectFold(EvalDocumentModel):
 
 
 class CampaignReport(EvalDocumentModel):
-    """A campaign's page: the writer's summary and recommendation, what code read across its aspects, the person's
-    call, then one fold per aspect.
+    """A campaign's page: the decision first, then what code read across its aspects, the writer's findings and next
+    steps, how the campaign was set up, then one fold per aspect.
 
-    **The first screen, in order** (:attr:`blocks`, in the ``header`` and ``scoreboard`` sections): every missed bar,
-    broken floor and guardrail an arm is not shown safe on, one loud line each, above the title; the question; the
-    writer's summary across every aspect; the writer's recommendation, or a line saying none was written; code's
-    table of every aspect × candidate (its change against the control, the interval it was read on, the margin and
-    what it shows); the cases that would settle each unclear row; the person's call, or that none is recorded, and
-    any broken floor it overrides. :attr:`blocks` may also hold the memo's findings and next steps (``memo``), which
-    the recommendation rests on. Then :attr:`aspects`, one fold each, in the campaign's order.
+    **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
+    sections), under the title: the question, or the line saying none was asked; the writer's summary across every
+    aspect; the writer's recommendation and its whys, or a line saying none was written; what warns, one plain line
+    per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
+    caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
+    the title.
+
+    **Then, each under its heading** (:attr:`headed_sections`), in the order
+    :func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report` describes: the Scorecard, the memo's
+    Findings and Next steps, and Design & provenance. Then :attr:`aspects`, one fold each, in the campaign's order,
+    and after them how the page was made.
 
     **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
     nothing else, and a code-only campaign page (no memo) holds none.
@@ -317,7 +355,9 @@ class CampaignReport(EvalDocumentModel):
         default=None, description="The stored analysis whose memo the page lays out; None on a code-only page."
     )
     finding_count: int = Field(ge=0, description="How many findings the memo holds.")
-    blocks: list[ReportBlock] = Field(description="The first screen, then the memo's findings, in reading order.")
+    blocks: list[ReportBlock] = Field(
+        description="Every block but the folds': the first screen, then each headed section's, in reading order."
+    )
     aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
@@ -355,9 +395,21 @@ class CampaignReport(EvalDocumentModel):
 
         :raises ValueError: A link names something other than a fold.
         """
-        places = {f"aspect-{fold_id}" for fold_id in self.fold_ids}
+        places = {fold_anchor(fold_id) for fold_id in self.fold_ids}
         if stray := sorted({cell.ref for cell in _cells(self.blocks) if cell.ref is not None} - places):
             raise ValueError(f"cells link to {stray}, which is no aspect's fold")
+        return self
+
+    @model_validator(mode="after")
+    def _every_block_sits_where_the_page_lays_it_out(self) -> Self:
+        """Refuse a block in the glossary, which the serializers write from the terms the page links: a block there
+        would vanish from the page. Every other section is on the first screen or headed (:attr:`section_titles`).
+
+        :raises ValueError: A block, or an aspect's summary block, sits in the glossary.
+        """
+        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
+        if any(block.section == "glossary" for block in blocks):
+            raise ValueError("the glossary is written from the terms the page links, and blocks sit in it")
         return self
 
     @model_validator(mode="after")
@@ -389,6 +441,37 @@ class CampaignReport(EvalDocumentModel):
             if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
                 raise ValueError(f"a code-only page holds no writer's words, and blocks {authored} are text blocks")
         return self
+
+    @property
+    def section_titles(self) -> dict[str, str]:
+        """Each section's heading on a campaign's page, in its reading order (:data:`ReportSection`'s): an aspect
+        page's (:data:`SECTION_TITLES`) with the campaign's own among them (``answer``, ``warnings``, ``scorecard``,
+        ``findings``, ``next`` and ``provenance``), each three words or fewer, the first screen's headed by none."""
+        titles = {**SECTION_TITLES, **_CAMPAIGN_SECTION_TITLES}
+        return {section: titles[section] for section in get_args(ReportSection)}
+
+    @property
+    def headed_sections(self) -> tuple[list[str], list[str]]:
+        """The headed sections holding a block, in reading order (:attr:`section_titles`), split at the aspect folds:
+        those up to Design & provenance read before the folds, what the page says of how it was made (cases, trials,
+        what was not tested, the methods) after them. The first screen and the glossary are laid out apart.
+
+        :return: ``(before, after)``, each a list of section ids.
+        :rtype: tuple[list[str], list[str]]
+        """
+        present = [
+            section
+            for section in self.section_titles
+            if section not in FIRST_SCREEN
+            and section != "glossary"
+            and any(block.section == section for block in self.blocks)
+        ]
+        order = list(self.section_titles)
+        fold_at = order.index("provenance")
+        return (
+            [section for section in present if order.index(section) <= fold_at],
+            [section for section in present if order.index(section) > fold_at],
+        )
 
     @property
     def terms(self) -> list[str]:
@@ -516,6 +599,7 @@ __all__ = [
     "ChartBlock",
     "ChartKind",
     "ContrastOutcome",
+    "CostQualityPoint",
     "DisclosureBlock",
     "DisclosureSource",
     "Fact",
@@ -535,9 +619,11 @@ __all__ = [
     "TextBlock",
     "TextRole",
     "TrialBlock",
+    "TrialDetail",
     "Verdict",
     "VerdictKind",
     "VerdictReason",
+    "fold_anchor",
     "fold_ids",
     "interval_text",
     "interval_value_text",

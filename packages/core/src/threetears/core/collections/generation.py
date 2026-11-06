@@ -408,6 +408,53 @@ class GenerationMarks:
             return None
         return f"{mark.incarnation}:{mark.accounted}"
 
+    def highest_heard(self, table_name: str) -> str | None:
+        """the newest generation this pod has heard any row of or accounted for, as a token.
+
+        At or past :meth:`recorded`: an advance still waiting on a gap has had rows applied here. A
+        cache that starts trusting a table part-way through takes this as its floor, since rows up
+        to it were applied before it could hear them.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: ``{incarnation}:{count}``, or ``None`` when :meth:`recorded` is
+        :rtype: str | None
+        """
+        mark = self._tables.get(table_name)
+        if mark is None or not mark.sighted or mark.incarnation is None:
+            return None
+        newest = max(
+            (count for incarnation, count in mark.heard if incarnation == mark.incarnation),
+            default=mark.accounted,
+        )
+        return f"{mark.incarnation}:{max(newest, mark.accounted)}"
+
+    def adopt(self, table_name: str, source: GenerationMarks) -> None:
+        """take ``source``'s mark for ``table_name`` as this one's, and follow the table.
+
+        For a second set of marks fed the same broadcasts from some point on (a cache counting what
+        it has itself been told): adopting at that point makes the two agree on everything heard
+        before it.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param source: the marks to copy from
+        :ptype source: GenerationMarks
+        :return: nothing
+        :rtype: None
+        """
+        theirs = source._tables.get(table_name)
+        if theirs is None:
+            self._tables[table_name] = _TableMark()
+            return
+        self._tables[table_name] = _TableMark(
+            sighted=theirs.sighted,
+            incarnation=theirs.incarnation,
+            accounted=theirs.accounted,
+            heard={key: _Heard(rows=heard.rows, of=heard.of) for key, heard in theirs.heard.items()},
+            overflowed=theirs.overflowed,
+        )
+
     def pending(self, table_name: str) -> tuple[str, ...]:
         """the advances beyond the mark this pod has heard rows of but cannot yet count, as tokens, for a log line.
 

@@ -47,6 +47,7 @@ __all__ = [
     "SCHEDULED_JOBS_LABEL_SETS",
     "SCHEDULED_JOBS_PROMETHEUS_NAMES",
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
+    "TIMING_BUCKETS",
     "ScheduledJobsMetricsEmitter",
     "get_scheduled_jobs_emitter",
     "reset_scheduled_jobs_emitter_for_testing",
@@ -83,6 +84,31 @@ SCHEDULED_JOBS_DRIFT_SECONDS: Final[str] = "threetears_scheduled_jobs_drift_seco
 #: fires whose outcome ran but whose row could not be finalized, left to the reaper to record as
 #: failed: the one count of outcomes the fire table itself lost
 SCHEDULED_JOBS_FIRES_UNRECORDED_TOTAL: Final[str] = "threetears_scheduled_jobs_fires_unrecorded_total"
+
+
+#: histogram buckets, in seconds, for timings measured against the tick: a fire's drift, and (in
+#: agent-wake, whose wakes run on this tick pump) a yielded run's duration. a fire runs on the first
+#: tick at or after its due time and the ticks run about half a minute apart, so ordinary drift is
+#: tens of seconds, and a backlog that drains over later ticks reaches minutes. the client library's
+#: default buckets end at 10 s, which put every ordinary fire in ``+Inf`` and pinned the dashboard's
+#: p95 to 10 s whatever the drift was. one tuple, so the dashboards of both packages move together.
+TIMING_BUCKETS: Final[tuple[float, ...]] = (
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    90.0,
+    120.0,
+    180.0,
+    300.0,
+    600.0,
+)
 
 
 # Public roll-up of every instrument name. Lets the consumer (and the
@@ -186,6 +212,7 @@ class ScheduledJobsMetricsEmitter:
         self._drift = Histogram(
             SCHEDULED_JOBS_DRIFT_SECONDS,
             "Fire drift (actual_fired_at - scheduled_fire_at) in seconds",
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._unrecorded = Counter(

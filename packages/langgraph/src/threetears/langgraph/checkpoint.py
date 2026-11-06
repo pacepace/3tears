@@ -55,6 +55,7 @@ one implementation with no parallel path.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final, cast
@@ -86,6 +87,8 @@ from threetears.langgraph.protocols import (
     CheckpointL1Cache,
     CheckpointL2Cache,
     CheckpointL2PrefixCache,
+    CheckpointL2RevisionCache,
+    CheckpointL2ValueLimit,
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -152,6 +155,12 @@ class CheckpointPurgeIncompleteError(CheckpointCacheError):
 
 
 _DEFAULT_L2_BUCKET = "checkpoints"
+
+#: the most L2 keys one saver keeps off its caches after a write AND its delete both failed. Such
+#: a key may still hold an older checkpoint, so the saver reads it from L3 until a later put or
+#: delete of it lands. During a long NATS outage every written key lands here; past this many the
+#: oldest is dropped with a WARNING naming it, and reads of it may again meet what L2 still holds.
+_L2_WRITE_BYPASS_LIMIT: Final = 4096
 
 #: separates the customer from the caller's own thread id inside a stored
 #: ``thread_id``. a UUID's text form contains no ``/``, so the split point is
@@ -463,9 +472,21 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         self._l2_bucket = l2_bucket
         self._scope = scope
         self._flush_callback = flush_callback
-        # stored thread ids whose purge deleted L3 but could not clear a cache: read from L3
-        # alone until a purge of them succeeds, so an erased thread is never served from cache
+        # two reasons to read a thread from L3 alone, kept apart because they end differently.
+        # purge: stored thread ids whose purge deleted L3 but could not clear a cache. an erased
+        # thread is never served from cache, so only a purge of it that succeeds lifts this; a
+        # write never does (a write cannot clear the namespaces a failed sweep left behind).
         self._cache_bypassed_threads: set[str] = set()
+        # write: L2 keys whose put and then delete both failed, so the key may still hold an older
+        # checkpoint. lifted by the next put or delete of that key that lands; bounded by
+        # _L2_WRITE_BYPASS_LIMIT, oldest first.
+        self._l2_write_bypassed: OrderedDict[str, None] = OrderedDict()
+        if l2_cache is not None and not isinstance(l2_cache, CheckpointL2RevisionCache):
+            # said once per saver, not per read: such a cache is never refilled from an L3 read
+            log.info(
+                "L2 checkpoint cache cannot fence a refill; a read that misses L1 asks L3 until the next write",
+                extra={"l2_bucket": l2_bucket, "l2_cache": type(l2_cache).__name__},
+            )
 
     # ------------------------------------------------------------------
     # Tenancy helpers
@@ -719,7 +740,22 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         return result
 
     async def l2_put(self, thread_id: str, checkpoint_ns: str, data: bytes, *, customer: UUID | None = None) -> None:
-        """write to L2 cache, swallowing errors.
+        """write to L2 cache; a blob that cannot be cached leaves no entry rather than an old one.
+
+        The key is per thread and namespace, not per checkpoint, so a put that does
+        not land leaves the PREVIOUS checkpoint under it -- and every worker whose
+        L1 misses is served that older state from L2 and never reaches L3. So:
+
+        - a blob over the cache's :attr:`CheckpointL2ValueLimit.max_value_bytes` is
+          not put; the key is deleted instead, with one WARNING naming both sizes;
+        - any other put failure is contained and the key is deleted too;
+        - only when that delete also fails is the key put on this saver's write
+          bypass, so that thread and namespace read from L3 alone until a later put
+          or delete of the key lands (at most 4096 keys,
+          oldest dropped first). Other processes are not reached by it; for them the
+          delete was the fix.
+
+        Nothing here raises: the L3 row was written first and is the answer of record.
 
         :param thread_id: conversation/thread identifier
         :ptype thread_id: str
@@ -736,10 +772,53 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         if self._l2 is None:
             return
         key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        limit = self._l2.max_value_bytes if isinstance(self._l2, CheckpointL2ValueLimit) else None
+        if limit is not None and len(data) > limit:
+            log.warning(
+                "L2 checkpoint blob is over the cache's value limit; deleting the cached entry so readers use L3",
+                extra={
+                    "l2_bucket": self._l2_bucket,
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "size_bytes": len(data),
+                    "max_value_bytes": limit,
+                },
+            )
+        else:
+            try:
+                await self._l2.put(self._l2_bucket, key, data)
+            except Exception as exc:
+                contain(exc, log=log, what="L2 checkpoint write failed; deleting the cached entry so readers use L3")
+            else:
+                # the key now holds the newest checkpoint
+                self._l2_write_bypassed.pop(key, None)
+                return
         try:
-            await self._l2.put(self._l2_bucket, key, data)
-        except Exception as exc:
-            contain(exc, log=log, what="L2 checkpoint write failed")
+            await self.l2_delete(thread_id, checkpoint_ns, customer=customer)
+        except CheckpointCacheError as exc:
+            contain(
+                exc,
+                log=log,
+                what="L2 checkpoint entry could not be deleted after a failed write; this saver reads it from L3",
+            )
+            self._bypass_l2_key(key)
+
+    def _bypass_l2_key(self, key: str) -> None:
+        """keep ``key`` off this saver's caches until a put or delete of it lands, within the bound.
+
+        :param key: the L2 key whose write and delete both failed
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        self._l2_write_bypassed[key] = None
+        self._l2_write_bypassed.move_to_end(key)
+        if len(self._l2_write_bypassed) > _L2_WRITE_BYPASS_LIMIT:
+            dropped, _ = self._l2_write_bypassed.popitem(last=False)
+            log.warning(
+                "L2 write bypass is full; the oldest key returns to the caches and may meet an older checkpoint",
+                extra={"l2_bucket": self._l2_bucket, "l2_key": dropped, "limit": _L2_WRITE_BYPASS_LIMIT},
+            )
 
     async def l2_delete(self, thread_id: str, checkpoint_ns: str, *, customer: UUID | None = None) -> None:
         """delete one thread+namespace L2 entry.
@@ -770,6 +849,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             await self._l2.delete(self._l2_bucket, key)
         except Exception as exc:
             raise CheckpointCacheError(f"L2 checkpoint delete failed ({type(exc).__name__})") from exc
+        # the key holds nothing now, so nothing older can be read from it
+        self._l2_write_bypassed.pop(key, None)
 
     async def l2_delete_prefix(self, prefix: str) -> bool:
         """sweep every L2 key under ``prefix``, reporting whether it happened.
@@ -945,7 +1026,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # a thread whose purge could not clear a cache is read from L3 alone: what the cache
         # still holds is the erased thread
-        bypassed = self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
+        bypassed = (
+            self.storage_thread_id(thread_id, customer=customer) in self._cache_bypassed_threads
+            or self.l2_key(thread_id, checkpoint_ns, customer=customer) in self._l2_write_bypassed
+        )
+        # the L2 key's revision as read BEFORE the L3 query; the refill after that query lands
+        # only if the key is unchanged since (:meth:`_refill_l2`). None: no refill.
+        l2_revision: int | None = None
         if checkpoint_id is None and not bypassed:
             # --- L1 attempt ---
             cached = await self._l1_or_recorded_miss(thread_id, checkpoint_ns, customer)
@@ -957,7 +1044,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     contain(exc, log=log, what="L1 checkpoint deserialization failed, falling through")
 
             # --- L2 attempt ---
-            cached = await self._l2_or_recorded_miss(thread_id, checkpoint_ns, customer)
+            cached, l2_revision = await self._l2_read_with_revision(thread_id, checkpoint_ns, customer)
             if cached is not None:
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
@@ -970,7 +1057,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # --- L3 (executor-backed) ---
         # the durable store is the answer of record, so its failure is not contained: a cache
         # that failed above and an L3 that fails here leave nothing to answer with.
-        return await self._l3_get_tuple(thread_id, checkpoint_ns, checkpoint_id, customer=customer)
+        return await self._l3_get_tuple(
+            thread_id, checkpoint_ns, checkpoint_id, customer=customer, l2_revision=l2_revision
+        )
 
     async def _l1_or_recorded_miss(self, thread_id: str, checkpoint_ns: str, customer: UUID | None) -> bytes | None:
         """:meth:`l1_get` for :meth:`aget_tuple`, a failure recorded as a miss caused by an error.
@@ -1016,6 +1105,86 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             contain(exc, log=log, what="L2 checkpoint read failed; reading the durable store", extra={"miss": "error"})
             return None
 
+    async def _l2_read_with_revision(
+        self, thread_id: str, checkpoint_ns: str, customer: UUID | None
+    ) -> tuple[bytes | None, int | None]:
+        """read L2 for :meth:`aget_tuple`, with the key's revision when the cache can fence a refill.
+
+        A cache satisfying :class:`CheckpointL2RevisionCache` answers with the key's latest
+        revision, which a refill after the L3 read is written at. Any other cache answers with
+        ``None`` for the revision, and is not refilled from the read. A failed read is contained
+        as :meth:`_l2_or_recorded_miss` contains it, and also refills nothing.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: str
+        :param checkpoint_ns: checkpoint namespace
+        :ptype checkpoint_ns: str
+        :param customer: the customer this call addresses, already resolved
+        :ptype customer: UUID | None
+        :return: the cached blob or None, and the key's revision or None
+        :rtype: tuple[bytes | None, int | None]
+        """
+        if not isinstance(self._l2, CheckpointL2RevisionCache):
+            return await self._l2_or_recorded_miss(thread_id, checkpoint_ns, customer), None
+        key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        try:
+            try:
+                return await self._l2.get_latest(self._l2_bucket, key)
+            except Exception as exc:
+                raise CheckpointCacheError(f"L2 checkpoint read failed: {type(exc).__name__}: {exc}") from exc
+        except CheckpointCacheError as exc:
+            contain(exc, log=log, what="L2 checkpoint read failed; reading the durable store", extra={"miss": "error"})
+            return None, None
+
+    async def _refill_l2(
+        self, thread_id: str, checkpoint_ns: str, data: bytes, revision: int | None, *, customer: UUID | None
+    ) -> bool:
+        """put a checkpoint read from L3 into L2 only if nothing has happened to the key since it was read.
+
+        The read is only as new as the moment its query ran. A writer whose newer checkpoint
+        reached L2 after that moment would be overwritten by an unconditional put, and every
+        worker whose L1 misses would then be served the older state. So the refill is written at
+        ``revision`` -- the key's latest revision, a deletion included, read BEFORE the query --
+        and any write or deletion since refuses it. With no revision (a cache without
+        :class:`CheckpointL2RevisionCache`, a failed read, a bypassed thread) nothing is written:
+        only :meth:`aput` fills the key.
+
+        Unlike :meth:`l2_put` this never deletes the key: whatever is there may be newer than
+        what the read found. An oversized blob or a failed write simply writes nothing.
+
+        :param thread_id: conversation/thread identifier
+        :ptype thread_id: str
+        :param checkpoint_ns: checkpoint namespace
+        :ptype checkpoint_ns: str
+        :param data: serialized cache blob of the checkpoint read
+        :ptype data: bytes
+        :param revision: the key's revision as read before the L3 query, or None
+        :ptype revision: int | None
+        :param customer: the customer this call addresses, already resolved
+        :ptype customer: UUID | None
+        :return: False when the key changed since the read, so a newer checkpoint stands and the
+            caller must not cache the one it read; True otherwise
+        :rtype: bool
+        """
+        if revision is None or not isinstance(self._l2, CheckpointL2RevisionCache):
+            return True
+        limit = self._l2.max_value_bytes if isinstance(self._l2, CheckpointL2ValueLimit) else None
+        if limit is not None and len(data) > limit:
+            return True
+        key = self.l2_key(thread_id, checkpoint_ns, customer=customer)
+        try:
+            landed = await self._l2.update(self._l2_bucket, key, data, revision)
+        except Exception as exc:
+            contain(exc, log=log, what="L2 checkpoint refill after an L3 read failed; the next read asks L3 again")
+            return True
+        if landed is None:
+            log.debug(
+                "L2 checkpoint refill lost to a write made since the read; the newer checkpoint stands",
+                extra={"l2_bucket": self._l2_bucket, "thread_id": thread_id, "checkpoint_ns": checkpoint_ns},
+            )
+            return False
+        return True
+
     async def _l3_get_tuple(
         self,
         thread_id: str,
@@ -1023,6 +1192,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         checkpoint_id: str | None,
         *,
         customer: UUID | None,
+        l2_revision: int | None = None,
     ) -> CheckpointTuple | None:
         """load checkpoint from the executor (L3 tier).
 
@@ -1036,6 +1206,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :param customer: the customer this call addresses, already resolved by
             the caller
         :ptype customer: UUID | None
+        :param l2_revision: the L2 key's revision as read before this query, which a refill is
+            fenced on; None refills nothing in L2
+        :ptype l2_revision: int | None
         :return: checkpoint tuple or None
         :rtype: CheckpointTuple | None
         """
@@ -1131,18 +1304,24 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             pending_writes=pending_writes,
         )
 
-        # Warm L1 and L2
-        try:
-            cache_blob = self.serialize_checkpoint_tuple(
-                checkpoint,
-                metadata,
-                parent_id,
-                pending_writes,
-            )
-            await self.l2_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-            await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
-        except Exception as exc:
-            contain(exc, log=log, what="Failed to warm caches after L3 read")
+        # Warm L1 and L2 -- only from a read of the LATEST checkpoint. The cache keys are per
+        # thread and namespace and are read as "latest", so warming them from a read pinned to an
+        # older checkpoint_id would serve that older state to every later unpinned read. The test is
+        # the one that chose the statement above, so "warmed" and "read the latest" cannot disagree.
+        # L2 is refilled only if no write reached it since the revision read before the query; a
+        # refill that lost says a newer checkpoint exists, so L1 is not given this one either.
+        if not checkpoint_id:
+            try:
+                cache_blob = self.serialize_checkpoint_tuple(
+                    checkpoint,
+                    metadata,
+                    parent_id,
+                    pending_writes,
+                )
+                if await self._refill_l2(thread_id, checkpoint_ns, cache_blob, l2_revision, customer=customer):
+                    await self.l1_put(thread_id, checkpoint_ns, cache_blob, customer=customer)
+            except Exception as exc:
+                contain(exc, log=log, what="Failed to warm caches after L3 read")
 
         return tup
 

@@ -47,7 +47,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
-__all__ = ["DeclaredTableCollection"]
+__all__ = ["DeclaredTableCollection", "RowCannotBeInsertedError"]
 
 log = get_logger(__name__)
 
@@ -433,8 +433,8 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
         the stored value), and a ``NOT NULL`` column with a server default that ``data`` names as
         ``None``, which no write can store. And every column, when the write landed on a row stored
         under another key (:meth:`settle_stored_key`): the key sent holds no row, so the read back
-        finds none and caches nothing. And an :attr:`insert_only_columns` column ``data`` names:
-        an update of a stored row keeps the stored value, which another writer may have changed.
+        finds none and caches nothing. And an ``immutable`` column or an :attr:`insert_only_columns`
+        column ``data`` names: an update of a stored row keeps the stored value, not the one sent.
 
         :param data: the row as the write sends it, stamped
         :ptype data: dict[str, Any]
@@ -451,6 +451,7 @@ class DeclaredTableCollection(BaseCollection[EntityT]):
                 column.name
                 for column in self.schema.columns
                 if column.name not in data
+                or column.immutable
                 or column.name in self.insert_only_columns
                 or (column.server_default is not None and not column.nullable and data[column.name] is None)
             )

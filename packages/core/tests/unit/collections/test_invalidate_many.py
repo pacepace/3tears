@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from sqlalchemy import MetaData
 
+from threetears.core.cache.duckdb import DuckDBBackend
+from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -127,3 +132,112 @@ async def test_a_write_on_the_collection_s_own_pool_settles_its_rows_in_one_call
     async with collection.bypassing_write("a", "b", "c"):
         pass
     assert calls == [["a", "b", "c"]]
+
+
+def _cached_collection(name: str = "rows") -> tuple[Any, SQLiteBackend]:
+    """a collection over a real SQLite L1 holding its table, with no bus."""
+    schema = _schema(name)
+    metadata = MetaData()
+    schema.to_sqlalchemy_table(metadata)
+    l1 = SQLiteBackend(db_name=f"invalidate_many_{uuid.uuid4().hex[:8]}")
+    l1.initialize(metadata)
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, kv_key_scope="test-principal")
+    return collection_for_schema(schema)(registry, DefaultCoreConfig(), None), l1
+
+
+def _cache_rows(collection: Any, keys: list[str]) -> None:
+    for key in keys:
+        assert collection.write_to_cache_sync({"id": key})
+
+
+class TestEvictionIsOneL1Write:
+    """settling N keys evicts them from L1 in one write transaction, not one transaction a key."""
+
+    async def test_n_keys_take_one_transaction_and_every_key_leaves(self, l1_statements: Any) -> None:
+        collection, l1 = _cached_collection()
+        keys = [f"k{i}" for i in range(60)]
+        _cache_rows(collection, keys)
+        statements = l1_statements(l1)
+
+        await collection.invalidate_cache_many(keys)
+
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert statements.count("COMMIT") == 1
+        assert [collection.exists_in_cache_sync(key) for key in keys] == [False] * len(keys)
+
+    async def test_every_l1_change_listener_hears_each_key(self) -> None:
+        collection, _ = _cached_collection()
+        keys = [f"k{i}" for i in range(5)]
+        _cache_rows(collection, keys)
+        heard: list[Any] = []
+        collection.add_l1_change_listener(heard.append)
+
+        await collection.invalidate_cache_many(keys)
+
+        assert heard == keys
+
+    async def test_a_failed_eviction_raises_unchanged_and_still_fences_reads_in_flight(self) -> None:
+        collection, l1 = _cached_collection()
+        keys = [f"k{i}" for i in range(5)]
+        _cache_rows(collection, keys)
+        l1.get_connection().execute(
+            "CREATE TRIGGER refuse BEFORE DELETE ON rows WHEN OLD.id = 'k2' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+        ticket = collection.scan_ticket()
+
+        with pytest.raises(sqlite3.IntegrityError, match="refused"):
+            await collection.invalidate_cache_many(keys)
+
+        # a read that began before the eviction may not cache what it read, though the delete failed
+        assert collection.write_to_cache_sync({"id": "k9"}, read_since=ticket) is False
+        assert not l1.get_connection().in_transaction
+
+    def test_dropping_the_cached_table_is_one_transaction(self, l1_statements: Any) -> None:
+        collection, l1 = _cached_collection()
+        keys = [f"k{i}" for i in range(30)]
+        _cache_rows(collection, keys)
+        statements = l1_statements(l1)
+
+        assert collection.drop_cached_table() == len(keys)
+
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert [collection.exists_in_cache_sync(key) for key in keys] == [False] * len(keys)
+
+
+class _RefusingDuckDBBackend(DuckDBBackend):
+    """a DuckDB L1 whose delete of one key fails, after the keys before it have gone."""
+
+    def delete_by_id(self, table: str, entity_id: Any, primary_key: str | tuple[str, ...] = "id") -> None:
+        if entity_id in ("k2", ("k2",)):
+            raise RuntimeError("refused")
+        super().delete_by_id(table, entity_id, primary_key)
+
+
+class TestAFailedEvictionStillTellsListeners:
+    """a batch eviction that fails partway tells every listener of every key that may have left L1."""
+
+    async def test_a_duckdb_l1_failing_partway_tells_listeners_of_the_keys_already_gone(self) -> None:
+        schema = _schema("rows")
+        metadata = MetaData()
+        schema.to_sqlalchemy_table(metadata)
+        l1 = _RefusingDuckDBBackend()
+        l1.initialize(metadata)
+        try:
+            registry = CollectionRegistry()
+            registry.configure(l1_backend=l1, kv_key_scope="test-principal")
+            collection = collection_for_schema(schema)(registry, DefaultCoreConfig(), None)
+            keys = [f"k{i}" for i in range(5)]
+            _cache_rows(collection, keys)
+            heard: list[Any] = []
+            collection.add_l1_change_listener(heard.append)
+
+            with pytest.raises(RuntimeError, match="refused"):
+                await collection.invalidate_cache_many(keys)
+
+            # k0 and k1 left before the failure: a complete copy over this L1 must hear them go
+            assert not collection.exists_in_cache_sync("k0")
+            assert not collection.exists_in_cache_sync("k1")
+            assert set(heard) == set(keys)
+        finally:
+            l1.reset()

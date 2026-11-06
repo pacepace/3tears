@@ -18,6 +18,7 @@ heartbeat ever reaches the bus.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import timedelta
 from typing import Any
@@ -434,3 +435,117 @@ class TestToolServerNatsIntegration:
             except asyncio.CancelledError:
                 pass
             await nc.shutdown()
+
+
+class _ReplicaTool(IntegrationStubTool):
+    """the stub tool, answering with the replica that ran it; ``slow`` sleeps first, so a call is in flight."""
+
+    def __init__(self, replica: str) -> None:
+        super().__init__()
+        self.replica = replica
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """answer with this replica's name, after a pause when asked for one.
+
+        :param kwargs: tool input parameters
+        :ptype kwargs: Any
+        :return: success result naming the replica
+        :rtype: ToolResult
+        """
+        if kwargs.get("message") == "slow":
+            await asyncio.sleep(0.3)
+        return ToolResult(success=True, content=self.replica)
+
+
+class TestReplicasJoinAndLeaveTheirCallGroup:
+    """two replicas of one pod identity: a held replica gets no call, and a leaving one loses none."""
+
+    async def test_a_held_replica_gets_no_call_and_a_leaving_replica_answers_what_it_was_given(
+        self,
+        nats_container: str,
+    ) -> None:
+        """the rolling-deploy shape: replica B starts while A serves, holds its calls until it can answer,
+        then A leaves while calls are in flight.
+
+        :param nats_container: NATS URL from the canonical testcontainer fixture
+        :ptype nats_container: str
+        :return: nothing
+        :rtype: None
+        """
+        pod_id = f"integ-{uuid4().hex[:8]}"
+        namespace = f"integ_{uuid4().hex[:8]}"
+        await _declare_the_hubs_buckets(nats_container, namespace)
+
+        def replica(name: str) -> ToolServer:
+            server = ToolServer(
+                nats_url=nats_container,
+                namespace=namespace,
+                pod_id=pod_id,
+                heartbeat_interval=60.0,
+                jwks_provider=_pod_jwks_provider,
+            )
+            server.register(_ReplicaTool(name))
+            return server
+
+        first, second = replica("a"), replica("b")
+        second.hold_calls()
+        tasks = [asyncio.create_task(first.serve()), asyncio.create_task(second.serve())]
+        set_default_namespace(namespace)
+        nc = await NatsClient.connect(
+            nats_url=nats_container, nats_subject_namespace=namespace, client_name="tool-server-itest-replicas"
+        )
+
+        async def call(message: str) -> dict[str, Any]:
+            payload = json.dumps(
+                _signed_call_payload(
+                    pod_id=pod_id,
+                    tool_name="integration.stub",
+                    tool_version="1.0",
+                    arguments={"message": message},
+                    correlation_id=str(uuid4()),
+                )
+            ).encode("utf-8")
+            answer: dict[str, Any] = json.loads(
+                await nc.request_raw(
+                    subject=Subjects.tools_internal(pod_id), payload=payload, timeout=timedelta(seconds=10)
+                )
+            )
+            return answer
+
+        try:
+            await asyncio.wait_for(asyncio.gather(first.wait_ready(), second.wait_ready()), timeout=10.0)
+            await _warm_the_replay_watermark(nc, pod_id)
+            assert first.serving_calls is True
+            assert second.serving_calls is False, "a held replica stays out of the call group after it registers"
+
+            held = await asyncio.gather(*(call("fast") for _ in range(20)))
+            assert all(a["success"] for a in held), held
+            assert {a["content"] for a in held} == {"a"}, "no call reaches a replica that holds its calls"
+
+            second.open_calls()
+            for _ in range(50):
+                if second.serving_calls:
+                    break
+                await asyncio.sleep(0.05)
+            assert second.serving_calls is True
+            both = await asyncio.gather(*(call("fast") for _ in range(60)))
+            assert all(a["success"] for a in both), both
+            assert {a["content"] for a in both} == {"a", "b"}, "an opened replica takes its share"
+
+            in_flight = [asyncio.create_task(call("slow")) for _ in range(10)]
+            await asyncio.sleep(0.05)
+            assert await first.leave_calls() is True
+            assert first.serving_calls is False
+            answered = await asyncio.gather(*in_flight)
+            assert all(a["success"] for a in answered), "a call routed to the leaving replica is answered"
+            after = await asyncio.gather(*(call("fast") for _ in range(20)))
+            assert all(a["success"] for a in after), after
+            assert {a["content"] for a in after} == {"b"}, "a replica that left gets no new call"
+        finally:
+            await nc.shutdown()
+            for server in (first, second):
+                await server.shutdown()
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task

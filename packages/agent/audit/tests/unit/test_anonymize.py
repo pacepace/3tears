@@ -397,6 +397,15 @@ class TestDeclaredExtensions:
         assert kept == {"reason": "target_blocked"}
         assert masked == {"reason": ANONYMIZED_MARKER}
 
+    def test_an_invitations_status_is_kept_for_the_hubs_user_events_alone(self) -> None:
+        """``invitation`` is emailed / not_emailed / not_sent on the hub's ``user.create`` and ``user.invite``; any
+        other family's ``invitation`` stays masked, as a key nobody classified for it."""
+        for event_type in ("user.create", "user.invite"):
+            assert anonymize_details({"invitation": "emailed"}, event_type=event_type) == {"invitation": "emailed"}
+        assert anonymize_details({"invitation": "bob@example.com"}, event_type=_PLAIN_EVENT) == {
+            "invitation": ANONYMIZED_MARKER
+        }
+
     def test_a_grant_that_followed_its_renamed_node_keeps_its_ids_and_loses_the_names(self) -> None:
         """``rbac.assignment.move``: the ids and the fixed reason are structural; the node names carry user segments."""
         details = {

@@ -13,7 +13,7 @@ from threetears.evals.analysis.depth import times
 from threetears.evals.analysis.depth_reading import SubjectDepth, subject_depth
 
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.verdict import MIN_CASES
 
 
@@ -97,7 +97,15 @@ def frontier_text(result: FrontierResult) -> str:
         f"frontier, {bar}: {len(result.subjects)} subject(s) over {result.n_results} result(s), "
         f"{result.n_filtered_out} filtered out",
     ]
-    lines += [text for text in (result.identity_span_disclosure, result.contended_latency_disclosure) if text]
+    lines += [
+        text
+        for text in (
+            result.narrowed_read_disclosure,
+            result.identity_span_disclosure,
+            result.contended_latency_disclosure,
+        )
+        if text
+    ]
     # What "kept out" covers, said once before the first cell line of any arm.
     said_reading = False
     for subject in result.subjects:

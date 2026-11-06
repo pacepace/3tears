@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nats.errors import ConnectionClosedError as NatsConnectionClosedError
+from nats.errors import MaxPayloadError as NatsMaxPayloadError
 from nats.errors import NoRespondersError
 from nats.errors import TimeoutError as NatsTimeoutError
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError, NoStreamResponseError
@@ -415,6 +416,24 @@ async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
 
     with pytest.raises(KvError):
         await bucket.put(key="k", value=b"v")
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_value_is_not_retried_through_reopen() -> None:
+    """nats-py refuses a value over the server's max_payload before sending it; a re-open cannot fix that.
+
+    The retry would fail the same way after a second round trip, logged as a transport failure it
+    is not. It still reaches the caller as a ``KvError`` naming the bucket and key.
+    """
+    broken_kv, healed_kv = _FakeKv(), _FakeKv()
+    broken_kv.fail_next = NatsMaxPayloadError()
+    bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+    with pytest.raises(KvError, match="maximum payload exceeded"):
+        await bucket.put(key="k", value=b"v")
+    # no re-open: the next write still lands on the handle the bucket was opened with
+    await bucket.put(key="after", value=b"v")
+    assert "after" in broken_kv.store and healed_kv.store == {}
 
 
 class TestABugIsNotATransportFailure:

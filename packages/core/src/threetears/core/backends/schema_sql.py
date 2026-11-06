@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -568,13 +568,16 @@ def build_insert_sql(schema: TableSchema, data: dict[str, Any] | None = None) ->
     * ``"raise"``: plain INSERT with no ON CONFLICT clause
     * ``"ignore"``: ``INSERT ... ON CONFLICT (pk) DO NOTHING``
     * ``"update"`` (default): ``INSERT ... ON CONFLICT (pk) DO UPDATE SET
-      <mutable>``; falls back to ``DO NOTHING`` when every non-pk column
-      is immutable so existing rows are not clobbered.
+      <mutable>``, the mutable columns ``data`` names (:func:`_update_set_clause`):
+      a column it leaves out keeps its stored value, and is written ``NULL``
+      only into a new row. falls back to ``DO NOTHING`` when every non-pk
+      column is immutable so existing rows are not clobbered.
 
     :param schema: table schema
     :ptype schema: TableSchema
     :param data: row dict to drive column selection. ``None`` is treated
-        as an empty dict (every server-default column omitted).
+        as an empty dict (every server-default column omitted) whose update
+        sets every mutable column emitted.
     :ptype data: dict[str, Any] | None
     :return: parameterized INSERT SQL
     :rtype: str
@@ -582,10 +585,42 @@ def build_insert_sql(schema: TableSchema, data: dict[str, Any] | None = None) ->
     cols = insert_columns_for_data(schema, data or {})
     col_names = ", ".join(c.name for c in cols)
     placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
-    return _with_conflict_clause(schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})")
+    return _with_conflict_clause(
+        schema, cols, f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})", named=data
+    )
 
 
-def _with_conflict_clause(schema: TableSchema, cols: list[Column], sql: str) -> str:
+def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Collection[str] | None) -> str:
+    """the ``SET`` list of an upsert's ``DO UPDATE``: the mutable columns the row names, from ``EXCLUDED``.
+
+    An update rewrites only the columns the row names, so a column it leaves out keeps its stored
+    value. The INSERT still names such a column, and writes ``NULL`` into a new row, which is the
+    default a nullable column with no ``server_default`` takes. When the row names none of
+    ``mutable``, the first of them is set to its stored value: the conflicting row is still updated
+    (one row affected), and nothing in it changes.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param mutable: the mutable columns the INSERT emits, in declared order; at least one
+    :ptype mutable: Sequence[Column]
+    :param named: the columns the row names; ``None`` sets every one of ``mutable`` (a bulk
+        statement, whose rows share one column list and replace what they write)
+    :ptype named: Collection[str] | None
+    :return: the comma-joined ``col = EXCLUDED.col`` list
+    :rtype: str
+    """
+    chosen = [c for c in mutable if named is None or c.name in named]
+    if chosen:
+        result = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in chosen)
+    else:
+        first = mutable[0].name
+        result = f"{first} = {_conflict_target_ref(schema)}.{first}"
+    return result
+
+
+def _with_conflict_clause(
+    schema: TableSchema, cols: list[Column], sql: str, *, named: Collection[str] | None = None
+) -> str:
     """an INSERT with the conflict clause ``schema.on_conflict`` selects (see :func:`build_insert_sql`).
 
     :param schema: table schema
@@ -594,6 +629,9 @@ def _with_conflict_clause(schema: TableSchema, cols: list[Column], sql: str) -> 
     :ptype cols: list[Column]
     :param sql: the INSERT without a conflict clause
     :ptype sql: str
+    :param named: the columns the row names, which are all a ``DO UPDATE`` rewrites
+        (:func:`_update_set_clause`); ``None`` rewrites every mutable column emitted
+    :ptype named: Collection[str] | None
     :return: the INSERT with it
     :rtype: str
     """
@@ -610,7 +648,7 @@ def _with_conflict_clause(schema: TableSchema, cols: list[Column], sql: str) -> 
         emitted = {c.name for c in cols}
         mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
         if mutable_emitted:
-            set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
+            set_clause = _update_set_clause(schema, mutable_emitted, named)
             result = f"{sql} ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause}"
         else:
             # pk-only table or every non-pk column is immutable or
@@ -623,11 +661,10 @@ def _with_conflict_clause(schema: TableSchema, cols: list[Column], sql: str) -> 
 def cas_mutable_columns_for_data(schema: TableSchema, data: dict[str, Any]) -> list[Column]:
     """select the mutable column list to emit in CAS UPDATE SQL + params.
 
-    symmetric counterpart to :func:`insert_columns_for_data` for the CAS
-    UPDATE path: a mutable column declared with ``server_default`` is
-    optional in the caller's payload and dropped when omitted, and a
-    ``None`` value on a NOT NULL server-default column is treated as
-    "use existing DB value".
+    the CAS UPDATE rewrites only the mutable columns the row names: a column
+    the caller's payload leaves out keeps its stored value, and so does a
+    ``None`` on a NOT NULL server-default column ("use existing DB value").
+    An explicit ``None`` on any other column writes ``NULL``.
 
     :param schema: table schema
     :ptype schema: TableSchema
@@ -638,7 +675,9 @@ def cas_mutable_columns_for_data(schema: TableSchema, data: dict[str, Any]) -> l
     """
     included: list[Column] = []
     for col in schema.mutable_columns():
-        if col.server_default is not None and col.name not in data:
+        if col.name not in data:
+            # an update rewrites only the columns the row names; one it leaves out keeps its
+            # stored value
             continue
         if col.server_default is not None and not col.nullable and col.name in data and data[col.name] is None:
             # L1 round-trip surfaced a None on a NOT NULL
@@ -679,6 +718,10 @@ def build_cas_update_sql(schema: TableSchema, data: dict[str, Any] | None = None
         next_idx += 1
     # final $ is the CAS fence value
     cas_idx = next_idx
+    if not set_parts:
+        # the row names no mutable column: the fenced write still matches (or misses) the row,
+        # and changes nothing in it
+        set_parts.append(f"{schema.cas_column} = {schema.cas_column}")
     set_clause = ", ".join(set_parts)
     result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
     return result
@@ -1064,8 +1107,9 @@ def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None
     * **no conflicting row**: the plain INSERT applies, the fence is never
       evaluated, the row is created and one row is affected. the fence
       cannot block a genuine creation.
-    * **conflicting row, fence matches**: ``DO UPDATE`` applies and one row
-      is affected. ``IS NOT DISTINCT FROM`` is Postgres's NULL-safe
+    * **conflicting row, fence matches**: ``DO UPDATE`` applies to the
+      columns the row names (:func:`_update_set_clause`) and one row is
+      affected. ``IS NOT DISTINCT FROM`` is Postgres's NULL-safe
       equality, so an expected value of ``NULL`` matches a stored ``NULL``
       -- which plain ``=`` never can, and which is exactly the "no row
       existed when i read" case.
@@ -1086,9 +1130,10 @@ def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None
     :return: parameterized INSERT ... ON CONFLICT ... WHERE SQL
     :rtype: str
     :raises RuntimeError: when the schema has no ``cas_column``, when
-        ``on_conflict`` is not ``"update"``, or when the ``cas_column`` is
+        ``on_conflict`` is not ``"update"``, when the ``cas_column`` is
         not among the emitted INSERT columns (which would leave the fence
-        referencing a column the statement never writes)
+        referencing a column the statement never writes), or when ``data``
+        does not name the ``cas_column`` (an update would not advance it)
     """
     if schema.cas_column is None:
         raise RuntimeError(
@@ -1107,6 +1152,14 @@ def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None
             f"cas_column {schema.cas_column!r} in the emitted INSERT columns; it was "
             f"dropped from this statement, so the write would proceed unfenced",
         )
+    if data is not None and schema.cas_column not in data:
+        # the DO UPDATE rewrites only the columns the row names, so a row that leaves the fence
+        # out would update a stored row without advancing it, and the next writer's stale
+        # expectation would still match
+        raise RuntimeError(
+            f"TableSchema(name={schema.name!r}): NULL-safe CAS upsert requires the row to name the "
+            f"cas_column {schema.cas_column!r}; an update leaving it out would not advance the fence",
+        )
     col_names = ", ".join(c.name for c in cols)
     placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
     pk_cols = ", ".join(schema.pk_columns)
@@ -1116,7 +1169,7 @@ def build_cas_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = None
     # which would be an unfenced no-op reporting the same 0 rows a lost
     # race reports.
     mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
-    set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
+    set_clause = _update_set_clause(schema, mutable_emitted, data)
     cas_idx = len(cols) + 1
     target = _conflict_target_ref(schema)
     return (
@@ -1176,7 +1229,7 @@ def build_ordered_upsert_sql(schema: TableSchema, data: dict[str, Any] | None = 
     col_names = ", ".join(c.name for c in cols)
     placeholders = ", ".join(render_param(c, i + 1) for i, c in enumerate(cols))
     pk_cols = ", ".join(schema.pk_columns)
-    set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in schema.mutable_columns() if c.name in emitted)
+    set_clause = _update_set_clause(schema, [c for c in schema.mutable_columns() if c.name in emitted], row)
     target = _conflict_target_ref(schema)
     return (
         f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders}) "

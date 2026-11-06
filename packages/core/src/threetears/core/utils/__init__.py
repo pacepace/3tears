@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         redact_dsn,
         resolve_pool_connect_timeout,
     )
+    from threetears.core.utils.session_settings import session_settings_connection_class
     from threetears.core.utils.yugabyte_pool_recycler import (
         DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES,
         YUGABYTE_POOL_TRIGGERS,
@@ -66,6 +67,10 @@ _LAZY: dict[str, tuple[str, str]] = {
     "log_pool_created": ("threetears.core.utils.pg_pool_kwargs", "log_pool_created"),
     "redact_dsn": ("threetears.core.utils.pg_pool_kwargs", "redact_dsn"),
     "resolve_pool_connect_timeout": ("threetears.core.utils.pg_pool_kwargs", "resolve_pool_connect_timeout"),
+    "session_settings_connection_class": (
+        "threetears.core.utils.session_settings",
+        "session_settings_connection_class",
+    ),
     "DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES": (
         "threetears.core.utils.yugabyte_pool_recycler",
         "DEFAULT_MIN_SECONDS_BETWEEN_EXPIRIES",
@@ -108,6 +113,7 @@ __all__ = [
     "render_local_time",
     "resolve_pool_connect_timeout",
     "resolve_zone",
+    "session_settings_connection_class",
 ]
 
 

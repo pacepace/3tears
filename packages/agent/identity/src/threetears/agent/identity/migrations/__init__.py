@@ -18,6 +18,9 @@ version history:
   pending-queue btree). Self-evolution, 3tears v0.15.0.
 - v002 adds ``wants`` / ``needs`` to the ``identity_block_key`` enum,
   making both proposable identity blocks. 3tears v0.27.0.
+- v003 adds the ``variant`` column (``''`` = the block itself) and moves the
+  one-active and history indexes onto ``(..., block_key, variant)``, so a
+  block can keep consumer-named variants, each with its own chain.
 
 No soft-ref provenance columns (no ``conversation_id`` / ``source_*``), so
 the package declares no cross-package apply-order dependency.
@@ -30,6 +33,9 @@ from threetears.agent.identity.migrations.v001_create_identity_versions import (
 )
 from threetears.agent.identity.migrations.v002_add_wants_needs_block_keys import (
     add_wants_needs_block_keys,
+)
+from threetears.agent.identity.migrations.v003_add_block_variants import (
+    add_block_variants,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -55,6 +61,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     )
     pkg.version(1)(create_identity_versions_table)
     pkg.version(2)(add_wants_needs_block_keys)
+    pkg.version(3)(add_block_variants)
     runner.register(pkg)
     return pkg
 

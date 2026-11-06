@@ -545,19 +545,40 @@ class TestEpochListenerResetFanOut:
             await listener.signal_reset()
 
     @pytest.mark.asyncio
-    async def test_a_consumer_without_a_reset_callback_is_skipped(self) -> None:
-        """Omitting it is a choice, not an error."""
+    async def test_a_consumer_without_a_reset_callback_is_reset_through_its_bump_callback(self) -> None:
+        """A replaced counter lost every bump it held, including any this pod missed the broadcast of.
+
+        Skipping a consumer that registered no ``on_reset`` left exactly that state stale, and the
+        catch-up compares against a last-seen the reset has just cleared, so nothing repaired it.
+        Every consumer in the family registered none (2026-11-05: ``registrations: 1, notified: 0``).
+        """
         _seeded = 5
         nats, _ = _capture_subscribe_typed()
         listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
 
-        told = AsyncMock()
-        await listener.subscribe(_subject("app.a.epoch"), AsyncMock())
-        await listener.subscribe(_subject("app.b.epoch"), AsyncMock(), on_reset=told)
+        bumped, told, also_bumped = AsyncMock(), AsyncMock(), AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), bumped)
+        await listener.subscribe(_subject("app.b.epoch"), also_bumped, on_reset=told)
 
         await listener.signal_reset()
 
+        bumped.assert_awaited_once_with(0, None)
         told.assert_awaited_once()
+        also_bumped.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_bump_callback_on_the_reset_does_not_deprive_the_others(self) -> None:
+        _seeded = 3
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=_seeded))
+        after = AsyncMock()
+        await listener.subscribe(_subject("app.a.epoch"), AsyncMock(side_effect=RuntimeError("consumer bug")))
+        await listener.subscribe(_subject("app.b.epoch"), after)
+
+        with pytest.raises(RuntimeError, match="consumer bug"):
+            await listener.signal_reset()
+
+        after.assert_awaited_once_with(0, None)
 
     @pytest.mark.asyncio
     async def test_last_seen_is_cleared_not_reprimed(self) -> None:
@@ -591,6 +612,36 @@ class TestEpochListenerResetFanOut:
         await callbacks[0](EpochBumpMessage(subject_path="app.a.epoch", epoch=1, payload=None))
 
         on_bump.assert_awaited_once()
+
+
+class TestABucketReplacementDropsAnEpochCache:
+    """The counter bucket is wiped as a broker restart on memory storage wipes it, and a consumer
+    that caches by the epoch and registered no ``on_reset`` -- the shape every consumer had --
+    drops its cache on the next catch-up rather than serve it until its subject bumps again."""
+
+    @pytest.mark.asyncio
+    async def test_the_cache_is_reloaded_after_the_bucket_is_replaced(self) -> None:
+        nats, _ = _capture_subscribe_typed()
+        listener = EpochListener(nats, _StubEpochClient(nats, epoch=0))
+        subject = _subject("app.capabilities.epoch")
+        cache: dict[str, str] = {"model": "loaded before the restart"}
+        reloads: list[tuple[int, dict[str, object] | None]] = []
+
+        async def _reload(epoch: int, payload: dict[str, object] | None) -> None:
+            reloads.append((epoch, payload))
+            cache.clear()
+            cache["model"] = "reloaded"
+
+        await listener.subscribe(subject, _reload)
+        await listener.catch_up(subject, _reload)  # first observation: records the identity
+        assert reloads == []
+
+        bucket = await nats.kv_bucket(name="epochs", ttl=None)
+        bucket.wipe()
+        await listener.catch_up(subject, _reload)
+
+        assert reloads == [(0, None)]
+        assert cache == {"model": "reloaded"}
 
 
 class TestEpochListenerRegistrationOrdering:

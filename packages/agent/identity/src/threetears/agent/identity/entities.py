@@ -10,7 +10,7 @@ uniformly across L1 / L2 / L3.
 
 A version is an immutable snapshot of one identity block at one point in
 the linear chain -- ``content`` / ``rationale`` / ``content_hash`` /
-``parent_version_id`` / ``block_key`` / ``proposer_agent_id`` are
+``parent_version_id`` / ``block_key`` / ``variant`` / ``proposer_agent_id`` are
 write-once (getters only). Only the lifecycle fields mutate:
 ``status`` (proposed -> active -> superseded / rejected),
 ``consenter_user_id`` (set at consent), and ``date_updated`` (the CAS
@@ -104,6 +104,12 @@ class IdentityVersionEntity(BaseEntity):
         """Get the identity block key (an :class:`IdentityBlockKey` value; immutable)."""
         value: str = self._get_raw("block_key")
         return value
+
+    @property
+    def variant(self) -> str:
+        """Get the block variant this version belongs to (``""`` = the block itself; immutable)."""
+        value: str | None = self._get_raw("variant")
+        return value or ""
 
     @property
     def content(self) -> str:

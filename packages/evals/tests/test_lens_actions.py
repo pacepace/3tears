@@ -45,6 +45,8 @@ from threetears.evals.analysis import (
     ScoreExport,
     campaign_report,
 )
+from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
@@ -87,9 +89,11 @@ def evals() -> MountedTool:
     return eval_catalogue().mount_all(standard_tools())[0]
 
 
-def _priced(fixture: OpsFixture) -> OpsFixture:
-    """Store a run of the toy template launched as a toy arm will be, with three priced results; price by history.
+def _priced(fixture: OpsFixture, costs: tuple[float, ...] = PRICED_COSTS) -> OpsFixture:
+    """Store a run of the toy template launched as a toy arm will be, with priced results; price by history.
 
+    :param costs: What each stored result cost; three, close together, unless a test needs other history.
+    :ptype costs: tuple[float, ...]
     :return: The fixture over a host whose launch pricer is the engine's history pricer.
     :rtype: OpsFixture
     """
@@ -105,7 +109,7 @@ def _priced(fixture: OpsFixture) -> OpsFixture:
         apparatus_settings={"reviewer_pool": TOYHOST_REVIEWER_POOL},
     )
     storage.save_eval_run(run)
-    for index, cost in enumerate(PRICED_COSTS):
+    for index, cost in enumerate(costs):
         storage.save_eval_result(
             make_eval_result(
                 id=f"priced-{index}",
@@ -277,6 +281,22 @@ async def test_an_estimate_raises_what_the_launch_refuses_before_pricing_a_kinds
     assert str(refused.value) == f"kind '{toyhost_template().candidate_kind}' has no default candidate model; name one"
 
 
+async def test_an_estimates_text_labels_each_arms_figure_and_the_total_as_the_cap_figures_they_are(
+    evals: MountedTool,
+) -> None:
+    fixture = off_loop(_priced, off_loop(ops_fixture), (0.0015,) * 3)
+    launching = _launching(toyhost_template().id, PRICED_MODEL, k_runs=1)
+
+    outcome = await _call(evals, fixture, {"action": "launch_estimate", **launching})
+
+    estimate = LaunchEstimate.model_validate(outcome.structured)
+    (arm,) = estimate.arms
+    assert arm.predicted_usd is not None and arm.central_usd is not None and estimate.total_predicted_usd is not None
+    cap_figure, centre = format_number(arm.predicted_usd, prefix="$"), format_number(arm.central_usd, prefix="$")
+    assert f": cap figure {cap_figure} (central {centre}) — admitted;" in outcome.text
+    assert f"\ntotal cap figure: {format_number(estimate.total_predicted_usd, prefix='$')}\n" in outcome.text
+
+
 async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_observed(evals: MountedTool) -> None:
     fixture = off_loop(_priced, off_loop(ops_fixture))
     template_id = toyhost_template().id
@@ -301,6 +321,33 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
     assert cell.predicted is not None and cell.predicted.method_id == "usage-history"
     assert f"- {template_id} / {PRICED_MODEL}: 0.2 (measured; n=3, 2 case(s)" in outcome.text
     assert "; predicted 0.2 [" in outcome.text
+
+
+async def test_an_arm_whose_every_past_result_cost_the_same_launches_under_an_enforced_cap() -> None:
+    """Discodon launched one arm twice; the second, priced from history that never varied, raised building its price."""
+    fixture = off_loop(_priced, off_loop(ops_fixture), (0.0015,) * 3)
+    launching = _launching(toyhost_template().id, PRICED_MODEL, k_runs=1)
+    assert fixture.host.launch.settings().enforcement_enabled
+
+    estimate = await launch_estimate(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+    async with asyncio.timeout(10):
+        first = await launched_runs(
+            fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+        )
+        second = await launched_runs(
+            fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
+        )
+
+    (arm,) = estimate.arms
+    assert arm.central_usd is not None and arm.predicted_usd is not None
+    assert arm.low_usd == arm.central_usd == arm.band_high_usd == pytest.approx(0.0015 * CASES), "the band: no width"
+    assert arm.predicted_usd == pytest.approx(arm.central_usd * (1 + COST_BAND_SAFETY_MARGIN), rel=1e-12)
+    (planned,) = estimate.planned_costs()
+    assert planned.predicted is not None
+    assert planned.predicted.interval_low == planned.predicted.value == planned.predicted.interval_high, (
+        "a pivot sets the band beside the cost observed, never the cap's margin"
+    )
+    assert len(first) == len(second) == 1 and first != second
 
 
 async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_launch_made(evals: MountedTool) -> None:

@@ -79,6 +79,7 @@ callable gets a :class:`TypeError` naming the parameter; wrap it as
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -88,7 +89,7 @@ from uuid import UUID
 
 from threetears.core.coordination import LockHeld, nats_distributed_lock
 from threetears.nats.errors import KvError
-from threetears.observe import contain, get_logger
+from threetears.observe import contain, get_logger, spawn_background
 from uuid_utils import uuid7
 
 from threetears.scheduled_jobs.config import (
@@ -110,7 +111,7 @@ from threetears.scheduled_jobs.events import (
 from threetears.scheduled_jobs.metrics import get_scheduled_jobs_emitter
 from threetears.scheduled_jobs.protocols import DueSchedule, FireStore, ScheduleStore
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
-from threetears.scheduled_jobs.types import JobFireResult, JobTrigger
+from threetears.scheduled_jobs.types import JobFireResult, JobTrigger, ScheduleStatus
 
 __all__ = [
     "UNROUTED_KIND_REASON",
@@ -119,6 +120,14 @@ __all__ = [
     "scheduled_tick_job",
 ]
 
+
+#: the longest pause before a fire's one retry (``JobFireResult.retry_after_seconds``), whatever the dispatcher
+#: asks: the field is for a failure a moment fixes, and the row stays 'dispatching' meanwhile, well inside every
+#: reap threshold
+_FIRE_RETRY_MAX_SECONDS: Final[float] = 30.0
+
+#: the retries running now, held so none is collected mid-pause
+_RETRYING: set[asyncio.Task[None]] = set()
 
 # Drift threshold for the dedicated drift-event log ("actual - scheduled
 # > 60s"). The histogram in :mod:`threetears.scheduled_jobs.metrics`
@@ -463,7 +472,7 @@ async def _dispatch_one(
             # of its grid after the tick, so late ticks never drift it.
             current_fire_at=expected_next_fire,
         )
-    new_status = "expired" if computed_next_fire is None else "active"
+    new_status: ScheduleStatus = "expired" if computed_next_fire is None else "active"
 
     claimed = await schedule_store.claim_and_reschedule(
         partition_key=schedule.partition_key,
@@ -505,6 +514,8 @@ async def _dispatch_one(
         scheduled_fire_at=expected_next_fire,
         payload=schedule.payload,
         name=schedule.name,
+        claimed_next_fire_at=computed_next_fire,
+        claimed_status=new_status,
     )
     await fire_store.create_dispatching(
         fire_id=fire_id,
@@ -561,26 +572,140 @@ async def _dispatch_one(
     # to produce a negative duration.
     dispatch_started = time.monotonic()
 
+    result: JobFireResult | None = None
+    failure: Exception | None = None
     try:
         result = await dispatch_callback(trigger, fire_id)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
-        contain(
-            exc,
-            log=log,
-            what=EVENT_FIRE_FAILED,
+        contain(exc, log=log, what=EVENT_FIRE_FAILED, extra=_fire_failure_extra(exc, schedule, fire_id), level="error")
+        failure = exc
+    if result is not None and result.status == "failed" and result.retry_after_seconds is not None:
+        # a failure the dispatcher says a moment fixes: the same fire, once more, after the pause it asked for
+        # (capped). Off the tick: the tick dispatches its due schedules one after another inside the cross-pod
+        # lock, so a pause here would hold back every later fire. The row stays 'dispatching' until the retry
+        # settles it, as a handed-off fire's does, and the reaper covers a pod lost meanwhile.
+        pause = min(max(0.0, result.retry_after_seconds), _FIRE_RETRY_MAX_SECONDS)
+        log.warning(
+            "scheduled_tick: fire failed with a retry asked for; running it once more",
             extra={
-                "job_id": str(schedule.job_id),
-                "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
-                "partition_key": str(schedule.partition_key),
-                "schedule_type": schedule.schedule_type,
-                "error_type": type(exc).__name__,
+                "extra_data": {
+                    "job_id": str(schedule.job_id),
+                    "fire_id": str(fire_id),  # convert at border: fire-retry log extra_data field
+                    "kind": schedule.kind,
+                    "error": result.error,
+                    "retry_after_seconds": result.retry_after_seconds,
+                    "pause_seconds": pause,
+                }
             },
-            level="error",
         )
+        retry = spawn_background(
+            _retry_fire(schedule, fire_store, dispatch_callback, trigger, fire_id, emitter, pause, dispatch_started),
+            name=f"scheduled-fire-retry:{fire_id}",
+            logger=log,
+        )
+        _RETRYING.add(retry)
+        retry.add_done_callback(_RETRYING.discard)
+        return
+    await _settle_fire(schedule, fire_store, fire_id, emitter, dispatch_started, result, failure)
+
+
+async def _retry_fire(
+    schedule: DueSchedule,
+    fire_store: FireStore,
+    dispatch_callback: DispatchCallback,
+    trigger: JobTrigger,
+    fire_id: UUID,
+    emitter: Any,
+    pause: float,
+    dispatch_started: float,
+) -> None:
+    """run a fire once more after ``pause``, and settle it with whatever the second try answers.
+
+    :param schedule: the schedule fired
+    :ptype schedule: DueSchedule
+    :param fire_store: the fire-side store
+    :ptype fire_store: FireStore
+    :param dispatch_callback: the fire's handler
+    :ptype dispatch_callback: DispatchCallback
+    :param trigger: the fire's trigger
+    :ptype trigger: JobTrigger
+    :param fire_id: the fire
+    :ptype fire_id: UUID
+    :param emitter: the metrics emitter
+    :ptype emitter: Any
+    :param pause: seconds to wait first
+    :ptype pause: float
+    :param dispatch_started: the monotonic mark the first try started at
+    :ptype dispatch_started: float
+    :return: nothing
+    :rtype: None
+    """
+    await asyncio.sleep(pause)
+    result: JobFireResult | None = None
+    failure: Exception | None = None
+    try:
+        result = await dispatch_callback(trigger, fire_id)
+    except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
+        contain(exc, log=log, what=EVENT_FIRE_FAILED, extra=_fire_failure_extra(exc, schedule, fire_id), level="error")
+        failure = exc
+    await _settle_fire(schedule, fire_store, fire_id, emitter, dispatch_started, result, failure)
+
+
+def _fire_failure_extra(exc: Exception, schedule: DueSchedule, fire_id: UUID) -> dict[str, str]:
+    """the fields a raised fire's contained failure is recorded with.
+
+    :param exc: what the handler raised
+    :ptype exc: Exception
+    :param schedule: the schedule fired
+    :ptype schedule: DueSchedule
+    :param fire_id: the fire
+    :ptype fire_id: UUID
+    :return: the fields
+    :rtype: dict[str, str]
+    """
+    return {
+        "job_id": str(schedule.job_id),
+        "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
+        "partition_key": str(schedule.partition_key),
+        "schedule_type": schedule.schedule_type,
+        "error_type": type(exc).__name__,
+    }
+
+
+async def _settle_fire(
+    schedule: DueSchedule,
+    fire_store: FireStore,
+    fire_id: UUID,
+    emitter: Any,
+    dispatch_started: float,
+    result: JobFireResult | None,
+    failure: Exception | None,
+) -> None:
+    """record how a fire ended: raised, handed off, failed, or finished.
+
+    :param schedule: the schedule fired
+    :ptype schedule: DueSchedule
+    :param fire_store: the fire-side store
+    :ptype fire_store: FireStore
+    :param fire_id: the fire
+    :ptype fire_id: UUID
+    :param emitter: the metrics emitter
+    :ptype emitter: Any
+    :param dispatch_started: the monotonic mark the dispatch started at
+    :ptype dispatch_started: float
+    :param result: what the handler returned; None when it raised
+    :ptype result: JobFireResult | None
+    :param failure: what the handler raised; None when it returned
+    :ptype failure: Exception | None
+    :return: nothing
+    :rtype: None
+    """
+    if failure is not None or result is None:
+        # a raise was contained where it was caught
         await fire_store.finalize_failed(
             schedule.partition_key,
             fire_id,
-            error=str(exc),
+            error=str(failure) if failure is not None else "the fire's handler returned nothing",
             latency_ms=_elapsed_ms(dispatch_started),
         )
         emitter.inc_fire(status="failed", schedule_type=schedule.schedule_type)

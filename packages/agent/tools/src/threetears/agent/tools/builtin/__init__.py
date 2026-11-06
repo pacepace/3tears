@@ -21,6 +21,7 @@ from threetears.agent.tools.builtin.date_math import DateMathTool, create_date_m
 from threetears.agent.tools.builtin.dictionary import DictionaryTool, create_dictionary_tool
 from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool, create_timezone_converter_tool
 from threetears.agent.tools.builtin.unit_converter import UnitConverterTool, create_unit_converter_tool
+from threetears.agent.tools.builtin.web_answer import create_web_answer_tool
 from threetears.agent.tools.builtin.web_fetch import create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import create_web_search_tool
 from threetears.observe import contain, get_logger
@@ -171,6 +172,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         ("date_math", create_date_math_tool),
         ("web_search", create_web_search_tool),
         ("web_fetch", create_web_fetch_tool),
+        ("web_answer", create_web_answer_tool),
         ("analyze_media", create_analyze_media_tool),
     ]
 

@@ -34,7 +34,7 @@ from threetears.agent.acl.types import (
     RoleAssignment,
 )
 
-__all__ = ["FakeStore", "make_cache"]
+__all__ = ["FakeBatchingStore", "FakeStore", "make_cache"]
 
 
 def make_cache(store: "FakeStore") -> AclCache:
@@ -205,4 +205,26 @@ class FakeStore:
         :rtype: dict[UUID, object]
         """
         result: dict[UUID, object] = {gid: self.groups[gid] for gid in group_ids if gid in self.groups}
+        return result
+
+
+# parity-with: threetears.agent.acl.loader.ParentGroupsLoader
+class FakeBatchingStore(FakeStore):
+    """a :class:`FakeStore` that also reads a whole level of parent groups at once.
+
+    the production :class:`~threetears.agent.acl.CollectionMembershipLoader` is a
+    :class:`~threetears.agent.acl.ParentGroupsLoader`; this fake takes the evaluator down the same
+    batched path, while a plain :class:`FakeStore` keeps the per-group one covered.
+    """
+
+    async def load_for_groups(self, group_ids: tuple[UUID, ...]) -> tuple[GroupMembership, ...]:
+        """return every membership row naming any of ``group_ids`` as a group member.
+
+        :param group_ids: child group UUIDs to resolve
+        :ptype group_ids: tuple[UUID, ...]
+        :return: tuple of memberships
+        :rtype: tuple[GroupMembership, ...]
+        """
+        wanted = set(group_ids)
+        result = tuple(m for m in self.memberships if m.member_type == MemberType.GROUP and m.member_id in wanted)
         return result

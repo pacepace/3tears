@@ -216,3 +216,23 @@ def test_default_wake_caps_match_placement_lock() -> None:
     assert DEFAULT_HTTP_ALLOWED_HOSTS == ()
     assert DEFAULT_LOKI_NAMED_QUERIES == {}
     assert DEFAULT_POSTGRES_NAMED_QUERIES == {}
+
+
+@pytest.mark.parametrize("instrument", [WAKE_DRIFT_SECONDS, WAKE_YIELD_DURATION_SECONDS])
+def test_wake_timing_histograms_resolve_minutes(instrument: str) -> None:
+    """a wake fires on a tick about half a minute apart and a yielded run lasts minutes, so both
+    timing histograms need finite buckets past 10 s, where the client library's defaults stop."""
+    prometheus_client = pytest.importorskip("prometheus_client")
+    registry = prometheus_client.CollectorRegistry()
+    emitter = WakeMetricsEmitter(registry=registry)
+    emitter.observe_drift(45.0)
+    emitter.observe_yield_duration(45.0)
+    bounds = sorted(
+        float(sample.labels["le"])
+        for metric in registry.collect()
+        for sample in metric.samples
+        if sample.name == f"{instrument}_bucket" and sample.labels["le"] != "+Inf"
+    )
+    assert bounds[-1] >= 300.0, f"{instrument} ends at {bounds[-1]} s"
+    assert any(45.0 <= bound < 90.0 for bound in bounds), bounds
+    assert bounds[0] <= 1.0

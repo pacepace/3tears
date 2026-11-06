@@ -762,23 +762,27 @@ class TestHubTableParity:
             (TableTemplateCollection, _full_template_row),
         ],
     )
-    def test_a_full_row_leaves_nothing_for_the_store_to_decide(self, cls: type[Any], row_factory: Any) -> None:
+    def test_a_full_row_leaves_only_its_immutable_stamp_for_the_store_to_decide(
+        self, cls: type[Any], row_factory: Any
+    ) -> None:
+        """``date_created`` is ``immutable``: an update keeps the stored stamp, so it is read back, not cached as sent."""
         registry, config = _make_registry_and_config()
         coll = cls(registry=registry, config=config)
-        assert coll.columns_decided_by_store(row_factory()) == ()
+        assert coll.columns_decided_by_store(row_factory()) == ("date_created",)
 
     def test_a_row_missing_a_column_leaves_it_for_the_store_to_decide(self) -> None:
         registry, config = _make_registry_and_config()
         coll = DataSourceRelationCollection(registry=registry, config=config)
         row = _full_relation_row()
         del row["edges"]
-        assert coll.columns_decided_by_store(row) == ("edges",)
+        assert coll.columns_decided_by_store(row) == ("edges", "date_created")
 
     def test_a_table_row_carrying_coverage_dimension_is_read_back(self) -> None:
         """an update keeps the stored designation, so the row as sent may not be the row stored."""
         registry, config = _make_registry_and_config()
         coll = DataSourceTableCollection(registry=registry, config=config)
-        assert coll.columns_decided_by_store(_full_table_row()) == ("coverage_dimension",)
+        decided = coll.columns_decided_by_store(_full_table_row())
+        assert set(decided) == {"coverage_dimension", "date_created"}
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgedEvidenceTier,
     JudgeEvidenceTier,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import ScoreRecord
 from threetears.evals.analysis.stats import (
     clustered_standard_error,

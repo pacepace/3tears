@@ -214,7 +214,8 @@ def deserialize_from_json(data: bytes, field_types: dict[str, Any]) -> dict[str,
     """Deserialize JSON bytes from cache back to entity data dictionary.
 
     Converts string representations back to their native Python types
-    based on the entity's field type annotations.
+    based on the entity's field type annotations. A ``Decimal`` field is a ``Decimal`` whether the
+    JSON holds it as a string, as :func:`serialize_to_json` writes it, or as a number.
     """
     raw: dict[str, Any] = json.loads(data.decode("utf-8"))
     result: dict[str, Any] = {}
@@ -227,8 +228,10 @@ def deserialize_from_json(data: bytes, field_types: dict[str, Any]) -> dict[str,
             result[key] = UUID(value)
         elif base_type is datetime and isinstance(value, str):
             result[key] = datetime.fromisoformat(value)
-        elif base_type is Decimal and isinstance(value, str):
-            result[key] = Decimal(value)
+        elif base_type is Decimal and isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            # a JSON number too: a writer that sent a float, or an L1 that held REAL, cached one.
+            # a float is taken by its shortest repr, the decimal it was written from
+            result[key] = Decimal(repr(value) if isinstance(value, float) else str(value))
         elif base_type is bytes and isinstance(value, str):
             result[key] = bytes.fromhex(value)
         elif base_type is int and isinstance(value, (int, float)):

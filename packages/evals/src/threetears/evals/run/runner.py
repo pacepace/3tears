@@ -96,7 +96,7 @@ from threetears.evals.kernel.host.timeouts import EvalCellTimeout
 from threetears.evals.schema.traces import CellIdentity, CellTrace, TraceSink, bind_cell_identity
 from threetears.evals.kernel.identity import DerivedVariantIdentity, resolve_variant_identity
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, undeclarable_host_measures
-from threetears.evals.kernel.result_condition import trial_exclusion
+from threetears.evals.kernel.result_condition import ExclusionCause, trial_exclusion
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -3406,10 +3406,54 @@ class RunCallbacks:
     on_result: Callable[[EvalResult], Awaitable[None]] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class StoredCell:
+    """What a run taken up again keeps of one stored row: the scalars its take-up and its run loop read, never the row.
+
+    A stored row carries its judge's reasoning, its kind's payload and its world events, so a take-up that held every
+    row of a large run would hold the run's whole volume. The take-up reads the rows a page at a time
+    (:mod:`~threetears.evals.kernel.run_pages`) and keeps this of each.
+
+    :ivar summary: The row as the run loop counts a cell (:meth:`~threetears.evals.kernel.scoring.CellSummary.from_result`,
+        persisted): its id, its cell, its outcome, its termination and its cost.
+    :ivar infra_error: The harness fault it recorded, if any.
+    :ivar exclusion: Why it is left out of the measures that need every rubric dimension
+        (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`), or ``None``.
+    :ivar superseded_spend_usd: What the attempts it was written over spent (``EvalResult.superseded_spend_usd``).
+    :ivar metered_calls: The metered calls it landed (``EvalResult.metered_calls``).
+    :ivar metered_calls_refused: The metered calls it was refused (``EvalResult.metered_calls_refused``).
+    """
+
+    summary: CellSummary
+    infra_error: str | None
+    exclusion: ExclusionCause | None
+    superseded_spend_usd: float | None
+    metered_calls: int | None
+    metered_calls_refused: int | None
+
+    @classmethod
+    def from_result(cls, row: EvalResult) -> StoredCell:
+        """Keep what a take-up reads of a stored row.
+
+        :param row: The row, as stored.
+        :ptype row: EvalResult
+        :return: Its scalars.
+        :rtype: StoredCell
+        """
+        return cls(
+            summary=CellSummary.from_result(row, persisted=True),
+            infra_error=row.infra_error,
+            exclusion=trial_exclusion(row),
+            superseded_spend_usd=row.superseded_spend_usd,
+            metered_calls=row.metered_calls,
+            metered_calls_refused=row.metered_calls_refused,
+        )
+
+
 @dataclass(frozen=True)
 class StoredCells:
     """What a run taken up again already holds of its matrix: the cells it does not run again, and the rows it
-    writes over.
+    writes over, each kept as a :class:`StoredCell` rather than the row itself.
 
     :ivar done: The stored rows that count as done. Their cells are not run again, and the run's progress, its
         completeness and its every-cell checks count them beside the cells this holding runs.
@@ -3420,8 +3464,8 @@ class StoredCells:
         cost cap and metered-call ceiling still count it.
     """
 
-    done: tuple[EvalResult, ...] = ()
-    replaced: Mapping[tuple[str, int], EvalResult] = field(default_factory=dict)
+    done: tuple[StoredCell, ...] = ()
+    replaced: Mapping[tuple[str, int], StoredCell] = field(default_factory=dict)
 
 
 def cell_execution_order(
@@ -3647,16 +3691,18 @@ async def execute_run(
     done = len(stored.done)
     # Each cell an apparatus fault excluded, by its fault — see the check after the loop.
     apparatus_failures: list[str] = [
-        row.infra_error or "an apparatus fault" for row in stored.done if row.termination == "apparatus_failed"
+        cell.infra_error or "an apparatus fault"
+        for cell in stored.done
+        if cell.summary.termination == "apparatus_failed"
     ]
     # Each cell excluded for an ``infra`` cause, by its error — see the check after the loop.
     infra_exclusions: list[str] = [
-        row.infra_error for row in stored.done if trial_exclusion(row) == "infra" and row.infra_error
+        cell.infra_error for cell in stored.done if cell.exclusion == "infra" and cell.infra_error
     ]
     # The caller's list when it supplied one, so what it can read mid-flight is
     # the identical object this returns — never a copy that could disagree.
     summaries: list[CellSummary] = cell_sink if cell_sink is not None else []
-    summaries.extend(CellSummary.from_result(row, persisted=True) for row in stored.done)
+    summaries.extend(cell.summary for cell in stored.done)
 
     # One lane for the whole run, so every cell records into — or replays — the one corpus the run
     # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
@@ -3695,7 +3741,7 @@ async def execute_run(
     if stored.done:
         # Filtered after it is ordered, never ordered after it is filtered: the run's own order with its done cells
         # left out is the order an uninterrupted run would have run the rest in.
-        held = {(row.test_case_id, row.k_iteration) for row in stored.done}
+        held = {(cell.summary.test_case_id, cell.summary.k_iteration) for cell in stored.done}
         order = [(k, tc) for k, tc in order if (tc.id, k) not in held]
     # The run's width, narrowed to its own matrix: a run of one cell is serial whatever was asked, and
     # its cells say so (``execution_mode`` reads the width off these options).
@@ -3961,20 +4007,21 @@ async def execute_run(
             # derived one), carrying what the attempts it replaces spent: the row was their only record.
             superseded = (
                 None
-                if over.cost_usd is None or over.superseded_spend_usd is None
-                else over.cost_usd + over.superseded_spend_usd
+                if over.summary.cost_usd is None or over.superseded_spend_usd is None
+                else over.summary.cost_usd + over.superseded_spend_usd
             )
             result = result.model_copy(
                 update={
-                    "id": over.id,
+                    "id": over.summary.result_id,
                     "superseded_spend_usd": superseded,
                     "metered_calls": None
                     if metered is None and over.metered_calls is None
                     else (metered or 0) + (over.metered_calls or 0),
                 }
             )
-            if cell_trace.result_id != over.id:
-                cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over.id), "result_id": over.id})
+            if cell_trace.result_id != over.summary.result_id:
+                over_id = over.summary.result_id
+                cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over_id), "result_id": over_id})
         saving = asyncio.ensure_future(
             run_blocking(host.blocking_executor, host.storage.save_run_cell, result, cell_trace)
         )

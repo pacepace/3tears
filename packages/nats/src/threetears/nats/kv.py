@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Final, NamedTuple, Protocol, runtime_chec
 
 from nats.errors import ConnectionClosedError as _NatsConnectionClosedError
 from nats.errors import Error as NatsError
+from nats.errors import MaxPayloadError as _NatsMaxPayloadError
 from nats.errors import NotJSMessageError
 from nats.js.api import (
     AckPolicy,
@@ -65,7 +66,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.resilience import retry_bounded
 
 from threetears.nats.diagnostics import kv_grant_remedy, kv_timeout_remedy
-from threetears.nats._named_read import NamedRead, read_through_named_consumer
+from threetears.nats._stream_listing import stream_subjects
 from threetears.nats._publish import run_bounded
 from threetears.nats.errors import (
     KvBucketNotFoundError,
@@ -75,6 +76,7 @@ from threetears.nats.errors import (
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
+from threetears.nats import kv_watch
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
@@ -216,8 +218,10 @@ RECONCILED_KV_STREAM_FIELDS: tuple[str, ...] = ("allow_direct", "allow_msg_ttl")
 #: whole shape owns that too.
 #:
 #: ``max_bytes`` and ``num_replicas`` because the owner sizes and places the bucket: JetStream
-#: updates both on a live stream, moving a memory bucket from one server to three (or back) with its
-#: entries kept, so a declaration that asks for more replicas gets them without a delete.
+#: updates both on a live stream, moving a memory bucket from one server to three with its entries
+#: kept, so a declaration that asks for more replicas gets them without a delete. Replicas are only
+#: ever raised: a live bucket on more servers than a declaration asks for stays on them
+#: (:func:`kv_stream_differences` reports no drift there).
 _OWNED_IN_PLACE_KV_STREAM_FIELDS: tuple[str, ...] = ("max_age", "max_msgs_per_subject", "max_bytes", "num_replicas")
 
 #: The fields a declaration that owns its bucket reconciles by DELETING the backing stream and
@@ -347,8 +351,8 @@ _KV_REMOVAL_OPERATIONS: Final[frozenset[str]] = frozenset({"DEL", "PURGE"})
 #: can tell a watch from anything else.
 _KEY_WATCH_CONSUMER_PREFIX: Final[str] = "kw_"
 
-#: Consumer names a key listing mints carry this prefix, beside the key watch's ``kw_``.
-_KEY_LISTING_CONSUMER_PREFIX: Final[str] = "kl_"
+#: how many keys one listing reads at once, each by the read :meth:`NatsKvBucket.get` makes
+_KEY_READS_IN_FLIGHT: Final[int] = 32
 
 #: Characters that make a subject token a wildcard or split it. A watched key must be literal: the
 #: grant names it literally, and a wildcard filter would be a different consumer from the one granted.
@@ -519,6 +523,8 @@ def kv_stream_differences(*, requested: StreamConfig, actual: StreamConfig) -> d
 
     a field the caller left unset (``None``) is not a request and is skipped:
     the server fills it and disagreeing with a value nobody asked for is noise.
+    a live replica count at or above the one requested is not a difference either:
+    a bucket's replicas are only ever raised.
 
     :param requested: config this process asked for
     :ptype requested: StreamConfig
@@ -534,6 +540,9 @@ def kv_stream_differences(*, requested: StreamConfig, actual: StreamConfig) -> d
         if want is None:
             continue
         have = getattr(actual, field, None)
+        if field == "num_replicas" and _normalised(field, have) >= _normalised(field, want):
+            # never fewer servers than the bucket is live on: a count at or above the one asked is no drift
+            continue
         if _normalised(field, want) != _normalised(field, have):
             differences[field] = (want, have)
     return differences
@@ -983,6 +992,9 @@ async def reconcile_kv_stream(
                 f"ensure_kv_bucket(owns_bucket=True, drop_file_storage=True) once; otherwise migrate "
                 f"its entries first."
             )
+        # created again on no fewer servers than it was live on: replicas are only ever raised
+        if _normalised("num_replicas", live.num_replicas) > _normalised("num_replicas", config.num_replicas):
+            config = dataclasses.replace(config, num_replicas=live.num_replicas)
         live, recreated = await _recreate_owned_kv_stream(
             js=js, full_name=full_name, config=config, differences=differences
         )
@@ -1829,12 +1841,19 @@ class NatsKvBucket:
         ``passthrough`` exceptions (KeyNotFound / CAS-mismatch) are normal control flow and
         are re-raised immediately -- only an unexpected failure (a vanished stream, a
         transient transport error) triggers the single re-open + retry. A second failure
-        propagates to the caller's ``KvError`` wrap.
+        propagates to the caller's ``KvError`` wrap. A value over the server's ``max_payload`` is
+        not a transport failure and is never retried: nothing about the second attempt is smaller.
         """
         try:
             await self._follow_connection()
             return await self._bounded(op)
         except passthrough:
+            raise
+        except _NatsMaxPayloadError:
+            # An oversized value is refused client-side, before anything leaves the process, against
+            # the max_payload the server advertised. Re-opening the bucket changes neither number,
+            # so the retry could only fail the same way after a second round trip and a misleading
+            # "transport error" line. The caller's KvError wrap still names it.
             raise
         except PublishTimeoutError:
             # A wedged operation is not a vanished bucket. Re-opening runs another KV call
@@ -2376,7 +2395,9 @@ class NatsKvBucket:
 
         A consumer create that fails is logged, naming the grant to check, and retried after
         ``retry``; it is never raised, because the watch's whole job is to outlast the conditions
-        that make a create fail. A closed consumer's server-side state is left to the server to
+        that make a create fail. One the server answers "stream not found" is the bucket being absent
+        -- a broker restart took it, until its declarer creates it again -- and is said once at INFO,
+        then once at WARNING if it lasts, rather than on every retry. A closed consumer's server-side state is left to the server to
         reap -- a key-scoped grant carries no ``CONSUMER.DELETE``.
 
         Close it by stopping iteration -- ``aclose()``, or leaving an ``aclosing`` block -- which
@@ -2401,6 +2422,7 @@ class NatsKvBucket:
         stream = kv_stream_name(self._full_name)
         last: KvKeyUpdate | None = None
         unsequenced = 0
+        absence = _StreamAbsence(subject=subject, stream=stream)
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2409,6 +2431,7 @@ class NatsKvBucket:
                 heartbeat=heartbeat,
                 retry=retry,
                 op_timeout_seconds=self._timings.op_timeout_seconds,
+                absence=absence,
             )
             if consumer is None:
                 await asyncio.sleep(retry.total_seconds())
@@ -2475,6 +2498,7 @@ class NatsKvBucket:
         # starts its sequence again, so a NEW value can arrive on the revision the old one had.
         known: dict[str, tuple[int, bytes]] = {}
         unsequenced = 0
+        absence = _StreamAbsence(subject=subject, stream=stream)
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2483,6 +2507,7 @@ class NatsKvBucket:
                 heartbeat=heartbeat,
                 retry=retry,
                 op_timeout_seconds=self._timings.op_timeout_seconds,
+                absence=absence,
             )
             if consumer is None:
                 await asyncio.sleep(retry.total_seconds())
@@ -2517,18 +2542,17 @@ class NatsKvBucket:
     async def list_keys(self, *, prefix: str = "") -> list[str]:
         """every live key in the bucket that starts with ``prefix``.
 
-        Lists through a push consumer created by NAME with its filter in the create subject
-        (``$JS.API.CONSUMER.CREATE.{stream}.{name}.$KV.{bucket}.{prefix}>``), the one consumer shape
-        a pod's grant on a bucket admits. nats-py's ``KeyValue.keys`` and ``watchall`` create an
-        UNNAMED consumer, whose filter rides only in the request body, and a pod is never granted
-        that -- the call blocks to its deadline instead of raising.
+        Lists with no consumer: the keys are the stream's subjects, from ``STREAM.INFO`` (paged past
+        the server's cap on one answer), and each key's latest message is read by a subject-carried
+        ``DIRECT.GET`` -- a key whose latest message is a delete or purge marker is not listed. A
+        replay of the bucket through a consumer stalls part way under load
+        (:mod:`threetears.nats._stream_listing`); nats-py's ``KeyValue.keys`` and ``watchall`` create
+        an UNNAMED consumer besides, whose filter rides only in the request body, and a pod is never
+        granted that. Both verbs used here are a bucket grant's own (bind, and a read by subject).
 
         A prefix that ends on a token boundary (``""``, or ending in ``.``) narrows the filter
-        itself, so the server delivers only matching keys; any other prefix filters the whole
-        bucket and keeps the matching keys here. The consumer delivers each key's latest message,
-        headers only, and a key whose latest message is a delete or purge is not listed. It
-        acknowledges nothing, and the server reaps it after its inactivity threshold -- a pod's
-        grant carries no ``CONSUMER.DELETE``.
+        itself, so only matching keys are read; any other prefix filters the whole bucket and keeps
+        the matching keys here.
 
         Like every other operation, it first follows the client onto its current connection
         (:meth:`_follow_connection`), so a handle held across a credential renewal or a move off a
@@ -2542,9 +2566,9 @@ class NatsKvBucket:
         :raises KvBucketNotFoundError: when the bucket's stream is gone and could not be bound again --
             a declaring handle could not recreate it, or a bind-only handle's declarer did not return
             within ``KvTimings.bind_wait_for_declarer_seconds``
-        :raises KvError: when the consumer cannot be created or the listing does not finish within
-            its bound -- an ungranted create is never answered, so it arrives here as a timeout --
-            or binding the bucket on the current connection failed for a reason other than its absence
+        :raises KvError: when the stream or a key cannot be read, or the listing does not finish within
+            its bound -- an ungranted read is never answered, so it arrives here as a timeout -- or
+            binding the bucket on the current connection failed for a reason other than its absence
         """
         if any(char in _KEY_WATCH_FORBIDDEN for char in prefix):
             raise ValueError(f"list_keys needs a literal prefix, got {prefix!r}")
@@ -2590,8 +2614,8 @@ class NatsKvBucket:
         :return: the subjects of the live keys, in stream order
         :rtype: list[str]
         :raises KvBucketNotFoundError: the server answered that the stream does not exist
-        :raises KvError: the attempt did not finish within its bound -- an ungranted consumer create
-            is never answered -- or the consumer create failed for another reason
+        :raises KvError: the attempt did not finish within its bound -- an ungranted read is never
+            answered -- or a read failed for another reason
         """
         bound = self._timings.key_listing_timeout_seconds
         try:
@@ -2600,13 +2624,18 @@ class NatsKvBucket:
         except TimeoutError as exc:
             raise KvError(
                 f"listing keys of {self._full_name} did not finish within {bound:g}s. "
-                f"an ungranted consumer create blocks to its deadline -- check this principal's grant on "
-                f"$JS.API.CONSUMER.CREATE.{stream}.*.{filter_subject}"
+                f"an ungranted read blocks to its deadline -- check this principal's grant on "
+                f"$JS.API.STREAM.INFO.{stream} and $JS.API.DIRECT.GET.{stream}.{filter_subject}"
             ) from exc
         return found
 
     async def _list_keys_through(self, *, stream: str, filter_subject: str) -> list[str]:
-        """create one named, headers-only consumer and read each key's latest message through it.
+        """the keys' subjects from one ``STREAM.INFO``, each kept when its latest message is a value.
+
+        No consumer: a replay of the bucket through one stalls part way under load
+        (:mod:`threetears.nats._stream_listing`). A key whose latest message is a delete or purge marker is still a
+        subject of the stream, so each subject's latest message is read (a subject-carried ``DIRECT.GET``, the read
+        :meth:`get` makes) and a marker is left out.
 
         :param stream: the bucket's backing stream
         :ptype stream: str
@@ -2614,30 +2643,71 @@ class NatsKvBucket:
         :ptype filter_subject: str
         :return: the subjects of the live keys, in stream order
         :rtype: list[str]
-        :raises KvError: when the NATS connection is closed or the consumer create fails
+        :raises KvBucketNotFoundError: the server answered that the stream does not exist
+        :raises KvError: when the stream or a key cannot be read
+        """
+        return [
+            subject for subject, _sequence, removed in await self._latest_by_key(stream, filter_subject) if not removed
+        ]
+
+    async def _latest_by_key(self, stream: str, filter_subject: str) -> list[tuple[str, int, bool]]:
+        """each key's subject under ``filter_subject``, its latest message's sequence, and whether that message is a
+        delete or purge marker; in stream order.
+
+        :param stream: the bucket's backing stream
+        :ptype stream: str
+        :param filter_subject: the subject filter, inside this bucket
+        :ptype filter_subject: str
+        :return: (subject, sequence, removed) per key
+        :rtype: list[tuple[str, int, bool]]
+        :raises KvBucketNotFoundError: the server answered that the stream does not exist
+        :raises KvError: when the stream or a key cannot be read
         """
 
         def failure(message: str, cause: BaseException | None) -> Exception:
             return KvError(message) if cause is None else _kv_error(message, bucket=self._full_name, cause=cause)
 
-        messages = await read_through_named_consumer(
-            self._client,
-            NamedRead(
-                stream=stream,
-                filter_subject=filter_subject,
-                deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
-                name_prefix=_KEY_LISTING_CONSUMER_PREFIX,
-                headers_only=True,
-                timeout_seconds=self._timings.key_listing_timeout_seconds,
-                receiver="key listing",
-            ),
-            failure=failure,
-        )
-        return [
-            msg.subject
-            for msg in messages
-            if (msg.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS
-        ]
+        timeout = self._timings.op_timeout_seconds
+        prefix = f"$KV.{self._full_name}."
+        limit = asyncio.Semaphore(_KEY_READS_IN_FLIGHT)
+
+        async def _latest(subject: str) -> tuple[str, int, bool] | None:
+            # the handle's own read: a direct get on a bucket that runs allow_direct, a message get on one that does
+            # not -- the same read get() makes
+            async with limit:
+                try:
+                    entry = await run_bounded(
+                        lambda: self._kv.get(subject[len(prefix) :], validate_keys=False),
+                        timeout=timeout,
+                        what=f"kv read of {subject}",
+                    )
+                except KeyNotFoundError as exc:
+                    # NOSILENT: a marker is reported with its sequence; a key gone since it was listed is left out
+                    marker = getattr(exc, "entry", None)
+                    return None if marker is None else (subject, int(marker.revision or 0), True)
+                return (subject, int(entry.revision or 0), False)
+
+        try:
+            subjects = await stream_subjects(
+                self._client, stream=stream, subjects_filter=filter_subject, timeout_seconds=timeout, failure=failure
+            )
+            read = await asyncio.gather(*(_latest(subject) for subject in subjects), return_exceptions=True)
+        except KvError:
+            raise
+        except Exception as exc:
+            # a stream that is gone keeps its type (KvBucketNotFoundError), which list_keys re-opens on
+            raise _kv_error(
+                f"listing keys of {self._full_name} failed: {exc}", bucket=self._full_name, cause=exc
+            ) from exc
+        failed = next((outcome for outcome in read if isinstance(outcome, BaseException)), None)
+        if failed is not None:
+            raise _kv_error(
+                f"listing keys of {self._full_name} failed reading a key: {failed}",
+                bucket=self._full_name,
+                cause=failed,
+            ) from failed
+        found = [outcome for outcome in read if outcome is not None and not isinstance(outcome, BaseException)]
+        return sorted(found, key=lambda latest: latest[1])
 
     async def purge_removal_markers(self, *, apply: bool = True) -> int:
         """purge every key whose latest message is a delete or purge marker: the bucket OWNER's sweep.
@@ -2661,27 +2731,10 @@ class NatsKvBucket:
         :raises KvError: when the listing or a purge fails
         """
         stream = kv_stream_name(self._full_name)
-
-        def failure(message: str, cause: BaseException | None) -> Exception:
-            return KvError(message) if cause is None else _kv_error(message, bucket=self._full_name, cause=cause)
-
-        messages = await read_through_named_consumer(
-            self._client,
-            NamedRead(
-                stream=stream,
-                filter_subject=f"$KV.{self._full_name}.>",
-                deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
-                name_prefix=_KEY_LISTING_CONSUMER_PREFIX,
-                headers_only=True,
-                timeout_seconds=self._timings.key_listing_timeout_seconds,
-                receiver="removal marker sweep",
-            ),
-            failure=failure,
-        )
         markers = [
-            (msg.subject, int(msg.metadata.sequence.stream))
-            for msg in messages
-            if (msg.headers or {}).get(_KV_OPERATION_HEADER) in _KV_REMOVAL_OPERATIONS
+            (subject, sequence)
+            for subject, sequence, removed in await self._latest_by_key(stream, f"$KV.{self._full_name}.>")
+            if removed
         ]
         if apply:
             js = self._client.jetstream_context()
@@ -2785,11 +2838,17 @@ class _KeyWatchConsumer:
         heartbeat: timedelta,
         retry: timedelta,
         op_timeout_seconds: float,
+        absence: _StreamAbsence,
     ) -> _KeyWatchConsumer | None:
         """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
 
         The inbox is subscribed FIRST so nothing the consumer delivers can arrive before anything
         is listening for it.
+
+        A create the server answers with "stream not found" (``err_code`` 10059) is the bucket being
+        absent -- a broker restart on memory storage, until the bucket's declarer creates it again --
+        not a refused grant: it goes to ``absence``, which says so without a traceback. Every other
+        failure is logged as before, naming the grant to check.
 
         :param client: the connected wrapper client
         :ptype client: NatsClient
@@ -2803,6 +2862,8 @@ class _KeyWatchConsumer:
         :ptype retry: timedelta
         :param op_timeout_seconds: the bucket's ceiling on one KV operation, which bounds the create
         :ptype op_timeout_seconds: float
+        :param absence: the watch's record of its bucket being absent, kept across its creates
+        :ptype absence: _StreamAbsence
         :return: the consumer, or ``None`` when it could not be created
         :rtype: _KeyWatchConsumer | None
         :raises KvError: when the NATS connection is closed
@@ -2841,20 +2902,25 @@ class _KeyWatchConsumer:
                 client=client,
                 pending=int(getattr(info, "num_pending", 0) or 0),
             )
-        # NOSILENT: logged naming the grant to check; the caller pauses and creates another
+        # NOSILENT: logged -- an absent bucket by the watch's absence record, anything else naming the
+        # grant to check; the caller pauses and creates another
         except _BOUNDED_CALL_FAILURES as exc:  # a failed create is retried, never raised
-            contain(
-                exc,
-                log=log,
-                what=(
-                    f"key watch consumer {name} on {subject} could not be created; retrying in "
-                    f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check this "
-                    f"principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
-                ),
-                extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
-            )
+            if is_bucket_not_found(exc):
+                absence.absent(retry=retry, error=exc)
+            else:
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        f"key watch consumer {name} on {subject} could not be created; retrying in "
+                        f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check "
+                        f"this principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
+                    ),
+                    extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
+                )
             await _drop_subscription(subscription, subject=subject)
         if consumer is not None:
+            absence.present()
             log.debug(
                 "key watch consumer created",
                 extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name}},
@@ -3000,6 +3066,78 @@ def _forget_unseen(known: dict[str, tuple[int, bytes]], seen: set[str]) -> list[
     for key in gone:
         del known[key]
     return [KvKeyUpdate(key=key, value=None, revision=0) for key in gone]
+
+
+class _StreamAbsence:
+    """one key watch's record of its bucket's stream being absent, kept across its consumer creates.
+
+    Each create names a fresh consumer, so "once per consumer" is once per WATCH: the first create
+    answered "stream not found" is logged at INFO, without a traceback, because a bucket on memory
+    storage is gone after a broker restart until its declarer creates it again, and every watch on it
+    sees the same answer meanwhile. A stream still absent after
+    :data:`~threetears.nats.kv_watch.KEY_WATCH_ABSENT_WARN_AFTER` is logged once at WARNING: nothing is recreating it.
+    The create that succeeds again logs the return and arms both lines for the next absence.
+
+    :param subject: the watched subject
+    :ptype subject: str
+    :param stream: the bucket's backing stream
+    :ptype stream: str
+    """
+
+    __slots__ = ("_since", "_stream", "_subject", "_warned")
+
+    def __init__(self, *, subject: str, stream: str) -> None:
+        self._subject = subject
+        self._stream = stream
+        self._since: float | None = None
+        self._warned = False
+
+    def absent(self, *, retry: timedelta, error: BaseException) -> None:
+        """record one create answered "stream not found".
+
+        :param retry: the pause before the next create, for the log line
+        :ptype retry: timedelta
+        :param error: what the create raised, for the log line
+        :ptype error: BaseException
+        """
+        now = time.monotonic()
+        extra = {"subject": self._subject, "stream": self._stream, "error": str(error)}
+        if self._since is None:
+            self._since = now
+            log.info(
+                "key watch on %s waits for stream %s, which does not exist (a broker restart takes a "
+                "memory bucket with it until its declarer creates it again); retrying every %.0fs",
+                self._subject,
+                self._stream,
+                retry.total_seconds(),
+                extra={"extra_data": extra},
+            )
+            return
+        absent_for = now - self._since
+        if not self._warned and absent_for >= kv_watch.KEY_WATCH_ABSENT_WARN_AFTER.total_seconds():
+            self._warned = True
+            log.warning(
+                "key watch on %s: stream %s has not existed for %.0fs; nothing has recreated the bucket, "
+                "so the watch hears no updates until something does",
+                self._subject,
+                self._stream,
+                absent_for,
+                extra={"extra_data": {**extra, "absent_seconds": round(absent_for)}},
+            )
+
+    def present(self) -> None:
+        """record a create that succeeded, logging the stream's return after an absence."""
+        if self._since is None:
+            return
+        log.info(
+            "key watch on %s: stream %s exists again after %.0fs; watching",
+            self._subject,
+            self._stream,
+            time.monotonic() - self._since,
+            extra={"extra_data": {"subject": self._subject, "stream": self._stream}},
+        )
+        self._since = None
+        self._warned = False
 
 
 async def _pause_after_unsequenced(

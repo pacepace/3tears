@@ -94,6 +94,31 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 - `evict_after_rbac_write(cache, member_actors=..., group_ids=...)` --
   what a helper that writes an rbac row evicts from its own cache at once.
 
+### Answers shared per access shape
+
+A person's access is a function of their direct membership rows alone (roles go to groups, never
+people), so an answer derived once for a set of groups serves everyone with it.
+
+- `AccessShape.of(rows)` -- a person's shape: sorted `(group_id, membership customer_id)`.
+- `ShapeActors(inner_loader)` -- the membership loader the `AclCache` reads through; `actor_for(shape)`
+  returns an actor whose memberships are the shape, so an answer derived as that actor is right for
+  everyone with the shape. A shape it no longer holds is refused (`LookupError`), never read as empty.
+- `access_shapes.access_footprint(cache, shape=, agent_ids=)` -- the groups (through nesting), roles and
+  agents an answer for a shape can reach: what a change must name to make the answer stale.
+- `AccessShapeAnswers(registry, config, table_name=..., acl_cache=..., actors=..., dependencies=...)`
+  -- one answer per `(kind, customer, shape)` in L1 and L2, derived once across replicas (in-process
+  gate and cross-pod build lock). `answer(kind=, customer_id=, shape=, context=, agent_ids=, compute=)`
+  reads L1, then L2, then derives; `compute(actor_id)` evaluates as the shape's actor.
+- `ShapeDependencies(registry, tables)` -- what the answers are checked against on every read: each
+  table's generation as applied here, and the generation of the last change reaching each group,
+  role and agent. A change drops only the answers whose footprint it reaches, on every tier and
+  every replica that hears it. Followed with
+  `generation_follow.follow_access_shape_answers(registry, dependencies, reader)`. Answers are served
+  and kept only while the tables are followed and the `AclCache` is followed too (`AclCache.followed`):
+  a scratch access cache drops nothing it holds.
+- `generation_follow.follow_caller_memberships(registry, cache, reader)` -- a `CallerAccessCache` of
+  each person's own shape, dropped only by a `group_members` row naming them.
+
 ### Value types & protocols
 
 - Value types: `Group`, `GroupMembership`, `Role`, `RoleAssignment`,

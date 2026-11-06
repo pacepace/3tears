@@ -184,6 +184,15 @@ cell"). Every minor's entry ends with :data:`MINOR_ADDITIVITY_SENTENCE`, verbati
 the change is a major. A newly computed field is safe under it: a newer build discards the stored echo and
 re-derives it.
 
+**One exception: a field inside an opaque payload.** A durable document may carry a payload its model never
+validates (``EvalTestCase.host_payload``, which a kind reads and the store keeps as bytes). A field added inside such
+a payload may ship in a minor though the sentence is false of the kind's read of it, because it stays true of the
+document the version stamps: an older build reads that document and writes the payload back verbatim. The entry
+then says, in bold, that the sentence is false for that read; names what an older build's kind does with such a
+payload, which must be a refusal by name and never a misreading; and gives the rolling-deploy step. It still ends
+with the sentence, true of the document. A field the document's own model declares never takes the exception, and
+neither does a payload field an older build's kind would read without refusing, since that read would be wrong.
+
 **A new doc type is a minor, with two gaps an older build cannot close.** An older build never reads the new
 type (every read selects by ``doc_type``), but its operator wipe sweeps only the types it knows, so it leaves the
 new type's documents in the store; and its deletes (``run_delete`` and the cascades it runs) cannot cascade to a
@@ -333,7 +342,8 @@ CORE_SCHEMA_MINOR: int = 7
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
-#: it is false for a change, the change is a major.
+#: it is false for a change, the change is a major, except for a field inside an opaque payload, whose entry says
+#: which read it is false for (the module docstring states the exception and its conditions).
 MINOR_ADDITIVITY_SENTENCE: Final[str] = (
     "An older build that ignores this field reads the document correctly, and its writes leave it true."
 )
@@ -614,7 +624,22 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   reads and its restores, until that build upgrades. So during a rolling deploy across 16.1 and 16.2, freeze no
 #:   verdict or excerpt label until every pod runs 16.2.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 2
+#: - **v16.3** — names are declared: a campaign's aspect may name what a page prints for it (``Aspect.short_name``,
+#:   default None) and a template what a page prints for each of its goal checks (``EvalTemplate.goal_check_names``,
+#:   default empty), each name at most 32 characters, and each is written only when set, so a campaign or a template
+#:   naming nothing holds exactly what v16.2 stored. Neither is in any identity, key, digest or fingerprint a run, a
+#:   cell, a pool, a pairing, an analysis or a reporter case is read by (``measured_template_digest`` and
+#:   ``template_digest`` leave a template's names out), and a template edit of its names alone leaves its
+#:   ``updated_at``, so naming an aspect or a check changes no reading, stales no analysis, reads no seeded template as
+#:   drifted, and cuts no run off from its template's criteria, rejudging or take-up. An older build (v16.2, as 0.78.0
+#:   shipped it, or v16.1) reading a campaign or template at this minor keeps the names opaquely, writes them back, and
+#:   prints each label and expression whole. Two of its writes can leave a name that no longer fits: renaming or
+#:   dropping a named goal check, after which this build's stored read drops the name its check lost (logged) rather
+#:   than refusing the template; and adopting an aspect whose label is another adopted aspect's short name, which this
+#:   build refuses on read, by the name the two share. So during a rolling deploy across 16.2 and 16.3, declare no name
+#:   until every pod reading the store runs 16.3.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

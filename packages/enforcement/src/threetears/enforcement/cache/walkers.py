@@ -207,6 +207,7 @@ def find_wrapper_classes(
       ``cache_method_names`` (``get`` / ``put`` / ``set`` / ``delete``
       / ``upsert``), OR the class calls SQLiteBackend's row-level data
       api (``upsert`` / ``select_by_id`` / ``delete_by_id`` /
+      ``delete_many_by_id`` /
       ``execute_query``) on a stored backend from a method body.
     - the class does NOT transitively subclass any name in
       ``base_collection_names`` — the chain through intermediate bases
@@ -297,6 +298,7 @@ _SQLITE_DATA_API_METHODS: frozenset[str] = frozenset(
         "upsert",
         "select_by_id",
         "delete_by_id",
+        "delete_many_by_id",
         "execute_query",
     }
 )

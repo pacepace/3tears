@@ -59,6 +59,7 @@ from threetears.evals.kernel.host.kinds import freeze
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.host.world import resolve_preconditions
 from threetears.evals.schema.models import (
+    TEMPLATE_PRESENTATION_FIELDS,
     CatalogRubricDim,
     EvalTemplate,
     JudgeConfig,
@@ -687,7 +688,11 @@ def update_template(
     reject_unknown_authoring_fields("update_template", fields, EvalTemplate, TEMPLATE_SERVER_FIELDS)
 
     changes = {key: value for key, value in fields.items() if key not in TEMPLATE_SERVER_FIELDS}
-    changes["updated_at"] = utc_now_iso()
+    # `updated_at` decides which runs still read this template's criteria and intent, and which may be rejudged or
+    # taken up again (a run launched before it reads none of them), so an edit of how a page prints it alone leaves
+    # the stamp, and every run, where it was.
+    if not changes or not set(changes) <= TEMPLATE_PRESENTATION_FIELDS:
+        changes["updated_at"] = utc_now_iso()
     try:
         template = edited_core_document(EvalTemplate, existing, changes)
     except ValidationError as e:

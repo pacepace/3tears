@@ -75,7 +75,7 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
 
 
 def _replica(
-    pool: asyncpg.Pool, nats: NatsClient | None = None, *, idle_timeout: Any = None
+    pool: asyncpg.Pool, nats: NatsClient | None = None, *, idle_timeout: Any = None, writer: Any = None
 ) -> tuple[CollectionRegistry, ScopeEpochs]:
     registry = CollectionRegistry()
     l1 = SQLiteBackend(db_name=f"epochs_{uuid.uuid4().hex[:8]}")
@@ -86,7 +86,7 @@ def _replica(
     # replicas of one deployment share one key scope, as tool pods of one ``tool_pods.id`` do
     registry.configure(l1_backend=l1, l3_pool=SqlL3Backend(pool), kv_key_scope="epochs-pod")
     collection = collection_class(registry, DefaultCoreConfig(), nats)
-    return registry, ScopeEpochs(collection, idle_timeout=idle_timeout)
+    return registry, ScopeEpochs(collection, idle_timeout=idle_timeout, writer=writer)
 
 
 @pytest.fixture
@@ -132,6 +132,23 @@ async def test_a_write_begun_is_in_progress_until_it_commits(held: _Held) -> Non
     assert isinstance(settled, EpochSnapshot)
     assert (settled.version, settled.writing) == (1, None)
     assert dict(settled.epochs) == {"state:VA": 1, "race:va-sen": 1}
+
+
+async def test_a_write_in_progress_names_what_it_touched_and_every_scopes_epoch(held: _Held) -> None:
+    """a reader may read a scope the write has not touched while it runs: the record says which it has."""
+    await _write(held, {"state:VA", "state:MD"})
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(version, {"state:VA"}, conn=conn))
+
+    unsettled = await held.epochs.settled()
+
+    assert isinstance(unsettled, Unsettled)
+    assert unsettled.pending == frozenset({"state:VA"})
+    assert dict(unsettled.epochs or {}) == {"state:VA": 1, "state:MD": 1}
+    await _in_transaction(held.pool, lambda conn: held.epochs.commit(version, set(), conn=conn))
+    settled = await held.epochs.settled()
+    assert isinstance(settled, EpochSnapshot) and settled.pending == frozenset()
+    assert settled.epoch("state:VA") == version
 
 
 async def test_a_commit_moves_only_the_scopes_it_names_and_records_what_each_replaced(held: _Held) -> None:
@@ -488,3 +505,115 @@ async def test_a_stalled_writers_hold_ends_within_the_idle_bound_and_the_next_be
         except asyncpg.PostgresError, asyncpg.InterfaceError, ConnectionError:
             pass  # NOSILENT: the server already ended this transaction; that is what the test proves
         await held.pool.release(hung)
+
+
+# ----------------------------------------------------------------------
+# a write whose writer is gone (replay of 2026-11-01, 2026-11-02): a load failed on a statement timeout mid-write and
+# nothing ended its write, so readers were told "in progress" until the next write began. The writer's lease is the
+# one statement of whether it still writes: a write whose lease is free is abandoned by the next reader
+# ----------------------------------------------------------------------
+
+
+class _Lease:
+    """the writers' lease as :meth:`KVLease.held` answers it: held by a live writer, or free."""
+
+    def __init__(self, *, held: bool) -> None:
+        self.holding = held
+        self.asked: list[str] = []
+
+    async def held(self, key: str) -> Any:
+        from datetime import UTC, datetime
+
+        from threetears.core.coordination.lease import LeaseHolding
+
+        self.asked.append(key)
+        return LeaseHolding(holder="pod-a", acquired_at=datetime.now(UTC)) if self.holding else None
+
+
+def _with_writer(held: _Held, lease: _Lease) -> ScopeEpochs:
+    from threetears.core.collections.scope_epochs import WriterLease
+
+    return _replica(held.pool, writer=WriterLease(lease, "enr-refresh"))[1]  # type: ignore[arg-type]
+
+
+async def test_a_write_whose_writers_lease_is_free_is_abandoned_and_its_rows_get_its_epoch(held: _Held) -> None:
+    epochs = _with_writer(held, lease := _Lease(held=False))
+    dead = await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+    # its first data transaction committed rows for VA, then a statement timeout ended the load
+    await _in_transaction(held.pool, lambda conn: epochs.touch(dead, {"state:VA"}, conn=conn))
+
+    settled = await epochs.settled()
+
+    assert isinstance(settled, EpochSnapshot), f"a write whose writer is gone still holds readers off: {settled}"
+    assert (settled.version, settled.writing, settled.epoch("state:VA")) == (dead, None, dead)
+    assert lease.asked == ["enr-refresh"]
+    # the writer coming back is refused by the fence, as one a later write superseded
+    with pytest.raises(ValueError, match="in progress"):
+        await _in_transaction(held.pool, lambda conn: epochs.commit(dead, {"state:MD"}, conn=conn))
+    assert await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn)) == dead + 1
+
+
+async def test_a_live_slow_writer_holding_its_lease_is_never_abandoned(held: _Held) -> None:
+    epochs = _with_writer(held, _Lease(held=True))
+    version = await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: epochs.touch(version, {"state:VA"}, conn=conn))
+    await held.pool.execute(
+        f"UPDATE {_TABLE} SET date_updated = now() - make_interval(secs => $1) WHERE scope = '*'",
+        STALLED_WRITE_SECONDS + 60,
+    )
+
+    assert isinstance(await epochs.settled(), Unsettled), "a live writer's write was abandoned"
+
+    await _in_transaction(held.pool, lambda conn: epochs.commit(version, set(), conn=conn))
+    settled = await epochs.settled()
+    assert isinstance(settled, EpochSnapshot) and settled.epoch("state:VA") == version
+
+
+async def test_a_write_with_a_data_transaction_still_open_is_not_abandoned_though_its_lease_is_free(
+    held: _Held,
+) -> None:
+    """a free lease with a transaction still open: the writer is not provably gone, so its write stands."""
+    epochs = _with_writer(held, _Lease(held=False))
+    version = await _in_transaction(held.pool, lambda conn: epochs.begin(conn=conn))
+    hung = await held.pool.acquire()
+    hang = CallerTransaction(hung)
+    await hang.__aenter__()
+    try:
+        await epochs.touch(version, {"state:VA"}, conn=hung)
+
+        assert isinstance(await epochs.settled(), Unsettled)
+    finally:
+        await hang.__aexit__(ConnectionError, ConnectionError("the writer ends"), None)
+        await held.pool.release(hung)
+    settled = await epochs.settled()
+    assert isinstance(settled, EpochSnapshot) and settled.version == version
+
+
+async def test_without_a_writer_lease_a_write_in_progress_is_never_abandoned(held: _Held) -> None:
+    version = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+
+    refused = await held.epochs.settled()
+
+    assert isinstance(refused, Unsettled) and f"write {version}" in refused.reason
+
+
+async def test_a_restarted_pod_abandons_at_its_first_settle_the_write_its_dead_predecessor_left_open(
+    held: _Held,
+) -> None:
+    """replay of 2026-11-01 (attempt 2): the pod running write 1349 died; its restart found the write still open after
+    2125 s and waited on it. The dead pod's lease lapsed with it, so the restarted pod's first settle abandons it."""
+    before = await _write(held, {"state:MD"})
+    lease = _Lease(held=True)
+    dying = _with_writer(held, lease)
+    dead = await _in_transaction(held.pool, lambda conn: dying.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: dying.touch(dead, {"state:VA"}, conn=conn))
+    assert isinstance(await dying.settled(), Unsettled), "the live writer's write was abandoned"
+    lease.holding = False  # the pod dies; its lease lapses with it
+
+    restarted = _with_writer(held, _Lease(held=False))
+    settled = await restarted.settled()
+
+    assert isinstance(settled, EpochSnapshot), (
+        f"the restarted pod still waits on its dead predecessor's write: {settled}"
+    )
+    assert (settled.version, settled.epoch("state:VA"), settled.epoch("state:MD")) == (dead, dead, before)

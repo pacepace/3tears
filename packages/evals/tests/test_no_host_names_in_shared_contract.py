@@ -188,6 +188,10 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # analysis and insight models, the campaign declaration, the decision surface, the authored
     # document shape, and the analysis measures). `kernel/` is split, so each is listed.
     "kernel/campaign.py",
+    # The package's one number rule, in kernel so `run` and `analysis` both spell figures by it.
+    "kernel/numbers.py",
+    # How a run's stored results are read a page at a time: its keys once, then pages by id.
+    "kernel/run_pages.py",
     # The step a stored campaign is upgraded by, in the schema package with the version chain that registers it.
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.

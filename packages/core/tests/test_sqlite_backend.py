@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import operator
+import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any, ClassVar
 
 import pytest
 from sqlalchemy import (
@@ -596,14 +600,112 @@ class TestNumericReadsBackAsDecimal:
             bounds = b.execute_query('SELECT MIN("price") AS low, MAX("price") AS high FROM "rates"')[0]
             assert b.deserialize_field(bounds["low"], code) == Decimal("-10.00")
             assert b.deserialize_field(bounds["high"], code) == Decimal("10.00")
-            # an operand is scaled the same way before it is compared
-            above = b.execute_query(
-                'SELECT "id" FROM "rates" WHERE "price" > ? ORDER BY "id"', (b.serialize_value(Decimal("9.6"), code),)
-            )
+            # an operand is compared through numeric_comparison, against the scaled column
+            condition, params = b.numeric_comparison('"price"', ">", Decimal("9.6"), code)
+            above = b.execute_query(f'SELECT "id" FROM "rates" WHERE {condition} ORDER BY "id"', params)
             assert [row["id"] for row in above] == ["b"]
             total = b.execute_query('SELECT SUM("price") AS total FROM "rates"')[0]["total"]
             assert b.deserialize_field(total, code) == Decimal("7.25")
             assert str(b.deserialize_field(total, code)) == "7.25"
+        finally:
+            b.reset()
+
+    _STORED: ClassVar[dict[str, Decimal | None]] = {
+        "a": Decimal("10.00"),
+        "b": Decimal("-10.00"),
+        "c": Decimal("9.99"),
+        "d": Decimal("-9.99"),
+        "e": None,
+    }
+    _OPERATORS: ClassVar[dict[str, Callable[[Decimal, Decimal], bool]]] = {
+        "=": operator.eq,
+        "!=": operator.ne,
+        "<>": operator.ne,
+        "<": operator.lt,
+        "<=": operator.le,
+        ">": operator.gt,
+        ">=": operator.ge,
+    }
+
+    def _matching(self, b: SQLiteBackend, op: str, operand: Any) -> list[str]:
+        for key, price in self._STORED.items():
+            b.upsert("rates", {"id": key, "price": price})
+        condition, params = b.numeric_comparison('"price"', op, operand, b.column_types("rates")["price"])
+        rows = b.execute_query(f'SELECT "id" FROM "rates" WHERE {condition} ORDER BY "id"', params)
+        return [row["id"] for row in rows]
+
+    @pytest.mark.parametrize("op", ["=", "!=", "<>", "<", "<=", ">", ">="])
+    @pytest.mark.parametrize(
+        "operand",
+        [
+            Decimal("9.995"),
+            Decimal("-9.995"),
+            "9.995",
+            9.995,
+            Decimal("10.00"),
+            Decimal("10"),
+            Decimal("-10.000"),
+            10,
+            Decimal("9.99"),
+            Decimal("-9.99"),
+            Decimal("1E+30"),
+            Decimal("-1E+30"),
+            Decimal("0.0000001"),
+        ],
+    )
+    def test_an_operand_finer_than_the_scale_compares_as_l3_compares_it(self, op: str, operand: Any) -> None:
+        """``price > 9.995`` against ``10.00`` is true in L3; rounded to the scale first, it was ``1000 > 1000``."""
+        b = self._backend()
+        try:
+            exact = Decimal(repr(operand)) if isinstance(operand, float) else Decimal(operand)
+            expected = sorted(
+                key for key, price in self._STORED.items() if price is not None and self._OPERATORS[op](price, exact)
+            )
+            assert self._matching(b, op, operand) == expected
+        finally:
+            b.reset()
+
+    @pytest.mark.parametrize(
+        ("operand", "above"),
+        [(Decimal("NaN"), True), (Decimal("Infinity"), True), (float("inf"), True), (Decimal("-Infinity"), False)],
+    )
+    @pytest.mark.parametrize("op", ["=", "!=", "<>", "<", "<=", ">", ">="])
+    def test_a_non_finite_operand_compares_above_or_below_every_value(self, op: str, operand: Any, above: bool) -> None:
+        b = self._backend()
+        try:
+            held = sorted(key for key, price in self._STORED.items() if price is not None)
+            true_for = {"!=", "<>", "<", "<="} if above else {"!=", "<>", ">", ">="}
+            assert self._matching(b, op, operand) == (held if op in true_for else [])
+        finally:
+            b.reset()
+
+    def test_an_unknown_operator_or_a_column_that_is_not_numeric_is_refused(self) -> None:
+        b = self._backend()
+        try:
+            with pytest.raises(ValueError, match="LIKE"):
+                b.numeric_comparison('"price"', "LIKE", 1, b.column_types("rates")["price"])
+            with pytest.raises(ValueError, match="TEXT"):
+                b.numeric_comparison('"id"', "=", 1, b.column_types("rates")["id"])
+        finally:
+            b.reset()
+
+    def test_a_sum_past_a_64_bit_integer_raises_naming_the_column(self) -> None:
+        """ten of NUMERIC(18, 2)'s largest values total past 2**63 once scaled; SQLite says only "integer overflow"."""
+        metadata = MetaData()
+        TableSchema(
+            name="ledger",
+            primary_key="id",
+            columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("amount", NUMERIC_TYPE, precision=18, scale=2)],
+        ).to_sqlalchemy_table(metadata)
+        b = SQLiteBackend(db_name=f"test_numeric_sum_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            b.upsert_many("ledger", [{"id": str(i), "amount": Decimal("9999999999999999.99")} for i in range(10)], "id")
+            with pytest.raises(OverflowError, match=r"ledger\.amount"):
+                b.execute_query('SELECT SUM("amount") AS total FROM "ledger"')
+            # a statement that fails some other way raises as SQLite raised it
+            with pytest.raises(sqlite3.OperationalError, match="no such column"):
+                b.execute_query('SELECT SUM(missing) FROM "ledger"')
         finally:
             b.reset()
 
@@ -623,3 +725,63 @@ class TestNumericReadsBackAsDecimal:
             assert not b.has_table("wide")
         finally:
             b.reset()
+
+
+class TestDeleteManyById:
+    """many rows leave in one write transaction: one lock and one commit for N rows, not N of each."""
+
+    def test_n_ids_take_one_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
+        ids = [str(uuid.uuid4()) for _ in range(40)]
+        for entity_id in ids:
+            backend.upsert("test_entities", {"id": entity_id, "name": "row"})
+        statements = l1_statements(backend)
+
+        backend.delete_many_by_id("test_entities", ids)
+
+        assert statements.count("BEGIN IMMEDIATE") == 1
+        assert statements.count("COMMIT") == 1
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 0}]
+
+    def test_nothing_named_takes_no_transaction(self, backend: SQLiteBackend, l1_statements: Any) -> None:
+        statements = l1_statements(backend)
+        backend.delete_many_by_id("test_entities", [])
+        assert statements == []
+
+    def test_composite_keys_each_leave(self) -> None:
+        metadata = MetaData()
+        Table(
+            "pairs",
+            metadata,
+            Column("a", String(32), primary_key=True),
+            Column("b", Integer, primary_key=True),
+            Column("name", String(32)),
+        )
+        b = SQLiteBackend(db_name=f"test_pairs_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            for a, n in (("x", 1), ("x", 2), ("y", 1)):
+                b.upsert("pairs", {"a": a, "b": n, "name": "p"}, primary_key=("a", "b"))
+            b.delete_many_by_id("pairs", [("x", 1), ("y", 1)], primary_key=("a", "b"))
+            assert b.execute_query("SELECT a, b FROM pairs") == [{"a": "x", "b": 2}]
+        finally:
+            b.reset()
+
+    def test_a_failure_rolls_every_row_back_and_raises_unchanged(self, backend: SQLiteBackend) -> None:
+        ids = [str(uuid.uuid4()) for _ in range(5)]
+        for entity_id in ids:
+            backend.upsert("test_entities", {"id": entity_id, "name": "row"})
+        conn = backend.get_connection()
+        conn.execute(
+            "CREATE TRIGGER refuse BEFORE DELETE ON test_entities "
+            f"WHEN OLD.id = '{ids[2]}' BEGIN SELECT RAISE(ABORT, 'refused'); END"
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="refused"):
+            backend.delete_many_by_id("test_entities", ids)
+
+        # the write lock is released and nothing left: the next write runs
+        assert not conn.in_transaction
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 5}]
+        conn.execute("DROP TRIGGER refuse")
+        backend.delete_many_by_id("test_entities", ids)
+        assert backend.execute_query("SELECT COUNT(*) AS n FROM test_entities") == [{"n": 0}]

@@ -213,6 +213,7 @@ class CollectionRegistry:
         # The write generation a negative-caching collection stamps its absences with. One per
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
+        self._write_marks_schema: str | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
@@ -493,6 +494,34 @@ class CollectionRegistry:
         :rtype: None
         """
         self._generation_source = source
+
+    def set_write_marks_schema(self, schema: str | None) -> None:
+        """name the schema holding the database's write-mark queue, so a writer clears the marks its advance covers.
+
+        A switched-on table's trigger marks each write in the write's transaction, and the reconciler
+        advances the table's generation from each mark (:mod:`threetears.core.collections.write_marks`).
+        A writer that advances after its own commit, and broadcasts, was followed by a second advance from
+        its mark that no follower heard, so every follower dropped the table. With the queue named, the
+        writer reads the table's marks after its commit, advances, and deletes exactly the marks it read:
+        each committed before its advance, which covers it. A writer that dies before the delete leaves
+        them to the reconciler. Unset, as before: the reconciler drains every mark. Only a process whose
+        L3 holds the queue (the hub over its own database) sets it.
+
+        :param schema: the schema, or ``None`` to leave every mark to the reconciler
+        :ptype schema: str | None
+        :return: nothing
+        :rtype: None
+        """
+        self._write_marks_schema = schema
+
+    @property
+    def write_marks_schema(self) -> str | None:
+        """the schema holding the write-mark queue a writer clears its own marks from, or ``None``.
+
+        :return: the schema, or ``None`` when unset
+        :rtype: str | None
+        """
+        return self._write_marks_schema
 
     @property
     def generation_source(self) -> GenerationSource | None:

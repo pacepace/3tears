@@ -226,21 +226,19 @@ class SqliteDocumentStore:
         wanted = list(dict.fromkeys(doc_ids))
         if not wanted:
             return []
-        bodies: list[str] = []
-        # Under SQLite's bound-parameter limit however many ids are asked for.
+        documents: list[dict[str, Any]] = []
+        # Under SQLite's bound-parameter limit however many ids are asked for; each row projected as it is read.
         for start in range(0, len(wanted), 500):
             chunk = wanted[start : start + 500]
             marks = ", ".join("?" * len(chunk))
             with self._lock:
-                bodies += [
-                    row[0]
-                    for row in self._db.execute(
-                        f"SELECT body FROM documents WHERE scope_id = ? AND doc_type = ? AND id IN ({marks})",  # noqa: S608
-                        (scope_id, doc_type, *chunk),
-                    )
-                ]
-        documents = [json.loads(body) for body in bodies]
-        return [keep_fields(d, keep) if keep else omit_paths(d, exclude) for d in documents]
+                for row in self._db.execute(
+                    f"SELECT body FROM documents WHERE scope_id = ? AND doc_type = ? AND id IN ({marks})",  # noqa: S608
+                    (scope_id, doc_type, *chunk),
+                ):
+                    document = json.loads(row[0])
+                    documents.append(keep_fields(document, keep) if keep else omit_paths(document, exclude))
+        return documents
 
     def by_doc_type(
         self,
@@ -308,9 +306,10 @@ class SqliteDocumentStore:
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)
+        # Each row projected as it is read, so a projected read of many large documents never holds their bodies at
+        # once: the run's result keys, read before its results are read a page at a time, are a few scalars a row.
         with self._lock:
-            bodies = [row[0] for row in self._db.execute(sql, params)]
-        return [omit_paths(json.loads(body), exclude) for body in bodies]
+            return [omit_paths(json.loads(row[0]), exclude) for row in self._db.execute(sql, params)]
 
     def iter_by_doc_type(self, doc_type: str, scope_id: str) -> Iterator[str]:
         """Yield the id of every document of one type within a scope.

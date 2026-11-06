@@ -292,3 +292,32 @@ class TestEveryBuiltinToolIsAccountedFor:
 
         registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
         assert "WebSearchTool" in registered, "web_search did not register even with THREETEARS_SEARXNG_URL set"
+
+    def test_web_answer_is_reported_as_skipped_when_no_brave_key_is_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """a pod with no Brave key does not serve web_answer, and says which variable would."""
+        monkeypatch.delenv("THREETEARS_BRAVE_ANSWERS_API_KEY", raising=False)
+        server = MagicMock()
+
+        with caplog.at_level("WARNING"):
+            asyncio.run(_entrypoint_bootstrap(monkeypatch).register_tools(server))
+
+        registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
+        assert "WebAnswerTool" not in registered
+        assert any("THREETEARS_BRAVE_ANSWERS_API_KEY" in str(record.__dict__) for record in caplog.records)
+
+    def test_web_answer_registers_when_a_brave_key_is_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """the complement: with a key, the tool is served."""
+        monkeypatch.setenv("THREETEARS_BRAVE_ANSWERS_API_KEY", "brave-key")
+        server = MagicMock()
+
+        asyncio.run(_entrypoint_bootstrap(monkeypatch).register_tools(server))
+
+        registered = {call.args[0].__class__.__name__ for call in server.register.call_args_list}
+        assert "WebAnswerTool" in registered

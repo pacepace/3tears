@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import Column, MetaData, String, Table
 
+import threetears.agent.tools.bootstrap as bootstrap_module
 from threetears.agent.tools.bootstrap import (
     EX_CONFIG,
     EX_SOFTWARE,
@@ -425,6 +426,7 @@ class _ReadinessFakeServer(_FakeToolServer):
         self.is_healthy = True
         self.tools_count = 1
         self.jwks_warmed = False
+        self.serving_calls = True
 
 
 def _free_port() -> int:
@@ -607,6 +609,7 @@ class TestAPodContributesItsOwnHealthChecks:
             "nats": True,
             "tools_registered": True,
             "jwks_warmed": True,
+            "calls_open": True,
             "catalogue_storage": False,
         }, "the contributed check is evaluated beside the bootstrap's own, not instead of them"
         assert ready_status == 503
@@ -614,6 +617,21 @@ class TestAPodContributesItsOwnHealthChecks:
         assert [c["name"] for c in live["components"]] == ["nats"], "a READY check never reaches liveness"
         assert after_status == 200
         assert after["healthy"] is True
+
+    async def test_reports_not_ready_while_calls_are_held_or_left(self) -> None:
+        """a replica out of its call queue group gets no calls, so a rolling deploy must not count it ready."""
+        srv = _ReadinessFakeServer()
+        srv.jwks_warmed = True
+        srv.serving_calls = False
+        async with _serving_pod(srv) as port:
+            held_status, held = await _probe(port, "/healthz/ready")
+            live_status, _live = await _probe(port, "/healthz/live")
+            srv.serving_calls = True
+            open_status, _open = await _probe(port, "/healthz/ready")
+        assert _components(held)["calls_open"] is False
+        assert held_status == 503
+        assert live_status == 200, "holding calls is not a liveness failure"
+        assert open_status == 200
 
     async def test_a_contributed_liveness_check_fails_both_tiers(self) -> None:
         srv = _ReadinessFakeServer()
@@ -626,7 +644,7 @@ class TestAPodContributesItsOwnHealthChecks:
         assert live_status == 503
         assert ready_status == 503
 
-    @pytest.mark.parametrize("name", ["nats", "tools_registered", "jwks_warmed"])
+    @pytest.mark.parametrize("name", ["nats", "tools_registered", "jwks_warmed", "calls_open"])
     async def test_a_check_named_like_a_bootstrap_check_is_refused_before_serving(self, name: str) -> None:
         """two components with one name make the JSON body ambiguous to the operator reading it."""
         srv = _ReadinessFakeServer()
@@ -1132,3 +1150,39 @@ class TestAToolPodExitsWhenItsOwnerIsGone:
         with pytest.raises(ToolPodShutdownError):
             await asyncio.wait_for(bootstrap.run_async(), timeout=5.0)
         assert server.shutdown_called is True
+
+
+class TestBootSizesTheProcessToItsCpuQuota:
+    """a tool pod's boot sizes pyarrow and the asyncio default executor from its cgroup quota, not the node's cores.
+
+    32 threads on a 4-CPU quota spend the quota early in each period and the kernel freezes the whole pod,
+    event loop included, for the rest of it: the reports tool pod's 50-100 ms stalls.
+    """
+
+    def test_run_sizes_pyarrow_and_the_default_executor_from_the_quota(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pyarrow = pytest.importorskip("pyarrow")
+        sizes: list[int | None] = []
+        real_executor = bootstrap_module.ThreadPoolExecutor
+
+        def _recording_executor(*args: Any, **kwargs: Any) -> Any:
+            sizes.append(kwargs.get("max_workers"))
+            return real_executor(*args, **kwargs)
+
+        monkeypatch.setattr(bootstrap_module, "effective_cpu_count", lambda: 3)
+        monkeypatch.setattr(bootstrap_module, "ThreadPoolExecutor", _recording_executor)
+        before = (pyarrow.cpu_count(), pyarrow.io_thread_count())
+        server = _FakeToolServer()
+        server.serve_event.set()
+        try:
+            with caplog.at_level(logging.INFO, logger=bootstrap_module.__name__):
+                _SucceedingBootstrap(server).run()
+            assert (pyarrow.cpu_count(), pyarrow.io_thread_count()) == (3, 6)
+        finally:
+            pyarrow.set_cpu_count(before[0])
+            pyarrow.set_io_thread_count(before[1])
+        assert sizes == [7]
+        sized = [r for r in caplog.records if r.getMessage() == "test-pod sized to its CPU quota"]
+        assert len(sized) == 1
+        assert sized[0].extra_data["effective_cpus"] == 3  # type: ignore[attr-defined]

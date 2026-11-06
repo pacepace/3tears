@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "campaign_id": "01a16c4c-2486-725d-818a-77879ab11104",
+  "schema_version": 3,
+  "campaign_id": "01a1714e-f3cf-76c9-8407-aae0011aed77",
   "scope_id": "llm-analysis",
   "name": "baseline vs candidate",
   "subject_id": "baseline vs candidate",
@@ -8,7 +8,7 @@
   "behavior": "classify",
   "declaration": {
     "question": "",
-    "declared_at": "2026-10-24T05:04:51.761839+00:00",
+    "declared_at": "2026-10-25T04:26:01.846153+00:00",
     "declared_by": "eval",
     "arms": [
       {
@@ -42,7 +42,7 @@
           }
         },
         "identity_version": 25,
-        "named_at": "2026-10-24T05:04:51.761839+00:00"
+        "named_at": "2026-10-25T04:26:01.846153+00:00"
       }
     ],
     "aspects": [
@@ -91,11 +91,11 @@
           "measure_latency": false
         },
         "run_ids": [
-          "01a16c4c-2434-72ee-bb6f-260b8b900636",
-          "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+          "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
+          "01a1714e-f2fc-76aa-be72-dcf83a266d92"
         ],
-        "declared_at": "2026-10-24T05:04:51.761839+00:00",
-        "asked_at": "2026-10-24T05:04:51.761839+00:00",
+        "declared_at": "2026-10-25T04:26:01.846153+00:00",
+        "asked_at": "2026-10-25T04:26:01.846153+00:00",
         "margin_declared_at": null
       }
     ],
@@ -133,7 +133,7 @@
         }
       },
       "identity_version": 25,
-      "named_at": "2026-10-24T05:04:51.761839+00:00"
+      "named_at": "2026-10-25T04:26:01.846153+00:00"
     },
     {
       "label": "candidate",
@@ -170,7 +170,7 @@
     }
   ],
   "readings": {
-    "campaign_id": "01a16c4c-2486-725d-818a-77879ab11104",
+    "campaign_id": "01a1714e-f3cf-76c9-8407-aae0011aed77",
     "alpha": 0.05,
     "control": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
     "control_label": "baseline",
@@ -239,12 +239,75 @@
     "kind": "change",
     "pairs": [],
     "bars": [],
-    "measures": []
+    "measures": [],
+    "aggregate": {
+      "weighting": {
+        "basis": "equal",
+        "weights": {
+          "classify": 1.0
+        },
+        "intervals": "aspects_independent"
+      },
+      "level": 0.95,
+      "arms": [
+        {
+          "arm": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
+          "arm_label": "baseline",
+          "pass_rate": {
+            "value": 58.333333333333336,
+            "interval": [
+              33.971914643748654,
+              82.69475202291801
+            ],
+            "missing": []
+          },
+          "change": null,
+          "cost": {
+            "value": null,
+            "interval": null,
+            "missing": [
+              "classify"
+            ]
+          },
+          "cheaper_on": null,
+          "dearer_on": null
+        },
+        {
+          "arm": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
+          "arm_label": "candidate",
+          "pass_rate": {
+            "value": 91.66666666666667,
+            "interval": [
+              74.71592582985669,
+              100.0
+            ],
+            "missing": []
+          },
+          "change": {
+            "value": 33.33333333333333,
+            "interval": [
+              -3.518959706118082,
+              70.18562637278474
+            ],
+            "missing": []
+          },
+          "cost": {
+            "value": null,
+            "interval": null,
+            "missing": [
+              "classify"
+            ]
+          },
+          "cheaper_on": [],
+          "dearer_on": []
+        }
+      ]
+    }
   },
   "aspects": [
     {
       "schema_version": 64,
-      "campaign_id": "01a16c4c-2486-725d-818a-77879ab11104",
+      "campaign_id": "01a1714e-f3cf-76c9-8407-aae0011aed77",
       "subject_id": "baseline vs candidate",
       "subject_kind": "",
       "behavior": "classify",
@@ -252,8 +315,8 @@
       "template_id": "eval-4feedbcc275d466e",
       "scope_id": "llm-analysis",
       "run_ids": [
-        "01a16c4c-2434-72ee-bb6f-260b8b900636",
-        "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+        "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
+        "01a1714e-f2fc-76aa-be72-dcf83a266d92"
       ],
       "unresolved_run_ids": [],
       "archived_run_ids": [],
@@ -261,14 +324,14 @@
         "candidate": "callable"
       },
       "window": {
-        "start": "2026-10-24T05:04:51.765029+00:00",
-        "end": "2026-10-24T05:04:51.766888+00:00"
+        "start": "2026-10-25T04:26:01.850015+00:00",
+        "end": "2026-10-25T04:26:01.852464+00:00"
       },
       "run_summaries": [
         {
-          "run_id": "01a16c4c-2434-72ee-bb6f-260b8b900636",
+          "run_id": "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
           "status": "completed",
-          "created_at": "2026-10-24T05:04:51.765029+00:00",
+          "created_at": "2026-10-25T04:26:01.850015+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -555,13 +618,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "feature_request → bug": 4,
-                  "account → account": 4,
-                  "bug → account": 2,
-                  "bug → bug": 4,
                   "billing → billing": 6,
+                  "feature_request → bug": 4,
+                  "billing → account": 2,
+                  "bug → account": 2,
+                  "account → account": 4,
                   "feature_request → billing": 2,
-                  "billing → account": 2
+                  "bug → bug": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -622,9 +685,9 @@
           "judge_shares_candidate_model": []
         },
         {
-          "run_id": "01a16c4c-2436-749b-8670-f30d9e9b0cad",
+          "run_id": "01a1714e-f2fc-76aa-be72-dcf83a266d92",
           "status": "completed",
-          "created_at": "2026-10-24T05:04:51.766888+00:00",
+          "created_at": "2026-10-25T04:26:01.852464+00:00",
           "candidate_model": "callable",
           "k_runs": 2,
           "config": {
@@ -955,11 +1018,11 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 6,
-                  "feature_request → feature_request": 6,
-                  "account → account": 4,
                   "billing → billing": 6,
-                  "billing → bug": 2
+                  "billing → bug": 2,
+                  "feature_request → feature_request": 6,
+                  "bug → bug": 6,
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -1027,8 +1090,8 @@
             "subject_label": "baseline vs candidate",
             "template_id": "eval-4feedbcc275d466e",
             "run_ids": [
-              "01a16c4c-2434-72ee-bb6f-260b8b900636",
-              "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+              "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
+              "01a1714e-f2fc-76aa-be72-dcf83a266d92"
             ],
             "shared_test_case_ids": [
               "eval-4feedbcc275d466e-0",
@@ -1049,8 +1112,8 @@
                 "fingerprint": "6cd82961453a6fd392c76b68602a69985e50e008b29e9cec971e411be04eef36",
                 "n_cases": 12,
                 "run_ids": [
-                  "01a16c4c-2434-72ee-bb6f-260b8b900636",
-                  "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+                  "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
+                  "01a1714e-f2fc-76aa-be72-dcf83a266d92"
                 ]
               }
             ],
@@ -1115,7 +1178,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a16c4c-2436-749b-8670-f30d9e9b0cad": {
+                    "01a1714e-f2fc-76aa-be72-dcf83a266d92": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1138,7 +1201,7 @@
                 "pass_hat_k_cells": [
                   {
                     "run_ids": [
-                      "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+                      "01a1714e-f2fc-76aa-be72-dcf83a266d92"
                     ],
                     "headline": true,
                     "reason": null,
@@ -1194,7 +1257,7 @@
                 "cost_per_acceptable_outcome": null,
                 "production_footing": {
                   "runs": {
-                    "01a16c4c-2434-72ee-bb6f-260b8b900636": {
+                    "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44": {
                       "moved": {},
                       "unchecked": {},
                       "held": [
@@ -1217,7 +1280,7 @@
                 "pass_hat_k_cells": [
                   {
                     "run_ids": [
-                      "01a16c4c-2434-72ee-bb6f-260b8b900636"
+                      "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44"
                     ],
                     "headline": true,
                     "reason": null,
@@ -1572,15 +1635,15 @@
               "ci_high": null,
               "case_means": null,
               "categories": {
-                "feature_request → bug": 4,
-                "account → account": 8,
-                "bug → account": 2,
-                "bug → bug": 10,
                 "billing → billing": 12,
-                "feature_request → billing": 2,
+                "feature_request → bug": 4,
                 "billing → account": 2,
-                "feature_request → feature_request": 6,
-                "billing → bug": 2
+                "bug → account": 2,
+                "account → account": 8,
+                "feature_request → billing": 2,
+                "bug → bug": 10,
+                "billing → bug": 2,
+                "feature_request → feature_request": 6
               },
               "rate": null,
               "n_true": null,
@@ -1684,7 +1747,7 @@
       "divergences_untested": 0,
       "declared": {
         "question": "",
-        "asked_at": "2026-10-24T05:04:51.761839+00:00",
+        "asked_at": "2026-10-25T04:26:01.846153+00:00",
         "margin_declared_at": null,
         "design": {
           "axes": [
@@ -1756,11 +1819,11 @@
             }
           },
           "identity_version": 25,
-          "named_at": "2026-10-24T05:04:51.761839+00:00"
+          "named_at": "2026-10-25T04:26:01.846153+00:00"
         },
         "margin": null,
         "floors": [],
-        "declared_at": "2026-10-24T05:04:51.761839+00:00",
+        "declared_at": "2026-10-25T04:26:01.846153+00:00",
         "declared_by": "eval",
         "unread_without_control": null
       },
@@ -1768,7 +1831,7 @@
         "control_arm": {
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "run_ids": [
-            "01a16c4c-2434-72ee-bb6f-260b8b900636"
+            "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44"
           ],
           "k": 2,
           "moved": {},
@@ -1781,7 +1844,7 @@
           {
             "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
             "run_ids": [
-              "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+              "01a1714e-f2fc-76aa-be72-dcf83a266d92"
             ],
             "k": 2,
             "moved": {
@@ -1817,8 +1880,8 @@
         "stimulus_reason": "",
         "declared_apparatus": "commissioned",
         "run_provenance": {
-          "01a16c4c-2434-72ee-bb6f-260b8b900636": "commissioned",
-          "01a16c4c-2436-749b-8670-f30d9e9b0cad": "commissioned"
+          "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44": "commissioned",
+          "01a1714e-f2fc-76aa-be72-dcf83a266d92": "commissioned"
         },
         "contradicting_run_ids": [],
         "disclosure": null
@@ -2129,7 +2192,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a41a2e78-845d-5dde-9e3e-d4c7b35a773c"
+          "result_id": "b1cfaa0b-9dc5-5ed2-814d-99cd1aacde6e"
         },
         {
           "trial_id": "T2",
@@ -2146,7 +2209,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "dc86f5c4-b4bf-5db9-b7a7-4f934581d29f"
+          "result_id": "99e877fe-2204-5f1e-b00b-c3f301d631ad"
         },
         {
           "trial_id": "T3",
@@ -2163,7 +2226,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "ccddc60d-1f90-542a-bba5-8c016647f351"
+          "result_id": "3c1dcc18-49ab-5fed-bc46-43201d7b5bf6"
         },
         {
           "trial_id": "T4",
@@ -2180,7 +2243,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "34058515-b623-5249-bf28-1cc6d6ae28ba"
+          "result_id": "0eb8b537-b861-5fc6-9efc-7cded7770ecf"
         },
         {
           "trial_id": "T5",
@@ -2197,7 +2260,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "4211e77d-0cb8-5089-a9d2-fe466f97fad6"
+          "result_id": "00f452c6-10d3-5e18-8275-46b1716d73ba"
         },
         {
           "trial_id": "T6",
@@ -2214,7 +2277,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "68a658ea-234d-5d3a-94bc-8f17d71857e9"
+          "result_id": "60d8b990-063c-5253-bf03-df4e571b6c92"
         },
         {
           "trial_id": "T7",
@@ -2236,7 +2299,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "39c5e76c-2b74-50d5-945c-af705bffd130"
+          "result_id": "371dc4fe-8b71-5cef-b203-6344350ac22a"
         },
         {
           "trial_id": "T8",
@@ -2258,7 +2321,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "59422371-4581-54be-93c5-f12902d7d1dc"
+          "result_id": "0bfe50a2-7447-52e1-aa77-c450bba746d9"
         },
         {
           "trial_id": "T9",
@@ -2275,7 +2338,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "e429a1da-9bcb-5743-8ccb-ca5cad10085a"
+          "result_id": "5355a279-8768-57d8-bd99-f6a74c0aff5c"
         },
         {
           "trial_id": "T10",
@@ -2292,7 +2355,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "bdca41e5-a8bc-5cf8-849a-5cc414d488fd"
+          "result_id": "537f7022-3501-5556-a2fc-ba6b6d1890ed"
         },
         {
           "trial_id": "T11",
@@ -2309,7 +2372,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "708bdee9-4211-54d9-a314-9dafaa42ed46"
+          "result_id": "70999d02-e950-5da4-9ef1-a7bd29a0545a"
         },
         {
           "trial_id": "T12",
@@ -2326,7 +2389,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "772eaef8-8f0f-53f1-91b5-a07f6f5e4a8a"
+          "result_id": "afdfcc75-6360-5b53-9568-1ce6131a9671"
         },
         {
           "trial_id": "T13",
@@ -2348,7 +2411,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "e5df0ff5-944a-56e4-8b7c-1aa9fbda36e8"
+          "result_id": "1e8122a8-18af-5a91-8765-5a99e8c9f29a"
         },
         {
           "trial_id": "T14",
@@ -2370,7 +2433,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "90f9c9b1-c4dd-55b7-9210-48e86146245d"
+          "result_id": "7901ddde-9485-5cbc-b72a-36057c110870"
         },
         {
           "trial_id": "T15",
@@ -2387,7 +2450,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "c6d5a6c2-f64c-59dd-ae75-1de74d4c9351"
+          "result_id": "6bf814cf-02d6-58b4-8ca2-2201c8dd050d"
         },
         {
           "trial_id": "T16",
@@ -2404,7 +2467,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "6d18583d-d214-5e07-8301-2d5c2f491614"
+          "result_id": "047f33f0-d5fb-57ed-a47e-d1dc071911f7"
         },
         {
           "trial_id": "T17",
@@ -2421,7 +2484,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "2839dea0-1e1a-5124-988b-2ba877078338"
+          "result_id": "f74e5c71-44de-5d6c-a9e1-6ae4670d1f59"
         },
         {
           "trial_id": "T18",
@@ -2438,7 +2501,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "e55603d1-cc4f-5908-9b9e-00af91e9ea57"
+          "result_id": "bea0f4d3-c00a-54dc-9783-dd88a1404afc"
         },
         {
           "trial_id": "T19",
@@ -2455,7 +2518,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "9e0be33a-6600-5764-8d22-73acc6c55b25"
+          "result_id": "d4cc9c11-52b4-51a4-8f05-497eec71e4c0"
         },
         {
           "trial_id": "T20",
@@ -2472,7 +2535,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "94fe1f63-eade-504a-afc2-69a638dc2fe0"
+          "result_id": "2bbd655a-489d-5e63-bb8d-d281e31a02dd"
         },
         {
           "trial_id": "T21",
@@ -2489,7 +2552,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "76dda671-c0cb-5e64-870b-f292815f7204"
+          "result_id": "eae511d1-0653-5c4c-a258-65b38e49a798"
         },
         {
           "trial_id": "T22",
@@ -2506,7 +2569,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "f25624c2-c1ee-5505-8671-8fa2cb815713"
+          "result_id": "86d26e82-1e82-589f-b4e6-70e1a4f8415b"
         },
         {
           "trial_id": "T23",
@@ -2523,7 +2586,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "19766491-63fe-5c27-a284-bb68127820fe"
+          "result_id": "23a29487-fe51-5809-87b1-9a5f20f66305"
         },
         {
           "trial_id": "T24",
@@ -2540,7 +2603,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "b4cabe28-de97-57d9-a193-7442340a248e"
+          "result_id": "b1f51852-4b98-59f5-b17f-70667810f02c"
         },
         {
           "trial_id": "T25",
@@ -2562,7 +2625,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "182de830-8393-5c9a-95e5-78785435638b"
+          "result_id": "75addc0d-6750-536b-b0fd-6fa2cd58beeb"
         },
         {
           "trial_id": "T26",
@@ -2584,7 +2647,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "6ac47a00-83ca-5e42-9e78-669ae0f8915b"
+          "result_id": "25479a99-90c3-5ab9-8efb-900f2d36d4f2"
         },
         {
           "trial_id": "T27",
@@ -2601,7 +2664,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "f9892432-4e23-5cf4-a968-21eb89d79f30"
+          "result_id": "31355f43-ae50-58ca-8e12-758bd2efcbeb"
         },
         {
           "trial_id": "T28",
@@ -2618,7 +2681,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "62661cec-8918-533a-a2f5-2e9d7d345219"
+          "result_id": "5662a4d0-8625-5d00-8322-fe7a5a057b27"
         },
         {
           "trial_id": "T29",
@@ -2635,7 +2698,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "ee892768-db93-5c3b-ac8a-b1d03e035b3c"
+          "result_id": "cea7ba72-4d5a-5816-9d47-0895ca16b58f"
         },
         {
           "trial_id": "T30",
@@ -2652,7 +2715,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "1342f01b-1045-52d6-919a-19c8030ea0e1"
+          "result_id": "fe9e5b61-367b-5d99-852a-0c6d6ebe8761"
         },
         {
           "trial_id": "T31",
@@ -2669,7 +2732,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "29494183-df10-5055-9695-1d315618490b"
+          "result_id": "b5434d7e-ded9-5ede-990a-448f6b54dad5"
         },
         {
           "trial_id": "T32",
@@ -2686,7 +2749,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "8023e872-d698-536a-afa9-fe4d4dcbacc8"
+          "result_id": "ead6b0d2-a8b3-5b76-b0b2-fac608aa6e14"
         },
         {
           "trial_id": "T33",
@@ -2703,7 +2766,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "4de229ad-9264-5834-a4d5-c9b5d168e2ac"
+          "result_id": "953d1f3a-d831-5e30-ac58-f19dcdafe801"
         },
         {
           "trial_id": "T34",
@@ -2720,7 +2783,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "ed914dc0-ac24-5df1-bb1d-18a83504b910"
+          "result_id": "2b161aa1-fb78-5efc-a4f0-eff20370b762"
         },
         {
           "trial_id": "T35",
@@ -2737,7 +2800,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "25bc4439-f01b-55c4-9550-ffe0be81ed01"
+          "result_id": "315495b4-b9cf-57a0-968b-cfaaa47e51ce"
         },
         {
           "trial_id": "T36",
@@ -2754,7 +2817,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "7cfe43ca-15dd-5869-8043-7ad4a8d26836"
+          "result_id": "6a079484-5260-5c9d-8476-0b2b5e3541d6"
         },
         {
           "trial_id": "T37",
@@ -2776,7 +2839,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "04cd94a4-6745-5504-a7b8-d175f341e9f7"
+          "result_id": "b6f1e527-0841-5410-bee1-e8dfe0336182"
         },
         {
           "trial_id": "T38",
@@ -2798,7 +2861,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "4a92e8af-5cb9-564d-ab95-7b63870eae5a"
+          "result_id": "0b4c42c4-78b6-55bf-a33d-e1d29c34a70d"
         },
         {
           "trial_id": "T39",
@@ -2815,7 +2878,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "1ab2263a-c18e-595a-be5c-7e6b387c8598"
+          "result_id": "b1ce615f-8cd7-52ff-8a97-c8da1afab6c9"
         },
         {
           "trial_id": "T40",
@@ -2832,7 +2895,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "6b20ff07-0b3c-5150-95b2-cfd26df42f22"
+          "result_id": "f69663f5-653a-55a8-9833-c3e9e6ee26b0"
         },
         {
           "trial_id": "T41",
@@ -2854,7 +2917,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "43f6ecba-6005-5d67-bc99-8e763f68bb2c"
+          "result_id": "107dae1e-091f-5e40-8c62-1870da26ead0"
         },
         {
           "trial_id": "T42",
@@ -2876,7 +2939,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "bfbd3f40-9bca-5bb0-8099-e2ba7444a973"
+          "result_id": "d7725015-aa4a-50d7-8ea6-df2090d50d87"
         },
         {
           "trial_id": "T43",
@@ -2893,7 +2956,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "4cde4c10-9684-50ab-90be-549eb49280eb"
+          "result_id": "50a8996a-384b-585f-b323-8205e89b15ca"
         },
         {
           "trial_id": "T44",
@@ -2910,7 +2973,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "a8e788c7-97f0-5b1d-bd94-5f3bc03be27e"
+          "result_id": "144518c0-6eab-540c-b1e8-b681f9f3ccb3"
         },
         {
           "trial_id": "T45",
@@ -2932,7 +2995,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "6c33cfa2-4c57-5ee3-ba75-400f84348b76"
+          "result_id": "33b196d5-65a3-5547-8384-863dd9206247"
         },
         {
           "trial_id": "T46",
@@ -2954,7 +3017,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "c980e8e1-c37d-5b3c-8b41-a1dfdcfd67e4"
+          "result_id": "a5cce10d-882d-59fb-843c-2235c4998414"
         },
         {
           "trial_id": "T47",
@@ -2971,7 +3034,7 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "daf1e42f-35e8-52ac-8256-05c42fc0f0e0"
+          "result_id": "5f4115b1-8641-5433-a56c-b3f50f006ada"
         },
         {
           "trial_id": "T48",
@@ -2988,14 +3051,14 @@
           "first_input": "",
           "excerpt": "",
           "error_words": null,
-          "result_id": "260f7170-b41f-5b32-8b14-1a87f911c41b"
+          "result_id": "4c92fe5a-8d34-535f-b477-4fd773616476"
         }
       ],
       "trials_omitted": 0,
       "case_sets": [],
-      "design_frozen_at": "2026-10-24T05:04:51.765029+00:00",
-      "first_result_at": "2026-10-24T05:04:51.770729+00:00",
-      "package_version": "0.77.0",
+      "design_frozen_at": "2026-10-25T04:26:01.850015+00:00",
+      "first_result_at": "2026-10-25T04:26:01.856316+00:00",
+      "package_version": "0.78.0",
       "reading_scope": {
         "questions_declared": false,
         "late_criteria": [],
@@ -3033,14 +3096,14 @@
       },
       "measurement_windows": [
         {
-          "run_id": "01a16c4c-2434-72ee-bb6f-260b8b900636",
-          "start": "2026-10-24T05:04:51.770729+00:00",
-          "end": "2026-10-24T05:04:51.830611+00:00"
+          "run_id": "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44",
+          "start": "2026-10-25T04:26:01.856316+00:00",
+          "end": "2026-10-25T04:26:02.045156+00:00"
         },
         {
-          "run_id": "01a16c4c-2436-749b-8670-f30d9e9b0cad",
-          "start": "2026-10-24T05:04:51.771079+00:00",
-          "end": "2026-10-24T05:04:51.831224+00:00"
+          "run_id": "01a1714e-f2fc-76aa-be72-dcf83a266d92",
+          "start": "2026-10-25T04:26:01.856777+00:00",
+          "end": "2026-10-25T04:26:02.045346+00:00"
         }
       ],
       "launch_disclosure": null,
@@ -3081,7 +3144,7 @@
       "arm_production_footings": {
         "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b": {
           "runs": {
-            "01a16c4c-2436-749b-8670-f30d9e9b0cad": {
+            "01a1714e-f2fc-76aa-be72-dcf83a266d92": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -3094,7 +3157,7 @@
         },
         "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6": {
           "runs": {
-            "01a16c4c-2434-72ee-bb6f-260b8b900636": {
+            "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44": {
               "moved": {},
               "unchecked": {},
               "held": [
@@ -3118,30 +3181,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "19766491-63fe-5c27-a284-bb68127820fe",
-            "1ab2263a-c18e-595a-be5c-7e6b387c8598",
-            "25bc4439-f01b-55c4-9550-ffe0be81ed01",
-            "260f7170-b41f-5b32-8b14-1a87f911c41b",
-            "29494183-df10-5055-9695-1d315618490b",
-            "34058515-b623-5249-bf28-1cc6d6ae28ba",
-            "39c5e76c-2b74-50d5-945c-af705bffd130",
-            "4cde4c10-9684-50ab-90be-549eb49280eb",
-            "59422371-4581-54be-93c5-f12902d7d1dc",
-            "62661cec-8918-533a-a2f5-2e9d7d345219",
-            "6b20ff07-0b3c-5150-95b2-cfd26df42f22",
-            "6d18583d-d214-5e07-8301-2d5c2f491614",
-            "708bdee9-4211-54d9-a314-9dafaa42ed46",
-            "772eaef8-8f0f-53f1-91b5-a07f6f5e4a8a",
-            "7cfe43ca-15dd-5869-8043-7ad4a8d26836",
-            "8023e872-d698-536a-afa9-fe4d4dcbacc8",
-            "94fe1f63-eade-504a-afc2-69a638dc2fe0",
-            "9e0be33a-6600-5764-8d22-73acc6c55b25",
-            "a8e788c7-97f0-5b1d-bd94-5f3bc03be27e",
-            "b4cabe28-de97-57d9-a193-7442340a248e",
-            "c6d5a6c2-f64c-59dd-ae75-1de74d4c9351",
-            "ccddc60d-1f90-542a-bba5-8c016647f351",
-            "daf1e42f-35e8-52ac-8256-05c42fc0f0e0",
-            "f9892432-4e23-5cf4-a968-21eb89d79f30"
+            "047f33f0-d5fb-57ed-a47e-d1dc071911f7",
+            "0bfe50a2-7447-52e1-aa77-c450bba746d9",
+            "0eb8b537-b861-5fc6-9efc-7cded7770ecf",
+            "144518c0-6eab-540c-b1e8-b681f9f3ccb3",
+            "23a29487-fe51-5809-87b1-9a5f20f66305",
+            "2bbd655a-489d-5e63-bb8d-d281e31a02dd",
+            "31355f43-ae50-58ca-8e12-758bd2efcbeb",
+            "315495b4-b9cf-57a0-968b-cfaaa47e51ce",
+            "371dc4fe-8b71-5cef-b203-6344350ac22a",
+            "3c1dcc18-49ab-5fed-bc46-43201d7b5bf6",
+            "4c92fe5a-8d34-535f-b477-4fd773616476",
+            "50a8996a-384b-585f-b323-8205e89b15ca",
+            "5662a4d0-8625-5d00-8322-fe7a5a057b27",
+            "5f4115b1-8641-5433-a56c-b3f50f006ada",
+            "6a079484-5260-5c9d-8476-0b2b5e3541d6",
+            "6bf814cf-02d6-58b4-8ca2-2201c8dd050d",
+            "70999d02-e950-5da4-9ef1-a7bd29a0545a",
+            "afdfcc75-6360-5b53-9568-1ce6131a9671",
+            "b1ce615f-8cd7-52ff-8a97-c8da1afab6c9",
+            "b1f51852-4b98-59f5-b17f-70667810f02c",
+            "b5434d7e-ded9-5ede-990a-448f6b54dad5",
+            "d4cc9c11-52b4-51a4-8f05-497eec71e4c0",
+            "ead6b0d2-a8b3-5b76-b0b2-fac608aa6e14",
+            "f69663f5-653a-55a8-9833-c3e9e6ee26b0"
           ],
           "unknown_dimensions": []
         },
@@ -3154,30 +3217,30 @@
           "repeats_per_case_min": 2,
           "repeats_per_case_max": 2,
           "observation_ids": [
-            "04cd94a4-6745-5504-a7b8-d175f341e9f7",
-            "1342f01b-1045-52d6-919a-19c8030ea0e1",
-            "182de830-8393-5c9a-95e5-78785435638b",
-            "2839dea0-1e1a-5124-988b-2ba877078338",
-            "4211e77d-0cb8-5089-a9d2-fe466f97fad6",
-            "43f6ecba-6005-5d67-bc99-8e763f68bb2c",
-            "4a92e8af-5cb9-564d-ab95-7b63870eae5a",
-            "4de229ad-9264-5834-a4d5-c9b5d168e2ac",
-            "68a658ea-234d-5d3a-94bc-8f17d71857e9",
-            "6ac47a00-83ca-5e42-9e78-669ae0f8915b",
-            "6c33cfa2-4c57-5ee3-ba75-400f84348b76",
-            "76dda671-c0cb-5e64-870b-f292815f7204",
-            "90f9c9b1-c4dd-55b7-9210-48e86146245d",
-            "a41a2e78-845d-5dde-9e3e-d4c7b35a773c",
-            "bdca41e5-a8bc-5cf8-849a-5cc414d488fd",
-            "bfbd3f40-9bca-5bb0-8099-e2ba7444a973",
-            "c980e8e1-c37d-5b3c-8b41-a1dfdcfd67e4",
-            "dc86f5c4-b4bf-5db9-b7a7-4f934581d29f",
-            "e429a1da-9bcb-5743-8ccb-ca5cad10085a",
-            "e55603d1-cc4f-5908-9b9e-00af91e9ea57",
-            "e5df0ff5-944a-56e4-8b7c-1aa9fbda36e8",
-            "ed914dc0-ac24-5df1-bb1d-18a83504b910",
-            "ee892768-db93-5c3b-ac8a-b1d03e035b3c",
-            "f25624c2-c1ee-5505-8671-8fa2cb815713"
+            "00f452c6-10d3-5e18-8275-46b1716d73ba",
+            "0b4c42c4-78b6-55bf-a33d-e1d29c34a70d",
+            "107dae1e-091f-5e40-8c62-1870da26ead0",
+            "1e8122a8-18af-5a91-8765-5a99e8c9f29a",
+            "25479a99-90c3-5ab9-8efb-900f2d36d4f2",
+            "2b161aa1-fb78-5efc-a4f0-eff20370b762",
+            "33b196d5-65a3-5547-8384-863dd9206247",
+            "5355a279-8768-57d8-bd99-f6a74c0aff5c",
+            "537f7022-3501-5556-a2fc-ba6b6d1890ed",
+            "60d8b990-063c-5253-bf03-df4e571b6c92",
+            "75addc0d-6750-536b-b0fd-6fa2cd58beeb",
+            "7901ddde-9485-5cbc-b72a-36057c110870",
+            "86d26e82-1e82-589f-b4e6-70e1a4f8415b",
+            "953d1f3a-d831-5e30-ac58-f19dcdafe801",
+            "99e877fe-2204-5f1e-b00b-c3f301d631ad",
+            "a5cce10d-882d-59fb-843c-2235c4998414",
+            "b1cfaa0b-9dc5-5ed2-814d-99cd1aacde6e",
+            "b6f1e527-0841-5410-bee1-e8dfe0336182",
+            "bea0f4d3-c00a-54dc-9783-dd88a1404afc",
+            "cea7ba72-4d5a-5816-9d47-0895ca16b58f",
+            "d7725015-aa4a-50d7-8ea6-df2090d50d87",
+            "eae511d1-0653-5c4c-a258-65b38e49a798",
+            "f74e5c71-44de-5d6c-a9e1-6ae4670d1f59",
+            "fe9e5b61-367b-5d99-852a-0c6d6ebe8761"
           ],
           "unknown_dimensions": []
         }
@@ -3688,7 +3751,7 @@
           "variant_key": "c9a852d89dc4cbde1f71bb0c32a614557d15983bb8b876d3b01670a6d11f45c6",
           "apparatus_class_id": "60157f7f793a3eef0f28cef52df605732c3f8153d4c99a960583ec3b878fa11f",
           "run_ids": [
-            "01a16c4c-2434-72ee-bb6f-260b8b900636"
+            "01a1714e-f2f9-77e4-a8e5-47d3f9daeb44"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -3959,13 +4022,13 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "feature_request → bug": 4,
-                  "account → account": 4,
-                  "bug → account": 2,
-                  "bug → bug": 4,
                   "billing → billing": 6,
+                  "feature_request → bug": 4,
+                  "billing → account": 2,
+                  "bug → account": 2,
+                  "account → account": 4,
                   "feature_request → billing": 2,
-                  "billing → account": 2
+                  "bug → bug": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -4032,7 +4095,7 @@
           "variant_key": "280bec47fabd9fde402225dd2fd75c682863ff9092a691900964ef2e81de936b",
           "apparatus_class_id": "60157f7f793a3eef0f28cef52df605732c3f8153d4c99a960583ec3b878fa11f",
           "run_ids": [
-            "01a16c4c-2436-749b-8670-f30d9e9b0cad"
+            "01a1714e-f2fc-76aa-be72-dcf83a266d92"
           ],
           "n_observations": 24,
           "n_cases": 12,
@@ -4347,11 +4410,11 @@
                 "ci_high": null,
                 "case_means": null,
                 "categories": {
-                  "bug → bug": 6,
-                  "feature_request → feature_request": 6,
-                  "account → account": 4,
                   "billing → billing": 6,
-                  "billing → bug": 2
+                  "billing → bug": 2,
+                  "feature_request → feature_request": 6,
+                  "bug → bug": 6,
+                  "account → account": 4
                 },
                 "rate": null,
                 "n_true": null,
@@ -4416,7 +4479,7 @@
         }
       ],
       "time_axis": null,
-      "time_axis_withheld": "every run started on one day (2026-10-24) and the host labels no build",
+      "time_axis_withheld": "every run started on one day (2026-10-25) and the host labels no build",
       "confound_catalog": {},
       "prior_insights": [],
       "prior_insights_omitted": 0,

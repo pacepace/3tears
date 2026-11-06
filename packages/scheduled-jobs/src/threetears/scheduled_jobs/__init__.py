@@ -21,7 +21,8 @@ stripped out. The public surface:
   schedule-type / fire-status Literals -- the vocabulary.
 - :class:`BackgroundDispatch` -- hands each fire off from the tick and
   runs it as its own task, one per kind in flight, so a slow fire no
-  longer holds up every other kind in the tick.
+  longer holds up every other kind in the tick. :func:`bring_back_cut_off_fire`
+  makes a fire it (or any dispatcher) cut off on close due again.
 - the event-name constants + the cardinality-bounded metrics emitter.
 
 Version is sourced from the installed package metadata so a release that
@@ -45,6 +46,7 @@ from threetears.scheduled_jobs.background import (
     REAP_MARGIN_SECONDS,
     BackgroundDispatch,
     FireNotRecordedError,
+    bring_back_cut_off_fire,
     in_flight_lock_key,
 )
 from threetears.scheduled_jobs.collections import (
@@ -68,6 +70,7 @@ from threetears.scheduled_jobs.events import (
     EVENT_FIRE_COMPLETED,
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
+    EVENT_FIRE_DUE_AGAIN,
     EVENT_FIRE_FAILED,
     EVENT_FIRE_HANDED_OFF,
     EVENT_FIRE_REAPED,
@@ -93,6 +96,7 @@ from threetears.scheduled_jobs.metrics import (
 )
 from threetears.scheduled_jobs.migrations import register
 from threetears.scheduled_jobs.protocols import (
+    ClaimUndoStore,
     DueSchedule,
     FireStore,
     ScheduleStore,
@@ -127,6 +131,7 @@ __all__ = [
     "EVENT_FIRE_COMPLETED",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
+    "EVENT_FIRE_DUE_AGAIN",
     "EVENT_FIRE_FAILED",
     "EVENT_FIRE_HANDED_OFF",
     "EVENT_FIRE_REAPED",
@@ -149,6 +154,7 @@ __all__ = [
     "SCHEDULED_JOBS_TICK_DURATION_SECONDS",
     "UNROUTED_KIND_REASON",
     "BackgroundDispatch",
+    "ClaimUndoStore",
     "DispatchCallback",
     "DispatchRoutes",
     "DueSchedule",
@@ -166,6 +172,7 @@ __all__ = [
     "ScheduledJobCollection",
     "ScheduledJobEntity",
     "ScheduledJobsMetricsEmitter",
+    "bring_back_cut_off_fire",
     "compute_next_fire_at",
     "get_scheduled_jobs_emitter",
     "in_flight_lock_key",

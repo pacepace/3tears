@@ -646,8 +646,9 @@ async def test_a_scope_published_before_any_rebuild_is_not_loaded_as_the_whole_s
     replica, _ = await platform.replica()
     await replica.start()
     await replica.wait_ready(timeout=_WAIT)
-    assert replica.status().source is SnapshotSource.L3, "an index naming one scope was loaded as the snapshot"
-    assert _count(replica, "results") == 1580
+    # the index names DE alone, partial: DE loads from L2 and each scope it does not name is rebuilt from L3 on its own
+    # (0.91.2, Pace 2026-11-05: one scope's state in L2 never rebuilds the snapshot), and nothing is missing
+    assert _count(replica, "results") == 1580, "an index naming one scope was loaded as the snapshot"
     await replica.stop()
 
 
@@ -876,9 +877,12 @@ async def test_a_replica_that_waited_on_a_rebuild_is_ready_again(platform: _Plat
     whole = await pointers.get_entry(key="enr.index")
     assert whole is not None
     # another replica holds the rebuild claim, and the index says it names only scopes published
-    # since NATS lost the snapshot: the ready replica must wait on that rebuild
-    claim = await pointers.create(key="enr.rebuild", value=b"another-replica")
-    assert claim is not None
+    # since NATS lost the snapshot: the ready replica must wait on that rebuild. A replica becomes ready
+    # before its own run lets the claim go, so the claim is taken once that release has landed
+    deadline = asyncio.get_running_loop().time() + _WAIT
+    while (claim := await pointers.create(key="enr.rebuild", value=b"another-replica")) is None:
+        assert asyncio.get_running_loop().time() < deadline, "the replica never released its own rebuild claim"
+        await asyncio.sleep(0.05)
     partial = json.dumps(json.loads(whole[0]) | {"partial": True}).encode("utf-8")
     revision = await pointers.update(key="enr.index", value=partial, revision=whole[1])
     assert revision is not None
@@ -935,7 +939,12 @@ async def test_a_staged_scope_shows_nowhere_until_its_pointer_moves_and_then_eve
         await replica.stop()
 
 
-async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catch_up(platform: _Platform) -> None:
+async def test_a_staged_scope_whose_pointer_fell_behind_moves_with_l3s_rows_for_what_it_left_out(
+    platform: _Platform,
+) -> None:
+    """A stage of some tables never carries the others from a pointer at an epoch its writer did not see; with L3
+    holding the scope at the stage's epoch it reads them from L3 and moves, so nothing waits on a catch-up that
+    back-to-back writes never let run (cobalt prod, 2026-10-31)."""
     writer, _ = await platform.replica()
     await writer.start()
     await writer.wait_ready(timeout=_WAIT)
@@ -947,11 +956,19 @@ async def test_a_staged_scope_whose_pointer_moved_elsewhere_is_left_for_the_catc
 
     moved, skipped = await writer.publish_staged([staged], carry_at={"CA": 3})
 
-    assert (moved, skipped) == ([], ["CA"]), "a chunk was carried from an epoch the writer did not see"
-    assert await writer.catch_up_from_l3() == ["CA"]
-    with writer.read() as cursor:
-        assert cursor.execute("SELECT DISTINCT total FROM counties WHERE state = 'CA'").fetchall() == [(5,)]
+    assert (moved, skipped) == (["CA"], []), "the scope whose pointer fell behind was left for the catch-up"
+    await _until(
+        lambda: _distinct(writer, "SELECT DISTINCT total FROM counties WHERE state = 'CA'") == [(5,)],
+        what="CA's counties as L3 holds them at the stage's epoch, never the pointer's chunk from epoch 1",
+    )
+    assert await writer.catch_up_from_l3() == [], "nothing is left behind L3"
     await writer.stop()
+
+
+def _distinct(replica: Any, sql: str) -> list[tuple[Any, ...]]:
+    """what a replica's copy answers for ``sql``."""
+    with replica.read() as cursor:
+        return cursor.execute(sql).fetchall()
 
 
 async def test_a_whole_write_into_an_empty_snapshot_is_loaded_from_l2_with_no_rebuild(platform: _Platform) -> None:
@@ -1074,18 +1091,21 @@ async def _pointer_revisions(platform: _Platform) -> dict[str, int]:
     return revisions
 
 
-async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_others_chunks(
+async def test_two_code_versions_with_other_columns_never_load_each_others_chunks_and_a_start_repoints(
     platform: _Platform,
 ) -> None:
     """a rolling deploy of a column change: the old version and the new one run together over the
-    same pointers. Neither ever holds the other's columns, neither repoints the other's scopes on a
-    rebuild, and a write either one publishes reaches the other, which rebuilds that scope from L3."""
+    same pointers. Neither ever holds the other's columns. The new version's start rebuilds from L3 and
+    repoints the scopes to its columns at the same epochs, so a later start loads them from L2 rather than
+    rebuilding every scope no write has touched; the ready old version keeps serving its own L1, not made
+    to rebuild. A write either one publishes reaches the other, which rebuilds that scope from L3."""
     await platform.pool.execute("ALTER TABLE counties ADD COLUMN note TEXT")
     await platform.pool.execute("UPDATE counties SET note = 'from L3'")
-    old, _ = await platform.replica()
+    old, old_l3 = await platform.replica()
     await old.start()
     await old.wait_ready(timeout=_WAIT)
     before = await _pointer_revisions(platform)
+    old_statements = old_l3.statements
 
     new, new_l3 = await platform.replica(backend=_new_backend_with_note())
     await new.start()
@@ -1096,9 +1116,12 @@ async def test_two_code_versions_with_other_columns_never_load_or_repoint_each_o
     assert new_l3.statements > 0
     with new.read() as cursor:
         assert cursor.execute("SELECT DISTINCT note FROM counties").fetchall() == [("from L3",)]
-    assert "other columns" in new.status().detail
-    assert await _pointer_revisions(platform) == before, "a rebuild repointed the other version's scopes"
+    after = await _pointer_revisions(platform)
+    assert all(after[state] > before[state] for state in _STATES), "the rebuild left scopes on the old columns"
+    assert new.status().detail == "ready"
     assert old.status().phase is SnapshotPhase.READY and "note" not in str(old.backend.column_types("counties"))
+    assert "other columns" in old.status().detail
+    assert old_l3.statements == old_statements, "the ready old version was made to rebuild"
 
     # the old version writes DE at epoch 2: the new one cannot load those chunks and rebuilds DE from L3
     await platform.pool.execute("UPDATE results SET votes = 11 WHERE state = 'DE'")

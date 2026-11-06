@@ -107,6 +107,8 @@ from threetears.langgraph.protocols import (
     CheckpointL1Cache,
     CheckpointL2Cache,
     CheckpointL2PrefixCache,
+    CheckpointL2RevisionCache,
+    CheckpointL2ValueLimit,
     FlushCallback,
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
@@ -156,6 +158,8 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
+    "CheckpointL2RevisionCache",
+    "CheckpointL2ValueLimit",
     "CheckpointScope",
     "ContextMergeMiddleware",
     "ConversationContextProvider",

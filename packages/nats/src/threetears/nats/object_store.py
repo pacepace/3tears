@@ -35,12 +35,13 @@ design notes
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -54,6 +55,7 @@ from nats.js.errors import APIError, NotFoundError
 from threetears.observe import get_logger
 
 from threetears.nats._named_read import NamedRead, read_through_named_consumer
+from threetears.nats._stream_listing import latest_messages, stream_subjects
 from threetears.nats._publish import run_bounded
 from threetears.nats.object_store_requests import OBJECT_NAME_PATTERN, is_write_claim_key
 from threetears.nats.errors import (
@@ -64,6 +66,7 @@ from threetears.nats.errors import (
     ObjectStoreNotFoundError,
     PublishTimeoutError,
 )
+from threetears.nats.errors import NatsClientError
 
 if TYPE_CHECKING:
     from threetears.nats.client import NatsClient
@@ -77,6 +80,7 @@ __all__ = [
     "NatsObjectStore",
     "ObjectInfo",
     "object_store_stream_name",
+    "stored_bytes_of_put",
 ]
 
 log = get_logger(__name__)
@@ -95,11 +99,6 @@ DEFAULT_OBJECT_CHUNK_BYTES: Final[int] = 512 * 1024
 DEFAULT_OBJECT_OP_TIMEOUT: Final[timedelta] = timedelta(seconds=10)
 
 
-#: consumer names a read mints carry these prefixes, so an operator listing a stream's consumers can
-#: tell an object read (``og_``) and a listing (``ol_``) from anything else.
-_GET_CONSUMER_PREFIX: Final[str] = "og_"
-_LIST_CONSUMER_PREFIX: Final[str] = "ol_"
-
 #: JetStream's refusals of a publish whose expected last subject sequence did not match.
 _JS_ERR_WRONG_LAST_SEQUENCE: Final[frozenset[int]] = frozenset({10071, 10164})
 
@@ -116,6 +115,10 @@ _JS_ERR_STORE_FAILED: Final = 10077
 #: the store error a stream at its ``max_bytes`` reports, as the description of a store failure
 _MAX_BYTES_EXCEEDED: Final = "maximum bytes exceeded"
 
+#: consumer names an object read mints carry this prefix, so an operator listing a stream's consumers can tell
+#: an object read from anything else.
+_GET_CONSUMER_PREFIX: Final[str] = "og_"
+
 #: how a JetStream request the server never answered arrives: our own deadline, nats-py's request
 #: timeout, or no responder. A request this principal is not granted is dropped unanswered, so each
 #: of these may name a missing grant as much as an unreachable broker.
@@ -128,9 +131,51 @@ _UNANSWERED: Final[tuple[type[BaseException], ...]] = (
 #: an answered refusal or an unanswered request: every way a JetStream call can fail to do its work
 _FAILED: Final[tuple[type[BaseException], ...]] = (APIError, *_UNANSWERED)
 
+#: a JetStream call that failed, or a request the wrapper client sent that was not answered (a listing's later
+#: ``STREAM.INFO`` page is such a request)
+_FAILED_OR_UNANSWERED: Final[tuple[type[BaseException], ...]] = (*_FAILED, NatsClientError)
+
 _EXPECTED_LAST_SUBJECT_SEQUENCE: Final[str] = "Nats-Expected-Last-Subject-Sequence"
 
 _DIGEST_PREFIX: Final[str] = "SHA-256="
+
+#: what a stream counts for one stored message beyond its subject, headers and payload (nats-server's
+#: ``memStoreMsgSize``/``fileStoreMsgSize``: the sequence, the timestamp and the lengths)
+_STORED_MESSAGE_OVERHEAD: Final = 16
+
+#: the bytes the metadata's JSON may grow by past the estimate :func:`stored_bytes_of_put` makes without it: its
+#: digest, sizes, write time and options (a record runs to about 300 bytes, the name aside)
+_META_ALLOWANCE: Final = 512
+
+
+def stored_bytes_of_put(bucket: str, name: str, size: int, *, chunks: int, nuid_length: int) -> int:
+    """the bytes a stream holds after a put of ``size`` bytes in ``chunks`` chunks: what the put asks room for.
+
+    Each message is counted as nats-server counts it -- its subject, its headers and its payload, plus
+    :data:`_STORED_MESSAGE_OVERHEAD` -- and the metadata message at :data:`_META_ALLOWANCE` past its name and
+    headers, so the estimate never falls short of the server's count and passes it by no more than that allowance.
+
+    :param bucket: the fully-qualified bucket name
+    :ptype bucket: str
+    :param name: the object's name
+    :ptype name: str
+    :param size: the object's bytes
+    :ptype size: int
+    :param chunks: how many chunk messages carry them
+    :ptype chunks: int
+    :param nuid_length: the length of the object's chunk token
+    :ptype nuid_length: int
+    :return: the bytes the put adds to the stream
+    :rtype: int
+    """
+    chunk_subject = len(_chunk_subject(bucket, "x" * nuid_length))
+    meta_subject = len(_meta_subject(bucket, name))
+    # the metadata's one header as nats-py frames it: "NATS/1.0\r\n" + "key: value\r\n" + "\r\n"
+    meta_headers = len("NATS/1.0\r\n") + len(_EXPECTED_LAST_SUBJECT_SEQUENCE) + len(": 0\r\n") + len("\r\n")
+    chunk_bytes = size + chunks * (chunk_subject + _STORED_MESSAGE_OVERHEAD)
+    # the record names the object and its bucket, each once
+    meta_bytes = meta_subject + meta_headers + _META_ALLOWANCE + len(name) + len(bucket) + _STORED_MESSAGE_OVERHEAD
+    return chunk_bytes + meta_bytes
 
 
 def object_store_stream_name(bucket: str) -> str:
@@ -202,6 +247,70 @@ def _digest(data: Iterable[bytes]) -> str:
     for piece in data:
         hasher.update(piece)
     return f"{_DIGEST_PREFIX}{base64.urlsafe_b64encode(hasher.digest()).decode('ascii')}"
+
+
+#: from this many bytes an object is hashed on a worker thread, never the event loop: SHA-256 runs
+#: at about 1-2 GB/s, so a 100 MB snapshot held the loop for 50-100 ms (cobalt prod reports pods,
+#: 2026-11-06). ``hashlib`` lets go of the interpreter lock while it hashes a piece this large, so the
+#: loop runs beside it; below it the thread costs more than the hash
+_DIGEST_OFF_LOOP_BYTES: Final[int] = 1 << 20
+
+
+def _split_and_digest(data: bytes, chunk_bytes: int) -> tuple[list[bytes], str]:
+    """``data`` cut into chunks of ``chunk_bytes``, and its :func:`_digest`.
+
+    :param data: the object's bytes
+    :ptype data: bytes
+    :param chunk_bytes: the most bytes one chunk holds
+    :ptype chunk_bytes: int
+    :return: the chunks, in order, and the digest
+    :rtype: tuple[list[bytes], str]
+    """
+    pieces = [data[start : start + chunk_bytes] for start in range(0, len(data), chunk_bytes)]
+    return pieces, _digest(pieces)
+
+
+async def _split_and_digest_off_loop(data: bytes, chunk_bytes: int) -> tuple[list[bytes], str]:
+    """:func:`_split_and_digest`, on a worker thread from :data:`_DIGEST_OFF_LOOP_BYTES` bytes.
+
+    Cutting the chunks copies every byte, so a large object is cut on the thread that hashes it.
+
+    :param data: the object's bytes
+    :ptype data: bytes
+    :param chunk_bytes: the most bytes one chunk holds
+    :ptype chunk_bytes: int
+    :return: the chunks, in order, and the digest
+    :rtype: tuple[list[bytes], str]
+    """
+    if len(data) < _DIGEST_OFF_LOOP_BYTES:
+        return _split_and_digest(data, chunk_bytes)
+    return await asyncio.to_thread(_split_and_digest, data, chunk_bytes)
+
+
+def _joined_and_digest(pieces: Sequence[bytes]) -> tuple[bytes, str]:
+    """the pieces as one ``bytes``, and their :func:`_digest`.
+
+    :param pieces: the bytes, in order
+    :ptype pieces: Sequence[bytes]
+    :return: the joined bytes and their digest
+    :rtype: tuple[bytes, str]
+    """
+    return b"".join(pieces), _digest(pieces)
+
+
+async def _joined_and_digest_off_loop(pieces: Sequence[bytes]) -> tuple[bytes, str]:
+    """:func:`_joined_and_digest` of ``pieces``, on a worker thread from :data:`_DIGEST_OFF_LOOP_BYTES` bytes.
+
+    The join is a copy of every byte, so a large object is joined on the thread that hashes it.
+
+    :param pieces: the bytes, in order
+    :ptype pieces: Sequence[bytes]
+    :return: the joined bytes and their digest
+    :rtype: tuple[bytes, str]
+    """
+    if sum(len(piece) for piece in pieces) < _DIGEST_OFF_LOOP_BYTES:
+        return _joined_and_digest(pieces)
+    return await asyncio.to_thread(_joined_and_digest, pieces)
 
 
 def _parse_mtime(value: str | None, name: str = "") -> datetime | None:
@@ -433,8 +542,9 @@ class NatsObjectStore:
         :rtype: ObjectInfo
         :raises ValueError: when the name is outside :data:`OBJECT_NAME_GRAMMAR`
         :raises ObjectExistsError: when the bucket already holds an object of that name
-        :raises ObjectStoreError: when a chunk or the metadata could not be written, the bucket's
-            ``max_bytes`` among the reasons
+        :raises ObjectStoreFullError: when the bucket has no room for it: refused before any chunk is
+            written when the room read before the put shows it, else by the server part way
+        :raises ObjectStoreError: when a chunk or the metadata could not be written, or the room could not be read
         """
         _check_name(name)
         if await self._raw_info(name) is not None:
@@ -446,7 +556,14 @@ class NatsObjectStore:
         js = self._client.jetstream_context()
         nuid = uuid.uuid7().hex
         chunk_subject = _chunk_subject(self._full_name, nuid)
-        pieces = [data[start : start + self._chunk_bytes] for start in range(0, len(data), self._chunk_bytes)]
+        pieces, digest = await _split_and_digest_off_loop(data, self._chunk_bytes)
+        # refused before the first chunk when the store cannot hold it: a put the server refused part way left the
+        # chunks it had written, which the declarer purges only while no write claim stands, never while the writer
+        # that met the full store holds its own (cobalt prod, 2026-11-01). Writers racing past this check meet the
+        # server's own refusal, as before
+        await self._require_room(
+            name, stored_bytes_of_put(self._full_name, name, len(data), chunks=len(pieces), nuid_length=len(nuid))
+        )
         for piece in pieces:
             await self._publish(js, chunk_subject, piece, headers=None, name=name)
         record = _NatsObjectInfo(
@@ -455,7 +572,7 @@ class NatsObjectStore:
             nuid=nuid,
             size=len(data),
             chunks=len(pieces),
-            digest=_digest(pieces),
+            digest=digest,
             mtime=datetime.now(UTC).isoformat(),
             options=ObjectMetaOptions(max_chunk_size=self._chunk_bytes),
         )
@@ -473,6 +590,35 @@ class NatsObjectStore:
             },
         )
         return _public_info(record)
+
+    async def _require_room(self, name: str, needed: int) -> None:
+        """refuse a put the store has no room for, before it writes anything (one ``STREAM.INFO``).
+
+        :param name: the object, for the error
+        :ptype name: str
+        :param needed: the bytes the put adds (:func:`stored_bytes_of_put`)
+        :ptype needed: int
+        :return: nothing
+        :rtype: None
+        :raises ObjectStoreFullError: when what the stream holds and ``needed`` pass its ``max_bytes``
+        :raises ObjectStoreError: when the stream cannot be read
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await self._bounded(lambda: js.stream_info(self.stream), what="object store room")
+        except _FAILED as exc:
+            raise ObjectStoreError(f"reading the room in object store {self._full_name} failed: {exc}") from exc
+        bound = int(info.config.max_bytes or 0)
+        held = int(info.state.bytes or 0)
+        # a bound of 0 or -1 is none: the stream takes whatever the server has room for
+        if bound > 0 and held + needed > bound:
+            raise ObjectStoreFullError(
+                f"object store {self._full_name} is full: writing {name!r} ({needed} bytes stored) would pass its "
+                f"max_bytes ({held} of {bound} held); nothing was written. retire objects no longer served, or raise "
+                "the bucket's bound",
+                bucket=self._full_name,
+                name=name,
+            )
 
     async def _publish(
         self, js: Any, subject: str, payload: bytes, *, headers: dict[str, str] | None, name: str
@@ -549,8 +695,8 @@ class NatsObjectStore:
                 deliver_policy=DeliverPolicy.ALL,
                 prefix=_GET_CONSUMER_PREFIX,
             )
-        data = b"".join(chunks)
-        if len(data) != int(raw.size or 0) or _digest(chunks) != (raw.digest or _digest(())):
+        data, digest = await _joined_and_digest_off_loop(chunks)
+        if len(data) != int(raw.size or 0) or digest != (raw.digest or _digest(())):
             raise ObjectStoreError(
                 f"object {name!r} in {self._full_name} did not arrive as recorded: {len(data)} bytes against "
                 f"{raw.size} recorded, or its digest differs"
@@ -572,19 +718,79 @@ class NatsObjectStore:
                 result.append(_public_info(raw))
         return result
 
+    async def list_names(self, *, prefix: str = "") -> list[str]:
+        """the names of the bucket's objects starting with ``prefix``, sorted; one ``STREAM.INFO``.
+
+        Read from the stream's metadata subjects, which carry each name, so a listing costs one
+        request and reply however many objects the bucket holds; :meth:`list_objects` delivers every
+        object's metadata as a message of its own through a consumer. A name whose metadata is a
+        deletion marker is listed (:meth:`delete` purges, leaving none; a foreign client may not),
+        so a caller acting on a name meets its absence the way it meets any other race. Past the
+        server's cap on the subjects one answer carries, the next page is asked for.
+
+        :param prefix: keep names starting with this; ``""`` lists every object
+        :ptype prefix: str
+        :return: the names
+        :rtype: list[str]
+        :raises ObjectStoreError: when the stream cannot be read or a subject does not decode
+        """
+        meta = f"$O.{self._full_name}.M."
+        subjects = await self._subjects(f"{meta}>", what="object name listing")
+        names: list[str] = []
+        for subject in subjects:
+            try:
+                name = base64.urlsafe_b64decode(subject.removeprefix(meta)).decode("utf-8")
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise ObjectStoreError(f"a metadata subject in {self._full_name} does not decode: {exc}") from exc
+            if name.startswith(prefix):
+                names.append(name)
+        return sorted(names)
+
+    async def _subjects(self, subjects_filter: str, *, what: str) -> dict[str, int]:
+        """the stream's subjects matching ``subjects_filter``, each with its message count: ``STREAM.INFO``, a page
+        per the server's cap on one answer.
+
+        :param subjects_filter: the subjects to count
+        :ptype subjects_filter: str
+        :param what: what the read is, for the error
+        :ptype what: str
+        :return: subject -> messages held on it
+        :rtype: dict[str, int]
+        :raises ObjectStoreError: when the stream cannot be read
+        """
+        try:
+            return await stream_subjects(
+                self._client,
+                stream=self.stream,
+                subjects_filter=subjects_filter,
+                timeout_seconds=self._op_timeout.total_seconds(),
+                failure=lambda message, _cause: ObjectStoreError(f"{message} ({self._full_name})"),
+            )
+        except ObjectStoreError:
+            raise
+        except _FAILED_OR_UNANSWERED as exc:
+            raise ObjectStoreError(f"{what} on {self._full_name} failed: {exc}") from exc
+
     async def _list_raw(self) -> list[_NatsObjectInfo]:
-        """every object's latest metadata, deleted ones included.
+        """every object's latest metadata, deleted ones included: the metadata subjects from ``STREAM.INFO``, each
+        read by a subject-carried ``DIRECT.GET`` -- never a replay through a consumer, which stalls part way under
+        load (:mod:`threetears.nats._stream_listing`).
 
         :return: the decoded metadata, in stream order
         :rtype: list[nats.js.api.ObjectInfo]
         :raises ObjectStoreError: when the listing fails or a record does not decode
         """
-        messages = await self._read_subject(
-            f"$O.{self._full_name}.M.>",
-            count=None,
-            deliver_policy=DeliverPolicy.LAST_PER_SUBJECT,
-            prefix=_LIST_CONSUMER_PREFIX,
-        )
+        subjects = await self._subjects(f"$O.{self._full_name}.M.>", what="object metadata listing")
+        try:
+            latest = await latest_messages(
+                self._client, stream=self.stream, subjects=subjects, timeout_seconds=self._op_timeout.total_seconds()
+            )
+        except _FAILED as exc:
+            raise ObjectStoreError(
+                f"reading object metadata in {self._full_name} failed: {exc}. an ungranted read is never answered -- "
+                f"check this principal's grant on $JS.API.DIRECT.GET.{self.stream}.$O.{self._full_name}.M.>"
+            ) from exc
+        messages = [bytes(message.data or b"") for message in latest]
         records: list[_NatsObjectInfo] = []
         for payload in messages:
             try:
@@ -687,20 +893,20 @@ class NatsObjectStore:
         # named objects, later still, sees. a put that starts after the listing is not in it, so
         # nothing of it is purged. read the other way round, a put starting between the claim read
         # and the listing has its first chunks purged and then names an object no get can verify.
-        try:
-            info = await self._bounded(
-                lambda: js.stream_info(self.stream, subjects_filter=f"$O.{self._full_name}.C.>"),
-                what="object chunk listing",
-            )
-        except _FAILED as exc:
-            raise ObjectStoreError(f"sweeping unnamed chunks from {self._full_name} failed: {exc}") from exc
-        subjects = dict(info.state.subjects or {})
+        subjects = await self._subjects(f"$O.{self._full_name}.C.>", what="object chunk listing")
         claims = [key for key in await pointers.list_keys() if is_write_claim_key(key)]
         if claims:
             log.info(
                 "unnamed object chunks kept: a write is in flight",
                 extra={"extra_data": {"bucket": self._full_name, "claims": len(claims)}},
             )
+            return 0
+        # every object names at most one chunk subject, so while there are no more chunk subjects than
+        # objects there is no orphan to find, and the metadata (a message per object) is not read. a
+        # bucket's empty objects (no chunks) or objects whose delete stopped between its purges can
+        # hide as many orphans from this count; they go at the first sweep the count lets through
+        objects = await self._subjects(f"$O.{self._full_name}.M.>", what="object name listing")
+        if len(subjects) <= len(objects):
             return 0
         named = {raw.nuid for raw in await self._list_raw() if raw.nuid and not raw.deleted}
         try:

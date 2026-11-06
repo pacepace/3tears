@@ -6,13 +6,31 @@ object: uploads stream through one part-size buffer at a time via S3
 multipart (or a single PUT when the whole object fits one part); downloads
 yield the response body in chunks. Lifted from metallm's ``S3Service`` and
 made streaming.
+
+A presign is signing alone, no request, but opening an aiobotocore client to sign builds a whole botocore client
+class first: on a shared CPU that held an event loop ~100 ms a URL, and a load that presigns a file per partition
+stalled its loop again and again (cobalt dev, 2026-10-27). So a store that opened its own session presigns on a
+worker thread, with one synchronous botocore client built once and kept: botocore signs from it safely across
+threads, and its credentials refresh themselves (an IRSA role's included).
+
+**One aiobotocore client a loop, kept.** Every request once opened a client of its own and closed it after. Each
+open built a botocore client on the loop (the same ~100 ms as a presign's), and each left about a thousand objects in
+reference cycles: a process that holds its cycle collector off while it works (a refresh holding rows, sweeping only
+the young generation) kept every request's, ~0.2 MiB each, until the hold ended (2026-10-27: a full LSF pull's tens of
+thousands of export reads). So a store that opened its own session opens one client per event loop on first use and
+keeps it, its connection pool sized for the reads a load runs at once, until :meth:`S3ObjectStore.aclose`. A store
+given a session (a test's fake) opens one per request, as before.
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import Any
 
+import botocore.session  # type: ignore[import-untyped]
 from aiobotocore.session import get_session  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -22,6 +40,34 @@ from threetears.observe import get_logger
 __all__ = ["S3ObjectStore"]
 
 log = get_logger(__name__)
+
+#: the service models an S3 client of this store is built from, and the STS one its credentials refresh through
+_WARMED_SERVICES = ("s3", "sts")
+
+
+def _warm_loader(session: Any) -> None:
+    """read the service models and endpoint data a client is built from into ``session``'s loader cache, on a worker
+    thread, so opening a client on the loop finds them read. A session without a loader (a test's fake) is left alone.
+
+    :param session: the aiobotocore session
+    :ptype session: Any
+    :return: nothing
+    :rtype: None
+    """
+    get_component = getattr(session, "get_component", None)
+    if get_component is None:
+        return
+    loader = get_component("data_loader")
+    for service in _WARMED_SERVICES:
+        # cached by the arguments exactly as given: asked every way a client asks (no version, None, the latest)
+        version = loader.determine_latest_version(service, "service-2")
+        for type_name in ("service-2", "endpoint-rule-set-1"):
+            loader.load_service_model(service, type_name)
+            for api_version in (None, version):
+                loader.load_service_model(service, type_name, api_version=api_version)
+    for data in ("endpoints", "partitions", "sdk-default-configuration", "_retry"):
+        loader.load_data(data)
+
 
 #: S3 multipart parts must be >= 5 MiB (except the final part). The default
 #: part size doubles as the upload buffer ceiling -- one part-size buffer is
@@ -44,6 +90,10 @@ _DELETE_BATCH_SIZE = 1000
 #: behind it. Observed on a 469 MB dump: 36 MB read, then a commit outlasted the default and the
 #: stream died.
 _DEFAULT_READ_TIMEOUT_SECONDS = 900.0
+
+#: connections the kept client holds at most: every request of a store shares it, and a load reads a few states'
+#: files at once, several files a state (botocore's default is 10, which would queue them)
+_MAX_POOL_CONNECTIONS = 64
 
 
 class S3ObjectStore:
@@ -98,10 +148,78 @@ class S3ObjectStore:
         self._bucket = bucket
         self._region = region
         self._part_size = part_size_bytes
+        # an injected session (a test's fake, a caller's aioboto3) presigns through it, on the loop, as before
+        self._presigns_off_loop = session is None
         self._session = session if session is not None else get_session()
+        self._presigner: Any = None
+        self._presigner_lock = threading.Lock()
+        # the kept client, the loop it was opened on, and what closes it (a store that opened its own session)
+        self._kept: Any = None
+        self._kept_loop: asyncio.AbstractEventLoop | None = None
+        self._kept_exit: AsyncExitStack | None = None
+        self._kept_lock: asyncio.Lock | None = None
+        # whether this store's session has read the service models a client is built from (:func:`_warm_loader`)
+        self._loader_warm = False
 
-    def _client(self) -> Any:
-        """Return an async-context-manager S3 client.
+    def _config(self) -> BotoConfig:
+        """the client configuration every client of this store is opened with.
+
+        :return: the configuration
+        :rtype: BotoConfig
+        """
+        return BotoConfig(
+            signature_version="s3v4",
+            read_timeout=self._read_timeout_seconds,
+            max_pool_connections=_MAX_POOL_CONNECTIONS,
+        )
+
+    def _client(self) -> AbstractAsyncContextManager[Any]:
+        """an S3 client for one request: the store's kept client (its own session), or one opened for it (an
+        injected session).
+
+        :return: an async context manager yielding the client
+        :rtype: AbstractAsyncContextManager[Any]
+        """
+        return self._kept_client() if self._presigns_off_loop else self._opened_client()
+
+    @asynccontextmanager
+    async def _kept_client(self) -> AsyncIterator[Any]:
+        """the client this store keeps on the running loop, opened on first use (see the module's docstring).
+
+        :return: the client, left open after the request
+        :rtype: AsyncIterator[Any]
+        """
+        loop = asyncio.get_running_loop()
+        if self._kept_loop is not loop:
+            # a client is bound to the loop it was opened on: another loop (a test's, a new run) opens its own
+            self._kept, self._kept_exit, self._kept_loop, self._kept_lock = None, None, loop, asyncio.Lock()
+        assert self._kept_lock is not None  # noqa: S101 -- set with the loop above
+        async with self._kept_lock:
+            if self._kept is None:
+                if not self._loader_warm:
+                    # the session's service models read off the loop first: read on it, opening the client held the
+                    # loop ~50 ms (json of the s3 model and its endpoint rules), at a load's first export read on
+                    # cobalt prod (2026-10-31); read here, the open takes ~2 ms
+                    await asyncio.to_thread(_warm_loader, self._session)
+                    self._loader_warm = True
+                exit_stack = AsyncExitStack()
+                self._kept = await exit_stack.enter_async_context(self._opened_client())
+                self._kept_exit = exit_stack
+        yield self._kept
+
+    async def aclose(self) -> None:
+        """close the kept client, if one is open on the running loop; the next request opens another.
+
+        :return: nothing
+        :rtype: None
+        """
+        exit_stack, loop = self._kept_exit, self._kept_loop
+        self._kept, self._kept_exit = None, None
+        if exit_stack is not None and loop is asyncio.get_running_loop():
+            await exit_stack.aclose()
+
+    def _opened_client(self) -> Any:
+        """a client opened for the caller's block and closed after it.
 
         :return: an S3 client context manager
         :rtype: Any
@@ -115,11 +233,35 @@ class S3ObjectStore:
             aws_access_key_id=self._access_key,
             aws_secret_access_key=self._secret_key,
             region_name=self._region,
-            config=BotoConfig(
-                signature_version="s3v4",
-                read_timeout=self._read_timeout_seconds,
-            ),
+            config=self._config(),
         )
+
+    def _presign(self, key: str, expires_in: int) -> str:
+        """presign a GET of one key with the store's synchronous client, built on first use and kept; run on a
+        worker thread.
+
+        :param key: object key
+        :ptype key: str
+        :param expires_in: URL validity in seconds
+        :ptype expires_in: int
+        :return: presigned URL
+        :rtype: str
+        """
+        with self._presigner_lock:
+            if self._presigner is None:
+                self._presigner = botocore.session.get_session().create_client(
+                    "s3",
+                    endpoint_url=self._endpoint_url,
+                    aws_access_key_id=self._access_key,
+                    aws_secret_access_key=self._secret_key,
+                    region_name=self._region,
+                    config=self._config(),
+                )
+            presigner = self._presigner
+        url: str = presigner.generate_presigned_url(
+            "get_object", Params={"Bucket": self._bucket, "Key": key}, ExpiresIn=expires_in
+        )
+        return url
 
     async def ensure_bucket(self) -> None:
         """Create the configured bucket if it does not already exist.
@@ -404,6 +546,9 @@ class S3ObjectStore:
     async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
         """Presigned GET URL for delivery -- bytes never cross the agent.
 
+        Signed on a worker thread with the store's kept synchronous client when the store opened its own session
+        (see the module's docstring); through the injected session otherwise.
+
         :param key: object key
         :ptype key: str
         :param expires_in: URL validity in seconds
@@ -411,6 +556,8 @@ class S3ObjectStore:
         :return: presigned URL
         :rtype: str
         """
+        if self._presigns_off_loop:
+            return await asyncio.to_thread(self._presign, key, expires_in)
         async with self._client() as client:
             url: str = await client.generate_presigned_url(
                 "get_object",

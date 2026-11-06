@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -77,6 +77,25 @@ def uuid7_upper_bound(moment: datetime) -> UUID:
     value |= 0b10 << 62  # variant
     value |= (1 << 62) - 1  # rand_b, maxed
     return UUID(int=value)
+
+
+def _as_column_holds(as_of: datetime, kind: str) -> datetime:
+    """the cutoff instant as a column of ``kind`` compares it.
+
+    A ``timestamp without time zone`` column holds wall-clock values, which this toolchain's hosts write in
+    UTC; asyncpg refuses an aware value for it ("can't subtract offset-naive and offset-aware datetimes"),
+    so the instant is bound as its naive UTC wall clock. A ``timestamp with time zone`` column takes the
+    instant as it is.
+
+    :param as_of: the backup's moment
+    :ptype as_of: datetime
+    :param kind: the column's ``information_schema`` data type
+    :ptype kind: str
+    :return: the value to bind
+    :rtype: datetime
+    """
+    naive = kind == "timestamp without time zone" and as_of.tzinfo is not None
+    return as_of.astimezone(UTC).replace(tzinfo=None) if naive else as_of
 
 
 @runtime_checkable
@@ -266,8 +285,9 @@ class DriftComparator:
     ) -> tuple[str | None, object | None, str]:
         columns = {r["column_name"]: r["data_type"] for r in await conn.fetch(_COLUMNS_SQL, schema, table)}
         for candidate in self._cutoff_columns:
-            if columns.get(candidate, "").startswith("timestamp"):
-                return f'"{candidate}" <= $1', as_of, f"column:{candidate}"
+            kind = columns.get(candidate, "")
+            if kind.startswith("timestamp"):
+                return f'"{candidate}" <= $1', _as_column_holds(as_of, kind), f"column:{candidate}"
         pk = await conn.fetch(_PK_SQL, f'"{schema}"', f'"{table}"')
         if len(pk) == 1 and pk[0]["type"] == "uuid":
             return f'"{pk[0]["attname"]}" <= $1', uuid7_upper_bound(as_of), f"uuid7:{pk[0]['attname']}"

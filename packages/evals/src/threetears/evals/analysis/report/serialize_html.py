@@ -7,10 +7,11 @@ is ``<details>``; moving between the screens is ``#`` anchors. The outcome bar i
 cell carrying an interval draws it as a small glyph beside its number, on one scale for the column, so a screen
 reader and a page with styles off lose nothing: every figure a glyph draws is in the row's text.
 
-**The first screen is the page's ``<header>``**: a broken floor's warning first, above everything, loud; the title
-(the campaign's name); the declared question quoted whole on its own line where there is one, then the arms line;
-the arms line alone (line 2) where none was; the verdict line, the scoreboard with its outcome bar, and the one
-caveat in normal weight that changes how the verdict is read. Everything a reader needs to decide whether to read on
+**The first screen is the page's ``<header>``**: the title (the campaign's name) first, nothing above it; the
+declared question quoted whole on its own line where there is one, then the arms line; the arms line alone (line 2)
+where none was; the verdict line; what warns (a broken floor's line, set apart, never announced over the title) and
+each report-wide caveat once; the scoreboard with its outcome bar, and the one caveat in normal weight that changes
+how the verdict is read. Everything a reader needs to decide whether to read on
 is there, written by code. Every term of art links to the glossary at the foot of the page.
 
 **Depth on demand, with the least ink.** The result, the floors, what it means and the contrasts are open;
@@ -43,6 +44,7 @@ from threetears.evals.analysis.report.blocks import (
     TableCell,
     TextBlock,
     TrialBlock,
+    fold_anchor,
 )
 from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, SUMMARY_LEADS, trial_summary
 from threetears.evals.analysis.report.svg import SVG_STYLE, chart_svg, interval_glyph_svg
@@ -90,8 +92,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; padding: 0 
 header { padding: 0 0 16px; }
 .question { font-size: 1.125rem; line-height: 1.4; margin: 0 0 8px; max-width: 75ch; }
 .arms { margin: 0 0 4px; color: var(--muted); }
-.floor { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px; max-width: 75ch;
-  border-left: 3px solid var(--tone-failed); }
+.floor, .warning { font-size: 1.125rem; line-height: 1.4; margin: 0 0 12px; padding: 2px 0 2px 14px;
+  max-width: 75ch; border-left: 3px solid var(--tone-failed); }
+.warning { font-size: 1rem; margin: 8px 0; }
 .verdict { font-size: 1.125rem; line-height: 1.4; margin: 16px 0 24px; padding: 2px 0 2px 14px;
   border-left: 3px solid var(--rule-strong); }
 .verdict[data-tone="decided"] { border-left-color: var(--tone-decided); }
@@ -100,7 +103,10 @@ header { padding: 0 0 16px; }
 .verdict[data-tone="summary"] { border-left-color: var(--tone-summary); }
 .facts, .order, .line { color: var(--muted); font-size: 0.875rem; }
 .line { margin: 4px 0; }
-.line[data-source="caveat"] { color: var(--fg); font-size: 0.9375rem; }
+.line[data-source="caveat"], .line.caveat { color: var(--fg); font-size: 0.9375rem; }
+details.expr { display: inline-block; margin: 0; }
+details.expr > summary::before { content: none; }
+details.expr[open] > summary { display: none; }
 nav { position: sticky; top: 0; z-index: 1; display: flex; gap: 20px; overflow-x: auto; white-space: nowrap;
   font-size: 0.875rem; padding: 10px 0; margin: 0 0 8px; background: var(--bg); border-bottom: 1px solid var(--rule); }
 nav a { color: var(--muted); text-decoration: none; }
@@ -214,10 +220,9 @@ def report_html(report: Report) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}">',
         "<header>",
-        # A broken floor's warning is the page's first line, above the title: the first thing a reader sees.
-        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
+        # The title first, then the first screen in order: what warns is under the verdict, never above the title.
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
+        *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
     titles = report.section_titles
@@ -235,9 +240,10 @@ def report_html(report: Report) -> str:
 def campaign_report_html(report: CampaignReport) -> str:
     """Render a campaign's page as one standalone HTML page that needs no script.
 
-    The first screen is the page's ``<header>``: every broken floor first, loud and announced (``role="alert"``),
-    then the title and the rest of the first screen in order. The memo's findings follow, open, under ``What it
-    means``; then one closed ``<section>`` per aspect, its summary the aspect's label and what code read there, its
+    The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
+    question, the answer, what warns, set apart but never announced over the title). The sections the page reads
+    before its folds follow, open (the findings, the next steps, Design & provenance); then one closed ``<section>``
+    per aspect, its summary the aspect's label and what code read there, its
     body the writer's summary of the aspect and the aspect's own page laid out as its page lays it out, a heading
     level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
     (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
@@ -261,23 +267,18 @@ def campaign_report_html(report: CampaignReport) -> str:
         "<body>",
         f'<article data-basis="{_escape(report.basis)}" data-page="campaign">',
         "<header>",
-        *(_block(block, index) for index, block in enumerate(head) if _warns(block)),
+        # The title first, then the decision: the question, the answer, then what warns, as consequences.
         f"<h1>{_escape(_one_line(report.title))}</h1>",
-        *(_block(block, index) for index, block in enumerate(head) if not _warns(block)),
+        *(_block(block, index) for index, block in enumerate(head)),
         "</header>",
     ]
-    present = [
-        section
-        for section in SECTION_TITLES
-        if section not in FIRST_SCREEN and section != "glossary" and any(b.section == section for b in report.blocks)
-    ]
-    # What the memo says reads before the folds; how the page was made (the methods) after them.
-    before = [section for section in present if section == "memo"]
-    after = [section for section in present if section != "memo"]
+    # What the page reads and the writer says sit before the folds; how the page was made (the methods) after them.
+    before, after = report.headed_sections
+    titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
-    links = [(section, SECTION_TITLES[section]) for section in before]
-    links += [(f"aspect-{slug}", fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
-    links += [(section, SECTION_TITLES[section]) for section in after]
+    links = [(section, titles[section]) for section in before]
+    links += [(fold_anchor(slug), fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{_escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
@@ -296,7 +297,7 @@ def _campaign_section(report: CampaignReport, section: str) -> list[str]:
     blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
-        *_section(section, SECTION_TITLES[section], _folded(blocks), count=None),
+        *_section(section, report.section_titles[section], _folded(blocks), count=None),
         "</section>",
     ]
 
@@ -324,10 +325,10 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str) -> list[str]:
     prefix = f"a-{slug}-"
     inner = _prefixed("\n".join(body), prefix)
     return [
-        f'<section id="aspect-{slug}">',
+        f'<section id="{fold_anchor(slug)}">',
         f'<details class="section"><summary><h2>{_escape(fold.aspect)}</h2> '
         f'<span class="count">· {_escape(fold.shows)}</span></summary>',
-        f'<div class="section-body" id="aspect-{slug}-body">',
+        f'<div class="section-body" id="{fold_anchor(slug)}-body">',
         inner,
         "</div></details>",
         "</section>",
@@ -353,7 +354,7 @@ def _prefixed(markup: str, prefix: str) -> str:
 
 def _present_sections(report: Report) -> list[str]:
     """The sections after the first screen that hold a block, in reading order; never the glossary."""
-    sections = [section for section in SECTION_TITLES if section not in FIRST_SCREEN and section != "glossary"]
+    sections = [section for section in report.section_titles if section not in FIRST_SCREEN and section != "glossary"]
     return [section for section in sections if any(block.section == section for block in report.blocks)]
 
 
@@ -502,7 +503,7 @@ def _table(block: TableBlock) -> str:
 
 def _header(text: str, term: str | None) -> str:
     """A column header, linked to its glossary entry where it is a term of art; a code span (a check) as code."""
-    shown = _code(text)
+    shown = _cell_code(text)
     return _term_link(term, shown) if term else shown
 
 
@@ -515,6 +516,26 @@ def _term_link(term: str, label: str, *, css: str = "") -> str:
 def _code(text: str) -> str:
     """Text escaped, its code spans (a check's expression, a call to copy) set as code."""
     return _CODE.sub(r"<code>\1</code>", _escape(text))
+
+
+#: The longest expression a table cell or header shows whole; a longer one shows this many characters and a visible
+#: ellipsis, the whole expression one click away.
+_EXPRESSION_CHARS = 60
+
+
+def _cell_code(text: str) -> str:
+    """A cell's or a header's text escaped, its code spans set as code, each longer than :data:`_EXPRESSION_CHARS`
+    shown by its start and a visible ellipsis, the whole of it in a fold that opens in place. Never shortened silently:
+    the whole expression is in the page."""
+
+    def span(match: re.Match[str]) -> str:
+        whole = match.group(1)
+        if len(html.unescape(whole)) <= _EXPRESSION_CHARS:
+            return f"<code>{whole}</code>"
+        start = _escape(html.unescape(whole)[:_EXPRESSION_CHARS].rstrip())
+        return f'<details class="expr"><summary><code>{start}…</code></summary><code>{whole}</code></details>'
+
+    return _CODE.sub(span, _escape(text))
 
 
 def _grid(block: TableBlock) -> str:
@@ -541,10 +562,15 @@ def _grid(block: TableBlock) -> str:
         cells = []
         for column in block.columns:
             cell = row[column.key]
-            text = _code(cell.text)
+            text = _cell_code(cell.text)
             if cell.ref is not None:
-                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it.
-                text = f'<a href="#{cell.ref}">{text}</a>'
+                # A finding's figure, linked to a cell printing the same figure, or to the closed fold holding it. A
+                # link never holds a fold that opens: a long expression's fold sits beside the link, not inside it.
+                text = (
+                    f'<a href="#{cell.ref}">{text}</a>'
+                    if "<details" not in text
+                    else f'{text} <a class="cell-link" href="#{cell.ref}">where it is</a>'
+                )
             if (block.name, column.key) in _TRIAL_COLUMNS:
                 text = _TRIAL_ID.sub(lambda match: f'<a href="#{match.group(0)}">{match.group(0)}</a>', text)
             if block.name == "cases" and column.key == "trials":
@@ -572,7 +598,9 @@ def _grid(block: TableBlock) -> str:
 
 
 def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float]]:
-    """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit.
+    """The scale each column's glyphs are drawn on, per unit: one for every cell of the column in that unit, or, in a
+    table drawn on one scale (``TableBlock.shared_scale``: a matrix), whose columns are one quantity read for each arm, one for every cell of the table
+    in that unit, so a glyph compares across columns as well as down them.
 
     The scale holds every interval end, every point and every margin band of the group, and zero where any cell is a
     difference, padded a little at either end so no mark sits on the edge.
@@ -591,6 +619,11 @@ def _glyph_scales(block: TableBlock) -> dict[tuple[str, str], tuple[float, float
                 group += [-cell.margin, cell.margin]
             if cell.zero_line:
                 group.append(0.0)
+    if block.shared_scale:
+        by_unit: dict[str, list[float]] = {}
+        for (_, unit), figures in ends.items():
+            by_unit.setdefault(unit, []).extend(figures)
+        ends = {(key, unit): by_unit[unit] for key, unit in ends}
     scales = {}
     for group_key, figures in ends.items():
         low, high = min(figures), max(figures)
@@ -620,6 +653,10 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, fl
         return ""
     headers = {column.key: column.header for column in block.columns}
     spans: dict[str, list[str]] = {}
+    if block.shared_scale:
+        # One scale per unit for every column: written once, not once per column.
+        scales = {("", unit): scale for (_, unit), scale in scales.items()}
+        headers[""] = "Each column"
     for (key, unit), (low, high) in scales.items():
         if unit == PERCENT or is_money(unit):
             ends = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
@@ -697,19 +734,9 @@ def _trial(block: TrialBlock) -> str:
     )
 
 
-#: The sources of the loud lines that open a page above its title: a missed bar, a broken floor, a guardrail an arm
-#: is not shown safe on.
+#: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not
+#: shown safe on.
 _WARNING_SOURCES = frozenset({"bar", "floor", "guardrails"})
-
-
-def _warns(block: ReportBlock) -> bool:
-    """Whether ``block`` opens the page above its title: a missed bar's, a broken floor's or a guardrail's warning, or
-    the writer's why for a floor its recommendation is made over, which sits beside the warning it answers."""
-    if block.section != "header":
-        return False
-    if isinstance(block, TextBlock):
-        return block.role == "override"
-    return isinstance(block, DisclosureBlock) and block.source in _WARNING_SOURCES
 
 
 def _disclosure(block: DisclosureBlock) -> str:
@@ -719,11 +746,15 @@ def _disclosure(block: DisclosureBlock) -> str:
         text += " " + _term_link(block.term, f"({_escape(block.term)})", css="term")
     if block.source == "arms":
         return f'<p class="arms">{text}</p>'
-    if block.section == "header" and block.source == "basis":
+    if block.section in ("header", "answer") and block.source == "basis":
         return f'<p class="question">{text}</p>'
-    if block.section == "header" and block.source in _WARNING_SOURCES:
-        # A broken floor, the page's first line: loud, and announced to a screen reader as it loads.
-        return f'<p class="floor" role="alert"><strong>{text}</strong></p>'
+    anchor = f' id="{_escape(block.anchor)}"' if block.anchor is not None else ""
+    if block.section in ("header", "warnings") and block.source in _WARNING_SOURCES:
+        # What warns, under the title: set apart, never announced over it.
+        return f'<p class="warning"{anchor}><strong>{text}</strong></p>'
+    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
+        # A report-wide caveat, once, beside what warns.
+        return f'<p class="line caveat"{anchor} data-source="{_escape(block.source)}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{_escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

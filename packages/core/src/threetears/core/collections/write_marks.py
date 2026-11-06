@@ -7,9 +7,10 @@ the advance, the row is committed and the generation is unmoved: every pod holdi
 absence for that key keeps answering "absent" -- for the revocation list, a revoked session still
 answering "not revoked". Nothing in the epoch system could see a commit that never moved it.
 
-So the database records the write itself. Each switched-on table carries a statement-level trigger
+So the database records the write itself. Each switched-on table carries a row trigger
 (:data:`WRITE_MARK_TRIGGER`) that inserts one row into :data:`WRITE_MARKS_TABLE` in the same
-transaction as the write: the mark commits exactly when the write does, whoever the writer is. The
+transaction as the write, at the transaction's first changed row of the table: the mark commits exactly
+when the write does, whoever the writer is, and a statement that changed no row marks nothing. The
 :class:`WriteMarkReconciler` drains the marks: it advances each marked table's generation once and
 deletes exactly the marks it read. A writer that advanced after its commit, as before, costs a
 second advance, which only makes followers re-read the table once more. Every process that owns a
@@ -37,7 +38,7 @@ and is excluded from the rest of the pass's pages, so every other table's marks 
 
 **Worst-case repair.** A commit whose own advance was lost is seen by a follower within the pass
 interval, plus the lease's lifetime when the replica holding it died mid-pass, plus the follower's
-own catch-up. ``TRUNCATE`` fires no statement-level row trigger and leaves no mark.
+own catch-up. ``TRUNCATE`` fires no row trigger and leaves no mark.
 """
 
 from __future__ import annotations
@@ -154,6 +155,7 @@ WHERE t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($1::text[]) AND N
     JOIN pg_class c ON c.oid = g.tgrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE g.tgname = $2 AND c.relname = t.table_name AND n.nspname = t.table_schema
+    AND (g.tgtype & 1) = 1
 )
 ORDER BY t.table_schema, t.table_name
 """
@@ -219,8 +221,17 @@ async def install_write_mark_triggers(
     async with pool.acquire() as conn:
         try:
             async with database_ddl_lock(ConnectionSession(conn), policy):
-                for schema, table in await tables_missing_the_trigger(conn, names):
+                missing = await tables_missing_the_trigger(conn, names)
+                if missing:
+                    # the function the row trigger calls, replacing the one that marked every statement
+                    await conn.execute(write_marks_ddl(marks_schema)[1])
+                for schema, table in missing:
                     try:
+                        # 0.78.0's statement trigger of the same name goes first, so the two never both mark
+                        await conn.execute(
+                            f"DROP TRIGGER IF EXISTS {quote_identifier(WRITE_MARK_TRIGGER)} "
+                            f"ON {quote_identifier(schema)}.{quote_identifier(table)}"
+                        )
                         await conn.execute(
                             write_mark_trigger_sql(marks_schema=marks_schema, table_schema=schema, table=table)
                         )

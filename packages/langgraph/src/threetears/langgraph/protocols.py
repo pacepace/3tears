@@ -24,6 +24,8 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "CheckpointL2PrefixCache",
+    "CheckpointL2RevisionCache",
+    "CheckpointL2ValueLimit",
     "FlushCallback",
 ]
 
@@ -97,6 +99,69 @@ class CheckpointL2PrefixCache(Protocol):
 
     async def delete_prefix(self, bucket: str, prefix: str) -> None:
         """Delete every key in ``bucket`` whose name starts with ``prefix``."""
+        ...
+
+
+@runtime_checkable
+class CheckpointL2RevisionCache(Protocol):
+    """Optional capability: read a key's revision and write only if the key is unchanged since.
+
+    A separate protocol for the reason :class:`CheckpointL2PrefixCache` is one.
+
+    Why it exists: after an L3 read the saver refills L2 with what it read. That
+    read is only as new as the moment the query ran; a writer whose newer
+    checkpoint reached L2 after that moment would be overwritten by the older
+    refill, and every worker whose L1 misses is then served the older state. So
+    the saver reads the key's revision BEFORE the L3 query and refills at that
+    revision; any write or deletion since refuses the refill. A cache without
+    this capability is never refilled from a read: only :meth:`aput
+    <threetears.langgraph.checkpoint.ThreeTierCheckpointSaver.aput>` writes it.
+
+    A NATS KV bucket offers both halves (``NatsKvBucket.get_latest`` and
+    ``NatsKvBucket.update``); an adapter delegates to them.
+    """
+
+    async def get_latest(self, bucket: str, key: str) -> tuple[bytes | None, int]:
+        """The key's latest value and revision, counting a deletion as a revision.
+
+        ``(value, revision)`` for a live value, ``(None, revision)`` when the latest
+        message is a deletion, ``(None, 0)`` when the key never had a message.
+        """
+        ...
+
+    async def update(self, bucket: str, key: str, value: bytes, revision: int) -> int | None:
+        """Write ``value`` only while the key's latest revision is ``revision``.
+
+        Returns the new revision, or None when the key changed since (the write did not land).
+        """
+        ...
+
+
+@runtime_checkable
+class CheckpointL2ValueLimit(Protocol):
+    """Optional capability: say the largest value the L2 cache will store.
+
+    A separate protocol for the reason :class:`CheckpointL2PrefixCache` is one: a
+    member added to :class:`CheckpointL2Cache` would stop every adapter already
+    written against it from satisfying the protocol.
+
+    Why it exists: the saver's L2 key is per thread and namespace, not per
+    checkpoint, so a put that fails leaves the PREVIOUS checkpoint under the key,
+    and every worker whose L1 misses is then served that older state from L2.
+    A cache with a size limit (a NATS KV bucket refuses a value over the server's
+    ``max_payload``) fails every put of an oversized blob. Told the limit, the
+    saver deletes the key instead of attempting a put that cannot land, so
+    readers fall through to L3. Without it the saver still deletes the key after
+    the put fails; the limit saves the doomed attempt and names the sizes.
+    """
+
+    @property
+    def max_value_bytes(self) -> int | None:
+        """The largest value :meth:`CheckpointL2Cache.put` accepts, or None when unknown.
+
+        None means no limit is known right now (for NATS: not connected, so no
+        server has advertised one); the saver then attempts the put.
+        """
         ...
 
 

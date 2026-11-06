@@ -264,12 +264,20 @@ class RestAffordance(PathTemplateBinding):
         ``tools.enr.state.va.1-0`` may read scope ``va``). The hub issues each reader an edge token
         naming the scopes discovery lists under it, every scope (``*``) when the reader sees every
         node there; ``None`` keeps a token at every scope. A dotted namespace name, no empty segment
+    :ivar scope_qualifier_node: with ``scope_node``, a second namespace node whose child tool nodes
+        narrow what a reader of a scope may see (``tools.enr.report``: the reports a reader may read in
+        the states ``scope_node`` names). A reader who sees every child of it keeps the scopes
+        ``scope_node`` names (``va``); any other reader's scopes are qualified by the children it
+        sees, ``<scope>.<fingerprint>`` (:func:`threetears.core.http_cache.qualified_scope`), so two
+        readers of the same scopes and different children never share a cached answer. ``None``:
+        scopes are not qualified. A dotted namespace name, no empty segment; only with ``scope_node``
     """
 
     cache: CacheClass = CacheClass.INHERIT
     cache_version_param: str | None = None
     cache_max_age: int | None = None
     scope_node: str | None = None
+    scope_qualifier_node: str | None = None
 
     def __post_init__(self) -> None:
         """normalize the method, then check everything knowable without a schema.
@@ -308,11 +316,16 @@ class RestAffordance(PathTemplateBinding):
             )
             raise RestAffordanceError(msg)
         self._check_max_age()
-        node = self.scope_node
-        if node is not None and (not node or any(not part or part != part.strip() for part in node.split("."))):
+        for label, node in (("scope_node", self.scope_node), ("scope_qualifier_node", self.scope_qualifier_node)):
+            if node is not None and (not node or any(not part or part != part.strip() for part in node.split("."))):
+                raise RestAffordanceError(
+                    f"REST affordance on {self.path_template!r}: {label} {node!r} is not a namespace name "
+                    "(dotted segments, none empty or padded)"
+                )
+        if self.scope_qualifier_node is not None and self.scope_node is None:
             raise RestAffordanceError(
-                f"REST affordance on {self.path_template!r}: scope_node {node!r} is not a namespace name "
-                "(dotted segments, none empty or padded)"
+                f"REST affordance on {self.path_template!r}: scope_qualifier_node qualifies the scopes "
+                "scope_node names, so it needs a scope_node"
             )
 
     def _check_max_age(self) -> None:

@@ -442,3 +442,119 @@ class TestPdfs:
     def test_the_fixture_is_the_recording_it_claims_to_be(self) -> None:
         assert _fixture("otter-survey.pdf").startswith(b"%PDF-")
         assert json.loads(_fixture("searxng-otters.json"))["results"]
+
+
+class TestAnyTextIsRead:
+    """A person debugging a site needs its stylesheet, its sitemap and its API's answer, not a refusal."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "declared", "body"),
+        [
+            ("/style.css?ver=1.3", "text/css", b"body { color: #333; }\n.menu { display: none; }\n"),
+            ("/sitemap_index.xml", "text/xml", b"<?xml version='1.0'?><sitemapindex></sitemapindex>\n"),
+            ("/feed", "application/rss+xml", b"<rss version='2.0'><channel></channel></rss>\n"),
+            ("/main.js", "application/javascript", b"document.querySelector('form').submit();\n"),
+        ],
+    )
+    async def test_a_text_file_comes_back_as_written_and_says_what_it_is(
+        self, path: str, declared: str, body: bytes
+    ) -> None:
+        tool, _ = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}{path}": RecordedPage(body=body, content_type=declared)})
+
+        result = await tool.execute(url=f"{_SITE}{path}")
+
+        assert result.success is True, result.content
+        assert result.content.splitlines()[0] == (
+            f"Read a {declared} file (no date given) at {_SITE}{path}: characters 0-{len(body):,} of {len(body):,}."
+        )
+        assert result.content.endswith(body.decode())
+
+    @pytest.mark.asyncio
+    async def test_an_api_answer_comes_back_indented(self) -> None:
+        url = f"{_SITE}/wp-json/wp/v2/pages?slug=contact"
+        tool, _ = _fetch_tool(
+            {_ROBOTS: _ALLOW, url: RecordedPage(body=b'[{"id":12,"slug":"contact"}]', content_type="application/json")}
+        )
+
+        result = await tool.execute(url=url)
+
+        assert result.success is True, result.content
+        assert result.content.endswith('[\n  {\n    "id": 12,\n    "slug": "contact"\n  }\n]')
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("name", "declared", "body"),
+        [("logo.png", "image/png", b"\x89PNG"), ("logo.svg", "image/svg+xml", b"<svg><script>1</script></svg>")],
+    )
+    async def test_an_image_is_refused_and_says_what_is_read(self, name: str, declared: str, body: bytes) -> None:
+        """An SVG is XML, and still an image: refused like one, scripts and all."""
+        tool, _ = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}/{name}": RecordedPage(body=body, content_type=declared)})
+
+        result = await tool.execute(url=f"{_SITE}/{name}")
+
+        assert result.success is False
+        assert result.content.startswith(
+            f"Did not read {_SITE}/{name}: the address is not a page, text or a PDF, so it is not read; "
+            "an image, an archive, audio or video is not read as text"
+        )
+
+    def test_the_description_says_what_it_reads(self) -> None:
+        tool, _ = _fetch_tool({})
+
+        described = tool.mcp_schema().description
+
+        for kind in ("page", "CSS", "XML", "JSON", "PDF", "Images"):
+            assert kind in described
+
+
+class TestSource:
+    @pytest.mark.asyncio
+    async def test_source_returns_the_page_s_html_as_fetched(self) -> None:
+        tool, _ = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}/otters": RecordedPage(body=_fixture("article.html"))})
+
+        result = await tool.execute(url=f"{_SITE}/otters", source=True)
+
+        lines = result.content.splitlines()
+        assert result.success is True, result.content
+        assert lines[0].startswith(f"Read the HTML source (text/html) (no date given) at {_SITE}/otters:")
+        assert lines[1] == "This is the page's HTML as fetched, not its article; scripts that run later are not run."
+        assert _fixture("article.html").decode() in result.content
+
+    @pytest.mark.asyncio
+    async def test_without_source_the_article_is_read(self) -> None:
+        """Good traffic: the default answer is the article, with no markup in it."""
+        tool, _ = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}/otters": RecordedPage(body=_fixture("article.html"))})
+
+        result = await tool.execute(url=f"{_SITE}/otters")
+
+        assert "<p>" not in result.content
+        assert "Otters have returned" in result.content
+
+    def test_the_argument_says_what_it_is_for(self) -> None:
+        tool, _ = _fetch_tool({})
+
+        source = tool.mcp_schema().input_schema["properties"]["source"]
+
+        assert source["type"] == "boolean"
+        for use in ("markup", "scripts", "forms", "meta tags"):
+            assert use in source["description"]
+
+
+class TestAThinPageWithAPlaceholderFrame:
+    @pytest.mark.asyncio
+    async def test_what_the_page_holds_is_returned_and_about_blank_is_never_named(self) -> None:
+        """A contact page whose only frame is an embed's placeholder."""
+        page = (
+            b"<html><head><title>Contact</title></head><body><nav><a href='/'>Home</a></nav>"
+            b"<main><p>Write to us at hello@example.org or call 555 0100 between nine and five.</p></main>"
+            b"<iframe src='about:blank'></iframe></body></html>"
+        )
+        tool, transport = _fetch_tool({_ROBOTS: _ALLOW, f"{_SITE}/contact": RecordedPage(body=page)})
+
+        result = await tool.execute(url=f"{_SITE}/contact")
+
+        assert result.success is True, result.content
+        assert "hello@example.org" in result.content
+        assert "about:blank" not in result.content
+        assert transport.fetched == [_ROBOTS, f"{_SITE}/contact"]

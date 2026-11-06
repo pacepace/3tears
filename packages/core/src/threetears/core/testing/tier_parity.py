@@ -7,7 +7,8 @@ that changed value on every read it answers -- a ``NUMERIC`` read back as a ``fl
 without its zone -- and nothing else notices. This gate writes one row of exacting values (a
 ``Decimal`` at its column's full precision, a negative one, an aware instant to the microsecond, a
 UUID, nested JSON, a bool, raw bytes, an integer beyond a float's precision) through every tier and
-reads it back, and names the collection, column and tier of every difference.
+reads it back, and names the collection, column and tier of every difference. Through L2 it also
+sends each ``NUMERIC`` as a ``float``, as an older writer cached it, and expects its ``Decimal`` back.
 
 Two halves, both for any host to run over its own collections:
 
@@ -279,13 +280,65 @@ def tier_parity_findings(
         except TypeError as exc:
             findings.append(f"{name}: L2: could not build the collection for its codec ({exc}); pass build=")
             continue
-        try:
-            decoded = collection.decode_row(collection.serialize(row))
-        except (TypeError, ValueError) as exc:
-            findings.append(f"{name}: L2: the row did not survive its codec: {type(exc).__name__}: {exc}")
-        else:
-            findings.extend(_row_findings(name, "L2", row, decoded))
+        findings.extend(_l2_findings(name, "L2", collection, row, row))
+        floats = _float_numeric_row(schema)
+        if floats is not None:
+            sent, expected = floats
+            findings.extend(_l2_findings(name, "L2 (a NUMERIC sent as a float)", collection, sent, expected))
     return findings
+
+
+def _float_numeric_row(schema: TableSchema) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """the sample row with each ``NUMERIC`` column a ``float``, and the row the codec must hand back for it.
+
+    A writer that passes a float, or a pod whose L1 held ``REAL``, puts a JSON number in L2; the codec
+    must hand back the ``Decimal`` that float was written from, as L3 would.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: the row sent and the row expected back, or ``None`` when the table has no ``NUMERIC``
+    :rtype: tuple[dict[str, Any], dict[str, Any]] | None
+    """
+    numeric = [
+        column
+        for column in schema.columns
+        if column.column_type == NUMERIC_TYPE and column.precision is not None and column.scale is not None
+    ]
+    if not numeric:
+        return None
+    sent = _sample_row(schema)
+    expected = dict(sent)
+    for column in numeric:
+        # fits every NUMERIC(p, s) with p > s, and 0.5 every one with a scale
+        value = -0.5 if column.scale else -7.0
+        sent[column.name] = value
+        expected[column.name] = Decimal(repr(value))
+    return sent, expected
+
+
+def _l2_findings(
+    name: str, tier: str, collection: BaseCollection[Any], sent: Mapping[str, Any], expected: Mapping[str, Any]
+) -> list[str]:
+    """pass ``sent`` through the collection's L2 codec and compare what it hands back with ``expected``.
+
+    :param name: the collection's name
+    :ptype name: str
+    :param tier: the tier, as the findings name it
+    :ptype tier: str
+    :param collection: the collection, for its codec
+    :ptype collection: BaseCollection[Any]
+    :param sent: the row encoded
+    :ptype sent: Mapping[str, Any]
+    :param expected: the row the codec must hand back
+    :ptype expected: Mapping[str, Any]
+    :return: the findings
+    :rtype: list[str]
+    """
+    try:
+        decoded = collection.decode_row(collection.serialize(dict(sent)))
+    except (TypeError, ValueError) as exc:
+        return [f"{name}: {tier}: the row did not survive its codec: {type(exc).__name__}: {exc}"]
+    return _row_findings(name, tier, expected, decoded)
 
 
 def _has_default(expression: str | None) -> bool:

@@ -48,7 +48,6 @@ Needs ``pyarrow`` (the ``export`` extra), imported only when a file is read.
 
 from __future__ import annotations
 
-import io
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -58,6 +57,7 @@ from threetears.core.backends.protocol import LOAD_FILES_MAX_WAIT_SECONDS, LoadF
 from threetears.observe import get_logger
 
 try:
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     _PARQUET = True
@@ -284,8 +284,38 @@ def _parquet_rows(data: bytes) -> list[dict[str, Any]]:
     """
     if not _PARQUET:
         raise ImportError("reading an export's parquet files needs pyarrow: install 3tears-datasources[export]")
-    rows: list[dict[str, Any]] = pq.read_table(io.BytesIO(data)).to_pylist()
+    rows: list[dict[str, Any]] = _read_parquet(data).to_pylist()
     return rows
+
+
+def _parquet_table(data: bytes) -> pa.Table:
+    """one parquet file as an Arrow table, its rows never made Python objects.
+
+    :param data: the file
+    :ptype data: bytes
+    :return: its rows
+    :rtype: pyarrow.Table
+    """
+    if not _PARQUET:
+        raise ImportError("reading an export's parquet files needs pyarrow: install 3tears-datasources[export]")
+    return _read_parquet(data)
+
+
+def _read_parquet(data: bytes) -> pa.Table:
+    """one parquet file's rows, read natively over its bytes: blocking, on a worker thread.
+
+    Over ``pa.BufferReader`` the reader never calls back into Python. Over ``io.BytesIO`` (and through
+    ``pq.read_table``'s dataset machinery) every read of the file went back through a Python file object, taking the
+    interpreter lock each time: six threads reading an export's files at once held the event loop 0.1 s
+    (cobalt prod, 2026-10-31).
+
+    :param data: the file
+    :ptype data: bytes
+    :return: its rows
+    :rtype: pyarrow.Table
+    """
+    table: pa.Table = pq.ParquetFile(pa.BufferReader(data)).read()
+    return table
 
 
 async def read_export(store: ExportStore, result: DatasourceExportResult, *, bucket: str) -> list[dict[str, Any]]:

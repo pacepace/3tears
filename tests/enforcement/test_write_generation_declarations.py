@@ -273,6 +273,9 @@ _TABLES_NAMED_PER_INSTANCE: dict[str, str] = {
         "one table per kind of answer, named by its owner (a report pod's enr_answers)"
     ),
     "threetears.core.collections.versioned_answers._AnswerIndex": "the index of one VersionedAnswers, {table}_index",
+    "threetears.agent.acl.shape_answers.AccessShapeAnswers": (
+        "one table per owner of access-shape answers, named by it (the hub's access_shape_answers)"
+    ),
 }
 
 

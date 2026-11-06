@@ -63,7 +63,7 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.evals.kernel.storage import UnreadableRecordError, UnreadableRunError
+from threetears.evals.kernel.storage import EvalStorage, UnreadableRecordError, UnreadableRunError
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
@@ -83,8 +83,8 @@ from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, Pla
 from threetears.evals.kernel.host.eval_host import CompletionRole
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
-from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
-from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
+from threetears.evals.analysis.agreement import InterJudgeAgreement, InterJudgeTally
+from threetears.evals.analysis.judge_drift import JudgeDrift, JudgeDriftTally
 from threetears.evals.analysis.judge_temperature import read_judge_temperatures
 from threetears.evals.analysis.summary import budget_stop_line
 from collections.abc import Awaitable, Callable
@@ -103,6 +103,7 @@ from threetears.evals.run.judge_second import SECOND_JUDGE_JOB, EvalSecondJudgeP
 from threetears.evals.run.judge_temperature import JUDGE_TEMPERATURE_JOB, EvalJudgeTemperatureCheck
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 #: What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a
 #: sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -550,6 +551,21 @@ async def _settled_attempt(
     return attempt
 
 
+def _second_judge_readings(
+    storage: EvalStorage, run_id: str, pass_id: str, scope_id: str
+) -> tuple[InterJudgeAgreement, JudgeDrift]:
+    """A second judge pass's agreement and drift, read off its run a page at a time
+    (:func:`~threetears.evals.kernel.run_pages.iter_run_results`), so a poll of a large run's pass never holds the run.
+    A run deleted since the pass leaves no result to read, as a read of its results by run found none.
+    """
+    agreement, drift = InterJudgeTally(pass_id=pass_id), JudgeDriftTally(pass_id=pass_id)
+    if (run := storage.load_eval_run(run_id, scope_id)) is not None:
+        for result in iter_run_results(storage, run, page_results=RUN_RESULTS_PAGE):
+            agreement.add(result)
+            drift.add(result)
+    return agreement.agreement(), drift.drift()
+
+
 async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     """Where a job stands, read from the record its work writes — the same answer in every process.
 
@@ -602,14 +618,15 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
             raise NotFoundError("second judge pass", target_id, remedy=FIND_JOB)
         read: dict[str, Any] | None = None
         if judged.outcome == "completed" and judged.report is not None and judged.lost is None:
-            results = await run_blocking(
-                eval_host.blocking_executor, eval_host.storage.query_eval_results_by_run, judged.run_id, scope_id
+            agreement, drift = await run_blocking(
+                eval_host.blocking_executor,
+                _second_judge_readings,
+                eval_host.storage,
+                judged.run_id,
+                judged.id,
+                scope_id,
             )
-            read = SecondJudgeRead(
-                report=judged.report,
-                agreement=inter_judge_agreement(results, pass_id=judged.id),
-                drift=judge_drift(results, pass_id=judged.id),
-            ).model_dump(mode="json")
+            read = SecondJudgeRead(report=judged.report, agreement=agreement, drift=drift).model_dump(mode="json")
         return _record_status(job_id, kind, judged, run_id=judged.run_id, result=read)
     if kind == "judge_temperature":
         check = await _settled(host, JUDGE_TEMPERATURE_JOB, target_id, scope_id)

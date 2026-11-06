@@ -108,8 +108,10 @@ async def test_an_unsatisfied_criterion_is_named_in_the_prose() -> None:
     )
     prose = render_prose(result)
 
-    assert prose.startswith(EXPECTED_PROSE)
-    assert "the rights-class filter was not applied" in prose
+    note, results = prose.split("\n\n", 1)
+    assert note.startswith("What this search could not do:"), "the note leads, ahead of the results"
+    assert "the rights-class filter was not applied" in note
+    assert results == EXPECTED_PROSE
 
 
 async def test_a_provider_degradation_is_named_in_the_prose() -> None:

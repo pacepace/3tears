@@ -177,6 +177,28 @@ class CallerTransaction:
         """
         self._enrolled.append((collection, entity_id, row))
 
+    def restate(self, collection: BaseCollection[Any], entity_id: Any, *, row: dict[str, Any]) -> None:
+        """replace the row ``collection``'s latest enrollment of ``entity_id`` carries, once the write knows it as stored.
+
+        A write enrolls before it writes, with the row as sent. A write that read its row back
+        restates it, so the eviction's broadcast takes its invalidation columns from the row as
+        stored. A key not enrolled is left alone.
+
+        :param collection: the collection that wrote the row
+        :ptype collection: BaseCollection
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param row: the row as stored
+        :ptype row: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        for index in range(len(self._enrolled) - 1, -1, -1):
+            enrolled, key, _ = self._enrolled[index]
+            if enrolled is collection and key == entity_id:
+                self._enrolled[index] = (collection, entity_id, row)
+                break
+
     async def __aenter__(self) -> CallerTransaction:
         """open the transaction and make it findable from the writes that join it.
 

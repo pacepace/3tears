@@ -20,6 +20,7 @@ from datetime import timedelta
 from typing import Any
 
 import nats.errors
+import nats.js.errors
 import pytest
 from nats.aio.msg import Msg
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
@@ -139,17 +140,25 @@ class _Raw:
 
 # parity-exempt: stands in for the nats-py JetStream context; records add_consumer and refuses the stock KV watch path outright
 class _JetStream:
-    def __init__(self, log: list[str], *, failures: int = 0, pending: int = 0) -> None:
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        failures: int = 0,
+        pending: int = 0,
+        failure: type[Exception] | Exception = nats.errors.TimeoutError,
+    ) -> None:
         self._log = log
         self._failures = failures
         self._pending = pending
+        self._failure = failure
         self.creates: list[tuple[str, ConsumerConfig]] = []
 
     async def add_consumer(self, stream: str, config: ConsumerConfig) -> object:
         self._log.append(f"create {config.name}")
         if self._failures:
             self._failures -= 1
-            raise nats.errors.TimeoutError
+            raise self._failure
         self.creates.append((stream, config))
         assert config.deliver_subject is not None and config.name is not None
         _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
@@ -188,7 +197,11 @@ class _ForbiddenKv:
 
 
 def _bucket(
-    scripts: list[list[Msg]], *, failures: int = 0, closed_after_scripts: bool = False
+    scripts: list[list[Msg]],
+    *,
+    failures: int = 0,
+    closed_after_scripts: bool = False,
+    failure: type[Exception] | Exception = nats.errors.TimeoutError,
 ) -> tuple[NatsKvBucket, _Raw, _JetStream, list[str]]:
     """a bucket over scripted deliveries, one script per consumer the watch creates.
 
@@ -198,12 +211,14 @@ def _bucket(
     :ptype failures: int
     :param closed_after_scripts: close the connection once the last script is drained
     :ptype closed_after_scripts: bool
+    :param failure: what each failing create raises
+    :ptype failure: type[Exception] | Exception
     :return: the bucket, the raw client, the JetStream context and the call log
     :rtype: tuple[NatsKvBucket, _Raw, _JetStream, list[str]]
     """
     log: list[str] = []
     raw = _Raw(scripts, log, closed_after_scripts=closed_after_scripts)
-    js = _JetStream(log, failures=failures)
+    js = _JetStream(log, failures=failures, failure=failure)
     bucket = NatsKvBucket(
         client=_Client(raw, js),  # type: ignore[arg-type]
         full_name=_BUCKET,
@@ -449,6 +464,72 @@ class TestReplacingAConsumer:
         assert len(js.creates) == 1
         assert f"$JS.API.CONSUMER.CREATE.{_STREAM}.*.{_SUBJECT}" in caplog.text
 
+    async def test_a_stream_not_yet_recreated_is_said_once_without_a_traceback_and_waited_out(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """After a broker restart the bucket's stream is gone until its declarer creates it again, and
+        every create in between answers "stream not found" (err_code 10059). That is the bucket being
+        absent, not a refused grant: one INFO line for the watch, no traceback, no grant hint, and the
+        watch delivers once the stream is back (2026-11-05: ~296 tracebacks per worker in 45 s)."""
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        bucket, raw, js, _log = _bucket([[], [], [], [_delivered(b"3", sequence=7)]], failures=3, failure=absent)
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            updates = await asyncio.wait_for(
+                _take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2
+            )
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        assert all(inbox.unsubscribed for inbox in raw.inboxes[:3])
+        assert len(js.creates) == 1
+        waits = [r for r in caplog.records if "does not exist" in r.getMessage()]
+        assert len(waits) == 1, f"three absent creates must log one wait, got {len(waits)}"
+        assert waits[0].levelno == logging.INFO
+        assert not any(r.exc_info for r in caplog.records), "an absent stream is no traceback"
+        assert "CONSUMER.CREATE" not in caplog.text, "an absent stream must not blame the grant"
+        assert any("exists again" in r.getMessage() for r in caplog.records)
+
+    async def test_a_prefix_watch_says_an_absent_stream_once_too(self, caplog: pytest.LogCaptureFixture) -> None:
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        log: list[str] = []
+        raw = _Raw([[], [], []], log)
+        js = _JetStream(log, failures=3, failure=absent)
+        bucket = NatsKvBucket(client=_Client(raw, js), full_name=_BUCKET, kv=_ForbiddenKv(), ttl=None)  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            async with aclosing(bucket.watch_prefix(prefix="snap.", heartbeat=_FAST, retry=_FAST)) as watch:
+                caught_up = await asyncio.wait_for(anext(watch), timeout=2)
+
+        assert caught_up is None
+        assert len(js.creates) == 1
+        assert len([r for r in caplog.records if "does not exist" in r.getMessage()]) == 1
+
+    async def test_a_stream_absent_past_the_bound_is_warned_once(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bucket nobody recreates leaves the watch deaf; that is the operator's to hear, once."""
+        monkeypatch.setattr("threetears.nats.kv_watch.KEY_WATCH_ABSENT_WARN_AFTER", timedelta(0))
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        bucket, _raw, _js, _log = _bucket([[], [], [], [_delivered(b"3", sequence=7)]], failures=3, failure=absent)
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2)
+
+        warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warned) == 1 and "has not existed" in warned[0].getMessage()
+
+    async def test_a_key_that_is_absent_but_a_stream_that_exists_still_names_the_grant(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only the stream's absence (10059) is the quiet case; any other not-found keeps the grant hint."""
+        other = nats.js.errors.NotFoundError(code=404, err_code=10014, description="consumer not found")
+        bucket, _raw, _js, _log = _bucket([[], [_delivered(b"3", sequence=7)]], failures=1, failure=other)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.kv"):
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2)
+
+        assert f"$JS.API.CONSUMER.CREATE.{_STREAM}.*.{_SUBJECT}" in caplog.text
+
     async def test_a_bug_in_the_create_ends_the_watch_rather_than_retrying_forever(self) -> None:
         bucket, _raw, js, log = _bucket([[], [_delivered(b"3", sequence=7)]])
 
@@ -569,94 +650,54 @@ class TestOnlyItsOwnConsumer:
         assert len({name[:8] for name in names}) > 40
 
 
-def _listed(key: str, *, pending: int, consumer: str = _OWN, stream: str = _STREAM, reply: str | None = None) -> Msg:
-    """a key listing delivery: headers only, the key's subject, ``num_pending`` in the ack reply.
+# parity-exempt: the JetStream context an object read meets: the metadata read by subject, and the chunks' named consumer
+class _ObjectJetStream(_JetStream):
+    """answers the object's metadata by direct read, and records the consumer its chunk read creates."""
 
-    :param key: the key
-    :ptype key: str
-    :param pending: the messages the consumer still has to deliver after this one
-    :ptype pending: int
-    :param consumer: the consumer the ack reply names; :data:`_OWN` is the listing's own
-    :ptype consumer: str
-    :param stream: the stream the ack reply names
-    :ptype stream: str
-    :param reply: a reply some other sender chose, in place of an ack reply
-    :ptype reply: str | None
-    :return: the message
-    :rtype: Msg
-    """
-    ack = f"$JS.ACK.{stream}.{consumer}.1.5.5.1700000000000000000.{pending}"
-    chosen = ack if reply is None else reply
-    return Msg(_client=None, subject=f"$KV.{_BUCKET}.{key}", reply=chosen, data=b"", headers=None)  # type: ignore[arg-type]
+    def __init__(self, log: list[str], metadata: bytes, *, pending: int) -> None:
+        super().__init__(log, pending=pending)
+        self._metadata = metadata
+
+    async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data=self._metadata, subject=subject, seq=1, headers=None)
 
 
-class TestTheKeyListingReadsOnlyItsOwnConsumer:
-    """any client can get bytes delivered onto the listing's inbox; only its own consumer's count.
+class TestAnObjectReadTakesOnlyItsOwnConsumersChunks:
+    """an object's chunks are read through a named consumer, onto an inbox any client can get bytes delivered to:
+    only what the read's own consumer delivered counts, or a forged chunk would become the object's bytes."""
 
-    A forgery that counted would add a key that does not exist, or, claiming nothing is pending,
-    end the listing before the live keys arrive.
-    """
-
-    async def test_forged_deliveries_neither_add_a_key_nor_cut_the_listing_short(
+    async def test_forged_chunks_are_refused_and_the_object_is_its_own_bytes(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        forgeries = [
-            _listed("forged-plain", pending=0, reply=""),
-            _listed("forged-stream", pending=0, stream="OBJ_forger", consumer="c1"),
-            _listed("forged-consumer", pending=0, consumer="kl_someone_else"),
-        ]
-        own = [_listed("alpha", pending=1), _listed("beta", pending=0)]
-        log: list[str] = []
-        raw = _Raw([[*forgeries, *own]], log)
-        js = _JetStream(log, pending=2)
-        bucket = NatsKvBucket(
-            client=_Client(raw, js),  # type: ignore[arg-type]
-            full_name=_BUCKET,
-            kv=_ForbiddenKv(),  # type: ignore[arg-type]
-            ttl=None,
-        )
-
-        with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
-            keys = await asyncio.wait_for(bucket.list_keys(), timeout=2)
-
-        assert keys == ["alpha", "beta"]
-        refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
-        assert len(refusals) == len(forgeries)
-        assert all(r.getMessage().startswith("key listing ") for r in refusals)
-        name = js.creates[0][1].name
-        assert name is not None and len(name.removeprefix("kl_")) == 32
-
-
-class TestTheObjectStoreReadsOnlyItsOwnConsumer:
-    """the Object Store reads through the same named read as the key listing, and refuses what its
-    consumer did not deliver."""
-
-    async def test_an_object_listing_takes_only_its_own_consumers_records(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+        import base64
+        import hashlib
         import json
 
         from threetears.nats import NatsObjectStore
 
         stream = "OBJ_pods"
-
-        def record(name: str) -> bytes:
-            return json.dumps({"name": name, "bucket": "pods", "nuid": f"n-{name}", "size": 0, "chunks": 0}).encode()
-
+        chunks = [b"the object's ", b"own bytes"]
+        data = b"".join(chunks)
+        digest = "SHA-256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode("ascii")
+        metadata = json.dumps(
+            {"name": "a/b", "bucket": "pods", "nuid": "n1", "size": len(data), "chunks": len(chunks), "digest": digest}
+        ).encode()
         forged = [
-            _delivered(record("forged-stream"), sequence=1, stream="OBJ_forger"),
-            _delivered(record("forged-consumer"), sequence=2, stream=stream, consumer="ol_someone_else"),
+            _delivered(b"forged by another stream", sequence=1, stream="OBJ_forger"),
+            _delivered(b"forged by another consumer", sequence=2, stream=stream, consumer="og_someone_else"),
         ]
-        own = [_delivered(record("real"), sequence=3, stream=stream)]
+        own = [_delivered(chunk, sequence=3 + n, stream=stream) for n, chunk in enumerate(chunks)]
         log: list[str] = []
-        raw = _Raw([[*forged, *own]], log)
-        js = _JetStream(log, pending=1)
+        raw = _Raw([[forged[0], own[0], forged[1], own[1]]], log)
+        js = _ObjectJetStream(log, metadata, pending=len(chunks))
         store = NatsObjectStore(client=_Client(raw, js), full_name="pods")  # type: ignore[arg-type]
 
         with caplog.at_level(logging.WARNING, logger="threetears.nats.own_consumer"):
-            listed = await asyncio.wait_for(store.list_objects(), timeout=2)
+            read = await asyncio.wait_for(store.get("a/b"), timeout=2)
 
-        assert [info.name for info in listed] == ["real"]
+        assert read == data
         refusals = [r for r in caplog.records if "refused a delivery not made by its own consumer" in r.getMessage()]
         assert len(refusals) == len(forged)
         assert all(r.getMessage().startswith("object store read ") for r in refusals)

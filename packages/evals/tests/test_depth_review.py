@@ -65,8 +65,8 @@ def test_arms_that_share_no_case_are_said_to_compare_nothing_in_the_bundle_the_w
     [entry] = view["aspects"][0]["depth"]["pass_k"]
     assert (entry["common_depth"], entry["shares_no_case"], entry["unmeasured_for"]) == (None, True, ["B"])
     page = _page(arms)
-    assert "On character the arms share no case, so pass^k compares nothing between them." in _lines(page, "scoreboard")
-    assert "On character, pass^2 is unmeasured for B, which ran no case twice." in _lines(page, "scoreboard")
+    assert "On character the arms share no case, so pass^k compares nothing between them." in _lines(page, "scorecard")
+    assert "On character, pass^2 is unmeasured for B, which ran no case twice." in _lines(page, "scorecard")
 
 
 # =============================================================================
@@ -94,7 +94,7 @@ def test_one_arm_short_on_one_case_sets_the_common_depth_and_the_planned_depth_i
     page = _page(arms)
     assert (
         "On character, pass^k is compared at depth 2, the fewest runs any arm gave a shared case, over all runs."
-        in _lines(page, "scoreboard")
+        in _lines(page, "scorecard")
     )
 
 
@@ -143,7 +143,7 @@ def test_the_model_s_line_is_true_when_only_one_arm_falls_short() -> None:
     (table,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "model_pass_k"]
     assert [row["arm"].value for row in table.rows] == ["B"]
     assert arms.point(arms.key_a).pass_hat_k is not None
-    said = [line for line in _lines(page, "scoreboard") if line.startswith("Each figure here is model-based")]
+    said = [line for line in _lines(page, "scorecard") if line.startswith("Each figure here is model-based")]
     assert said and said[0].endswith("Its arm ran no case that deep, so nothing ranks on it.")
 
 
@@ -155,7 +155,7 @@ def test_a_frozen_campaign_bundle_or_frame_of_the_old_shape_is_refused_naming_wh
 
     with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape") as refused:
         CampaignBundle.from_dict(frozen)
-    assert "this build's shape (2)" in str(refused.value)
+    assert "this build's shape (3)" in str(refused.value)
     with pytest.raises(RefusedInput, match="frozen by a build whose readings carried another shape"):
         CampaignBundle.from_frame(frame, bundle.aspects)
 
@@ -183,9 +183,11 @@ def test_a_floor_states_its_worst_case_its_margin_and_how_far_it_is_short_after_
     keys = list(view)
     assert keys.index("pass_rate_verdicts") < keys.index("floors")
     assert view["pass_rate_verdicts"] == [{"aspect": "character", "arm": "B", "reading": "unclear", "change": 12.5}]
-    [floor] = view["floors"]
-    assert (floor["status"], floor["speaks_for"], floor["margin"]) == ("unclear", "the pass rate", 10.0)
-    assert floor["short_by"] == pytest.approx(-100 * low - 10.0, rel=1e-3)
+    [arm] = view["floors"]
+    [floor] = arm["unclear"]
+    assert (arm["arm"], floor["reads"], floor["margin"]) == ("B", "the pass rate", 10.0)
+    # Spelled as the page prints points: to one decimal.
+    assert floor["short_by"] == round(-100 * low - 10.0, 1)
 
 
 #: Twenty cases, for a floor to be read over enough of them (5 at least) to be held or broken.
@@ -204,11 +206,14 @@ def _floor_arms(control: int, candidate: int, margin: float = 10.0) -> TwoArms:
 
 
 def _written(arms: TwoArms) -> dict[str, object]:
+    """The one floor the writer's view rolls up under its arm, with the status it is listed under; a figure the view
+    leaves out, having none, as None."""
     read = arms.readings()
-    [floor] = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings, floors=read.floors))[
+    [arm] = writer_view(campaign_bundle(arms.bundle, arms=arms.arms, readings=read.readings, floors=read.floors))[
         "floors"
     ]
-    return floor
+    [(status, [floor])] = [(state, floors) for state, floors in arm.items() if state != "arm"]
+    return {"status": status, "margin": None, "worst_drop": None, "short_by": None, **floor}
 
 
 def test_a_held_floor_states_its_margin_and_worst_case_and_is_short_by_nothing() -> None:
@@ -221,13 +226,13 @@ def test_a_held_floor_states_its_margin_and_worst_case_and_is_short_by_nothing()
     assert status.margin == 60.0 and status.worst_drop is not None and 0.0 <= status.worst_drop <= 60.0
     assert status.short_by is None
     floor = _written(arms)
-    assert (floor["status"], floor["margin"], floor["speaks_for"], floor["short_by"]) == (
+    assert (floor["status"], floor["margin"], floor["reads"], floor["short_by"]) == (
         "held",
         60.0,
         "the pass rate",
         None,
     )
-    assert floor["worst_drop"] == pytest.approx(status.worst_drop, rel=1e-3)
+    assert floor["worst_drop"] == round(status.worst_drop, 1)
 
 
 def test_a_broken_floor_is_short_by_nothing_because_its_worst_case_is_not_how_far_it_is_broken() -> None:
@@ -241,7 +246,7 @@ def test_a_broken_floor_is_short_by_nothing_because_its_worst_case_is_not_how_fa
     assert status.short_by is None
     floor = _written(arms)
     assert (floor["status"], floor["margin"], floor["short_by"]) == ("broken", 10.0, None)
-    assert floor["worst_drop"] == pytest.approx(status.worst_drop, rel=1e-3)
+    assert floor["worst_drop"] == round(status.worst_drop, 1)
 
 
 def test_an_unclear_floor_is_short_by_what_its_worst_case_lies_past_the_margin() -> None:
@@ -251,7 +256,7 @@ def test_an_unclear_floor_is_short_by_what_its_worst_case_lies_past_the_margin()
     assert status.status == "unclear"
     assert status.worst_drop is not None and status.worst_drop > 10.0
     assert status.short_by == pytest.approx(status.worst_drop - 10.0)
-    assert _written(arms)["short_by"] == pytest.approx(status.short_by, rel=1e-3)
+    assert status.short_by is not None and _written(arms)["short_by"] == round(status.short_by, 1)
 
 
 def test_a_cost_floor_has_no_margin_worst_case_or_shortfall() -> None:
@@ -261,4 +266,4 @@ def test_a_cost_floor_has_no_margin_worst_case_or_shortfall() -> None:
     assert (status.margin, status.worst_drop, status.short_by) == (None, None, None)
     floor = _written(arms)
     assert (floor["margin"], floor["worst_drop"], floor["short_by"]) == (None, None, None)
-    assert floor["speaks_for"] == "the cost per reply"
+    assert floor["reads"] == "the cost per reply"

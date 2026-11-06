@@ -424,15 +424,22 @@ _STATUS_IDLE_HEARTBEAT: Final[str] = "100"
 #: surfaces as a failure the wait retries rather than as a hang.
 _RESULT_WAITER_CREATE_TIMEOUT_SECONDS: Final[float] = 10.0
 
-#: bound on handing a superseded subscription over during a renewal. It must NEVER cut nats-py's
-#: drain off inside the flush it starts: nats-py leaves the cancelled PING future in its PONG queue,
-#: the next PONG then raises ``InvalidStateError`` in ``_process_pong``, and the read loop's catch-all
-#: ends the loop -- the connection reports itself connected and never reads again (see
-#: :func:`_round_trip`). A handover makes two round trips (:func:`_stop_routing_then_drain`): its own,
-#: which is safe to cancel, and the flush inside nats-py's drain, which bounds itself
-#: (``DEFAULT_FLUSH_TIMEOUT``). This bound exceeds both: when it fires, the drain is past its flush
-#: and waiting for queued messages to be taken, where a cancellation harms nothing.
+#: bound on a subscription leaving its group (:func:`_stop_routing`, and :func:`_leave_then_drain` past its
+#: grace). It must NEVER cut nats-py's drain off inside the flush it starts: nats-py leaves the cancelled PING
+#: future in its PONG queue, the next PONG then raises ``InvalidStateError`` in ``_process_pong``, and the read
+#: loop's catch-all ends the loop -- the connection reports itself connected and never reads again (see
+#: :func:`_round_trip`). Leaving makes at most two round trips: its own, which is safe to cancel, and the flush
+#: inside nats-py's drain, which bounds itself (``DEFAULT_FLUSH_TIMEOUT``). This bound exceeds both: when it
+#: fires, the drain is past its flush and waiting for queued messages to be taken, where a cancellation harms
+#: nothing.
 _HANDOVER_DRAIN_BOUND_SECONDS: Final[float] = REAUTH_RETIRE_DRAIN_SECONDS + 2 * _NATS_FLUSH_TIMEOUT_SECONDS
+
+#: how long a subscription that left its group stays registered and received before nats-py forgets it, when no
+#: longer hold covers it (:meth:`NatsClient.drain`, a durable push consumer's release). The round trip after an
+#: ``UNSUB`` proves the server processed it, not that every message it matched to this member just before has
+#: been written: one can land after the ``PONG`` (traced at 8 ms under load), and a subscription forgotten by
+#: then drops it. A second is two orders of magnitude past the traced gap.
+_LATE_DELIVERY_GRACE_SECONDS: Final[float] = 1.0
 
 #: the prefix of the queue group a subscription joins when its caller names none. Each such
 #: subscription gets a group of its OWN, of which it is the only member -- see
@@ -647,7 +654,7 @@ class _SubscriptionFeed:
     :ptype note_reply: Callable[[str, Any], None] | None
     """
 
-    __slots__ = ("_backlog", "_subject", "_note_reply", "_current", "_receivers")
+    __slots__ = ("_backlog", "_subject", "_note_reply", "_current", "_receivers", "_receiving")
 
     def __init__(
         self,
@@ -672,9 +679,37 @@ class _SubscriptionFeed:
         self._note_reply = note_reply
         self._current: Any = None
         self._receivers: set[asyncio.Task[None]] = set()
+        #: the nats-py subscriptions a receiver runs for (the objects, never their ids: an id is reused once its
+        #: object is gone, and a new subscription taken for an old one would get no receiver)
+        self._receiving: set[Any] = set()
+
+    def receive_from(self, raw_subscription: Any, connection: Any) -> None:
+        """start receiving from ``raw_subscription`` into the backlog, without making it current.
+
+        A successor's subscription receives from the moment it is made: it is a member of the subscription's
+        group from its ``SUB`` on, so the server may route a message to it before the move completes -- or
+        before a renewal that then fails gives it up. Harmless twice.
+
+        :param raw_subscription: the nats-py subscription on ``connection``
+        :ptype raw_subscription: Any
+        :param connection: the nats-py connection that carries it
+        :ptype connection: Any
+        :return: nothing
+        :rtype: None
+        """
+        if raw_subscription in self._receiving:
+            return
+        self._receiving.add(raw_subscription)
+        task = asyncio.create_task(
+            self._receive(raw_subscription, connection),
+            name=f"nats-receive:{self._subject.path}",
+        )
+        self._receivers.add(task)
+        task.add_done_callback(self._receivers.discard)
+        task.add_done_callback(lambda _: self._receiving.discard(raw_subscription))
 
     def attach(self, raw_subscription: Any, connection: Any) -> None:
-        """start receiving from ``raw_subscription`` and make it the current receiver.
+        """make ``raw_subscription`` the current receiver, receiving from it if it is not already.
 
         :param raw_subscription: the nats-py subscription on ``connection``
         :ptype raw_subscription: Any
@@ -684,43 +719,47 @@ class _SubscriptionFeed:
         :rtype: None
         """
         self._current = raw_subscription
-        task = asyncio.create_task(
-            self._receive(raw_subscription, connection),
-            name=f"nats-receive:{self._subject.path}",
-        )
-        self._receivers.add(task)
-        task.add_done_callback(self._receivers.discard)
+        self.receive_from(raw_subscription, connection)
 
-    async def release(self, raw_subscription: Any, connection: Any) -> None:
-        """hand over a superseded receiver: stop the server routing to it, keep what it already has.
+    async def release(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> None:
+        """hand over a superseded receiver: after ``hold``, stop the server routing to it, keeping what it
+        already has and anything still on its way.
 
-        :func:`_stop_routing_then_drain` removes the server's interest, proves by round trip that
-        everything routed there has arrived, and waits for the receiver to have taken each of
-        those messages into the backlog -- so nothing already in flight to the old connection is
-        dropped. Never raises: a connection that closed first has nothing left to hand over.
+        The ``hold`` keeps the superseded member in its queue group beside its successor first. A server
+        matches each published message to the group's members as they stand when it matches, and
+        delivers a moment later; when every member of that match has left by then, the message is
+        dropped -- even though the successor joined meanwhile (nats-server 2.14 and 2.15, under load:
+        8 ms between a match and its delivery was traced, against 2 ms between the successor's ``SUB``
+        and the old member's ``UNSUB``). So the old member leaves only after the hold, the longest
+        request the client declares: a match that old has long been delivered.
+
+        :func:`_stop_routing` removes the server's interest and proves the server processed that.
+        The receiver keeps running: a message the server picked this member for just before the
+        ``UNSUB`` can still arrive after its round trip, and is taken into the backlog as any other.
+        It ends when the connection is drained at its retirement (``NatsClient._retire``), which
+        comes a full ``retire_after`` after this returns and takes every message still queued. Never
+        raises: a connection that closed first has nothing left to hand over.
 
         :param raw_subscription: the superseded nats-py subscription
         :ptype raw_subscription: Any
         :param connection: the nats-py connection that carries it
         :ptype connection: Any
+        :param hold: seconds the superseded member stays in its group beside its successor first
+        :ptype hold: float
         :return: nothing
         :rtype: None
         """
+        await asyncio.sleep(hold)
         try:
-            # bounded: the drain waits for the receiver to take each message, and a subscription
-            # dropped mid-handover has no receiver left to take them. see the bound's own comment
-            # for why it is longer than the flushes inside the drain.
-            await asyncio.wait_for(
-                _stop_routing_then_drain(raw_subscription, connection),
-                timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
-            )
+            # bounded: a connection that stopped answering would otherwise hold the handover forever.
+            await asyncio.wait_for(_stop_routing(raw_subscription, connection), timeout=_HANDOVER_DRAIN_BOUND_SECONDS)
         # NOSILENT: logged; the successor is already receiving, so the only loss is whatever the
         # closed connection had not yet handed over, and a closed connection cannot hand it over.
         except Exception as exc:  # noqa: BLE001 -- handover is best-effort once the successor receives
             contain(
                 exc,
                 log=log,
-                what="superseded subscription could not be drained",
+                what="superseded subscription could not leave its group",
                 extra={"subject": self._subject.path, "error": str(exc)},
             )
 
@@ -849,10 +888,21 @@ class Subscription:
         """
         return self._queue
 
-    async def subscribe_on(self, connection: Any) -> Any:
-        """subscribe this subscription's subject and group on a successor connection.
+    @property
+    def connection(self) -> Any:
+        """the nats-py connection the subscription currently receives on.
 
-        The first half of a move; nothing receives from it until :meth:`move_to`.
+        :return: the connection ``raw_subscription`` is on
+        :rtype: Any
+        """
+        return self._connection
+
+    async def subscribe_on(self, connection: Any) -> Any:
+        """subscribe this subscription's subject and group on a successor connection, and receive from it.
+
+        The first half of a move. It receives at once: the successor is a member of the group from its ``SUB``,
+        so a message routed to it before :meth:`move_to` -- or before a renewal that fails gives it up
+        (:meth:`give_up_on`) -- reaches the callbacks like any other.
 
         :param connection: the successor nats-py connection
         :ptype connection: Any
@@ -860,19 +910,39 @@ class Subscription:
         :rtype: Any
         """
         # sender-posture: primitive -- moves a caller's subscription to a successor connection
-        return await connection.subscribe(self._subject.path, queue=self._queue)
+        raw = await connection.subscribe(self._subject.path, queue=self._queue)
+        self._feed.receive_from(raw, connection)
+        return raw
 
-    def move_to(self, raw_subscription: Any, connection: Any) -> asyncio.Task[None]:
-        """make the successor's subscription current, and hand over the old one's backlog.
-
-        The successor receives from here on; the old subscription is drained in the background
-        so whatever the server had already routed to it still reaches the callbacks.
+    async def give_up_on(self, raw_subscription: Any, connection: Any) -> None:
+        """leave a successor's subscription a renewal will not complete: the server stops routing to it, and what
+        it already received, or receives before the successor is drained ``retire_after`` later, still reaches the
+        callbacks.
 
         :param raw_subscription: the successor's nats-py subscription, from :meth:`subscribe_on`
         :ptype raw_subscription: Any
         :param connection: the successor nats-py connection
         :ptype connection: Any
-        :return: the task draining the old subscription
+        :return: nothing
+        :rtype: None
+        """
+        await self._feed.release(raw_subscription, connection)
+
+    def move_to(self, raw_subscription: Any, connection: Any, *, hold: float = 0.0) -> asyncio.Task[None]:
+        """make the successor's subscription current, and hand over the old one's backlog.
+
+        The successor receives from here on; the old subscription leaves its group in the background
+        (:meth:`_SubscriptionFeed.release`), still received, so whatever the server had already routed to it
+        still reaches the callbacks.
+
+        :param raw_subscription: the successor's nats-py subscription, from :meth:`subscribe_on`
+        :ptype raw_subscription: Any
+        :param connection: the successor nats-py connection
+        :ptype connection: Any
+        :param hold: seconds the old subscription stays in its group beside the successor before it leaves
+            (:meth:`_SubscriptionFeed.release`)
+        :ptype hold: float
+        :return: the task releasing the old subscription
         :rtype: asyncio.Task[None]
         """
         if self._closed:
@@ -886,7 +956,7 @@ class Subscription:
         self.raw_subscription = raw_subscription
         self._connection = connection
         return asyncio.create_task(
-            self._feed.release(previous, previous_connection),
+            self._feed.release(previous, previous_connection, hold=hold),
             name=f"nats-handover:{self._subject.path}",
         )
 
@@ -1080,8 +1150,8 @@ class JetStreamPushConsumer:
         previous = self.raw_subscription
         try:
             await asyncio.wait_for(
-                _stop_routing_then_drain(previous, self._connection),
-                timeout=_HANDOVER_DRAIN_BOUND_SECONDS,
+                _leave_then_drain(previous, self._connection, grace=_LATE_DELIVERY_GRACE_SECONDS),
+                timeout=_HANDOVER_DRAIN_BOUND_SECONDS + _LATE_DELIVERY_GRACE_SECONDS,
             )
         # NOSILENT: logged; the durable redelivers anything unacknowledged, so the rebind below
         # loses nothing even when the release could not finish.
@@ -1568,10 +1638,11 @@ class JetStreamPullConsumer:
     async def _release_inbox(self) -> list[Any]:
         """drop the fetch inbox's interest at the server, keeping it here, and collect what was delivered.
 
-        The same ``UNSUB`` then ordered :func:`_round_trip` as :func:`_stop_routing_then_drain`,
-        for the same reason; the queue is then taken here rather than by nats-py's ``drain``,
-        because a pull inbox has no callback to take it and the messages in it are to be HANDLED,
-        not merely waited out.
+        The same ``UNSUB`` then ordered :func:`_round_trip` as :func:`_stop_routing`; the queue is then
+        taken here rather than by nats-py's ``drain``, because a pull inbox has no callback to take it
+        and the messages in it are to be HANDLED, not merely waited out. No grace follows the round
+        trip (:data:`_LATE_DELIVERY_GRACE_SECONDS`): a fetched message that lands after it is never
+        acknowledged, and the durable redelivers it to the next fetch.
 
         :return: every message the server delivered to the inbox, status messages excluded
         :rtype: list[Any]
@@ -2037,24 +2108,22 @@ async def round_trip(connection: Any, *, timeout: float = _NATS_FLUSH_TIMEOUT_SE
     await _round_trip(connection, timeout=timeout)
 
 
-async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> None:
-    """end a subscription the server may still be routing to, without dropping what it routed.
+async def _stop_routing(raw_subscription: Any, connection: Any) -> None:
+    """remove the server's interest in a subscription, keeping it registered here and still received.
 
-    nats-py's own ``Subscription.drain`` cannot be trusted with this. It queues its ``UNSUB`` in the
-    connection's pending buffer but writes the ``PING`` of its round trip straight to the socket
-    (``Client._send_ping``), so the ``PING`` reaches the server FIRST. The ``PONG`` it waits for
-    therefore proves nothing about the ``UNSUB``; the drain then forgets the subscription while the
-    server is still routing to it, and ``_process_msg`` drops whatever arrives for a subscription
-    it no longer knows. For a subscription sharing a queue group with its successor, a message the
-    server hands to the old member in that gap is lost outright -- no other member ever sees it.
-    Found by the live renewal test: 1 of 11858 streamed messages, across a few dozen renewals.
+    The ``UNSUB`` goes out on its own, then an ordered :func:`_round_trip` proves the server processed
+    it. That round trip does NOT prove every message routed to the subscription has arrived: the
+    server delivers a message from the PUBLISHER's side, which can pick this member of a queue group
+    just before the ``UNSUB`` lands and write the message to this connection just after the ``PONG``.
+    A subscription forgotten at the ``PONG`` (nats-py's ``drain``) then drops that message -- for a
+    queue-group member, lost outright: no other member ever sees it. Found by the live renewal test
+    under load: 1 message in about 100,000, in a few runs of every hundred, with no error anywhere.
+    So the subscription stays registered, and its receiver keeps taking what arrives, for a grace
+    after this returns: a renewal's old half until its connection is drained a full ``retire_after``
+    later (``NatsClient._retire``); any other leaver for :data:`_LATE_DELIVERY_GRACE_SECONDS`
+    (:func:`_leave_then_drain`).
 
-    So the ``UNSUB`` goes out on its own first, then an ordered :func:`_round_trip`, whose ``PONG``
-    proves the server processed the ``UNSUB`` and has sent every message it routed here before it.
-    Only then does nats-py's drain run -- its own round trip now harmless -- to wait for each of
-    those messages to be taken, and forget the subscription.
-
-    :param raw_subscription: the nats-py subscription to end
+    :param raw_subscription: the nats-py subscription to stop routing to
     :ptype raw_subscription: Any
     :param connection: the nats-py connection carrying it
     :ptype connection: Any
@@ -2062,10 +2131,32 @@ async def _stop_routing_then_drain(raw_subscription: Any, connection: Any) -> No
     :rtype: None
     :raises Exception: whatever the connection raises; the caller logs it
     """
-    # nats-py exposes no way to remove a subscription's interest without also forgetting the
-    # subscription (unsubscribe) or racing its own round trip (drain); see the docstring.
     await send_unsubscribe(connection, raw_subscription)
     await _round_trip(connection)
+
+
+async def _leave_then_drain(raw_subscription: Any, connection: Any, *, grace: float) -> None:
+    """end a subscription the server may still be routing to, without dropping what it routed.
+
+    :func:`_stop_routing` first, then the subscription stays registered and received for ``grace`` -- a
+    message the server matched to it just before the ``UNSUB`` can land after that round trip -- and only then
+    does nats-py's ``drain`` run, to wait for each queued message to be taken and forget the subscription.
+    nats-py's own drain alone cannot be trusted with this: it queues its ``UNSUB`` but writes its ``PING``
+    straight to the socket, so its ``PONG`` proves nothing about the ``UNSUB`` (found by the live renewal test:
+    1 of 11858 streamed messages lost).
+
+    :param raw_subscription: the nats-py subscription to end
+    :ptype raw_subscription: Any
+    :param connection: the nats-py connection carrying it
+    :ptype connection: Any
+    :param grace: seconds it stays registered and received after the server processed its ``UNSUB``
+    :ptype grace: float
+    :return: nothing
+    :rtype: None
+    :raises Exception: whatever the connection raises; the caller logs it
+    """
+    await _stop_routing(raw_subscription, connection)
+    await asyncio.sleep(grace)
     await raw_subscription.drain()
 
 
@@ -3968,11 +4059,15 @@ class NatsClient:
            from here on uses it -- but only once the old connection has proved that everything
            already published on it reached the server (:meth:`_settle_publishes`), so a message
            published on the successor never overtakes one published before the renewal;
-        4. end each subscription's old half (:func:`_stop_routing_then_drain`), so whatever the
-           server had already routed to the old connection still reaches the callbacks, and
+        4. keep each subscription's old half in its group for ``retire_after``, then stop the server
+           routing to it (:func:`_stop_routing`) -- a server drops a message matched to members that
+           have all left by its delivery, so a member leaves only once no match that old remains --
+           its receiver taking whatever the server had already routed to the old connection until
+           that connection is drained at its retirement, and
            rebind each durable push consumer;
-        5. keep the old connection open for ``retire_after`` -- the longest request it may be
-           carrying -- then drain and close it. Until then a request sent on it still receives its
+        5. keep the old connection open a further ``retire_after`` after its members left -- the
+           longest request it may be carrying, and a message matched to a leaving member just before
+           its ``UNSUB`` that lands after the round trip -- then drain and close it. Until then a request sent on it still receives its
            reply there, a reply this client owes for a request that arrived there still leaves
            there (:meth:`publish_reply`), and a JetStream message received there is acknowledged
            there. Anything that outlives the old connection and is bound to it -- a KV handle, a
@@ -4007,10 +4102,11 @@ class NatsClient:
         if self._raw.is_closed:
             raise NatsClientError("cannot renew the credential of a closed NATS client; it requires a fresh connect")
         self._lifecycle.begin_renewal()
+        successor: _NatsPyClient | None = None
+        moving: list[tuple[Subscription, Any]] = []
         try:
             successor = await self._open_successor(opener)
             async with self._handover_lock:
-                moving: list[tuple[Subscription, Any]] = []
                 for sub in [s for s in self._subscriptions if not s.is_closed]:
                     # sender-posture: primitive -- moves every caller's subscription to a successor connection
                     moving.append((sub, await sub.subscribe_on(successor)))
@@ -4023,7 +4119,9 @@ class NatsClient:
             # a candidate that never became current is closed on every path out -- an error, a
             # cancellation, an abandon or a shutdown -- because nothing else will ever reach it.
             for stranded in self._lifecycle.end_renewal():
-                await _close_quietly(stranded)
+                await self._discard_candidate(
+                    stranded, moving if stranded is successor else [], retire_after=retire_after
+                )
         log.info(
             "NATS connection handed over to a successor with a fresh credential",
             extra={
@@ -4034,6 +4132,70 @@ class NatsClient:
                 }
             },
         )
+
+    async def _discard_candidate(
+        self, candidate: _NatsPyClient, moving: list[tuple[Subscription, Any]], *, retire_after: timedelta
+    ) -> None:
+        """close a successor a renewal will not make current.
+
+        Its subscriptions, when any were made, joined their groups at their ``SUB``: the server may have routed
+        messages to them, and closing the connection outright would drop whatever it had not yet handed over --
+        under load, thousands (a renewal whose round trip on its successor timed out after subscribing, while the
+        stream kept flowing). So while the client still serves, each subscription stops routing there (its receiver
+        taking what arrived), and the candidate is retired as a replaced connection is (:meth:`_retire`): drained a
+        full ``retire_after`` after they left, in the background, so a message matched just before an ``UNSUB``
+        that lands after its round trip is still taken. The current connection's members kept receiving
+        throughout. A client that stopped serving closes it outright.
+
+        :param candidate: the successor that will not become current
+        :ptype candidate: nats.aio.client.Client
+        :param moving: each subscription with its nats-py subscription on ``candidate``; empty when none was made
+        :ptype moving: list[tuple[Subscription, Any]]
+        :param retire_after: how long the candidate stays open after its subscriptions left their groups
+        :ptype retire_after: timedelta
+        :return: nothing
+        :rtype: None
+        """
+        if not moving or not self._lifecycle.is_live:
+            await _close_quietly(candidate)
+            return
+        log.warning(
+            "a NATS renewal that will not complete gives up its successor's subscriptions; what they received is kept",
+            extra={"extra_data": {"client_name": self._client_name, "subscriptions": len(moving)}},
+        )
+        give_ups = [
+            asyncio.create_task(sub.give_up_on(raw, candidate), name=f"nats-give-up:{sub.subject.path}")
+            for sub, raw in moving
+        ]
+        self._lifecycle.add_retirement(
+            asyncio.create_task(
+                self._retire_candidate(candidate, after=retire_after, give_ups=give_ups),
+                name=f"nats-retire-candidate:{self._client_name}",
+            )
+        )
+
+    async def _retire_candidate(
+        self, candidate: _NatsPyClient, *, after: timedelta, give_ups: list[asyncio.Task[None]]
+    ) -> None:
+        """retire a discarded candidate as a replaced connection is, closing it when the retirement is cut short.
+
+        The lifecycle already disowned it, so nothing else closes it: a shutdown that cancels this retirement
+        must not leave it open.
+
+        :param candidate: the successor that will not become current
+        :ptype candidate: nats.aio.client.Client
+        :param after: how long it stays open after its subscriptions left their groups
+        :ptype after: timedelta
+        :param give_ups: its subscriptions leaving their groups
+        :ptype give_ups: list[asyncio.Task[None]]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            await self._retire(candidate, after=after, handovers=give_ups)
+        finally:
+            if not candidate.is_closed:
+                await _close_quietly(candidate)
 
     async def _hand_over(
         self,
@@ -4075,7 +4237,9 @@ class NatsClient:
                 # nothing about the credential now in use.
                 self._health_state["auth_violations"] = 0
                 self._health_state["overflow_events"] = 0
-                handovers = [sub.move_to(raw_sub, successor) for sub, raw_sub in moving]
+                # each old half stays in its group until the replaced connection's hold is over
+                hold = retire_after.total_seconds()
+                handovers = [sub.move_to(raw_sub, successor, hold=hold) for sub, raw_sub in moving]
                 self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
                 js = successor.jetstream()
                 handovers.extend(
@@ -4138,17 +4302,23 @@ class NatsClient:
     ) -> None:
         """keep a replaced connection open for the work it carries, then drain and close it.
 
+        The connection stays open a full ``after`` past the moment its last subscription left its group (the
+        handovers), never less: a message the server matched to a leaving member just before its ``UNSUB`` can
+        land after the round trip that proved the ``UNSUB``, and the drain forgets every subscription. Timed from
+        the handovers' end rather than their start, so a handover that held its member for ``after`` itself
+        does not use the grace up.
+
         :param connection: the replaced connection
         :ptype connection: nats.aio.client.Client
-        :param after: how long to keep it open
+        :param after: how long to keep it open past its subscriptions' leaving
         :ptype after: timedelta
-        :param handovers: the subscription handovers draining its old halves, awaited first
+        :param handovers: the subscription handovers moving its members out of their groups, awaited first
         :ptype handovers: list[asyncio.Task[None]]
         :return: nothing
         :rtype: None
         """
         try:
-            # each handover is bounded, and never raises (it logs); gathering them first means the
+            # each handover is bounded and never raises (it logs); gathering them first means the
             # connection-wide drain below never races one.
             await asyncio.gather(*handovers, return_exceptions=True)
             await asyncio.sleep(after.total_seconds())
@@ -5445,6 +5615,60 @@ class NatsClient:
         if sub in self._subscriptions:
             self._subscriptions.remove(sub)
 
+    async def drain(self, sub: Subscription, *, timeout: float) -> bool:
+        """end a subscription without dropping what it was given: the server stops routing to it, every message
+        it had already routed reaches the callbacks, and the callbacks finish.
+
+        The graceful twin of :meth:`unsubscribe`, for a queue-group member leaving while its siblings stay (a
+        replica shutting down in a rolling deploy): once the server has processed the ``UNSUB`` it hands the
+        group's messages to the other members only, and nothing it had already given this one is lost or cut
+        off mid-reply. :meth:`unsubscribe` cancels the callbacks in flight instead, which leaves a request
+        unanswered. After the server processed the ``UNSUB`` the subscription stays received for a grace
+        (:data:`_LATE_DELIVERY_GRACE_SECONDS`, at most half of ``timeout``): a message matched to it just before can
+        land after that. Bounded by ``timeout``: past it the subscription is dropped as :meth:`unsubscribe` drops it.
+        Idempotent; a subscription already dropped returns ``True``.
+
+        :param sub: subscription handle returned by :meth:`subscribe`
+        :ptype sub: Subscription
+        :param timeout: longest to wait for the routed messages and their callbacks, in seconds
+        :ptype timeout: float
+        :return: ``True`` when every routed message was handled within ``timeout``; ``False`` when the bound, or
+            a connection that failed first, cut it short
+        :rtype: bool
+        """
+        if sub.is_closed:
+            return True
+        async with self._handover_lock:
+            # closed under the lock: a renewal moves only the subscriptions open when it holds it, so none moves
+            # this one onto a successor connection while it is being drained
+            sub.mark_closed()
+            raw_subscription, connection = sub.raw_subscription, sub.connection
+
+        async def _drained() -> None:
+            # within the bound: a short bound shortens the grace rather than cutting the drain off inside it
+            await _leave_then_drain(raw_subscription, connection, grace=min(_LATE_DELIVERY_GRACE_SECONDS, timeout / 2))
+            # the receiver ends with the drained subscription and closes the backlog, so the dispatcher hands
+            # out what is left, waits for its callbacks and ends; shielded so the bound does not cancel them
+            await asyncio.shield(sub.dispatch_task)
+
+        drained = True
+        try:
+            await asyncio.wait_for(_drained(), timeout=timeout)
+        # NOSILENT: logged and reported as False; the subscription is dropped below either way
+        except Exception as exc:  # noqa: BLE001 -- a bound or a failed connection ends the drain, never the caller
+            drained = False
+            contain(
+                exc,
+                log=log,
+                what="subscription drain did not complete; dropping it",
+                extra={"subject": sub.subject.path, "timeout_seconds": timeout, "error": str(exc)},
+            )
+            await _unsubscribe_quietly(raw_subscription, subject=sub.subject)
+        await cancel_and_wait(sub.dispatch_task)
+        if sub in self._subscriptions:
+            self._subscriptions.remove(sub)
+        return drained
+
     # ------------------------------------------------------------------
     # request / reply
     # ------------------------------------------------------------------
@@ -5546,19 +5770,27 @@ class NatsClient:
     ) -> bytes:
         """raw-bytes request/reply round-trip.
 
+        The deadline covers the whole request, not only the wait for the reply: nats-py bounds only
+        that wait, after its publish, and the publish itself can wait with no bound -- on a renewal's
+        publish gate, or on a flush when the pending buffer is past its size (``flush_timeout`` is
+        unset). A request stuck there waited for ever, with nothing in the log; bounded here it is a
+        :class:`RequestTimeoutError` like any lost reply, which a caller sends again and says so.
+
         :param subject: target subject (point only)
         :ptype subject: Subject
         :param payload: pre-serialized request bytes
         :ptype payload: bytes
-        :param timeout: max wait for reply
+        :param timeout: max wait for the whole request
         :ptype timeout: timedelta
         :return: response payload bytes
         :rtype: bytes
         :raises RequestError: on timeout, no responders, transport failure
         """
+        seconds = timeout.total_seconds()
         try:
-            connection = await self._lifecycle.publishing_connection()
-            msg = await connection.request(subject.path, payload, timeout=timeout.total_seconds())
+            async with asyncio.timeout(seconds):
+                connection = await self._lifecycle.publishing_connection()
+                msg = await connection.request(subject.path, payload, timeout=seconds)
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestTimeoutError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"
@@ -5586,6 +5818,7 @@ class NatsClient:
         create_if_missing: bool = True,
         history: int = 1,
         direct: bool | None = None,
+        replicas: int | None = None,
     ) -> NatsKvBucket:
         """obtain (or create) a JetStream KV bucket.
 
@@ -5618,14 +5851,20 @@ class NatsClient:
             ordinary consumer wants: it binds to whatever the declaring identity
             established. see :meth:`ensure_kv_bucket`
         :ptype direct: bool | None
+        :param replicas: how many servers hold a bucket this call creates. ``None`` (the default) creates
+            it on one and asks nothing of a live bucket; a live bucket's replicas are never lowered
+        :ptype replicas: int | None
         :return: ready KV bucket handle
         :rtype: NatsKvBucket
+        :raises ValueError: if ``replicas`` is given and not positive
         :raises KvBucketNotFoundError: if ``create_if_missing`` is ``False`` and the bucket does not
             exist once the wait for its declarer is spent (a ``KvError``)
         :raises KvError: if bucket creation or binding fails for any other reason
         :raises KvConfigMismatch: if a bind-only open finds a reconciled field differing
         """
         full_name = f"{self._namespace}-{name}"
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"KV bucket {full_name!r} needs at least one replica, got {replicas!r}")
         cached = self._buckets.get(full_name)
         if cached is not None:
             return cached
@@ -5642,6 +5881,7 @@ class NatsClient:
                 history=history,
                 direct=direct,
                 timings=self._kv_timings if self._kv_timings is not None else DEFAULT_KV_TIMINGS,
+                replicas=replicas,
             )
             self._buckets[full_name] = bucket
         return bucket
@@ -5808,9 +6048,10 @@ class NatsClient:
             without this client hearing of it. ``None`` restores it always
         :ptype still_wanted: Callable[[], Awaitable[bool]] | None
         :param replicas: how many servers hold the bucket. ``None`` (the default) creates it on one,
-            as nats-py does, and asks nothing of a live bucket's placement. an owner reconciles a
-            live bucket's replicas in place (JetStream keeps its entries), and a restoration after a
-            reconnect creates it again with them
+            as nats-py does, and asks nothing of a live bucket's placement. an owner raises a live
+            bucket's replicas in place (JetStream keeps its entries) and never lowers them: a live
+            bucket on more servers than asked stays on them. a restoration after a reconnect creates
+            it again with them
         :ptype replicas: int | None
         :return: ready KV bucket handle, also installed in the client's cache
         :rtype: NatsKvBucket
@@ -5899,6 +6140,7 @@ class NatsClient:
         storage: str = "memory",
         max_age_seconds: float | None = None,
         max_msgs_per_subject: int | None = None,
+        replicas: int | None = None,
     ) -> str:
         """create (or update) a JetStream stream over given subjects.
 
@@ -5940,14 +6182,23 @@ class NatsClient:
             whose subjects are minted per call and answered once -- a retry that republishes cannot
             then leave a stale first answer behind for the waiter to pick up
         :ptype max_msgs_per_subject: int | None
+        :param replicas: how many servers hold the stream. ``None`` (the default) creates it on one (a
+            local single-node NATS) and keeps a live stream's. a live stream's replicas are never
+            lowered: an update sends the larger of the live count and this one, so a stream raised to
+            three (by its declarer or by an operator) stays on three when a declarer that asks for
+            fewer, or for none, starts. the count remembered for a restoration is the one sent
+        :ptype replicas: int | None
         :return: full namespace-prefixed stream name
         :rtype: str
+        :raises ValueError: if ``replicas`` is given and not positive
         :raises StreamSubjectsOverlapError: if subjects are already claimed by a different stream
         :raises RuntimeError: if stream creation and update both fail
         """
         full_name = f"{self._namespace}-{name}"
+        if replicas is not None and replicas <= 0:
+            raise ValueError(f"JetStream stream {full_name!r} needs at least one replica, got {replicas!r}")
         storage_type = _NatsStorageType.FILE if storage == "file" else _NatsStorageType.MEMORY
-        config = _NatsStreamConfig(name=full_name, subjects=subjects, storage=storage_type)
+        config = _NatsStreamConfig(name=full_name, subjects=subjects, storage=storage_type, num_replicas=replicas)
         if max_age_seconds is not None:
             config.max_age = max_age_seconds
         if max_msgs_per_subject is not None:
@@ -5975,13 +6226,19 @@ class NatsClient:
                     f"subject namespace; resolve the conflicting stream or correct the "
                     f"namespace."
                 ) from exc
+            # an update sends every field, and an unsent replica count is the server's one: never lower
+            # the live stream's (cobalt prod, 2026-11-02: 56 of 58 streams back on one server after
+            # their declarers restarted)
+            live = (await js.stream_info(full_name)).config
+            config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
             await js.update_stream(config)
         self._declarations[full_name] = dataclasses.replace(config)
         log.info(
-            "jetstream stream ensured: stream=%s subjects=%s storage=%s",
+            "jetstream stream ensured: stream=%s subjects=%s storage=%s replicas=%s",
             full_name,
             ",".join(subjects),
             storage,
+            config.num_replicas or 1,
         )
         return full_name
 
@@ -6011,7 +6268,7 @@ class NatsClient:
         name: str,
         max_bytes: int,
         storage: str = "memory",
-        replicas: int = 1,
+        replicas: int | None = None,
         prefix_namespace: bool = True,
         still_wanted: Callable[[], Awaitable[bool]] | None = None,
     ) -> NatsObjectStore:
@@ -6035,8 +6292,9 @@ class NatsClient:
         :ptype max_bytes: int
         :param storage: ``"memory"`` (the default: NATS is the L2 tier) or ``"file"``
         :ptype storage: str
-        :param replicas: how many servers hold the bucket
-        :ptype replicas: int
+        :param replicas: how many servers hold the bucket. ``None`` (the default) creates it on one and keeps
+            a live bucket's; a live bucket's replicas are raised in place, never lowered
+        :ptype replicas: int | None
         :param prefix_namespace: layer ``{namespace}-`` over ``name``; ``False`` names it exactly
         :ptype prefix_namespace: bool
         :param still_wanted: asked before each restoration after a reconnect; a declaration it says
@@ -6050,7 +6308,7 @@ class NatsClient:
         """
         if max_bytes <= 0:
             raise ValueError(f"an object store needs a positive max_bytes, got {max_bytes!r}")
-        if replicas <= 0:
+        if replicas is not None and replicas <= 0:
             raise ValueError(f"an object store needs at least one replica, got {replicas!r}")
         full_name = f"{self._namespace}-{name}" if prefix_namespace else name
         stream = object_store_stream_name(full_name)
@@ -6080,6 +6338,8 @@ class NatsClient:
             # name in use: the bucket is live with another shape (an identical one creates idempotently)
             try:
                 live = (await js.stream_info(stream)).config
+                # never onto fewer servers than it is live on (an unsent count is the server's one)
+                config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
                 await js.update_stream(config)
             except _NatsJsAPIError as update_exc:
                 raise ObjectStoreError(
@@ -6091,7 +6351,7 @@ class NatsClient:
                     "extra_data": {
                         "bucket": full_name,
                         "max_bytes": {"was": live.max_bytes, "now": max_bytes},
-                        "replicas": {"was": live.num_replicas, "now": replicas},
+                        "replicas": {"was": live.num_replicas, "now": config.num_replicas},
                     }
                 },
             )
@@ -6103,7 +6363,12 @@ class NatsClient:
         log.info(
             "object store ensured",
             extra={
-                "extra_data": {"bucket": full_name, "max_bytes": max_bytes, "storage": storage, "replicas": replicas}
+                "extra_data": {
+                    "bucket": full_name,
+                    "max_bytes": max_bytes,
+                    "storage": storage,
+                    "replicas": config.num_replicas or 1,
+                }
             },
         )
         return NatsObjectStore(client=self, full_name=full_name)
@@ -6842,6 +7107,22 @@ async def _on_disconnected() -> None:
     :rtype: None
     """
     log.warning("NATS disconnected")
+
+
+def _never_fewer_replicas(live: int | None, requested: int | None) -> int:
+    """the replica count an update of a live stream sends: the larger of its live count and the one asked.
+
+    An update sends every field, and an unsent count is the server's one, so an update built from a declaration
+    alone moves a stream raised to three back onto one. A declaration that asks for none keeps the live count.
+
+    :param live: the live stream's count (unset and zero are one)
+    :ptype live: int | None
+    :param requested: the count the declaration asks for, or None
+    :ptype requested: int | None
+    :return: the count to send
+    :rtype: int
+    """
+    return max(live or 1, requested or 1)
 
 
 def _is_authorization_violation(exc: Exception) -> bool:

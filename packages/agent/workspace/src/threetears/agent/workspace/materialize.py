@@ -242,7 +242,7 @@ async def materialize(
         try:
             run_builder(tempdir)
         finally:
-            shutil.rmtree(tempdir, ignore_errors=True)
+            remove_tree(tempdir, log=log, what="a materialized workspace")
 
     :param workspace_id: identifier of workspace whose files to dump
     :ptype workspace_id: UUID

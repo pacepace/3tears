@@ -15,30 +15,43 @@ import enum
 import hashlib
 import json
 import threading
+import time
+import weakref
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from datetime import time as time_of_day
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, LargeBinary, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
 from sqlalchemy.sql.sqltypes import ARRAY
 from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
-from threetears.core.cache.base import build_select_clause, bulk_columns, exact_decimal_type, stored_decimal
+from threetears.core.cache.base import (
+    build_select_clause,
+    bulk_columns,
+    exact_decimal_type,
+    stored_decimal,
+    stored_date,
+    stored_time,
+)
 from threetears.core.sql_fragments import quote_identifier
+from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger
 
 __all__ = [
     "DuckDBBackend",
     "PartitionReplacement",
+    "arrow_rows",
     "fetch_arrow",
+    "query_arrow",
 ]
 
 try:
@@ -57,6 +70,7 @@ except ImportError:
 
 try:
     import pyarrow as pa
+    import pyarrow.compute as pc
 
     _PYARROW = True
 except ImportError:  # NOSILENT: the snapshot extra is optional; bulk writes bind value by value without it, said once
@@ -98,6 +112,12 @@ class PartitionReplacement:
 #: whether this process has said pyarrow is missing (once is enough)
 _ARROW_MISSING_SAID = False
 
+#: the name of a compressed backend's checkpointer thread
+_CHECKPOINTER_THREAD: Final = "duckdb-l1-checkpointer"
+
+#: the in-memory catalog a compressed backend's tables live in (``DuckDBBackend(compressed=True)``)
+_COMPRESSED_CATALOG: Final = "l1"
+
 #: the most rows one Arrow batch of a result is sized for: DuckDB's own default
 _ARROW_BATCH_ROWS = 1_000_000
 
@@ -134,6 +154,136 @@ def fetch_arrow(result: Any, rows: int) -> Any:
     return fetch(min(max(int(rows), 1), _ARROW_BATCH_ROWS))
 
 
+#: the field metadata key :meth:`DuckDBBackend.execute_arrow` names each column's DuckDB type under
+_DUCKDB_TYPE_KEY: Final = b"duckdb_type"
+
+#: the rows one piece of :func:`arrow_rows` makes Python objects of: one short hold of the interpreter lock each
+_ROWS_PIECE: Final = 256
+
+#: DuckDB's 128-bit integers, which its Arrow answers as ``decimal128(38, 0)`` where ``fetchall`` answers an ``int``
+_WIDE_INTEGERS: Final = {"HUGEINT": "int64", "UHUGEINT": "uint64"}
+
+#: the DuckDB types whose Arrow form is not the Python value ``fetchall`` answers, made so value by value
+#: (:func:`arrow_rows`): a UUID (Arrow text), an interval (Arrow month-day-nano), a map (Arrow pairs)
+_UNLIKE_IN_ARROW: Final = ("UUID", "INTERVAL", "MAP(")
+
+
+def _like_fetchall(value: Any, code: str) -> Any:
+    """one value of a column as ``fetchall`` answers it, from its Arrow form (:data:`_UNLIKE_IN_ARROW`).
+
+    :param value: the value, as Arrow's ``to_pylist`` makes it
+    :ptype value: Any
+    :param code: the column's DuckDB type
+    :ptype code: str
+    :return: the value as ``fetchall`` makes it
+    :rtype: Any
+    """
+    result: Any = value
+    if value is None:
+        result = None
+    elif code == "UUID":
+        result = uuid.UUID(value)
+    elif code == "INTERVAL":
+        # fetchall's: a month is thirty days
+        result = timedelta(days=value.months * 30 + value.days, microseconds=value.nanoseconds // 1000)
+    elif code.startswith("MAP("):
+        result = dict(value)
+    elif code in _WIDE_INTEGERS:
+        result = int(value)
+    return result
+
+
+def arrow_rows(table: Any) -> list[dict[str, Any]]:
+    """an answer of :meth:`DuckDBBackend.execute_arrow` as the rows :meth:`DuckDBBackend.execute_query` answers, a
+    piece at a time.
+
+    Arrow's ``to_pylist`` makes every row in one call, holding the interpreter lock for all of them (840 ms for 400k
+    rows on a laptop, the event loop waiting the whole time); made :data:`_ROWS_PIECE` rows a call, no hold is long.
+    Each value is the one ``fetchall`` answers: a 128-bit integer an ``int``, a UUID a ``uuid.UUID``, an interval a
+    ``timedelta`` (a month thirty days), a map a ``dict``.
+
+    :param table: the answer
+    :ptype table: pyarrow.Table
+    :return: the rows, by column name
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: for a UUID, interval, map or 128-bit integer nested in a list or a struct, which only
+        ``execute_query`` answers as ``fetchall`` does
+    """
+    unlike: dict[str, str] = {}
+    for field_ in table.schema:
+        code = (field_.metadata or {}).get(_DUCKDB_TYPE_KEY, b"").decode()
+        top = code in ("UUID", "INTERVAL") or code.startswith("MAP(")
+        top = top or (code in _WIDE_INTEGERS and pa.types.is_decimal(field_.type))
+        settled = top or code in _WIDE_INTEGERS or code.endswith("HUGEINT[]")
+        if not settled and any(word in code for word in (*_UNLIKE_IN_ARROW, "HUGEINT")):
+            raise ValueError(
+                f"column {field_.name!r} ({code}): nested in Arrow otherwise than fetchall; use execute_query"
+            )
+        if top:
+            unlike[field_.name] = code
+    rows: list[dict[str, Any]] = []
+    for batch in table.to_batches(max_chunksize=_ROWS_PIECE):
+        piece = batch.to_pylist()
+        if unlike:
+            for row in piece:
+                for name, code in unlike.items():
+                    row[name] = _like_fetchall(row[name], code)
+        rows.extend(piece)
+    return rows
+
+
+def query_arrow(connection: Any, sql: str, params: Sequence[Any] = ()) -> Any:
+    """:meth:`DuckDBBackend.execute_arrow` on any DuckDB connection or cursor: a read transaction's cursor
+    (:meth:`DuckDBBackend.read_snapshot`, a scoped snapshot's read), whose caller holds it alone.
+
+    :param connection: the connection or cursor to run the query on
+    :ptype connection: duckdb.DuckDBPyConnection
+    :param sql: the query
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the rows, each column naming its DuckDB type (:data:`_DUCKDB_TYPE_KEY`)
+    :rtype: pyarrow.Table
+    """
+    result = connection.execute(sql, list(params))
+    described = [(str(column[0]), str(column[1])) for column in result.description]
+    return _typed_answer(fetch_arrow(result, _ARROW_BATCH_ROWS), described)
+
+
+def _typed_answer(table: Any, described: Sequence[tuple[str, str]]) -> Any:
+    """a DuckDB answer's Arrow, each column named with its DuckDB type, a 128-bit integer column an ``int64``
+    (``uint64``) where every value fits, as ``fetchall`` answers an ``int``.
+
+    :param table: the answer, as DuckDB's Arrow export gives it
+    :ptype table: pyarrow.Table
+    :param described: each column's name and DuckDB type, in order (the result's ``description``)
+    :ptype described: Sequence[tuple[str, str]]
+    :return: the answer
+    :rtype: pyarrow.Table
+    """
+    columns: list[Any] = []
+    fields: list[Any] = []
+    for index, (_name, code) in enumerate(described):
+        field_ = table.schema.field(index)
+        column = table.column(index)
+        wide = _WIDE_INTEGERS.get(code)
+        if wide is not None and pa.types.is_decimal(field_.type):
+            try:
+                column = pc.cast(column, wide)
+                field_ = field_.with_type(column.type)
+            except pa.ArrowInvalid, OverflowError:
+                # NOSILENT: past 64 bits stays decimal, and arrow_rows makes each value the int fetchall answers
+                pass
+        elif (
+            code.endswith("HUGEINT[]") and pa.types.is_list(field_.type) and pa.types.is_decimal(field_.type.value_type)
+        ):
+            column = pc.cast(column, pa.list_(pa.int64() if code == "HUGEINT[]" else pa.uint64()))
+            field_ = field_.with_type(column.type)
+        columns.append(column)
+        fields.append(field_.with_metadata({_DUCKDB_TYPE_KEY: code.encode()}))
+    return pa.Table.from_arrays(columns, schema=pa.schema(fields))
+
+
 #: DuckDB's widest exact ``DECIMAL``
 _DUCKDB_MAX_DECIMAL_PRECISION = 38
 
@@ -148,6 +298,54 @@ def _decimal_code_scale(code: str) -> int | None:
     """
     is_decimal = code.startswith("DECIMAL(") and code.endswith(")")
     return int(code[len("DECIMAL(") : -1].split(",")[1]) if is_decimal else None
+
+
+def stored_value(value: Any, col_type: str) -> Any:
+    """a Python value as a DuckDB L1 stores it in a column of ``col_type`` (:meth:`DuckDBBackend.serialize_value`).
+
+    The one conversion the L1 writes every value through, so a value compared with what it holds (a scoped
+    snapshot's diff, matching L3's answer to its copy's rows) is compared as it is stored: a UUID as its text, an
+    instant as its ISO text, a decimal at its column's scale, a JSON value as its text.
+
+    :param value: the value
+    :ptype value: Any
+    :param col_type: the column's type code (:meth:`DuckDBBackend.column_types`)
+    :ptype col_type: str
+    :return: the value as stored
+    :rtype: Any
+    """
+    if value is None:
+        return None
+
+    result: Any = value
+    scale = _decimal_code_scale(col_type)
+
+    if scale is not None and not isinstance(value, bool):
+        result = stored_decimal(value, scale)
+    elif isinstance(value, enum.Enum):
+        result = value.value
+    elif isinstance(value, dict):
+        result = json.dumps(value, default=json_default)
+    elif isinstance(value, _UUID_TYPES):
+        result = str(value)
+    elif isinstance(value, date) and col_type.endswith("_DATE"):
+        result = stored_date(value)
+    elif isinstance(value, datetime):
+        result = value.isoformat()
+    elif isinstance(value, time_of_day):
+        result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
+    elif isinstance(value, date):
+        result = value.isoformat()
+    elif isinstance(value, bool):
+        result = value  # DuckDB has native BOOLEAN
+    elif isinstance(value, Decimal):
+        result = float(value)
+    elif isinstance(value, (tuple, list)):
+        result = json.dumps(list(value), default=json_default)
+    elif isinstance(value, bytes):
+        result = value.hex()
+
+    return result
 
 
 def _ddl_type(code: str) -> str:
@@ -223,6 +421,78 @@ def _insert_through_arrow(connection: Any, target: str, columns: Sequence[str], 
     return arrow is not None
 
 
+class _Checkpointer:
+    """a compressed backend's checkpointer: a thread that checkpoints once per wake, after writes ask. It holds the
+    backend weakly, so a backend dropped without :meth:`DuckDBBackend.reset` is collected and its thread ends.
+
+    :param backend: the backend
+    :ptype backend: DuckDBBackend
+    """
+
+    def __init__(self, backend: DuckDBBackend) -> None:
+        self._wanted = threading.Event()
+        self._stopping = False
+        held = weakref.ref(backend)
+        self._thread = threading.Thread(
+            target=_checkpoint_when_asked,
+            args=(held, self._wanted, lambda: self._stopping),
+            name=_CHECKPOINTER_THREAD,
+            daemon=True,
+        )
+        weakref.finalize(backend, self._wake_to_end)
+        self._thread.start()
+
+    def ask(self) -> None:
+        """ask for a checkpoint.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wanted.set()
+
+    def stop(self) -> None:
+        """end the thread, after any checkpoint it is running.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._wake_to_end()
+        self._thread.join()
+
+    def _wake_to_end(self) -> None:
+        self._stopping = True
+        self._wanted.set()
+
+
+def _checkpoint_when_asked(
+    backend: Callable[[], DuckDBBackend | None], wanted: threading.Event, stopping: Callable[[], bool]
+) -> None:
+    """a compressed backend's checkpointer thread (:meth:`DuckDBBackend.request_checkpoint`): wait to be asked, then
+    checkpoint once. The wake is cleared before the stop is read, so a stop set at any moment -- even between the wake
+    and its clear -- is seen before the next wait; and the backend is held only while it checkpoints, so one dropped
+    without a reset is collected and the thread ends.
+
+    :param backend: the backend, or None once it is gone (a weak reference)
+    :ptype backend: Callable[[], DuckDBBackend | None]
+    :param wanted: set by each request (and by a stop)
+    :ptype wanted: threading.Event
+    :param stopping: whether the thread is to end
+    :ptype stopping: Callable[[], bool]
+    :return: nothing
+    :rtype: None
+    """
+    while True:
+        wanted.wait()
+        wanted.clear()
+        if stopping():
+            return
+        held = backend()
+        if held is None:
+            return
+        held.checkpoint()
+        del held
+
+
 class DuckDBBackend:
     """L1 cache backend using DuckDB in-memory database.
 
@@ -231,11 +501,39 @@ class DuckDBBackend:
 
     DuckDB is an optional dependency. If not installed, instantiation raises
     ImportError with installation instructions.
+
+    **Key-less tables.** DuckDB never reclaims a deleted row of a table with an index: its row ids are the
+    index's, so a keyed table whose rows are deleted as often as they are written grows by every row it
+    ever held, and the primary-key index itself is neither compressed nor freed. A table named in
+    ``keyless`` is created with no primary key (its key columns still ``NOT NULL``), and this backend keeps
+    its key instead: every write replaces the rows of the keys it names (:meth:`upsert_many`,
+    :meth:`replace_all`, a replacement's ``rows``), and rows added as Arrow (:meth:`replace_partitions`)
+    are refused when they name a key the table holds, or one key twice, as the key would refuse them.
+    Once checkpointed, such a table gives back what was deleted and holds what is kept compressed.
+    :meth:`load_parquet` refuses one (DuckDB's ``INSERT OR REPLACE`` needs the key).
+
+    **Compressed.** DuckDB keeps an in-memory database's tables uncompressed, however often it is checkpointed. With
+    ``compressed`` the tables live in an in-memory catalog attached with DuckDB's ``COMPRESS`` option, which a
+    checkpoint compresses as a file-backed database is (real election tables: a quarter of the memory). Every write
+    that commits asks for a checkpoint on a thread of this backend's own (:meth:`request_checkpoint`), off the write's
+    path: what a write added is held uncompressed until that checkpoint runs, and the next write waits for a
+    checkpoint in progress. For a copy that is only written here and read elsewhere (a published shared-memory
+    version, :mod:`threetears.core.shared_arrow`): DuckDB reads compressed tables slower.
+
+    :param keyless: the tables to create with no primary key, by name; each must declare one
+    :ptype keyless: Collection[str]
+    :param compressed: hold the tables compressed (above)
+    :ptype compressed: bool
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, keyless: Collection[str] = (), compressed: bool = False) -> None:
         if not _HAS_DUCKDB:
             raise ImportError("DuckDB backend requires the 'duckdb' package. Install with: pip install 3tears[duckdb]")
+        self._keyless_names: frozenset[str] = frozenset(keyless)
+        #: every key-less table created, with the key this backend keeps for it
+        self._keyless: dict[str, tuple[str, ...]] = {}
+        #: every table created, with the columns it holds NOT NULL (its primary key's)
+        self._not_null: dict[str, frozenset[str]] = {}
         self._db: Any = None  # duckdb.DuckDBPyConnection
         self._initialized: bool = False
         self._schema_info: dict[str, dict[str, str]] = {}
@@ -247,10 +545,113 @@ class DuckDBBackend:
         # across their transaction, so opening a read never waits for a write to commit
         self._reader: Any = None
         self._reader_lock: threading.Lock = threading.Lock()
+        self._compressed = compressed
+        #: the thread that checkpoints the compressed tables after writes, once one asks (:meth:`request_checkpoint`)
+        self._checkpointer: _Checkpointer | None = None
+        #: checkpoints run by the checkpointer thread, the seconds they took, and the ones that failed (each logged)
+        self._background_checkpoints = 0
+        self._background_checkpoint_seconds = 0.0
+        self._background_checkpoints_failed = 0
+
+    @property
+    def background_checkpoints(self) -> int:
+        """checkpoints run, on the checkpointer thread or by checkpoint: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints
+
+    @property
+    def background_checkpoint_seconds(self) -> float:
+        """seconds they took: a diagnostic, written only by this object under its write lock.
+
+        :return: the seconds
+        :rtype: float
+        """
+        return self._background_checkpoint_seconds
+
+    @property
+    def background_checkpoints_failed(self) -> int:
+        """checkpoints that failed: a diagnostic, written only by this object under its write lock.
+
+        :return: the count
+        :rtype: int
+        """
+        return self._background_checkpoints_failed
+
+    @property
+    def compressed(self) -> bool:
+        """whether the tables are held compressed.
+
+        :return: the flag
+        :rtype: bool
+        """
+        return self._compressed
+
+    def _cursor(self, source: Any) -> Any:
+        """a new cursor of ``source``, reading and writing the tables' catalog (a cursor starts in the default one).
+
+        :param source: a connection or cursor
+        :ptype source: duckdb.DuckDBPyConnection
+        :return: the cursor
+        :rtype: duckdb.DuckDBPyConnection
+        """
+        cursor = source.cursor()
+        if self._compressed:
+            cursor.execute(f"USE {_COMPRESSED_CATALOG}")
+        return cursor
+
+    def request_checkpoint(self) -> None:
+        """ask the checkpointer thread to checkpoint the compressed tables once the writes in progress are done; any
+        number of requests before it runs make one checkpoint. Nothing when the tables are not compressed, or after
+        :meth:`reset`.
+
+        :return: nothing
+        :rtype: None
+        """
+        if not self._compressed:
+            return
+        with self._pool_lock:
+            if not self._initialized:
+                return
+            if self._checkpointer is None:
+                self._checkpointer = _Checkpointer(self)
+            checkpointer = self._checkpointer
+        checkpointer.ask()
+
+    def checkpoint(self) -> None:
+        """checkpoint the tables now, under the write lock, counted (``background_checkpoints``); a failure is logged
+        and counted, never raised (only memory waits for the next one). What the checkpointer thread runs.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._db_lock:
+            if self._db is None:
+                return
+            started = time.monotonic()
+            try:
+                self._run_checkpoint()
+            except Exception as exc:  # noqa: BLE001 - only memory waits for the next one
+                self._background_checkpoints_failed += 1
+                contain(exc, log=log, what="the compressed L1 could not be checkpointed; the next write asks again")
+                return
+            self._background_checkpoints += 1
+            self._background_checkpoint_seconds += time.monotonic() - started
+
+    def _run_checkpoint(self) -> None:
+        """checkpoint the tables; the caller holds the write lock. A subclass that must commit something first (DuckDB
+        compresses nothing when a checkpoint follows an append to a keyed table straight away) overrides it.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._db.execute("CHECKPOINT")
 
     def _make_connection(self) -> Any:
         """Create a new cursor/connection from the shared database."""
-        conn = self._db.cursor()
+        conn = self._cursor(self._db)
         with self._pool_lock:
             self._pooled_connections.append(conn)
         return conn
@@ -269,20 +670,31 @@ class DuckDBBackend:
         for table in sa_metadata.tables.values():
             for column in table.columns:
                 self._column_code(table.name, column)
+            if table.name in self._keyless_names and not any(col.primary_key for col in table.columns):
+                raise ValueError(f"key-less table {table.name!r} declares no primary key for this backend to keep")
         new_tables = 0
         with self._db_lock:
             if not self._initialized:
-                self._db = duckdb.connect(":memory:", config=dict(_DATABASE_CONFIG))
+                # ``threads`` on the CPU quota, not the machine's cores: DuckDB's default is one thread
+                # per core, 32 on a large node, which throttles a pod limited to a few CPUs for most of
+                # every period (:mod:`threetears.core.utils.cpu_quota`)
+                self._db = duckdb.connect(":memory:", config={**_DATABASE_CONFIG, "threads": effective_cpu_count()})
+                if self._compressed:
+                    self._db.execute(f"ATTACH ':memory:' AS {_COMPRESSED_CATALOG} (COMPRESS)")
+                    self._db.execute(f"USE {_COMPRESSED_CATALOG}")
             for table in sa_metadata.tables.values():
                 if table.name in self._schema_info:
                     log.debug(f"DuckDB table already registered, skipping: {table.name}")
                     continue
                 self._db.execute(self._generate_create_table(table))
                 self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
+                self._not_null[table.name] = frozenset(col.name for col in table.columns if col.primary_key)
+                if table.name in self._keyless_names:
+                    self._keyless[table.name] = tuple(col.name for col in table.columns if col.primary_key)
                 new_tables += 1
                 log.debug(f"Created DuckDB table: {table.name}")
             if not self._initialized:
-                self._reader = self._db.cursor()
+                self._reader = self._cursor(self._db)
                 self._initialized = True
         log.debug(
             "DuckDB L1 cache initialized",
@@ -361,8 +773,32 @@ class DuckDBBackend:
         :raises ValueError: when the rows do not all name the same columns
         """
         with self._db_lock:
-            self._insert_rows(self._db, table, rows, primary_key)
+            if table in self._keyless:
+                # a key-less table's write is a delete and an insert: one transaction, so a reader never sees between
+                with self._transaction():
+                    self._insert_rows(self._db, table, rows, primary_key)
+            else:
+                self._insert_rows(self._db, table, rows, primary_key)
+        self.request_checkpoint()
         return len(rows)
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """one transaction on the write connection, committed when the block ends and rolled back when it raises;
+        the caller holds the lock.
+
+        :return: a context
+        :rtype: Iterator[None]
+        """
+        committed = False
+        self._db.execute("BEGIN TRANSACTION")
+        try:
+            yield
+            self._db.execute("COMMIT")
+            committed = True
+        finally:
+            if not committed:
+                self._db.execute("ROLLBACK")
 
     def _serialized(
         self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]
@@ -413,13 +849,78 @@ class DuckDBBackend:
         :raises ValueError: when the rows do not all name the same columns
         """
         columns, lists = self._serialized(table, rows, primary_key)
-        if lists and lists[0]:
+        if lists and lists[0] and table in self._keyless:
+            self._replace_keyless_rows(connection, table, columns, lists)
+        elif lists and lists[0]:
             # values are already serialized to each column's storage form, so the insert's own
             # conversion types them; the registry's names are logical (VARCHAR_UUID), not SQL
             target = f"{quote_identifier(table)} ({', '.join(quote_identifier(c) for c in columns)})"
             if not _insert_through_arrow(connection, target, columns, lists):
                 select = ", ".join(f"unnest(${i}) AS {quote_identifier(c)}" for i, c in enumerate(columns, 1))
                 connection.execute(f"INSERT OR REPLACE INTO {target} SELECT {select}", lists)  # noqa: S608
+
+    def _replace_keyless_rows(
+        self, connection: Any, table: str, columns: Sequence[str], lists: Sequence[list[Any]]
+    ) -> None:
+        """write serialized rows to a key-less table: the rows of the keys they name deleted, then they inserted;
+        the caller holds the lock and the transaction.
+
+        :param connection: the connection to write on
+        :ptype connection: Any
+        :param table: a key-less table this backend created
+        :ptype table: str
+        :param columns: the columns, in order, every key column among them
+        :ptype columns: Sequence[str]
+        :param lists: each column's values, serialized to its storage form, one row per key
+        :ptype lists: Sequence[list[Any]]
+        :return: nothing
+        :rtype: None
+        """
+        quoted = quote_identifier(table)
+        position = {name: index for index, name in enumerate(columns)}
+        arrow = _as_arrow(quoted, lists)
+        source = "_bulk_rows"
+        bound: list[Any] = []
+        if arrow is None:
+            # values Arrow cannot type as one column: each list bound and unnested
+            source = "(SELECT " + ", ".join(f"unnest(?) AS c{index}" for index in range(len(lists))) + ")"
+            bound = list(lists)
+        joined = " AND ".join(f"held.{quote_identifier(k)} = given.c{position[k]}" for k in self._keyless[table])
+        names = ", ".join(quote_identifier(c) for c in columns)
+        given = ", ".join(f"c{index}" for index in range(len(columns)))
+        if arrow is not None:
+            connection.register(source, arrow)
+        try:
+            connection.execute(f"DELETE FROM {quoted} AS held USING {source} AS given WHERE {joined}", bound)  # noqa: S608
+            connection.execute(f"INSERT INTO {quoted} ({names}) SELECT {given} FROM {source}", bound)  # noqa: S608
+        finally:
+            if arrow is not None:
+                connection.unregister(source)
+
+    def _refuse_held_keys(self, table: str, chunk: str) -> None:
+        """refuse rows about to be added to a key-less table (registered as ``chunk``) that name a key the table
+        holds, or one key twice, as the table's key would; the caller holds the lock.
+
+        :param table: a key-less table this backend created
+        :ptype table: str
+        :param chunk: the registered name of the rows
+        :ptype chunk: str
+        :return: nothing
+        :rtype: None
+        :raises duckdb.ConstraintException: naming the table and how many rows repeat a key
+        """
+        key = self._keyless[table]
+        keys = ", ".join(quote_identifier(k) for k in key)
+        joined = " AND ".join(f"held.{quote_identifier(k)} = given.{quote_identifier(k)}" for k in key)
+        held = self._db.execute(
+            f"SELECT count(*) FROM {quote_identifier(table)} AS held JOIN {chunk} AS given ON {joined}"  # noqa: S608
+        ).fetchone()[0]
+        repeated = self._db.execute(f"SELECT count(*) - count(DISTINCT ({keys})) FROM {chunk}").fetchone()[0]  # noqa: S608
+        if held or repeated:
+            raise duckdb.ConstraintException(
+                f"Duplicate key in key-less table {table!r}: {held} row(s) name a key it holds, "
+                f"{repeated} repeat a key among themselves"
+            )
 
     def replace_all(self, table: str, rows: Sequence[Mapping[str, Any]], primary_key: str | tuple[str, ...]) -> int:
         """make a table hold exactly ``rows``, in one transaction: what it held before is gone.
@@ -451,6 +952,7 @@ class DuckDBBackend:
             finally:
                 if not committed:
                     self._db.execute("ROLLBACK")
+        self.request_checkpoint()
         log.info("replaced an L1 table whole", extra={"extra_data": {"table": table, "rows": len(rows)}})
         return len(rows)
 
@@ -487,11 +989,13 @@ class DuckDBBackend:
         :ptype row_number_column: str | None
         :return: how many rows the file held
         :rtype: int
-        :raises ValueError: when the table is not one this backend created
+        :raises ValueError: when the table is not one this backend created, or is key-less
         """
         schema = self._schema_info.get(table)
         if schema is None:
             raise ValueError(f"unknown table {table!r}: load_parquet fills tables this backend created")
+        if table in self._keyless:
+            raise ValueError(f"key-less table {table!r}: load_parquet replaces rows by the table's own key")
         with self._db_lock:
             in_file = {
                 row[0] for row in self._db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
@@ -507,6 +1011,7 @@ class DuckDBBackend:
                 [str(path)],
             )
             (count,) = self._db.execute("SELECT count(*) FROM read_parquet(?)", [str(path)]).fetchone()
+        self.request_checkpoint()
         log.info(
             "loaded a Parquet file into an L1 table",
             extra={"extra_data": {"table": table, "rows": count, "columns": len(columns)}},
@@ -562,12 +1067,91 @@ class DuckDBBackend:
             held = self._db.execute(f"SELECT count(*) FROM {relation}", params).fetchone()[0]  # noqa: S608
             return fetch_arrow(self._db.execute(sql, params), held)
 
+    def storage_arrow(self, table: str, rows: Any, primary_key: str | tuple[str, ...]) -> tuple[list[str], Any]:
+        """an Arrow table's rows in ``table``'s storage forms, the last row of each key kept: what
+        :meth:`export_rows` makes of dict rows, never making a row a Python object where the column
+        allows.
+
+        For a writer whose rows already are Arrow (an export read straight into Arrow), and for a
+        subclass whose own export types rows: the columns are those of the table the rows name (all
+        the rows name, for a table this backend did not create), as dict rows give them. A column
+        whose Arrow type an insert's cast stores exactly as its stored form (integers, floats,
+        booleans, strings, dates; a decimal at the column's own scale; a zoned timestamp into a zoned
+        timestamp column) is kept as it is; any other is stored value by value as
+        :meth:`serialize_value` stores a dict row's, so either form of the same rows is stored alike.
+
+        :param table: the table whose columns type them
+        :ptype table: str
+        :param rows: the rows
+        :ptype rows: pyarrow.Table
+        :param primary_key: the table's key, as :meth:`upsert_many` takes it
+        :ptype primary_key: str | tuple[str, ...]
+        :return: the columns written, and the rows in them, in that order
+        :rtype: tuple[list[str], pyarrow.Table]
+        :raises KeyError: when a key column is not among the rows' columns, as a dict row lacking it is refused
+        """
+        schema = self._schema_info.get(table, {})
+        named = set(rows.column_names)
+        columns = [c for c in schema if c in named] if schema else sorted(named)
+        key = list(self._pk_columns(primary_key))
+        # a key column every row lacks, as a dict row lacking it is refused (no rows: nothing to key)
+        absent = [c for c in key if c not in named] if rows.num_rows else []
+        if absent:
+            raise KeyError(absent[0])
+        if rows.num_rows and key:
+            # the last row of each key, as a batch of dict rows keeps it
+            indexed = rows.select(key).append_column("__row", pa.array(range(rows.num_rows), pa.int64()))
+            last = indexed.group_by(key, use_threads=False).aggregate([("__row", "max")]).column("__row_max")
+            if len(last) != rows.num_rows:
+                rows = rows.take(pa.array(sorted(last.to_pylist()), pa.int64()))
+        stored = [self._stored_column(rows.column(c), schema.get(c, "VARCHAR")) for c in columns]
+        return columns, pa.table(dict(zip(columns, stored, strict=True))) if columns else pa.table({})
+
+    def _stored_column(self, values: Any, code: str) -> Any:
+        """one Arrow column in its storage form for a column of type ``code``.
+
+        :param values: the column
+        :ptype values: pyarrow.ChunkedArray
+        :param code: the column's type code
+        :ptype code: str
+        :return: the column as an insert's cast stores it exactly
+        :rtype: pyarrow.ChunkedArray | pyarrow.Array
+        """
+        kind = values.type
+        ddl = _ddl_type(code).upper()
+        scale = _decimal_code_scale(code)
+        if scale is not None and (pa.types.is_string(kind) or pa.types.is_large_string(kind)):
+            # a NUMERIC's digits as the rail answers them: cast in Arrow where that is exact (a value at the column's
+            # scale or fewer places); one the cast refuses (more places, rounded; NaN, refused) goes value by value
+            try:
+                return pc.cast(values, pa.decimal128(_DUCKDB_MAX_DECIMAL_PRECISION, scale))
+            except pa.ArrowInvalid, pa.ArrowNotImplementedError:
+                pass  # NOSILENT: stored value by value below, as serialize_value stores a dict row's
+        if scale is not None:
+            as_is = pa.types.is_decimal(kind) and kind.scale == scale
+        elif pa.types.is_timestamp(kind):
+            # an instant into an instant column; a naive one is read in another zone by the cast than by
+            # its isoformat text, so it is stored as a dict row's is
+            as_is = kind.tz is not None and ddl in ("TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE")
+        else:
+            as_is = (
+                pa.types.is_null(kind)
+                or pa.types.is_integer(kind)
+                or pa.types.is_floating(kind)
+                or pa.types.is_boolean(kind)
+                or pa.types.is_string(kind)
+                or pa.types.is_large_string(kind)
+                or pa.types.is_date(kind)
+            )
+        # one column made Python values, only where its Arrow type is not its stored form
+        return values if as_is else pa.array([self.serialize_value(v, code) for v in values.to_pylist()])
+
     def export_rows(
         self,
         table: str,
         column: str,
         value: Any,
-        rows: Sequence[Mapping[str, Any]],
+        rows: Sequence[Mapping[str, Any]] | Any,
         *,
         primary_key: str | tuple[str, ...],
         order_by: Sequence[str],
@@ -587,8 +1171,9 @@ class DuckDBBackend:
         :ptype column: str
         :param value: the scope's value; ``None`` for the rows where the column is null
         :ptype value: Any
-        :param rows: every row the scope would hold, each keyed by column name
-        :ptype rows: Sequence[Mapping[str, Any]]
+        :param rows: every row the scope would hold: each keyed by column name, or one Arrow table, which is
+            typed alike (:meth:`storage_arrow`) and gives the same export as the same rows as dicts
+        :ptype rows: Sequence[Mapping[str, Any]] | pyarrow.Table
         :param primary_key: the table's key, as :meth:`upsert_many` takes it
         :ptype primary_key: str | tuple[str, ...]
         :param order_by: the columns ordering the rows, the table's key
@@ -596,13 +1181,27 @@ class DuckDBBackend:
         :return: the rows
         :rtype: pyarrow.Table
         :raises ValueError: when the table or column is unknown
-        :raises duckdb.ConstraintException: when a row's key column is null, as the table refuses it
+        :raises KeyError: when an Arrow table lacks a key column
+        :raises duckdb.ConstraintException: when a row's key column is null where the table holds it NOT NULL, as the
+            table refuses it
         """
         condition, params = self._partition_filter(table, column, value)
         schema = self._schema_info[table]
-        columns, lists = self._serialized(table, rows, primary_key)
+        arrow: Any = None
+        if _PYARROW and isinstance(rows, pa.Table):
+            columns, stored = self.storage_arrow(table, rows, primary_key)
+            nulls = {name: stored.column(name).null_count > 0 for name in columns}
+            arrow = stored.rename_columns([f"c{index}" for index in range(len(columns))]) if rows.num_rows else None
+            lists: list[list[Any]] = []
+        else:
+            columns, lists = self._serialized(table, rows, primary_key)
+            nulls = {name: None in lists[index] for index, name in enumerate(columns)}
+            arrow = _as_arrow(f"an export of {table}", lists) if rows else None
+        # the table refuses a NULL only in a column it holds NOT NULL (its own key's): a key given here may name a
+        # column it holds nullable (a scoped snapshot's key, a NULL in it read as its own group)
+        refused = self._not_null.get(table, frozenset(self._pk_columns(primary_key)))
         for key in self._pk_columns(primary_key):
-            if key in columns and None in lists[columns.index(key)]:
+            if nulls.get(key) and key in refused:
                 raise duckdb.ConstraintException(f"NOT NULL constraint failed: {table}.{key}")
         order = ", ".join(quote_identifier(c) for c in order_by)
         given = {name: f"c{index}" for index, name in enumerate(columns)}
@@ -612,7 +1211,6 @@ class DuckDBBackend:
             f"CAST({given.get(name, 'NULL')} AS {_ddl_type(code)}) AS {quote_identifier(name)}"
             for name, code in schema.items()
         )
-        arrow = _as_arrow(f"an export of {table}", lists) if rows else None
         source = "_export_rows"
         bound: list[Any] = []
         if not rows:
@@ -701,6 +1299,8 @@ class DuckDBBackend:
                     if replacement.arrow is not None and replacement.arrow.num_rows:
                         self._db.register("_partition_chunk", replacement.arrow)
                         try:
+                            if replacement.table in self._keyless:
+                                self._refuse_held_keys(replacement.table, "_partition_chunk")
                             self._db.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _partition_chunk")  # noqa: S608
                         finally:
                             self._db.unregister("_partition_chunk")
@@ -713,6 +1313,7 @@ class DuckDBBackend:
             finally:
                 if not committed:
                     self._db.execute("ROLLBACK")
+        self.request_checkpoint()
         return written
 
     @contextmanager
@@ -731,7 +1332,7 @@ class DuckDBBackend:
         if not self._initialized:
             raise RuntimeError("DuckDB not initialized - call initialize() first")
         with self._reader_lock:
-            cursor = self._reader.cursor()
+            cursor = self._cursor(self._reader)
         try:
             cursor.execute("BEGIN TRANSACTION")
             # DuckDB starts a transaction's snapshot at its first statement that reads, not at BEGIN:
@@ -880,6 +1481,51 @@ class DuckDBBackend:
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {where_clause}"
         with self._db_lock:
             self._db.execute(sql, list(pk_vals))
+        self.request_checkpoint()
+
+    def delete_many_by_id(
+        self,
+        table: str,
+        entity_ids: Sequence[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete many rows by primary key, through ``delete_by_id`` a row at a time.
+
+        Through it and not around it: a subclass that keeps something in step with each
+        delete stays in step for these too. Not atomic: a failure partway leaves the rows
+        before it deleted, and raises unchanged.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: pk values or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        for entity_id in entity_ids:
+            self.delete_by_id(table, entity_id, primary_key)
+
+    def execute_arrow(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        """run a query and answer its rows as one Arrow table, never one Python object a row.
+
+        DuckDB runs the query and writes its Arrow without the interpreter lock, so neither the event loop nor any
+        other thread waits on it, however many rows it answers (400k rows: 10 ms, where ``fetchall`` made Python
+        objects for 1.4 s). Each column carries its DuckDB type in its field metadata (:data:`_DUCKDB_TYPE_KEY`), and
+        a 128-bit integer (a ``SUM`` of integers) is an ``int64`` where every value fits, the number
+        :meth:`execute_query` answers. For a caller that needs dict rows from it, :func:`arrow_rows` makes them a
+        piece at a time, each as :meth:`execute_query` answers it. Needs ``pyarrow``.
+
+        :param sql: the query
+        :ptype sql: str
+        :param params: its parameters
+        :ptype params: tuple[Any, ...]
+        :return: the rows
+        :rtype: pyarrow.Table
+        """
+        with self._db_lock:
+            return query_arrow(self._db, sql, params)
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""
@@ -890,39 +1536,14 @@ class DuckDBBackend:
         return [dict(zip(columns, row)) for row in rows]
 
     def serialize_value(self, value: Any, col_type: str) -> Any:
-        """Serialize a Python value for DuckDB storage based on column type.
+        """Serialize a Python value for DuckDB storage based on column type (:func:`stored_value`).
 
         JSON values encode with the storage handler every tier shares
         (:func:`~threetears.core.backends.schema_sql.json_default`), as the SQLite L1 does: a
         nested UUID, Decimal or datetime is cached as the string the other tiers store, where a
         bare ``json.dumps`` raised on it.
         """
-        if value is None:
-            return None
-
-        result: Any = value
-        scale = _decimal_code_scale(col_type)
-
-        if scale is not None and not isinstance(value, bool):
-            result = stored_decimal(value, scale)
-        elif isinstance(value, enum.Enum):
-            result = value.value
-        elif isinstance(value, dict):
-            result = json.dumps(value, default=json_default)
-        elif isinstance(value, _UUID_TYPES):
-            result = str(value)
-        elif isinstance(value, datetime):
-            result = value.isoformat()
-        elif isinstance(value, bool):
-            result = value  # DuckDB has native BOOLEAN
-        elif isinstance(value, Decimal):
-            result = float(value)
-        elif isinstance(value, (tuple, list)):
-            result = json.dumps(list(value), default=json_default)
-        elif isinstance(value, bytes):
-            result = value.hex()
-
-        return result
+        return stored_value(value, col_type)
 
     def deserialize_field(self, value: Any, col_type: str) -> Any:
         """Deserialize a single DuckDB value back to the correct Python type."""
@@ -952,6 +1573,10 @@ class DuckDBBackend:
                 result = value
             else:
                 result = datetime.fromisoformat(str(value)) if value else None
+        elif col_type == "VARCHAR_DATE":
+            result = date.fromisoformat(str(value)) if value else None
+        elif col_type in ("VARCHAR_TIME", "VARCHAR_TIMETZ"):
+            result = time_of_day.fromisoformat(str(value)) if value else None
         elif col_type == "VARCHAR_BYTEA":
             result = bytes.fromhex(value) if value else None
         return result
@@ -965,6 +1590,12 @@ class DuckDBBackend:
 
     def reset(self) -> None:
         """Close all connections and clear state."""
+        with self._pool_lock:
+            checkpointer, self._checkpointer = self._checkpointer, None
+            # no request after this starts another: request_checkpoint sees the backend uninitialized
+            self._initialized = False
+        if checkpointer is not None:
+            checkpointer.stop()
         with self._pool_lock:
             for conn in self._pooled_connections:
                 try:
@@ -995,15 +1626,26 @@ class DuckDBBackend:
         """Return True if the backend has been initialized."""
         return self._initialized
 
+    def not_null_columns(self, table: str) -> frozenset[str]:
+        """the columns of a table this backend holds NOT NULL: its primary key's; every other may hold NULL.
+
+        :param table: the table
+        :ptype table: str
+        :return: the columns (empty for a table it does not know)
+        :rtype: frozenset[str]
+        """
+        return self._not_null.get(table, frozenset())
+
     def has_table(self, table: str) -> bool:
         """Return True if ``table`` was registered via ``initialize()`` (see
         :meth:`~threetears.core.cache.base.L1Backend.has_table`)."""
         return table in self._schema_info
 
     def _generate_create_table(self, table: Any) -> str:
-        """Generate DuckDB CREATE TABLE from SQLAlchemy table."""
+        """Generate DuckDB CREATE TABLE from SQLAlchemy table; a key-less one's has no primary key."""
+        keyless = table.name in self._keyless_names
         pk_cols = [col.name for col in table.columns if col.primary_key]
-        is_composite_pk = len(pk_cols) > 1
+        is_composite_pk = len(pk_cols) > 1 and not keyless
 
         columns = []
         for column in table.columns:
@@ -1014,7 +1656,7 @@ class DuckDBBackend:
             primary = ""
             if column.primary_key:
                 nullable = " NOT NULL"
-                if not is_composite_pk:
+                if not is_composite_pk and not keyless:
                     primary = " PRIMARY KEY"
             columns.append(f"{quote_identifier(column.name)} {ddl_type}{nullable}{primary}")
 
@@ -1064,6 +1706,12 @@ class DuckDBBackend:
             return "BIGINT"
         if isinstance(sa_type, (DateTime, TIMESTAMP)):
             return "VARCHAR_DATETIME"
+        # a Date or Time column is its ISO text, as a DateTime column is
+        # (:func:`~threetears.core.cache.base.stored_time`)
+        if isinstance(sa_type, Date):
+            return "VARCHAR_DATE"
+        if isinstance(sa_type, Time):
+            return "VARCHAR_TIMETZ" if sa_type.timezone else "VARCHAR_TIME"
         if isinstance(sa_type, (String, Text)):
             return "VARCHAR"
         # Generic LargeBinary covers both sqlalchemy.LargeBinary and the

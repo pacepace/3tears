@@ -516,6 +516,10 @@ class MemoryRetriever:
     ) -> str | None:
         """full retrieval pipeline; returns formatted context or ``None``.
 
+        this is the ambient path: with ``MemoryConfig.ambient_recall_enabled`` off it answers
+        ``None`` without searching. a host's own recall tool built on a retriever gives that
+        retriever a config with the switch on.
+
         :param user_id: user whose memories to search (row filter)
         :ptype user_id: UUID
         :param user_text: query text for similarity search
@@ -570,6 +574,10 @@ class MemoryRetriever:
     ) -> RetrievalResult:
         """Full retrieval pipeline returning structured results.
 
+        this is the ambient path: with ``MemoryConfig.ambient_recall_enabled`` off it answers an
+        empty :class:`RetrievalResult` without searching or authorizing. a host's own recall tool
+        built on a retriever gives that retriever a config with the switch on.
+
         :param user_id: user whose memories to search
         :ptype user_id: UUID
         :param user_text: query text for similarity search
@@ -597,6 +605,13 @@ class MemoryRetriever:
         :raises EmbeddingUnavailableError: when the query could not be embedded, so nothing was searched
         """
         empty = RetrievalResult()
+        if not self._config.ambient_recall_enabled:
+            # convert at border: log extra_data fields
+            log.debug(
+                "ambient memory recall skipped: MemoryConfig.ambient_recall_enabled is off",
+                extra={"extra_data": {"agent_id": str(agent_id), "user_id": str(user_id)}},
+            )
+            return empty
         if not user_text.strip():
             return empty
 

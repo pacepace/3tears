@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -182,6 +183,37 @@ def _default_ttl() -> timedelta:
     :rtype: timedelta
     """
     return timedelta(seconds=get_definition_ttl())
+
+
+def _persisted_content(value: dict[str, Any]) -> str:
+    """the digest of a persisted value with its liveness instants left out.
+
+    every heartbeat re-registration refreshes when each copy last registered and when each of its
+    definitions was last announced, and nothing else. those instants are read from memory -- by
+    routing, discovery and the heartbeat sweep -- and the per-pod liveness every replica shares is
+    the heartbeat row, so a value that differs from the one last written only in them is not
+    written again. everything else a warm-load reads (the copies, their definitions and when each
+    was first announced, status, the publisher mark, when the tool was registered) is in the digest.
+
+    :param value: an entry serialized by :meth:`CatalogEntry.to_dict`
+    :ptype value: dict[str, Any]
+    :return: the digest
+    :rtype: str
+    """
+    content = {
+        **value,
+        "endpoints": [
+            {
+                **{name: field_value for name, field_value in copy.items() if name != "date_last_heartbeat"},
+                "definitions": [
+                    {name: field_value for name, field_value in item.items() if name != "last_announced"}
+                    for item in copy["definitions"]
+                ],
+            }
+            for copy in value["endpoints"]
+        ],
+    }
+    return _sha256_hex(_canonical_json(content))
 
 
 @dataclass(frozen=True)
@@ -459,6 +491,8 @@ class ToolEndpoint:
             "status": self.status,
             "date_last_heartbeat": json_datetime(self.date_last_heartbeat, field="date_last_heartbeat"),
             "verified_publisher": self.verified_publisher,
+            "holder_jkt": self.holder_jkt,
+            "proves_delegation": self.proves_delegation,
             "definitions": [announcement.to_dict() for announcement in self.definitions.values()],
         }
         return result
@@ -469,7 +503,9 @@ class ToolEndpoint:
 
         in_flight is always reset to zero on load since pending calls
         cannot survive a restart. each definition is re-keyed by its digest as computed NOW,
-        so a stored key can never name a definition other than the one beside it.
+        so a stored key can never name a definition other than the one beside it. the pod's key
+        and its delegation mark are read back, so a loaded registry delegates as the one that
+        wrote them did; a row written before they were kept reads as a copy whose key is unknown.
 
         :param data: dictionary representation of endpoint
         :ptype data: dict[str, Any]
@@ -484,6 +520,8 @@ class ToolEndpoint:
             date_last_heartbeat=datetime.fromisoformat(data["date_last_heartbeat"]),
             definitions={announcement.definition.digest: announcement for announcement in announcements},
             verified_publisher=data["verified_publisher"],
+            holder_jkt=data.get("holder_jkt"),
+            proves_delegation=data.get("proves_delegation", False),
         )
         return result
 
@@ -844,12 +882,71 @@ class ToolCatalog:
         """
         self._entries: dict[str, CatalogEntry] = {}
         self._kv: KvBucketLike | None = None
+        # by KV key, the content digest of the value this catalog last wrote there and saw land; a
+        # registration whose entry still has that content writes nothing. a key is dropped from it
+        # on any failed write or delete, and on a bucket bound afresh, so the next write is made.
+        self._written: dict[str, str] = {}
+        # the copies the last warm load brought in unavailable, by (full name, pod id), and when it
+        # landed: a replica routes nothing to them until their pods announce again, so it holds its
+        # calls until they have (loaded_copies_settled); replaced whole by each load, never pruned
+        self._awaiting_revival: set[tuple[str, str]] = set()
+        self._loaded_at: float | None = None
         self._write_health = CopyWriteHealth(
             copy="tool catalog",
             consequence=(
                 "registrations are not being recorded, and the registry reports itself not ready until a write lands"
             ),
         )
+
+    def loaded_copies_settled(self, window: float) -> bool:
+        """whether every copy the warm load brought in is routable again, gone, or past waiting for.
+
+        A starting replica loads the persisted catalog with every copy unavailable, and each comes back
+        only with its pod's next heartbeat. A replica that answered calls before then refused a tool
+        every other replica could route (``TOOL_UNAVAILABLE ... has no available endpoints``, from a
+        scheduled job on cobalt dev on 2026-10-30, during a platform rollout). A copy settles when it is
+        available again or no longer in the catalog; all of them settle once ``window`` has passed since
+        the load, since a pod that died never announces again. ``True`` before any load: a catalog with
+        nothing loaded has nothing to wait for. Read-only: the readiness probe and the start-up wait both ask
+        it, so asking changes nothing.
+
+        :param window: seconds after the load past which nothing is waited for (one heartbeat round)
+        :ptype window: float
+        :return: whether the replica may answer calls
+        :rtype: bool
+        """
+        if self._loaded_at is None or time.monotonic() - self._loaded_at >= window:
+            return True
+        return not self.loaded_copies_pending()
+
+    def loaded_copies_pending(self) -> frozenset[tuple[str, str]]:
+        """the copies the last warm load brought in that are neither routable again nor gone, however long ago.
+
+        Read-only. Empty before any load.
+
+        :return: each such copy, as (tool full name, pod id)
+        :rtype: frozenset[tuple[str, str]]
+        """
+        return frozenset(
+            (full_name, pod_id)
+            for full_name, pod_id in self._awaiting_revival
+            if self._copy_status(full_name, pod_id) not in (None, "available")
+        )
+
+    def _copy_status(self, full_name: str, pod_id: str) -> str | None:
+        """the status of one copy, or ``None`` when the catalog no longer holds it.
+
+        :param full_name: the tool's full name
+        :ptype full_name: str
+        :param pod_id: the pod serving the copy
+        :ptype pod_id: str
+        :return: the copy's status
+        :rtype: str | None
+        """
+        entry = self._entries.get(full_name)
+        if entry is None:
+            return None
+        return next((endpoint.status for endpoint in entry.endpoints if endpoint.pod_id == pod_id), None)
 
     @property
     def persisting(self) -> bool:
@@ -878,6 +975,12 @@ class ToolCatalog:
         an empty bucket lists no keys. a listing or read that fails raises, so the caller's
         declaration is retried rather than a failed read being taken for an empty bucket.
 
+        **a loaded copy's liveness instants are as of the entry's last content change**, since a
+        re-registration that changes nothing else is not written. nothing is routed by them: every
+        loaded copy is unavailable until its pod's next heartbeat, which travels with a
+        registration that re-announces each definition the pod still serves; a definition it no
+        longer announces stays dead, and a copy whose pod has no heartbeat row is swept.
+
         **the one place an older persisted shape is read.** every value passes through
         :func:`_translate_persisted_entry` before it becomes a :class:`CatalogEntry`; an entry
         written before per-copy definitions loses its entry-level definition there, and its
@@ -890,6 +993,8 @@ class ToolCatalog:
         :raises KvError: when the bucket's keys could not be listed or an entry could not be read
         """
         self._kv = kv
+        self._written.clear()
+        awaiting: set[tuple[str, str]] = set()
         keys = await kv.list_keys()
         for key in keys:
             raw = await kv.get(key=key)
@@ -901,7 +1006,10 @@ class ToolCatalog:
             entry = CatalogEntry.from_dict(_translate_persisted_entry(data))
             for endpoint in entry.endpoints:
                 endpoint.status = "unavailable"
-            self._entries.setdefault(entry.full_name, entry)
+            if self._entries.setdefault(entry.full_name, entry) is entry:
+                awaiting.update((entry.full_name, endpoint.pod_id) for endpoint in entry.endpoints)
+        self._awaiting_revival = awaiting
+        self._loaded_at = time.monotonic()
         _logger.info(
             "loaded catalog from KV",
             extra={"extra_data": {"entry_count": len(self._entries), "keys_listed": len(keys)}},
@@ -921,6 +1029,7 @@ class ToolCatalog:
         :rtype: list[str]
         """
         self._kv = kv
+        self._written.clear()
         failed: list[str] = []
         # the whole write-back is one write operation, however many entries it writes
         async with self._write_health.operation():
@@ -959,6 +1068,32 @@ class ToolCatalog:
         if self._kv is not None:
             await self._put(self._kv, _sanitize_kv_key(entry.full_name), entry)
 
+    async def _persist_if_changed(self, entry: CatalogEntry) -> bool:
+        """write one entry to KV unless its content is what this catalog last recorded for it.
+
+        with no bucket bound the content is recorded without a write, so the answer still says
+        whether the entry changed; binding a bucket forgets every record, so each entry is then
+        written once. while :attr:`persisting` is ``False`` every entry is written, changed or not.
+
+        :param entry: the entry to write
+        :ptype entry: CatalogEntry
+        :return: whether the entry's content changed (and, with a bucket bound, was written)
+        :rtype: bool
+        :raises KvError: when the write failed
+        """
+        key = _sanitize_kv_key(entry.full_name)
+        content = _persisted_content(entry.to_dict())
+        # while writes are failing, an unchanged entry is written anyway: a failed delete is never
+        # retried (its entry is gone from memory), so on an idle platform this write is the only one
+        # coming, and the first to land is what puts the registry back in rotation
+        if self._written.get(key) == content and self._write_health.persisting:
+            return False
+        if self._kv is None:
+            self._written[key] = content
+        else:
+            await self._put(self._kv, key, entry)
+        return True
+
     async def _put(self, kv: KvBucketLike, key: str, entry: CatalogEntry) -> None:
         """write ``entry`` under ``key``, counting the outcome toward :attr:`persisting`.
 
@@ -972,7 +1107,10 @@ class ToolCatalog:
         :rtype: None
         :raises KvError: when the write failed; counted, then raised to the caller
         """
-        await self._write_health.write(kv.put(key=key, value=json.dumps(entry.to_dict()).encode("utf-8")), key=key)
+        value = entry.to_dict()
+        self._written.pop(key, None)
+        await self._write_health.write(kv.put(key=key, value=json.dumps(value).encode("utf-8")), key=key)
+        self._written[key] = _persisted_content(value)
 
     async def _delete(self, kv: KvBucketLike, key: str) -> None:
         """delete ``key``, counting the outcome toward :attr:`persisting`.
@@ -985,9 +1123,10 @@ class ToolCatalog:
         :rtype: None
         :raises KvError: when the delete failed; counted, then raised to the caller
         """
+        self._written.pop(key, None)
         await self._write_health.write(kv.delete(key=key), key=key)
 
-    async def register(self, entry: CatalogEntry) -> None:
+    async def register(self, entry: CatalogEntry) -> bool:
         """register tool in catalog and persist to KV, merging PER COPY.
 
         each endpoint in ``entry`` is folded into the held entry's copy for the same pod id: its
@@ -997,13 +1136,25 @@ class ToolCatalog:
         registering copy that have not been re-announced within the TTL are pruned; another
         copy's stale definitions are that pod's to refresh, and are left alone.
 
+        a pod re-registers on every heartbeat, so most registrations change nothing but liveness.
+        those are folded into memory and **not written**: the bucket is written only when the
+        entry's content differs from what this catalog last wrote there (see
+        :func:`_persisted_content`), and only then is the registration logged at INFO.
+
         :param entry: catalog entry to register
         :ptype entry: CatalogEntry
+        :return: whether the registration changed the entry's content, which is then written when a
+            bucket is bound
+        :rtype: bool
+        :raises KvError: when the write failed; the next registration of the entry writes again
         """
         now = datetime.now(UTC)
         ttl = _default_ttl()
         existing = self._entries.get(entry.full_name)
         if existing is None:
+            # an entry new to memory is always a change, whatever was recorded for its key before
+            # it was dropped
+            self._written.pop(_sanitize_kv_key(entry.full_name), None)
             for endpoint in entry.endpoints:
                 endpoint.prune_definitions(now, ttl)
             self._entries[entry.full_name] = entry
@@ -1020,19 +1171,24 @@ class ToolCatalog:
                 held.status = incoming.status
                 held.date_last_heartbeat = incoming.date_last_heartbeat
                 held.verified_publisher = incoming.verified_publisher
+                # the key a delegation for this pod binds is the one its latest registration signed with
+                held.holder_jkt = incoming.holder_jkt
+                held.proves_delegation = incoming.proves_delegation
                 held.merge_announcements(incoming.definitions)
                 held.prune_definitions(now, ttl)
             target = existing
-        await self._persist(target)
-        _logger.info(
-            "registered tool in catalog",
-            extra={
-                "extra_data": {
-                    "full_name": target.full_name,
-                    "endpoint_count": len(target.endpoints),
-                }
-            },
-        )
+        written = await self._persist_if_changed(target)
+        if written:
+            _logger.info(
+                "registered tool in catalog",
+                extra={
+                    "extra_data": {
+                        "full_name": target.full_name,
+                        "endpoint_count": len(target.endpoints),
+                    }
+                },
+            )
+        return written
 
     async def remove_copy(self, full_name: str, pod_id: str) -> bool:
         """withdraw ONE pod's copy of one tool, leaving every other copy as it was.

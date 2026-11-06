@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -60,6 +60,7 @@ from threetears.core.backends.protocol import (
     OrderedDurableStore,
     TruncatingStore,
     load_requests,
+    side_by_side_requests,
 )
 from threetears.core.backends.schema_sql import (
     PGVECTOR_TYPES,
@@ -290,6 +291,16 @@ class IndexDef:
         ``(("m", "16"), ("ef_construction", "64"))``). values are
         strings to mirror the textual ``WITH (key = value, ...)`` DDL
         syntax verbatim. v0.8.1+
+    :cvar desc: names of the covered columns that sort descending
+        (``date_created DESC`` in the DDL); every other column sorts
+        ascending. each name must also be in ``columns``. emitted as
+        ``column.desc()`` so the declared index equals a migration
+        that creates the column ``DESC``. a column cannot carry both
+        ``desc`` and an operator class in ``ops``.
+    :cvar nulls_not_distinct: when ``True`` (a ``unique`` index only), two
+        rows whose covered columns are both NULL collide, as
+        ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
+        column still holds one row per key while that column is unset.
     """
 
     name: str
@@ -300,19 +311,38 @@ class IndexDef:
     using: str | None = None
     ops: tuple[tuple[str, str], ...] | None = None
     pg_with: tuple[tuple[str, str], ...] | None = None
+    desc: tuple[str, ...] = ()
+    nulls_not_distinct: bool = False
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``name`` is empty or ``columns`` is empty
+        :raises ValueError: when ``name`` is empty or ``columns`` is empty, or
+            ``nulls_not_distinct`` is set on an index that is not unique
         """
         if not self.name:
             raise ValueError("IndexDef: name must be non-empty")
         if not self.columns:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): columns must be a non-empty tuple",
+            )
+        if self.nulls_not_distinct and not self.unique:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): nulls_not_distinct says how a unique index compares NULLs; "
+                "this index is not unique",
+            )
+        stray = [col for col in self.desc if col not in self.columns]
+        if stray:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        both = [col for col in self.desc if col in dict(self.ops or ())]
+        if both:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): {both!r} carry both an operator class and desc, which "
+                "to_sqlalchemy_table cannot emit (SQLAlchemy drops the operator class of a descending column)",
             )
 
 
@@ -375,6 +405,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     using: str | None = None,
     ops: Mapping[str, str] | None = None,
     pg_with: Mapping[str, str] | None = None,
+    desc: str | Sequence[str] = (),
+    nulls_not_distinct: bool = False,
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -395,6 +427,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
             pg_with={"m": "16", "ef_construction": "64"},
         )
         Index("idx_memories_tags", "tags", using="gin")
+        Index("idx_history", "agent_id", "date_created", desc="date_created")
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -423,6 +456,13 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         strings to mirror the textual ``WITH (key = value, ...)`` DDL
         syntax verbatim
     :ptype pg_with: Mapping[str, str] | None
+    :param desc: the covered column(s) that sort descending, as the
+        migration's ``<column> DESC`` says; a bare ``str`` names one
+    :ptype desc: str | Sequence[str]
+    :param nulls_not_distinct: a unique index whose NULLs collide
+        (``NULLS NOT DISTINCT``); maps to SQLAlchemy's
+        ``postgresql_nulls_not_distinct`` dialect kwarg
+    :ptype nulls_not_distinct: bool
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -446,6 +486,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         using=using,
         ops=ops_tuple,
         pg_with=pg_with_tuple,
+        desc=(desc,) if isinstance(desc, str) else tuple(desc),
+        nulls_not_distinct=nulls_not_distinct,
     )
 
 
@@ -1235,7 +1277,26 @@ class TableSchema:
                 ),
             )
 
-        sa_indexes: list[Any] = []
+        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
+        # so Alembic auto-gen reads them out of
+        # ``information_schema.table_constraints`` and matches the prod
+        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
+        # :class:`UniqueConstraintDef` docstring for the distinction.
+        sa_unique_constraints: list[Any] = [
+            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
+        ]
+
+        table = sa.Table(
+            self.name,
+            metadata,
+            *sa_columns,
+            *sa_fk_constraints,
+            *sa_unique_constraints,
+        )
+
+        # indexes are built against the table's own columns so a ``desc``
+        # column can be emitted as ``column.desc()``; an Index over bound
+        # columns attaches itself to their table.
         for idx in self.indexes:
             idx_kwargs: dict[str, Any] = {
                 "unique": idx.unique,
@@ -1250,31 +1311,15 @@ class TableSchema:
                 idx_kwargs["postgresql_ops"] = dict(idx.ops)
             if idx.pg_with is not None:
                 idx_kwargs["postgresql_with"] = dict(idx.pg_with)
-            sa_indexes.append(
-                sa.Index(
-                    idx.name,
-                    *idx.columns,
-                    **idx_kwargs,
-                ),
+            if idx.nulls_not_distinct:
+                idx_kwargs["postgresql_nulls_not_distinct"] = True
+            sa.Index(
+                idx.name,
+                *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),
+                **idx_kwargs,
             )
 
-        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
-        # so Alembic auto-gen reads them out of
-        # ``information_schema.table_constraints`` and matches the prod
-        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
-        # :class:`UniqueConstraintDef` docstring for the distinction.
-        sa_unique_constraints: list[Any] = [
-            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
-        ]
-
-        return sa.Table(
-            self.name,
-            metadata,
-            *sa_columns,
-            *sa_fk_constraints,
-            *sa_indexes,
-            *sa_unique_constraints,
-        )
+        return table
 
 
 def require_pgvector() -> Any:
@@ -1666,7 +1711,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     schema: TableSchema
     partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
     #: whether every L3 write this collection makes is a statement generated from :attr:`schema`,
-    #: so :meth:`complete_written_row` may fill in the columns those statements write ``NULL``.
+    #: so :meth:`complete_written_row` may name, as ``None``, the nullable columns a write that
+    #: reaches L2 before L3 leaves out: those statements write the ``None`` sent as ``NULL``.
     #: ``None`` infers it: ``True`` unless the subclass overrides :meth:`save_to_store`. A
     #: subclass whose override only wraps the generated write (calls ``super().save_to_store``
     #: for every row it writes) declares ``True``; one that writes its own SQL leaves it inferred.
@@ -1823,18 +1869,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return self.schema.declares_l2_order and (store is None or isinstance(store, OrderedDurableStore))
 
     def complete_written_row(self, data: dict[str, Any]) -> dict[str, Any]:
-        """``data`` with each declared column every generated statement stores as ``NULL`` filled in.
+        """``data`` with each nullable column a write ahead of L3 leaves out named as ``None``.
 
-        see :meth:`BaseCollection.complete_written_row`. a nullable, mutable, non-key column with no
-        ``server_default`` that ``data`` leaves out is written ``NULL`` by every statement this
-        collection generates: the INSERT names it (:func:`~threetears.core.backends.schema_sql
-        .pull_value` answers ``None``), its ``DO UPDATE SET`` and the fenced UPDATE both set it. so
-        its stored value is known without reading it, and the row is completed with it.
+        see :meth:`BaseCollection.complete_written_row`: consulted only by a write that reaches L1
+        and L2 before L3, which sends L3 the completed row. a nullable, mutable, non-key column with
+        no ``server_default`` that ``data`` leaves out is named ``None``, and every statement this
+        collection generates writes a named ``None`` as ``NULL`` -- the INSERT, its ``DO UPDATE
+        SET`` and the fenced UPDATE alike -- so L3 stores the row the tiers cache. (a synchronous
+        write is never completed: its update rewrites only the columns the row names, and a column
+        it leaves out keeps its stored value, read back for the caches.)
 
         only while this collection's L3 writes are the generated statements
-        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may leave such a
-        column out of an UPDATE and keep its stored value, so nothing is completed for it, and
-        :meth:`columns_decided_by_store` sends the row to a read back.
+        (:attr:`stores_through_generated_sql`): a subclass that writes its own SQL may not write a
+        ``None`` it is sent, so nothing is completed for it, and such a write is refused.
 
         :param data: the row as the write sends it, stamped
         :ptype data: dict[str, Any]
@@ -1865,11 +1912,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         answer. two shapes, both read off the schema:
 
         * a declared column ``data`` does not name. the generated INSERT drops it when it has a
-          ``server_default`` and the database fills the default in; an immutable one is kept by
-          any update of an existing row; a statement this collection writes itself may keep any
-          of them. none of those is knowable from ``data``. (the framework asks after
-          :meth:`complete_written_row`, so a column every generated statement writes ``NULL`` is
-          already present.)
+          ``server_default`` and the database fills the default in; any update of an existing row
+          keeps its stored value (the generated statements rewrite only the columns the row
+          names); a statement this collection writes itself may keep any of them. none of those
+          is knowable from ``data``. (a write ahead of L3 asks after
+          :meth:`complete_written_row`, so a nullable column it sends as ``None`` is present.)
         * a ``NOT NULL`` ``server_default`` column ``data`` names as ``None``. the fenced UPDATE
           skips it and keeps the stored value (:func:`~threetears.core.backends.schema_sql
           .cas_mutable_columns_for_data`).
@@ -2019,6 +2066,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
         return await store.fetch_one(self.schema.name, pk)
 
+    async def fetch_from_store_in_transaction(self, entity_id: Any, *, conn: Any) -> dict[str, Any] | None:
+        """fetch one row on a caller's open transaction, through the :class:`DurableStore` seam.
+
+        See :meth:`BaseCollection.fetch_from_store_in_transaction`. The same declared-columns
+        SELECT and read coercion as :meth:`fetch_from_store`, bound to ``conn`` so it sees the
+        transaction's uncommitted writes. A subclass that overrides :meth:`fetch_from_store` reads
+        its own way, which this cannot know, so it reads nothing here unless it overrides this too.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values (composite-pk)
+        :ptype entity_id: Any
+        :param conn: the caller's connection, with its transaction open
+        :ptype conn: Any
+        :return: row dict on hit; ``None`` on miss, with no durable store, or when a subclass reads
+            its own way
+        :rtype: dict[str, Any] | None
+        """
+        store = self._durable_store()
+        if store is None or type(self).fetch_from_store is not SchemaBackedCollection.fetch_from_store:
+            return None
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        return await store.fetch_one(self.schema.name, pk, conn=conn)
+
     #: the most rows one bulk statement writes: well inside a broker's statement timeout for a
     #: row of a few dozen columns
     BULK_MAX_ROWS: ClassVar[int] = 1000
@@ -2130,7 +2200,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         for key, data in zip(keys, stamped, strict=True):
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
             transaction.enroll(self, key, row=data)
-            self._evict_l1(key)
+        # every key leaves L1 in one write before the store's, not one write a key
+        await self._evict_l1_many_off_loop(keys)
         written = 0
         if copy:
             written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
@@ -2253,6 +2324,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         constants: Mapping[str, Any] | None = None,
         rows_per_transaction: int | None = None,
         timeout_ms: int | None = None,
+        connections: int = 1,
     ) -> int:
         """load the table in L3 from parquet files, then drop what every cache holds of it.
 
@@ -2280,6 +2352,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         (or after the one that failed). Only a single file too long for the wait on its own is
         refused, before anything is sent.
 
+        **Over several connections** (``connections`` above one): the broker copies a request's files one after
+        another on one connection (about 16,000 rows a second on the local stack), so the requests are cut further,
+        into runs of whole files of about the load's rows over ``connections``
+        (:func:`~threetears.core.backends.protocol.side_by_side_requests`), and up to ``connections`` of them are
+        sent at once, each its own connection and transactions. The rows are the same, insert-only as before; a
+        request that fails stops the others (cancelled, then awaited, so none is left running), and the drop and the
+        advance happen once, before the failure reaches the caller.
+
         :param files: the files, in order
         :ptype files: Sequence[LoadFile]
         :param columns: the table's columns each file supplies
@@ -2292,11 +2372,13 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :param timeout_ms: the most time one transaction may take, in milliseconds;
             :attr:`LOAD_TIMEOUT_MS` when None
         :ptype timeout_ms: int | None
+        :param connections: the most requests sent at once; one sends them one after another
+        :ptype connections: int
         :return: the rows written
         :rtype: int
         :raises ValueError: when the collection has no durable store, its store cannot load files,
             it defers its L3 writes (a buffered row would land among the loaded ones), a bound is
-            under one, or one file alone needs a longer wait than the cap
+            under one, ``connections`` is under one, or one file alone needs a longer wait than the cap
         :raises GenerationUnavailableError: when the table's write generation had to advance and
             could not; the rows are loaded and this process's caches dropped
         """
@@ -2316,9 +2398,15 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         bound = self.LOAD_TIMEOUT_MS if timeout_ms is None else timeout_ms
         # refused here, before anything is sent: only a single file too long for one reply
         requests = load_requests(files, rows_per_transaction=per_transaction, timeout_ms=bound)
+        if connections > 1:
+            requests = side_by_side_requests(requests, connections)
+        elif connections < 1:
+            raise ValueError(f"a load runs over at least one connection, not {connections} connections")
         written = 0
-        try:
-            for request in requests:
+        slots = asyncio.Semaphore(connections)
+
+        async def one(request: Sequence[LoadFile]) -> int:
+            async with slots:
                 result = await store.load_files(
                     self.table_name,
                     request,
@@ -2327,7 +2415,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                     rows_per_transaction=per_transaction,
                     timeout_ms=bound,
                 )
-                written += result.row_count
+            return result.row_count
+
+        try:
+            if connections == 1:
+                for request in requests:
+                    written += await one(request)
+            else:
+                written = sum(await _all_or_first_failure([one(request) for request in requests]))
         except (Exception, asyncio.CancelledError) as exc:
             # the load commits as it goes: the requests and transactions before a failure stay
             # committed, and a reply lost or timed out may follow a load the broker finished
@@ -2444,6 +2539,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(
                 f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
             )
+        entity_keys: list[Any] = []
         for key in named:
             entity_key = key if width > 1 else key[0]
             # a collection whose row messages carry columns reads each row before it goes, on the
@@ -2456,7 +2552,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
             # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
             transaction.enroll(self, entity_key, row=seen)
-            self._evict_l1(entity_key)
+            entity_keys.append(entity_key)
+        # every key leaves L1 in one write before the store's delete, not one write a key
+        await self._evict_l1_many_off_loop(entity_keys)
         deleted = 0
         if named and isinstance(store, BulkDeletingStore):
             deleted = await store.delete_many(
@@ -2652,6 +2750,23 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :rtype: dict[str, Any]
         """
         return _coerce_row_fn(self.schema, row)
+
+
+async def _all_or_first_failure(calls: Sequence[Coroutine[Any, Any, int]]) -> list[int]:
+    """every call's answer, run side by side; the first failure stops the rest (cancelled, then awaited) and is
+    raised as itself, not inside a group.
+
+    :param calls: the calls, not started
+    :ptype calls: Sequence[Coroutine[Any, Any, int]]
+    :return: each call's answer, in order
+    :rtype: list[int]
+    """
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(call) for call in calls]
+    except* BaseException as failed:
+        raise failed.exceptions[0] from None
+    return [task.result() for task in tasks]
 
 
 def _text_vector_width(text: str) -> int | None:

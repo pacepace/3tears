@@ -61,13 +61,14 @@ from threetears.evals.kernel.job_leases import (
 )
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.run.budget import EvalRunCostCap
 from threetears.evals.run.job_work import start_job_work
 from threetears.evals.run.launch import LaunchGroup, LaunchHost, admit_group, admit_resumed_run
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch, resumed_launch_work
 from threetears.evals.run.metering import MeteredCallLedger
-from threetears.evals.run.runner import StoredCells
+from threetears.evals.run.runner import StoredCell, StoredCells
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
@@ -182,8 +183,19 @@ def _run_again(row: EvalResult) -> bool:
     return row.termination == "cancelled" or row.account_refused
 
 
-def _planned_cells(rows: Sequence[EvalResult]) -> StoredCells:
-    """What a run taken up again holds of its matrix: the rows that count as done, and the rows it runs again.
+@dataclass(frozen=True)
+class _StoredRows:
+    """What a take-up keeps of a run's stored rows, read a page at a time: each row as a :class:`StoredCell`, every one
+    and then the done and the run-again apart, each in the page order (:mod:`~threetears.evals.kernel.run_pages`)."""
+
+    every: tuple[StoredCell, ...]
+    done: tuple[StoredCell, ...]
+    again: tuple[StoredCell, ...]
+
+
+def _stored_rows(storage: EvalStorage, run: EvalRun) -> _StoredRows:
+    """Read a run's stored rows a page at a time (:data:`~threetears.evals.kernel.run_pages.RUN_RESULTS_PAGE`), keeping
+    each as a :class:`StoredCell`, so a take-up of a large run never holds its rows' reasoning, payloads or events.
 
     A row whose cell was cut short by a cancel (``cancelled``) is an attempt a shutdown or a cancel abandoned, and one
     the provider account paying for the run refused (``account_refused``) is a call a funded account would have
@@ -191,18 +203,39 @@ def _planned_cells(rows: Sequence[EvalResult]) -> StoredCells:
     Every other row — a timeout, a rig fault, a call the provider itself declined, a failed seed included — is what
     the uninterrupted run would also have stored, so its cell is done. A cell with no row is neither, and runs.
 
+    :param storage: The run's store.
+    :ptype storage: EvalStorage
+    :param run: The run.
+    :ptype run: EvalRun
+    :return: Its rows, done and run again.
+    :rtype: _StoredRows
+    """
+    every: list[StoredCell] = []
+    done: list[StoredCell] = []
+    again: list[StoredCell] = []
+    for row in iter_run_results(storage, run, page_results=RUN_RESULTS_PAGE):
+        cell = StoredCell.from_result(row)
+        every.append(cell)
+        (again if _run_again(row) else done).append(cell)
+    return _StoredRows(every=tuple(every), done=tuple(done), again=tuple(again))
+
+
+def _planned_cells(rows: _StoredRows) -> StoredCells:
+    """What a run taken up again holds of its matrix: the rows that count as done, and the rows it runs again by cell
+    (:func:`_stored_rows` says which is which).
+
     :param rows: Every row stored for the run.
-    :ptype rows: Sequence[EvalResult]
+    :ptype rows: _StoredRows
     :return: The done rows, and the rows run again by cell.
     :rtype: StoredCells
     """
     return StoredCells(
-        done=tuple(row for row in rows if not _run_again(row)),
-        replaced={(row.test_case_id, row.k_iteration): row for row in rows if _run_again(row)},
+        done=rows.done,
+        replaced={(cell.summary.test_case_id, cell.summary.k_iteration): cell for cell in rows.again},
     )
 
 
-def _counted_spend(rows: Sequence[EvalResult]) -> list[float | None]:
+def _counted_spend(rows: Sequence[StoredCell]) -> list[float | None]:
     """What a run's stored rows spent, as its cost cap counts it: each row's attempt, and the attempts it was written
     over (``EvalResult.superseded_spend_usd``), so a cell cut short and run again counts every attempt once. ``None``
     is spend nobody priced.
@@ -212,13 +245,13 @@ def _counted_spend(rows: Sequence[EvalResult]) -> list[float | None]:
     Counting it here would hold a resumed run to a stricter cap than the same run uninterrupted.
 
     :param rows: Every row stored for the run.
-    :ptype rows: Sequence[EvalResult]
+    :ptype rows: Sequence[StoredCell]
     :return: One amount per attempt the rows record.
     :rtype: list[float | None]
     """
     spend: list[float | None] = []
     for row in rows:
-        spend.append(row.cost_usd)
+        spend.append(row.summary.cost_usd)
         if row.superseded_spend_usd != 0.0:
             spend.append(row.superseded_spend_usd)
     return spend
@@ -373,7 +406,8 @@ class RunResumption:
     :ivar run: The run as stored, settled.
     :ivar cases: Its frozen cases, in its own order: the launcher freezes these.
     :ivar stored: What it holds of its matrix (:func:`_planned_cells`).
-    :ivar rows: Every row stored for it, done or run again: what its cost cap counts (:func:`_counted_spend`).
+    :ivar rows: Every row stored for it, done or run again, as a :class:`~threetears.evals.run.runner.StoredCell`:
+        what its cost cap and metered-call ceiling count (:func:`_counted_spend`).
     :ivar holder: The process taking it up.
     :ivar epoch: The lease epoch it is taken up under.
     :ivar cell_order_seed: What its cells were ordered by when that was its launch's group, shared with its sibling
@@ -387,7 +421,7 @@ class RunResumption:
     run: EvalRun
     cases: tuple[EvalTestCase, ...]
     stored: StoredCells
-    rows: tuple[EvalResult, ...]
+    rows: tuple[StoredCell, ...]
     holder: str | None
     epoch: int
     cell_order_seed: str | None
@@ -539,7 +573,7 @@ class _Read:
 
     run: EvalRun
     etag: str | None
-    rows: list[EvalResult]
+    rows: _StoredRows
     cases: tuple[EvalTestCase, ...]
     missing_cases: list[str]
     group_size: int
@@ -553,7 +587,7 @@ def _read(storage: EvalStorage, run_id: str, scope_id: str) -> _Read:
     run, etag = read_to_take_up(storage, RUN_JOB, run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    rows = storage.query_eval_results_by_run(run_id, scope_id)
+    rows = _stored_rows(storage, run)
     loaded = {case_id: storage.load_test_case(case_id, scope_id) for case_id in dict.fromkeys(run.test_case_ids)}
     group_size = (
         len(storage.launch_group_run_ids(run.launch_group_id, scope_id)) if run.launch_group_id is not None else 1
@@ -591,7 +625,7 @@ def _status_not_resumable(run: EvalRun) -> ValidationFailedError:
 
 def _why_not_taken_up(
     run: EvalRun,
-    rows: Sequence[EvalResult],
+    rows: Sequence[StoredCell],
     *,
     cap: float | None,
     metered_ceiling: int | None,
@@ -604,7 +638,7 @@ def _why_not_taken_up(
     :param run: The run, settled.
     :ptype run: EvalRun
     :param rows: Every row stored for it.
-    :ptype rows: Sequence[EvalResult]
+    :ptype rows: Sequence[StoredCell]
     :param cap: The cost cap it would be taken up under.
     :ptype cap: float | None
     :param metered_ceiling: The metered-call ceiling it would be taken up under; ``None`` when none bounds it.
@@ -669,7 +703,7 @@ def _refuse_what_cannot_be_taken_up(read: _Read, *, cap: float | None, live_here
         reached, ad hoc, or its cases are gone: the first reason a take-up meets.
     """
     reasons = _why_not_taken_up(
-        read.run, read.rows, cap=cap, metered_ceiling=None, live_here=live_here, missing_cases=read.missing_cases
+        read.run, read.rows.every, cap=cap, metered_ceiling=None, live_here=live_here, missing_cases=read.missing_cases
     )
     if reasons:
         raise reasons[0]
@@ -707,7 +741,7 @@ async def _run_resumption(
         run=run,
         cases=read.cases,
         stored=_planned_cells(read.rows),
-        rows=tuple(read.rows),
+        rows=read.rows.every,
         holder=leases.holder_id if leases is not None else None,
         epoch=next_epoch(run.lease, run.lost, (lifetime.epoch for lifetime in run.lifetimes)),
         # One arm of an interleaved launch played its cases in the order its group's id gave every arm; a group of one
@@ -1153,8 +1187,9 @@ def _ended(run: EvalRun) -> ResumableEnding:
     return "exhausted" if run.status == "exhausted" else "cancelled"
 
 
-def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> ResumableJob:
+def _offered(run: EvalRun, template_id: str, stored: _StoredRows) -> ResumableJob:
     """One resumable run as it is offered, read off its record and its stored rows."""
+    rows = stored.every
     spend = _counted_spend(rows)
     spent = sum(amount for amount in spend if amount is not None)
     cap = run.max_cost_usd
@@ -1173,7 +1208,7 @@ def _offered(run: EvalRun, template_id: str, rows: Sequence[EvalResult]) -> Resu
         status=run.status,
         ended=_ended(run),
         reason=run_ending_reason(run),
-        cells_done=len(_planned_cells(rows).done),
+        cells_done=len(stored.done),
         cells_expected=run.expected_cells,
         spent_usd=spent,
         unpriced=sum(1 for amount in spend if amount is None),
@@ -1279,12 +1314,10 @@ def resumable_jobs(storage: EvalStorage, scopes: Iterable[str]) -> ResumableJobs
         named += [run_id for launch in launches for run_id in launch.run_ids]
         runs = dict(resumable)
         runs.update((run.id, run) for run in storage.load_eval_runs([i for i in named if i not in runs], scope_id))
-        rows: dict[str, list[EvalResult]] = {run_id: [] for run_id in resumable}
-        # One read for every run's rows, however many runs the scope holds.
-        for row in storage.query_eval_results_by_runs(list(resumable), scope_id):
-            rows[row.eval_run_id].append(row)
+        # Each run's rows read a page at a time and kept as the scalars an offer reads, one run after another, so the
+        # listing never holds a run's rows whole, nor every run's at once.
         offered = {
-            run.id: _offered(run, run.template_id, rows[run.id])
+            run.id: _offered(run, run.template_id, _stored_rows(storage, run))
             for run in sorted(resumable.values(), key=lambda run: run.created_at, reverse=True)
             if run.template_id is not None
         }

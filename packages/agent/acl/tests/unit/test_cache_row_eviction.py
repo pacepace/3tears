@@ -43,7 +43,7 @@ from threetears.agent.acl import (
 from threetears.agent.acl.access_tables import DegradedEvictions
 from threetears.core.collections import CacheInvalidationMessage, CollectionRegistry
 
-from .fake_loaders import FakeStore, make_cache
+from .fake_loaders import FakeBatchingStore, FakeStore, make_cache
 
 
 def _granted_store() -> tuple[FakeStore, Namespace, UUID, Role, Group]:
@@ -296,6 +296,24 @@ class TestTheOtherFenceSites:
             return rows
 
         store.load_for_group = load_then_unnested  # type: ignore[method-assign]
+        await evaluate_decision(EvaluationContext(namespace=namespace, action="read", user_id=user), cache=cache)
+        assert cache.get_membership(ActorMembershipKey("group", group.id)) is None
+        assert cache.fence_skipped_stores >= 1
+
+    async def test_an_unnesting_during_a_batched_parent_read_keeps_the_parent_entry_out(self) -> None:
+        plain, namespace, user, _role, group = _granted_store()
+        store = FakeBatchingStore(
+            memberships=plain.memberships, groups=plain.groups, roles=plain.roles, assignments=plain.assignments
+        )
+        cache = make_cache(store)
+        load = store.load_for_groups
+
+        async def load_then_unnested(group_ids: tuple[UUID, ...]) -> tuple[GroupMembership, ...]:
+            rows = await load(group_ids)
+            cache.evict_group_member_row("group", group_ids[0])
+            return rows
+
+        store.load_for_groups = load_then_unnested  # type: ignore[method-assign]
         await evaluate_decision(EvaluationContext(namespace=namespace, action="read", user_id=user), cache=cache)
         assert cache.get_membership(ActorMembershipKey("group", group.id)) is None
         assert cache.fence_skipped_stores >= 1

@@ -1,10 +1,11 @@
 # Grounded Answers: What the Family Needs, and the Shape
 
-**Status:** Draft for stakeholder review -- 2026-10-22. Requirements and design
+**Status:** Ruled -- drafted 2026-10-22; the owner's rulings of 2026-10-22,
+2026-10-23 and 2026-10-24 are recorded in §8 and §14. Requirements and design
 in one document, because the capability is small enough that splitting them
-would be two documents saying one thing. Decisions below are **vetoable
-rulings** in the `search-spec.md` sense: each adopts a recommendation and says
-why; a veto is recorded here and propagated.
+would be two documents saying one thing. Decisions below are rulings in the
+`search-spec.md` sense: each adopts a recommendation and says why, and a later
+change to one is recorded here and propagated.
 **Companions:** [`search-requirements.md`](search-requirements.md) states the
 need for search and owns the requirement IDs (`G*`, `P*`, `SR-*`) and success
 checks cited here; [`search-spec.md`](search-spec.md) is the buildable statement
@@ -192,11 +193,32 @@ Read from Brave's documentation on 2026-10-22; field names verbatim.
 - **Auth:** `X-Subscription-Token` header (or Bearer). discodon's SearXNG
   secret already holds `BRAVE_ANSWERS_API_KEY`, provisioned and unused.
 
-**(verify live)** Whether `start_index`/`end_index` are character or byte
-offsets, and whether they index the answer text before or after the tags are
-stripped; and whether `snippet` is the cited page's own text or model-written.
-Both change a contract field and both are a five-minute check with the key
-discodon already holds.
+**Verified live (slice 0, 2026-10-24).** Two streamed single-mode answers,
+recorded under `packages/search/src/threetears/search/testing/recordings/`:
+
+- **Offsets are code points into the text with every tag removed.** A citation
+  is a zero-width point, `start_index == end_index`, at the end of the claim it
+  supports; several citations share one point. In the non-ASCII capture the
+  last point is 83, the stripped text's length in characters (its UTF-8 length
+  is 94), and indexing the text before stripping lands nowhere meaningful.
+- **`snippet` is the cited page's own text**, extracted: Markdown headings,
+  `…` elisions, a page's JSON caption. It is not model-written, so AR-G1's
+  standing for it is the SERP snippet's, as designed.
+- **No tag straddled an SSE event** in either capture: each `<citation>` and
+  the `<usage>` arrived whole in one `delta.content`. The parser still buffers
+  across events (AR-F2); the provider promises nothing.
+- **Usage keys are as documented**, inside the stream, absent from the
+  response headers. The cost values are JSON numbers, not strings, so they are
+  parsed with `Decimal` at JSON-decode time (AR-C2). The response's `model` is
+  `brave-pro` for a request naming `brave`.
+- **Errors share one envelope**, `{"type": "ErrorResponse", "error": {"code",
+  "detail", "status", "meta"}}` as `application/json`. An invalid key is a
+  **422** `SUBSCRIPTION_TOKEN_INVALID`, not a 401; a malformed body is a 422
+  `VALIDATION`. The credit-limit refusal could not be provoked; it is mapped
+  by `error.code` from Brave's published codes and stays unverified.
+
+One capture cost $0.057 by the provider's own total: 10,463 tokens in, at
+$5/M, is most of it.
 
 ## 5. Who consumes this
 
@@ -321,10 +343,10 @@ returns up to 20 URLs with extracted text chunks; it fits the search contract
 today and would retire the page-read step. Demoted, not rejected: latency is
 rounds-bound (6.4); the owner just chose the SearXNG path, which LLM Context
 would bypass along with its cache; and no post-SearXNG prod run exists to
-compare against. Trigger to revisit: page-read failures or
-`cited_sources_snippet_only` rising on prod traces. If it is built, it is a
-`SearchProvider` in `adapters/`, with the Brave auth, spend and pacing wiring
-from this document shared.
+compare against. It is off the roadmap, and no trigger is tracked for it
+(owner, 2026-10-24, §14): it is revisited only if someone asks for it. If it
+is ever built, it is a `SearchProvider` in `adapters/`, with the Brave auth,
+spend and pacing wiring from this document shared.
 
 ---
 
@@ -339,14 +361,14 @@ from this document shared.
 | AD3 | **Answers is a layer under discodon's research tool, never its replacement** | §6.1-6.3 | Consumer wiring in §11 names two integration points and no change to the findings contract or the gate |
 | AD4 | **`fact_check` is the first consumer; `research__ask_web` is an experiment** | 6.5 vs 6.4 | Sequencing in §12: the adapter ships for `fact_check`; the sub-tool lands behind a config flag with a measured hypothesis |
 | AD5 | **The adapter always streams; blocking mode is not exposed** | Citations exist only when streaming (4.2); AG2 | `StreamingTransport` is a hard requirement of the adapter, not an optimisation; a host that injects no streaming transport cannot construct it, and is told why |
-| AD6 | **v1 has no `mode` field; single mode only** | 6.1; research mode's citation format is undocumented | `AnswerRequest` gains `mode` additively later; `AnswerCapabilities.modes` declares `("single",)` so a consumer can branch before sending (SR-B4) |
+| AD6 | **v1 has no `mode` field; single mode only** (owner, 2026-10-24: research mode stays out of v1) | 6.1; research mode's citation format is undocumented | `AnswerRequest` gains `mode` additively later; `AnswerCapabilities.modes` declares `("single",)` so a consumer can branch before sending (SR-B4) |
 | AD7 | **Sources are `Candidate`s; the answer text is the new type** | Everything that consumes a candidate -- page reads, grounding, provenance, spend -- applies unchanged (6.3, 6.7). Tavily's `answer` objection (a different shape from a candidate) is honoured by *containing* candidates rather than impersonating one | `GroundedAnswer.sources: tuple[Candidate, ...]`; Brave's citation `snippet` → `Candidate.snippet`, `content=None`, so Extract runs |
 | AD8 | **Own metadata key, one construction site** | Check 14; `test_one_search_result_shape` guards the search key at its source and must do the same for this one | `ANSWER_METADATA_KEY = "answer"`, projection owned by `bind_answer`'s module, enforcement test extended per key |
 | AD9 | **The search error taxonomy is the answers error taxonomy** | 6.7; SR-J1; one mapping on the consumer side | `AnswerProvider.answer` raises `SearchFailure` subclasses only; no `AnswerFailure` |
 | AD10 | **Spend is read from the provider's usage report, never computed** | D4, AG3; Tavily precedent for unpriced-is-not-free | `money` = `X-Request-Total-Cost`; `provider_units` = `X-Request-Queries` as `"brave:searches"`; `calls` = 1; tokens typed on the answer, not folded into spend. The pre-call estimate counts one call and one search; money is estimated only when the host supplies rates |
 | AD11 | **A third transport protocol, `StreamingTransport`, beside `SearchTransport` and `FetchTransport`** | Gate A: different obligations are different protocols; widening `SearchTransport` would invalidate every implementer | Declared in `contracts/transport.py`; implemented by `standalone.py` (httpx streams; same D19-sanctioned module, no exemption); a host-side `TracedHttpClient` adapter cannot implement it today (it buffers), which is the same situation `FetchTransport` records |
 | AD12 | **v1 is request/response; streaming-to-UI is a later additive face** | Every named consumer is a tool (§5) | `AnswerProvider.answer` returns a whole `GroundedAnswer`; an `AnswerProvider.stream` method is reserved by name, not declared |
-| AD13 | **The `web_answer` builtin is opt-in by its own alias, never inside `web`** | Every call costs money; a persona that opted into `web` for a free SearXNG search must not acquire a paid tool silently | `aliases.py` gains `answers` → `{"threetears.web_answer"}`; `web` is unchanged. **Owner may veto** the alias name |
+| AD13 | **The `web_answer` builtin is opt-in by its own alias, never inside `web`** | Every call costs money; a persona that opted into `web` for a free SearXNG search must not acquire a paid tool silently | `aliases.py` gains `answers` → `{"threetears.web_answer"}`; `web` is unchanged. The alias name stands (owner, 2026-10-24) |
 | AD14 | **Research mode, LLM Context and a chat-model adapter are out of v1** | §2, §7 | None; recorded so nobody builds them by accident |
 
 ## 9. Requirements
@@ -376,13 +398,19 @@ notice that says so (SR-J2 shape; AG2). The prose rendering states it in the
 first line, not a footnote.
 
 **AR-A4 (MUST).** `anchors` are empty when the provider gave no usable offsets,
-and a notice says so. They are never inferred by string search.
-**(verify live)** before the offset semantics are fixed (§12).
+and a notice says so. They are never inferred by string search. Units, from
+slice 0: code points into `text`, and Brave's anchors are zero-width
+(`start == end`), a point after the cited claim.
 
 **AR-A5 (SHOULD).** Unknown `<name>{json}</name>` tags in single mode are
 removed from `text`, kept verbatim under `provenance.provider_ids`, and named
 in a notice. Treating them as answer text would put provider machinery in a
-persona's mouth; dropping them silently would break P2.
+persona's mouth; dropping them silently would break P2. An unknown name whose
+body is *not* a JSON object -- an answer quoting `<div>{x}</div>` -- is the
+answer's own text: it stays in `text` verbatim, where the provider's offsets
+count it, and one notice names the tag names so a consumer can see markup
+reached the prose. Only `<citation>` and `<usage>` fail closed on a bad body
+(AR-E2).
 
 ### B. What goes in
 
@@ -433,7 +461,13 @@ rps default is the limiter's configuration, not the adapter's constant.
 **AR-E1 (MUST).** AD9. Every raise carries the spend consumed so far (SR-E3).
 A stream broken after the first byte is `TransportFailed` with
 `attempts` as the transport counted them; it is never retried after the first
-byte, because the provider has billed the search (AR-C1).
+byte, because the provider has billed the search (AR-C1). A deadline passing
+after the first byte is `TimedOut`, not `TransportFailed`, whether the
+transport raises it typed or as a bare `TimeoutError`: the remedy differs --
+raise the call's bound, which covers the whole answer, rather than look at the
+connection -- and a consumer branching on the class must be able to tell. It
+too carries `calls=1` and is never retried. A failed answer's span carries the
+same spend as its failure (AR-J1).
 
 **AR-E2 (MUST).** A tag whose JSON does not parse, or a `<usage>` whose cost
 keys are absent, is `MalformedResponse`, carrying the raw tag in the failure
@@ -443,13 +477,18 @@ cannot state.
 ### F. Transport and streaming
 
 **AR-F1 (MUST).** `StreamingTransport` declares `egress_name` and
-`stream(method, url, *, headers, json_body, timeout_seconds) -> StreamedResponse`,
+`stream(method, url, *, headers, json_body, timeout_seconds, max_bytes) -> StreamedResponse`,
 where `StreamedResponse` exposes `status_code`, `headers`, `final_url`,
-`egress` before the body, an async iterator of `bytes` chunks, and `elapsed_seconds`
-/ `attempts` after close. Obligations as `SearchTransport` states them
-(configurable timeout, bounded retry *before first byte*, breaker, span,
-egress, SSRF rulings), plus: **a byte cap** on the whole stream (SR-G5's
-rule, applied to a response that is open-ended by construction).
+`egress` and `attempts` before the body, an async iterator of `bytes` chunks,
+and `elapsed_seconds` (final after close), and is released by `async with` or
+`aclose()`. Obligations as `SearchTransport` states them (configurable
+timeout -- bounding the whole stream, body included -- bounded retry *before
+first byte*, breaker, span, egress, SSRF rulings), plus: **a byte cap** on
+the whole stream (SR-G5's rule, applied to a response that is open-ended by
+construction). `max_bytes` is required per call, as on `FetchTransport.fetch`,
+and tightens the transport's configured cap without loosening it. The
+standalone transport discharges every one of these, breaker and span
+included.
 
 **AR-F2 (MUST).** The SSE framing (`data:` lines, `[DONE]`) is the adapter's
 to parse, not the transport's; the transport moves bytes. The tag parser
@@ -491,8 +530,10 @@ a future replay key and an eval run identity agree. Search-internal replay
 is today, and D27's two-spend rule applies when replay lands.
 
 **AR-I2 (MUST).** A recorded live stream is the fixture for the tag parser and
-the spend reader, in `testing/recorded.py`'s shape. The fixture is captured
-once with a real key and committed; the conformance suite runs against it.
+the spend reader, replayed in `testing/recorded.py`'s shape. The fixture is
+captured once with a real key and shipped as package data under
+`testing/recordings/`; the answer conformance suite, which lives with the
+search package's tests (§14), runs against it.
 
 ### J. Telemetry
 
@@ -523,7 +564,9 @@ adapters/
 answer.py            # the call layer: ports consulted, dispositions completed, one answer
 bind_answer.py       # prose + the metadata projection (the key's ONE construction site)
 standalone.py        # + StreamingTransport implementation
-testing/             # + AnswerConformanceSuite, the recorded Brave stream
+testing/recordings/  # + the recorded Brave streams, as package data; the
+                     #   AnswerConformanceSuite and the stream replay live in
+                     #   packages/search/tests/ (§14)
 ```
 
 Layer names stay module vocabulary (`search-spec.md` §2): no type is called
@@ -534,14 +577,21 @@ Layer names stay module vocabulary (`search-spec.md` §2): no type is called
 - `AnswerRequest(ContractModel)`: `question`, `criteria`, `budget_scope_tags`.
   Canonical form registered beside `SearchRequest`'s.
 - `Anchor(ContractModel)`: `start: int`, `end: int`, `source_index: int`.
-  Units fixed after §12's live check; documented on the field.
+  Code points into the stripped text (§4.2, slice 0); documented on the field.
 - `GroundedAnswer(ContractModel)`: per AR-A1.
 - `AnswerCapabilities(ContractModel)`: per AR-B2, registered through the same
   module-level registry pattern as `ProviderCapabilities` (one registry,
-  keyed by provider name, with a `kind` discriminator so `get_capabilities`
-  stays one call).
+  keyed by provider name **and** `kind` -- a `kind` literal on both
+  declarations -- so one provider can declare both kinds and
+  `get_capabilities(provider, kind)` stays one call, its default `kind` the
+  search one every existing caller means).
 - `AnswerProvider(Protocol)`: `provider`, `provider_instance`,
-  `capabilities`, `async answer(request, *, timeout_seconds) -> GroundedAnswer`.
+  `capabilities`, `estimate(request) -> Spend`,
+  `async answer(request, *, timeout_seconds) -> GroundedAnswer`. `estimate` is
+  the pre-call figure `answer.py` hands `BudgetPort.check` (AR-C3): the money
+  rates are the configured instance's (§10.2), which no capability declaration
+  carries, so the provider states its own estimate rather than the call layer
+  deriving one.
 
 ### 10.2 `adapters/brave_answers.py`
 
@@ -573,18 +623,50 @@ own.
 
 `bind_answer(request, *, provider, timeout_seconds, budget, limiter, egress,
 zone) -> RenderedAnswer` (success / content / error / metadata, the
-`RenderedSearch` shape). Prose: AR-G2's first line, the text, then a numbered
-sources list in citation order using `result_facts`. `project_metadata` and
-`project_failure_metadata` own `ANSWER_SCHEMA_VERSION`. The reader checks
-`schema_version` before structural validation (D13).
+`RenderedSearch` shape). Prose, in order: AR-G2's first line; right under it,
+the "What this answer could not do" note naming any unhonoured criterion and
+every notice; the text; then a numbered sources list in citation order using
+`result_facts`. The note leads the body because a reader that keeps only the
+head of a long result keeps what comes first, and the sentence saying an
+answer is uncited, unbilled or unscoped is the one it must not lose
+(`test_a_tool_states_its_notes_first`). The note is built by
+`threetears.search.bind.could_not_do_note`, the same builder the search prose
+uses, so the two word an unmet criterion and a notice alike.
+`project_answer_metadata` and `project_answer_failure_metadata` own
+`ANSWER_SCHEMA_VERSION`. The reader checks `schema_version` before structural
+validation (D13).
+
+**The search prose changes with it.** `render_prose` states its "What this
+search could not do" note before the results, where it used to close them.
+That is a change to `web_search`'s shipped prose: the tool's own "Searched the
+web for ..." line still comes first, then the note, then the results. Its
+in-repo consumers -- the `web_search` builtin and its tests,
+`test_three_faces_one_contract`, and the search package's bind tests -- were
+checked and carry the new order. discodon's persona `web_search` reads the
+same prose from outside this repo and was not checked here: it sees the note
+earlier, and any parsing of the old position is discodon's to find when it
+takes the release.
 
 ### 10.5 `agent-tools`: `threetears.web_answer`
 
 `WebAnswerTool(TearsTool)`: `question` in, `RenderedAnswer.content` on
 `content`, the projection on `metadata[ANSWER_METADATA_KEY]`, a failed
 `ToolResult` carrying the failure record. Factory `create_web_answer_tool`
-takes `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds`. Registered
-in `builtin/__init__.py`'s list; alias per AD13.
+takes `api_key`, `transport`, `budget`, `limiter`, `timeout_seconds` from its
+config dict, the `web_search` factory's shape, and optionally `usd_per_search`
+and `usd_per_million_tokens` -- the account's Brave rates, given together or
+not at all, each a finite number of 0 or more, refused naming the key
+otherwise -- which price the estimate the budget checks before the call
+(AR-C3). Registered in
+`builtin/__init__.py`'s list; the built-in pod serves it when
+`THREETEARS_BRAVE_ANSWERS_API_KEY` is set and reports the skip when it is not,
+as it does for `web_search`; alias per AD13. **Known limit:** the pod path
+reads no rates -- `web_search`'s pod reads no optional settings either -- so a
+pod-served `web_answer` estimates no money and cannot refuse on a money cap
+before the call. It still records the provider's own bill after it; a host
+that needs a money pre-check constructs the tool with the rates. With no transport injected it
+reads through the leaf's standalone streaming transport, since the host-side
+traced client buffers.
 
 ### 10.6 Enforcement changes
 
@@ -594,8 +676,11 @@ in `builtin/__init__.py`'s list; alias per AD13.
 - `test_dependency_alignment.py`: no change (AR-H1 is the check).
 - `tests/test_package_boundaries.py` in the search package: pins that no
   module but `standalone.py` imports httpx, now including the SSE path.
-- `test_fake_protocol_parity.py`: the suite's `_FakeStreamingTransport`
-  declares `# parity-with: threetears.search.contracts.transport.StreamingTransport`.
+- `test_fake_protocol_parity.py`: every streaming fake declares
+  `# parity-with: threetears.search.contracts.transport.StreamingTransport`
+  (the search package's `FakeStreamingTransport`, agent-tools'
+  `_FakeStreamingTransport`), and the search tests' `RecordedStreamingTransport`
+  declares it too.
 
 ## 11. Consumer wiring: discodon
 
@@ -607,7 +692,7 @@ the inner-agent loop. It composes the claim and optional context into one
 question, calls `bind_answer` through discodon's existing transport seam
 (`SearxngTransport`'s sibling for a public upstream; it already has the
 guarded route), and renders the verdict as the answer text with its sources
-list. No page reads: a fact-check is a verdict the persona hedges on, not
+list. No page reads (owner, 2026-10-24, §14): a fact-check is a verdict the persona hedges on, not
 findings that reach the queue, and it is on the turn loop. Spend: the
 delivery's `cost_usd` adds `Spend.money`; `metered_call_spend` reports
 `ExternalSpend(provider="brave", calls=1, provider_units=<queries>,
@@ -637,18 +722,28 @@ eval cost rows and the budget cap see Brave money for the first time (AC2).
 
 ## 12. Sequencing, and what to verify live first
 
-Slices, each a PR into `develop`, stacked:
+Slices, stacked. Slices 1, 2 and 3 reach `develop` **together**, on this
+document's area branch (owner rulings, 2026-10-23 and 2026-10-24): slice 1's
+public contract names have their first caller in slice 2's adapter, and slice
+2's -- the adapter, `bind_answer`, `RenderedAnswer` -- have theirs in slice 3's
+builtin, so the branch is not mergeable to `develop` until all three are on
+it. Slices 4 and 5 are discodon's.
 
 0. **Live capture (prerequisite, half a day).** With discodon's provisioned
    key: one single-mode streamed answer with citations, saved as the recorded
    fixture (AR-I2). Settles the three **(verify live)** items: offset units,
    pre/post-strip indexing, and whether `snippet` is page text. The `Anchor`
-   field and AR-A4 are finalised from this, not before.
-1. **Contracts + `StreamingTransport` + standalone SSE** (AD11, AR-F1..F3),
-   with the conformance suite's transport pins. MINOR bump.
+   field and AR-A4 are finalised from this, not before. **Done 2026-10-24**:
+   the results are in §4.2.
+1. **Contracts + `StreamingTransport` + the standalone streaming transport**
+   (AD11, AR-F1..F3), with the transport's pins. The transport moves bytes;
+   SSE parsing is slice 2's adapter (AR-F2). Reaches `develop` with slices 2
+   and 3, in a MINOR release.
 2. **`BraveAnswersAdapter` + `answer.py` + `bind_answer.py`** against the
-   fixture; enforcement rows (10.6). MINOR bump.
-3. **`agent-tools` `web_answer`** (10.5, AD13).
+   fixture, the SSE and tag parsers in the adapter; enforcement rows (10.6).
+   Lands on the area branch after slice 1.
+3. **`agent-tools` `web_answer`** (10.5, AD13). Lands on the area branch after
+   slice 2, and the three reach `develop` together, in a MINOR release.
 4. **discodon `fact_check`** (11.1) -- the first production use; AC1 and AC2
    measured there.
 5. **discodon `research__ask_web`** behind its flag (11.2, 11.3) -- an
@@ -673,20 +768,27 @@ Applied on this branch, verbatim:
 `search-spec.md` §5 ("summarise, judge, or conclude") takes the same rider
 when the build plan for slice 1 is cut.
 
-## 14. Decisions needing an owner
+## 14. Owner rulings
 
-Beyond AD1 and AD2, already taken:
+Beyond AD1 and AD2 (2026-10-22) and the slice 1-2 stacking (2026-10-23), the
+owner ruled on 2026-10-24:
 
-1. **AD13's alias name** (`answers`) -- or no alias, by-name only.
-2. **AD6** -- confirm research mode stays out of v1 rather than shipping as
-   "declared unsatisfied".
-3. **Shape 4's trigger** -- is "page-read failures or `cited_sources_snippet_only`
-   rising on prod" the right condition to revisit LLM Context, or is there a
-   cost condition too (Brave Web Search spend through SearXNG is currently
-   invisible to discodon, 6.6).
-4. **11.1's no-page-reads stance for `fact_check`** -- a verdict grounded on the
-   provider's citations alone. The alternative, reading the cited pages
-   inline, puts the latency back on the turn.
+1. **The `answers` alias stands** (AD13). `web_answer` is granted by
+   `answers` and by its own name, never by `web`.
+2. **Research mode stays out of v1** (AD6). It is not shipped as a declared
+   but unsatisfied mode; `AnswerCapabilities.modes` is `("single",)`.
+3. **No trigger is tracked for LLM Context.** Shape 4 (§7) is off the
+   roadmap, and is revisited only if someone asks for it.
+4. **`fact_check` grounds on the provider's citations alone** (§11.1). It
+   reads no page inline, because that would put the latency back on the turn.
+5. **Slices 1-3 reach `develop` together, on this area branch** (§12),
+   because slice 2's public names have their first caller in slice 3.
+6. **The answer conformance pins live in the search package's tests**, not
+   in the public `testing` module: `AnswerConformanceSuite`, its case, and the
+   stream replay sit in `packages/search/tests/`, as the streaming-transport
+   pins do, because no consumer writes an answers provider and nothing in
+   `src` replays a stream. The recorded streams stay shipped as package data.
+   The suite moves to `testing/` when a host writes a second answers adapter.
 
 ## 15. Requirements confidence
 

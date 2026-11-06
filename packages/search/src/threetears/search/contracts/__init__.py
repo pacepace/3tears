@@ -20,6 +20,13 @@ from threetears.search.contracts._canonical import (
     canonical_digest,
     canonicalize,
 )
+from threetears.search.contracts.answer import (
+    Anchor,
+    AnswerCapabilities,
+    AnswerProvider,
+    AnswerRequest,
+    GroundedAnswer,
+)
 from threetears.search.contracts.capabilities import (
     PRICING_FREE_SELF_HOSTED,
     PRICING_PER_REQUEST,
@@ -79,8 +86,11 @@ from threetears.search.contracts.fidelity import (
 )
 from threetears.search.contracts.limiter import RateLimitDecision, RateLimiterPort
 from threetears.search.contracts.metadata import (
+    ANSWER_METADATA_KEY,
+    ANSWER_SCHEMA_VERSION,
     SEARCH_RESULTS_METADATA_KEY,
     SEARCH_RESULTS_SCHEMA_VERSION,
+    AnswerMetadata,
     SearchResultsMetadata,
 )
 from threetears.search.contracts.provenance import (
@@ -100,9 +110,18 @@ from threetears.search.contracts.scores import (
     ScoreEntry,
 )
 from threetears.search.contracts.spend import Spend
-from threetears.search.contracts.transport import FetchTransport, SearchTransport, TransportResponse
+from threetears.search.contracts.transport import (
+    FetchTransport,
+    SearchTransport,
+    StreamedResponse,
+    StreamingTransport,
+    TransportResponse,
+    media_type_accepted,
+)
 
 __all__ = [
+    "ANSWER_METADATA_KEY",
+    "ANSWER_SCHEMA_VERSION",
     "CANONICAL_FORM_VERSION",
     "CRITERION_CARRIER",
     "CRITERION_DOMAINS_EXCLUDE",
@@ -135,6 +154,11 @@ __all__ = [
     "SEARCH_RESULTS_METADATA_KEY",
     "SEARCH_RESULTS_SCHEMA_VERSION",
     "WELL_KNOWN_CRITERIA",
+    "Anchor",
+    "AnswerCapabilities",
+    "AnswerMetadata",
+    "AnswerProvider",
+    "AnswerRequest",
     "AuthFailed",
     "BudgetDecision",
     "BudgetPort",
@@ -148,6 +172,7 @@ __all__ = [
     "Disposition",
     "FailureRecord",
     "FetchTransport",
+    "GroundedAnswer",
     "LocalCapExceeded",
     "Locator",
     "MalformedResponse",
@@ -166,6 +191,8 @@ __all__ = [
     "SearchResultsMetadata",
     "SearchTransport",
     "Spend",
+    "StreamedResponse",
+    "StreamingTransport",
     "TimedOut",
     "TransportFailed",
     "TransportResponse",
@@ -173,5 +200,6 @@ __all__ = [
     "canonicalize",
     "get_capabilities",
     "list_capabilities",
+    "media_type_accepted",
     "register_capabilities",
 ]

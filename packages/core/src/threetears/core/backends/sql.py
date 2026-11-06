@@ -317,6 +317,132 @@ def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] |
     return measure
 
 
+def _bulk_params(
+    schema: TableSchema, table: str, rows: Sequence[Mapping[str, Any]], form: str
+) -> tuple[list[Any], list[list[Any]]]:
+    """the columns a bulk write names, and every row's parameters for them, in the rows' order.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param table: the table, for the refusal
+    :ptype table: str
+    :param rows: the rows, each keyed by column; at least one
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param form: ``upsert`` or ``copy``, for the refusal
+    :ptype form: str
+    :return: the columns, and each row's parameters
+    :rtype: tuple[list[Any], list[list[Any]]]
+    :raises ValueError: when the rows disagree on which columns they supply
+    """
+    columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
+    names = [c.name for c in columns]
+    params: list[list[Any]] = []
+    for row in rows:
+        data = dict(row)
+        if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
+            raise ValueError(
+                f"{table}: rows of one bulk {form} must supply the same columns; "
+                f"a server-default column is supplied by some rows and not others"
+            )
+        params.append(schema_sql.build_insert_params(schema, data))
+    return list(columns), params
+
+
+def _upsert_batches(
+    schema: TableSchema,
+    table: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    measure: Callable[[str, list[Any]], int | None] | None,
+) -> tuple[list[Any], list[list[list[Any]]]]:
+    """:meth:`SqlBackend.upsert_many`'s columns and statement batches: the CPU half of the write, run off the loop.
+
+    Every row's parameters are built and each candidate statement is measured as the transport sends it,
+    which for a page of a thousand rows is tens of milliseconds of Python: on the event loop it held every
+    call the process answers for that long, a page after a page.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows; at least one
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param max_rows: the most rows one statement writes
+    :ptype max_rows: int
+    :param max_bytes: the most bytes one statement's request comes to
+    :ptype max_bytes: int
+    :param measure: the transport's measure of a statement's request, or None
+    :ptype measure: Callable[[str, list[Any]], int | None] | None
+    :return: the columns, and the batches of rows' parameters
+    :rtype: tuple[list[Any], list[list[list[Any]]]]
+    :raises ValueError: when the rows disagree on which columns they supply
+    """
+    columns, params = _bulk_params(schema, table, rows, "upsert")
+    batches = schema_sql.bulk_insert_batches(
+        schema, columns, params, max_rows=max_rows, max_bytes=max_bytes, request_bytes=measure
+    )
+    return columns, list(batches)
+
+
+def _copy_batches(
+    schema: TableSchema,
+    table: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    max_rows: int,
+    max_bytes: int,
+    conn: Any,
+) -> tuple[list[str], list[list[tuple[Any, ...]]]]:
+    """:meth:`SqlBackend.copy_many`'s column names and copy batches: the CPU half of the copy, run off the loop.
+
+    As :func:`_upsert_batches`: every row's values built, ordered by key and each sized as the request
+    sends it, which on the event loop held the process's every call a page at a time.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param table: the table
+    :ptype table: str
+    :param rows: the rows; at least one
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param max_rows: the most rows one copy carries
+    :ptype max_rows: int
+    :param max_bytes: the most bytes one copy's request comes to
+    :ptype max_bytes: int
+    :param conn: the connection the copies go to, whose ``copy_request_bytes`` measures a request
+    :ptype conn: Any
+    :return: the column names, and the batches of records
+    :rtype: tuple[list[str], list[list[tuple[Any, ...]]]]
+    :raises ValueError: when the rows disagree on which columns they supply, or a column is one a
+        copy cannot write
+    """
+    columns, params = _bulk_params(schema, table, rows, "copy")
+    names = [c.name for c in columns]
+    unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
+    if unwritable:
+        raise ValueError(
+            f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}; "
+            f"save the rows with an upsert"
+        )
+    key_positions = [names.index(name) for name in schema.pk_columns]
+    params.sort(key=lambda values: tuple(values[position] for position in key_positions))
+    measure = getattr(conn, "copy_request_bytes", None)
+    measured = measure(table, names, []) if callable(measure) else None
+    base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
+    batches = schema_sql.bulk_batches(
+        params,
+        max_rows=max_rows,
+        max_bytes=max_bytes,
+        # a copy binds no parameters, so only the row and byte bounds cut it
+        max_params=max_rows * len(names),
+        base_bytes=base,
+        # each row after the first follows a ", " in the request's list of rows
+        position_bytes=lambda position: 2 if position else 0,
+    )
+    return names, [[tuple(values) for values in batch] for batch in batches]
+
+
 def _key_led_groups(
     schema: TableSchema, keys: list[tuple[Any, ...]]
 ) -> tuple[int, list[tuple[tuple[Any, ...], list[Any]]]]:
@@ -725,25 +851,18 @@ class SqlL3Backend:
             raise ValueError(f"upsert_many needs the schema of {table!r} registered")
         written = 0
         if rows:
-            columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
-            names = [c.name for c in columns]
-            params: list[list[Any]] = []
-            for row in rows:
-                data = dict(row)
-                if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
-                    raise ValueError(
-                        f"{table}: rows of one bulk upsert must supply the same columns; "
-                        f"a server-default column is supplied by some rows and not others"
-                    )
-                params.append(schema_sql.build_insert_params(schema, data))
-            for batch in schema_sql.bulk_insert_batches(
+            # the rows' parameters built and each statement measured on a thread: tens of milliseconds of
+            # Python a page, which on the loop held every call the process answers (_upsert_batches)
+            columns, batches = await asyncio.to_thread(
+                _upsert_batches,
                 schema,
-                columns,
-                params,
+                table,
+                rows,
                 max_rows=max_rows,
                 max_bytes=max_bytes,
-                request_bytes=_request_measure(conn if conn is not None else self._pool),
-            ):
+                measure=_request_measure(conn if conn is not None else self._pool),
+            )
+            for batch in batches:
                 sql = schema_sql.build_bulk_insert_sql(schema, rows=len(batch), columns=columns)
                 await self._execute(sql, *(value for row in batch for value in row), conn=conn)
                 written += len(batch)
@@ -793,40 +912,13 @@ class SqlL3Backend:
             raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
         if not rows:
             return 0
-        columns = schema_sql.insert_columns_for_data(schema, dict(rows[0]))
-        names = [c.name for c in columns]
-        unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
-        if unwritable:
-            raise ValueError(
-                f"{table}: a copy cannot write the {unwritable[0].column_type} column {unwritable[0].name!r}; "
-                f"save the rows with an upsert"
-            )
-        params: list[list[Any]] = []
-        for row in rows:
-            data = dict(row)
-            if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
-                raise ValueError(
-                    f"{table}: rows of one bulk copy must supply the same columns; "
-                    f"a server-default column is supplied by some rows and not others"
-                )
-            params.append(schema_sql.build_insert_params(schema, data))
-        key_positions = [names.index(name) for name in schema.pk_columns]
-        params.sort(key=lambda values: tuple(values[position] for position in key_positions))
-        measure = getattr(conn, "copy_request_bytes", None)
-        measured = measure(table, names, []) if callable(measure) else None
-        base = measured if isinstance(measured, int) and not isinstance(measured, bool) else 0
+        # the rows' values built, ordered and sized on a thread, as an upsert's are (_copy_batches)
+        names, batches = await asyncio.to_thread(
+            _copy_batches, schema, table, rows, max_rows=max_rows, max_bytes=max_bytes, conn=conn
+        )
         written = 0
-        for batch in schema_sql.bulk_batches(
-            params,
-            max_rows=max_rows,
-            max_bytes=max_bytes,
-            # a copy binds no parameters, so only the row and byte bounds cut it
-            max_params=max_rows * len(names),
-            base_bytes=base,
-            # each row after the first follows a ", " in the request's list of rows
-            position_bytes=lambda position: 2 if position else 0,
-        ):
-            await conn.copy_records_to_table(table, records=[tuple(values) for values in batch], columns=names)
+        for batch in batches:
+            await conn.copy_records_to_table(table, records=batch, columns=names)
             written += len(batch)
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
         return written

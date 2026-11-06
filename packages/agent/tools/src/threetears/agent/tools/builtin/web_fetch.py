@@ -40,6 +40,13 @@ the text. A read that did not happen says why and what to do next ("the site
 is turning requests away for now (429 Too Many Requests)" / "wait and try
 again later"), from the facets Extract records.
 
+**What it reads.** A web page, as its article. Any text as written: CSS, XML (a
+sitemap, a feed), CSV, JavaScript, Markdown, YAML, plain text, and JSON, shown indented
+when it parses. A PDF, below. An image (an SVG too, though it is XML), an archive, audio
+or video is refused before its body is read, and says so. ``source`` hands a page back as the HTML that was
+fetched instead of its article, so markup, scripts, forms and meta tags can be checked;
+it is the HTML as served, before any script runs.
+
 **PDFs** are read through :func:`threetears.agent.tools.document.parse_document`
 (PyMuPDF), handed to Extract as a
 :class:`~threetears.search.extract.CarrierReader`: the search leaf owns the
@@ -92,6 +99,9 @@ from threetears.search.extract import (
     DEFAULT_THIN_PAGE_CHARS,
     DEFAULT_USER_AGENT,
     EXTRACTION_FINAL_URL_FACET,
+    EXTRACTION_METHOD_FACET,
+    EXTRACTION_METHOD_SOURCE,
+    EXTRACTION_METHOD_TEXT,
     EXTRACTION_NEXT_STEP_FACET,
     EXTRACTION_NOTES_FACET,
     EXTRACTION_REASON_FACET,
@@ -305,7 +315,11 @@ class WebFetchTool(TearsTool):
         "properties": {
             "url": {
                 "type": "string",
-                "description": "URL to fetch and extract content from",
+                "description": "http(s) URL of a page, a text file (CSS, XML, JSON, CSV, JS) or a PDF",
+            },
+            "source": {
+                "type": "boolean",
+                "description": "Return the page's raw HTML instead of its article, to check markup, scripts, forms, meta tags",
             },
             "etag": {
                 "type": "string",
@@ -458,6 +472,7 @@ class WebFetchTool(TearsTool):
                 robots_unreadable="allow" if self._robots_unreadable == "allow" else "deny",
                 readers=(self._pdf,),
                 thin_page_chars=self._thin_page_chars,
+                source=kwargs.get("source") is True,
                 **extra,
             )
         except SearchFailure as failure:
@@ -522,7 +537,7 @@ class WebFetchTool(TearsTool):
         final_url = str(fetched.facets.get(EXTRACTION_FINAL_URL_FACET) or url)
         dated = shown_date(fetched.published_at, self._zone)
         head = (
-            f'Read "{fetched.title or "Untitled page"}" ({f"published {dated}" if dated else "no date given"}) '
+            f"Read {_what_was_read(fetched)} ({f'published {dated}' if dated else 'no date given'}) "
             f"at {final_url}: characters {window.offset:,}-{window.offset + len(window.text):,} of {window.total:,}."
         )
         notes = [str(note) for note in _as_list(fetched.facets.get(EXTRACTION_NOTES_FACET))]
@@ -561,7 +576,10 @@ class WebFetchTool(TearsTool):
         result = MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description="fetch URL and extract main page content",
+            description=(
+                "Read a URL: a web page's article, any text as written (CSS, XML, sitemaps, feeds, CSV, "
+                "JavaScript, YAML; JSON indented), or a PDF. Images (SVG too), archives, audio and video are refused."
+            ),
             input_schema=self._INPUT_SCHEMA,
         )
         return result
@@ -630,6 +648,23 @@ def _refusal_metadata(url: str, record: FailureRecord) -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     return project_failure_metadata(url, record)
+
+
+def _what_was_read(fetched: Candidate) -> str:
+    """What the opening line calls the thing read: a page's title, the page's HTML, or a file of a type.
+
+    :param fetched: the candidate Extract filled
+    :ptype fetched: Candidate
+    :return: the name, quoted when it is a title
+    :rtype: str
+    """
+    method = fetched.facets.get(EXTRACTION_METHOD_FACET)
+    mime = (fetched.content.mime_type if fetched.content is not None else None) or "text"
+    if method == EXTRACTION_METHOD_SOURCE:
+        return f"the HTML source ({mime})"
+    if method == EXTRACTION_METHOD_TEXT and not fetched.title:
+        return f"a {mime} file"
+    return f'"{fetched.title or "Untitled page"}"'
 
 
 def _as_list(value: object) -> list[object]:
