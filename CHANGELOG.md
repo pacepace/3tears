@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.3 -- 2026-11-05
+
+### core: a diff names its groups in one array only when the group column's type allows it
+
+**Fixed:** 0.91.2's batched diff read chose its array type by how the group values looked, not by the column. The
+rail binds a group's values as text, so a diff grouped by a timestamp column sent `= ANY($n::text[])`, and L3
+refused it (`operator does not exist: timestamp with time zone = text`). On cobalt dev (2026-11-06) six states never
+came forward. The array type now comes from the group column's L1 type: VARCHAR -> `text[]`, BIGINT/INTEGER ->
+`bigint[]`; any other column is read a value at a time, as before 0.91.2.
+
 ## v0.91.2 -- 2026-11-05
 
 ### core: one scope's bad copy in L2 never rebuilds the snapshot

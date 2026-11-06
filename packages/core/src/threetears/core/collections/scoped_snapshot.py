@@ -1588,18 +1588,30 @@ class _HeldGroups:
         return pc.invert(self.rows_of(drop))
 
 
-def _array_of(values: Sequence[Any]) -> str | None:
-    """the array type a set of group values is bound as in one ``= ANY($n)`` parameter; ``None`` when they are not
-    all text or all whole numbers (read a value at a time).
+#: the L1 type codes whose values one ``= ANY($n::text[])`` / ``::bigint[]`` names exactly as L3 holds them. Any other
+#: column (a timestamp, a decimal, a uuid) is read a value at a time: the rail binds a group's values as text, and
+#: L3 refuses ``timestamptz = text`` in an array where ``= $1`` casts it (cobalt dev 2026-11-06, six states left behind)
+_ANY_TEXT_TYPES: Final = frozenset({"VARCHAR"})
+_ANY_BIGINT_TYPES: Final = frozenset({"BIGINT", "INTEGER"})
+
+
+def _array_of(values: Sequence[Any], column_type: str | None) -> str | None:
+    """the array type a set of group values is bound as in one ``= ANY($n)`` parameter, by the group COLUMN's type,
+    never by how the values look; ``None`` when that column's values cannot be named that way (read a value at a
+    time).
 
     :param values: the values
     :ptype values: Sequence[Any]
+    :param column_type: the group column's L1 type code; ``None`` when unknown
+    :ptype column_type: str | None
     :return: ``text[]``, ``bigint[]``, or ``None``
     :rtype: str | None
     """
-    if values and all(isinstance(v, str) for v in values):
+    if not values or column_type is None:
+        return None
+    if column_type in _ANY_TEXT_TYPES and all(isinstance(v, str) for v in values):
         return "text[]"
-    if values and all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+    if column_type in _ANY_BIGINT_TYPES and all(isinstance(v, int) and not isinstance(v, bool) for v in values):
         return "bigint[]"
     return None
 
@@ -6792,7 +6804,7 @@ class ScopedSnapshot:
             for i, value in enumerate(values)
             if group is not None and value is not None and (n := size(i)) is not None and n <= DEFAULT_PAGE_SIZE
         ]
-        array = _array_of([values[i] for i in together])
+        array = _array_of([values[i] for i in together], self._backend.column_types(table.name).get(group or ""))
         if array is None:
             together = []
         alone = [i for i in range(len(values)) if i not in set(together)]
