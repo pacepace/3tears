@@ -21,7 +21,8 @@ import uuid
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as time_of_day
 from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
@@ -331,7 +332,7 @@ def stored_value(value: Any, col_type: str) -> Any:
         result = stored_date(value)
     elif isinstance(value, datetime):
         result = value.isoformat()
-    elif isinstance(value, time):
+    elif isinstance(value, time_of_day):
         result = stored_time(value, zoned=col_type.endswith("_TIMETZ"))
     elif isinstance(value, date):
         result = value.isoformat()
@@ -1575,7 +1576,7 @@ class DuckDBBackend:
         elif col_type == "VARCHAR_DATE":
             result = date.fromisoformat(str(value)) if value else None
         elif col_type in ("VARCHAR_TIME", "VARCHAR_TIMETZ"):
-            result = time.fromisoformat(str(value)) if value else None
+            result = time_of_day.fromisoformat(str(value)) if value else None
         elif col_type == "VARCHAR_BYTEA":
             result = bytes.fromhex(value) if value else None
         return result
