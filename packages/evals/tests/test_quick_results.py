@@ -36,7 +36,7 @@ from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import summarize_run
+from threetears.evals.analysis import campaign_report_markdown, summarize_run
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 
@@ -571,3 +571,34 @@ async def test_a_lead_with_nothing_else_separated_says_so() -> None:
     (accuracy,) = result.contrasts("accuracy")
     assert not [row for row in result.contrasts() if row["outcome"] in ("improved", "regressed")]
     assert result.render().splitlines()[0] == f"{result.name}: {_worded([accuracy])}; nothing else separated"
+
+
+def resolved(case: Mapping[str, Any], out: Any) -> bool:
+    """Files the ticket somewhere."""
+    return bool(out["queue"])
+
+
+@pytest.mark.parametrize("question", [None, "Does cheap resolve tickets as often as dear?"])
+async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grader_asked_or_not(
+    question: str | None,
+) -> None:
+    """A function listed before the classifier is the first grader: the printed first line and the page's lead both
+    read it, never the classifier's accuracy, never the cost. Declared, the question is that measure's and the lead
+    reads as asked, the line saying none was asked gone; undeclared, the lead is marked a lead and the line stays."""
+    result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [resolved, QUEUE, no_leak], k=2, question=question).run(
+        store=":memory:", scope=SCOPE
+    )
+    (first,) = result.contrasts("resolved")
+    assert result.render().splitlines()[0].startswith(f"{result.name}: {first['reading']}: {first['verdict']}")
+    (verdict,) = [
+        verdict
+        for verdict in result.page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "resolved"
+    ]
+    page = campaign_report_markdown(result.page)
+    bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
+    asked = question is not None
+    assert bold[0] == f"**{verdict.heading}: {verdict.words}{'' if asked else ', a lead'}.**"
+    assert bold[1].startswith("**cheap is not yet shown safe on the no leak guardrail")
+    assert ("No question was declared, so every reading is a lead." in page) is not asked
+    assert result.question == question

@@ -108,6 +108,12 @@ class TestTheAspectDesign:
             ),
             pytest.param({"merit_priority": ["cost", "cost"]}, "merit_priority names cost", id="priority"),
             pytest.param(
+                {"measure_order": ["accuracy", "total", "accuracy"]},
+                "measure_order names accuracy more than once",
+                id="measure-order",
+            ),
+            pytest.param({"measure_order": [" "]}, "measure_order names a blank measure", id="blank-measure"),
+            pytest.param(
                 {"skipped_cells": [{"model": "nowhere", "temperature": "0"}]},
                 "is none of its declared levels",
                 id="cell",
@@ -121,6 +127,14 @@ class TestTheAspectDesign:
     def test_it_refuses_a_merit_axis_named_twice(self) -> None:
         with pytest.raises(ValidationError, match="merit_axes names quality more than once"):
             minimal_aspect_design(merit_axes=["quality", "quality"])
+
+    def test_a_measure_order_is_written_only_when_stated(self) -> None:
+        """A design stating no order is stored as it was before the field; one stating it keeps its order."""
+        assert "measure_order" not in minimal_aspect_design().to_dict()
+        assert minimal_aspect_design(measure_order=["total", "accuracy"]).to_dict()["measure_order"] == [
+            "total",
+            "accuracy",
+        ]
 
     def test_no_question_is_not_an_unscoped_one(self) -> None:
         assert minimal_aspect_design().merit_axes is None

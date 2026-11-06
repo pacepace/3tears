@@ -6,6 +6,29 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
+
+**Added:** `Eval(question=...)`, the one sentence a comparison answers, as `WriterEval(question=)` takes it (a blank one
+is refused). It is filed as the campaign's question: the page quotes it under the title in place of `No question was
+declared, so every reading is a lead.`, the readings it asks about read as asked (no ", a lead"), and the aspect
+declares a 5-point margin on the pass rate, which a question asked of a control needs, so a pass rate can now read
+shown worse or no worse than the margin. Its measure is the first grader. `Result.question` carries it, and
+`Result.against(...)` asks it again. `AspectDesign.measure_order` (durable v16.8, written only when stated) holds the
+measures an eval's graders read, in the order listed; `Eval` files it from `Result.grader_readings`.
+
+**Changed:** where a guardrail warns, a campaign page's lead reads the first measure in the design's `measure_order`
+that a contrast tested and that is no cost: the same measure the printed first line leads on, whether a question is
+declared or not (a function listed before the classifier now leads the page too, where it led on the pass rate). A
+campaign stating no order, every one filed before, leads as it did. A measurement's scorecard prints each money
+measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
+`$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
+
+**Hosts:** a script parsing the first line of a comparison reads the lead on the first grader, as before; a host
+matching a page's first screen sees the question in place of the no-question line where one is declared, and a lead
+on the first grader where a function is listed before the classifier. A host matching a measurement's scorecard
+reads money cells with `$` and the per-1,000 mark. An older pod reading a campaign at durable v16.8 keeps
+`measure_order` and leads as before.
+
 ### evals: a campaign page leads on its question's reading, and an undecided guardrail says what leaves it undecided
 
 **Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question,
