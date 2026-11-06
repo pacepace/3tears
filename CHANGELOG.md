@@ -28,6 +28,14 @@ renewal landed, such as a warehouse export, lost its reply and failed at its own
   connection for that time. Messages are not doubled: each subscription's two halves share one
   queue group.
 
+### scrape: `discover_links_labeled` follows an attribute other than `href`
+
+**Added:** `discover_links_labeled(..., attribute="href")`. A listing that names its documents in another
+attribute, such as a contest dropdown whose `<option value>` is each page's id, is walked with
+`attribute="value"`; the element's text is the label, and a match without the attribute is skipped as an
+anchor without `href` is. `base_url=""` returns the raw value for a caller that fills its own URL template.
+The default keeps every existing call unchanged. An API addition, so it ships in the next minor.
+
 ### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
 
 **Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
