@@ -1,13 +1,11 @@
 """A role whose output must bind says so in its request settings, and the run records it (#686).
 
-The memo writer sent its contract as a strict ``response_format`` and the judge a reasoning effort, and a
-router whose default routing reaches a provider that ignores either returns free text (a paid repair, or a
-lost generation) or an unbounded judge. ``ClientRequestSettings.strict_output`` is how the engine says
+The judge sends its score as a strict ``response_format`` under a reasoning budget, and a router whose default
+routing reaches a provider that ignores either returns free text (a paid repair) or an unbounded judge. ``ClientRequestSettings.strict_output`` is how the engine says
 "route only to a provider honouring every parameter sent"; a host's client builder reads it from the
 settings it is handed. Pinned here:
 
-- the retired memo writer's settings (a one-minor shim a host still builds a client from, read through the analysis
-  root with its warning) and the judge's carry it, so a refactor that drops it fails;
+- the judge's settings carry it, so a refactor that drops it fails;
 - a host's builder reads it off the value it is handed, and it survives a store round trip;
 - a stamp stored before the flag reads False, and its recorded apparatus level is unchanged, while a strict
   stamp reads as a different level, so two runs differing only in it are told apart.
@@ -27,13 +25,6 @@ from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 _SUBJECT = SubjectSnapshot(
     subject_id="summarizer-3", subject_label="Summarizer, config 3", state=None, captured_at="2026-08-01T00:00:00+00:00"
 )
-
-
-def _generator_settings() -> ClientRequestSettings:
-    with pytest.warns(DeprecationWarning, match="analysis_gen_request_settings_for is retired"):
-        from threetears.evals.analysis import analysis_gen_request_settings_for
-    settings: ClientRequestSettings = analysis_gen_request_settings_for(answer_budget_tokens=32768)
-    return settings
 
 
 def _level(name: str, settings: ClientRequestSettings) -> Any:
@@ -57,9 +48,6 @@ def _level(name: str, settings: ClientRequestSettings) -> Any:
 
 
 class TestTheRolesThatMustBindSayStrict:
-    def test_the_generators_settings_ask_for_strict_routing(self) -> None:
-        assert _generator_settings().strict_output is True
-
     def test_the_judges_settings_ask_for_strict_routing(self) -> None:
         assert JUDGE_REQUEST_SETTINGS.strict_output is True
 
@@ -70,11 +58,11 @@ class TestTheRolesThatMustBindSayStrict:
             # What a host's client factory does with it: its router's own require-parameters switch.
             applied["provider"] = {"require_parameters": settings.strict_output}
 
-        build(_generator_settings())
+        build(JUDGE_REQUEST_SETTINGS)
         assert applied == {"provider": {"require_parameters": True}}
 
     def test_it_survives_a_store_round_trip(self) -> None:
-        stored = _generator_settings().model_dump(mode="json")
+        stored = JUDGE_REQUEST_SETTINGS.model_dump(mode="json")
         assert ClientRequestSettings.model_validate(stored).strict_output is True
 
 

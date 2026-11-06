@@ -12,7 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from threetears.evals.kernel import inner_ceilings
-from threetears.evals.kernel.retired import GENERATION_CEILING_RETIRED, warn_retired
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
@@ -31,10 +30,6 @@ class Ceilings:
     ``scheduler_call_attempts``, the simulator's and proposer's client caps from the token fields, a report's or a
     judge phase's deadline from the ceiling functions over its own per-request ceiling) instead of restating
     the number, so a release that raises an inner ceiling raises the budget over it.
-
-    :attr:`generation_ceiling_s` is retired: the only generation it bounded was the report planner's. Reading it warns
-    with a :class:`DeprecationWarning` and returns the function it did; the next minor removes it. A report's budget is
-    derived from :attr:`writer_ceiling_s`.
     """
 
     #: Calls one ``llm_decided`` scheduling decision may make: the first and one repair.
@@ -57,19 +52,6 @@ class Ceilings:
     judge_phase_ceiling_s: Callable[..., float] = field(
         default_factory=lambda: inner_ceilings.judge_phase_ceiling_s, init=False
     )
-
-    @property
-    def generation_ceiling_s(self) -> Callable[..., float]:
-        """Retired: the wall-clock ceiling of one report planner's generation, in seconds, from the host's per-request
-        ceiling (``generation_ceiling_s(request_s=..., generator_max_tokens=...)``).
-
-        Warns that it leaves in the next minor, naming :attr:`writer_ceiling_s`, and returns the function it did.
-
-        :return: The generation ceiling's function.
-        :rtype: Callable[..., float]
-        """
-        warn_retired("threetears.evals.run.Ceilings.generation_ceiling_s", GENERATION_CEILING_RETIRED)
-        return inner_ceilings.generation_ceiling_s
 
 
 __all__ = ["Ceilings"]

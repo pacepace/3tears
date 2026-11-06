@@ -71,7 +71,6 @@ HOST_TYPES: frozenset[str] = frozenset(
         "MeasureRegistry",
         "BarRegistry",
         "WorldRegistry",
-        "StyleProfile",
     }
 )
 

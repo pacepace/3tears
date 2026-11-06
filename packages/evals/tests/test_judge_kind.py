@@ -421,7 +421,6 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
     spent = sum(row.cost_usd or 0.0 for row in answered.telemetry.usage)
     assert spent > 0
     assert room.spent == {"candidate": pytest.approx(spent)}, "the trial's call is counted the moment it returns"
-    assert room.held == [], "its reservation was settled"
 
     spent_already = FakeCellSink()
     spent_already.add_spend("candidate", 1.0)
@@ -577,9 +576,8 @@ async def test_a_trial_whose_completion_carries_no_temperature_fails_the_run_and
     with pytest.raises(CompletionProtocolDefect, match="check_completion_conformance"):
         await kind.invoke(prepared, stored, sink=room)
 
-    # Raised, but what the call was billed is counted: settled against the cap and reported as the cell's spend,
+    # Raised, but what the call was billed is counted: added to the cell's spend and reported as it,
     # which the runner records on the excluded cell before it fails the run.
-    assert room.held == [], "nothing is left held against the cap"
     assert room.progress is not None
     spent = sum(row.cost_usd or 0.0 for row in room.progress().telemetry.usage)
     assert spent > 0 and room.spent == {"candidate": pytest.approx(spent)}

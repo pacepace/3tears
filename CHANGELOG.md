@@ -22,6 +22,33 @@ null, leaves the object. The arms a report document recommends are its `report_d
 **Hosts:** stop reading or setting the removed fields and the JSON's `recommendation`: each read an empty value.
 Nothing stored changes.
 
+### evals: the retired generations' shims and the in-cell cost cap's names are removed
+
+**Removed:** the 19 names the retired analysis reporter kind, report planner and memo writer left a host (12 from
+`threetears.evals.analysis`, 7 from `threetears.evals.ops`); `StyleProfile`, `ToneRegister`, `HostProfile.style` and
+`HostProfile.caveat_kinds`; the in-cell cost cap's `CostCapReached`, `CellReservation`, `CellSink.reserve` and
+`CellSink.cost_cap_reached`; and `Ceilings.generation_ceiling_s`. The module `__getattr__` hooks that served them go
+too. These names, all but `EVAL_REPORT_PLAN_DEFAULT`, which no release exported, were live in v0.90.0 and v0.91.x, the
+host-contract `REPORTER_KIND_CONTRACT`, `EVAL_ANALYSIS_GEN_DEFAULT`, `analysis_gen_request_settings_for`,
+`generate_analysis`, `CostCapReached`, `HostProfile.style`, `HostProfile.caveat_kinds`, `CellSink.reserve`,
+`CellSink.cost_cap_reached` and `Ceilings.generation_ceiling_s` among them, and no release carried their deprecation, so
+removing them breaks the host-contract cycle in [stability
+tiers](packages/evals/docs/adopting-a-host.md#stability-tiers). The owner approved the exception on 2026-11-03, for
+every deletion of the evals reset, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every
+import on its re-pin branch before it moves its pin. A host still importing one breaks on upgrade and ports by the Hosts
+line. `MIGRATIONS.toml` records each name. The declared surface drops from 535 names to 514: `KnownReasoningEffort`
+(`threetears.evals.schema`) goes provisional, since only `analysis_gen_request_settings_for`'s signature reached it.
+Nothing stored changes shape or version, and no printed page changes.
+
+**Hosts:** a host that still imports one changes it as follows. The reporter kind's names: delete the kind's
+registration, launcher and template check, and evaluate the report writer with the `report_writer` kind
+(`writer_template_create`, `writer_case_mint`); a host that named the kind's string writes `"analysis_reporter"` itself.
+`generate_analysis`: call `analysis_generate`. `EVAL_ANALYSIS_GEN_DEFAULT`, `EVAL_REPORT_PLAN_DEFAULT`,
+`analysis_gen_request_settings_for`: drop the slot and the client policy. `StyleProfile`, `ToneRegister`, `style=`,
+`caveat_kinds=`: drop them. `CostCapReached`: drop the `except` clause. `reserve`, `cost_cap_reached`,
+`CellReservation`: call `sink.add_spend(source, cost)` once a call returns. `generation_ceiling_s`: use
+`Ceilings().writer_ceiling_s`.
+
 ### evals: the report input names the report, not the memo, and sixteen names nothing called are removed
 
 **Changed:** a report input's `meta.kind_means`, the sentence the analyst reads for what a campaign's kind asks of
@@ -162,22 +189,14 @@ in prose to its tier.
 
 **Hosts:** nothing to change. A host that binds one of these names sends its import list to have it declared again.
 
-### evals: the in-cell cost cap's names and the report planner's ceiling are deprecated
+### evals: no call in a cell is priced before it is made
 
-**Deprecated:** `CostCapReached` (`threetears.evals.kernel`), `CellSink.reserve`, `CellSink.cost_cap_reached` and
-`Ceilings.generation_ceiling_s` (`threetears.evals.run`) each warn when used and keep answering as they did; the next
-minor removes them, and `CellReservation` with `reserve`. The run's cost cap is read between cells, so nothing raises
-`CostCapReached`, `reserve` never refuses and `cost_cap_reached` is always `False`. `generation_ceiling_s` bounded only
-the retired report planner.
-
-**Changed:** no engine path calls `reserve`: `CappedCompletion`, the judge phase, the judge kind and the quick path's
+**Changed:** the run's cost cap is read between cells, and no engine path reserves a call against it: `CappedCompletion`, the judge phase, the judge kind and the quick path's
 kind count each call's cost with `add_spend` when it returns, so no call in a cell is priced before it is made; a
 client's unusable `price_ceiling` no longer fails a call there, and launch pricing still refuses it.
-`MAX_GENERATION_CALLS` is private. `Ceilings.generation_ceiling_s` is a property, so `dataclasses.fields(Ceilings)` no longer lists it. Nothing
-stored changes shape or version.
+`MAX_GENERATION_CALLS` is gone. Nothing stored changes shape or version.
 
-**Hosts:** count a call's cost with `sink.add_spend(source, cost)` once it returns, drop any `cost_cap_reached()` check
-and `except CostCapReached` clause, and derive a report's `budget_s` from `Ceilings().writer_ceiling_s`.
+**Hosts:** count a call's cost with `sink.add_spend(source, cost)` once it returns.
 
 ### evals: the modules that outlived the retired writers are named for what they hold now
 
@@ -197,7 +216,7 @@ description is the only served text that moves. `tests/test_retired_vocabulary.p
 **Hosts:** nothing to do: none of the moved modules is a public root. A script importing one by its module path
 imports it from its new path.
 
-### evals: the memo page is retired; a stored memo is held as JSON, and the host's style fields are deprecated
+### evals: the memo page is retired; a stored memo is held as JSON
 
 **Removed:** the memo page: `build_report` (one aspect's memo page), the memo blocks of the campaign page (the writer's
 summary, recommendation and whys, findings and their trace, next steps and each aspect's summary) and of the aspect
@@ -208,10 +227,6 @@ page, and the memo writer's view (`build_campaign_user_message`, `CAMPAIGN_MESSA
 takes no memo, recommended key, resolutions or trial ids. The `paid` pytest marker and the `THREETEARS_EVALS_PAID*`
 gate in `scripts/test.sh`, orphaned with `evals-paid.yml`, are gone.
 
-**Deprecated:** `HostProfile.style` and `HostProfile.caveat_kinds` default to None and warn when passed, and
-`StyleProfile` and `ToneRegister` (`threetears.evals.kernel.host`) warn on every read: only the retired writers'
-prompts read them. The next minor removes them.
-
 **Changed:** `EvalAnalysis.document` is a stored memo as the JSON it was stored as, never validated as a memo and never
 read; a memo analysis reads through every door as code's page with the memo writer's line. An aspect's page of a
 stored analysis is code's (`build_code_only_report` over `analysis_bundle`). The Coverage fold, which joined a memo's
@@ -219,8 +234,7 @@ findings and next steps to the levers, leaves every page; a page lists each thin
 models it nests leave in this release with `CampaignReport.recommendation`, which no page fills. Nothing
 stored changes shape or version.
 
-**Hosts:** drop `style=` and `caveat_kinds=` from `HostProfile(...)` and the `StyleProfile` import; read an analysis
-with `report_read` or `analysis_report`, never `build_report`.
+**Hosts:** read an analysis with `report_read` or `analysis_report`, never `build_report`.
 
 ### evals: the memo writer is retired; a memo analysis reads as code's page with the retired writer's line
 
@@ -231,16 +245,12 @@ with `report_read` or `analysis_report`, never `build_report`.
 `GenerationTally` moved to `analysis/generation_tally.py` and stays exported; what a stored analysis keeps of each
 aspect is built in `analysis/doc_analysis.py`.
 
-**Deprecated:** `generate_analysis` (`threetears.evals.analysis`) keeps importing for this minor, warning, and refuses
-every call before its client is asked anything, naming `analysis_generate`. `EVAL_ANALYSIS_GEN_DEFAULT` and
-`analysis_gen_request_settings_for` stay as they were (one minor).
-
 **Changed:** a memo analysis reads, through `report_read` (every form), `campaign_report`, `analysis_report` by id and
 `analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the memo
 writer); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line, and the
 listing counts no findings for it. Nothing stored changes shape or version.
 
-**Hosts:** drop the `eval_analysis_gen` slot and any call to `generate_analysis`; regenerate a memo analysis with
+**Hosts:** drop the `eval_analysis_gen` slot; regenerate a memo analysis with
 `analysis_generate` to read a report over it.
 
 ### evals: the report plan's checks, facts and models are retired; a stored plan is held verbatim
@@ -285,11 +295,6 @@ sweep a stored plan; nothing stored changes shape or version.
 `PreparedGeneration` and `BudgetedGenerator` (`threetears.evals.analysis`), the planner's modules and the report
 input's planner view. `analysis_generate` already ran the report writer; nothing else generated with the planner.
 
-**Deprecated:** `EVAL_REPORT_PLAN_DEFAULT` and `EVAL_ANALYSIS_GEN_DEFAULT` (`threetears.evals.analysis`) still resolve
-by name, as a host's prompt registry seeds a slot, but each is now one line saying its generation is retired, never
-the old prompt. `analysis_gen_request_settings_for` still answers the settings it did. Every read warns with a
-`DeprecationWarning`, and the next minor removes all three.
-
 **Changed:** the `eval_report_plan` prompt slot is retired: `SEED_PROMPTS` no longer seeds it and no generation
 reads it. A stored planned analysis still reads, as the code-only page with the regenerate line, and nothing stored
 changes shape or version.
@@ -302,11 +307,6 @@ inert. Drop the memo writer's client policy. Delete any call to the five removed
 **Removed:** the analysis reporter kind's module, and with it `AS_RECORDED_MODEL`, `ReporterLabel`, `ReporterCase`,
 `LabelCriterion`, `LabelDirection`, `LabelVerdict`, `LABEL_BANDS`, `PreparedReporter`, `WriterMessageCheck` and
 `render_memo_as_written` (`threetears.evals.analysis`). The report writer is evaluated by the `report_writer` kind.
-
-**Deprecated:** `REPORTER_KIND`, `ReporterKind`, `AsRecordedReporterKind` and `reporter_cell_timeout_s`
-(`threetears.evals.analysis`), kept for this minor with a `DeprecationWarning` on every read. `REPORTER_KIND` is still
-`"analysis_reporter"` and the cell ceiling keeps its answer; building either kind refuses, naming the writer kind. The
-next minor removes them.
 
 **Changed:** a stored `analysis_reporter` template and its cases list as data, and a launch or estimate of one is
 refused as a template whose kind the host has no launcher for. Nothing stored changes shape or version.
@@ -321,14 +321,6 @@ refused as a template whose kind the host has no launcher for. Nothing stored ch
 `reporter_cases_list`, `reporter_case_archive` and their types), and the three `evals` tool actions of the same
 names. The report writer is evaluated by the `report_writer` kind instead: `writer_template_create`,
 `writer_case_mint`, `writer_pairwise` and `writer_promotion`.
-
-**Deprecated:** the reporter kind's contract and launch names, kept for this minor with a `DeprecationWarning` on
-every read: `REPORTER_KIND_CONTRACT`, `reporter_kind_contract`, `ReporterOverlays` and
-`refuse_undeliverable_reporter_template` (`threetears.evals.analysis`), and `REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`,
-`ReporterAdmitted`, `ReporterModelResolver`, `ReporterModelRole`, `admit_reporter_launch`, `plan_reporter_arm` and
-`price_largest_reporter_call` (`threetears.evals.ops`). Each still imports. None launches anything: the contract has
-no overlay and no seat, and the template check and the three launch operations refuse, naming the writer kind. The
-next minor removes them.
 
 **Changed:** a stored `analysis_reporter` template and its cases stay readable as data, and nothing stored changes
 shape or version. The reporter judge cases a host seeded are not carried over, since their labels quoted memo and
