@@ -11,16 +11,16 @@ packages (bumped in lock-step).
 **Removed:** `TextBlock`, `TextRole` and `Fact` (`threetears.evals.analysis`), the block of an author's words no page
 has held since the memo writer was retired, with the serializers' branches for it; `ReportBlock` is a table, a chart, a
 trial or a disclosure. `Recommendation`, `FloorOverride`, `BehindOn` and `BarMissed` (`threetears.evals.kernel`). The
-fields every page left empty: `Report.basis` and `.finding_count`, `ReportSource.analysis_id` and `.generator_model`,
-`CampaignReport.finding_count`, `.recommendation`, `.recommended_variant_key` and `.plan_page`, and
-`CampaignAspectFold.summary`. `CampaignReport.basis` and `.analysis_id` stay. A block naming a finding is refused on
+fields every page left empty: `Report.basis` and `.finding_count` (host-contract), `ReportSource.analysis_id` and
+`.generator_model`, `CampaignReport.finding_count`, `.recommendation`, `.recommended_variant_key` and `.plan_page`,
+and `CampaignAspectFold.summary`. `CampaignReport.basis` and `.analysis_id` stay. A block naming a finding is refused on
 both pages, as on every page built since the memo. No printed page moves.
 
 **Changed:** `campaign.json` and `report_read(format="json")` are `CAMPAIGN_JSON_SHAPE` 6: `recommendation`, always
 null, leaves the object. The arms a report document recommends are its `report_doc.doc.recommends`.
 
-**Hosts:** stop reading the removed fields and the JSON's `recommendation`: each read an empty value. Nothing stored
-changes.
+**Hosts:** stop reading or setting the removed fields and the JSON's `recommendation`: each read an empty value.
+Nothing stored changes.
 
 ### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
 
@@ -121,8 +121,8 @@ as a table in the examples' README, rung 0, linked from the package README.
 
 **Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
 retired memo writer wrote, and both serializers drop the lines that laid them out. No page this version builds held
-one, so no printed page changes. `Report`'s and `CampaignReport`'s `basis`, `finding_count`, `analysis_id` and
-`recommendation`, and `CampaignAspectFold.summary`, keep their fields and describe what a page built now holds. Messages
+one, so no printed page changes. The memo-era fields those models kept (`basis`, `finding_count`, `recommendation`,
+`CampaignAspectFold.summary` and the rest) leave in this release (see the memo-era page models entry). Messages
 reword: the remedy for an analysis of several aspects names `get_analysis` as reading the analysis, a double brace in
 report prose is refused as the retired figure reference, and the import-time word check and the code-only
 recommendation refusal name the page, not the memo. Nothing stored changes.
@@ -198,7 +198,7 @@ prompts read them. The next minor removes them.
 read; a memo analysis reads through every door as code's page with the memo writer's line. An aspect's page of a
 stored analysis is code's (`build_code_only_report` over `analysis_bundle`). The Coverage fold, which joined a memo's
 findings and next steps to the levers, leaves every page; a page lists each thin or unswept lever under Not tested. `Recommendation` and the
-models it nests stay for this minor as the type of `CampaignReport.recommendation`, which no page fills. Nothing
+models it nests leave in this release with `CampaignReport.recommendation`, which no page fills. Nothing
 stored changes shape or version.
 
 **Hosts:** drop `style=` and `caveat_kinds=` from `HostProfile(...)` and the `StyleProfile` import; read an analysis
@@ -256,7 +256,7 @@ page and the analyst's blocks draw with move, unchanged, from `analysis/report/p
 and `analyses_list`, as code's page with one line on its first screen: "written by a retired report writer (the
 report planner); regenerate with analysis_generate to read a report over it". `needs_regeneration` carries the line,
 and the listing counts no findings for it. `analysis_report` no longer refuses one whose plan stopped resolving.
-`CampaignReport.plan_page` is always null and leaves in the next minor. `drop_derived` and `analysis_delete` still
+`CampaignReport.plan_page` is always null and leaves in this release. `drop_derived` and `analysis_delete` still
 sweep a stored plan; nothing stored changes shape or version.
 
 **Hosts:** drop any read of `plan_page` or of a stored plan; regenerate a planned analysis with `analysis_generate`.
