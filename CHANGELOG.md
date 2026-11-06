@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.92.0 -- 2026-11-06
+
 ### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
 
 **Changed (behaviour consumers must know about):** when the epoch bucket is replaced (a broker restart
