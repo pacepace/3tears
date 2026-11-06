@@ -21,7 +21,7 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -230,6 +230,35 @@ def _unadvanced_absence_error(table_name: str) -> GenerationUnavailableError:
         f"the write generation of {table_name!r} was not advanced after a committed write (the broker "
         f"advanced nothing for it); absences recorded under the unmoved generation would stay trusted"
     )
+
+
+async def _to_completion(work: Awaitable[None]) -> None:
+    """await ``work`` to its end, even when the waiter is cancelled; the cancel is raised after.
+
+    An eviction that ran on the loop could not be cut short: nothing ran between its first statement
+    and its last. One that awaits a thread could, and one cut short leaves L1 holding rows a commit
+    replaced. So the waiter's cancels wait for ``work`` to finish, and the first is raised then; what
+    ``work`` raised is raised in its place when it was not cancelled.
+
+    :param work: the work, already running or about to
+    :ptype work: Awaitable[None]
+    :return: nothing
+    :rtype: None
+    """
+    running = asyncio.ensure_future(work)
+    waiter_cancelled = False
+    while True:
+        try:
+            await asyncio.shield(running)
+            break
+        except asyncio.CancelledError:
+            # the work itself cancelled, or done as the cancel landed: nothing is left to wait for
+            if running.done():
+                raise
+            # NOSILENT: the waiter's cancel is held until the work has finished, then raised below
+            waiter_cancelled = True
+    if waiter_cancelled:
+        raise asyncio.CancelledError
 
 
 @dataclass(frozen=True, slots=True)
@@ -2210,6 +2239,74 @@ class BaseCollection(ABC, Generic[EntityT]):
         finally:
             for entity_id in entity_ids:
                 self._l1_changed(entity_id)
+
+    async def _evict_l1_many_off_loop(self, entity_ids: Sequence[Any]) -> None:
+        """:meth:`_evict_l1_many` from a coroutine: from :attr:`L1_EVICT_OFF_LOOP_KEYS` keys its work runs on threads.
+
+        A commit of thousands of rows settles them in one delete, which held the event loop for its
+        whole length (cobalt prod reports pods, 2026-11-06). So the keys' fence forms are made, and
+        the rows deleted, on a worker thread; the fence hears every key on the loop before the
+        delete starts, and every listener hears every key after it ends, also when it fails. Both
+        L1 backends are built for any thread: SQLite gives each thread its own connection to the one
+        in-memory database, DuckDB writes under its own lock. A cancel waits for the eviction to
+        finish and is raised after, so a cancel never leaves L1 holding a row a commit replaced.
+        Fewer keys are evicted on the loop, where a thread costs more than the work.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if len(entity_ids) < self.L1_EVICT_OFF_LOOP_KEYS:
+            self._evict_l1_many(entity_ids)
+            return
+        await _to_completion(self._evict_l1_rows_on_threads(entity_ids))
+
+    async def _evict_l1_rows_on_threads(self, entity_ids: Sequence[Any]) -> None:
+        """the work of :meth:`_evict_l1_many_off_loop`: fence on the loop, delete on a thread, listeners on the loop.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :return: nothing
+        :rtype: None
+        """
+        fence_keys = await asyncio.to_thread(self._fence_keys, entity_ids)
+        fence = self._l1_fence
+        for fence_key in fence_keys:
+            fence.changed(fence_key)
+        try:
+            l1 = self._l1_holding_table()
+            if l1 is not None:
+                await asyncio.to_thread(self._delete_l1_rows, l1, entity_ids)
+        finally:
+            for entity_id in entity_ids:
+                self._l1_changed(entity_id)
+
+    def _fence_keys(self, entity_ids: Sequence[Any]) -> list[tuple[str, ...]]:
+        """every key's :meth:`_fence_key`, in order; pure, so a thread may make them.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :return: the fence keys
+        :rtype: list[tuple[str, ...]]
+        """
+        return [self._fence_key(entity_id) for entity_id in entity_ids]
+
+    def _delete_l1_rows(self, l1: Any, entity_ids: Sequence[Any]) -> None:
+        """delete ``entity_ids``' rows from ``l1`` in one backend write; blocking (:meth:`_evict_l1_many_off_loop`).
+
+        :param l1: this collection's L1, holding its table
+        :ptype l1: Any
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :return: nothing
+        :rtype: None
+        """
+        l1.delete_many_by_id(
+            self.table_name,
+            [self.normalize_pk(entity_id) for entity_id in entity_ids],
+            self.primary_key_columns,
+        )
 
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
@@ -4846,6 +4943,10 @@ class BaseCollection(ABC, Generic[EntityT]):
     #: which costs that key one more L3 read and nothing else.
     L2_READ_THROUGH_LIMIT: ClassVar[int] = 10_000
 
+    #: from this many keys an eviction a coroutine settles deletes from L1 on a worker thread, not
+    #: the event loop (:meth:`_evict_l1_many_off_loop`); below it the thread costs more than the delete
+    L1_EVICT_OFF_LOOP_KEYS: ClassVar[int] = 64
+
     async def invalidate_cache_many(
         self, entity_ids: Sequence[Any], *, rows: Sequence[dict[str, Any] | None] | None = None
     ) -> None:
@@ -4873,7 +4974,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             write generation; every key has left L1 and L2 and every eviction was broadcast
         """
         self._set_span_table()
-        self._evict_l1_many(entity_ids)
+        await self._evict_l1_many_off_loop(entity_ids)
         if not entity_ids:
             return
         seen: Sequence[dict[str, Any] | None] = rows if rows is not None else (None,) * len(entity_ids)
