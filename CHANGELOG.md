@@ -95,6 +95,28 @@ switches: an agent with all three off still saves, searches, recalls and retires
 (agent-memory migration v032), backfilled; reads and upserts take the agent, so two agents in one conversation keep
 separate tool results and separate recalled memories. An index declaration can say `NULLS NOT DISTINCT`.
 
+## v0.91.4 -- 2026-11-06
+
+### nats: a large object is hashed off the event loop
+
+**Fixed:** an Object Store put or get hashed the whole object on the event loop. On cobalt prod reports pods
+(2026-11-06) the loop watchdog caught the stall; a 256 MB put and get held the loop 176 ms. An object of 1 MiB or more
+is now cut into chunks and hashed (put), or joined and hashed (get), on a worker thread; smaller objects stay inline.
+The worst wake for the same put and get is about 14 ms.
+
+### core: evicting many L1 keys runs off the event loop
+
+**Fixed:** `invalidate_cache_many`, `save_rows` and `delete_rows` evicted every key from L1 on the event loop; a
+100k-key eviction held it 228 ms. At 64 keys or more, the fence keys are made and the L1 delete runs on worker threads.
+The fence hears every key on the loop before the delete, and listeners hear them after it. A cancel waits for the
+eviction to finish and is raised after, so L1 never keeps a row a commit replaced. The worst wake is about 19 ms.
+
+### evals: a job lease's log shows a sub-second lease as it is
+
+**Fixed:** the lease renewal and lost-lease log lines rounded a sub-second lease to "0s"; they now print it as set
+("0.3s"). The job-lease cancel test no longer races a 0.3 s lease on a loaded machine: it failed 19 of 20 concurrent
+runs before and passes 40 of 40 after.
+
 ## v0.91.3 -- 2026-11-05
 
 ### core: a diff names its groups in one array only when the group column's type allows it

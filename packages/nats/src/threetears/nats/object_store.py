@@ -35,12 +35,13 @@ design notes
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
@@ -246,6 +247,70 @@ def _digest(data: Iterable[bytes]) -> str:
     for piece in data:
         hasher.update(piece)
     return f"{_DIGEST_PREFIX}{base64.urlsafe_b64encode(hasher.digest()).decode('ascii')}"
+
+
+#: from this many bytes an object is hashed on a worker thread, never the event loop: SHA-256 runs
+#: at about 1-2 GB/s, so a 100 MB snapshot held the loop for 50-100 ms (cobalt prod reports pods,
+#: 2026-11-06). ``hashlib`` lets go of the interpreter lock while it hashes a piece this large, so the
+#: loop runs beside it; below it the thread costs more than the hash
+_DIGEST_OFF_LOOP_BYTES: Final[int] = 1 << 20
+
+
+def _split_and_digest(data: bytes, chunk_bytes: int) -> tuple[list[bytes], str]:
+    """``data`` cut into chunks of ``chunk_bytes``, and its :func:`_digest`.
+
+    :param data: the object's bytes
+    :ptype data: bytes
+    :param chunk_bytes: the most bytes one chunk holds
+    :ptype chunk_bytes: int
+    :return: the chunks, in order, and the digest
+    :rtype: tuple[list[bytes], str]
+    """
+    pieces = [data[start : start + chunk_bytes] for start in range(0, len(data), chunk_bytes)]
+    return pieces, _digest(pieces)
+
+
+async def _split_and_digest_off_loop(data: bytes, chunk_bytes: int) -> tuple[list[bytes], str]:
+    """:func:`_split_and_digest`, on a worker thread from :data:`_DIGEST_OFF_LOOP_BYTES` bytes.
+
+    Cutting the chunks copies every byte, so a large object is cut on the thread that hashes it.
+
+    :param data: the object's bytes
+    :ptype data: bytes
+    :param chunk_bytes: the most bytes one chunk holds
+    :ptype chunk_bytes: int
+    :return: the chunks, in order, and the digest
+    :rtype: tuple[list[bytes], str]
+    """
+    if len(data) < _DIGEST_OFF_LOOP_BYTES:
+        return _split_and_digest(data, chunk_bytes)
+    return await asyncio.to_thread(_split_and_digest, data, chunk_bytes)
+
+
+def _joined_and_digest(pieces: Sequence[bytes]) -> tuple[bytes, str]:
+    """the pieces as one ``bytes``, and their :func:`_digest`.
+
+    :param pieces: the bytes, in order
+    :ptype pieces: Sequence[bytes]
+    :return: the joined bytes and their digest
+    :rtype: tuple[bytes, str]
+    """
+    return b"".join(pieces), _digest(pieces)
+
+
+async def _joined_and_digest_off_loop(pieces: Sequence[bytes]) -> tuple[bytes, str]:
+    """:func:`_joined_and_digest` of ``pieces``, on a worker thread from :data:`_DIGEST_OFF_LOOP_BYTES` bytes.
+
+    The join is a copy of every byte, so a large object is joined on the thread that hashes it.
+
+    :param pieces: the bytes, in order
+    :ptype pieces: Sequence[bytes]
+    :return: the joined bytes and their digest
+    :rtype: tuple[bytes, str]
+    """
+    if sum(len(piece) for piece in pieces) < _DIGEST_OFF_LOOP_BYTES:
+        return _joined_and_digest(pieces)
+    return await asyncio.to_thread(_joined_and_digest, pieces)
 
 
 def _parse_mtime(value: str | None, name: str = "") -> datetime | None:
@@ -491,7 +556,7 @@ class NatsObjectStore:
         js = self._client.jetstream_context()
         nuid = uuid.uuid7().hex
         chunk_subject = _chunk_subject(self._full_name, nuid)
-        pieces = [data[start : start + self._chunk_bytes] for start in range(0, len(data), self._chunk_bytes)]
+        pieces, digest = await _split_and_digest_off_loop(data, self._chunk_bytes)
         # refused before the first chunk when the store cannot hold it: a put the server refused part way left the
         # chunks it had written, which the declarer purges only while no write claim stands, never while the writer
         # that met the full store holds its own (cobalt prod, 2026-11-01). Writers racing past this check meet the
@@ -507,7 +572,7 @@ class NatsObjectStore:
             nuid=nuid,
             size=len(data),
             chunks=len(pieces),
-            digest=_digest(pieces),
+            digest=digest,
             mtime=datetime.now(UTC).isoformat(),
             options=ObjectMetaOptions(max_chunk_size=self._chunk_bytes),
         )
@@ -630,8 +695,8 @@ class NatsObjectStore:
                 deliver_policy=DeliverPolicy.ALL,
                 prefix=_GET_CONSUMER_PREFIX,
             )
-        data = b"".join(chunks)
-        if len(data) != int(raw.size or 0) or _digest(chunks) != (raw.digest or _digest(())):
+        data, digest = await _joined_and_digest_off_loop(chunks)
+        if len(data) != int(raw.size or 0) or digest != (raw.digest or _digest(())):
             raise ObjectStoreError(
                 f"object {name!r} in {self._full_name} did not arrive as recorded: {len(data)} bytes against "
                 f"{raw.size} recorded, or its digest differs"

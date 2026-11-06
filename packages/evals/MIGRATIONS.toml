@@ -59,10 +59,18 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.91.3"
+since = "v0.91.4"
 summary = """
 Memory switches, the public cut-off-fire undo, descending index declarations and Date/Time cache columns: no
-3tears-evals name has moved or been removed since 0.91.3, and no judge wording changed.
+3tears-evals name has moved or been removed since 0.91.4, and no judge wording changed.
+"""
+
+[[release]]
+version = "0.91.4"
+since = "v0.91.3"
+summary = """
+Large objects are hashed and many L1 keys evicted off the event loop, and a job lease logs a sub-second lease as it
+is: no 3tears-evals name has moved or been removed since 0.91.3, and no judge wording changed.
 """
 
 [[release]]

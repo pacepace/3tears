@@ -2201,7 +2201,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # enrolled before the write, so a write whose outcome is unknown is settled with the rest
             transaction.enroll(self, key, row=data)
         # every key leaves L1 in one write before the store's, not one write a key
-        self._evict_l1_many(keys)
+        await self._evict_l1_many_off_loop(keys)
         written = 0
         if copy:
             written = await self._copy_rows(store, stamped, conn=conn, max_rows=max_rows, max_bytes=max_bytes)
@@ -2554,7 +2554,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             transaction.enroll(self, entity_key, row=seen)
             entity_keys.append(entity_key)
         # every key leaves L1 in one write before the store's delete, not one write a key
-        self._evict_l1_many(entity_keys)
+        await self._evict_l1_many_off_loop(entity_keys)
         deleted = 0
         if named and isinstance(store, BulkDeletingStore):
             deleted = await store.delete_many(
