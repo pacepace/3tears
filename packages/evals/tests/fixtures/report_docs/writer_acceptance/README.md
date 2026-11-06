@@ -135,3 +135,31 @@ The same command as the $0.75 run above with `--budget-usd 1.5 --cap-usd 104`, 2
 
 This is the first run on which the writer gate separated two configurations of the same writer on held-out cases, so the
 pairwise instrument has signal at n=25 (design decision D4, "signal before search").
+
+# Writer acceptance: the minimal skill against the shipped skill over 25 held-out cases, 2026-11-06
+
+Files: `20261106-sonnet-minimal-25.json` (the result), `20261106-sonnet-minimal-25-run.txt` (the printed run). The turn
+recordings and the store are not kept.
+
+## What ran
+
+`--variant minimal` (the skill reduced to `SKILL.md` and `editor.md`) with the same settings as the $1.50 no-editor run
+(`--budget-usd 1.5 --turns 30 --request-s 50 --cap-usd 104`), 2026-11-06 21:45 to 22:27 UTC, over the same 25 cases.
+
+## Result
+
+| Reading | Figure |
+|---|---|
+| Cases with two pages, paired for the judge | 24 of 25 |
+| Primary (preferred by the judge, side by side) | not separated: the candidate preferred on 0.56 of the pairs, p 0.88 |
+| Order consistency | 20 of 24 |
+| Pages both stored finished | 6 of 25 (the finished-only reading: 0.5) |
+| Gated readings | none separated; bounces +0.58 for minimal (-0.41 to 1.58) |
+| Held-out cases like these that would settle the primary | 388 |
+| Spend | shipped $10.85, minimal $10.72, pairwise pass $0.37 |
+| Verdict | FAIL to promote, keep the shipped skill: minimal is not shown better |
+
+Read with the 2026-11-03 blind read (shipped against hollow, no detectable difference at n=11) and the no-editor run
+above: on Sonnet, the skill's files beyond `SKILL.md` and `editor.md` are not measurably load-bearing, while the editor
+is. The gate can separate what matters (the editor) and does not separate what does not (the extra files), on the same
+25 cases and the same day.
