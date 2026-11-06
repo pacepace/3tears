@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import gc
 import asyncio
 import json
 import linecache
@@ -19,9 +20,10 @@ import sqlite3
 import sys
 import threading
 import time
+import tracemalloc
 from dataclasses import replace
 from types import FrameType
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -47,6 +49,7 @@ from threetears.core.collections.scoped_snapshot import (
     SnapshotPhase,
     SnapshotSource,
     SnapshotTable,
+    decode_chunk,
     encode_chunk,
     open_tool_pod_snapshot,
 )
@@ -252,7 +255,8 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
 
     async def settled() -> Any:
         if not l3.writing:
-            return dict(l3.epochs)
+            # opaque, as L3's own answer is (cobalt's SqlL3Backend gives a number): only equal or not, never epochs
+            return repr(sorted(l3.epochs.items()))
         if l3.pending is None:
             return Unsettled("a write is in progress")
         return Unsettled("a write is in progress", epochs=dict(l3.epochs), pending=frozenset(l3.pending))
@@ -470,24 +474,29 @@ async def test_a_tool_pods_snapshot_refuses_an_option_it_wires_itself(option: st
     assert client.sent == [], "the hub was asked before the options were checked"
 
 
-async def test_a_catch_up_on_a_replica_whose_watch_ended_leaves_it_failed() -> None:
-    """the watch ends while the buckets still answer (a consumer lost, the client fine): a catch-up
-    that really rebuilds a scope must not make the replica, which no longer applies changes, look ready."""
-    snapshot, pointers, _, l3 = _snapshot()
+async def test_a_replica_whose_watch_ended_says_so_watches_again_and_applies_changes_once_more() -> None:
+    """the watch ends while the buckets still answer (a consumer lost, the client fine). The replica says so, a
+    catch-up does not make it look ready meanwhile, and it follows the pointers again by itself: a replica whose watch
+    ended was FAILED for good until its process restarted (Pace, 2026-11-05: no failure parks the system)."""
+    snapshot, pointers, _, l3 = _snapshot(rewatch_backoff=(0.3, 0.3))
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
     # the first rebuild declares the copy ready before it lets go of its claim
     await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
     pointers.end_watch()
-    await _until(lambda: snapshot.status().phase is SnapshotPhase.FAILED, what="the watch's end")
+    await _until(lambda: snapshot.status().phase is not SnapshotPhase.READY, what="the watch's end said")
+    assert "watch" in snapshot.status().detail
     l3.rows[0]["votes"] = 7
     l3.epochs["TX"] = 2
 
     caught = await snapshot.catch_up_from_l3()
 
     assert caught == ["TX"], "the catch-up did not rebuild the scope L3 moved"
-    assert snapshot.status().phase is SnapshotPhase.FAILED, "a catch-up hid a replica that no longer applies changes"
-    assert "watch" in snapshot.status().detail
+    assert snapshot.status().phase is not SnapshotPhase.READY or "watch" not in snapshot.status().detail
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.READY, what="the pointers watched again")
+    l3.epochs["TX"] = 3
+    await snapshot.publish("TX", 3, {"results": [{"county": "c1", "state": "TX", "votes": 9}]})
+    await _until(lambda: snapshot.applied_epoch("TX") == 3, what="a change applied once the watch was back")
     await snapshot.stop()
 
 
@@ -682,7 +691,9 @@ async def test_a_carry_whose_chunk_is_gone_is_left_for_the_catch_up() -> None:
     await snapshot.stop()
 
 
-async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on_every_look() -> None:
+async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on_every_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """L3 never reaches the pointer's epoch: every rebuild of TX publishes nothing (a stale epoch) and
     its pointer's chunk still cannot be read, so TX is behind at every look across many rechecks and
     rebuilds, its reason named, never reported current in between."""
@@ -702,8 +713,12 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
 
     looks = []
+    # each rebuild waits out the scope's backoff (0.91.2: never one at every recheck), which the clock moves past
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
     while takes[0] < 2:  # rebuilds of TX ran, each taking and letting go of the claim
         looks.append(snapshot.status())
+        clock.ahead += 3600
         await asyncio.sleep(0.01)
     for _ in range(20):  # and several rechecks after
         looks.append(snapshot.status())
@@ -1048,11 +1063,14 @@ async def test_a_versioned_read_keeps_the_state_its_epochs_name_through_a_later_
     await snapshot.stop()
 
 
-async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_behind_on_every_look() -> None:
+async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_behind_on_every_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """another code version wrote TX at epoch 3 under other columns, with a chunk that reads fine, and
     L3's epochs still say 2: each rebuild of TX publishes nothing (a stale epoch) and the pointer's
     chunks may not be loaded here, so TX is behind at every look across many rebuilds, never
-    reported current in between while the L1 holds epoch 1."""
+    reported current in between while the L1 holds epoch 1. Each rebuild waits out the scope's backoff
+    (0.91.2: never one at every recheck), which the clock here moves past."""
     snapshot, pointers, store, l3 = _snapshot()
     await snapshot.start()
     await snapshot.wait_ready(timeout=5)
@@ -1104,8 +1122,12 @@ async def test_a_stuck_scope_whose_later_pointer_carries_other_columns_stays_beh
     # (with 32 DuckDB threads one export took 4.96 s under the spin, and 4 ms without it)
     first, looking = takes[0], True
 
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+
     def rebuilt_three_more_times() -> bool:
         look()
+        clock.ahead += 3600  # past the scope's backoff, at every poll
         return takes[0] >= first + 3
 
     try:
@@ -1182,6 +1204,313 @@ async def test_a_cold_load_whose_chunk_reads_fail_loads_from_l2_again_and_never_
     assert later.status().source is SnapshotSource.L2, "a failed read rebuilt the snapshot from L3"
     assert l3.statements == statements, "L3 was read while L2 held the copy"
     assert store.failing == 0
+    await later.stop()
+
+
+class _ScopedL3(_L3):
+    """an L3 counting its reads of each scope's rows."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__(rows)
+        self.read_of: dict[str, int] = {}
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "DISTINCT" not in sql and args:
+            self.read_of[str(args[0])] = self.read_of.get(str(args[0]), 0) + 1
+        return await super().fetch(sql, *args)
+
+
+def _spoil_de(kind: str, pointers: Any, store: _Store) -> None:
+    """make scope DE's copy in L2 unusable, one way: its chunk of another count, gone or corrupt; its pointer gone,
+    unreadable or of other columns; or the index partial, not naming it."""
+    entry = pointers.entries["enr.s.DE"][0]
+    de = json.loads(entry)
+    chunk = de["tables"]["results"]["object"]
+    if kind == "wrong_count":
+        de["tables"]["results"]["rows"] = 5
+        pointers.put_now("enr.s.DE", json.dumps(de).encode())
+    elif kind == "chunk_gone":
+        del store.objects[chunk]
+    elif kind == "chunk_corrupt":
+        store.objects[chunk] = b"not a chunk"
+    elif kind == "pointer_gone":
+        del pointers.entries["enr.s.DE"]
+    elif kind == "pointer_unreadable":
+        pointers.put_now("enr.s.DE", b"{not json")
+    elif kind == "other_columns":
+        pointers.put_now("enr.s.DE", json.dumps({**de, "schema": {"results": "old"}}).encode())
+    elif kind == "partial_index":
+        pointers.put_now("enr.index", json.dumps({"scopes": ["TX"], "partial": True}).encode())
+        del pointers.entries["enr.s.DE"]
+    else:
+        raise AssertionError(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "wrong_count",
+        "chunk_gone",
+        "chunk_corrupt",
+        "pointer_gone",
+        "pointer_unreadable",
+        "other_columns",
+        "partial_index",
+    ],
+)
+async def test_a_cold_load_rebuilds_from_l3_only_the_scope_l2_cannot_give_and_loads_the_rest_from_l2(kind: str) -> None:
+    """cobalt prod 2026-11-05: one chunk held 471 rows where its pointer said 218, and every new pod rebuilt all 52
+    states whole from L3 for that one scope (about four hours at prod's size). Whatever makes one scope's copy in L2
+    unusable, that scope alone is read from L3 and published; every other scope loads from L2, and is never read."""
+    l3 = _ScopedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    first, pointers, store, _ = _snapshot(l3=l3)
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    _spoil_de(kind, pointers, store)
+    l3.read_of.clear()
+
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+
+    assert later.status().source is SnapshotSource.L2, f"one scope's {kind} rebuilt the snapshot from L3"
+    assert l3.read_of.get("TX", 0) == 0, f"a scope L2 held was read from L3: {l3.read_of}"
+    assert l3.read_of.get("DE", 0) > 0, "the scope L2 could not give was not rebuilt from L3"
+    with later.read() as cursor:
+        assert cursor.execute("SELECT county, state, votes FROM results ORDER BY county").fetchall() == [
+            ("c1", "TX", 1),
+            ("c2", "DE", 2),
+        ]
+    if kind == "wrong_count":
+        assert json.loads(pointers.entries["enr.s.DE"][0])["tables"]["results"]["rows"] == 1, "L2 was not repaired"
+    await later.stop()
+
+
+async def test_a_ready_replica_whose_chunk_reads_keep_failing_reads_l2_again_and_never_reads_the_scope_from_l3() -> (
+    None
+):
+    """a read NATS failed (a timeout, a slow consumer cut off) is not the chunk's fault: it never counts toward the
+    failures that bring a scope forward from L3, so a replica whose reads fail more times than that bound applies the
+    scope from L2 once they answer, and reads nothing from L3 meanwhile."""
+    store = _CutOffStore()
+    writer, pointers, _, l3 = _snapshot(store=store)
+    await writer.start()
+    await writer.wait_ready(timeout=5)
+    replica, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    statements = l3.statements
+    store.failing = 6  # twice the failures (3) that bring a scope forward from L3
+
+    l3.epochs["TX"] = 2
+    await writer.publish("TX", 2, {"results": [{"county": "c1", "state": "TX", "votes": 7}]})
+
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="TX applied from L2 once its reads answered")
+    assert store.failing == 0
+    assert l3.statements == statements, "a scope whose reads failed was read from L3"
+    await writer.stop()
+    await replica.stop()
+
+
+def _de_past_l3_with_its_chunk_gone(pointers: Any, epoch: int) -> None:
+    """DE's pointer moved to ``epoch``, past what L3 records, naming a chunk the store does not hold: no rebuild can
+    publish over it (a pointer is never moved back), and no replica can load it."""
+    de = json.loads(pointers.entries["enr.s.DE"][0])
+    de["epoch"] = epoch
+    de["tables"]["results"]["object"] = f"enr/DE/{epoch}/results.gone"
+    pointers.put_now("enr.s.DE", json.dumps(de).encode())
+
+
+async def test_a_repair_of_one_scope_lands_whatever_another_scopes_chunk_is() -> None:
+    """a rebuild of some scopes applied every scope the index names ahead of this L1 before it ended, and one
+    unrelated scope's chunk that could not be read failed it: the repaired scope did not land, and the catch-up failed
+    at every try. The repair applies its own scopes; the other one is marked behind on its own."""
+    snapshot, pointers, _, l3 = _snapshot()
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    _de_past_l3_with_its_chunk_gone(pointers, epoch=5)
+    await _until(lambda: "DE" in snapshot.status().behind, what="DE behind: its chunk cannot be read")
+    l3.rows[0]["votes"] = 7
+    l3.epochs["TX"] = 2
+
+    caught = await snapshot.catch_up_from_l3()
+
+    assert "TX" in caught, f"the repair of TX did not land: {caught}"
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at its repaired epoch")
+    assert _held_votes(snapshot, "TX") == [7]
+    assert "DE" in snapshot.status().behind, "the scope whose chunk is gone was not left behind"
+    await snapshot.stop()
+
+
+async def test_a_pointer_no_rebuild_can_publish_over_is_retried_with_backoff_never_by_rebuilding_every_scope() -> None:
+    """NATS lost the index; DE's pointer stands past L3's epoch, naming a chunk that is gone. The rebuild of every
+    scope could not apply DE and failed, and the next pass rebuilt every scope again, at every recheck. Now the
+    rebuild runs once: DE alone is left, and tried again after a backoff."""
+    l3 = _ScopedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    first, pointers, store, _ = _snapshot(l3=l3)
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    _de_past_l3_with_its_chunk_gone(pointers, epoch=5)
+    del pointers.entries["enr.index"]
+    l3.read_of.clear()
+
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3, l2_reload_backoff=(0.5,))
+    await later.start()
+    await _until(lambda: l3.read_of.get("TX", 0) > 0, what="the rebuild of every scope to read TX")
+    await asyncio.sleep(1.0)  # twenty rechecks at 50 ms
+
+    assert l3.read_of.get("TX", 0) == 1, f"every scope was rebuilt again and again: TX read {l3.read_of}"
+    assert l3.read_of.get("DE", 0) <= 3, f"DE was tried at every recheck, not after a backoff: {l3.read_of}"
+    await later.stop()
+
+
+class _FailsForStore(_Store):
+    """an Object Store whose reads of one scope's chunks fail as a NATS timeout does, while ``scope`` names it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scope: str | None = None
+
+    async def get(self, name: str) -> bytes:
+        from threetears.nats import ObjectStoreError
+
+        if self.scope is not None and f"/{self.scope}/" in name:
+            raise ObjectStoreError(f"reading {name} stalled after 3 of 7 messages")
+        return await super().get(name)
+
+
+async def test_a_recovery_whose_base_l2_cannot_read_reads_l2_again_and_never_reads_the_scope_whole() -> None:
+    """a scope this L1 never got a copy of (its chunks' reads failed), behind L3: the recovery could not read its base
+    from L2, took it for no copy, and read the scope whole from L3. The copy is in L2: it is read from L2 again."""
+    store = _FailsForStore()
+    l3 = _VersionedL3()
+    writer, replica, pointers, _, _ = await _diffed_pair(l3, store=store)
+    l3.tables["results"].append({"county": "c9", "state": "CA", "votes": 9, "source_version": 1})
+    l3.tables["totals"].append({"state": "CA", "total": 9, "source_version": 1})
+    l3.epochs["CA"] = 1
+    store.scope = "CA"
+    assert (await writer.catch_up()).caught == ("CA",)
+    await _until(lambda: "enr.s.CA" in pointers.entries, what="CA published")
+    l3.write(2, "results", {"county": "c9", "state": "CA", "votes": 10})
+    l3.epochs["CA"] = 2
+    l3.whole_reads = 0
+
+    outcome = await replica.catch_up()
+
+    assert l3.whole_reads == 0, "a scope whose base L2 could not read was read whole from L3"
+    assert "CA" in outcome.left and "read from L2 again" in outcome.left["CA"], outcome
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_cold_start_after_a_schema_change_rebuilds_each_scope_once_is_l3s_and_stops_within_a_bound() -> None:
+    """every pointer of other columns (a schema change): the new replica rebuilds each scope alone, once, publishes
+    over the old pointers, and is ready as L3's copy; and it stops. Said ready as L2's, the integration test of the
+    change failed before its replica was stopped, and the replica re-watching a closed NATS kept CI's loop alive."""
+    l3 = _ScopedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    first, pointers, store, _ = _snapshot(l3=l3)
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    # the old version's chunks: other columns, under names of their own (a chunk's name carries its columns)
+    for scope, county, votes in (("TX", "c1", 1), ("DE", "c2", 2)):
+        held = json.loads(pointers.entries[f"enr.s.{scope}"][0])
+        name = f"enr/{scope}/1/results.old"
+        store.objects[name] = encode_chunk(
+            _pa.table({"county": [county], "state": [scope], "votes": [votes]}).drop_columns(["votes"])
+        )
+        old = {**held, "tables": {"results": {"object": name, "rows": 1}}, "schema": {"results": "old"}}
+        pointers.put_now(f"enr.s.{scope}", json.dumps(old).encode())
+    l3.read_of.clear()
+
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+
+    assert later.status().source is SnapshotSource.L3, "a copy every scope of which was rebuilt was said to be L2's"
+    assert l3.read_of == {"TX": 1, "DE": 1}, f"a scope was rebuilt more than once: {l3.read_of}"
+    for scope in ("TX", "DE"):
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["schema"]["results"] != "old", "not published over"
+    await asyncio.wait_for(later.stop(), timeout=5)
+
+
+async def test_a_watch_whose_nats_connection_closed_is_not_followed_again_and_the_replica_stops() -> None:
+    """a watch the KV layer ends because its NATS connection is closed can never deliver again: followed again, it
+    retried for the life of the process, and a replica nobody stopped kept the event loop alive (CI's integration job
+    hung 18 minutes). It is said, failed, and not followed again; stop() returns."""
+    from threetears.nats import KvError
+
+    snapshot, pointers, _, _ = _snapshot(rewatch_backoff=(0.05, 0.05))
+    watches = [0]
+    real_watch = pointers.watch_prefix
+
+    def counting(*, prefix: str, heartbeat: timedelta) -> AsyncIterator[KvKeyUpdate | None]:
+        watches[0] += 1
+        return real_watch(prefix=prefix, heartbeat=heartbeat)
+
+    pointers.watch_prefix = counting  # type: ignore[method-assign]
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    pointers.broadcast(KvError("key watch on $KV.pod-pointers.enr.> ended: the NATS connection is closed"))
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.FAILED, what="the closed connection said")
+    await asyncio.sleep(0.3)  # six backoffs
+
+    assert watches[0] == 1, f"a watch on a closed connection was followed again {watches[0] - 1} times"
+    assert "connection is closed" in snapshot.status().detail
+    await asyncio.wait_for(snapshot.stop(), timeout=5)
+
+
+class _WriteOnceStore(_Store):
+    """an Object Store whose names are written once, as NATS's are: a put of a name it holds is refused."""
+
+    async def put(self, name: str, data: bytes) -> None:
+        from threetears.nats import ObjectExistsError
+
+        if name in self.objects:
+            raise ObjectExistsError(f"{name} is already in the store", bucket="objects", name=name)
+        await super().put(name, data)
+
+
+async def test_a_same_epoch_rebuild_of_other_rows_never_points_at_the_chunk_an_earlier_writer_wrote() -> None:
+    """cobalt prod 2026-11-05: a chunk is named by its scope, epoch, table and columns, not its rows, and a copy whose
+    retention moves with the clock keeps other rows of the same epoch written later. The later writer found the name
+    taken, reused the chunk, and recorded its own count (218) on a pointer to the earlier 471 rows; every new pod
+    then found the scope unloadable. Other rows go under a name of their own, and the pointer and chunk agree."""
+    l3 = _L3(
+        [
+            {"county": "c1", "state": "TX", "votes": 1},
+            {"county": "c3", "state": "TX", "votes": 3},
+            {"county": "c2", "state": "DE", "votes": 2},
+        ]
+    )
+    first, pointers, store, _ = _snapshot(l3=l3, store=_WriteOnceStore())
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    tx = json.loads(pointers.entries["enr.s.TX"][0])
+    # the same epoch, later: the retention keeps one of TX's rows now; the pointer is of other columns, so the next
+    # replica rebuilds TX at the epoch L3 still records
+    l3.rows = [r for r in l3.rows if r["county"] != "c3"]
+    store.objects["enr/TX/1/results.other"] = encode_chunk(_tx_arrow(1).drop_columns(["votes"]))
+    old = {**tx, "tables": {"results": {"object": "enr/TX/1/results.other", "rows": 1}}, "schema": {"results": "old"}}
+    pointers.put_now("enr.s.TX", json.dumps(old).encode())
+    rebuilder, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await rebuilder.start()
+    await rebuilder.wait_ready(timeout=5)
+    await rebuilder.stop()
+
+    held = json.loads(pointers.entries["enr.s.TX"][0])
+    chunk = decode_chunk(store.objects[held["tables"]["results"]["object"]])
+    assert chunk.num_rows == held["tables"]["results"]["rows"] == 1, "the pointer names a chunk of other rows"
+    statements = l3.statements
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+    assert later.status().source is SnapshotSource.L2
+    assert l3.statements == statements, "a scope L2 held was read from L3"
     await later.stop()
 
 
@@ -1919,11 +2248,13 @@ def _retiring_snapshot(max_bytes: int = 10**9) -> tuple[ScopedSnapshot, _Pointer
     return snapshot, pointers, store, l3
 
 
-async def _started(snapshot: ScopedSnapshot, pointers: _Pointers) -> None:
+async def _started(snapshot: ScopedSnapshot, pointers: _Pointers, *, timeout: float = 5) -> None:
     """started, ready, and its first rebuild's claim let go, so a catch-up here takes it."""
     await snapshot.start()
-    await snapshot.wait_ready(timeout=5)
-    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    await snapshot.wait_ready(timeout=timeout)
+    await _until(
+        lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released", timeout=timeout
+    )
 
 
 def _epochs_held(store: _Store, scope: str) -> set[int]:
@@ -2454,11 +2785,13 @@ async def test_a_pointer_marked_by_a_format_this_replica_does_not_know_is_served
     _with_pieces(pointers, store, epoch=1, pieces=[(1, [_county("c3", 3)])], mark="+pieces-v9")
     standing = pointers.entries["enr.s.TX"][0]
 
-    second, _, _, _ = _snapshot(pointers=pointers, store=store)
+    second, _, _, l3 = _snapshot(pointers=pointers, store=store)
     await second.start()
     await second.wait_ready(timeout=5)
 
-    assert second.status().source is SnapshotSource.L3
+    # the scope of the other format alone is served from L3 (Pace, 2026-11-05: one scope's pointer never rebuilds the
+    # snapshot); every other scope loads from L2
+    assert second.status().source is SnapshotSource.L2
     assert _tx_counties(second) == [("c1", 1)], "a pointer of another format was loaded"
     assert pointers.entries["enr.s.TX"][0] == standing, "the other format's pointer was repointed at its epoch"
     await second.stop()
@@ -3060,7 +3393,9 @@ class _PagedL3(_L3):
             return [{"scope": s} for s in sorted(self.sizes)]
         state = args[0]
         limit = int(sql.rsplit("LIMIT", 1)[1])
-        start = 0 if len(args) == 1 else int(args[1].rsplit("-", 1)[1]) + 1
+        # a set of groups (= ANY($n)) is no cursor: the cursor is the parameters after the pinned ones
+        cursor = [a for a in args[1:] if not isinstance(a, list)]
+        start = 0 if not cursor else int(cursor[0].rsplit("-", 1)[1]) + 1
         if start == 0:
             self.reads[state] += 1
             self.events.append(f"read {state}")
@@ -4785,6 +5120,8 @@ class _PartitionedL3(_L3):
         self.partition = partition
         self.scanned = 0
         self.partition_reads = 0
+        #: the values each read of many partition values at once named
+        self.partition_values_read: list[int] = []
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         if "AS value" in sql:
@@ -4799,13 +5136,20 @@ class _PartitionedL3(_L3):
         pinned = f'"{self.partition}" = ' in sql.split("ORDER BY", 1)[0]
         state, value = args[0], (args[1] if pinned else None)
         cursor = tuple(args[2 if pinned else 1 :]) or None
+        # a set of values (= ANY($2)): any of them
+        values = set(value) if pinned and isinstance(value, list) else None
+        if values is not None:
+            self.partition_values_read.append(len(values))
 
         def place(row: dict[str, Any]) -> tuple[Any, ...]:
             return tuple(row[column] for column in order)
 
-        scope = sorted(
-            (r for r in self.rows if r["state"] == state and (not pinned or r[self.partition] == value)), key=place
-        )
+        def named(row: dict[str, Any]) -> bool:
+            if not pinned:
+                return True
+            return row[self.partition] in values if values is not None else row[self.partition] == value
+
+        scope = sorted((r for r in self.rows if r["state"] == state and named(r)), key=place)
         self.scanned += len(scope)
         return [dict(r) for r in scope if cursor is None or place(r) > cursor][:limit]
 
@@ -5167,8 +5511,9 @@ class _VersionedL3:
                 for value, members in groups.items()
             ]
         pins = {column: args[int(n) - 1] for column, n in re.findall(r'"(\w+)" = \$(\d+)', sql)}
+        among = {column: list(args[int(n) - 1]) for column, n in re.findall(r'"(\w+)" = ANY\(\$(\d+)', sql)}
         # the totals hold one row a scope: its one group is the scope, so only a results read is ever whole
-        if set(pins) == {"state"} and table.group(1) == "results":
+        if set(pins) == {"state"} and not among and table.group(1) == "results":
             self.whole_reads += 1
         else:
             self.diff_reads += 1
@@ -5176,6 +5521,7 @@ class _VersionedL3:
             {k: v for k, v in r.items() if k != "source_version"}
             for r in rows
             if all(r.get(column) == value for column, value in pins.items())
+            and all(r.get(column) in values for column, values in among.items())
         ]
         self.after_read(str(pins.get("state")))
         return found
@@ -5195,10 +5541,15 @@ def _l3_holds(snapshot: ScopedSnapshot, l3: _VersionedL3) -> bool:
 
 
 async def _diffed_pair(
-    l3: Any | None = None, *, backend: DuckDBBackend | None = None, tables: Any = _DIFFED, **options: Any
+    l3: Any | None = None,
+    *,
+    backend: DuckDBBackend | None = None,
+    tables: Any = _DIFFED,
+    store: _Store | None = None,
+    **options: Any,
 ) -> tuple[ScopedSnapshot, ScopedSnapshot, _Pointers, _Store, Any]:
     """a writer and a replica over the diffed results and totals, both ready at epoch 1 (the first one built cold)."""
-    pointers, store, l3 = _Pointers(), _Store(), l3 or _VersionedL3()
+    pointers, store, l3 = _Pointers(), store or _Store(), l3 or _VersionedL3()
     writer, _, _, _ = _snapshot(tables=tables, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
     replica, _, _, _ = _snapshot(
         tables=tables, pointers=pointers, store=store, backend=backend or _two_table_backend(), l3=l3, **options
@@ -5272,26 +5623,155 @@ async def test_a_writer_killed_mid_write_is_recovered_from_the_diff_with_no_whol
 
     assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
     assert l3.whole_reads == 0, "a scope with a copy held was read whole from L3"
-    assert l3.diff_reads == 3, "the diff read more than the groups the write changed (c1, c4, and the total)"
+    # the groups the write changed (c1 and c4) in one statement, and the total
+    assert l3.diff_reads == 2, "the diff read more than the groups the write changed (c1 and c4 together, the total)"
     await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
     assert _l3_holds(replica, l3)
     await writer.stop()
     await replica.stop()
 
 
+async def test_a_recovery_whose_later_tables_ask_fails_reads_no_base_and_no_diff_before_leaving_the_scope_behind() -> (
+    None
+):
+    """cobalt dev 2026-11-05: a recovery read the scope's base from L2 (every table) and diffed its earlier tables
+    (FL: 102k rows of result_snapshots_by_id) before the lsf_projections ask timed out, at every retry, and pods died
+    of it at 20 GiB. Every table is asked first: an ask that fails leaves the scope behind having read nothing."""
+
+    fails = [False]
+
+    async def failing(l3: Any, scope: str) -> list[Any]:
+        if fails[0]:
+            raise ConnectionError("L3 query failed: QUERY_TIMEOUT")
+        return sorted({r["county"] for r in l3.tables["results"] if r["state"] == scope})
+
+    tables = (
+        _DIFFED[1],
+        SnapshotTable(
+            name="results",
+            scope_column="state",
+            key=("county",),
+            version_column="source_version",
+            partition_by="county",
+            partition_values=failing,
+        ),
+    )
+    writer, replica, pointers, store, l3 = await _diffed_pair(tables=tables)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    fails[0] = True
+    gets, reads = store.gets, (l3.whole_reads, l3.diff_reads)
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == () and "could not be asked" in outcome.left["TX"], outcome
+    assert (l3.whole_reads, l3.diff_reads) == reads, "an earlier table was diffed before the ask failed"
+    assert store.gets == gets, "the scope's base was read before the ask failed"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_recovery_reads_its_base_a_table_at_a_time_each_after_the_one_before_is_diffed() -> None:
+    """cobalt dev 2026-11-05: a recovery read the scope's every table from L2 before diffing any, and held it beside
+    the composed rows: the scope twice, and pods OOMKilled at 20 GiB. Each table's base is read when its diff runs and
+    let go once composed, so the next table's chunk is read only after the table before it was diffed."""
+    events: list[str] = []
+
+    class _Logged(_VersionedL3):
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            table = re.search(r'FROM "(\w+)"', sql)
+            if table is not None and args and args[0] == "TX":
+                events.append(f"l3 {table.group(1)}")
+            return await super().fetch(sql, *args)
+
+    class _LoggedStore(_Store):
+        async def get(self, name: str) -> bytes:
+            if "/TX/" in name:
+                events.append(f"chunk {name.rsplit('/', 1)[1].split('.', 1)[0]}")
+            return await super().get(name)
+
+    l3 = _Logged()
+    pointers, store = _Pointers(), _LoggedStore()
+    writer, _, _, _ = _snapshot(tables=_DIFFED, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await _started(writer, pointers)
+    replica, _, _, _ = _snapshot(tables=_DIFFED, pointers=pointers, store=store, backend=_two_table_backend(), l3=l3)
+    await replica.start()
+    await replica.wait_ready(timeout=5)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    events.clear()
+
+    outcome = await replica.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    chunk_totals = events.index("chunk totals")
+    assert "l3 results" in events[:chunk_totals], f"the totals' base was read before the results were diffed: {events}"
+    await writer.stop()
+    await replica.stop()
+
+
+async def test_a_scope_whose_ask_keeps_failing_with_l3_unchanged_is_not_asked_again_until_its_backoff_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cobalt dev 2026-11-05: catch-up attempts 32-36 in minutes, each of a scope whose ask timed out. An ask that fails
+    the same way with L3 unchanged waits out the scope's backoff: catch-ups meanwhile leave it behind, asking nothing."""
+    fails = [False]
+    asks = [0]
+
+    async def failing(l3: Any, scope: str) -> list[Any]:
+        asks[0] += 1
+        if fails[0]:
+            raise ConnectionError("L3 query failed: QUERY_TIMEOUT")
+        return sorted({r["county"] for r in l3.tables["results"] if r["state"] == scope})
+
+    tables = (
+        _DIFFED[1],
+        SnapshotTable(
+            name="results",
+            scope_column="state",
+            key=("county",),
+            version_column="source_version",
+            partition_by="county",
+            partition_values=failing,
+        ),
+    )
+    writer, replica, _, _, l3 = await _diffed_pair(tables=tables)
+    await _texas_at_2(writer, l3)
+    l3.epochs["TX"] = 2
+    fails[0] = True
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
+
+    first = await replica.catch_up()
+    asked = asks[0]
+    for _ in range(5):
+        clock.ahead += 5
+        again = await replica.catch_up()
+        assert "TX" in again.left, again
+    assert asks[0] == asked, f"a scope in its backoff was asked again {asks[0] - asked} times"
+    clock.ahead += 61
+    await replica.catch_up()
+    assert asks[0] > asked, "the scope was not tried again once its backoff ended"
+    assert "could not be asked" in first.left["TX"], first
+    await writer.stop()
+    await replica.stop()
+
+
 class _SlowGroupsL3(_VersionedL3):
-    """:class:`_VersionedL3` whose every read of one group (a county) takes ``delay`` seconds; it counts the most
-    group reads in flight at once."""
+    """:class:`_VersionedL3` whose every read of groups (counties, one or many at once) takes ``delay`` seconds; it
+    counts those statements, and the most in flight at once."""
 
     def __init__(self, delay: float) -> None:
         super().__init__()
         self.delay = delay
         self.in_flight = 0
         self.most_in_flight = 0
+        self.group_statements = 0
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        if '"county" = $' not in sql:
+        if '"county" = ' not in sql:
             return await super().fetch(sql, *args)
+        self.group_statements += 1
         self.in_flight += 1
         self.most_in_flight = max(self.most_in_flight, self.in_flight)
         try:
@@ -5301,11 +5781,11 @@ class _SlowGroupsL3(_VersionedL3):
             self.in_flight -= 1
 
 
-async def test_a_diff_over_many_slow_groups_finishes_past_the_stall_bound_and_reads_them_side_by_side() -> None:
+async def test_a_diff_over_many_slow_groups_finishes_past_the_stall_bound_and_reads_them_in_one_statement() -> None:
     """cobalt dev 2026-11-05: a writer killed mid-write left a diff of 45k rows over 940 partitions; read one group
     after another at about 4 a second, it landed nothing for the stall bound, was let go 39k rows in, and the next
-    replica began it again from zero, without end. Each group read is a landing, and the reads run side by side:
-    40 groups at 0.1 s each finish, and no read pauses the bound's clock."""
+    replica began it again from zero, without end. The groups whose rows fit a page are read in one statement (0.91.2;
+    0.91.1 read them eight at a time), each a landing: 40 groups finish, past the bound, in one round trip."""
     l3 = _SlowGroupsL3(delay=0.1)
     writer, replica, pointers, _, l3 = await _diffed_pair(l3, rebuild_stall=timedelta(seconds=0.3))
     # a write at 2 added 40 TX counties; its writer was killed before it staged anything
@@ -5318,7 +5798,7 @@ async def test_a_diff_over_many_slow_groups_finishes_past_the_stall_bound_and_re
 
     assert outcome.result is CatchUpResult.CAUGHT_UP, outcome
     assert l3.whole_reads == 0, "a scope with a copy held was read whole from L3"
-    assert l3.most_in_flight > 1, "the diff read its groups one after another"
+    assert l3.group_statements == 1, f"the diff read its 40 groups in {l3.group_statements} statements, not one"
     await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
     assert _l3_holds(replica, l3)
     await writer.stop()
@@ -5509,8 +5989,9 @@ class _EndlessL3(_VersionedL3):
     endless = False
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        pinned = '"county" = $2' in sql and args[1] == "c1"
-        whole = '"county" = $2' not in sql and '"results"' in sql and "count(*)" not in sql and "DISTINCT" not in sql
+        # c1 alone, pinned (= $2) or as the one value of a set (= ANY($2))
+        pinned = ('"county" = $2' in sql and args[1] == "c1") or ('"county" = ANY($2' in sql and args[1] == ["c1"])
+        whole = '"county" = ' not in sql and '"results"' in sql and "count(*)" not in sql and "DISTINCT" not in sql
         if self.endless and args and args[0] == "TX" and (pinned or whole):
             self.diff_reads += 1
             await asyncio.sleep(0.01)
@@ -5629,6 +6110,16 @@ async def test_a_wait_says_what_it_waits_for_on_whom_and_since_when_once_a_minut
     await replica.stop()
 
 
+def _as_sqlite(sql: str, args: Sequence[Any]) -> tuple[str, list[Any]]:
+    """a statement as SQLite runs it: ``$n`` as ``?n``, and a set filter ``= ANY($n::type[])`` as membership of the
+    array's members (bound as JSON), which is what it means in YugabyteDB."""
+    bound = list(args)
+    for number in re.findall(r"= ANY\(\$(\d+)::\w+\[\]\)", sql):
+        bound[int(number) - 1] = json.dumps(list(bound[int(number) - 1]))
+    sql = re.sub(r"= ANY\(\$(\d+)::\w+\[\]\)", r"IN (SELECT value FROM json_each(?\1))", sql)
+    return re.sub(r"\$(\d+)", r"?\1", sql), bound
+
+
 class _SqlL3:
     """L3 as a SQL engine answers it (SQLite in memory): every statement a scoped snapshot sends is run as sent, its
     keyset pages included, so a NULL in a paged column ends a read as it does on PostgreSQL. ``delay`` says how long
@@ -5667,7 +6158,7 @@ class _SqlL3:
         wait = self.delay(sql, args)
         if wait:
             await asyncio.sleep(wait)
-        return [dict(r) for r in self.db.execute(re.sub(r"\$(\d+)", r"?\1", sql), args).fetchall()]
+        return [dict(r) for r in self.db.execute(*_as_sqlite(sql, args)).fetchall()]
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         return None
@@ -5706,12 +6197,17 @@ def _held(snapshot: ScopedSnapshot, scope: str) -> list[tuple[Any, ...]]:
 
 
 async def _geos_snapshot(
-    l3: _SqlL3, table: SnapshotTable, *, backend: DuckDBBackend | None = None, **options: Any
+    l3: _SqlL3,
+    table: SnapshotTable,
+    *,
+    backend: DuckDBBackend | None = None,
+    ready_within: float = 5,
+    **options: Any,
 ) -> ScopedSnapshot:
-    """one snapshot over ``l3``'s one table, ready at epoch 1 from a cold rebuild."""
+    """one snapshot over ``l3``'s one table, ready at epoch 1 from a cold rebuild (``ready_within`` seconds)."""
     snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(table,), backend=backend or _geos_backend(), **options)
     l3.epochs = {"TX": 1}
-    await _started(snapshot, pointers)
+    await _started(snapshot, pointers, timeout=ready_within)
     return snapshot
 
 
@@ -5740,6 +6236,69 @@ async def test_a_diff_reads_every_page_of_a_group_whose_value_is_null(
     assert _held(snapshot, "TX") == l3.rows("TX"), "rows of the NULL group were lost"
     nulls = [sql for sql, _ in l3.statements if "IS NULL" in sql]
     assert len(nulls) == 4, nulls
+    await snapshot.stop()
+
+
+@pytest.mark.parametrize("retained", [False, True], ids=["counted", "retained"])
+async def test_a_diff_of_hundreds_of_groups_reads_them_in_a_few_statements_and_holds_what_l3_holds(
+    retained: bool,
+) -> None:
+    """cobalt dev 2026-11-05: a diff read each changed group in a statement of its own, thousands of round trips a
+    scope (AK's feed tables, 900-plus partitions each, about 300 rows a second). The groups whose rows fit a page are
+    read together, one array parameter a statement; a NULL group, and a group of more than a page, alone. Here 300
+    stamped groups, a group of which one row of two was stamped, a NULL group and a group spanning pages."""
+    rows = [_geo("TX", f"g{i:03d}", f"t{i:03d}", 1) for i in range(300)]
+    rows += [_geo("TX", "half", "h1", 1), _geo("TX", "half", "h2", 1)]
+    rows += [_geo("TX", "big", f"b{i:04d}", 1) for i in range(1500)]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    table = SnapshotTable(
+        name="geos", scope_column="state", key=("geo", "item"), version_column="source_version", retained=retained
+    )
+    snapshot = await _geos_snapshot(l3, table)
+    # a write at 2 rewrites every one-row group, one row of "half", every row of "big", and adds a NULL group
+    rewritten = [f"t{i:03d}" for i in range(300)] + ["h1"] + [f"b{i:04d}" for i in range(1500)]
+    l3.db.executemany('UPDATE "geos" SET votes = 2, source_version = 2 WHERE item = ?', [(i,) for i in rewritten])
+    l3.add([_geo("TX", None, f"n{i}", 2) for i in range(5)])
+    l3.epochs["TX"] = 2
+    l3.statements.clear()  # the diff's reads, not the cold rebuild's
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="the copy applied epoch 2")
+    assert _held(snapshot, "TX") == l3.rows("TX"), "the copy does not hold what L3 holds"
+    reads = [
+        sql
+        for sql, _ in l3.statements
+        if "count(*)" not in sql and "DISTINCT" not in sql and " AS value" not in sql and '"geos"' in sql
+    ]
+    # the 301 groups that fit a page in one statement; "big" a statement a page; the NULL group alone
+    assert len(reads) <= 6, f"the diff read 303 groups in {len(reads)} statements"
+    await snapshot.stop()
+
+
+async def test_a_diff_of_a_scope_of_many_held_rows_makes_no_python_object_a_held_row() -> None:
+    """cobalt dev 2026-11-05: a recovery listed a state's every held row's group in Python (``to_pylist`` and a key
+    a row), beside the rows themselves, and pods were OOMKilled at 20 GiB. The groups are counted by Arrow: a diff of
+    200,000 held rows of which one group changed allocates a few Python objects a group, never a row."""
+    rows = [_geo("TX", f"g{i % 20:02d}", f"i{i:06d}", 1) for i in range(200_000)]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    # the cold build of 200,000 rows a page at a time through SQLite is the test's setup, not what it measures
+    snapshot = await _geos_snapshot(l3, table, ready_within=60)
+    l3.db.execute('UPDATE "geos" SET votes = 2, source_version = 2 WHERE item = ?', ("i000000",))
+    l3.epochs["TX"] = 2
+    gc.collect()
+    tracemalloc.start()
+    try:
+        outcome = await snapshot.catch_up()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert outcome.caught == ("TX",), outcome
+    # a Python object a held row is 200,000 of them, over 10 MB; Arrow's buffers are not Python's to count
+    assert peak < 8 << 20, f"the diff held {peak / (1 << 20):.1f} MiB of Python objects for 200,000 rows"
     await snapshot.stop()
 
 
@@ -5980,9 +6539,14 @@ def _delete(l3: _SqlL3, *items: str) -> None:
     l3.db.executemany('DELETE FROM "runs" WHERE item = ?', [(item,) for item in items])
 
 
+def _flat(args: Sequence[Any]) -> tuple[Any, ...]:
+    """a statement's parameters, an array parameter's members (``= ANY($n)``) among them."""
+    return tuple(member for arg in args for member in (arg if isinstance(arg, list) else [arg]))
+
+
 def _row_reads(l3: _SqlL3) -> list[tuple[str, tuple[Any, ...]]]:
     """each statement that read rows of the runs, with its parameters (not a count, not the scopes' listing)."""
-    return [(sql, args) for sql, args in l3.statements if sql.startswith('SELECT "state", "run", "item"')]
+    return [(sql, _flat(args)) for sql, args in l3.statements if sql.startswith('SELECT "state", "run", "item"')]
 
 
 def _counts(l3: _SqlL3) -> list[tuple[str, tuple[Any, ...]]]:
@@ -5991,7 +6555,7 @@ def _counts(l3: _SqlL3) -> list[tuple[str, tuple[Any, ...]]]:
 
 def _runs_named(l3: _SqlL3) -> list[set[str]]:
     """each statement's runs, as its parameters name them."""
-    return [{a for a in args if isinstance(a, str) and a.startswith("r")} for _, args in l3.statements]
+    return [{a for a in _flat(args) if isinstance(a, str) and a.startswith("r")} for _, args in l3.statements]
 
 
 async def _caught_up(snapshot: ScopedSnapshot, l3: _SqlL3) -> None:

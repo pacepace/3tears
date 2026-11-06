@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.91.2"
+since = "v0.91.1"
+summary = """
+One scope's bad copy in L2 never rebuilds a scoped snapshot, and a diff reads its groups in a few statements: no
+3tears-evals name has moved or been removed since 0.91.1, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.91.1"
 since = "v0.91.0"
 summary = """
