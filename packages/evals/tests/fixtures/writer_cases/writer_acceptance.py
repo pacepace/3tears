@@ -721,6 +721,9 @@ async def _measured(
         held_out_fraction=held_out_fraction,
         name=NAME,
         question=variant.question,
+        # The margin every recorded acceptance run declared (the old default): an author's choice, so the records
+        # replay to their verdicts, the pass rate in the question's family.
+        margin=5.0,
         turns=budget.turns,
         request_s=request_s,
         writer_provider=WRITER_PROVIDER,
