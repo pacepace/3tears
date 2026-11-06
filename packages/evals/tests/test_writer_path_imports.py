@@ -1,6 +1,6 @@
 """The report writer's test path stands apart from the planner's and the memo's fixtures, so deleting them breaks none of it.
 
-Each module on the writer's path is imported first in a fresh interpreter: rung 5's test, its case export, the writer
+Each module on the writer's path is imported first in a fresh interpreter: rung 5's test, its case exports, the writer
 host, the case bank's seed, the recorded writer's support, the writer's acceptance and calibration scripts. None of
 them may load the planner's and the memo's fixtures (``ops_support``, ``toyhost_memo``, ``toyhost_plan``), which go when
 the planner and the memo generator are deleted.
@@ -20,6 +20,7 @@ from packages.evals.tests.test_package_matrix import REPO_ROOT
 WRITER_PATH: Final = (
     "test_rung_five_writer",
     "fixtures.writer_cases.export_writer_cases",
+    "fixtures.writer_cases.export_held_out_cases",
     "writer_host_support",
     "writer_case_support",
     "writer_eval_support",
