@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -437,16 +438,29 @@ class _ReadinessFakeServer(_FakeToolServer):
         return ("text/plain; version=0.0.4; charset=utf-8", generate_latest(self.metrics_registry))
 
 
+#: ports the health tests pick from, below the range the OS hands outgoing connections (49152+ on
+#: macOS, 32768+ on Linux). a port the OS picked for us comes from that range, and between closing
+#: it and the pod binding it, another worker's probe connection can take it as its local port.
+_TEST_PORTS = range(20000, 32000)
+
+
 def _free_port() -> int:
-    """a TCP port nothing is listening on right now.
+    """a TCP port the pod's health server can bind, outside the outgoing-connection range.
+
+    bound on ``0.0.0.0`` because that is where the health server binds.
 
     :return: the port
     :rtype: int
+    :raises AssertionError: when no port in the range binds
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port: int = sock.getsockname()[1]
-    return port
+    for port in random.sample(_TEST_PORTS, 50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("0.0.0.0", port))  # noqa: S104 -- the health server binds every interface
+            except OSError:
+                continue
+        return port
+    raise AssertionError(f"no free port in {_TEST_PORTS}")
 
 
 async def _probe(port: int, path: str) -> tuple[int, dict[str, Any]]:
