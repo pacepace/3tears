@@ -47,7 +47,7 @@ from typing import Any, Final, Literal, get_args
 from threetears.evals.kernel.numbers import group_thousands, spell_dollars
 from threetears.evals.schema.turns import TurnCeiling, TurnReply
 
-__all__ = ["MIN_TURNS_FOR_A_REPORT", "BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
+__all__ = ["BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
 
 #: The fewest turns a finished report takes: the analyst's submission and the editor's review.
 #:

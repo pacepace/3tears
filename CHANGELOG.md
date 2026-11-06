@@ -14,9 +14,9 @@ under two of the first turn's ceiling is refused at $0: `WriterEval` refuses it 
 each arm's first turn at the writer's output cap and its skill's text on the rates Anthropic publishes; and every
 report's budget refuses its first turn on the real ceiling (`ReportBudget.fewest_turns_refusal`), so `report_write`
 ends `over_budget` with nothing sent. Each refusal names the budget asked, the ceiling, the fewest turns and the budget
-that admits them: on Sonnet 5.5, a $0.75 budget is refused and a budget of about $1.06 (at launch) to $1.34 (a $0.67
-first turn) admits a report. The 2026-11-06 acceptance run spent about $0.10 on each of 36 reports that could never
-finish.
+that admits them: on Sonnet 5.5, a $0.75 budget is refused, and a budget of about $1.05 (at launch, before any
+snapshot is read) to $1.34 (a $0.67 first turn) admits a report. The 2026-11-06 acceptance run spent about $0.10 on
+each of 36 reports that could never finish.
 
 **Changed:** a report that still runs out ends saying how many turns it was admitted and how many turns its whole
 budget admits at the ceiling that stopped it, and a writer eval adds, for an arm whose reports ended over budget with

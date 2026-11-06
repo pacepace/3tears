@@ -67,3 +67,4 @@ packages/evals/tests/test_providers_ceiling.py::price-ceiling and completion-pri
 # names it, and a moved constant would silently relabel recorded calibration data.
 packages/evals/tests/test_providers_pricing.py::pins the default pricer's published rate per Claude id; the model id is the row under test, not a default
 packages/evals/tests/test_report_writer_pricing.py::drives the shipped client on the Claude id the report writer's default pricer prices; the model id is the subject under test, not a default
+packages/evals/tests/test_writer_acceptance_dry.py::the 2026-11-06 acceptance incident's writer, whose published rates price the launch refusal under test; the subject under test, not a default

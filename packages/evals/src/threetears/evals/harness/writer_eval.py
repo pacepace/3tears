@@ -152,6 +152,7 @@ from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, W
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
+from threetears.evals.providers import AnthropicPublishedRates, Provider
 from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
 from threetears.evals.harness.analyse import TURN_CAP
@@ -804,8 +805,6 @@ class WriterEval:
         """Refuse the run before the store is opened when an arm's first turn, priced before any snapshot is read,
         shows ``budget_usd`` cannot admit a finished report (the module docstring); an arm whose model the published
         rates do not list is left to each report's first turn."""
-        from threetears.evals.providers import AnthropicPublishedRates, Provider  # loaded only to price a launch
-
         provider = next((known for known in get_args(Provider) if known == self.writer_provider), None)
         max_tokens = WriterLimits().analyst.session.max_tokens
         for arm, writer in self.arms.items():
