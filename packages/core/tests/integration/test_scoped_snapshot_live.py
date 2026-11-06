@@ -646,8 +646,9 @@ async def test_a_scope_published_before_any_rebuild_is_not_loaded_as_the_whole_s
     replica, _ = await platform.replica()
     await replica.start()
     await replica.wait_ready(timeout=_WAIT)
-    assert replica.status().source is SnapshotSource.L3, "an index naming one scope was loaded as the snapshot"
-    assert _count(replica, "results") == 1580
+    # the index names DE alone, partial: DE loads from L2 and each scope it does not name is rebuilt from L3 on its own
+    # (0.91.2, Pace 2026-11-05: one scope's state in L2 never rebuilds the snapshot), and nothing is missing
+    assert _count(replica, "results") == 1580, "an index naming one scope was loaded as the snapshot"
     await replica.stop()
 
 

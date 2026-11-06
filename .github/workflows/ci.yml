@@ -20,9 +20,72 @@ on:
     branches: [develop]
 
 jobs:
+  # The unit + enforcement suite, as six shards running side by side: one session after another
+  # took ~25 of `check`'s ~27 minutes, evals alone 12. The shards partition exactly what
+  # `./scripts/ci-unit-tests.sh` runs with no selector (see its header), so every test still runs
+  # once. `check` below waits for all of them and is the one status the branches require.
+  unit:
+    name: unit (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      # every shard reports, so one failure does not hide another's
+      fail-fast: false
+      matrix:
+        shard: [evals-1, evals-2, evals-3, core, tests, rest]
+    steps:
+      # fetch-depth 0: the scope step diffs against the PR base, and the API-growth gate in
+      # tests/enforcement compares against the latest vX.Y.Z tag; a shallow clone has neither.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # the same classifier `check` runs (scripts/ci-scope.sh), so a doc-only PR skips the shards too
+      - name: Decide whether this change needs the suite
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/ci-scope.sh
+
+      - uses: astral-sh/setup-uv@v8.2.0
+        if: steps.scope.outputs.needed == 'true'
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        if: steps.scope.outputs.needed == 'true'
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        if: steps.scope.outputs.needed == 'true'
+        run: uv sync --extra vision
+
+      - name: Test (unit + enforcement; integration runs in its own job below)
+        if: steps.scope.outputs.needed == 'true'
+        # four workers, one package per worker, as ./scripts/test.sh runs it locally -- split into
+        # several sessions so no worker outgrows the runner's memory (see the script's header)
+        run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v
+
   check:
+    # the required status: it reports whatever the shards did, so it never waits on a check that
+    # cannot arrive, and it is red unless every shard passed.
+    needs: unit
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      # A shard runs its suite or, for a doc-only PR, skips its steps and still succeeds; the
+      # job itself is never skipped, so anything but success (failure, cancelled, or skipped
+      # because the run broke before it started) means the suite did not pass.
+      - name: Every unit shard passed
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+        run: |
+          if [ "$UNIT_RESULT" != "success" ]; then
+            echo "::error::the unit shards finished '$UNIT_RESULT'; see the failing unit (...) job."
+            exit 1
+          fi
+          echo "every unit shard passed."
+
       # fetch-depth 0 because the scope step below diffs against the PR base,
       # which a shallow clone does not have.
       - uses: actions/checkout@v7
@@ -40,64 +103,15 @@ jobs:
         if: github.event_name == 'pull_request'
         run: ./scripts/check-attribution.sh '${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}'
 
-      # A documentation-only PR runs no suite. The skip is decided HERE, inside
-      # the job, rather than by a `paths-ignore:` on the trigger -- and that is
-      # not a style preference.
-      #
-      # `check` is a REQUIRED status context on both develop and main. A
-      # workflow that `paths-ignore` filters out never starts, so it never
-      # reports that context, so the PR waits on a check that can never
-      # arrive and blocks forever. That is strictly worse than running the
-      # suite. It is also the same failure this file's trigger comments
-      # already record twice, from the other direction.
-      #
-      # Keeping the job unconditional and skipping its STEPS keeps the
-      # contract: `check` always reports, and a docs PR gets its green in
-      # seconds instead of minutes.
+      # A documentation-only PR runs no lint, typecheck or suite. Why the skip lives in the jobs
+      # rather than in a `paths-ignore:` on the trigger, and how a change is classified, is in
+      # scripts/ci-scope.sh -- one classifier, shared with the unit shards above.
       - name: Decide whether this change needs the suite
         id: scope
-        run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            # Every push to develop runs the full suite whatever it touched.
-            # The develop -> main release PR is gated on THIS commit's stored
-            # result (see the push trigger's comment), so a stamp that skipped
-            # the suite would hand main a green light nothing verified.
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "push to develop: running the full suite."
-            exit 0
-          fi
-          changed=$(git diff --name-only '${{ github.event.pull_request.base.sha }}...HEAD')
-          echo "changed files:"
-          echo "$changed"
-          # Classified with shell `case` rather than a grep expression, on
-          # purpose. `grep -qv` means "some line did not match", which is one
-          # negation away from "no line matched" and reads the same at a
-          # glance -- and the two differ exactly on the case that matters
-          # here, a PR mixing docs with code. `case` states the doc shapes
-          # positively and needs no negation to be read correctly.
-          #
-          # The default branch is `needed=true`: an unrecognised path is
-          # treated as code, so a new kind of file is tested rather than
-          # silently skipped. A changeset that is somehow empty also runs.
-          needed=false
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-            case "$file" in
-              *.md|docs/*|LICENSE|*/LICENSE) ;;
-              *) needed=true; break ;;
-            esac
-          done <<CHANGED
-          $changed
-          CHANGED
-          if [ -z "$changed" ]; then
-            needed=true
-          fi
-          echo "needed=$needed" >> "$GITHUB_OUTPUT"
-          if [ "$needed" = "true" ]; then
-            echo "-> code changed: running the full suite."
-          else
-            echo "-> documentation only: skipping lint, typecheck and tests."
-          fi
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/ci-scope.sh
 
       - uses: astral-sh/setup-uv@v8.2.0
         if: steps.scope.outputs.needed == 'true'
@@ -123,13 +137,7 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: ./scripts/typecheck.sh
 
-      - name: Test (unit + enforcement; integration runs in its own job below)
-        if: steps.scope.outputs.needed == 'true'
-        # four workers, one package per worker, as ./scripts/test.sh runs it locally -- split into
-        # several sessions so no worker outgrows the runner's memory (see the script's header)
-        run: ./scripts/ci-unit-tests.sh -v
-
-      # The step above only ever sees the OpenTelemetry uv.lock pins, which is always recent, so a
+      # The unit shards only ever see the OpenTelemetry uv.lock pins, which is always recent, so a
       # declared floor can fall behind the code with everything green. It did: observe imported a
       # name first shipped in opentelemetry-sdk 1.39 while declaring >=1.28, and a consumer pinned
       # to 1.36 failed at import. This runs the OpenTelemetry tests at exactly the declared floor.

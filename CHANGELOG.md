@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.2 -- 2026-11-05
+
+### core: one scope's bad copy in L2 never rebuilds the snapshot
+
+**Fixed:** `ScopedSnapshot` rebuilt every scope whole from L3 when one scope's copy in L2 could not be used. On cobalt
+prod (2026-11-05) one chunk holding another count than its pointer made every new pod rebuild all 52 states, about four
+hours each. Now a cold load loads every scope L2 can give and reads from L3, on its own, only a scope it cannot (a
+chunk gone, of another count or corrupt; a pointer gone, unreadable or of other columns; a scope a partial index does
+not name), publishing it so L2 is whole again. A ready copy brings such a scope forward on its own too, and makes a
+partial index whole scope by scope. The one rebuild of every scope left is NATS holding no index at all, pinned by a
+test of the code's shape. A scope a rebuild cannot apply, and a pointer that does not decode, is that scope's failure,
+never the rebuild's or the load's.
+
+### core: a chunk written again with other rows gets a name of its own
+
+**Fixed:** a chunk is named by its scope, epoch, table and columns, not its rows, and a copy whose retention moves with
+the clock writes other rows of the same epoch later. The later writer found the name taken, reused the chunk, and
+recorded its own count on its pointer: the chunk and the pointer disagreed (prod: 471 rows where its pointer said 218).
+A chunk is reused only when it holds the same bytes; other rows go under a name of their own, and a same-epoch pointer
+of other counts is moved past.
+
+### core: a diff reads its changed groups in a few statements, and holds a scope's rows once
+
+**Changed:** a diff read each changed group in a statement of its own (cobalt dev 2026-11-05: AK's feed tables 900-plus
+partitions each, about 300 rows a second). The groups whose rows together fit a page are read in one statement
+(`= ANY($n)`, one array parameter, at most `groups_per_read`, 500), split back by value; a NULL group and a group of
+more than a page are read alone. A recovery asks every table's partition values before it reads anything, so an ask
+that fails reads nothing; reads its base a table at a time, letting each go once composed; and counts the copy's
+groups with Arrow, never a Python object a held row (dev pods were OOMKilled at 20 GiB recovering a state).
+
+### core: a read NATS failed never turns into a read from L3; a watch that ends is followed again
+
+**Fixed:** a chunk read NATS failed (a timeout, a slow consumer cut off) counted toward the failures that bring a
+scope forward from L3, and a recovery whose base L2 could not read took it for no copy: both read the scope whole from
+L3. Each is read from L2 again instead. A replica whose pointer watch ended was FAILED for good; it now serves its
+copy as it is, says so, and follows the pointers again after a backoff (`rewatch_backoff`).
+
 ## v0.91.1 -- 2026-11-05
 
 ### core: a cold load bounds the chunk bytes it reads at once, under NATS's pending bound
