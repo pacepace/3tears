@@ -12,6 +12,7 @@ import re
 from html.parser import HTMLParser
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -140,11 +141,11 @@ async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
 
 
 @pytest.mark.parametrize("link", [{"finding": 0}, {"rests_on": [0]}], ids=["finding", "rests_on"])
-async def test_a_campaign_page_refuses_a_block_linked_to_a_finding(link: dict[str, object]) -> None:
-    """A campaign's page holds no finding, so a block naming one, by ``finding`` or ``rests_on``, is refused."""
+async def test_a_campaign_page_refuses_a_block_naming_a_finding_field_it_no_longer_has(link: dict[str, object]) -> None:
+    """A block has no ``finding`` or ``rests_on``, so a campaign's page refuses a block naming either as an unknown key."""
     page = await page_of("billing")
     linked = {"kind": "disclosure", "section": "provenance", "source": "design", "text": "linked", **link}
-    with pytest.raises(ValueError, match=r"is linked to finding position\(s\) \[0\], and the page holds no finding"):
+    with pytest.raises(ValidationError, match="extra_forbidden"):
         CampaignReport.model_validate({**dict(page), "blocks": [*page.blocks, linked]})
 
 

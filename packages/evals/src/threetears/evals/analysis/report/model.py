@@ -136,16 +136,6 @@ class Report(EvalDocumentModel):
     )
 
     @model_validator(mode="after")
-    def _positions_point_at_findings(self) -> Self:
-        """Refuse a block linked to a finding: an aspect's page holds none.
-
-        :raises ValueError: A block's ``finding`` or ``rests_on`` names a position.
-        """
-        if stray := _linked_to_findings(self.blocks):
-            raise ValueError(f"{stray}, and the report holds no finding")
-        return self
-
-    @model_validator(mode="after")
     def _every_link_lands(self) -> Self:
         """Refuse one id carried twice, by cells or blocks, and a cell linking to an id nothing on the page carries.
 
@@ -419,12 +409,10 @@ class CampaignReport(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
-        """Refuse a block linked to a finding, which no page holds, and an analysis named on a code-only page.
+        """Refuse an analysis named on a code-only page.
 
-        :raises ValueError: A block names a finding position, or a code-only page names an ``analysis_id``.
+        :raises ValueError: A code-only page names an ``analysis_id``.
         """
-        if stray := _linked_to_findings(self.blocks):
-            raise ValueError(f"{stray}, and the page holds no finding")
         if self.basis == "code_only" and self.analysis_id is not None:
             raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
         return self
@@ -563,16 +551,6 @@ class CampaignReport(EvalDocumentModel):
         }
         served: dict[str, object] = round_floats(document)
         return served
-
-
-def _linked_to_findings(blocks: Sequence[ReportBlock]) -> str | None:
-    """Which of ``blocks`` name a finding position (``finding`` or ``rests_on``), said for a refusal; None for none."""
-    linked = [
-        f"block {index} ({block.kind}) is linked to finding position(s) {named}"
-        for index, block in enumerate(blocks)
-        if (named := sorted({*([block.finding] if block.finding is not None else []), *block.rests_on}))
-    ]
-    return "; ".join(linked) or None
 
 
 def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:

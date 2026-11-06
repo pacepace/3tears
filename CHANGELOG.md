@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a report block no longer carries `finding` or `rests_on`
+
+**Removed:** the `finding` and `rests_on` fields of every report block (`ChartBlock`, host-contract, with no deprecation
+cycle under the owner's 2026-11-03 exception for the reset's deletions; `TableBlock`, `TrialBlock` and
+`DisclosureBlock`), with their `finding_number` and `rests_on_numbers` properties and the two page checks that refused
+any value in them. No page has held a finding since the memo writer was retired, nothing filled either field, and no
+serializer printed one. No printed page moves.
+
+**Hosts:** stop setting the two fields; a block naming either is refused as an unknown key, as before it was refused by
+the page. Discodon reads neither. Nothing stored carries a block, so nothing stored changes.
+
 ### evals: the memo-era page models leave: the text block, the recommendation and the empty page fields
 
 **Removed:** `TextBlock`, `TextRole` and `Fact` (`threetears.evals.analysis`), the block of an author's words no page
