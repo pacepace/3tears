@@ -6,6 +6,95 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.92.0 -- 2026-11-06
+
+### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
+
+**Changed (behaviour consumers must know about):** when the epoch bucket is replaced (a broker restart
+on memory storage), `EpochListener` now resets EVERY ephemeral registration. A registration made
+without `on_reset` used to be skipped; it is now reset by calling its `on_bump(0, None)`. A consumer
+whose `on_bump` reloads whatever the epoch (metallm's capabilities registry, scriob's principal status)
+needs no change and now reloads after a restart. **A consumer whose `on_bump` ignores an epoch at or
+below one it has seen must pass `on_reset`**, or it will discard this call and stay stale, as every
+consumer did before. **Fixed:** skipping such a consumer lost any bump whose broadcast it had missed,
+and the catch-up compared against the last-seen the reset had just cleared, so its cache stayed stale
+until its subject bumped again (production 2026-11-05: `registrations: 1, notified: 0`). The reset's
+WARNING now says how many consumers were told and how many through their bump callback.
+
+### nats: a key watch waiting for its bucket's stream says so once, without a traceback
+
+**Fixed:** after a broker restart on memory storage, every consumer create of `watch_key` /
+`watch_prefix` answers "stream not found" (`err_code` 10059) until the bucket's declarer creates it
+again, and each retry was logged with a full traceback and a hint to check the principal's grant
+(~296 tracebacks per worker in 45 s, 2026-11-05). The watch now logs that wait once at INFO, once at
+WARNING if it lasts past 120 s, and once at INFO when the stream is back. Every other create failure
+keeps its traceback and the grant hint.
+
+### models: a pooled Claude CLI whose call was abandoned is killed before it is disconnected
+
+**Fixed:** a CLI still answering does not exit on the end of its input, the SDK's disconnect waits 5 s
+for it, and `PooledCliSession.dispose` bounded the disconnect at the same 5 s, so a session stopped
+after its caller gave up logged `Claude CLI disconnect failed` and was killed 5 s late. **Added:**
+`PooledCliSession.dispose(..., abandoned=False)`; the pool passes `abandoned=True` for a call that
+left by an exception or a cancellation and for a session on loan when the pool closes, and kills
+those first. A session that finished cleanly is still disconnected first.
+
+### core: the SQLite and DuckDB caches keep `Date` and `Time` columns
+
+**Fixed:** a `sqlalchemy.Time` or `sqlalchemy.Date` column fell through both cache type mappers to plain
+text, logging `Unknown SQLAlchemy type ... defaulting to TEXT` / `VARCHAR` three times per column at every
+start (metallm's `users.config_sleep_from` / `config_sleep_until`) and reading a `time` or `date` back as a
+string. Both are now ISO text decoded on read (`TEXT_DATE` / `TEXT_TIME` / `TEXT_TIMETZ`, `VARCHAR_*` in
+DuckDB) and round-trip exactly, microseconds included. A `Time` column keeps the wall clock and drops a
+zone, as Postgres `time` does through asyncpg; a `Time(timezone=True)` column keeps a fixed offset and
+refuses a naive or `ZoneInfo` time, as asyncpg does. A `datetime` written to a `Date` column keeps its date,
+as asyncpg writes it to a Postgres `date`. **Added:** `threetears.core.cache.base.stored_time` and `stored_date`.
+After this no type in metallm's metadata or any 3tears schema reaches the mapper's default, so the warning
+fires only for a genuinely new type.
+
+### core: an index declaration can say a column sorts descending
+
+**Added:** `Index(..., desc="date_created")` (a name or a sequence; stored as `IndexDef.desc`, each name
+one of the index's columns). `TableSchema.to_sqlalchemy_table` emits it as `column.desc()`, so the
+declared index equals a migration's `(..., date_created DESC)` and Alembic auto-gen reports no
+remove/add pair for it; `embedding_width`'s rebuild from a declaration keeps the `DESC` too.
+**Fixed:** `idx_identity_variant_history` (agent-identity) and `idx_intentions_open_ranked`
+(agent-intention) now declare the `DESC` their migrations create; metallm's schema drift guard caught the
+identity one. **Changed:** `threetears.core.testing.sqla_parity.index_signature` compares an index's
+columns in order and with direction (it compared an unordered set of names, so neither drift could fail
+parity); a textual reference element such as `text("date_created DESC")` reads as that column descending.
+A column cannot be both `desc` and in `ops` (`ValueError`): SQLAlchemy drops a descending column's operator
+class. `coordination.tables.table_def_for` refuses an index that declares `desc`, `where`, `using`, `ops` or
+`pg_with` (`ValueError`), which its DDL definition cannot carry; it dropped them silently.
+
+### scheduled-jobs: the undo of a fire cut off on close is a public function
+
+**Added:** `threetears.scheduled_jobs.bring_back_cut_off_fire(schedule_store, trigger, fire_id)`, the
+undo `BackgroundDispatch.aclose` runs for each fire it cancels, now callable by any dispatcher that
+hands fires off the tick. It calls `ClaimUndoStore.undo_claim` (the compare-and-swap on what the
+claim wrote), logs `EVENT_FIRE_DUE_AGAIN` when the job is due again and a WARNING when it is left as it
+is, returns whether it was undone, and never raises. `BackgroundDispatch` behaves as before; its log
+lines now start `scheduled_jobs:` rather than `scheduled_jobs background:`.
+
+### agent-memory: automatic extraction, ambient recall and consolidation each have a switch
+
+**Added:** three fields on `MemoryConfig`, all default `True`, so a host that sets none sees no
+change. `extraction_enabled=False` makes `MemoryExtractor.extract` answer `SKIPPED` with the new
+`ExtractionGate.DISABLED` before any stage runs, so a turn writes no memory. `ambient_recall_enabled=False`
+makes `MemoryRetriever.retrieve` / `retrieve_with_candidates` answer an empty result, so
+`retrieve_memories` and `MemoryInjectionMiddleware` hand the model nothing. `consolidation_enabled=False`
+makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` without loading a
+candidate. Each logs the reason once per call at DEBUG. The explicit memory tools do not read the
+switches: an agent with all three off still saves, searches, recalls and retires memories through them.
+`MemoryRetriever` is the ambient path: a host's own recall tool built on one gives it a config with
+`ambient_recall_enabled` on.
+
+### agent-tools, agent-memory: context items and memory refs are kept per agent
+
+**Added:** `context_items.agent_id` (agent-tools migration v005) and `conversation_memory_refs.agent_id`
+(agent-memory migration v032), backfilled; reads and upserts take the agent, so two agents in one conversation keep
+separate tool results and separate recalled memories. An index declaration can say `NULLS NOT DISTINCT`.
+
 ## v0.91.4 -- 2026-11-06
 
 ### nats: a large object is hashed off the event loop
