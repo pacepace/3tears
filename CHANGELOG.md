@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.3 -- 2026-11-05
+
 ### core: a diff names its groups in one array only when the group column's type allows it
 
 **Fixed:** 0.91.2's batched diff read chose its array type by how the group values looked, not by the column. The

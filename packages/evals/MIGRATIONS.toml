@@ -58,6 +58,14 @@
 # callers.
 
 [[release]]
+version = "0.91.3"
+since = "v0.91.2"
+summary = """
+A diff names its groups in one array only when the group column's type allows it: no 3tears-evals name has moved or
+been removed since 0.91.2, and no judge wording changed.
+"""
+
+[[release]]
 version = "0.91.2"
 since = "v0.91.1"
 summary = """
