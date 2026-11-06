@@ -22,6 +22,7 @@ import html
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     NO_ANALYSIS,
@@ -186,6 +187,20 @@ def _table(**update: Any) -> TableBlock:
 class TestTheReportsRefusals:
     def test_the_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
         assert [block.kind for block in _report(bundle).blocks] == ["disclosure"]
+
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "finding": 1},
+            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "rests_on": [3]},
+        ],
+        ids=["finding", "rests_on"],
+    )
+    def test_a_block_naming_a_finding_field_it_no_longer_has_is_refused(
+        self, bundle: AnalysisContextBundle, block: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            _report(bundle, blocks=[block])
 
     def test_a_table_showing_more_rows_than_it_has_is_refused(self) -> None:
         with pytest.raises(ValueError, match="shows 2 rows but says it has 1"):
