@@ -147,6 +147,9 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
   dimension rather than scoring it.
 - **`case_material`** is what the judge reads beside each answer: here the policy and the email, the material the
   runner answered from.
+- **What the judge reads of an answer that is not a string**: `json.dumps` of it, or its `repr` when JSON cannot
+  hold it. A pydantic object is one JSON cannot hold, so a runner whose answer a judge reads returns
+  `model_dump(mode="json")` of it, or builds a plain dict, and the judge reads the fields rather than a repr.
 - **A judge of another family.** A model tends to rate its own output higher, so judging with the runner's own model
   prints the self-judging warning under the scores, a warning no quiet print drops.
 - **`Example`s are hard negatives in pairs**: an answer that looks right and must fail, beside one that looks wrong

@@ -28,7 +28,8 @@ How the file is read:
   prompt's first line is what each case asks, which a judge reads. Its keys:
 
   - ``model``: the model's id, as :class:`~threetears.evals.providers.Model` takes it.
-  - ``prompt``: the prompt, written here; or ``prompt_file``: a file beside this one whose text is the prompt.
+  - ``prompt``: the prompt, written here; or ``prompt_file``: a file, named relative to this one, whose text is the
+    prompt.
   - ``system`` or ``system_file``, optionally: the system message, sent as written (no ``{field}`` is filled).
   - ``max_tokens``, optionally: the output cap, a positive number of tokens.
   - ``effort``, optionally: the reasoning effort, a word (``none`` to ``max``) or a token budget below ``max_tokens``.
@@ -148,7 +149,7 @@ def _runner_table(path: Path, runner: Any) -> Mapping[str, Any]:
 
 
 def _runner_text(path: Path, runner: Mapping[str, Any], key: str) -> str | None:
-    """The text ``key`` gives, inline (``prompt``) or as a file beside ``path`` (``prompt_file``), or ``None``.
+    """The text ``key`` gives, inline (``prompt``) or as a file relative to ``path`` (``prompt_file``), or ``None``.
 
     :raises ValueError: Both forms given, a value that is not a non-blank string, or a file that cannot be read or is
         blank.
@@ -165,7 +166,7 @@ def _runner_text(path: Path, runner: Mapping[str, Any], key: str) -> str | None:
         return None
     named = runner[from_file]
     if not isinstance(named, str) or not named.strip():
-        raise _refuse(path, f"runner.{from_file} is a file beside this one, named by a non-blank string")
+        raise _refuse(path, f"runner.{from_file} is a file named relative to this one, by a non-blank string")
     try:
         text = (path.parent / named).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as unreadable:

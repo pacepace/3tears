@@ -3,8 +3,9 @@
 A test of a program that calls ``Model(id, recording=...)`` needs the recording to exist. :func:`record_model` makes
 one with :class:`~threetears.evals.providers.Model` itself, recording live into the file over a scripted HTTP
 transport that answers each prompt with what the test says, in OpenRouter's own reply shape. So the replay the
-program then makes is the replay a real recording gives: keyed by the prompt, the directive ``Model.json`` sends, the
-request settings the model sends and the call's index, and nothing is sent anywhere.
+program then makes is the replay a real recording gives: keyed by the system message and the prompt, the directive
+``Model.json`` sends, the request settings the model sends (``max_tokens``, effort) and the call's index, and nothing is
+sent anywhere.
 """
 
 from __future__ import annotations
@@ -53,6 +54,9 @@ async def record_model(
     *,
     schema: type[BaseModel] | None = None,
     repeats: int = 1,
+    system: str = "",
+    max_tokens: int | None = None,
+    effort: str | int | None = None,
 ) -> None:
     """Record ``model`` (an OpenRouter ``vendor/model`` id) answering each prompt ``repeats`` times, afresh.
 
@@ -68,16 +72,30 @@ async def record_model(
     :ptype schema: type[BaseModel] | None
     :param repeats: How many times each prompt is asked: an eval's ``k``.
     :ptype repeats: int
+    :param system: The system message each prompt is sent with, as the program sends it; empty for none.
+    :ptype system: str
+    :param max_tokens: The model's ``max_tokens``, which the recording's key covers.
+    :ptype max_tokens: int | None
+    :param effort: The model's reasoning effort, which the recording's key covers.
+    :ptype effort: str | int | None
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
     http = _scripted(model, answer)
     directive = None if schema is None else strict_response_format(schema.__name__, schema.model_json_schema())
     try:
-        recorder = Model(model, api_key="scripted", recording=path, http=http, catalogue=Catalogue(http=http))
+        recorder = Model(
+            model,
+            api_key="scripted",
+            recording=path,
+            http=http,
+            catalogue=Catalogue(http=http),
+            max_tokens=max_tokens,
+            effort=effort,
+        )
         for _ in range(repeats):
             for prompt in prompts:
-                await recorder.generate(system="", user=prompt, response_format=directive)
+                await recorder.generate(system=system, user=prompt, response_format=directive)
         await recorder.aclose()
     finally:
         await http.aclose()

@@ -17,13 +17,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-import httpx
 import pytest
 from pydantic import BaseModel
 
 from threetears.evals import Eval
-from threetears.evals.kernel import strict_response_format
-from threetears.evals.providers import Catalogue, Model
 from threetears.evals.quick.files import main
 from threetears.evals.quick.toml_file import load_toml
 from threetears.evals.testing import RecordingRefused
@@ -202,26 +199,6 @@ INLINE_TOML = FROM_FILES_TOML.replace(
 ).replace('system_file = "prompts/system.md"', f'system = """\n{SYSTEM}\n"""')
 
 
-def _scripted(answer: Callable[[str], str]) -> httpx.AsyncClient:
-    """An OpenRouter that answers each chat request with ``answer`` of its user message; its catalogue lists none."""
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(200, json={"data": []})
-        body = json.loads(request.content)
-        user = next(message["content"] for message in body["messages"] if message["role"] == "user")
-        reply: dict[str, Any] = {  # Any: JSON
-            "model": MODEL,
-            "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": answer(user)}, "finish_reason": "stop"}
-            ],
-            "usage": {"prompt_tokens": 40, "completion_tokens": 12, "cost": 0.00001, "is_byok": False},
-        }
-        return httpx.Response(200, json=reply)
-
-    return httpx.AsyncClient(transport=httpx.MockTransport(respond))
-
-
 async def _record_as_the_app_sends(path: Path, *, max_tokens: int | None, effort: str | None) -> None:
     """Record the model answering each email three times, sent as the app sends it: its system message, its prompt,
     and its settings, which the recording's key covers."""
@@ -231,26 +208,17 @@ async def _record_as_the_app_sends(path: Path, *, max_tokens: int | None, effort
         )
         for email in EMAILS
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.unlink(missing_ok=True)
-    http = _scripted(replies.__getitem__)
-    directive = strict_response_format("Output", Output.model_json_schema())
-    try:
-        recorder = Model(
-            MODEL,
-            api_key="scripted",
-            recording=path,
-            http=http,
-            catalogue=Catalogue(http=http),
-            max_tokens=max_tokens,
-            effort=effort,
-        )
-        for _ in range(3):
-            for prompt in replies:
-                await recorder.generate(system=SYSTEM, user=prompt, response_format=directive)
-        await recorder.aclose()
-    finally:
-        await http.aclose()
+    await record_model(
+        path,
+        MODEL,
+        list(replies),
+        replies.__getitem__,
+        schema=Output,
+        repeats=3,
+        system=SYSTEM,
+        max_tokens=max_tokens,
+        effort=effort,
+    )
 
 
 @pytest.fixture
