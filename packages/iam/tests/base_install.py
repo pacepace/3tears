@@ -11,7 +11,9 @@ from __future__ import annotations
 __all__ = ["BASE_MODULES", "REFUSED_ROOTS"]
 
 #: what the base install leaves out: core, the NATS client and the agent layer, and the drivers
-#: they bring
+#: they bring; and observe's optional backends, which observe imports at its top when they are
+#: installed and does without otherwise. observe declares no dependency, so a base install has
+#: neither, and refusing them measures that install rather than a development environment's.
 REFUSED_ROOTS = (
     "threetears.core",
     "threetears.agent",
@@ -20,6 +22,8 @@ REFUSED_ROOTS = (
     "asyncpg",
     "nats",
     "nkeys",
+    "opentelemetry",
+    "prometheus_client",
 )
 
 #: every module the base install imports. Listed by name rather than discovered, so a new module
