@@ -19,6 +19,8 @@ from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_vi
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (
+    DesignRefused,
+    refuse_an_undeclarable_design,
     Aspect,
     AspectDesign,
     BarOverride,
@@ -35,6 +37,8 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key
 from threetears.evals.schema.values import SweepableValue
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.v15_shapes import V15Design
 
 #: The frozen v15 campaign: a design declaring a control and asking no question.
@@ -135,6 +139,27 @@ class TestTheAspectDesign:
             "total",
             "accuracy",
         ]
+
+    def test_a_measure_order_naming_no_measure_the_aspect_declares_is_refused_naming_what_it_declares(self) -> None:
+        """A typo in the order would pass the page's lead on to the next measure without a word: the declaration
+        gate refuses it, naming the entry and every measure the host and template declare."""
+        profile, template = toyhost_profile(), toyhost_template()
+        refuse_an_undeclarable_design(
+            minimal_aspect_design(measure_order=["field_accuracy", "accuracy"]),
+            behavior="b",
+            template=template,
+            profile=profile,
+        )
+        with pytest.raises(
+            DesignRefused, match="measure_order names 'acuracy', which no grader of this aspect reads"
+        ) as refused:
+            refuse_an_undeclarable_design(
+                minimal_aspect_design(measure_order=["field_accuracy", "acuracy"]),
+                behavior="b",
+                template=template,
+                profile=profile,
+            )
+        assert "field_accuracy" in refused.value.remedy
 
     def test_no_question_is_not_an_unscoped_one(self) -> None:
         assert minimal_aspect_design().merit_axes is None

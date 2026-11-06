@@ -282,7 +282,7 @@ guardrail's row, and the trials' census:
 
 The page leads on the question's measure, the first grader's accuracy, as the printed line does, and says beside it
 what leaves the guardrail undecided. Because the question was asked before the readings were seen, each reading is an
-answer, set without ", a lead"; v2's pass rate is shown no worse than v1's by more than the 5-point margin.
+answer, set without ", a lead". v2's pass rate is shown not to fall more than 5 points below v1's.
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,

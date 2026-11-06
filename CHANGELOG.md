@@ -23,7 +23,12 @@ campaign stating no order, every one filed before, leads as it did. A measuremen
 measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
 `$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
 
-**Hosts:** a script parsing the first line of a comparison reads the lead on the first grader, as before; a host
+**Hosts:** declaring a question on an existing eval moves its figures: the question is unscoped, so every reading
+joins the question's family, its intervals are corrected together and a verdict can change (rung 3's `Number score`
+interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts); and the pass rate gains a "no worse than the margin" reading,
+at a fixed 5-point margin for now, which nothing on `Eval` sets yet. A design's `measure_order` naming a measure no
+grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing
+the first line of a comparison reads the lead on the first grader, as before; a host
 matching a page's first screen sees the question in place of the no-question line where one is declared, and a lead
 on the first grader where a function is listed before the classifier. A host matching a measurement's scorecard
 reads money cells with `$` and the per-1,000 mark. An older pod reading a campaign at durable v16.8 keeps

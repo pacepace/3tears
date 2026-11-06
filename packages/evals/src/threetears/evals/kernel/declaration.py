@@ -1447,6 +1447,35 @@ def _refuse_unreadable_guardrail_margins(design: AspectDesign, template: EvalTem
             )
 
 
+def _refuse_unread_measure_order(design: AspectDesign, template: EvalTemplate | None, profile: HostProfile) -> None:
+    """Refuse a ``measure_order`` entry naming no measure the aspect's results can carry: the host's measures and the
+    engine's, the template's judged dimensions and its goal-state checks. A page's lead reads the first entry a
+    contrast tested, so an entry naming nothing would pass the lead to the next, or to the pass rate, without a word.
+
+    :raises DesignRefused: An entry names no such measure, naming it and every name the aspect declares.
+    """
+    if not design.measure_order:
+        return
+    rubric = [dim.name for dim in template.rubric] if template is not None else []
+    checks = list(template.goal_state_checks) if template is not None else []
+    known = {*rubric, *checks}
+    if stray := [
+        name
+        for name in design.measure_order
+        if name not in known and profile.measures.get(name) is None and name not in METRIC_DESCRIPTORS
+    ]:
+        declared = sorted({*profile.measures.names, *rubric, *checks})
+        raise DesignRefused(
+            f"measure_order names {', '.join(map(repr, stray))}, which no grader of this aspect reads, so the page's "
+            "lead could not read it",
+            remedy=(
+                f"list measures this aspect declares, or an engine measure such as accuracy: {', '.join(declared)}"
+                if declared
+                else "list the engine's measures, such as accuracy; this host and template declare none of their own"
+            ),
+        )
+
+
 def decision_readings(template: EvalTemplate | None, profile: HostProfile) -> list[str]:
     """Every name a ``RateDrop.reading`` may carry on a campaign of ``template``: what the page reads as a pass rate.
 
@@ -1595,6 +1624,8 @@ def refuse_an_undeclarable_design(
         priority asks about latency in a design that does not declare ``measure_latency``, naming each and
         the setting to turn on; or a floor's ``RateDrop`` names a reading :func:`decision_readings` does
         not offer.
+    :raises DesignRefused: A ``measure_order`` entry names no measure the host, the engine or the template declares,
+        naming it and every name the aspect declares.
     """
     _refuse_unreadable_floor_readings(floors, template, profile)
     # ASK the profile rather than re-deriving from its registry. `HostProfile.controllable` is
@@ -1629,6 +1660,7 @@ def refuse_an_undeclarable_design(
     rubric = {dim.name: dim.scale for dim in template.rubric} if template is not None else {}
     checks = list(template.goal_state_checks) if template is not None else []
     _refuse_unreadable_guardrail_margins(design, template)
+    _refuse_unread_measure_order(design, template, profile)
     resolved = {
         override.measure_id: resolve_bar_name(
             override.measure_id, rubric_dimensions=rubric, goal_state_checks=checks, measures=profile.measures
