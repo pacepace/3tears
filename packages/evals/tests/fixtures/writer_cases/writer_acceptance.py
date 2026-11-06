@@ -1,7 +1,8 @@
 """The reset's P2 acceptance: does the writer gate read a worse writer as writing worse reports?
 
-Two arms of one writer over the held-out writer cases: the shipped skill (the control) and one candidate variant,
-chosen by ``--variant``, each a function of the shipped skill:
+Two arms of one writer over the held-out writer cases: the shipped skill (the control) and one candidate, either a
+variant chosen by ``--variant``, each a function of the shipped skill, or a whole skill read from a directory by
+``--candidate-skill`` (never both):
 
 - ``hollow`` (the default): ``principles.md`` and ``statistics.md`` each left as one stub line;
 - ``minimal``: ``SKILL.md`` and ``editor.md`` kept, every other module, the exemplars' index and every note left as a
@@ -12,7 +13,13 @@ chosen by ``--variant``, each a function of the shipped skill:
 
 The loader requires every module, so blanked files stay as stubs; ``README.md`` is in no session's text and stays as
 shipped. ``editor.md`` is byte-identical in every variant, so the in-loop editor is the same instrument for both arms
-and the code measures stay comparable. Then:
+and the code measures stay comparable.
+
+**A candidate skill** (``--candidate-skill DIR``) is a directory holding the shipped skill's file set, each file free to
+differ; one missing a file the shipped skill has, or holding one it does not, is refused by name. Its arm is named for
+the directory, the record names it by its skill digest, and the acceptance asks whether the gate reads it as writing
+better reports: the criterion asks ``promote`` and an improved primary. Its ``editor.md`` may differ, so where it does,
+bounces are read by two editors and the criterion does not compare them. Then:
 
 1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
    the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
@@ -28,6 +35,7 @@ Commands::
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --variant minimal
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --candidate-skill <dir>
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
@@ -62,7 +70,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, get_args
+from typing import Any, Final, Literal, get_args
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
@@ -221,6 +229,10 @@ class Variant:
     :ivar build: The variant's skill, made from the shipped one.
     :ivar changes: The files it is allowed to change, given the shipped skill.
     :ivar revisions: The revisions its arm is given; the control's are :data:`MOST_REVISIONS`.
+    :ivar expects: How the acceptance expects the gate to read it against the control: worse for a variant made to
+        write worse, better for a candidate skill.
+    :ivar editor_fixed: Whether its ``editor.md`` must be the control's; a candidate skill's may differ.
+    :ivar directory: The directory a candidate skill was read from; ``None`` for a variant.
     """
 
     name: str
@@ -229,6 +241,9 @@ class Variant:
     build: Callable[[AnalystSkill | None], AnalystSkill]
     changes: Callable[[AnalystSkill], list[str]]
     revisions: int = MOST_REVISIONS
+    expects: Literal["worse", "better"] = "worse"
+    editor_fixed: bool = True
+    directory: Path | None = None
 
 
 #: Every variant, by the name ``--variant`` takes; the hollow variant first, the default.
@@ -266,13 +281,74 @@ VARIANTS: Final[Mapping[str, Variant]] = {
 
 
 def refuse_unlike_editors(shipped: AnalystSkill, candidate: AnalystSkill, variant: Variant = VARIANTS[HOLLOW]) -> None:
-    """Refuse a variant whose editor text is not the control's, or that differs anywhere but the files it changes."""
-    if candidate.editor().digest != shipped.editor().digest:
+    """Refuse a variant whose editor text is not the control's (where it must be), or that differs anywhere but the
+    files it changes."""
+    if variant.editor_fixed and candidate.editor().digest != shipped.editor().digest:
         raise SystemExit(
             f"writer_acceptance.py: the {variant.name} variant's editor.md differs, so the editor is not one instrument"
         )
     if (differing := files_differing(shipped, candidate)) != (allowed := variant.changes(shipped)):
         raise SystemExit(f"writer_acceptance.py: the {variant.name} variant differs in {differing}, not {allowed}")
+
+
+def candidate_files(directory: Path) -> set[str]:
+    """The skill files a directory holds, by path relative to it: its Markdown, as the skill's loader reads it."""
+    return {path.relative_to(directory).as_posix() for path in directory.rglob("*.md") if path.is_file()}
+
+
+def read_candidate_skill(directory: Path, shipped: AnalystSkill | None = None) -> AnalystSkill:
+    """A candidate skill read from ``directory``, refused by name unless it holds exactly the shipped skill's files.
+
+    :param directory: The candidate's root, laid out as the shipped skill's.
+    :param shipped: The skill whose file set it must hold; ``None`` for the one this build ships.
+    :return: The candidate, checked whole.
+    """
+    skill = load_skill() if shipped is None else shipped
+    if not directory.is_dir():
+        raise SystemExit(f"writer_acceptance.py: no candidate skill directory at {directory}")
+    held = candidate_files(directory)
+    if missing := sorted(skill.files.keys() - held):
+        raise SystemExit(
+            f"writer_acceptance.py: the candidate skill {directory.name} is missing {', '.join(missing)}, "
+            "which the shipped skill has"
+        )
+    if extra := sorted(held - skill.files.keys()):
+        raise SystemExit(
+            f"writer_acceptance.py: the candidate skill {directory.name} holds {', '.join(extra)}, "
+            "which the shipped skill does not"
+        )
+    return AnalystSkill.at(directory)
+
+
+def candidate_variant(directory: Path, shipped: AnalystSkill | None = None) -> Variant:
+    """The candidate skill in ``directory`` as the acceptance's candidate: its arm named for the directory, asked
+    whether the gate reads it as writing better reports than the shipped skill.
+
+    :param directory: The candidate's root.
+    :param shipped: The control's skill; ``None`` for the one this build ships.
+    :return: The candidate, its skill read and checked once.
+    """
+    root = directory.resolve()
+    name = root.name
+    if name == SHIPPED:
+        raise SystemExit(f"writer_acceptance.py: a candidate skill's directory is not named {SHIPPED!r}, the control's")
+    control = load_skill() if shipped is None else shipped
+    skill = read_candidate_skill(root, control)
+    if skill.digest == control.digest:
+        raise SystemExit(
+            f"writer_acceptance.py: the candidate skill {name} is the shipped skill byte for byte, so its arm would "
+            "compare nothing; change a file (its README.md, which no session reads, for a run of like against like)"
+        )
+    return Variant(
+        name,
+        f"the {name} skill",
+        f"Does the gate read the {name} skill as writing better reports than the shipped skill?",
+        lambda _shipped: skill,
+        lambda base: files_differing(base, skill),
+        expects="better",
+        editor_fixed=False,
+        directory=root,
+    )
 
 
 # --- the cases -------------------------------------------------------------------------------------------------
@@ -438,6 +514,7 @@ class Criterion:
     requirements: tuple[Requirement, ...]
     cases_to_settle: int | None
     noun: str = VARIANTS[HOLLOW].noun
+    expects: Literal["worse", "better"] = "worse"
 
     @property
     def passed(self) -> bool:
@@ -447,7 +524,7 @@ class Criterion:
     def verdict(self) -> str:
         """The criterion's one line: PASS, or FAIL naming what did not hold."""
         if self.passed:
-            return f"PASS: the gate reads {self.noun} as writing worse reports, on the primary reading."
+            return f"PASS: the gate reads {self.noun} as writing {self.expects} reports, on the primary reading."
         failed = "; ".join(requirement.asks for requirement in self.requirements if not requirement.holds)
         settle = (
             ""
@@ -474,19 +551,27 @@ _REASON_WORDS: Final = {
 
 
 def pass_criterion(
-    read: WriterPromotion, runs: Mapping[str, EvalSummary], *, variant: Variant = VARIANTS[HOLLOW]
+    read: WriterPromotion,
+    runs: Mapping[str, EvalSummary],
+    *,
+    variant: Variant = VARIANTS[HOLLOW],
+    one_editor: bool = True,
 ) -> Criterion:
     """Decide the pass criterion on a promotion read (reset P2 §4).
 
     Both arms' runs must have completed with a result for every case; the read must answer ``keep``; its primary
     reading must read ``regressed``, separated, with its interval below 0; the judge's order check must not void it;
-    and bounces must not separate, since a variant that changes bounces broke the format rather than the writing.
+    and bounces must not separate, since a variant that changes bounces broke the format rather than the writing. A
+    candidate expected better asks the mirror: ``promote``, ``improved``, its interval above 0.
 
     :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
     :param runs: Each arm's run summary, by arm.
     :param variant: The candidate the verdict names.
+    :param one_editor: Whether both arms ran one ``editor.md``; when not, bounces are two editors' and not compared.
     :return: The criterion, each requirement decided.
     """
+    better = variant.expects == "better"
+    decision, outcome = ("promote", "improved") if better else ("keep", "regressed")
     primary = read.primary
     bounces = next((verdict for verdict in read.verdicts if verdict.name == BOUNCES_MEASURE), None)
     reliability = read.reliability
@@ -503,21 +588,21 @@ def pass_criterion(
             ran,
             all(run.status == "completed" and run.n_results == run.n_cases * run.k_runs for run in runs.values()),
         ),
-        Requirement("the read answers keep", read.decision, read.decision == "keep"),
+        Requirement(f"the read answers {decision}", read.decision, read.decision == decision),
         Requirement(
-            "the primary reading reads regressed",
+            f"the primary reading reads {outcome}",
             "not read" if primary is None else primary.outcome.replace("_", " "),
-            primary is not None and primary.outcome == "regressed",
+            primary is not None and primary.outcome == outcome,
         ),
         Requirement(
-            "it separated, its interval below 0",
+            f"it separated, its interval {'above' if better else 'below'} 0",
             "not read"
             if primary is None
             else f"{_REASON_WORDS.get(primary.reason, primary.reason.replace('_', ' '))}, {_interval(primary)}",
             primary is not None
             and primary.reason == "separated"
             and primary.interval is not None
-            and primary.interval[1] < 0,
+            and (primary.interval[0] > 0 if better else primary.interval[1] < 0),
         ),
         Requirement(
             "the judge's order consistency stands at 0.7 or more",
@@ -526,11 +611,15 @@ def pass_criterion(
         ),
         Requirement(
             "bounces do not separate",
-            "not read" if bounces is None else bounces.outcome.replace("_", " "),
-            bounces is None or bounces.outcome not in ("improved", "regressed"),
+            "not compared: the arms' editors differ"
+            if not one_editor
+            else "not read"
+            if bounces is None
+            else bounces.outcome.replace("_", " "),
+            not one_editor or bounces is None or bounces.outcome not in ("improved", "regressed"),
         ),
     )
-    return Criterion(requirements, read.cases_to_settle, variant.noun)
+    return Criterion(requirements, read.cases_to_settle, variant.noun, variant.expects)
 
 
 # --- the run -----------------------------------------------------------------------------------------------------
@@ -572,6 +661,8 @@ class Acceptance:
         writer = next(iter(result.arms.values())).candidate_model
         editor = "" if self.editor_model is None else f", its editor on {self.editor_model}"
         yield f"Both arms write on {writer}{editor}; the scoring judge is {result.judge}."
+        if self.candidate.editor().digest != self.shipped.editor().digest:
+            yield f"The {self.variant.name} arm's editor.md differs, so each arm's reports are reviewed by its own editor."
         if self.variant.revisions != MOST_REVISIONS:
             yield (
                 f"The {self.variant.name} arm is given {self.variant.revisions} revisions and the control "
@@ -617,6 +708,13 @@ class Acceptance:
             "campaign": self.result.campaign_id,
             "scope": self.result.scope_id,
             "skills": {SHIPPED: self.shipped.digest, self.variant.name: self.candidate.digest},
+            "candidate_skill": None
+            if self.variant.directory is None
+            else {
+                "directory": self.variant.directory.name,
+                "path": str(self.variant.directory),
+                "digest": self.candidate.digest,
+            },
             "revisions": {SHIPPED: MOST_REVISIONS, self.variant.name: self.variant.revisions},
             "pass_job": self.read.pairwise_job,
             "pairwise": self.report.model_dump(mode="json"),
@@ -756,7 +854,8 @@ async def acceptance(
     turns: int = TURNS,
     request_s: float = REQUEST_S,
     held_out_fraction: float = HELD_OUT_FRACTION,
-    variant: str = HOLLOW,
+    variant: str | None = None,
+    candidate_skill: Path | None = None,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -764,11 +863,15 @@ async def acceptance(
     :param cases_dir: The writer case files; ``None`` for the default cases, written into a scratch directory.
     :param cap_usd: The whole run's cap, split by the writer eval's rule (the module docstring).
     :param out: Where a live run's recordings, store and result go.
-    :param variant: The candidate, by its name in :data:`VARIANTS`.
+    :param variant: The candidate, by its name in :data:`VARIANTS`; the hollow variant when neither it nor
+        ``candidate_skill`` is named.
+    :param candidate_skill: The candidate, a skill directory (:func:`candidate_variant`); never with ``variant``.
     :return: What it found.
     """
-    chosen = VARIANTS[variant]
+    if variant is not None and candidate_skill is not None:
+        raise SystemExit("writer_acceptance.py: name one candidate, --variant or --candidate-skill, not both")
     shipped = load_skill()
+    chosen = VARIANTS[variant or HOLLOW] if candidate_skill is None else candidate_variant(candidate_skill, shipped)
     candidate = chosen.build(shipped)
     refuse_unlike_editors(shipped, candidate, chosen)
     arms = {
@@ -812,7 +915,9 @@ async def acceptance(
         with_documents=with_documents,
         report=report,
         read=read,
-        criterion=pass_criterion(read, result.arms, variant=chosen),
+        criterion=pass_criterion(
+            read, result.arms, variant=chosen, one_editor=candidate.editor().digest == shipped.editor().digest
+        ),
         cap_usd=cap_usd,
         editor_model=editor_model,
         variant=chosen,
@@ -829,8 +934,12 @@ def _amount(text: str) -> float:
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="writer_acceptance.py", description=__doc__.splitlines()[0])
     parser.add_argument("--dry", action="store_true", help="scripted models, nothing sent")
-    parser.add_argument(
-        "--variant", choices=list(VARIANTS), default=HOLLOW, help="the candidate run against the shipped skill"
+    candidate = parser.add_mutually_exclusive_group()
+    candidate.add_argument(
+        "--variant", choices=list(VARIANTS), help="the candidate run against the shipped skill; default: hollow"
+    )
+    candidate.add_argument(
+        "--candidate-skill", type=Path, help="a directory holding a whole skill, run against the shipped one"
     )
     parser.add_argument("--cases", type=Path, help="a directory of writer case files; default: prototype 5's seven")
     parser.add_argument("--cap-usd", type=_amount, help="the owner's cap for the whole run; a live run names it")
@@ -844,6 +953,8 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--held-out-fraction", type=float, default=HELD_OUT_FRACTION, help="groups on held-out")
     parser.add_argument("--out", type=Path, help="where a live run's recordings, store and result go")
     options = parser.parse_args(list(argv))
+    if options.candidate_skill is not None:
+        candidate_variant(options.candidate_skill)  # refused by name before anything is made or sent
     if not options.dry:
         if options.out is None or options.cap_usd is None:
             parser.error("a live run names --cap-usd and --out")
@@ -866,6 +977,7 @@ def main(argv: Sequence[str]) -> int:
             request_s=options.request_s,
             held_out_fraction=options.held_out_fraction,
             variant=options.variant,
+            candidate_skill=options.candidate_skill,
         )
     )
     summary = found.summary()
