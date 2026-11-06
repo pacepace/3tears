@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.92.0 -- 2026-11-06
+
 ### agent-tools: a tool pod serves its own metrics on the health port's `/metrics`
 
 **Added:** `ToolServerBootstrap(..., extra_metric_registries=...)`. The health port's `/metrics` now
@@ -67,8 +69,6 @@ export deletes and export listings keep `timeout`.
 - A hub set to a longer export deadline needs its clients to pass a matching `export_timeout`.
 - `export_part`, `export_partitions`, `export_counted_partitions` and every other caller of
   `client.export` get the export deadline with no change.
-
-## v0.92.0 -- 2026-11-06
 
 ### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
 
