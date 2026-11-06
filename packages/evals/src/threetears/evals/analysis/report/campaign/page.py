@@ -181,7 +181,6 @@ def build_campaign_report(
         campaign_id=campaign.id,
         campaign_name=campaign.name or None,
         scope_id=campaign.scope_id,
-        finding_count=0,
         blocks=blocks,
         aspects=folds,
         readings=readings,

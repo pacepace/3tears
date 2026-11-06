@@ -120,7 +120,6 @@ __all__ = [
     "CandidatePreparationFailed",
     "CandidateTelemetry",
     "CellPending",
-    "CellReservation",
     "CellSink",
     "CellSpanWindow",
     "UnknownCandidateKind",
@@ -439,35 +438,6 @@ class CellSpanWindow(Protocol):
 CellPending = Literal["apparatus", "candidate", "background_work", "simulator", "judge"]
 
 
-class CellReservation(Protocol):
-    """Retired with :meth:`CellSink.reserve`: the handle of one paid call, landing the call's cost when it returns.
-
-    Minted by :meth:`CellSink.reserve` before the call is made. It holds nothing against the run: no ceiling is
-    asked inside a cell. It is closed exactly once: :meth:`settle` when the call returned, :meth:`release`
-    when it did not. Settling it adds the cost as :meth:`CellSink.add_spend` does, which is what to call instead.
-    The next minor removes it with :meth:`CellSink.reserve`.
-    """
-
-    def settle(self, cost_usd: float | None) -> None:
-        """Land what the call actually cost on the reservation's source, as :meth:`CellSink.add_spend` would add it.
-
-        :param cost_usd: What the call cost, its every attempt included; ``None`` when the provider priced none,
-            which leaves the source unpriced for the rest of the cell.
-        :ptype cost_usd: float | None
-        :raises ValueError: The reservation was already closed, or ``cost_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def release(self) -> None:
-        """Close the reservation, counting nothing — for a call that raised, or was never made.
-
-        A call that raised may still have been billed; a kind that learns what it cost adds it through
-        :meth:`CellSink.add_spend`. Releasing an already-closed reservation does nothing, so a ``finally``
-        may release unconditionally after a settle.
-        """
-        ...  # pragma: no cover — protocol
-
-
 class CellSink(Protocol):
     """One cell's record of where it stands, as the kind driving that cell reports into it.
 
@@ -481,8 +451,7 @@ class CellSink(Protocol):
     total per source (:data:`CellPending`: the candidate, its background work, the simulator, the judge, the
     rig), each only ever added to (:meth:`add_spend`). It asks no ceiling: the run's cost cap and its
     metered-call ceiling are read BETWEEN cells, against what the recorded cells landed, and stop new cells from
-    starting while the running ones finish. :meth:`reserve` and :meth:`cost_cap_reached` are retired: each warns,
-    refuses and reports nothing, and the next minor removes both.
+    starting while the running ones finish.
 
     A kind is handed one per cell, like ``span_window``, and uses it for that cell alone.
     """
@@ -526,8 +495,7 @@ class CellSink(Protocol):
 
         Each call ADDS: report each paid call's cost once, as it lands. A source's total only ever grows,
         so a kind reporting its candidate's spend and the engine reporting the simulator's or the judge's
-        never overwrite one another. A call made through the retired :meth:`reserve` is counted by settling its
-        reservation instead — adding it here too would count it twice.
+        never overwrite one another.
 
         Not the cell's record: what the cell stores is what :meth:`CandidateKind.invoke` returns, or at a
         deadline what :meth:`report_progress` reads.
@@ -538,36 +506,6 @@ class CellSink(Protocol):
             unpriced for the rest of the cell.
         :ptype cost_usd: float | None
         :raises ValueError: ``cost_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation:
-        """Retired: open the handle for one paid call, to settle once the call returns or release if it does not.
-
-        Warns with a :class:`DeprecationWarning`; the next minor removes it. It never refuses the call: the cost cap
-        is read between cells, so nothing inside a cell is turned away by it, and the handle adds nothing over
-        counting the call's cost with :meth:`add_spend` once it returns, which is what to call instead. The ceiling
-        is the most the call can cost
-        (:meth:`~threetears.evals.schema.completion.PricedCompletion.price_ceiling`) and is only checked to be
-        a usable amount.
-
-        :param source: Whose call it is; its cost lands on that source's total when the reservation settles.
-        :ptype source: CellPending
-        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded.
-        :ptype ceiling_usd: float | None
-        :return: The reservation, to settle once the call returns or release if it does not.
-        :rtype: CellReservation
-        :raises ValueError: ``ceiling_usd`` is negative or not finite.
-        """
-        ...  # pragma: no cover — protocol
-
-    def cost_cap_reached(self) -> bool:
-        """Retired: always ``False``, because the cost cap is read between cells and never inside one.
-
-        Warns with a :class:`DeprecationWarning`; the next minor removes it. Drop the check.
-
-        :return: ``False``.
-        :rtype: bool
         """
         ...  # pragma: no cover — protocol
 

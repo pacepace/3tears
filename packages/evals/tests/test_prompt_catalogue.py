@@ -53,11 +53,11 @@ def test_the_catalogue_declares_each_of_the_packages_prompts_once():
 )
 def test_a_retired_writers_slot_is_neither_seeded_nor_declared(slot: str, constant: str, seed: str):
     """The report planner and the memo writer are retired: no entry seeds their slots and the catalogue declares no id
-    for either, so a fresh deployment never fills them. A host that still declares one itself resolves the root's
-    constant, one line saying it is retired (``test_retired_names``)."""
+    for either, so a fresh deployment never fills them, and the analysis root holds no constant to seed either from."""
     assert slot not in {entry.prompt_type for entry in SEED_PROMPTS}
     assert not hasattr(catalogue, constant)
     assert all(entry.constant != seed for entry in SEED_PROMPTS)
+    assert not hasattr(importlib.import_module("threetears.evals.analysis"), seed)
 
 
 @pytest.mark.parametrize("entry", SEED_PROMPTS, ids=lambda entry: entry.prompt_type)

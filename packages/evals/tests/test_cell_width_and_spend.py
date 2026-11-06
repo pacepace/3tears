@@ -453,23 +453,20 @@ async def test_an_unpriced_call_is_made_like_any_other_so_every_cell_makes_all_o
 
 
 class _ReportsBySourceKind(ToyExtractorKind):
-    """Two cells of one run, side by side: the first reports spend on two sources, the second asks the sink.
+    """Two cells of one run, side by side: the first reports spend on two sources, the second adds its own past the cap.
 
     The first to invoke reports $0.6 of candidate spend and $0.3 of background work and waits; the second, once it
-    has, asks to hold a $0.2 call and asks whether the cap is reached. Neither is refused: the $1 cap is read
-    between cells. Both questions are the sink's retired members, which still answer so and warn, each warning
-    kept here.
+    has, adds a $0.2 call of its own, taking the cells past the run's $1 cap while both still run. Neither is
+    refused: the cap is read between cells.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.reported = asyncio.Event()
-        self.asked = asyncio.Event()
+        self.added = asyncio.Event()
         self.order: list[str] = []
-        self.refused: list[str] = []
         self.negative_refused: list[str] = []
-        self.cap_reached: list[bool] = []
-        self.warned: list[str] = []
+        self.finished: list[str] = []
 
     async def invoke(self, instance: ToyExtractorInstance, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
         self.order.append(test_case.id)
@@ -480,23 +477,15 @@ class _ReportsBySourceKind(ToyExtractorKind):
                 sink.add_spend("candidate", -0.6)
             except ValueError as refused:
                 self.negative_refused.append(str(refused))
-            self.cap_reached.append(self._retired(sink.cost_cap_reached))
             self.reported.set()
-            await self.asked.wait()
+            await self.added.wait()
+            self.finished.append(test_case.id)
             return CandidateOutput(output=[{"first": True}])
         await self.reported.wait()
-        self._retired(lambda: sink.reserve("candidate", 0.2)).release()
-        self.cap_reached.append(self._retired(sink.cost_cap_reached))
-        self.asked.set()
+        sink.add_spend("candidate", 0.2)
+        self.added.set()
+        self.finished.append(test_case.id)
         return CandidateOutput(output=[{"first": False}])
-
-    def _retired(self, member: Callable[[], Any]) -> Any:
-        """Call a retired member of the sink, keeping the one warning it raises."""
-        with pytest.warns(DeprecationWarning) as caught:
-            answered = member()
-        (warning,) = caught
-        self.warned.append(str(warning.message))
-        return answered
 
 
 async def test_a_cells_spend_by_source_only_grows_and_no_sibling_is_refused_by_it() -> None:
@@ -506,19 +495,14 @@ async def test_a_cells_spend_by_source_only_grows_and_no_sibling_is_refused_by_i
         kinds.append(_ReportsBySourceKind(client=ScriptedExtractionClient(), world=world, goal_checks=()))
         return kinds[0]
 
-    _host, _run, _results, stopped, _cap = await _capped_run(kind_for, cap_usd=1.0, width=2, n_cases=2)
+    _host, _run, results, stopped, _cap = await _capped_run(kind_for, cap_usd=1.0, width=2, n_cases=2)
 
     (kind,) = kinds
     assert kind.negative_refused and "0 or more" in kind.negative_refused[0], "a source's total never decreases"
-    assert kind.cap_reached == [False, False], (
+    assert sorted(kind.finished) == sorted(kind.order) and len(kind.order) == 2, (
         "$0.9 beside a $0.2 call is asked of no cell: the cap is read between cells"
     )
-    assert [message.split(" is retired")[0] for message in kind.warned] == [
-        "threetears.evals.kernel.CellSink.cost_cap_reached",
-        "threetears.evals.kernel.CellSink.reserve",
-        "threetears.evals.kernel.CellSink.cost_cap_reached",
-    ]
-    assert "add_spend(source, cost)" in kind.warned[1]
+    assert len(results) == 2
     assert stopped is None
 
 
@@ -690,8 +674,7 @@ async def test_a_capped_client_makes_every_priced_call_and_counts_each_at_what_i
         await client.generate(system="s", user="u")
 
     assert paid.calls == 5
-    assert sink.spent == {"candidate": pytest.approx(0.02)}
-    assert sink.reservations_opened == 0, "each cost is added as it lands; the retired reservation is never opened"
+    assert sink.spent == {"candidate": pytest.approx(0.02)}, "each cost is added as it lands"
 
 
 @pytest.mark.parametrize("cost_usd", [None, 0.004])
@@ -709,7 +692,6 @@ async def test_a_capped_client_makes_a_call_its_client_prices_at_nan_and_counts_
 
     assert paid.calls == 1, "the call was made"
     assert sink.spent == {"candidate": None if cost_usd is None else pytest.approx(cost_usd)}
-    assert sink.reservations_opened == 0
 
 
 async def test_a_capped_client_counts_nothing_when_the_call_raises() -> None:
@@ -723,7 +705,7 @@ async def test_a_capped_client_counts_nothing_when_the_call_raises() -> None:
     with pytest.raises(RuntimeError, match="fell over"):
         await client.generate(system="s", user="u")
 
-    assert sink.reservations_opened == 0 and sink.spent == {}, "a call that raised holds nothing and counts nothing"
+    assert sink.spent == {}, "a call that raised counts nothing"
 
 
 @dataclass
@@ -752,7 +734,7 @@ async def test_a_capped_client_counts_a_billed_call_whatever_its_sent_settings_h
     returned = await client.generate(system="s", user="u")
 
     assert returned.sent_settings == "low", "the completion is handed back unchanged"
-    assert sink.reservations_opened == 0 and sink.spent == {source: pytest.approx(0.004)}
+    assert sink.spent == {source: pytest.approx(0.004)}
 
 
 async def test_a_simulator_call_whose_sent_settings_is_refused_is_counted_and_recorded_before_the_defect_leaves() -> (
@@ -774,7 +756,7 @@ async def test_a_simulator_call_whose_sent_settings_is_refused_is_counted_and_re
             driver, answer, post, llm=_MistypedSentClient(cost_usd=0.004, ceiling_usd=0.01), sink=sink
         )
 
-    assert sink.reservations_opened == 0 and sink.spent == {"simulator": pytest.approx(0.004)}
+    assert sink.spent == {"simulator": pytest.approx(0.004)}
     assert driver.stop_cause is ConversationStopCause.SIMULATOR_ERROR
     ledger = RoleUsageLedger(role="simulator")
     driver.fold_usage(ledger)

@@ -12,9 +12,8 @@ The four companion gates, and where each lives:
 2. **No host names in the shared registry** — ``test_no_host_names_in_shared_contract.py`` runs the
    whole-tree version; the registry-shaped half is here.
 3. **A well-formed empty answer** — the sweepables suite.
-4. **The retired style fields** — a host's tone register and caveat kinds were read only by the retired writers'
-   prompts. ``HostProfile.style`` and ``HostProfile.caveat_kinds`` default to None and warn when passed, and
-   ``StyleProfile`` and ``ToneRegister`` warn when read from the host contract, for one minor.
+4. **No style fields** — a host's tone register and caveat kinds were read only by the retired writers' prompts, and
+   ``HostProfile`` takes neither: a host still passing ``style=`` or ``caveat_kinds=`` is refused at construction.
 
 Profiles and observations are really constructed; nothing here is mocked.
 """
@@ -23,12 +22,11 @@ from __future__ import annotations
 
 import ast
 import warnings
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
 
-from threetears.evals.kernel import host as host_contract
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
@@ -41,7 +39,6 @@ from threetears.evals.kernel.host.sweepables import (
 )
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
-from threetears.evals.kernel.retired import HOST_STYLE_RETIRED
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from packages.evals.tests.fixtures.toyhost.corpus import (
     clean_sweep,
@@ -353,42 +350,20 @@ def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered():
     assert answer.state != "uncovered"
 
 
-def test_the_default_profile_sets_no_style_and_no_caveat_kinds_and_warns_nothing():
-    """The toy host sets neither retired field, so its profile is built without a warning and holds neither."""
+def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field():
+    """The toy host's profile is built without a warning, and a profile has no field a retired writer read."""
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         toy = toyhost_profile()
 
-    assert (toy.style, toy.caveat_kinds) == (None, None)
+    assert not {"style", "caveat_kinds"} & {f.name for f in fields(toy)}
 
 
 @pytest.mark.parametrize("retired", ["style", "caveat_kinds"])
-def test_passing_a_retired_style_field_warns_naming_its_retirement(retired: str) -> None:
-    """A host still passing ``style=`` or ``caveat_kinds=`` is told, once per profile, that nothing reads it."""
-    toy = toyhost_profile()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        value = host_contract.StyleProfile() if retired == "style" else frozenset({"adjudication_scope"})
-
-    with pytest.warns(DeprecationWarning) as caught:
-        profile = replace(toy, **{retired: value})
-
-    (warned,) = [str(warning.message) for warning in caught]
-    assert warned == f"HostProfile.{retired} is retired and leaves in the next minor: {HOST_STYLE_RETIRED}"
-    assert getattr(profile, retired) == value, "the profile still holds what it was given, for its last minor"
-
-
-@pytest.mark.parametrize("name", ["StyleProfile", "ToneRegister"])
-def test_reading_a_retired_style_name_from_the_host_contract_warns(name: str) -> None:
-    """``StyleProfile`` and ``ToneRegister`` still import from the host contract, each read warning."""
-    with pytest.warns(DeprecationWarning) as caught:
-        getattr(host_contract, name)
-
-    (warned,) = [str(warning.message) for warning in caught]
-    assert warned == (
-        f"threetears.evals.kernel.host.{name} is retired and leaves in the next minor: {HOST_STYLE_RETIRED}"
-    )
-    assert name in host_contract.__all__, "kept in __all__ for its last minor"
+def test_passing_a_retired_style_field_is_refused_naming_it(retired: str) -> None:
+    """A host still passing ``style=`` or ``caveat_kinds=`` is refused, the field named, rather than ignored."""
+    with pytest.raises(TypeError, match=retired):
+        replace(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent():

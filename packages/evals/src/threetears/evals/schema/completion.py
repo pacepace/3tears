@@ -34,8 +34,8 @@ JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 #: (re-sends of a severed body, SDK retries, their back-off sleeps). The host answers it, because only
 #: the host knows its client: how many calls one request can become, how long it sleeps between them,
 #: and how slowly a finishing call may write. Every wall-clock ceiling the engine derives over a
-#: request (``Ceilings().writer_ceiling_s``, ``Ceilings().judge_phase_ceiling_s``
-#: of :class:`~threetears.evals.run.Ceilings`, and :func:`~threetears.evals.analysis.reporter_cell_timeout_s`) is a count of requests times this, so
+#: request (``Ceilings().writer_ceiling_s`` and ``Ceilings().judge_phase_ceiling_s`` of
+#: :class:`~threetears.evals.run.Ceilings`) is a count of requests times this, so
 #: an answer below the client's real worst case cancels requests that were still going to finish,
 #: after they were billed. On the package's ``Model``, the resends of a declined call all end within
 #: one request's timeout of the first attempt (:class:`~threetears.evals.providers.DeclinedRetry`), so

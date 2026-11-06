@@ -236,9 +236,9 @@ class CampaignLine(EvalBaseModel):
         default=None,
         description=(
             "Where it stands in a few words, written by code and never by a model: from the recorded call, `Keep "
-            "<arm>` for the control and `Adopt <arm>` for a candidate; else from its report's recommendation, the "
-            "same way; `No call` for a report recommending no arm or more than one; None with neither a call nor a "
-            "report. report.headline is the long form."
+            "<arm>` for the control and `Adopt <arm>` for a candidate; else from the one arm its report document "
+            "recommends (`EvalAnalysis.recommended_variant_key`), the same way; `No call` for a report recommending no "
+            "arm or more than one; None with neither a call nor a report. report.headline is the long form."
         ),
     )
     outcome_short: str | None = Field(
@@ -2367,9 +2367,9 @@ def report_read(
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
     :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or
-        ``json`` (the page's machine form: code's readings across the campaign's aspects, the recommendation, the
-        call, each aspect's bundle by its fingerprint, as ``campaign.json`` beside a written page holds it, and
-        ``report_doc``, the stored report document the page draws, or None).
+        ``json`` (the page's machine form: code's readings across the campaign's aspects, the call, each aspect's
+        bundle by its fingerprint, as ``campaign.json`` beside a written page holds it, and ``report_doc``, the stored
+        report document the page draws, or None).
     :ptype format: ReportFormat
     :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
     :ptype trials: TrialDetail

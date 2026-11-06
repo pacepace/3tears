@@ -111,7 +111,7 @@ def _said(analysis: EvalAnalysis, form: str, line: str = _LINE) -> str:
 def _assert_stands_in(page: CampaignReport, analysis: EvalAnalysis, line: str = _LINE) -> None:
     assert (page.basis, page.analysis_id, page.unread_analysis_id) == ("code_only", None, analysis.id)
     assert page.needs_regeneration is not None and page.needs_regeneration.startswith(line)
-    assert page.plan_page is None and page.doc_page is None
+    assert page.doc_page is None
     for form in ("markdown", "html", "json"):
         assert _said(analysis, form, line) in _first_screen(serialize_report(page, form), form), form
 

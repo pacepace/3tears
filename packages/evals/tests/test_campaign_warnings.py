@@ -27,7 +27,6 @@ from threetears.evals.analysis.report.campaign_page import NO_CALL, build_campai
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
-    TextBlock,
 )
 
 from packages.evals.tests.campaign_support import (
@@ -97,8 +96,8 @@ async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_re
     assert first.startswith("# ") and "**alpha falls short of the bar on solo.**" in first
     header = header_html(page)
     assert header.index("<h1>") < header.index('<p class="flag warning">') and 'role="alert"' not in header
-    assert "Recommended" not in first and page.recommendation is None
-    assert json.loads(serialize_report(page, "json"))["recommendation"] is None
+    assert "Recommended" not in first
+    assert "recommendation" not in json.loads(serialize_report(page, "json"))
     measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
     assert measures.rows[0]["measure"].text == "pass rate"
     bars = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "bars")
@@ -123,7 +122,7 @@ async def test_two_arms_breaking_one_floor_each_have_their_own_line() -> None:
         f"Adopting {CANDIDATE_LABEL} overrides the 10-point floor it breaks on billing.",
         "Adopting v3 overrides the 10-point floor it breaks on billing.",
     ]
-    assert not [block for block in warned if isinstance(block, TextBlock)], "no writer's words beside them"
+    assert {block.kind for block in warned} == {"disclosure"}, "code's lines alone, no writer's words beside them"
 
 
 def _guardrail(bundle: AnalysisContextBundle, name: str, arm: str) -> GuardrailCheck:

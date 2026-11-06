@@ -28,11 +28,21 @@ The campaigns:
 its length, and its first and last 1,024 characters, so a red names the body and shows where it starts and ends
 without the goldens growing to megabytes. Each campaign's goldens are one file, ``fixtures/hot_path_oracle/<name>.json``.
 
-**Regenerating** is for an owner-approved change of output, never a routine re-baseline: a red here means a change
-moved what a host reads. With ``HOT_PATH_ORACLE_REGEN=1`` every test writes its golden instead of comparing it (run it
-locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1 ./scripts/test.sh evals -k hot_path_oracle``). A
-capture under ``inputs/`` is written only when it is missing; it is the campaign read, not an output, so it is never
-rewritten by a regeneration.
+**The build is not compared.** Which version of 3tears-evals read a page is the build's identity, not the page's
+content, and a release bump would otherwise move every bundle and every code-only page. A bundle carries it as
+``package_version``, which its fingerprint already leaves out (a build is not evidence), and a code-only
+page prints it in one place, its methods table's Bundle row (``3tears-evals <version>,``). The oracle puts
+:data:`GOLDEN_VERSION` in both places before it compares or writes, so the goldens hold that version whatever build
+reads them. Nothing else the fingerprint leaves out is the build's: ``first_result_at`` is when the results were
+written, and the presentation and pricing fields are what the page prints, so all of them stay compared.
+
+**Goldens move only when a change to a page is intended** (owner ruling, 2026-11-06): regenerate with
+``HOT_PATH_ORACLE_REGEN=1``, review the golden diff line by line, state the reason in the commit and the chunk report,
+and never regenerate to make a red go away: a red here means a change moved what a host reads. A regeneration writes
+every golden instead of comparing it (run it locally, on one process: ``TESTAMENT=off HOT_PATH_ORACLE_REGEN=1
+./scripts/test.sh evals -k hot_path_oracle``), and each regenerating test fails naming the entries it moved, with their
+sizes before and after, and how many it left as they were. A capture under ``inputs/`` is written only when it is
+missing; it is the campaign read, not an output, so it is never rewritten by a regeneration.
 
 **One golden set, the pool's, holds on every platform but for one named exception.** The last digits of some statistics (a t interval's bounds and everything
 computed from them, read through the platform's maths library) differ between platforms: the same code reads
@@ -47,7 +57,7 @@ body that prints them differ there. Those entries, and only those (:data:`PLATFO
 for that platform until a fingerprint over inputs retires the case (#1062); an override of any other entry fails. The
 goldens are the pool's (GitHub CI's x86_64 runner on glibc 2.39 reads them too). One red lists every entry of its test that moved, carrying the record it read
 (between :data:`OBSERVED` marks). A regeneration is local only: it refuses in CI, on xdist and on testament's runners,
-and every regenerating test fails, naming what it wrote.
+and every regenerating test fails, naming what it moved.
 
 **Where a reordered fold is caught.** Comparing past twelve figures no longer catches a fold whose float order moved
 its last place. That is guarded where it is exact: ``test_readings_match_results.py``,
@@ -69,12 +79,15 @@ import platform
 from collections.abc import Callable, Coroutine, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.kernel import build_stamp
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import report_read
 from threetears.evals.ops.lenses import detectable_effects
@@ -104,6 +117,10 @@ REGENERATE = os.environ.get("HOT_PATH_ORACLE_REGEN") == "1"
 
 #: The instant every code-only page is assembled at.
 REPORT_NOW = "2026-10-30T09:00:00+00:00"
+
+#: The version every golden holds as the build that read it (see the module docstring): the version the goldens were
+#: written at when the build was first left out of the comparison. A read's own version is put in its place.
+GOLDEN_VERSION = "0.90.0"
 
 #: A body up to this many characters is held whole; a longer one by digest, length, head and tail.
 WHOLE_UP_TO = 4096
@@ -243,6 +260,30 @@ def record(text: str) -> dict[str, Any]:
     return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "head": text[:EDGE], "tail": text[-EDGE:]}
 
 
+def size(stored: dict[str, Any]) -> int:
+    """How many UTF-8 bytes the body a golden's record holds has."""
+    return int(stored["bytes"]) if "bytes" in stored else len(stored["text"].encode())
+
+
+def bundle_without_build(aspect: AnalysisContextBundle) -> str:
+    """``aspect``'s bundle through ``identity_json``, the version that assembled it put as :data:`GOLDEN_VERSION`."""
+    document = aspect.to_dict()
+    assert "package_version" in document, "the bundle no longer carries package_version: update the oracle"
+    return identity_json({**document, "package_version": GOLDEN_VERSION})
+
+
+def body_without_build(body: str) -> str:
+    """``body`` with the version the running build printed in its methods table put as :data:`GOLDEN_VERSION`.
+
+    Only the one token a code-only page prints the build in (``3tears-evals <version>,``) is replaced; a page that
+    prints no such token (the JSON, a stored document's page) comes back as it was.
+    """
+    version = build_stamp.package_version()
+    if version is None or version == GOLDEN_VERSION:
+        return body
+    return body.replace(f"3tears-evals {version},", f"3tears-evals {GOLDEN_VERSION},")
+
+
 def refuse_unattended_regeneration() -> None:
     """Refuse to write goldens anywhere but one local process: never in CI, on an xdist worker or a testament runner.
 
@@ -271,7 +312,8 @@ class Goldens:
         self.path = GOLDENS / f"{name}.json"
         self.stored: dict[str, Any] = json.loads(self.path.read_text()) if self.path.exists() else {}
         self.problems: list[str] = []
-        self.written: list[str] = []
+        self.moved: list[str] = []
+        self.unchanged = 0
 
     def entries(self) -> list[str]:
         """The entries the file holds, without the overrides."""
@@ -321,16 +363,26 @@ class Goldens:
         """Write ``observed`` as ``entry``'s golden for this platform (:meth:`key`): on :data:`OVERRIDE_PLATFORM` an
         overridden entry's override, never the pool's golden beside it, which a pool red's record supplies."""
         refuse_unattended_regeneration()
+        before = self.stored.get(self.key(entry))
+        if before == observed:
+            self.unchanged += 1
+        else:
+            was = "new" if before is None else f"{size(before)} bytes"
+            self.moved.append(f"{entry} ({was} -> {size(observed)} bytes)")
         self.stored[self.key(entry)] = observed
         GOLDENS.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self.stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
-        self.written.append(entry)
 
     def assert_unchanged(self) -> None:
-        """Fail naming every entry that moved or has no golden; under :data:`REGENERATE`, fail naming what was written,
-        so a regenerating run never reads as green."""
-        if self.written:
-            pytest.fail(f"{self.name}: goldens written on {PLATFORM} for {', '.join(self.written)}: review the diff")
+        """Fail naming every entry that moved or has no golden; under :data:`REGENERATE`, fail naming every entry the
+        regeneration moved, with its size before and after, and how many it left as they were, so a regenerating run
+        never reads as green and its diff is reviewed where it moved."""
+        if self.moved or self.unchanged:
+            pytest.fail(
+                f"{self.name}: goldens written on {PLATFORM}; {len(self.moved)} moved: "
+                f"{', '.join(self.moved) or 'none'}; {self.unchanged} unchanged. Review `git diff {self.path}` line by "
+                "line and state the reason in the commit"
+            )
         assert not self.problems, "\n".join(self.problems)
 
 
@@ -345,22 +397,39 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-@pytest.mark.parametrize("name", WITH_BUNDLES)
-def test_every_aspect_s_bundle_and_the_campaign_frame_are_unchanged(name: str, pinned_clock: None) -> None:
+def check_bundles(goldens: Goldens, name: str) -> list[AnalysisContextBundle]:
+    """Check campaign ``name``'s aspect bundles, their fingerprints, its frame and its fingerprint; return the aspects."""
     read = subject(name)
     bundle = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
-
-    goldens = Goldens(name)
-
     assert bundle.aspects, f"{name} assembled no aspect"
     if not REGENERATE:
         pinned = sorted(entry.removeprefix("bundle:") for entry in goldens.entries() if entry.startswith("bundle:"))
         assert sorted(aspect.aspect for aspect in bundle.aspects) == pinned, f"{name}'s aspects are not the pinned ones"
     for aspect in bundle.aspects:
-        goldens.check(f"bundle:{aspect.aspect}", identity_json(aspect.to_dict()))
+        goldens.check(f"bundle:{aspect.aspect}", bundle_without_build(aspect))
         goldens.check(f"fingerprint:{aspect.aspect}", aspect.fingerprint())
     goldens.check("frame", identity_json(bundle.frame()))
     goldens.check("campaign_fingerprint", bundle.fingerprint())
+    return list(bundle.aspects)
+
+
+def check_body(goldens: Goldens, name: str, form: Any, static: bool, trials: Any) -> str:
+    """Check campaign ``name``'s report read in ``form`` with ``trials``, its body and its other fields; return the
+    body as served."""
+    read = subject(name)
+    document = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=static, trials=trials)
+    form_id = f"{form}_static" if static else form
+    goldens.check(f"body:{form_id}:{trials}", body_without_build(document.body))
+    goldens.check(f"read:{form_id}:{trials}", _json(document.model_dump(mode="json", exclude={"body"})))
+    return document.body
+
+
+@pytest.mark.parametrize("name", WITH_BUNDLES)
+def test_every_aspect_s_bundle_and_the_campaign_frame_are_unchanged(name: str, pinned_clock: None) -> None:
+    goldens = Goldens(name)
+
+    check_bundles(goldens, name)
+
     goldens.assert_unchanged()
 
 
@@ -370,13 +439,10 @@ def test_every_aspect_s_bundle_and_the_campaign_frame_are_unchanged(name: str, p
 def test_every_report_read_body_is_unchanged(
     name: str, form: Any, static: bool, trials: Any, pinned_clock: None
 ) -> None:
-    read = subject(name)
-    document = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=static, trials=trials)
-    form_id = f"{form}_static" if static else form
     goldens = Goldens(name)
 
-    goldens.check(f"body:{form_id}:{trials}", document.body)
-    goldens.check(f"read:{form_id}:{trials}", _json(document.model_dump(mode="json", exclude={"body"})))
+    check_body(goldens, name, form, static, trials)
+
     goldens.assert_unchanged()
 
 
@@ -442,3 +508,59 @@ def test_a_regeneration_refuses_to_write_goldens_where_nobody_reviews_them(
 
     with pytest.raises(pytest.fail.Exception, match=rf"refuses to write goldens here \({variable} set\)"):
         refuse_unattended_regeneration()
+
+
+#: The version :func:`bumped_build` installs: any version but :data:`GOLDEN_VERSION`.
+BUMPED_VERSION = "99.1.0"
+
+
+@pytest.fixture
+def bumped_build(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """The installed 3tears-evals distribution reporting :data:`BUMPED_VERSION`, as it would after a release bump:
+    its metadata is what :func:`~threetears.evals.kernel.build_stamp.package_version` reads, so every reader of the
+    version sees the bump."""
+    installed = build_stamp.distribution
+
+    def bumped(name: str) -> Any:
+        distribution = installed(name)
+        return SimpleNamespace(version=BUMPED_VERSION, read_text=distribution.read_text)
+
+    monkeypatch.setattr(build_stamp, "distribution", bumped)
+    build_stamp.package_version.cache_clear()
+    yield BUMPED_VERSION
+    build_stamp.package_version.cache_clear()
+
+
+def test_a_version_bump_moves_no_golden(bumped_build: str, pinned_clock: None) -> None:
+    """A build at another version reads the toy host's campaign against the same goldens: its bundles carry the bumped
+    version and its code-only pages print it, and neither is compared (see the module docstring)."""
+    goldens = Goldens("toyhost")
+
+    aspects = check_bundles(goldens, "toyhost")
+    bodies = [check_body(goldens, "toyhost", form, static, trials) for form, static in FORMS for trials in TRIALS]
+
+    assert {aspect.package_version for aspect in aspects} == {bumped_build}, "the bump did not reach the bundle"
+    printed = sum(f"3tears-evals {bumped_build}," in body for body in bodies)
+    assert printed == 6, f"the bump reached {printed} of the six markdown and html bodies"
+    goldens.assert_unchanged()
+
+
+def test_a_regeneration_names_every_entry_it_moved_with_its_size_before_and_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A regeneration fails naming what it moved, so its diff is reviewed where it moved: each moved or new entry with
+    its size before and after, and how many it left as they were."""
+    for name in [name for name in os.environ if name in ("CI", "PYTEST_XDIST_WORKER") or name.startswith("TESTAMENT_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setitem(globals(), "GOLDENS", tmp_path)
+    (tmp_path / "campaign.json").write_text(json.dumps({"body:a": record("kept"), "body:b": record("before")}))
+    goldens = Goldens("campaign")
+
+    goldens.regenerate("body:a", record("kept"))
+    goldens.regenerate("body:b", record("after, longer"))
+    goldens.regenerate("body:c", record("new"))
+
+    with pytest.raises(pytest.fail.Exception) as failed:
+        goldens.assert_unchanged()
+    assert "2 moved: body:b (6 bytes -> 13 bytes), body:c (new -> 3 bytes); 1 unchanged" in str(failed.value)
+    assert json.loads((tmp_path / "campaign.json").read_text())["body:b"] == record("after, longer")

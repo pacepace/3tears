@@ -403,10 +403,6 @@ filterwarnings = [
     # Both were moved off; errors, so a return to either fails rather than warns.
     "error:Accessing `[A-Za-z.]+` is deprecated; MCP SDK v2 renamed:DeprecationWarning",
     "error:The 'shapely.ops.transform\\(\\)' function is deprecated:DeprecationWarning",
-    # The evals cell sink's two retired members (``CellSink.reserve``, ``CellSink.cost_cap_reached``) warn until the
-    # next minor removes them, and no engine path calls either. Errors, so a path that reaches for one again fails; a
-    # test calling one on purpose holds its warning with ``pytest.warns``.
-    "error:threetears\\.evals\\.kernel\\.CellSink\\.[a-z_]+ is retired:DeprecationWarning",
     # discord.py 2.7.1, the newest release, calls ``asyncio.iscoroutinefunction`` inside its own
     # ``Client.event``; nothing on our side can change the call. Remove when discord.py does.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:discord.client",

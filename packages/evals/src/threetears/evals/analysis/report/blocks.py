@@ -1,4 +1,4 @@
-"""The blocks a report is made of — text, tables, charts, trials and disclosures — and the vocabulary they share.
+"""The blocks a report is made of — tables, charts, trials and disclosures — and the vocabulary they share.
 
 The pieces a :class:`~threetears.evals.analysis.report.model.Report` and a
 :class:`~threetears.evals.analysis.report.model.CampaignReport` hold, defined below both the documents and the
@@ -37,7 +37,6 @@ from threetears.evals.analysis.report.parts.look import arm_shape, arm_token, co
 from threetears.evals.kernel.numbers import MoneyForm, money_form
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.base import EvalDocumentModel
-from threetears.evals.schema.prose import ModelProse
 
 #: A table cell's value: a number, words, a boolean, or None where there is none.
 CellValue = str | int | float | bool | None
@@ -155,21 +154,6 @@ SECTION_TITLES: dict[str, str] = {
 #: The sections the first screen is made of: a campaign's answer and warnings are on it too.
 FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "scoreboard"})
 
-
-#: What a text block's author wrote it as. ``summary`` is a read across every aspect, which a campaign's page opens on
-#: after its warnings. No builder in this version writes a text block: every page it builds is code's.
-TextRole = Literal[
-    "summary",
-    "answer",
-    "recommendation",
-    "reason",
-    "finding_title",
-    "finding_body",
-    "caveat",
-    "carried_forward",
-    "next_step",
-    "next_step_why",
-]
 
 #: Who a disclosure speaks for. ``arms``: the first screen's arms line, each arm named in full once by the version
 #: that answered it, the control marked, and the design (``30 cases × 3 repeats``). ``caveat``: a line under the
@@ -346,13 +330,6 @@ class Verdict(EvalDocumentModel):
         return self
 
 
-class Fact(EvalDocumentModel):
-    """A labelled fact code states beside an author's words — a confidence, a disposition, a tier."""
-
-    name: str = Field(min_length=1, description="What the fact is, e.g. `Confidence`.")
-    value: str = Field(min_length=1, description="The fact, in words.")
-
-
 class _Block(EvalDocumentModel):
     """What every block carries: where it sits, and which findings it belongs to or rests on."""
 
@@ -385,31 +362,6 @@ class _Block(EvalDocumentModel):
     def rests_on_numbers(self) -> list[int]:
         """``rests_on`` counted from one, as a reader counts findings."""
         return [position + 1 for position in self.rests_on]
-
-
-#: The text roles that are part of one finding, and so name it.
-FINDING_ROLES: frozenset[str] = frozenset({"finding_title", "finding_body", "caveat", "carried_forward"})
-
-
-class TextBlock(_Block):
-    """What the analysis's author wrote, exactly as written, with the facts code states beside it."""
-
-    kind: Literal["text"] = Field(default="text", description="Which kind of block this is.")
-    role: TextRole = Field(description="What the author wrote it as.")
-    body: ModelProse = Field(
-        description="The author's words, Markdown allowed; empty where the author left a required field blank."
-    )
-    facts: list[Fact] = Field(default_factory=list, description="Facts code states beside the words, in reading order.")
-
-    @model_validator(mode="after")
-    def _a_findings_own_words_name_it(self) -> Self:
-        """Refuse a finding's title, body, caveat or carried-forward claim that names no finding.
-
-        :raises ValueError: A block in one of those roles has no ``finding``.
-        """
-        if self.role in FINDING_ROLES and self.finding is None:
-            raise ValueError(f"a {self.role} block belongs to a finding and names none")
-        return self
 
 
 class TableColumn(EvalDocumentModel):
@@ -1239,11 +1191,10 @@ class DisclosureBlock(_Block):
 
 
 #: A report block, discriminated by ``kind``.
-ReportBlock = Annotated[TextBlock | TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator="kind")]
+ReportBlock = Annotated[TableBlock | ChartBlock | TrialBlock | DisclosureBlock, Field(discriminator="kind")]
 
 
 __all__ = [
-    "FINDING_ROLES",
     "FIRST_SCREEN",
     "FOLDED_SECTIONS",
     "SECTION_TITLES",
@@ -1256,7 +1207,6 @@ __all__ = [
     "CostQualityPoint",
     "DisclosureBlock",
     "DisclosureSource",
-    "Fact",
     "GuardrailOutcome",
     "IntervalRow",
     "OutcomeBar",
@@ -1267,8 +1217,6 @@ __all__ = [
     "TableBlock",
     "TableCell",
     "TableColumn",
-    "TextBlock",
-    "TextRole",
     "TrialBlock",
     "TrialDetail",
     "Verdict",

@@ -25,7 +25,6 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
-    TextBlock,
 )
 from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -111,15 +110,13 @@ async def page_of(
 
 
 def opening(page: CampaignReport) -> list[tuple[str, str]]:
-    """What the page says up to its first table, less its warnings and its question: each text block by its role, and
-    each other line by its source and text."""
+    """What the page says up to its first table, less its warnings and its question: each line by its source and
+    text."""
     said: list[tuple[str, str]] = []
     for block in page.blocks:
         if isinstance(block, TableBlock):
             break
-        if isinstance(block, TextBlock):
-            said.append(("text", block.role))
-        elif isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
+        if isinstance(block, DisclosureBlock) and block.source not in {"bar", "floor", "guardrails", "basis"}:
             said.append((block.source, block.text))
     return said
 

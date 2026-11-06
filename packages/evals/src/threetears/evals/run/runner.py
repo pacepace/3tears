@@ -67,7 +67,6 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, Protocol
 
-from threetears.evals.kernel.retired import COST_CAP_INSIDE_A_CELL_RETIRED, warn_retired
 from threetears.evals.kernel.candidate_kind import (
     CandidateKind,
     CandidateKindDefect,
@@ -679,43 +678,6 @@ def _refuse_an_unusable_amount(amount: float | None, *, what: str) -> None:
         raise ValueError(f"{what} is a finite amount of US dollars, 0 or more; got {amount!r}")
 
 
-@dataclass(eq=False)
-class _HeldCall:
-    """One reservation on a cell's sink — :class:`~threetears.evals.kernel.candidate_kind.CellReservation`.
-
-    It holds nothing against the run: the cost cap is read between cells and refuses no call, so a reservation
-    is only the handle that lands a call's cost on its source's total once it settles.
-
-    :ivar sink: The cell's sink.
-    :ivar source: Whose call it is; its cost lands on that source's total when it settles.
-    :ivar closed: Whether it was settled or released.
-    """
-
-    sink: _CellSink
-    source: CellPending
-    closed: bool = False
-
-    def settle(self, cost_usd: float | None) -> None:
-        """Land what the call cost on its source's total.
-
-        :param cost_usd: What the call cost; ``None`` when nothing priced it.
-        :ptype cost_usd: float | None
-        :raises ValueError: The reservation was already closed, or ``cost_usd`` is not a usable amount.
-        """
-        if self.closed:
-            raise ValueError(f"this {self.source} call's reservation was already closed; settle a reservation once")
-        _refuse_an_unusable_amount(cost_usd, what=f"a {self.source} call's cost")
-        self.closed = True
-        self.sink.close_reservation(self, cost_usd, settled=True)
-
-    def release(self) -> None:
-        """Close the reservation, counting nothing; a no-op once closed."""
-        if self.closed:
-            return
-        self.closed = True
-        self.sink.close_reservation(self, None, settled=False)
-
-
 @dataclass
 class _CellSink:
     """The engine's record of one cell as it runs — everything a deadline's record is built from.
@@ -829,51 +791,6 @@ class _CellSink:
         _refuse_an_unusable_amount(cost_usd, what=f"{source} spend")
         total = self.spent.get(source, 0.0)
         self.spent[source] = None if total is None or cost_usd is None else total + cost_usd
-
-    def reserve(self, source: CellPending, ceiling_usd: float | None) -> _HeldCall:
-        """Retired: open the handle that lands one paid call's cost, never refusing the call — see
-        :meth:`~threetears.evals.kernel.candidate_kind.CellSink.reserve`.
-
-        Warns that it leaves in the next minor, naming :meth:`add_spend`, and otherwise answers as it did. The cost
-        cap is read between cells, against what has landed, so nothing here can turn a call away: a refusal inside
-        a cell contaminates whichever cell happened to ask once the cap was spent. The engine's own calls count
-        their cost with :meth:`add_spend` once they return.
-
-        :param source: Whose call it is.
-        :ptype source: CellPending
-        :param ceiling_usd: The most the call can cost, or ``None`` when it cannot be bounded; checked and
-            otherwise unused.
-        :ptype ceiling_usd: float | None
-        :return: The reservation.
-        :rtype: _HeldCall
-        :raises ValueError: ``ceiling_usd`` is negative or not finite.
-        """
-        warn_retired(
-            "threetears.evals.kernel.CellSink.reserve",
-            f"{COST_CAP_INSIDE_A_CELL_RETIRED}; count each paid call's cost with add_spend(source, cost) once it "
-            "returns",
-        )
-        _refuse_an_unusable_amount(ceiling_usd, what="a call's ceiling")
-        return _HeldCall(sink=self, source=source)
-
-    def cost_cap_reached(self) -> bool:
-        """Retired: always ``False``, because the cost cap is read between cells, never inside one.
-
-        Warns that it leaves in the next minor.
-
-        :return: ``False``.
-        :rtype: bool
-        """
-        warn_retired(
-            "threetears.evals.kernel.CellSink.cost_cap_reached",
-            f"{COST_CAP_INSIDE_A_CELL_RETIRED}; it is always False, so drop the check",
-        )
-        return False
-
-    def close_reservation(self, held: _HeldCall, cost_usd: float | None, *, settled: bool) -> None:
-        """Close one reservation, counting what its call cost when it settled."""
-        if settled:
-            self.add_spend(held.source, cost_usd)
 
     def begin_judging(self, phase: _JudgePhase) -> None:
         """Mark the judge phase begun: the cell now waits on the judge, and the phase is on record.

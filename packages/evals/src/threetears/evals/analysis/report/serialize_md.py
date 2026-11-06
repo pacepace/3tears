@@ -14,10 +14,9 @@ fenced block whose fence is longer than any run of backticks inside it, so a tra
 code fence is text, never a section of this document's outline. Every other string a trial's record quotes (why it
 failed, a failed check's name and expression, the judge's criterion and reason) takes the same escape chosen by its
 content: a fence for text over several lines, else a code span whose backticks no run inside it can close, so a
-``</details>`` the judge wrote never closes the fold it sits in. The author's words are laid out as the page lays
-them out — paragraphs and bullet lists, bold and code — with any other block a line would open (a heading, a quote,
-a fence, raw HTML) escaped. A trial's summary line is escaped as the HTML it sits in. The trials are the page's:
-a record for each failed or lost trial, the passed ones one table of their stored results.
+``</details>`` the judge wrote never closes the fold it sits in. A trial's summary line is escaped as the HTML it
+sits in. The trials are the page's: a record for each failed or lost trial, the passed ones one table of their stored
+results.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from threetears.evals.analysis.report.blocks import (
     DisclosureBlock,
     ReportBlock,
     TableBlock,
-    TextBlock,
     TrialBlock,
 )
 from threetears.evals.analysis.report.md_parts import (
@@ -42,7 +40,6 @@ from threetears.evals.analysis.report.md_parts import (
     fenced,
     inert,
     one_line,
-    paragraphs,
     table_lines,
 )
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
@@ -52,9 +49,6 @@ from threetears.evals.analysis.style import GLOSSARY
 if TYPE_CHECKING:
     # The documents import this module to write themselves, so their types are named for the checker alone.
     from threetears.evals.analysis.report.model import CampaignReport, Report
-
-#: How an answer's resolution leads it.
-RESOLUTION_WORDS = {"answered": "Answered", "partial": "Partly answered", "unanswerable": "Unanswerable"}
 
 
 def report_markdown(report: Report) -> str:
@@ -122,7 +116,6 @@ def _fold_lines(report: CampaignReport) -> list[str]:
         prefix = f"a-{slug}--"
         lines += ["", f"## {inert(one_line(fold.aspect))}", "", f"{inert(one_line(fold.shows))}.", ""]
         lines += [f"<details><summary>{html.escape(one_line(fold.aspect), quote=False)} in full</summary>"]
-        lines += _folded(fold.summary, prefix=prefix)
         own = [block for block in fold.head if not _repeats_scoreboard(block)]
         for block in own:
             lines += ["", *_block(block, prefix=prefix)]
@@ -197,8 +190,6 @@ def _folded(blocks: Sequence[ReportBlock], *, prefix: str = "") -> list[str]:
 
 def _block(block: ReportBlock, *, prefix: str = "") -> list[str]:
     """One block's lines; a trial's id prefixed with ``prefix``."""
-    if isinstance(block, TextBlock):
-        return _text(block)
     if isinstance(block, TableBlock):
         if block.details:
             return [f"<details><summary>{block.title}</summary>", "", *table_lines(block), "", "</details>"]
@@ -211,31 +202,6 @@ def _block(block: ReportBlock, *, prefix: str = "") -> list[str]:
     if isinstance(block, TrialBlock):
         return _trial(block, prefix=prefix)
     return _disclosure(block)
-
-
-def _text(block: TextBlock) -> list[str]:
-    """An author's words, laid out by what they were written as."""
-    body = one_line(block.body.strip())
-    facts = {fact.name: fact.value for fact in block.facts}
-    if block.role == "finding_title":
-        # A finding leads with its headline, unnumbered: nothing on the page cites it by number.
-        return [f"**{body}**"]
-    if block.role == "answer":
-        lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
-        return [f"**{lead}.** {body}" if lead else inert(body)]
-    if block.role == "recommendation":
-        disposition = facts.get("Disposition", "")
-        sure = f" ({facts['Confidence']} confidence)" if "Confidence" in facts else ""
-        return [f"**{disposition[:1].upper()}{disposition[1:]}:** {body}{sure}" if disposition else inert(body + sure)]
-    if block.role == "reason":
-        return [f"- {inert(body)}"]  # one line: body is one_line(...) above
-    if block.role == "next_step":
-        return [f"**Next:** {body}"]
-    if block.role == "caveat":
-        return [f"Caveat ({facts.get('Kind', 'unkinded')}): {body}"]
-    if block.role == "carried_forward":
-        return [f"Carried forward: {body}"]
-    return paragraphs(block.body)
 
 
 def _disclosure(block: DisclosureBlock) -> list[str]:
@@ -297,7 +263,6 @@ def _quoted(label: str, text: str) -> list[str]:
 
 
 __all__ = [
-    "RESOLUTION_WORDS",
     "campaign_report_markdown",
     "report_markdown",
     "trial_summary",

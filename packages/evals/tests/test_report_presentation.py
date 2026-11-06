@@ -25,7 +25,8 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
-from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TextBlock, TrialBlock
+from threetears.evals.analysis.report import DisclosureBlock, TableBlock, TrialBlock
+from threetears.evals.analysis.report.md_parts import paragraphs
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement
 from threetears.evals.analysis.style import GLOSSARY
 from packages.evals.tests.style_support import lint_page
@@ -637,16 +638,13 @@ async def test_a_transcript_is_quoted_whole_and_none_of_it_is_the_report_s_struc
     assert not re.search(r"<h[1-6][^>]*>[^<]*(music|Persona|Ben)", page)
 
 
-async def test_an_author_s_words_open_no_block_of_their_own_in_markdown(g2_ruled: tuple[Result, Report]) -> None:
-    _, coded = g2_ruled
-    report = build_code_only_report(coded.bundle, assembled_at="2026-10-14T00:00Z")
+def test_an_author_s_words_open_no_block_of_their_own_in_markdown() -> None:
+    """An author's words, as a report document's lede and captions lay them out (``md_parts.paragraphs``): paragraphs
+    and bullet lists, every other block a line would open escaped, so they add no heading to the page's outline."""
     body = "## music\n\n- # Persona\n- plain\n\n```\n\n> quoted\n\n1. first\n\n<details>"
-    words = report.model_copy(
-        update={"blocks": [*report.blocks, TextBlock(section="not_tested", role="finding_body", body=body, finding=0)]}
-    )
-    markdown = report_markdown(words)
-    assert "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>" in markdown
-    assert _outline(markdown) == _outline(report_markdown(report))
+    markdown = "\n".join(paragraphs(body))
+    assert markdown == "\\## music\n\n- \\# Persona\n- plain\n\n\\```\n\n\\> quoted\n\n1\\. first\n\n\\<details>"
+    assert _outline(markdown) == []
 
 
 async def test_sixty_passed_trials_and_one_failed_carry_one_record_and_one_table() -> None:

@@ -758,8 +758,8 @@
     },
     "threetears.evals.schema.KnownReasoningEffort": {
       "kind": "literal",
-      "signature": "'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownRefusalKind": {
       "kind": "literal",
@@ -1466,11 +1466,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.BarMissed": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.BarName": {
       "kind": "dataclass",
       "signature": "",
@@ -1492,11 +1487,6 @@
       "tier": "stable"
     },
     "threetears.evals.kernel.BarVerdict": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.BehindOn": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -1661,14 +1651,9 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.CellReservation": {
-      "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.CellSink": {
       "kind": "protocol",
-      "signature": "CellSink{add_spend(self, source: CellPending, cost_usd: float | None) -> None; cost_cap_reached(self) -> bool; report_progress(self, read: Callable[[], CandidateOutput]) -> None; reserve(self, source: CellPending, ceiling_usd: float | None) -> CellReservation; waiting_on(self, pending: CellPending) -> None}",
+      "signature": "CellSink{add_spend(self, source: CellPending, cost_usd: float | None) -> None; report_progress(self, read: Callable[[], CandidateOutput]) -> None; waiting_on(self, pending: CellPending) -> None}",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.CellSpanWindow": {
@@ -1770,11 +1755,6 @@
       "kind": "literal",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.kernel.CostCapReached": {
-      "kind": "exception",
-      "signature": "CostCapReached(detail: str = \"the run's cost cap has no room for another paid call\") -> None",
-      "tier": "host-contract"
     },
     "threetears.evals.kernel.CostLower": {
       "kind": "model",
@@ -2115,11 +2095,6 @@
       "kind": "model",
       "signature": "Floor(aspect: str, clause: DecisionClause, declared_at: str | None = None)",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.FloorOverride": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
@@ -2718,11 +2693,6 @@
     },
     "threetears.evals.kernel.REASONING_RATIO_KEY": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.Recommendation": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -3473,7 +3443,7 @@
     },
     "threetears.evals.kernel.host.HostProfile": {
       "kind": "dataclass",
-      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), style: StyleProfile | None = None, world: WorldRegistry | None = None, caveat_kinds: frozenset[str] | None = None, variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
+      "signature": "HostProfile(host_id: str, host_sweepables: SweepableRegistry, measures: MeasureRegistry, bars: BarRegistry = BarRegistry(), world: WorldRegistry | None = None, variant_levers: VariantLeverReader | None = None, observed_model_levers: Mapping[str, str] = dict(), action_parameters: ActionParameterReader | None = None, tool_actions: ToolActionReader | None = None, kinds: tuple[KindContract, ...] = (), listing_elisions: frozenset[str] = frozenset(), release_label: str | None = None, analysis_writer_models: tuple[str, ...] = (), model_pass_hat_k: bool = False, sweepables: SweepableRegistry (derived))",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.IgnoresTemplateFields": {
@@ -3621,11 +3591,6 @@
       "signature": "",
       "tier": "host-contract"
     },
-    "threetears.evals.kernel.host.StyleProfile": {
-      "kind": "dataclass",
-      "signature": "StyleProfile(tone_register: ToneRegister = 'neutral')",
-      "tier": "stable"
-    },
     "threetears.evals.kernel.host.Sweepable": {
       "kind": "dataclass",
       "signature": "Sweepable(name: str, role: SweepableRole, read: SweepableReader, reader_prose: str, confounds: str | None = None, indeterminate_when_blank: bool = False, result_level: bool = False, no_own_coordinate: str | None = None, no_rig_coordinate: str | None = None, open_family: str | None = None, owns_member: FamilyMemberTest | None = None, resolves_into: str | None = None, read_residual: ResidualReader | None = None, departs_production: ProductionDepartureReader | None = None, acts_on: str | None = None, member_acts_on: Mapping[str, str] | None = None)",
@@ -3655,11 +3620,6 @@
       "kind": "dataclass",
       "signature": "TemplateChecks(require_known_tools_allowed: Callable[[Sequence[str] | None], None], refuse_undeclared_world_seed: Callable[[EvalTemplate], None], refuse_undeliverable_template: Callable[[EvalTemplate], None], kinds: Mapping[str, IgnoresTemplateFields], refuse_inadmissible_template_case: Callable[[TemplateCaseFields], None])",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.host.ToneRegister": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.host.ToolActionReader": {
       "kind": "type alias",
@@ -4866,11 +4826,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.analysis_gen_request_settings_for": {
-      "kind": "function",
-      "signature": "analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings",
-      "tier": "host-contract"
-    },
     "threetears.evals.analysis.analysis_report": {
       "kind": "function",
       "signature": "",
@@ -4955,11 +4910,6 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.analysis.AsRecordedReporterKind": {
-      "kind": "class",
-      "signature": "AsRecordedReporterKind() -> None",
-      "tier": "stable"
     },
     "threetears.evals.analysis.assemble_campaign_bundle": {
       "kind": "function",
@@ -5098,7 +5048,7 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None, plan_page: None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {
@@ -5486,11 +5436,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "host-contract"
-    },
     "threetears.evals.analysis.EvalSummary": {
       "kind": "model",
       "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
@@ -5542,11 +5487,6 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.ExportPage": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.Fact": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -5720,11 +5660,6 @@
       "kind": "literal",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.analysis.generate_analysis": {
-      "kind": "async function",
-      "signature": "generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: Callable[[str, str, dict[str, Any] | None], None] | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]",
-      "tier": "host-contract"
     },
     "threetears.evals.analysis.GenerationError": {
       "kind": "exception",
@@ -6376,11 +6311,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.refuse_undeliverable_reporter_template": {
-      "kind": "function",
-      "signature": "refuse_undeliverable_reporter_template(template: EvalTemplate) -> None",
-      "tier": "stable"
-    },
     "threetears.evals.analysis.RefusedMerge": {
       "kind": "model",
       "signature": "",
@@ -6403,7 +6333,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(basis: ReportBasis, title: str, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
+      "signature": "Report(title: str, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.report_html": {
@@ -6425,36 +6355,6 @@
       "kind": "type alias",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.analysis.reporter_cell_timeout_s": {
-      "kind": "function",
-      "signature": "reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float",
-      "tier": "stable"
-    },
-    "threetears.evals.analysis.REPORTER_KIND": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "stable"
-    },
-    "threetears.evals.analysis.REPORTER_KIND_CONTRACT": {
-      "kind": "constant (KindContract)",
-      "signature": "",
-      "tier": "host-contract"
-    },
-    "threetears.evals.analysis.reporter_kind_contract": {
-      "kind": "function",
-      "signature": "reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract",
-      "tier": "stable"
-    },
-    "threetears.evals.analysis.ReporterKind": {
-      "kind": "class",
-      "signature": "ReporterKind(*, prompt: str, prompt_id: str, prompt_version: str | None, client: Any, model: str, host: Any) -> None",
-      "tier": "stable"
-    },
-    "threetears.evals.analysis.ReporterOverlays": {
-      "kind": "model",
-      "signature": "ReporterOverlays(prompt_preset: str | None = None)",
-      "tier": "stable"
     },
     "threetears.evals.analysis.ReportFile": {
       "kind": "literal",
@@ -6723,16 +6623,6 @@
     },
     "threetears.evals.analysis.TemperatureSide": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.TextBlock": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.TextRole": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -7311,11 +7201,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.admit_reporter_launch": {
-      "kind": "function",
-      "signature": "admit_reporter_launch(request: LaunchRequest, *, storage: EvalStorage, prompts: object, resolve_model: ReporterModelResolver) -> ReporterAdmitted",
-      "tier": "stable"
-    },
     "threetears.evals.ops.AdmittedJob": {
       "kind": "dataclass",
       "signature": "",
@@ -7881,16 +7766,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.plan_reporter_arm": {
-      "kind": "function",
-      "signature": "plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: object, resolve_model: ReporterModelResolver) -> ArmPlan",
-      "tier": "stable"
-    },
-    "threetears.evals.ops.price_largest_reporter_call": {
-      "kind": "async function",
-      "signature": "price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: object, resolve_model: ReporterModelResolver) -> CallCeiling | None",
-      "tier": "stable"
-    },
     "threetears.evals.ops.ProposedBar": {
       "kind": "model",
       "signature": "",
@@ -7925,26 +7800,6 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.ops.REPORTER_UNHONOURED_LAUNCH_ARGUMENTS": {
-      "kind": "constant (frozenset)",
-      "signature": "",
-      "tier": "stable"
-    },
-    "threetears.evals.ops.ReporterAdmitted": {
-      "kind": "dataclass",
-      "signature": "ReporterAdmitted(preset: str | None, prompt: str, candidate_model: str, judge_model: str, cases: tuple[EvalTestCase, ...])",
-      "tier": "stable"
-    },
-    "threetears.evals.ops.ReporterModelResolver": {
-      "kind": "type alias",
-      "signature": "Callable[[ReporterModelRole, str | None], str]",
-      "tier": "stable"
-    },
-    "threetears.evals.ops.ReporterModelRole": {
-      "kind": "literal",
-      "signature": "'generator'` | `'judge'",
-      "tier": "stable"
     },
     "threetears.evals.ops.ReportState": {
       "kind": "literal",

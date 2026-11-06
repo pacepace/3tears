@@ -32,7 +32,7 @@ from packages.evals.tests.report_kit_support import report_of
 
 
 def _block(chart: str, data: dict[str, Any]) -> ChartBlock:
-    return ChartBlock(section="memo", finding=0, chart=chart, title="t", data=data)  # type: ignore[arg-type]
+    return ChartBlock(section="memo", chart=chart, title="t", data=data)  # type: ignore[arg-type]
 
 
 _BARS: dict[str, Any] = {"rows": [{"label": "a", "value": 2}], "domain": [0, 4], "fmt": "int"}
@@ -234,8 +234,8 @@ def test_markdown_prints_every_chart_s_values_table() -> None:
     }
     report = report_of(
         [
-            {"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "Spend", "data": _BARS},
-            {"kind": "chart", "section": "memo", "finding": 0, "chart": "heatmap", "title": "Cells", "data": panels},
+            {"kind": "chart", "section": "memo", "chart": "bars", "title": "Spend", "data": _BARS},
+            {"kind": "chart", "section": "memo", "chart": "heatmap", "title": "Cells", "data": panels},
         ]
     )
     markdown = report_markdown(report)
@@ -247,7 +247,7 @@ def test_a_range_bar_s_start_is_spelled_from_in_a_stored_report_as_in_the_kit_s_
     """A stored report spells a range row's start ``from``, as the kit's contract and ``kit_data`` do; one stored as
     ``from_`` before still loads."""
     data = {"domain": [0, 4], "fmt": "s", "groups": [{"label": "g", "rows": [{"label": "a", "from": 1, "to": 2}]}]}
-    block = ChartBlock(section="memo", finding=0, chart="range_bars", title="t", data=data)
+    block = ChartBlock(section="memo", chart="range_bars", title="t", data=data)
     stored = report_of([block]).to_dict()
     (row,) = next(b for b in stored["blocks"] if b.get("chart") == "range_bars")["data"]["groups"][0]["rows"]
     assert "from" in row and "from_" not in row

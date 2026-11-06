@@ -1,22 +1,40 @@
 """The strict projection every package call sends, and the confidence and reading vocabularies the stored analyses
 share: what survives of the authored contract now that the memo writer is retired.
 
-The projection is held over :class:`~threetears.evals.kernel.authored.Recommendation`, the one retired-memo model that
-stays (``CampaignReport.recommendation`` types its field with it), whose nested definitions give it references.
+The projection is held over a reply shaped as a writer's structured reply is (:class:`_Pick`): nested models in
+lists and alone, so its schema has definitions and references, with titles, defaults and a closed vocabulary.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from threetears.evals.kernel import authored
 
 
+class _Why(BaseModel):
+    """One reason a pick is made over a warning, named by its key."""
+
+    key: str = Field(description="The warning's key.")
+    why: str = Field(default="", description="Why the pick stands over it.")
+
+
+class _Pick(BaseModel):
+    """A structured reply naming an arm, how sure, and each warning it is made over."""
+
+    arm: str = Field(description="The arm picked, by its label.")
+    reasons: list[str] = Field(description="Why, strongest first.")
+    confidence: authored.Confidence
+    over: list[_Why] = Field(default_factory=list, description="Each warning the pick is made over.")
+    first: _Why | None = Field(default=None, description="The warning that weighs most, if any.")
+    reading: Literal["measure", "judged"] = "measure"
+
+
 def _schema() -> dict[str, Any]:
-    return authored.strict_schema(authored.Recommendation.model_json_schema())
+    return authored.strict_schema(_Pick.model_json_schema())
 
 
 def _walk(node: Any):
