@@ -40,6 +40,7 @@ from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze
+from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.ops import OpsHost
 from threetears.evals.quick.files import load_evals
 
@@ -65,6 +66,13 @@ MISFIT: Final = "misfit"
 _KEYS: Final = ("RECORD", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")
 
 
+def replay_only() -> None:
+    """Unset every variable a recording run reads, so a replay whose recording no longer serves it is refused, never
+    sent to a provider."""
+    for variable in _KEYS:
+        os.environ.pop(variable, None)
+
+
 @dataclass(frozen=True)
 class Rung:
     """One ladder rung whose campaign becomes a case: its directory, its eval file and its domain.
@@ -88,36 +96,73 @@ LADDER: Final = (
 )
 
 
-def case_path(name: str) -> Path:
-    """The file a case is written to: its name, spaces as dashes."""
-    return CASES_DIR / f"{name.replace(' ', '-')}{WRITER_CASE_SUFFIX}"
+def case_path(name: str, directory: Path = CASES_DIR) -> Path:
+    """The file a case is written to in ``directory``: its name, spaces as dashes."""
+    return directory / f"{name.replace(' ', '-')}{WRITER_CASE_SUFFIX}"
+
+
+def frozen_case(
+    snapshot: EvalReportSnapshot, *, name: str, group: str, stratum: str, withhold: Sequence[str] = ()
+) -> WriterCaseFile:
+    """A fixture snapshot as a case, frozen at :data:`FROZEN_AT` so its bytes never move."""
+    frozen = snapshot.model_copy(update={"created_at": FROZEN_AT})
+    return WriterCaseFile(name=name, group=group, stratum=stratum, withhold=list(withhold), snapshot=frozen)
+
+
+def seeded_case(snapshot: EvalReportSnapshot, name: str, stratum: str) -> WriterCaseFile:
+    """A fixture snapshot as a case in its :data:`SEED` group, withholding its :data:`SEED` notes."""
+    group, withhold = SEED[name]
+    return frozen_case(snapshot, name=name, group=group, stratum=stratum, withhold=withhold)
 
 
 def fixture_cases() -> list[WriterCaseFile]:
     """The package's frozen campaign and the six misfits, each in its reference's group with its note withheld."""
     snapshots = fixture_snapshots(SCOPE)
-    cases: list[WriterCaseFile] = []
-    for name, stratum in ((KAIRO, SEED[KAIRO][0]), *((misfit, MISFIT) for misfit in MISFITS)):
-        group, withhold = SEED[name]
-        snapshot = snapshots[name].model_copy(update={"created_at": FROZEN_AT})
-        cases.append(
-            WriterCaseFile(name=name, group=group, stratum=stratum, withhold=list(withhold), snapshot=snapshot)
-        )
-    return cases
+    return [
+        seeded_case(snapshots[name], name, stratum)
+        for name, stratum in ((KAIRO, SEED[KAIRO][0]), *((misfit, MISFIT) for misfit in MISFITS))
+    ]
 
 
-async def ladder_case(rung: Rung) -> WriterCaseFile:
-    """One rung's eval replayed in memory through the quick path, its campaign frozen through its own host."""
-    (evaluation,) = load_evals(PACKAGE / "examples" / rung.directory / rung.file)
-    ran = await evaluation.run(store=":memory:", scope=rung.directory)
+async def replayed_case(eval_file: Path, *, name: str, group: str, stratum: str, scope: str) -> WriterCaseFile:
+    """An eval file's one eval replayed in memory through the quick path, its campaign frozen through its own host.
+
+    Nothing is sent when :func:`replay_only` has run: a call its recordings do not answer is refused.
+
+    :param eval_file: The eval file, its recordings beside it.
+    :ptype eval_file: Path
+    :param name: The case's name.
+    :ptype name: str
+    :param group: Its split group.
+    :ptype group: str
+    :param stratum: Its stratum.
+    :ptype stratum: str
+    :param scope: The scope its run is stored in.
+    :ptype scope: str
+    :return: The case, unwritten.
+    :rtype: WriterCaseFile
+    """
+    (evaluation,) = load_evals(eval_file)
+    ran = await evaluation.run(store=":memory:", scope=scope)
     return await writer_case_freeze(
         OpsHost.reading(ran.host),
         ran.scope_id,
         campaign_id=ran.campaign_id,
+        name=name,
+        group=group,
+        stratum=stratum,
+        created_by=FROZEN_BY,
+    )
+
+
+async def ladder_case(rung: Rung) -> WriterCaseFile:
+    """One rung's eval replayed in memory through the quick path, its campaign frozen through its own host."""
+    return await replayed_case(
+        PACKAGE / "examples" / rung.directory / rung.file,
         name=rung.directory,
         group=rung.directory,
         stratum=rung.stratum,
-        created_by=FROZEN_BY,
+        scope=rung.directory,
     )
 
 
@@ -148,8 +193,7 @@ def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="export_writer_cases.py", description=__doc__.splitlines()[0])
     parser.add_argument("--refreeze", action="store_true", help="freeze every ladder rung again (strands recordings)")
     options = parser.parse_args(list(argv))
-    for variable in _KEYS:  # a replay or nothing: a rung whose recording no longer serves it is refused, never sent
-        os.environ.pop(variable, None)
+    replay_only()  # a replay or nothing: a rung whose recording no longer serves it is refused, never sent
     for path, what in asyncio.run(export(refreeze=options.refreeze)):
         print(f"{what} {path.relative_to(PACKAGE)}")
     return 0

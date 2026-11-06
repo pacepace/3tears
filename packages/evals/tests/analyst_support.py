@@ -12,7 +12,7 @@ with nothing added here; a chunk whose action needs arguments read off the input
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
 from typing import Any
 
@@ -260,11 +260,13 @@ def shape_bundle(name: str) -> CampaignBundle:
     return build_campaign_bundle(shape.campaign, list(shape.bundles.values()), arms=shape.arms, readings=shape.readings)
 
 
-def shape_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
-    """A snapshot of each shape campaign (:data:`SHAPE_NAMES`) in one scope, by name, frozen with its bundle.
+def shape_snapshots(scope_id: str, names: Sequence[str] = SHAPE_NAMES) -> dict[str, EvalReportSnapshot]:
+    """A snapshot of each shape campaign named in one scope, by name, frozen with its bundle.
 
     :param scope_id: The scope they live in.
     :ptype scope_id: str
+    :param names: The shapes, by short name; :data:`SHAPE_NAMES` unless a caller reads another.
+    :ptype names: Sequence[str]
     :return: The snapshots, unsaved.
     :rtype: dict[str, EvalReportSnapshot]
     """
@@ -279,7 +281,7 @@ def shape_snapshots(scope_id: str) -> dict[str, EvalReportSnapshot]:
                 bundle=shape_bundle(name),
                 assembled_at=_KAIRO_ASSEMBLED_AT,
             )
-            for name in SHAPE_NAMES
+            for name in names
         }
 
 
