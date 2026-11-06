@@ -26,7 +26,7 @@ Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`
 | Field | Purpose |
 |---|---|
 | `story` | The dominant form (`stories.md`). It describes the report; it selects nothing. |
-| `headline` | The answer to the question the campaign asked (where it declared none, to what its first grader read), with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
+| `headline` | The answer to the question the campaign asked (where it declared none, to the reading of the first grader: the measure the page's lead reads, the first in the report input's grader order (`measure_order`) that a contrast tested), with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
 | `lede` | At most two sentences: the strongest supporting fact, and what would change the answer. |
 | `confidence` | `high`, `high_if_immaterial` or `low`, and every open caveat with its `material_if` clause (`principles.md`). |
 | `decision` | Four slots from the shared vocabulary that fit the story: recommendation, why_not, watch, next; the_trade, where_it_flips, our_lean, what_settles_it; what_is_tangled, known_despite_it. `watch` lists only what could change the call; when every alternative read worse and cost more, it says so in one line and lists nothing else, the weakest margin aside when it could change the call. |

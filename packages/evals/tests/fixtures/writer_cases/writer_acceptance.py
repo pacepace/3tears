@@ -82,7 +82,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SM
 from packages.evals.tests.report_writer_support import reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import lay_recording
-from threetears.evals.analysis import EvalSummary
+from threetears.evals.analysis import EvalSummary, RunMeasureSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
@@ -93,6 +93,7 @@ from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
 from threetears.evals.ops.report_writer.writer_contract import (
+    ANALYST_ROUNDS_MEASURE,
     BOUNCES_MEASURE,
     FINISHED_MEASURE,
     MUST_FIX_OPEN_MEASURE,
@@ -774,7 +775,32 @@ class Acceptance:
             yield f"| {requirement.asks} | {requirement.reads} | {holds} |"
         yield ""
         yield self.criterion.verdict()
+        if self.candidate.editor().digest != self.shipped.editor().digest:
+            yield from self._two_editors()
         yield from result.disclosures
+
+    def _two_editors(self) -> Iterator[str]:
+        """Beside the verdict, with two editors: what a PASS means, how many pairs were both finished, and each arm's
+        bounces beside its analyst rounds, since a stricter editor's extra rounds give the analyst more to bounce."""
+        both = sum(1 for pair in self.report.pairs if pair.both_finished)
+        bounces = next((verdict for verdict in self.read.verdicts if verdict.name == BOUNCES_MEASURE), None)
+        yield ""
+        yield (
+            "PASS means the fixed judge prefers the candidate's pages; the shipped promotion rule, which counts each "
+            "editor's own readings, is not applied here."
+        )
+        yield f"{both} of {len(self.report.pairs)} pairs had both pages stored finished."
+        yield ""
+        yield "| Arm | Bounces | Analyst rounds | Reports |"
+        yield "|---|---|---|---|"
+        for arm, summary in self.result.arms.items():
+            measures = {measure.name: measure for measure in summary.measures}
+            yield f"| {arm} | {_total(measures.get(BOUNCES_MEASURE))} | {_total(measures.get(ANALYST_ROUNDS_MEASURE))} | {summary.n_results} |"
+        yield ""
+        yield (
+            f"Bounces read {'not read' if bounces is None else bounces.outcome.replace('_', ' ')} for "
+            f"{self.variant.name}, beside each arm's analyst rounds, since more rounds give more submissions to bounce."
+        )
 
     def summary(self) -> dict[str, Any]:
         """What the run found, as JSON: the read, the pass's report, the criterion and the readout."""
@@ -803,6 +829,13 @@ class Acceptance:
             },
             "readout": "\n".join(self.readout()),
         }
+
+
+def _total(measure: RunMeasureSummary | None) -> str:
+    """A count measure's total over the reports that carry it, as the two-editor table prints it."""
+    if measure is None or measure.mean is None:
+        return "not read"
+    return f"{round(measure.mean * measure.n)}"
 
 
 def _cap(usd: float | None) -> str:

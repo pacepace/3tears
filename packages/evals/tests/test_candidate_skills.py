@@ -191,6 +191,7 @@ def test_the_shipped_skill_as_its_own_candidate_reads_not_separated(
     # One editor, so bounces are compared, and no sentence says the editors differ.
     assert "| bounces do not separate | not separated | yes |" in text
     assert "editor.md differs" not in text
+    assert "PASS means the fixed judge prefers" not in text and "| Analyst rounds |" not in text
 
 
 def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
@@ -224,6 +225,17 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     assert "| the read answers promote |" not in printed
     assert "| no other gated reading regressed, and every guardrail held | none regressed | yes |" in printed
     assert "| the preference over pairs both finished points the same way | " in printed
+    # Beside the verdict, once: what a PASS means here, the pairs both finished, and bounces beside analyst rounds.
+    after = printed[printed.index("\nFAIL: ") :]
+    assert after.count("PASS means the fixed judge prefers") == 1
+    assert (
+        "PASS means the fixed judge prefers the candidate's pages; the shipped promotion rule, which counts each "
+        "editor's own readings, is not applied here." in after
+    )
+    assert "7 of 7 pairs had both pages stored finished." in after
+    assert "| Arm | Bounces | Analyst rounds | Reports |" in after
+    assert f"| {SHIPPED} | 0 | 7 | 7 |" in after and "| headline-answers | 0 | 7 | 7 |" in after
+    assert "Bounces read not separated for headline-answers, beside each arm's analyst rounds" in after
     # Each arm's recordings are keyed by its own skill digest.
     assert f"recordings/headline-answers-{digest[:12]}-" in printed
     assert f"recordings/{SHIPPED}-{load_skill().digest[:12]}-" in printed

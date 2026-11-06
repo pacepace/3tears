@@ -54,7 +54,7 @@ Every headline below is one sentence of at most 25 words carrying the figure it 
 
 **When:** no question was declared, or the campaign measured things without a decision in view.
 
-**Headline:** the most decision-relevant thing learned, stated as a finding with its figure: what the first grader read. "Long tickets fail 3 times as often as short ones on every arm." The question worth asking next goes in `next`.
+**Headline:** the most decision-relevant thing learned, stated as a finding with its figure: the reading of the first grader, which `SKILL.md` defines. "Long tickets fail 3 times as often as short ones on every arm." The question worth asking next goes in `next`.
 
 **Slots:** known_despite_it (what is solid), what_is_tangled where relevant, what_settles_it, next. The next steps matter most here. They are usually declarations: the question, the margin, the control.
 

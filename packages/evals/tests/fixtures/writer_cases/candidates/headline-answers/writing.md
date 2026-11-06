@@ -26,7 +26,7 @@ These come from the owner's review of earlier reports. Each has a reason.
 
 A claim's text states what is true, with a subject and a direction. "Refund requests, the largest slice, carry most of the candidate's loss." Never a topic: "Failure analysis". A reader who reads only the claim sentences should get the argument.
 
-The headline answers the question the campaign asked (where it declared none, what its first grader read): the call, the trade or what is unresolved, with the figure it turns on, in one sentence of at most 25 words. It never restates the question, never quotes the campaign's own question text, which is often written in ids, and never states an absence.
+The headline answers the question the campaign asked (where it declared none, the reading of its first grader, which `SKILL.md` defines): the call, the trade or what is unresolved, with the figure it turns on, in one sentence of at most 25 words. It never restates the question, never quotes the campaign's own question text, which is often written in ids, and never states an absence.
 
 ## Names
 

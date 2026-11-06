@@ -27,7 +27,7 @@ Every other file is the shipped skill's, byte for byte.
 
 | Rule | Findings it answers |
 |---|---|
-| The headline answers the question asked (with none declared, what the first grader read), in one sentence of at most 25 words, with the answer's figure | H1, H9 |
+| The headline answers the question asked (with none declared, the first grader's reading), in one sentence of at most 25 words, with the answer's figure | H1, H9 |
 | An absence is a caveat line, anywhere on the page, never headline matter and never a sentence of its own | H9, H10; H5, H12 by analogy |
 | Watch lists only what could change the call; when every alternative read worse and cost more, it says so in one line | H3 |
 | A rate on the first screen carries its count | H11 by analogy |
@@ -42,7 +42,7 @@ their rule to the writer's page; the code pages need their own package change. C
 | Skill | Skill digest | Analyst text digest | Editor text digest |
 |---|---|---|---|
 | shipped | `4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8` | `063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b` | `07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611` |
-| headline-answers | printed by the run | `3b148f8519cd306dc72091df2a24308d20dee3608a43fa721dce3b64a354294d` | `187f9f72fcdb8e047a3a03e23b737e2f7b76d8bfaeb0a15f66898dcf2237a9da` |
+| headline-answers | printed by the run | `f6c737d08ce6327796d4e45137b2223ffcde186effb12fa95dee63110a049ef9` | `d383f0b1dd018afeb59c7c8042f80047ff0da7d09addf5d9ea4644d535eaac30` |
 
 The candidate's skill digest covers this file, so this file cannot hold it: the acceptance readout prints it, and
 `acceptance.json` records it under `candidate_skill`. The analyst's text is read with no note withheld.
@@ -78,7 +78,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  |---|---|
  | `story` | The dominant form (`stories.md`). It describes the report; it selects nothing. |
 -| `headline` | The call and its reason in one sentence, or the trade, or what is unresolved. Never the eval's question restated. |
-+| `headline` | The answer to the question the campaign asked (where it declared none, to what its first grader read), with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
++| `headline` | The answer to the question the campaign asked (where it declared none, to the reading of the first grader: the measure the page's lead reads, the first in the report input's grader order (`measure_order`) that a contrast tested), with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
  | `lede` | At most two sentences: the strongest supporting fact, and what would change the answer. |
  | `confidence` | `high`, `high_if_immaterial` or `low`, and every open caveat with its `material_if` clause (`principles.md`). |
 -| `decision` | Four slots from the shared vocabulary that fit the story: recommendation, why_not, watch, next; the_trade, where_it_flips, our_lean, what_settles_it; what_is_tangled, known_despite_it. |
@@ -114,7 +114,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
 -  - a claim that ranks models by cost with no provider named: a cost is the provider routing's, not the model's, so a cost comparison names who served each model (the `cost_served_by` fact states it, per arm, where the page cites a cost).
 +  - a claim that ranks models by cost with no provider named: a cost is the provider routing's, not the model's, so a cost comparison names who served each model (the `cost_served_by` fact states it, per arm, where the page cites a cost). Where no provider is recorded, a caveat line saying the costs are what this run paid answers it.
    - a confidence that reads high over an open caveat it does not stand behind: one that could plausibly be material, or whose clause does not say what would make it matter and why the call holds until then. The fix is to say which findings the high applies to and what it leaves open, or to make the form low.
-+  - a headline that does not answer the question the campaign asked, with the figure the answer turns on, in one sentence of at most 25 words. Where the campaign declared no question, the headline answers what its first grader read, with that figure. A headline that restates the question, leads with what is missing, or runs past 25 words fails the reader at the first sentence they read.
++  - a headline that does not answer the question the campaign asked, with the figure the answer turns on, in one sentence of at most 25 words. Where the campaign declared no question, the headline answers the reading of the first grader: the measure the page's lead reads, the first in the report input's grader order (`measure_order`) that a contrast tested, with that reading's figure. A headline that restates the question, leads with what is missing, or runs past 25 words fails the reader at the first sentence they read.
 +  - an absence stated anywhere on the page as headline matter or as a sentence of its own: "nothing declares whether that pass rate is enough", "this report recommends nothing", "no recommendation was written", "no question was declared". What the campaign did not declare, run, record or decide is a caveat line (in the confidence, or beside the one claim it qualifies), with what would make it matter; that is its one form. The page says what it is, never what it is not.
 +  - a Watch item that could not change the call. The weakest margin stays in Watch, by its `weakest.*` keys, when a move within its interval could change the call; when none could, it is a caveat line instead. When every alternative read worse and cost more, Watch says so in one line and lists nothing else, the weakest margin aside when it could change the call.
 +  - a rate on the first screen without its count: "20 of 20", never "100%" alone, since a rate over 3 cases and one over 300 read alike without it.
@@ -351,7 +351,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  **When:** no question was declared, or the campaign measured things without a decision in view.
  
 -**Headline:** the most decision-relevant thing learned, stated as a finding, and the question worth asking next.
-+**Headline:** the most decision-relevant thing learned, stated as a finding with its figure: what the first grader read. "Long tickets fail 3 times as often as short ones on every arm." The question worth asking next goes in `next`.
++**Headline:** the most decision-relevant thing learned, stated as a finding with its figure: the reading of the first grader, which `SKILL.md` defines. "Long tickets fail 3 times as often as short ones on every arm." The question worth asking next goes in `next`.
  
  **Slots:** known_despite_it (what is solid), what_is_tangled where relevant, what_settles_it, next. The next steps matter most here. They are usually declarations: the question, the margin, the control.
  
@@ -387,7 +387,7 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  A claim's text states what is true, with a subject and a direction. "Refund requests, the largest slice, carry most of the candidate's loss." Never a topic: "Failure analysis". A reader who reads only the claim sentences should get the argument.
  
 -The headline is the call (or the trade, or what is unresolved) with its reason. It never restates the question, and it never quotes the campaign's own question text, which is often written in ids.
-+The headline answers the question the campaign asked (where it declared none, what its first grader read): the call, the trade or what is unresolved, with the figure it turns on, in one sentence of at most 25 words. It never restates the question, never quotes the campaign's own question text, which is often written in ids, and never states an absence.
++The headline answers the question the campaign asked (where it declared none, the reading of its first grader, which `SKILL.md` defines): the call, the trade or what is unresolved, with the figure it turns on, in one sentence of at most 25 words. It never restates the question, never quotes the campaign's own question text, which is often written in ids, and never states an absence.
  
  ## Names
  
