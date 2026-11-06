@@ -278,8 +278,8 @@ class RecordedClient:
         # the eval measures a request that differs from production by this join.
         user = "\n\n".join(m.content for m in request.messages if m.role == "user")
         reply = await model.generate(system=system, user=user)
-        if reply.stop_reason == "truncated":  # text() and json() refuse this; an adapter must too, or a cut-off
-            raise RuntimeError(f"the reply stopped at max_tokens ({reply.provider_stop_reason})")  # reply scores as wrong
+        if reply.stop_reason != "end_turn":  # text() and json() refuse anything else; an adapter must too, or a
+            raise RuntimeError(f"the reply did not finish: {reply.stop_reason}")  # cut-off reply scores as a wrong answer
         return AppReply(text=reply.content, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens)
 
     async def aclose(self):

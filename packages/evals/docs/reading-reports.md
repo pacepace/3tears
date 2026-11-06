@@ -47,6 +47,7 @@ first screen, which is the decision. Top to bottom, nothing above the title:
 |---|---|---|---|
 | 1 | title and question | title and question | title and question |
 | 2 | where the report is | where the report is | where the report is |
+| 2a | the lead, where a guardrail warns: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | the same, per arm | none: one arm compares with nothing |
 | 3 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
 | 4 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
 | 5 | the call | the call | the call, once one is recorded |
@@ -55,7 +56,8 @@ Then, each under its heading: code's readings, under **Scorecard** ([below](#the
 **Design & provenance**; then one fold per aspect.
 
 A campaign that asks no question says so in the question's place, once: `No question was declared, so every reading
-is a lead.` Where the report is takes one line: the report document it is stored as, an analysis this version no
+is a lead.` An eval that declares its question (`Eval(question=...)`) has it quoted there instead, and its readings
+read as answers, without ", a lead". Where the report is takes one line: the report document it is stored as, an analysis this version no
 longer reads or a retired writer wrote, or `No recommendation was written: no analysis has been generated over this
 campaign.`
 
@@ -189,13 +191,14 @@ links to its fold.
 
 In a fold, the campaign's first screen holds the title, the question and the warnings, so the fold opens on its
 reading (`v2 unclear, a lead.`), then the arms line and the scoreboard. Laid out alone (`result.report`), an aspect's
-page opens on its own first screen; the invoices example (rung 3) renders this, verbatim:
+page opens on its own first screen; the invoices example (rung 3) renders this (the date is the render's):
 
 ```markdown
-# invoices: does v2 do better than v1?
-v1 (control) vs v2 · 15 Oct 2026 · 30 cases × 3 repeats
+# v1 vs v2 · classify (invoices)
+"Does v2 read the currency an invoice charges in right more often than v1?"
+v1 (control) vs v2 · 6 Nov 2026 · 30 cases × 3 repeats
 
-**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**
+**Declared question: nothing separated v2 from v1. Not yet shown safe: v2 on no invented total.**
 
 **Scoreboard**
 
