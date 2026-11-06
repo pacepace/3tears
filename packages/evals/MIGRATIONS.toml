@@ -156,6 +156,7 @@ notes = [
     "`Ceilings.generation_ceiling_s` (a field of `threetears.evals.run.Ceilings`, host-contract) is deprecated and keeps answering the same function, with a `DeprecationWarning` on every read, for this minor; the next minor removes it. It is a property now, not a dataclass field, so `dataclasses.fields(Ceilings)` no longer lists it. The only generation it bounded was the retired report planner's. Port: derive a report's `AnalysisGeneration.budget_s` from `Ceilings().writer_ceiling_s`.",
     "`MAX_GENERATION_CALLS` leaves `threetears.evals.kernel.inner_ceilings.__all__` and is private: no root exported it, and its only reader is the deprecated generation ceiling, which still answers four requests at the generator's cap.",
     "Eighteen declared names go provisional: nothing outside the package imports them, no shipped page teaches them, and no declared signature reaches them. Nothing is removed and nothing warns: each still imports from its root. Provisional means a release may change or move the name without a deprecation cycle (recorded here), and `docs/reference.md` no longer lists it; a host that binds one sends its import list to have it declared again. From host-contract (16): `threetears.evals` `declared_names`; `threetears.evals.analysis` `format_signed`, `report_markdown`; `threetears.evals.negotiation` `ANTHROPIC_MIN_THINKING_BUDGET`; `threetears.evals.schema` `CELL_TIMEOUT_ORIGINS`, `KnownCellTimeoutOrigin`, `KnownCostCapOrigin`, `KnownMeteredCallOrigin`, `KnownModelRoleOrigin`, `KnownRoleModelOrigin`, `METERED_CALL_ORIGINS`, `MODEL_ROLE_ORIGINS`, `OUT_OF_RUN_PURPOSES`, `REASONING_EFFORTS`, `ROLE_MODEL_ORIGINS`, `SIMULATOR_PURPOSES`. From stable (2): `threetears.evals.analysis` `GATE_TOKENS`, `GLOSSARY`.",
+    "`campaign_evidence_digest` leaves `threetears.evals.analysis.campaign_bundle` (no root exported it, and nothing in the package called it; the 0.75.0 notes named it as taking `like=`). Port: read the document back and fingerprint it, `CampaignBundle.from_dict(document).fingerprint(like=...)`.",
     "An aspect's design may list its graders' measures in order (durable v16.8): `AspectDesign.measure_order` (measure keys, each once, written only when stated), which `Eval` files so the campaign page's lead reads the first of them a contrast tested that is no cost, as the printed line does; a campaign stating none, every one stored before included, leads on the classifier's accuracy where the aspect reads one and it asks no question, else on its pass rate. It changes no reading, verdict or gate. An older pod reading a campaign at this minor keeps the list opaquely and leads its page as that pod does. Nothing to change.",
 ]
 
@@ -240,7 +241,7 @@ why = """
 The memo page is retired with the memo writer: build_report laid a stored memo out as its aspect's page, and
 build_campaign_user_message rendered the view the memo writer was sent, within CAMPAIGN_MESSAGE_CHARS_PER_ASPECT. A
 stored memo analysis reads, through every door, as code's page with the retired writer's line, and an aspect's page
-is code's (build_code_only_report over the bundle frozen with the analysis, analysis_bundle). The report writer reads a
+is code's (build_code_only_report over the bundle frozen with the analysis). The report writer reads a
 frozen snapshot through its analyst tool, never a user message. Nothing stored changes. Port: read an analysis with
 analysis_report or report_read; lay one aspect out with build_code_only_report.
 """
@@ -254,6 +255,42 @@ The memo's models are retired with the memo writer: EvalAnalysis.document holds 
 as, never validated as a memo and never rendered, and no regenerable version moves. Recommendation and the three models
 it nests (FloorOverride, BehindOn, BarMissed) stay for this minor as the type of CampaignReport.recommendation, which
 no page fills. Port: read a stored memo, if at all, as JSON (EvalAnalysis.document); a report is a report document.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["analysis_bundle", "cell_label", "get_campaign_view", "list_analyses", "list_analysis_attempts"]
+why = """
+Nothing in the package called them. analysis_bundle read one aspect's bundle back from an analysis of one aspect, as
+frozen with it: read the stored bundle, AnalysisContextBundle.from_dict(analysis.aspect(label).bundle).
+(inspect_analysis_bundle re-assembles the bundle from today's evidence and compares it; it does not read the frozen
+one.)
+cell_label named a cell from a variant index, and no page names a cell that way. get_campaign_view read a campaign
+with its window and its archived and unresolved members: a campaign's evidence (assemble_context_bundle) carries all
+three. list_analyses and list_analysis_attempts each wrapped one storage read:
+call EvalStorage.list_analyses_by_campaign or list_analysis_attempts_by_campaign. Nothing stored changes.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CONFIDENCE_TIERS", "CampaignView", "HOST_PRODUCED_MEASURES"]
+why = """
+Nothing in the package read them. CONFIDENCE_TIERS was get_args(ConfidenceTier): read the tiers off the type.
+CampaignView was get_campaign_view's answer, removed with it; a campaign's evidence carries its window and its
+archived and unresolved members. HOST_PRODUCED_MEASURES only exempted two classifier measures from a package test.
+Nothing stored changes.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel.host"
+to = "removed"
+names = ["ObligationRow", "obligation_rows"]
+why = """
+They named the rows of the world conformance kit's obligations table for a package test, and the kit read neither:
+it derives each dimension's checks from its declared shape (obligations). Port: call obligations, or read the
+dimension's verdicts on WorldConformanceReport.for_dimension.
 """
 
 [[release]]

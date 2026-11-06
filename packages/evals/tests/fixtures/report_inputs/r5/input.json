@@ -5,7 +5,7 @@
   "question": "With the promoted queue-wording and AI-lane directives, does qwen3.8-flash or 1017 keep Kairo in character on dj_character_v2 at least as well as September, without being worse by more than 15 points?",
   "behavior": "Kairo's character across persona models",
   "kind": "change",
-  "kind_means": "A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.",
+  "kind_means": "A control and candidates: the report recommends a candidate the evidence separated, or keeps the control.",
   "design_shape": "one_factor_at_a_time",
   "run_date": "2026-10-25",
   "provenance": "Rebuilt read-only in the prod pod with assemble_campaign_bundle on 2026-10-25, minus insight 01a17220-d2e4 (minted by this analysis after generation). Aspect fingerprint matches the stored one: v2:9a5263b22a2d2b3f5db2c045efd03303ccba7bb22f01e583b15380574efcd53c",

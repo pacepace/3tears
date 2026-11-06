@@ -30,7 +30,7 @@ from packages.evals.tests.run_facts_support import CASES, aspect_bundle, campaig
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmPricing, evidence_digest
-from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report_input import report_input_digest
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.parts.tables import arms_table
@@ -217,7 +217,10 @@ def test_two_bundles_differing_only_in_pricing_share_their_fingerprints_and_evid
     other = _priced(plain, ArmPricing(sources=["anthropic:published"], providers=[], calls=4, priced_calls=4))
     for campaign in (priced, other):
         assert campaign.fingerprint() == plain.fingerprint()
-        assert campaign_evidence_digest(campaign.to_dict()) == campaign_evidence_digest(plain.to_dict())
+        assert (
+            CampaignBundle.from_dict(campaign.to_dict()).fingerprint()
+            == CampaignBundle.from_dict(plain.to_dict()).fingerprint()
+        )
         for held, bare in zip(campaign.aspects, plain.aspects, strict=True):
             assert held.fingerprint() == bare.fingerprint()
             assert evidence_digest(held.to_dict()) == evidence_digest(bare.to_dict())
@@ -237,7 +240,6 @@ def test_a_change_to_an_evidence_field_still_moves_the_fingerprints() -> None:
     assert moved_aspect.fingerprint() != aspect.fingerprint()
     assert evidence_digest(moved_aspect.to_dict()) != evidence_digest(aspect.to_dict())
     assert moved.fingerprint() != plain.fingerprint()
-    assert campaign_evidence_digest(moved.to_dict()) != campaign_evidence_digest(plain.to_dict())
 
 
 def test_a_real_assembled_campaign_fingerprints_as_it_would_without_its_census_pricing() -> None:
@@ -251,5 +253,8 @@ def test_a_real_assembled_campaign_fingerprints_as_it_would_without_its_census_p
     campaign = campaign_over(trials)
     stripped = campaign.model_copy(update={"aspects": [_unpriced(aspect) for aspect in campaign.aspects]})
     assert campaign.fingerprint() == stripped.fingerprint()
-    assert campaign_evidence_digest(campaign.to_dict()) == campaign_evidence_digest(stripped.to_dict())
+    assert (
+        CampaignBundle.from_dict(campaign.to_dict()).fingerprint()
+        == CampaignBundle.from_dict(stripped.to_dict()).fingerprint()
+    )
     assert '"pricing"' not in stripped.to_json() and '"pricing"' in campaign.to_json()

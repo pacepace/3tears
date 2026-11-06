@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from threetears.evals.analysis import Report, TableBlock, build_code_only_report, report_markdown
-from threetears.evals.analysis.report.build import analysis_bundle, analysis_writer
+from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import declared_arm_names
 from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
@@ -149,7 +149,7 @@ async def toy_report() -> tuple[EvalHost, EvalAnalysis, Report]:
     listed = analysis.campaign_bundle.get("arms")
     arms = [CampaignArm.model_validate(arm) for arm in listed] if isinstance(listed, list) else []
     report = build_code_only_report(
-        analysis_bundle(analysis),
+        analysis_campaign_bundle(analysis).aspects[0],
         assembled_at=analysis.generation.bundle_assembled_at,
         campaign_name=campaign.name,
         arm_short_names=declared_arm_names(arms),

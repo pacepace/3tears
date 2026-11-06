@@ -167,7 +167,6 @@ from threetears.evals.analysis.quantities import (
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.campaign import (
-    AspectAnalysis,
     EvalAnalysis,
     ReadingKind,
     VariantIndexEntry,
@@ -176,7 +175,6 @@ from threetears.evals.kernel.declaration import (
     CostLower,
     RateDrop,
 )
-from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.kernel.metrics import (
     METRIC_DESCRIPTORS,
@@ -337,44 +335,6 @@ def build_code_only_report(
         arm_short_names=arm_short_names,
         trials=trials,
     )
-
-
-def analysis_bundle(analysis: EvalAnalysis) -> AnalysisContextBundle:
-    """The evidence bundle a stored analysis of one aspect was written over, read back from the analysis.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :return: The bundle, as frozen at generation.
-    :rtype: AnalysisContextBundle
-    :raises RefusedInput: The analysis covers several aspects, or was written over a bundle of another shape than this
-        build's, which is regenerated, never read.
-    """
-    held = _only_aspect(analysis)
-    refuse_a_bundle_of_another_shape(
-        held.bundle,
-        what=f"analysis {analysis.id}",
-        remedy="generate the analysis again (analysis_generate), which assembles the campaign's evidence as it stands",
-    )
-    return AnalysisContextBundle.from_dict(dict(held.bundle))
-
-
-def _only_aspect(analysis: EvalAnalysis) -> AspectAnalysis:
-    """The one aspect a page of one aspect lays out.
-
-    :raises RefusedInput: The analysis covers several aspects.
-    """
-    if len(analysis.aspects) != 1:
-        raise RefusedInput(
-            f"analysis {analysis.id} covers {len(analysis.aspects)} aspects "
-            f"({', '.join(aspect.label for aspect in analysis.aspects)}), and this page lays out one",
-            remedy=(
-                "read each aspect's evidence with threetears.evals.analysis.inspect_analysis_bundle (naming its "
-                "aspect) and the analysis with threetears.evals.analysis.get_analysis; the campaign's page, which "
-                "lays out every aspect, is read through report_read, or threetears.evals.analysis.analysis_report by "
-                "its id"
-            ),
-        )
-    return analysis.aspects[0]
 
 
 def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
@@ -3577,7 +3537,6 @@ __all__ = [
     "NO_ANALYSIS",
     "contrast_rows",
     "report_cell_labels",
-    "analysis_bundle",
     "analysis_campaign_bundle",
     "analysis_verdict",
     "NO_STRATUM",

@@ -69,8 +69,7 @@ DIMENSION rather than the event — or one a world's own events share — makes 
 armed, and ``fired_armed()`` passes for a candidate whose world fired an event of its own. Everything
 else about a host stays the host's business.
 
-The checks are derived from an obligations table, one row per registrable shape; its rows are
-:data:`ObligationRow`.
+The checks are derived from each dimension's declared shape (:func:`obligations`), never declared.
 """
 
 from __future__ import annotations
@@ -141,19 +140,6 @@ Qualification = Literal[
     "schema_admits_too_few_values",
     "nothing_to_resolve",
     "seeding_did_not_take",
-]
-
-#: A row of the obligations table. The kit derives obligations from these and nothing else,
-#: so a shape that lands on no row would owe nothing — which
-#: ``tests/test_world_conformance.py`` refuses, by asserting the fixture set covers every
-#: row rather than by trusting this list to stay complete on its own.
-ObligationRow = Literal[
-    "seedable_machine_read",
-    "seedable_labeled_read",
-    "perceivable_not_seedable",
-    "triggered_automatic",
-    "triggered_human",
-    "every_dimension",
 ]
 
 #: Distinct values the kit will try to synthesize before giving up on a schema.
@@ -308,28 +294,6 @@ class WorldConformanceReport:
         return tuple(result for result in self.results if result.dimension == name)
 
 
-def obligation_rows(declared: WorldDimension) -> frozenset[ObligationRow]:
-    """Which rows of the obligations table this dimension's declared shape sits on.
-
-    Rows overlap on purpose — a triggered dimension is also a seedable one, and owes both rows'
-    obligations. Exposed rather than kept private because the test suite generates its coverage
-    matrix from this, so a shape that lands on no row is visible as a hole rather than as silence.
-
-    :param declared: The dimension.
-    :ptype declared: WorldDimension
-    :return: Every applicable row, always including ``every_dimension``.
-    :rtype: frozenset[ObligationRow]
-    """
-    rows: set[ObligationRow] = {"every_dimension"}
-    if declared.seedable:
-        rows.add("seedable_labeled_read" if declared.evidence == "labeled" else "seedable_machine_read")
-    if declared.perceivable and not declared.seedable:
-        rows.add("perceivable_not_seedable")
-    if isinstance(declared.when, Triggered):
-        rows.add("triggered_human" if declared.when.kind == "human" else "triggered_automatic")
-    return frozenset(rows)
-
-
 def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
     """The per-dimension checks this dimension's shape owes, derived and never declared.
 
@@ -339,7 +303,7 @@ def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
     so a dimension with none still owes the check and records ``nothing_to_observe``.
 
     ``ambient_isolation`` and ``vocabulary_completeness`` are absent here and are not thereby
-    optional: both are the ``every_dimension`` row's obligations, and each asks one question of
+    optional: every dimension owes both, and each asks one question of
     the whole registry rather than one per dimension, so the kit discharges each once. Reporting
     N copies of a single answer would be a lie told by repetition.
 
@@ -1942,12 +1906,10 @@ def _array_elements(items: Mapping[str, Any], wanted: int, *, named: str) -> lis
 __all__ = [
     "CheckName",
     "ConformanceResult",
-    "ObligationRow",
     "Outcome",
     "Qualification",
     "WorldConformanceError",
     "WorldConformanceReport",
     "check_world_conformance",
-    "obligation_rows",
     "obligations",
 ]

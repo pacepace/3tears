@@ -55,27 +55,6 @@ def _sign_flip_p(n: int) -> float:
     return min(1.0, 2.0 ** (1 - n))
 
 
-def _min_pairs_for_sign_flip(alpha: float) -> int:
-    """Smallest ``n`` whose exact paired sign-flip test can reach ``alpha``.
-
-    Under the null of exchangeable signs there are ``2 ** n`` equally likely sign
-    assignments, so the smallest attainable two-sided p is ``2 ** (1 - n)``. This
-    returns the first ``n`` for which that lands at or below ``alpha`` — computed
-    rather than written down, so it tracks the threshold instead of drifting from
-    it.
-    """
-    n = 2
-    while _sign_flip_p(n) > alpha:
-        n += 1
-    return n
-
-
-#: The fewest pairs at which the exact sign-flip p of a perfectly consistent move reaches alpha.
-#: Kept for callers that cite it; since #597 no verdict reads it. The sign-flip test asks whether a move is
-#: symmetric about zero, not whether the mean moved, so a move with no spread is decided by the bounded test on
-#: a declared range instead (:func:`separation_test`), and with no range is never called separated.
-MIN_PAIRS_FOR_DETERMINISTIC_GAP = _min_pairs_for_sign_flip(SIGNIFICANCE_ALPHA)
-
 #: The paired test the change classifier discloses, so a regression flag names the
 #: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
@@ -2871,7 +2850,6 @@ __all__ = [
     "GuardrailVerdict",
     "INTERVAL_LEVEL",
     "MIN_PAIRS_FOR_CORRELATION",
-    "MIN_PAIRS_FOR_DETERMINISTIC_GAP",
     "PROJECTION_CASE_CAP",
     "UNPAIRED_PROJECTION_CAP",
     "UNPAIRED_PROJECTION_RESOLUTION",
