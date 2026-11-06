@@ -6277,6 +6277,41 @@ async def test_a_diff_of_hundreds_of_groups_reads_them_in_a_few_statements_and_h
     await snapshot.stop()
 
 
+async def test_a_diff_grouped_by_a_timestamp_column_names_no_array_l3_would_refuse() -> None:
+    """cobalt dev 2026-11-06: a diff grouped by a timestamp column read its groups in one ``= ANY($n::text[])``
+    statement, the rail binding the values as text, and L3 refused it (``timestamp with time zone = text``): six
+    states never came forward. The array's type comes from the group COLUMN's type: a timestamp group is read a
+    value at a time, and the copy still holds what L3 holds."""
+    schema = TableSchema(
+        name="geos",
+        primary_key=("item",),
+        columns=[
+            Column("state", STRING_TYPE),
+            Column("geo", DATETIMETZ_TYPE, nullable=True),
+            Column("item", STRING_TYPE),
+            Column("votes", BIGINT_TYPE, nullable=True),
+        ],
+        on_conflict="update",
+    )
+    times = [f"2026-11-04 {h:02d}:00:00+00:00" for h in range(12)]
+    rows = [_geo("TX", t, f"t{i:02d}", 1) for i, t in enumerate(times)]
+    l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
+    table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
+    snapshot = await _geos_snapshot(l3, table, backend=_geos_backend(schema))
+    l3.db.executemany(
+        'UPDATE "geos" SET votes = 2, source_version = 2 WHERE item = ?', [(f"t{i:02d}",) for i in range(12)]
+    )
+    l3.epochs["TX"] = 2
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    arrays = [sql for sql, _ in l3.statements if "= ANY(" in sql and '"geo"' in sql]
+    assert not arrays, f"a timestamp group was named in an array: {arrays[:1]}"
+    await snapshot.stop()
+
+
 async def test_a_diff_of_a_scope_of_many_held_rows_makes_no_python_object_a_held_row() -> None:
     """cobalt dev 2026-11-05: a recovery listed a state's every held row's group in Python (``to_pylist`` and a key
     a row), beside the rows themselves, and pods were OOMKilled at 20 GiB. The groups are counted by Arrow: a diff of
