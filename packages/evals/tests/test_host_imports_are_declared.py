@@ -7,7 +7,7 @@ one (``threetears.evals``, ``threetears.evals.ops``) is skipped. Every other lin
 records, tiered ``host-contract`` or ``stable``; the failure names the host's file and the name.
 
 A name the package removed while a host's recorded list still carries it is listed in :data:`REMOVED_BEFORE_REPIN`,
-by host file, with the date and the host's word that its code no longer imports it. Each listed name must still be in
+by host file, with the date and the host's word that it drops each import before it moves its pin. Each listed name must still be in
 that host's file and must be gone from the snapshot, so the set empties as the host re-records its list.
 """
 
