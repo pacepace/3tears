@@ -226,7 +226,7 @@ Keep each rung's directory together: a rung reads its cases and replays its `rec
 `python -m threetears.evals 1-triage/triage.py`, or with `export OPENROUTER_API_KEY=...` and `RECORD=1` first, any
 rung live.
 
-**A rung file imports the modules beside it.** While it loads and runs, its directory is first on `sys.path`, as
+**A rung file imports the modules beside it.** Its directory is put first on `sys.path` before it loads and stays there for the process, as
 `python FILE` puts it, so app code several rung files share (an adapter like the one below) is written once, in a
 module beside them, and each imports it (`from router_adapter import RecordedClient`). A module is imported once per
 process, so helpers in two rung directories need distinct names.
@@ -275,6 +275,8 @@ class RecordedClient:
         # the eval measures a request that differs from production by this join.
         user = "\n\n".join(m.content for m in request.messages if m.role == "user")
         reply = await model.generate(system=system, user=user)
+        if reply.stop_reason == "truncated":  # text() and json() refuse this; an adapter must too, or a cut-off
+            raise RuntimeError(f"the reply stopped at max_tokens ({reply.provider_stop_reason})")  # reply scores as wrong
         return AppReply(text=reply.content, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens)
 
     async def aclose(self):
