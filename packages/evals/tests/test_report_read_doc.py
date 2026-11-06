@@ -71,7 +71,7 @@ _RETIRED = (
 )
 
 #: The members the campaign's JSON carried before the report document's, which every page's JSON keeps.
-_CAMPAIGN_MEMBERS = {"kind", "shape", "campaign_id", "basis", "analysis_id", "recommendation", "readings", "call"}
+_CAMPAIGN_MEMBERS = {"kind", "shape", "campaign_id", "basis", "analysis_id", "readings", "call"}
 
 
 class _ReadsCounted(InMemoryDocumentStore):
