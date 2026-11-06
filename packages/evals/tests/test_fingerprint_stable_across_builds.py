@@ -38,7 +38,7 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
-from threetears.evals.analysis.campaign_bundle import CampaignBundle, campaign_evidence_digest
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, ReportBlock, TableBlock
 from threetears.evals.schema.hashing import (
@@ -176,7 +176,14 @@ def test_every_float_of_a_campaign_bundle_moved_one_ulp_leaves_its_fingerprint(t
     nudged = _nudged(document, toward)
     assert _v1_campaign(nudged) != _v1_campaign(document)
 
-    assert campaign_evidence_digest(nudged) == campaign_evidence_digest(document) == bundle.fingerprint()
+    # The campaign's fingerprint is its frame's, which names each aspect by its fingerprint: every aspect's document
+    # and the frame's own floats, each moved one ULP, leave it.
+    assert [evidence_digest(aspect) for aspect in nudged["aspects"]] == [
+        aspect.fingerprint() for aspect in bundle.aspects
+    ]
+    frame = _nudged(bundle.frame(), toward)
+    assert frame != bundle.frame(), "the frame's readings carry floats"
+    assert CampaignBundle.from_frame(frame, bundle.aspects).fingerprint() == bundle.fingerprint()
 
 
 @pytest.mark.parametrize("toward", [math.inf, -math.inf], ids=["up", "down"])

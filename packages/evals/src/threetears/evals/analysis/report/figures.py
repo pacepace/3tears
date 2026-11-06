@@ -16,11 +16,10 @@ dimension on a pass/fail scale is a share like any other.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from threetears.evals.analysis.quantities import MONEY, PERCENT, display_scale, is_money
 from threetears.evals.analysis.report.cost_unit import money_ruler
-from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.numbers import MoneyForm
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, classifier_label_of, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
@@ -29,9 +28,6 @@ from threetears.evals.kernel.surface import DecisionSurface, MeasureFacts
 #: measured", and this arm was measured — every result failed, which its rates count. Never a number: a refused
 #: call's round trip and its empty spend are what read as a fast, free arm.
 NO_SUCCESSFUL_RESULTS = "no successful results"
-
-#: What marks the control's row: it is the reference every other row is read against, never the pick.
-REFERENCE_MARK = "(control: the reference)"
 
 #: The row order, stated on a table laid out by :func:`~threetears.evals.analysis.arms.surface_order`, so no reader
 #: takes the top row for a recommendation.
@@ -229,30 +225,11 @@ def report_rulers(surface: DecisionSurface, catalog: Mapping[str, MetricDescript
     return Rulers(measure_rulers(surface, catalog), dimensions)
 
 
-def analysis_rulers(analysis: EvalAnalysis, aspect: str) -> Rulers:
-    """Every ruler one aspect's readings in a stored analysis are stated on, over the surface and catalog frozen there.
-
-    :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
-    :param aspect: The label of the aspect whose readings are stated.
-    :ptype aspect: str
-    :return: The rulers, chosen as :func:`report_rulers` chooses them over the bundle the aspect was written over.
-    :rtype: Rulers
-    :raises KeyError: The analysis holds no aspect with that label.
-    """
-    held = analysis.aspect(aspect)
-    frozen: Mapping[str, Any] = held.bundle
-    entries = frozen.get("measure_catalog") or {}
-    catalog = {name: MetricDescriptor.model_validate(entry) for name, entry in entries.items()}
-    return report_rulers(held.decision_surface, catalog)
-
-
 __all__ = [
     "NO_SUCCESSFUL_RESULTS",
     "PER_MILLION_REPLIES",
     "PER_THOUSAND_LABEL",
     "PER_THOUSAND_REPLIES",
-    "REFERENCE_MARK",
     "REPLY_COST_FLOOR",
     "SHARE",
     "SURFACE_ORDER",
@@ -260,7 +237,6 @@ __all__ = [
     "UNITLESS",
     "MeasureRuler",
     "Rulers",
-    "analysis_rulers",
     "measure_rulers",
     "reply_cost_ruler",
     "report_rulers",
