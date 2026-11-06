@@ -380,11 +380,9 @@ class _Models:
         return model
 
 
-async def _capped_run(
-    models: _Models, *, cap_usd: float = 5.0, turns: int | None = None
-) -> tuple[list[EvalResult], BudgetStoppedError | None]:
-    """One arm over both cases, one cell at a time, under an enforcing cost cap, each report under a $2 budget (with
-    ``turns`` as its turn cap): its stored results, by case, and the stop the cap raised, if it did."""
+async def _capped_run(models: _Models, *, cap_usd: float = 5.0) -> tuple[list[EvalResult], BudgetStoppedError | None]:
+    """One arm over both cases, one cell at a time, under an enforcing cost cap: its stored results, by case, and the
+    stop the cap raised, if it did."""
     host = off_loop(_host)
     skill = load_skill()
     overlays = WRITER_KIND_CONTRACT.validate_overlays({"skill": skill.digest, "revisions": 1})
@@ -408,9 +406,7 @@ async def _capped_run(
         CALLER,
         overlays=WriterOverlays.model_validate(run.overlays),
         models=models,
-        # Two of the first turn's ceiling (its skill text at the incident model's rates and a 32,000-token cap, about
-        # $0.6) must fit, or the budget refuses the report before its first turn: $2 holds them.
-        budget=ReportBudget(usd=2.0, turns=turns),
+        budget=ReportBudget(usd=1.0),
         skills={},
     )
     cap = EvalRunCostCap(run.id, cap_usd, enabled=True)
@@ -489,8 +485,7 @@ async def test_a_reply_nothing_could_price_still_stops_the_capped_run_after_its_
     """A reply that reported no usage was answered, so may have been billed: unpriced spend, and the cap stops."""
     models = _Models(lambda: sonnet(Messages((200, READS), (200, UNREPORTED)), Waits()))
 
-    # Two turns are scripted; the turn cap ends the report there, as a $1 budget's ceiling once did.
-    results, stopped = await _capped_run(models, turns=2)
+    results, stopped = await _capped_run(models)
 
     assert stopped is not None, "unpriced spend stops an enforcing run"
     assert "1 result(s) spent what could not be priced" in str(stopped)

@@ -12,7 +12,7 @@ withhold; the no-editor arm given a revision; ``--variant`` ignored, or a varian
 asking one order; the read made without the pass; the criterion passing on
 ``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
 short or with a case it stored no page on; the readout's first table not counting the cases with two pages; a
-report budget under two first-turn ceilings launched; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
+report budget under the first turn's ceiling launched, or one under two of it launched with no warning; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
 directory; the doc's commands drifting from the script's.
 """
 
@@ -396,28 +396,41 @@ def test_main_reads_a_case_directory_and_prints_the_readout(
     assert re.search(r"^(PASS|FAIL): ", printed, re.M)
 
 
-def test_a_report_budget_that_cannot_admit_a_report_is_refused_before_anything_runs(
+def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two_is_warned(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The 2026-11-06 run's budget: Sonnet's first turn alone can cost over half of $0.75, and a report takes two.
+    # The incident's writer. Its first turn's ceiling moves with the skill's size, so each figure is read back from the
+    # line that states it and held to the line's own arithmetic.
     attempts = _offline(monkeypatch)
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"^the writer eval was not launched, and nothing was sent or spent: the first turn of arm 'shipped' on "
-            r"claude-sonnet-5-5, priced at its 32,000-token output cap and its skill's text before any snapshot is "
-            r"read, can cost up to \$0\.5\d, and a report takes at least 2 turns, so the report's \$0\.75 budget "
-            r"cannot admit one at that ceiling; a budget of \$1\.0\d or more can: raise budget_usd$"
-        ),
-    ):
-        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.75"])
-    assert attempts == []
-    assert capsys.readouterr().out == ""
-    # The second run's $1.50 is admitted, and the dry run goes through.
+    with pytest.raises(ValueError) as refused:
+        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.25"])
+    said = re.fullmatch(
+        r"the writer eval was not launched, and nothing was sent or spent: the analyst's first turn of arm 'shipped' on "
+        r"claude-sonnet-5-5, priced at its 32,000-token output cap and its text before any snapshot is read, can cost "
+        r"up to \$([0-9.]+), above the report's \$0\.25 budget, so it cannot admit even one turn of the 2 a report "
+        r"takes; a budget of \$([0-9.]+) or more admits it: raise budget_usd",
+        str(refused.value),
+    )
+    assert said is not None, str(refused.value)
+    ceiling, admits = float(said[1]), float(said[2])
+    assert 0.25 < ceiling <= admits < ceiling + 0.011
+    assert attempts == [] and capsys.readouterr().out == ""
+    # The 2026-11-06 run's $0.75 fits the first turn, so the run goes through, warned once with the records.
+    assert (
+        writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "0.75", "--cap-usd", "30"])
+        == 0
+    )
+    printed = capsys.readouterr().out
+    (warning,) = [line for line in printed.splitlines() if "recorded Sonnet 5.5 acceptance runs" in line]
+    twice = re.search(r"under 2 of a first turn's ceiling on claude-sonnet-5-5 \(\$([0-9.]+)\)", warning)
+    assert twice is not None and float(twice[1]) > 0.75
+    assert "at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and at $1.50 50 of 50" in warning
+    # At two of the ceiling and above, no warning.
     assert (
         writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "1.5", "--cap-usd", "30"])
         == 0
     )
+    assert "recorded Sonnet 5.5" not in capsys.readouterr().out
     assert attempts == []
 
 
