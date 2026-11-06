@@ -667,13 +667,11 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # cites when it explains a generation's total wall time.
         "threetears.evals.ops.ANALYSIS_PREPARATION_BUDGET_S",
         # What the host guide tells a host to call, build, catch, type against or read in its prose: the cost-cap
-        # wrapper and the error a refused reservation raises, the strict reply projection and the schema it refuses,
-        # the reader of a boot seed directory, a measure's per-entry marker, the narrow store ports a function types
-        # itself against, the read tier's row budget, the reporter kind's contract, the judge-wording sentence a
-        # release note carries, the error a store raises on an event loop, and the renderer of started jobs.
+        # wrapper, the strict reply projection and the schema it refuses, the reader of a boot seed directory, a
+        # measure's per-entry marker, the narrow store ports a function types itself against, the read tier's row
+        # budget, the judge-wording sentence a release note carries, the error a store raises on an event loop, and the renderer of started jobs.
         # `tests/test_guide_names_are_declared.py` holds the rule: a name the guide teaches is never provisional.
         "threetears.evals.kernel.CappedCompletion",
-        "threetears.evals.kernel.CostCapReached",
         "threetears.evals.kernel.strict_response_format",
         "threetears.evals.kernel.UnportableSchema",
         "threetears.evals.kernel.host.MemberActsOn",
@@ -685,7 +683,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.kernel.CassetteStore",
         "threetears.evals.kernel.JobStore",
         "threetears.evals.analysis.READ_TIER_ROW_BUDGET",
-        "threetears.evals.analysis.REPORTER_KIND_CONTRACT",
         "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE",
         "threetears.evals.schema.StoreCalledOnEventLoop",
         "threetears.evals.actions.render_jobs_started",
@@ -729,11 +726,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # value a host passes for its judge client: a host cannot call the recorder without naming one.
         "threetears.evals.schema.ClientRequestSettings",
         "threetears.evals.run.JUDGE_REQUEST_SETTINGS",
-        # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge,
-        # and the retired memo writer's, which it built from its own answer budget, effort and headroom (a one-minor
-        # shim): what each role is asked for, so a host's client sends what the run records as asked.
+        # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge:
+        # what each role is asked for, so a host's client sends what the run records as asked.
         "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
-        "threetears.evals.analysis.analysis_gen_request_settings_for",
         # The case floor below which no rate or difference is estimated, which a host's seed gate holds its templates to.
         "threetears.evals.analysis.MIN_CASES",
         "threetears.evals.testing.CompletionGuard",
@@ -820,9 +815,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         "threetears.evals.run.get_result_trace",
         # Analysing a campaign and rendering its report, as the examples do.
         "threetears.evals.analysis.inspect_campaign_bundle",
-        # Retired with the memo writer: refuses every call, naming analysis_generate, and leaves in the next minor.
-        "threetears.evals.analysis.generate_analysis",
-        "threetears.evals.analysis.EVAL_ANALYSIS_GEN_DEFAULT",
         # The frozen bundle an analysis is written from, reloaded from its file (`from_json`) to write over it again.
         "threetears.evals.analysis.AnalysisContextBundle",
         "threetears.evals.analysis.report_html",
@@ -980,7 +972,6 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.kernel.host.Interval",
         "threetears.evals.kernel.host.Ordinal",
         "threetears.evals.kernel.host.RolePins",
-        "threetears.evals.kernel.host.StyleProfile",
         "threetears.evals.kernel.host.Triggered",
         "threetears.evals.kernel.host.WorldConformanceError",
         "threetears.evals.kernel.host.check_world_conformance",
@@ -1024,14 +1015,7 @@ STABLE: frozenset[str] = frozenset(
         # Literal `Model`'s signature reaches) are provisional: no host imports them.
         "threetears.evals.providers.Completion",
         # A production host's further bindings in `threetears.evals.analysis`: what Discodon's production code imports.
-        "threetears.evals.analysis.AsRecordedReporterKind",
-        "threetears.evals.analysis.REPORTER_KIND",
-        "threetears.evals.analysis.ReporterKind",
-        "threetears.evals.analysis.ReporterOverlays",
         "threetears.evals.analysis.dollars_text",
-        "threetears.evals.analysis.refuse_undeliverable_reporter_template",
-        "threetears.evals.analysis.reporter_cell_timeout_s",
-        "threetears.evals.analysis.reporter_kind_contract",
         # A production host's further bindings in `threetears.evals.gen`: what Discodon's production code imports.
         "threetears.evals.gen.generate_variations",
         "threetears.evals.gen.plan_draft",
@@ -1079,21 +1063,14 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.JobStatus",
         "threetears.evals.ops.JobsStarted",
         "threetears.evals.ops.LaunchArguments",
-        "threetears.evals.ops.REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
-        "threetears.evals.ops.ReporterAdmitted",
-        "threetears.evals.ops.ReporterModelResolver",
-        "threetears.evals.ops.ReporterModelRole",
         "threetears.evals.ops.RunLine",
         "threetears.evals.ops.RunListing",
         "threetears.evals.ops.TemplateListing",
-        "threetears.evals.ops.admit_reporter_launch",
         "threetears.evals.ops.campaign_create",
         "threetears.evals.ops.campaigns_list",
         "threetears.evals.ops.history_launch_pricer",
         "threetears.evals.ops.job_cancel",
         "threetears.evals.ops.job_poll",
-        "threetears.evals.ops.plan_reporter_arm",
-        "threetears.evals.ops.price_largest_reporter_call",
         "threetears.evals.ops.report_read",
         "threetears.evals.ops.run_get",
         "threetears.evals.ops.run_launch",
@@ -1234,7 +1211,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 535  # the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 515  # the shims removed (R4, 535 -> 515, 2026-11-06: the twenty declared names the retired generations and the in-cell cost cap left, each deprecated for a minor no final release carried, leave the package; Discodon drops its imports before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

@@ -36,21 +36,10 @@ it, and only the names in ``__all__``; ``tests/test_package_matrix.py`` holds th
 ``tests/test_public_surface_is_closed.py`` holds every engine type a public signature hands a host to
 being exported from a public root. A ``# debt:`` comment on an export names what retires it. Code
 inside the package imports its own modules directly.
-
-**A name a retired generation left** stays in ``__all__`` for one minor, served by the module's ``__getattr__``
-from ``_retired`` with a ``DeprecationWarning`` naming its replacement
-(:func:`~threetears.evals.kernel.retired.served_retired`): the analysis reporter kind's names a host binds, its
-contract, its two kinds and its cell ceiling; the two retired generations' prompt constants, which a host seeds a
-prompt slot from by name, each now one line saying it is retired; the memo writer's client settings; and the memo
-writer's entry point, which refuses every call.
-``EVAL_REPORT_PLAN_DEFAULT`` is served but not in ``__all__``: no final release exported it.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from threetears.evals.kernel.retired import served_retired
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
     InterJudgeAgreement,
@@ -625,7 +614,6 @@ __all__ = [
     "DECLARED_INPUT_ORIGIN",
     "DEFAULT_WEIGHTING",
     "EQUIVALENCE_TEST_NAME",
-    "EVAL_ANALYSIS_GEN_DEFAULT",
     "HISTORY_METRICS",
     "METRIC_COMPOSITE",
     "METRIC_OUTCOME",
@@ -638,8 +626,6 @@ __all__ = [
     "PLANNING_READ_BUDGET",
     "BUNDLE_READ_BUDGET",
     "EXPORT_PAGE_RESULTS",
-    "REPORTER_KIND",
-    "REPORTER_KIND_CONTRACT",
     "SCOPED_METRICS_HELP",  # debt: retires when the English moves to one renderer
     "SERVED_MODEL_UNRECORDED",
     "WEIGHTING_EQUAL_PER_SCENARIO",
@@ -659,7 +645,6 @@ __all__ = [
     "ArmLevel",
     "ArmMechanismReading",
     "ArmServedModel",
-    "AsRecordedReporterKind",
     "BaselineBarProposals",
     "BundleInspection",
     "CampaignReadStore",
@@ -766,8 +751,6 @@ __all__ = [
     "ReadingScope",
     "RealizedDesign",
     "RefusedMerge",
-    "ReporterKind",
-    "ReporterOverlays",
     "RowColumns",
     "RunLister",
     "RoleUnanswered",
@@ -796,7 +779,6 @@ __all__ = [
     "campaign_report",
     "campaign_verdicts",
     "record_campaign_call",
-    "analysis_gen_request_settings_for",
     "assemble_context_bundle",
     "cell_label",
     "compare_two_runs",
@@ -812,7 +794,6 @@ __all__ = [
     "format_signed",
     "format_significance",
     "frontier",
-    "generate_analysis",
     "get_analysis",
     "get_campaign",
     "get_campaign_view",
@@ -851,9 +832,6 @@ __all__ = [
     "program_budget",
     "propose_bars",
     "remove_runs_from_campaign",
-    "refuse_undeliverable_reporter_template",
-    "reporter_kind_contract",
-    "reporter_cell_timeout_s",
     "running_analysis_attempt",
     "run_summary",
     "set_campaign_control",
@@ -866,26 +844,3 @@ __all__ = [
     "Depth",
     "ModelPassHatK",
 ]
-
-if TYPE_CHECKING:
-    from threetears.evals.analysis._retired import (
-        EVAL_ANALYSIS_GEN_DEFAULT,
-        EVAL_REPORT_PLAN_DEFAULT as EVAL_REPORT_PLAN_DEFAULT,
-        REPORTER_KIND,
-        REPORTER_KIND_CONTRACT,
-        AsRecordedReporterKind,
-        ReporterKind,
-        ReporterOverlays,
-        analysis_gen_request_settings_for,
-        generate_analysis,
-        refuse_undeliverable_reporter_template,
-        reporter_cell_timeout_s,
-        reporter_kind_contract,
-    )
-else:
-    # Imported last, beside the module __getattr__ that serves it.
-    from threetears.evals.analysis import _retired
-
-    def __getattr__(name: str) -> object:
-        """Serve a name a retired generation left, warning that it leaves in the next minor."""
-        return served_retired(__name__, name, _retired.RETIRED)

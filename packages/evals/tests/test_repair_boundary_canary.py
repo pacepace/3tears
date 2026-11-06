@@ -48,7 +48,7 @@ def _raises_by_function(path: Path) -> dict[str, set[str]]:
     """Map each function to the generation-contract exception classes it raises directly.
 
     Nested functions are attributed to their enclosing top-level function, since a closure
-    raising inside `generate_analysis` is still that function's behaviour.
+    raising inside its enclosing function is still that function's behaviour.
     """
     tree = ast.parse(path.read_text())
     found: dict[str, set[str]] = {}

@@ -1138,7 +1138,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, 535 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, 515 names, mapped by rung in [the surface](surface.md). A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
 only a known host's tests import, until that host re-pins (the rules, in full: [the surface](surface.md)). Otherwise
@@ -1293,8 +1293,6 @@ cell running when the cap is reached finishes whole, and a run may land past it 
 `CappedCompletion(client, sink=sink, source="candidate")`, which does it for every call, or call
 `sink.add_spend(source, cost)` once a call returns; a call that raises counts nothing. Each call adds, and never
 replaces what another source reported. Return the cell's spend on its output; that is what the cap counts.
-`sink.reserve`, `sink.cost_cap_reached()` and `CostCapReached` are deprecated and leave in the next minor
-([Cost and budgets: caps](cost-and-budgets.md#caps)).
 
 A run is one arm with one `candidate_model`; a launch naming several models starts one run per model, and
 runs of different kinds are always different variants. A reader of yours that answers for a run its lever
@@ -1444,7 +1442,7 @@ in `threetears.evals.run`) carries them as one value: `Ceilings()` holds `schedu
 `simulator_max_tokens`, `simulator_answer_budget_tokens` and `proposer_max_tokens`, and the functions
 `judge_phase_ceiling_s` and `writer_ceiling_s`, which turn your own ceiling for one request into the ceiling of a
 judge phase or of the writing of a report (every analyst round, revision, bounce and editor review its limits allow).
-`generation_ceiling_s`, the retired report planner's, is deprecated and leaves in the next minor. `writer_ceiling_s` also takes the writer's limits, the same ones the report is
+`writer_ceiling_s` also takes the writer's limits, the same ones the report is
 written under, and the turn cap of your report budget (`turns=`, `ReportBudget.turns`). A report's job budget is
 `writer_ceiling_s` plus your headroom. Declare a turn cap even on a dollar budget (`ReportBudget(usd=10.0,
 turns=60)`): dollars bound what a report spends, never how many turns it sends, so without one the ceiling is every
@@ -1633,9 +1631,8 @@ against the acceptance campaigns and the editor's scores. Each report records th
 
 The engine steers its other LLM calls with a prompt: the capability proposer (`PROPOSER_PROMPT`) and the boundary
 proposer (`BOUNDARY_GEN_PROMPT`). The retired writers' slots, the memo writer's (`eval_analysis_gen`) and the report
-planner's (`eval_report_plan`), are neither listed nor read, and `EVAL_ANALYSIS_GEN_DEFAULT` and
-`EVAL_REPORT_PLAN_DEFAULT` are each one line saying so, kept for one minor so a host seeding a slot by name still
-starts. Drop both slot declarations; a stored override of either is inert.
+planner's (`eval_report_plan`), are neither listed nor read, and no root constant seeds either. Drop both slot
+declarations; a stored override of either is inert.
 **A new host does nothing here.** Each call runs the default the package ships (`EVAL_PROPOSER_TEMPLATE_DEFAULT` and
 `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT` in `gen`) unless you hand it a prompt of your own: `plan_draft(axis=...,
 subject_feed=..., catalog_feed=...)` with no `system_prompt` (`default_system_prompt(axis)` is the text it sends).
@@ -1679,11 +1676,8 @@ check.
 ### The analysis reporter is retired
 
 The analysis reporter kind measured the memo writer and the report planner, which are retired, so its cases and
-actions are gone. Its contract and launch names (`REPORTER_KIND_CONTRACT`, `reporter_kind_contract`,
-`ReporterOverlays`, `refuse_undeliverable_reporter_template` from `threetears.evals.analysis`;
-`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`, `admit_reporter_launch`, `plan_reporter_arm`, `price_largest_reporter_call`
-and their types from `threetears.evals.ops`) still import for one minor, warn on every read, and refuse every launch.
-Delete the reporter kind's registration, its launch entry and its template check. The report writer is measured by
+actions are gone, and so are its contract, kinds and launch names. Delete the reporter kind's registration, its launch
+entry and its template check. The report writer is measured by
 a writer campaign instead ([Serving](serving.md#writer-campaigns-evaluating-the-report-writer)).
 
 ## A world, through the cell's session

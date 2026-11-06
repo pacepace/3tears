@@ -1078,9 +1078,7 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
         [read.get(name) or descriptor for name in profile.measures.names if (descriptor := profile.measures.get(name))],
         families=profile.measures.families,
     )
-    # The copy leaves the retired style fields out: nothing reads them, and a host passing one was warned once, when it
-    # built its profile, never again on every assembly.
-    return replace(profile, measures=measures, style=None, caveat_kinds=None), sentences
+    return replace(profile, measures=measures), sentences
 
 
 def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]:

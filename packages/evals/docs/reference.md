@@ -279,7 +279,6 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
 - **`CellSpanWindow`** · *host contract* · protocol · One cell's two tracing windows, as the kind driving that cell sees them.
 - **`ConflictError`** · *host contract* · exception · State conflict (status 409).
 - **`ControlDeclaration`** · model · What held still, stated — because an absent control is a fact, not a null.
-- **`CostCapReached`** · *host contract* · exception · Retired: the engine no longer raises it, because no ceiling is asked inside a cell.
 - **`CostLower`** · *host contract* · model · A clause of a floor: the arm must cost less per reply than the control.
 - **`DefinitionStore`** · *host contract* · protocol · What runs are launched FROM: templates, their test cases, rubric dimensions and judge configs.
 - **`DeliveryRecorder`** · protocol · Captures one asynchronous tool's background work for one cell.
@@ -403,7 +402,6 @@ The host contract — what a consuming product declares, and what the engine nev
 - **`ResolvesInto`** · dataclass · Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
 - **`RolePins`** · dataclass · One pinned ROLE — who filled a seat in the rig, and the inputs that identify them.
 - **`SeedRefused`** · *host contract* · exception · A seed asked for a write the registry or the subject cannot make.
-- **`StyleProfile`** · dataclass · Retired: one host's tone register, which nothing reads now that the writers that read it are retired.
 - **`Sweepable`** · *host contract* · dataclass · One score-determining input: what it is called, who owns it, how to read it.
 - **`SweepableRegistry`** · *host contract* · class · The declared inputs for one host, validated at construction.
 - **`TemplateCaseFields`** · *host contract* · protocol · What a host's check over a template case reads of it: the fields of a seed corpus's `threetears.evals.run.SeedTemplateCase`, which is what the check is handed.
@@ -584,8 +582,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 **Functions**
 
-- **`analysis_gen_request_settings_for`** · *host contract* · function · Retired: the memo writer's client settings, answered as they were; nothing in the package builds that client.
-  <br>`analysis_gen_request_settings_for(*, answer_budget_tokens: int, reasoning_effort: KnownReasoningEffort = 'medium', reasoning_headroom_tokens: int = 8192) -> ClientRequestSettings`
 - **`assemble_campaign_bundle`** · function · Assemble the campaign bundle a generation launched right now would read, without generating.
   <br>`assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle`
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
@@ -602,8 +598,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
-- **`generate_analysis`** · *host contract* · async function · Retired: the memo writer. Every call refuses before anything is sent, naming what writes a report now.
-  <br>`generate_analysis(bundle: CampaignBundle, *, prompt: str, model: str, client: CompletionGenerator, prompt_id: str, bundle_assembled_at: str, prompt_version: str | None = None, tally: GenerationTally | None = None, admit: Callable[[str, str, dict[str, Any] | None], None] | None = None, profile: HostProfile, measuring_writers: bool = False) -> tuple[EvalAnalysis, list[EvalInsight]]`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
@@ -626,14 +620,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]`
 - **`read_judge_temperatures`** · function · Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
   <br>`read_judge_temperatures(answers: JudgeTemperatureAnswers) -> JudgeTemperatureComparison`
-- **`refuse_undeliverable_reporter_template`** · function · Retired: refuses every analysis reporter template, naming the writer kind that replaces it.
-  <br>`refuse_undeliverable_reporter_template(template: EvalTemplate) -> None`
 - **`report_html`** · *host contract* · function · Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
   <br>`report_html(report: Report, *, static: bool = False) -> str`
-- **`reporter_cell_timeout_s`** · function · Retired: the wall-clock ceiling one reporter cell had, the memo writer's two requests then its judge phase.
-  <br>`reporter_cell_timeout_s(*, judge_dims: int, judge_concurrency: int, generator_max_tokens: int, judge_call_attempts: int, judge_max_tokens: int, request_s: RequestCeiling) -> float`
-- **`reporter_kind_contract`** · function · Retired: the analysis reporter kind's contract, the host's seats ignored; `REPORTER_KIND_CONTRACT`.
-  <br>`reporter_kind_contract(host_seats: Iterable[str] = ()) -> KindContract`
 - **`serialize_report`** · function · A report in one of its three forms: an aspect's page, or a campaign's.
   <br>`serialize_report(report: Report | CampaignReport, format: ReportFormat, *, static: bool = False) -> str`
 - **`tier_sentence`** · function · One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
@@ -642,7 +630,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 **Classes**
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
-- **`AsRecordedReporterKind`** · class · Retired: a case's recorded memo replayed. Building one refuses, naming the writer kind that replaces it.
 - **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
 - **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the findings and next steps, how the campaign was set up, then one fold per aspect.
@@ -650,8 +637,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`EvalSummary`** · *host contract* · model · One run, summarised.
 - **`GateResult`** · dataclass · What a gate read and what it came to.
 - **`Report`** · *host contract* · model · A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states.
-- **`ReporterKind`** · class · Retired: the memo writer as a candidate. Building one refuses, naming the writer kind that replaces it.
-- **`ReporterOverlays`** · model · Retired: the analysis reporter's one overlay, the memo writer's prompt preset; no launch reads it.
 - **`RequestSettingsReading`** · *host contract* · model · What one role asked for and what its calls were actually sent with, across the results read.
 - **`SentSettingsShare`** · *host contract* · model · One value a role's calls were sent with, and how many of the role's units carried it.
 - **`Verdict`** · model · One verdict the report states, typed: what a program reads instead of the words printed from it.
@@ -667,14 +652,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`= '—'`
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
-- **`EVAL_ANALYSIS_GEN_DEFAULT`** · *host contract* · constant (str) · Retired: what the memo writer's prompt slot is seeded from by name now, one line, never the memo writer's prompt.
 - **`MIN_CASES`** · *host contract* · constant (int) · The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or compared: below it a t interval is too wide and unstable to read (`SMALL_N_BAND_FLOOR`), so a rate is printed as a count ("1 of 2"), never as a percentage, a difference or an interval.
   <br>`= 5`
 - **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
   <br>`= 66003`
-- **`REPORTER_KIND`** · constant (str) · Retired: the `candidate_kind` a reporter template declares.
-  <br>`= 'analysis_reporter'`
-- **`REPORTER_KIND_CONTRACT`** · *host contract* · constant (KindContract) · Retired: the analysis reporter kind's contract, now one with no overlay and no seat, which makes nothing launchable.
 
 <a id="api-gen"></a>
 ### `threetears.evals.gen`
@@ -816,8 +797,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 
 **Functions**
 
-- **`admit_reporter_launch`** · function · Retired: refuses every reporter arm, naming the writer kind that replaces it.
-  <br>`admit_reporter_launch(request: LaunchRequest, *, storage: EvalStorage, prompts: object, resolve_model: ReporterModelResolver) -> ReporterAdmitted`
 - **`await_job`** · async function · Await started jobs to their end in the foreground, and return how each ended — its result included.
   <br>`await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]`
 - **`campaign_create`** · function · Create a campaign over runs already in the scope, declared as it is created when the definition says so.
@@ -842,10 +821,6 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`judge_case_author(host: EvalHost, case: JudgeCaseAuthor, scope_id: str, *, collected_by: str) -> JudgeCaseFreezeReport`
 - **`judge_profiles_record`** · function · Record the profile of every judge and criterion a judge campaign's runs measured.
   <br>`judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id: str) -> JudgeProfileRecording`
-- **`plan_reporter_arm`** · function · Retired: refuses every reporter arm's plan, naming the writer kind that replaces it.
-  <br>`plan_reporter_arm(host: EvalHost, request: LaunchRequest, *, prompts: object, resolve_model: ReporterModelResolver) -> ArmPlan`
-- **`price_largest_reporter_call`** · async function · Retired: refuses every reporter arm's price, naming the writer kind that replaces it.
-  <br>`price_largest_reporter_call(host: EvalHost, request: LaunchRequest, *, prompts: object, resolve_model: ReporterModelResolver) -> CallCeiling | None`
 - **`report_read`** · function · The campaign's report, serialized in one form — the same report the command line's `report` prints.
   <br>`report_read(host: EvalHost, campaign_id: str, scope_id: str, *, format: ReportFormat, trials: TrialDetail = 'table', static: bool = False, report_doc_id: str | None = None, include_sessions: bool = False) -> ReportDocument`
 - **`run_get`** · function · One run, summarised from its stored results.
@@ -887,25 +862,16 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
 - **`OpsHost`** · dataclass · The host the operations, and the actions over them, work in.
 - **`RegressionWatch`** · dataclass · Checks a completed run's measures against its contestant's history, and delivers each regression.
 - **`ReportBudget`** · class · The host's cap for one report, shared by every session that writes it: dollars, or tokens, and either with turns.
-- **`ReporterAdmitted`** · dataclass · Retired: what a reporter arm resolved to; `admit_reporter_launch` now refuses every arm.
 - **`RunLine`** · model · One run, as a listing shows it.
 - **`RunListing`** · model · A scope's runs, newest first as the store lists them.
 - **`SessionLimits`** · dataclass · What every turn of a session is held to (plan §4.3).
 - **`TemplateListing`** · model · A scope's templates.
 - **`WriterLimits`** · dataclass · What the writing loop is held to (plan §4.3).
 
-**Types**
-
-- **`ReporterModelResolver`** · type alias · Retired: the host's model resolution, as a reporter launch asked it.
-  <br>`Callable[[ReporterModelRole, str | None], str]`
-- **`ReporterModelRole`** · literal · Retired: which model a reporter launch asked the host to resolve, the memo writer or its judge.
-  <br>`'generator'` | `'judge'`
-
 **Constants**
 
 - **`ANALYSIS_PREPARATION_BUDGET_S`** · *host contract* · constant (float) · The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
   <br>`= 900.0`
-- **`REPORTER_UNHONOURED_LAUNCH_ARGUMENTS`** · constant (frozenset) · Retired: the launch arguments a reporter arm could not honour. No reporter arm launches now.
 
 **Also exported here**
 
@@ -1071,9 +1037,7 @@ Everything the engine knows about one consuming product.
 | `host_sweepables` | `SweepableRegistry` | required | What this host itself declares it sweeps and what holds its measurements: the shared core (`SHARED_CORE`) extended with the host's own levers, apparatus and labels. |
 | `measures` | `MeasureRegistry` | required | What this host can see. The observability map. |
 | `bars` | `BarRegistry` | `BarRegistry()` | The incumbent standards per behavior. A host with none registers an empty registry. |
-| `style` | `StyleProfile \| None` | `None` | Retired: the tone register the retired writers' prompts read; nothing reads it now. |
 | `world` | `WorldRegistry \| None` | `None` | What a run may set before the subject starts, and what it may only witness. |
-| `caveat_kinds` | `frozenset[str] \| None` | `None` | Retired: the caveat kinds the retired memo writer offered beyond the engine's own; nothing reads them now. |
 | `variant_levers` | `VariantLeverReader \| None` | `None` | How this host resolves a run's level of each of its OWN fixed levers. See `VariantLeverReader`. |
 | `observed_model_levers` | `Mapping[str, str]` | `dict()` | Levers whose INHERITED value is recoverable from what a run observably did. |
 | `action_parameters` | `ActionParameterReader \| None` | `None` | How a goal check learns which of a call's recorded parameters are closed values. |

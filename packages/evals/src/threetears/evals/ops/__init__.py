@@ -34,21 +34,12 @@ A run's results are read by :func:`results_list` — one light row per result, p
 the cell that came out wrong — and :func:`result_get`, which reads one result back as stored with one part of its
 trace: by default the output its kind stored and the roles' spend, and the judge's evidence or the spans by name.
 
-The analysis reporter kind's launch names (:func:`admit_reporter_launch`, :func:`plan_reporter_arm`,
-:func:`price_largest_reporter_call` and their types) retired with the reporter cases. Each stays in ``__all__`` for
-one minor, served by the module's ``__getattr__`` from ``_retired`` with a ``DeprecationWarning``, and refuses,
-naming the ``report_writer`` kind that replaces it.
-
 **This module is the package's public root.** A host imports from here and from no module below it,
 and only the names in ``__all__``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from threetears.evals.ops import _retired
-from threetears.evals.kernel.retired import served_retired
 from threetears.evals.ops.analysis import (
     AnalysisDeleted,
     AnalysisGenerationEstimate,
@@ -337,13 +328,6 @@ __all__ = [
     "JudgeProfileListing",
     "JudgeProfileRecording",
     "JudgeProfilesRecord",
-    "REPORTER_UNHONOURED_LAUNCH_ARGUMENTS",
-    "ReporterAdmitted",
-    "ReporterModelResolver",
-    "ReporterModelRole",
-    "admit_reporter_launch",
-    "plan_reporter_arm",
-    "price_largest_reporter_call",
     "ResultDetail",
     "ResultLine",
     "ResultListing",
@@ -444,19 +428,3 @@ __all__ = [
     "WriterModelFactory",
     "WriterRole",
 ]
-
-if TYPE_CHECKING:
-    from threetears.evals.ops._retired import (
-        REPORTER_UNHONOURED_LAUNCH_ARGUMENTS,
-        ReporterAdmitted,
-        ReporterModelResolver,
-        ReporterModelRole,
-        admit_reporter_launch,
-        plan_reporter_arm,
-        price_largest_reporter_call,
-    )
-else:
-
-    def __getattr__(name: str) -> object:
-        """Serve a name a retired generation left, warning that it leaves in the next minor."""
-        return served_retired(__name__, name, _retired.RETIRED)

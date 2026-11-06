@@ -685,7 +685,7 @@ class _FakeLedger:
 
 
 async def _analysis_call(client: Any) -> tuple[list[float | None], Any, _FakeLedger]:
-    """One analysis call through the engine's out-of-run budget, as ``generate_analysis`` makes it: priced, then made."""
+    """One analysis call through the engine's out-of-run budget: priced, then made."""
     ledger = _FakeLedger()
     budget = OutOfRunBudget(ledger, scope_id="s", cap_usd=1.0, blocking_executor=None)
     [admitted] = budget.admit(client, "analysis", [PlannedCall(system=SYSTEM, user="Write the analysis.")])

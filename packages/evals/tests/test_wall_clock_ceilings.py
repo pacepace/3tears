@@ -1,9 +1,7 @@
 """Tests for the wall-clock ceilings the engine derives over a host's requests.
 
-:func:`~threetears.evals.kernel.inner_ceilings.generation_ceiling_s`, :func:`~threetears.evals.kernel.inner_ceilings.judge_phase_ceiling_s`
-and the retired reporter kind's ``reporter_cell_timeout_s`` (kept for one minor, warning on every read) each count
-requests and multiply by the host's own
-ceiling for one request (:data:`~threetears.evals.schema.RequestCeiling`). The host owns that answer because only
+:func:`~threetears.evals.kernel.inner_ceilings.judge_phase_ceiling_s` counts requests and multiplies by the host's
+own ceiling for one request (:data:`~threetears.evals.schema.RequestCeiling`). The host owns that answer because only
 it knows its client: how many provider calls one request can become and how long the client sleeps between them. The
 engine once reconstructed it from per-call parameters with no term for those sleeps, so a host whose client retries
 could not state its own worst case, and the engine shipped a package-side calls-per-request figure a host would read
@@ -17,28 +15,13 @@ answer rather than landing on a value that still looks reasonable.
 from __future__ import annotations
 
 import inspect
-import warnings
-from collections.abc import Callable
 
 import pytest
 
 import threetears.evals.kernel as kernel
 import threetears.evals.schema as schema
-import threetears.evals.analysis as analysis
-from threetears.evals.kernel.inner_ceilings import generation_ceiling_s, judge_phase_ceiling_s
+from threetears.evals.kernel.inner_ceilings import judge_phase_ceiling_s
 
-
-def _reporter_cell_timeout_s() -> Callable[..., float]:
-    """The retired reporter kind's cell ceiling, read without the warning the read raises (asserted where it is)."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        timeout: Callable[..., float] = analysis.reporter_cell_timeout_s
-    return timeout
-
-
-reporter_cell_timeout_s = _reporter_cell_timeout_s()
-
-_GENERATOR_MAX_TOKENS = 8_000
 _JUDGE_MAX_TOKENS = 3_000
 
 
@@ -51,20 +34,6 @@ class _RecordingRequestCeiling:
     def __call__(self, max_tokens: int) -> float:
         self.asked.append(max_tokens)
         return max_tokens / 10 + 7
-
-
-class TestTheGenerationCeiling:
-    def test_is_four_requests_at_the_generator_cap(self) -> None:
-        """A generation is the planner's structure and prose calls, each with its one repair round-trip, each the
-        host's request ceiling at the cap."""
-        request_s = _RecordingRequestCeiling()
-        ceiling = generation_ceiling_s(request_s=request_s, generator_max_tokens=_GENERATOR_MAX_TOKENS)
-        assert ceiling == 4 * (800 + 7)
-        assert set(request_s.asked) == {_GENERATOR_MAX_TOKENS}
-
-    def test_adds_nothing_of_its_own_to_a_request(self) -> None:
-        """A host whose request takes a flat 100s, sleeps included, gets exactly 400s: no per-call term on top."""
-        assert generation_ceiling_s(request_s=lambda _max_tokens: 100.0, generator_max_tokens=1) == 400.0
 
 
 class TestTheJudgePhaseCeiling:
@@ -97,48 +66,15 @@ class TestTheJudgePhaseCeiling:
         assert ceiling == waves * 10.0
 
 
-class TestTheReporterCellCeiling:
-    def test_is_the_generation_then_the_judge_phase(self) -> None:
-        """The two caps differ, so judging at the generator's cap (or generating at the judge's) changes the sum.
-
-        The kind is retired; its ceiling keeps its answer for the minor a host still reads it in, and warns.
-        """
-        request_s = _RecordingRequestCeiling()
-        with pytest.warns(DeprecationWarning, match="reporter_cell_timeout_s is retired"):
-            timeout = analysis.reporter_cell_timeout_s
-        ceiling = timeout(
-            judge_dims=5,
-            judge_concurrency=2,
-            generator_max_tokens=_GENERATOR_MAX_TOKENS,
-            judge_call_attempts=2,
-            judge_max_tokens=_JUDGE_MAX_TOKENS,
-            request_s=request_s,
-        )
-        assert ceiling == 2 * (800 + 7) + 3 * 2 * (300 + 7)
-        assert set(request_s.asked) == {_GENERATOR_MAX_TOKENS, _JUDGE_MAX_TOKENS}
-
-
 class TestTheHostOwnsTheRequest:
     """No ceiling takes a per-call parameter the host would have to translate its client into."""
 
     @pytest.mark.parametrize(
         ("ceiling", "parameters"),
         [
-            (generation_ceiling_s, {"request_s", "generator_max_tokens"}),
             (
                 judge_phase_ceiling_s,
                 {"judge_dims", "judge_concurrency", "judge_call_attempts", "judge_max_tokens", "request_s"},
-            ),
-            (
-                reporter_cell_timeout_s,
-                {
-                    "judge_dims",
-                    "judge_concurrency",
-                    "generator_max_tokens",
-                    "judge_call_attempts",
-                    "judge_max_tokens",
-                    "request_s",
-                },
             ),
         ],
     )
