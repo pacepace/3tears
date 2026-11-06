@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.91.4 -- 2026-11-06
+
 ### nats: a large object is hashed off the event loop
 
 **Fixed:** an Object Store put or get hashed the whole object on the event loop. On cobalt prod reports pods
