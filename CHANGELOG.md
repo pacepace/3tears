@@ -20,6 +20,36 @@ port and no second scrape. A pod that records through `threetears.observe.metric
 - `ToolServer.metrics_registry` returns the registry `render_metrics()` renders.
 - A pod that passes nothing serves exactly what it served before.
 
+### agent-tools: a pod that makes long requests holds its replaced connection for them across a renewal, `longest_request_seconds`
+
+**Fixed:** a tool pod renews its NATS credential about once a day by moving to a new connection. It
+kept the old one open only for the 30 s synchronous reply budget. A request the pod itself was
+waiting on is answered on the connection it was sent on. So a request older than 30 s when the
+renewal landed, such as a warehouse export, lost its reply and failed at its own timeout as
+`REQUEST_FAILED`.
+
+- `ToolServer(..., longest_request_seconds=...)` is the longest request the pod makes. A renewal
+  keeps the replaced connection open that long: its subscriptions for that long, then the
+  connection for that long again. It also renews that much earlier in the credential's lifetime.
+  It defaults to `SYNC_REPLY_BUDGET_SECONDS`, today's 30 s, so a pod that passes nothing is
+  unchanged.
+- It must be finite and at least the reply budget, because a shorter hold would cut off replies the
+  pod owes. It is refused beside an injected `nats_client`, whose owner sets its own renewal.
+- Cost, measured with nats-py on NATS 2.12: one extra idle connection for twice the hold, once per
+  renewal. That is about 22 KiB of Python heap, plus about 4.6 KiB for each subscription during
+  the first half of the hold. A 700 s hold at the platform's 24 h TTL means two connections for
+  about 23 minutes a day, under 1 MiB even with 200 subscriptions. The server sees one more
+  connection for that time. Messages are not doubled: each subscription's two halves share one
+  queue group.
+
+### scrape: `discover_links_labeled` follows an attribute other than `href`
+
+**Added:** `discover_links_labeled(..., attribute="href")`. A listing that names its documents in another
+attribute, such as a contest dropdown whose `<option value>` is each page's id, is walked with
+`attribute="value"`; the element's text is the label, and a match without the attribute is skipped as an
+anchor without `href` is. `base_url=""` returns the raw value for a caller that fills its own URL template.
+The default keeps every existing call unchanged. An API addition, so it ships in the next minor.
+
 ### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
 
 **Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
