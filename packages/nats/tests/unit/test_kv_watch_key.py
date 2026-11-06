@@ -508,7 +508,7 @@ class TestReplacingAConsumer:
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A bucket nobody recreates leaves the watch deaf; that is the operator's to hear, once."""
-        monkeypatch.setattr("threetears.nats.kv._KEY_WATCH_ABSENT_WARN_AFTER_SECONDS", 0.0)
+        monkeypatch.setattr("threetears.nats.kv_watch.KEY_WATCH_ABSENT_WARN_AFTER", timedelta(0))
         absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
         bucket, _raw, _js, _log = _bucket([[], [], [], [_delivered(b"3", sequence=7)]], failures=3, failure=absent)
 

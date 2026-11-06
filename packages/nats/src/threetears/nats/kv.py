@@ -76,6 +76,7 @@ from threetears.nats.errors import (
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
+from threetears.nats import kv_watch
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
@@ -341,13 +342,6 @@ _STATUS_IDLE_HEARTBEAT: Final[str] = "100"
 #: its deadline, which would turn every close into a ten-second stall. Long enough to ride out a
 #: client reconnect without losing the consumer; short enough that an abandoned one is gone soon.
 _KEY_WATCH_INACTIVE_THRESHOLD_SECONDS: Final[float] = 30.0
-
-#: How long a key watch's bucket may stay absent before the watch says so at WARNING. A broker
-#: restart on memory storage takes the bucket's stream with it, and the watch's consumer creates
-#: answer "stream not found" until the bucket's declarer creates it again: about 45 s across a
-#: production NATS restart (2026-11-05). That wait is said once at INFO; a bucket still absent past
-#: this is one nobody is recreating, and the operator is told.
-_KEY_WATCH_ABSENT_WARN_AFTER_SECONDS: Final[float] = 120.0
 
 #: The header nats KV stamps on a delete or purge marker, and the values that mean one.
 _KV_OPERATION_HEADER: Final[str] = "KV-Operation"
@@ -3081,7 +3075,7 @@ class _StreamAbsence:
     answered "stream not found" is logged at INFO, without a traceback, because a bucket on memory
     storage is gone after a broker restart until its declarer creates it again, and every watch on it
     sees the same answer meanwhile. A stream still absent after
-    :data:`_KEY_WATCH_ABSENT_WARN_AFTER_SECONDS` is logged once at WARNING: nothing is recreating it.
+    :data:`~threetears.nats.kv_watch.KEY_WATCH_ABSENT_WARN_AFTER` is logged once at WARNING: nothing is recreating it.
     The create that succeeds again logs the return and arms both lines for the next absence.
 
     :param subject: the watched subject
@@ -3120,7 +3114,7 @@ class _StreamAbsence:
             )
             return
         absent_for = now - self._since
-        if not self._warned and absent_for >= _KEY_WATCH_ABSENT_WARN_AFTER_SECONDS:
+        if not self._warned and absent_for >= kv_watch.KEY_WATCH_ABSENT_WARN_AFTER.total_seconds():
             self._warned = True
             log.warning(
                 "key watch on %s: stream %s has not existed for %.0fs; nothing has recreated the bucket, "
