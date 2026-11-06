@@ -35,8 +35,9 @@ question unless its author writes a margin, and with none the pass rate leaves i
 **Hosts:** a question is unscoped, so every reading joins the question's family; with a margin the pass rate joins it
 too, its intervals are corrected together and a verdict can change (rung 3 with `margin=0.05` would move its `Number
 score` interval from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts; asked alone, as it is, it stays at `[-7.2, 34.8]`). A
-campaign already asking a question of a control with no margin on an aspect now reads that aspect's drop against zero,
-so its row can read shown worse where it read unclear; its contrast family is unchanged. A host wanting a
+campaign asking a question with no margin can now read a candidate "shown worse" on its pass rate where before it could
+not (its drop is read against zero), and an unclear row there reads "not separated", so a host's stored page text
+pinned on that may move; its contrast family is unchanged. A host wanting a
 non-inferiority reading writes the margin itself: `margin` on the aspect, in points, or
 `Eval(question=..., margin=0.05)`. A design's `measure_order` naming a measure no
 grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing
