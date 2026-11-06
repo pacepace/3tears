@@ -142,3 +142,46 @@ class TestServeWiring:
         await _serve_briefly(server)
 
         mock_nc.renew_credential.assert_not_called()
+
+
+class TestAPodThatMakesLongRequestsHoldsItsReplacedConnectionLonger:
+    """``longest_request_seconds`` raises how long a renewal keeps the replaced connection for the pod's own asks.
+
+    A request the pod MAKES waits for its reply on the connection it was sent on. A renewal keeps
+    that connection only for the longest request the pod declares, so a pod whose asks run past the
+    synchronous reply budget (a warehouse export) declares how long they run, or a renewal in the
+    middle of one loses its reply.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_declared_longest_request_is_the_renewals_hold(self) -> None:
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="export-pod",
+            auth_token=lambda: "identity-jwt",
+            longest_request_seconds=700.0,
+        )
+        mock_nc = _mock_nc()
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            await _serve_briefly(server)
+
+        assert mock_nc.renew_credential.call_args.kwargs["longest_request_seconds"] == 700.0
+
+    @pytest.mark.parametrize("seconds", [SYNC_REPLY_BUDGET_SECONDS - 1, 0.0, -5.0, float("inf"), float("nan")])
+    def test_a_hold_below_the_reply_budget_or_not_finite_is_refused(self, seconds: float) -> None:
+        """below the budget a renewal would cut off replies the pod owes; an endless hold never retires."""
+        with pytest.raises(ValueError, match="longest_request_seconds"):
+            ToolServer(
+                nats_url="nats://localhost:9999",
+                namespace="testns",
+                pod_id="export-pod",
+                auth_token=lambda: "identity-jwt",
+                longest_request_seconds=seconds,
+            )
+
+    def test_an_injected_connection_refuses_a_hold_its_owner_sets(self) -> None:
+        """the owner renews an injected connection, so a hold given here would be silently ignored."""
+        with pytest.raises(ValueError, match="longest_request_seconds"):
+            ToolServer(nats_client=_mock_nc(), namespace="testns", pod_id="shared-pod", longest_request_seconds=700.0)

@@ -2546,6 +2546,54 @@ arm declaring none takes the computed one. `campaign_create` takes `short_name` 
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
+### agent-tools: a pod that makes long requests holds its replaced connection for them across a renewal, `longest_request_seconds`
+
+**Fixed:** a tool pod renews its NATS credential about once a day by moving to a new connection. It
+kept the old one open only for the 30 s synchronous reply budget. A request the pod itself was
+waiting on is answered on the connection it was sent on. So a request older than 30 s when the
+renewal landed, such as a warehouse export, lost its reply and failed at its own timeout as
+`REQUEST_FAILED`.
+
+- `ToolServer(..., longest_request_seconds=...)` is the longest request the pod makes. A renewal
+  keeps the replaced connection open that long: its subscriptions for that long, then the
+  connection for that long again. It also renews that much earlier in the credential's lifetime.
+  It defaults to `SYNC_REPLY_BUDGET_SECONDS`, today's 30 s, so a pod that passes nothing is
+  unchanged.
+- It must be finite and at least the reply budget, because a shorter hold would cut off replies the
+  pod owes. It is refused beside an injected `nats_client`, whose owner sets its own renewal.
+- Cost, measured with nats-py on NATS 2.12: one extra idle connection for twice the hold, once per
+  renewal. That is about 22 KiB of Python heap, plus about 4.6 KiB for each subscription during
+  the first half of the hold. A 700 s hold at the platform's 24 h TTL means two connections for
+  about 23 minutes a day, under 1 MiB even with 200 subscriptions. The server sees one more
+  connection for that time. Messages are not doubled: each subscription's two halves share one
+  queue group.
+
+### scrape: `discover_links_labeled` follows an attribute other than `href`
+
+**Added:** `discover_links_labeled(..., attribute="href")`. A listing that names its documents in another
+attribute, such as a contest dropdown whose `<option value>` is each page's id, is walked with
+`attribute="value"`; the element's text is the label, and a match without the attribute is skipped as an
+anchor without `href` is. `base_url=""` returns the raw value for a caller that fills its own URL template.
+The default keeps every existing call unchanged. An API addition, so it ships in the next minor.
+
+### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
+
+**Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
+default. The hub now gives an export 600 s on the warehouse, so a pod gave up on exports the hub
+would still have finished. Its `REQUEST_FAILED` also steered a retry that stacked a second export
+on the first. An export now waits the client's new `export_timeout`. Reads, fingerprints, queries,
+export deletes and export listings keep `timeout`.
+
+- `DatasourceQueryClient(..., export_timeout=...)` takes a `timedelta` or seconds. It defaults to
+  660 s, so a caller that passes nothing needs no change.
+- The default sits above the hub's default export deadline, 600 s, as `DEFAULT_QUERY_TIMEOUT_SECONDS`
+  sits above `QUERY_STATEMENT_TIMEOUT_SECONDS`. It covers 620 s of hub work: a 5 s turn at the
+  datasource, a 5 s pooled connection, the 600 s statement and 10 s for the reply. The other 40 s
+  cover a hub that is slow to start the statement.
+- A hub set to a longer export deadline needs its clients to pass a matching `export_timeout`.
+- `export_part`, `export_partitions`, `export_counted_partitions` and every other caller of
+  `client.export` get the export deadline with no change.
+
 ## v0.92.0 -- 2026-11-06
 
 ### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
