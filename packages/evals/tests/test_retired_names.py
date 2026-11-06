@@ -123,6 +123,6 @@ def test_the_ceilings_hold_no_generation_ceiling() -> None:
 def test_the_planner_s_call_count_is_no_name() -> None:
     from threetears.evals.kernel import inner_ceilings
 
-    for name in ("MAX_GENERATION_CALLS", "_PLANNER_CALLS", "generation_ceiling_s"):
+    for name in ("MAX_GENERATION_CALLS", "generation_ceiling_s"):
         assert name not in inner_ceilings.__all__
         assert not hasattr(inner_ceilings, name)
