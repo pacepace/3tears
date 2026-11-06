@@ -291,6 +291,16 @@ class IndexDef:
         ``(("m", "16"), ("ef_construction", "64"))``). values are
         strings to mirror the textual ``WITH (key = value, ...)`` DDL
         syntax verbatim. v0.8.1+
+    :cvar desc: names of the covered columns that sort descending
+        (``date_created DESC`` in the DDL); every other column sorts
+        ascending. each name must also be in ``columns``. emitted as
+        ``column.desc()`` so the declared index equals a migration
+        that creates the column ``DESC``. a column cannot carry both
+        ``desc`` and an operator class in ``ops``.
+    :cvar nulls_not_distinct: when ``True`` (a ``unique`` index only), two
+        rows whose covered columns are both NULL collide, as
+        ``NULLS NOT DISTINCT`` says (Postgres 15+): a key with an optional
+        column still holds one row per key while that column is unset.
     """
 
     name: str
@@ -301,19 +311,38 @@ class IndexDef:
     using: str | None = None
     ops: tuple[tuple[str, str], ...] | None = None
     pg_with: tuple[tuple[str, str], ...] | None = None
+    desc: tuple[str, ...] = ()
+    nulls_not_distinct: bool = False
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
 
         :return: nothing
         :rtype: None
-        :raises ValueError: when ``name`` is empty or ``columns`` is empty
+        :raises ValueError: when ``name`` is empty or ``columns`` is empty, or
+            ``nulls_not_distinct`` is set on an index that is not unique
         """
         if not self.name:
             raise ValueError("IndexDef: name must be non-empty")
         if not self.columns:
             raise ValueError(
                 f"IndexDef(name={self.name!r}): columns must be a non-empty tuple",
+            )
+        if self.nulls_not_distinct and not self.unique:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): nulls_not_distinct says how a unique index compares NULLs; "
+                "this index is not unique",
+            )
+        stray = [col for col in self.desc if col not in self.columns]
+        if stray:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): desc names {stray!r} which are not in columns {self.columns!r}",
+            )
+        both = [col for col in self.desc if col in dict(self.ops or ())]
+        if both:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): {both!r} carry both an operator class and desc, which "
+                "to_sqlalchemy_table cannot emit (SQLAlchemy drops the operator class of a descending column)",
             )
 
 
@@ -376,6 +405,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     using: str | None = None,
     ops: Mapping[str, str] | None = None,
     pg_with: Mapping[str, str] | None = None,
+    desc: str | Sequence[str] = (),
+    nulls_not_distinct: bool = False,
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -396,6 +427,7 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
             pg_with={"m": "16", "ef_construction": "64"},
         )
         Index("idx_memories_tags", "tags", using="gin")
+        Index("idx_history", "agent_id", "date_created", desc="date_created")
 
     The ``ops`` and ``pg_with`` arguments accept any
     :class:`collections.abc.Mapping` (typically ``dict``) and are
@@ -424,6 +456,13 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         strings to mirror the textual ``WITH (key = value, ...)`` DDL
         syntax verbatim
     :ptype pg_with: Mapping[str, str] | None
+    :param desc: the covered column(s) that sort descending, as the
+        migration's ``<column> DESC`` says; a bare ``str`` names one
+    :ptype desc: str | Sequence[str]
+    :param nulls_not_distinct: a unique index whose NULLs collide
+        (``NULLS NOT DISTINCT``); maps to SQLAlchemy's
+        ``postgresql_nulls_not_distinct`` dialect kwarg
+    :ptype nulls_not_distinct: bool
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
@@ -447,6 +486,8 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
         using=using,
         ops=ops_tuple,
         pg_with=pg_with_tuple,
+        desc=(desc,) if isinstance(desc, str) else tuple(desc),
+        nulls_not_distinct=nulls_not_distinct,
     )
 
 
@@ -1236,7 +1277,26 @@ class TableSchema:
                 ),
             )
 
-        sa_indexes: list[Any] = []
+        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
+        # so Alembic auto-gen reads them out of
+        # ``information_schema.table_constraints`` and matches the prod
+        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
+        # :class:`UniqueConstraintDef` docstring for the distinction.
+        sa_unique_constraints: list[Any] = [
+            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
+        ]
+
+        table = sa.Table(
+            self.name,
+            metadata,
+            *sa_columns,
+            *sa_fk_constraints,
+            *sa_unique_constraints,
+        )
+
+        # indexes are built against the table's own columns so a ``desc``
+        # column can be emitted as ``column.desc()``; an Index over bound
+        # columns attaches itself to their table.
         for idx in self.indexes:
             idx_kwargs: dict[str, Any] = {
                 "unique": idx.unique,
@@ -1251,31 +1311,15 @@ class TableSchema:
                 idx_kwargs["postgresql_ops"] = dict(idx.ops)
             if idx.pg_with is not None:
                 idx_kwargs["postgresql_with"] = dict(idx.pg_with)
-            sa_indexes.append(
-                sa.Index(
-                    idx.name,
-                    *idx.columns,
-                    **idx_kwargs,
-                ),
+            if idx.nulls_not_distinct:
+                idx_kwargs["postgresql_nulls_not_distinct"] = True
+            sa.Index(
+                idx.name,
+                *(table.c[col].desc() if col in idx.desc else table.c[col] for col in idx.columns),
+                **idx_kwargs,
             )
 
-        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
-        # so Alembic auto-gen reads them out of
-        # ``information_schema.table_constraints`` and matches the prod
-        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
-        # :class:`UniqueConstraintDef` docstring for the distinction.
-        sa_unique_constraints: list[Any] = [
-            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
-        ]
-
-        return sa.Table(
-            self.name,
-            metadata,
-            *sa_columns,
-            *sa_fk_constraints,
-            *sa_indexes,
-            *sa_unique_constraints,
-        )
+        return table
 
 
 def require_pgvector() -> Any:
