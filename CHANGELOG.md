@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
+
+**Changed (behaviour consumers must know about):** when the epoch bucket is replaced (a broker restart
+on memory storage), `EpochListener` now resets EVERY ephemeral registration. A registration made
+without `on_reset` used to be skipped; it is now reset by calling its `on_bump(0, None)`. A consumer
+whose `on_bump` reloads whatever the epoch (metallm's capabilities registry, scriob's principal status)
+needs no change and now reloads after a restart. **A consumer whose `on_bump` ignores an epoch at or
+below one it has seen must pass `on_reset`**, or it will discard this call and stay stale, as every
+consumer did before. **Fixed:** skipping such a consumer lost any bump whose broadcast it had missed,
+and the catch-up compared against the last-seen the reset had just cleared, so its cache stayed stale
+until its subject bumped again (production 2026-11-05: `registrations: 1, notified: 0`). The reset's
+WARNING now says how many consumers were told and how many through their bump callback.
+
+### nats: a key watch waiting for its bucket's stream says so once, without a traceback
+
+**Fixed:** after a broker restart on memory storage, every consumer create of `watch_key` /
+`watch_prefix` answers "stream not found" (`err_code` 10059) until the bucket's declarer creates it
+again, and each retry was logged with a full traceback and a hint to check the principal's grant
+(~296 tracebacks per worker in 45 s, 2026-11-05). The watch now logs that wait once at INFO, once at
+WARNING if it lasts past 120 s, and once at INFO when the stream is back. Every other create failure
+keeps its traceback and the grant hint.
+
+### models: a pooled Claude CLI whose call was abandoned is killed before it is disconnected
+
+**Fixed:** a CLI still answering does not exit on the end of its input, the SDK's disconnect waits 5 s
+for it, and `PooledCliSession.dispose` bounded the disconnect at the same 5 s, so a session stopped
+after its caller gave up logged `Claude CLI disconnect failed` and was killed 5 s late. **Added:**
+`PooledCliSession.dispose(..., abandoned=False)`; the pool passes `abandoned=True` for a call that
+left by an exception or a cancellation and for a session on loan when the pool closes, and kills
+those first. A session that finished cleanly is still disconnected first.
+
 ### core: the SQLite and DuckDB caches keep `Date` and `Time` columns
 
 **Fixed:** a `sqlalchemy.Time` or `sqlalchemy.Date` column fell through both cache type mappers to plain

@@ -20,6 +20,7 @@ from datetime import timedelta
 from typing import Any
 
 import nats.errors
+import nats.js.errors
 import pytest
 from nats.aio.msg import Msg
 from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
@@ -139,17 +140,25 @@ class _Raw:
 
 # parity-exempt: stands in for the nats-py JetStream context; records add_consumer and refuses the stock KV watch path outright
 class _JetStream:
-    def __init__(self, log: list[str], *, failures: int = 0, pending: int = 0) -> None:
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        failures: int = 0,
+        pending: int = 0,
+        failure: type[Exception] | Exception = nats.errors.TimeoutError,
+    ) -> None:
         self._log = log
         self._failures = failures
         self._pending = pending
+        self._failure = failure
         self.creates: list[tuple[str, ConsumerConfig]] = []
 
     async def add_consumer(self, stream: str, config: ConsumerConfig) -> object:
         self._log.append(f"create {config.name}")
         if self._failures:
             self._failures -= 1
-            raise nats.errors.TimeoutError
+            raise self._failure
         self.creates.append((stream, config))
         assert config.deliver_subject is not None and config.name is not None
         _CONSUMER_BY_INBOX[config.deliver_subject] = config.name
@@ -188,7 +197,11 @@ class _ForbiddenKv:
 
 
 def _bucket(
-    scripts: list[list[Msg]], *, failures: int = 0, closed_after_scripts: bool = False
+    scripts: list[list[Msg]],
+    *,
+    failures: int = 0,
+    closed_after_scripts: bool = False,
+    failure: type[Exception] | Exception = nats.errors.TimeoutError,
 ) -> tuple[NatsKvBucket, _Raw, _JetStream, list[str]]:
     """a bucket over scripted deliveries, one script per consumer the watch creates.
 
@@ -198,12 +211,14 @@ def _bucket(
     :ptype failures: int
     :param closed_after_scripts: close the connection once the last script is drained
     :ptype closed_after_scripts: bool
+    :param failure: what each failing create raises
+    :ptype failure: type[Exception] | Exception
     :return: the bucket, the raw client, the JetStream context and the call log
     :rtype: tuple[NatsKvBucket, _Raw, _JetStream, list[str]]
     """
     log: list[str] = []
     raw = _Raw(scripts, log, closed_after_scripts=closed_after_scripts)
-    js = _JetStream(log, failures=failures)
+    js = _JetStream(log, failures=failures, failure=failure)
     bucket = NatsKvBucket(
         client=_Client(raw, js),  # type: ignore[arg-type]
         full_name=_BUCKET,
@@ -447,6 +462,72 @@ class TestReplacingAConsumer:
         assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
         assert raw.inboxes[0].unsubscribed
         assert len(js.creates) == 1
+        assert f"$JS.API.CONSUMER.CREATE.{_STREAM}.*.{_SUBJECT}" in caplog.text
+
+    async def test_a_stream_not_yet_recreated_is_said_once_without_a_traceback_and_waited_out(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """After a broker restart the bucket's stream is gone until its declarer creates it again, and
+        every create in between answers "stream not found" (err_code 10059). That is the bucket being
+        absent, not a refused grant: one INFO line for the watch, no traceback, no grant hint, and the
+        watch delivers once the stream is back (2026-11-05: ~296 tracebacks per worker in 45 s)."""
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        bucket, raw, js, _log = _bucket([[], [], [], [_delivered(b"3", sequence=7)]], failures=3, failure=absent)
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            updates = await asyncio.wait_for(
+                _take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2
+            )
+
+        assert updates == [KvKeyUpdate(key=_KEY, value=b"3", revision=7)]
+        assert all(inbox.unsubscribed for inbox in raw.inboxes[:3])
+        assert len(js.creates) == 1
+        waits = [r for r in caplog.records if "does not exist" in r.getMessage()]
+        assert len(waits) == 1, f"three absent creates must log one wait, got {len(waits)}"
+        assert waits[0].levelno == logging.INFO
+        assert not any(r.exc_info for r in caplog.records), "an absent stream is no traceback"
+        assert "CONSUMER.CREATE" not in caplog.text, "an absent stream must not blame the grant"
+        assert any("exists again" in r.getMessage() for r in caplog.records)
+
+    async def test_a_prefix_watch_says_an_absent_stream_once_too(self, caplog: pytest.LogCaptureFixture) -> None:
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        log: list[str] = []
+        raw = _Raw([[], [], []], log)
+        js = _JetStream(log, failures=3, failure=absent)
+        bucket = NatsKvBucket(client=_Client(raw, js), full_name=_BUCKET, kv=_ForbiddenKv(), ttl=None)  # type: ignore[arg-type]
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            async with aclosing(bucket.watch_prefix(prefix="snap.", heartbeat=_FAST, retry=_FAST)) as watch:
+                caught_up = await asyncio.wait_for(anext(watch), timeout=2)
+
+        assert caught_up is None
+        assert len(js.creates) == 1
+        assert len([r for r in caplog.records if "does not exist" in r.getMessage()]) == 1
+
+    async def test_a_stream_absent_past_the_bound_is_warned_once(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bucket nobody recreates leaves the watch deaf; that is the operator's to hear, once."""
+        monkeypatch.setattr("threetears.nats.kv._KEY_WATCH_ABSENT_WARN_AFTER_SECONDS", 0.0)
+        absent = nats.js.errors.NotFoundError(code=404, err_code=10059, description="stream not found")
+        bucket, _raw, _js, _log = _bucket([[], [], [], [_delivered(b"3", sequence=7)]], failures=3, failure=absent)
+
+        with caplog.at_level(logging.INFO, logger="threetears.nats.kv"):
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2)
+
+        warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warned) == 1 and "has not existed" in warned[0].getMessage()
+
+    async def test_a_key_that_is_absent_but_a_stream_that_exists_still_names_the_grant(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only the stream's absence (10059) is the quiet case; any other not-found keeps the grant hint."""
+        other = nats.js.errors.NotFoundError(code=404, err_code=10014, description="consumer not found")
+        bucket, _raw, _js, _log = _bucket([[], [_delivered(b"3", sequence=7)]], failures=1, failure=other)
+
+        with caplog.at_level(logging.WARNING, logger="threetears.nats.kv"):
+            await asyncio.wait_for(_take(bucket.watch_key(key=_KEY, heartbeat=_FAST, retry=_FAST), 1), timeout=2)
+
         assert f"$JS.API.CONSUMER.CREATE.{_STREAM}.*.{_SUBJECT}" in caplog.text
 
     async def test_a_bug_in_the_create_ends_the_watch_rather_than_retrying_forever(self) -> None:
