@@ -9,7 +9,7 @@ A report is not a tour of the data. Each claim earns its place by changing or qu
 ## Honest emphasis
 
 - **Lead with the size of a change before its verdict against a line.** A candidate whose interval sits wholly below zero is worse, even when the margin allows that much loss. "Within the margin" said first makes a regression read as a pass. Say how much worse, then whether the margin allows it.
-- **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin belongs in Watch. "Weakest" is code's measure, not yours: the gap smallest relative to its line (the gap over the line's value), which the `weakest.*` keys name. Cite those keys in Watch. If another margin matters more to the call (fewer points, or fewer half-widths), Watch still names the weakest and says why the other matters more, stating both in the same terms.
+- **Show the recommended option's weak axes.** A recommendation whose weak side is hidden reads as stronger than the evidence. The weakest margin belongs in Watch when a move within its interval could change the call; when none could, it is a caveat line citing the same keys, since Watch lists only what could change the call. "Weakest" is code's measure, not yours: the gap smallest relative to its line (the gap over the line's value), which the `weakest.*` keys name. If another margin matters more to the call (fewer points, or fewer half-widths), Watch names the weakest and says why the other matters more, stating both in the same terms.
 - **Status follows the direction of the change, not the margin.** A worse result stays marked as worse even when it is within the margin. Approval colors on a regression read as approval.
 - **Frame nothing stronger than its interval supports.** A point estimate that clears a gate while its interval crosses it is *borderline*. It counts as passing for the call, but it goes in Watch with what would settle it: `settle_cases` sizes that run.
 - **State findings in the direction the evidence supports.** A refuted claim at low confidence is still a refutation. Don't let a weak tier blur which way the evidence points.
@@ -20,7 +20,7 @@ Leaving things out is most of the craft, and it has to be accountable. Everythin
 
 - Method statistics (repeats, depth, pass^k, precision tables) describe how the evidence was gathered. They go to Method or the appendix, never between the decision and the evidence.
 - Small, noisy strata appear in the full tables, never as leads.
-- If the data a comparison needs is missing, say so in one caption line. Never fill it in.
+- If the data a comparison needs is missing, that is a caveat line. Never fill it in.
 
 ## Decisions: survivors and dominance
 
@@ -28,7 +28,7 @@ A call usually comes from two questions. Which options survive every gate and gu
 
 - **One survivor dominates:** a decision. The story says why it wins and what it gives up.
 - **Several survive and none dominates:** if the campaign declared a rule that ranks the axes, the rule decides. If not, the honest report is a tradeoff. Price it and let the owner choose. You may state a lean, labelled as yours.
-- **Nothing survives, one arm was measured, or nothing separates the options:** the report says what is missing and what would settle it.
+- **Nothing survives, one arm was measured, or nothing separates the options:** the report states what was measured and what would settle the call.
 
 If your call disagrees with `options_dominance`, the editor will see that. Disagree only for a reason the page states, such as an axis the computation can't weigh.
 
@@ -37,9 +37,9 @@ Gate reasoning that recurs:
 - A gate with no figure for an option is not passed. Absence of evidence isn't a pass.
 - An aspect that occurs inside every task (safety, speculation) gates every option that would receive any traffic, not one task. Reading it per task invents savings.
 - Gate the asked aspect on its own readings. If a floor speaks for a different measure than the reading does, show it separately and name the mismatch in Method. Don't merge the two.
-- "Pass" means whatever the campaign defined. If the campaign doesn't say what makes a trial pass, say so plainly. Don't guess.
+- "Pass" means whatever the campaign defined. If the campaign doesn't say what makes a trial pass, that is a caveat line (code often prints it already). Don't guess.
 - A latency or cost win needs the delivery rate beside it. An arm can buy a shorter tail by declining work.
-- **A cost belongs to the provider routing, not the model.** One model served by two providers (another host, another quantization) can cost several times as much, while its quality barely moves. A cost comparison between models names the provider each was served by (`campaign_overview` gives each arm's `served_by`), and never ranks models on cost alone as if the cost were the model's. Where an arm's pricing names no provider, say the cost's routing is unknown. A tool the model called (`tool_spend`, such as a web-search API) is spend in the cost, never a provider of the model.
+- **A cost belongs to the provider routing, not the model.** One model served by two providers (another host, another quantization) can cost several times as much, while its quality barely moves. A cost comparison between models names the provider each was served by (`campaign_overview` gives each arm's `served_by`), and never ranks models on cost alone as if the cost were the model's. Where an arm's pricing names no provider, that is one caveat line in plain words: the costs are what this run paid, and another provider may charge differently. On the page, name the provider that served a model; never write "routing". A tool the model called (`tool_spend`, such as a web-search API) is spend in the cost, never a provider of the model.
 - Rank on the scope that matches what was changed. A subsystem change read on whole-turn figures can pick the wrong arm.
 
 ## Confounds
@@ -48,7 +48,7 @@ A confound qualifies a claim. It never names a cause by itself. Check apparatus 
 
 A confound qualifies every finding whose evidence it is attached to, not only the one it was noticed on. `contrasts_list` names each contrast's confounds and `caveats_list` what each caveat touches. A setting that moved between arms (a reasoning budget, a retry) moves cost and latency as well as quality, so measured telemetry is not immune to it (`statistics.md`, Caveats on the evidence).
 
-Say a caveat once, at the level it applies to. A caveat that touches the whole comparison (late criteria, an uncalibrated judge, a shared-machine latency) belongs in the confidence. One that touches one arm or one finding (that arm's reasoning budget, one short run) sits beside that claim, usually in Watch.
+Say a caveat once, at the level it applies to. A caveat that touches the whole comparison (late criteria, an uncalibrated judge, a shared-machine latency) belongs in the confidence. One that touches one arm or one finding (that arm's reasoning budget, one short run) sits beside that claim, in Watch only when it could change the call.
 
 ## Confidence
 
@@ -66,7 +66,7 @@ Code removes the caveats it can prove immaterial, such as a late margin when the
 
 ## Prior insights
 
-When this run contradicts an earlier finding, say so in one sentence in Watch, and reconcile it in a next step if it matters. Insights it confirms need no sentence; the evidence already says it.
+When this run contradicts an earlier finding, say so in one sentence beside the claim it bears on, in Watch when it could change the call, and reconcile it in a next step if it matters. Insights it confirms need no sentence; the evidence already says it.
 
 ## Next steps
 

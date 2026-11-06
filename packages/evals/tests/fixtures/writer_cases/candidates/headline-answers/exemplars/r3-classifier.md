@@ -4,13 +4,13 @@
 
 **What I noticed first.**
 - Nano-XS with few-shot cost about a twenty-first of anything that passes in this run, with 90.1% balanced and 92.0% traffic-weighted accuracy. It fails one cell: complex news at 76.7%.
-- That ratio is this run's provider routing's, not the models' own. The snapshot names no provider for any configuration, so the routing is unknown, and every cost comparison on the page says so.
+- That ratio is what this run paid, not the models' own. The snapshot names no provider for any configuration, so one caveat line says the costs are this run's and another provider may charge differently.
 - Complex news is the weakest cell for every configuration.
 - The best prompt depends on the model. The rubric prompt helps Atlas-M and Brisk-S, and costs Nano-XS six points against few-shot.
 
 **The trap.** The overall number. Simple conversational turns are almost a third of the corpus, so a traffic-weighted average hides the cell that rules Nano-XS out. Lead with overall accuracy and the lowest-cost configuration looks like the answer. The campaign's gates already guard against this (balanced accuracy and a cell floor), but the analyst has to lead with the cell, not the average. A second trap: describing the prompt as a main effect ("few-shot helps", "the rubric helps"). Averaged over models, that would be true and wrong for Nano-XS.
 
-**Story.** Decision. "Use Brisk-S with the few-shot prompt. Of the configurations that stay above 80% in every cell, it cost the least in this run." The cost claim says the routing behind that order is unknown. Labels are human-adjudicated, so there is no judge caveat. Confidence is high.
+**Story.** Decision. "Use Brisk-S with the few-shot prompt: of the 9 configurations, it is the cheapest that stays above 80% in every cell." A caveat line beside the cost claim says the costs are what this run paid. Labels are human-adjudicated, so there is no judge caveat. Confidence is high.
 
 **Lead evidence.** The model × prompt lattice, with cost, latency and gate status per tile. It shows the pick, the interaction, and why the more accurate options are out (latency), in one grid. Then the target-matrix heatmaps for the pick, the lower-cost alternative and the most accurate, so the reader sees the cell that decides.
 

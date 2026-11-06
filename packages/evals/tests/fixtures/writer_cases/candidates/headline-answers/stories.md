@@ -2,13 +2,15 @@
 
 A story form is a way of answering, not a category the eval belongs to. Choose it after investigating, from what the evidence supports. The same campaign design can produce any of them: a control against two candidates can end in a decision, a tradeoff or a diagnosis, depending on what the numbers say. The `story` field names the dominant form so the editor knows what you meant to deliver. It selects nothing.
 
+Every headline below is one sentence of at most 25 words carrying the figure it turns on. The examples show each figure as a reader sees it; you write it through its key.
+
 ## Decision
 
 **When:** the evidence supports one call. Usually one option survives the gates and dominates the others, or a declared rule ranks the survivors.
 
-**Headline:** the call as an instruction, with its reason. "Keep the current router. The candidate costs more per request and resolves no more tickets."
+**Headline:** the call as an instruction, with its reason. "Keep the current router: the candidate costs 18% more per request and resolves no more tickets."
 
-**Slots:** recommendation (with the figures that make it), why_not (each rejected option and the one thing that rules it out), watch (the weakest margin, a confound scoped to one arm, a contradicted prior insight), next (the step that could change the call, and which way).
+**Slots:** recommendation (with the figures that make it), why_not (each rejected option and the one thing that rules it out), watch (only what could change the call: the weakest margin when a move within its interval could, a confound scoped to one arm, a contradicted prior insight), next (the step that could change the call, and which way).
 
 **Lead evidence:** whatever shows the reason for the call. If the call rests on two things (the asked question is answered, and cost decides), each needs its own claim, side by side. One chart alone would hide half the reason.
 
@@ -18,7 +20,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** two or more options survive, none dominates, and the campaign declared nothing that ranks the axes, such as an exchange rate or a priority.
 
-**Headline:** the trade, with both sides and where the loss sits. "Switching halves the cost but answers fewer questions correctly, mostly on the hardest ones."
+**Headline:** the trade, with both sides and where the loss sits. "Switching halves the cost per request but answers 6 points fewer questions correctly, mostly on the hardest ones."
 
 **Slots:** the_trade, where_it_flips (the price bands where the best option changes), our_lean (labelled yours, with the band it holds for), what_settles_it.
 
@@ -30,7 +32,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** the result can't be read cleanly because two things are tangled. A model changed together with its reasoning budget. The judge is unreliable exactly where the arms differ. A short run touches one arm.
 
-**Headline:** what can't be concluded and why, plus what still holds. "The candidate's drop can't be credited to the model: its reasoning budget changed too. It still costs more."
+**Headline:** the tangle and what still holds. "The candidate's 9-point drop can't be credited to the model, since its reasoning budget changed too, and it costs 30% more."
 
 **Slots:** what_is_tangled, known_despite_it, what_settles_it, next.
 
@@ -42,7 +44,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** one arm, read against its own thresholds or its own history. There is nothing to choose between.
 
-**Headline:** where it stands against the lines that matter, led by the nearest one. "The service holds every floor; refunds are one point above their line."
+**Headline:** where it stands against the lines that matter, led by the nearest one. "The service holds all 4 floors; refunds sit 1 point above their line."
 
 **Slots:** usually recommendation (ship, hold, or fix first), watch, next, plus why_not when an alternative was implicitly on the table.
 
@@ -52,7 +54,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 **When:** no question was declared, or the campaign measured things without a decision in view.
 
-**Headline:** the most decision-relevant thing learned, stated as a finding, and the question worth asking next.
+**Headline:** the most decision-relevant thing learned, stated as a finding with its figure: what the first grader read. "Long tickets fail 3 times as often as short ones on every arm." The question worth asking next goes in `next`.
 
 **Slots:** known_despite_it (what is solid), what_is_tangled where relevant, what_settles_it, next. The next steps matter most here. They are usually declarations: the question, the margin, the control.
 
@@ -60,7 +62,7 @@ A story form is a way of answering, not a category the eval belongs to. Choose i
 
 ## Mixing forms
 
-Reports often mix. A decision on cost can carry a diagnosis on the judged aspect: "Keep the current router: the candidate costs more. Whether its answers also read worse can't be known until the judge is calibrated." The headline carries the dominant form, meaning the one the reader acts on. The secondary form gets its own claim and its own slot (often Watch or what_is_tangled), and never contradicts the headline unaddressed.
+Reports often mix. A decision on cost can carry a diagnosis on the judged aspect: "Keep the current router: the candidate costs 18% more, and whether its answers read worse waits on a calibrated judge." The headline carries the dominant form, meaning the one the reader acts on. The secondary form gets its own claim and its own slot (often Watch or what_is_tangled), and never contradicts the headline unaddressed.
 
 Pick the four decision slots that fit what you are actually saying. A decision with an unresolved secondary question might use recommendation, why_not, what_is_tangled and next.
 

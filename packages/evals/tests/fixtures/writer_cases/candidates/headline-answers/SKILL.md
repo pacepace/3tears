@@ -19,26 +19,26 @@ Read with this file: `principles.md`, `stories.md`, `charts.md`, `statistics.md`
 5. **Render and check.** Draw each claim's block with `block_render` and read its values table. Then send the whole draft to `report_check`: it returns every mechanical verdict the store would refuse it for, then the page as a reader and the editor will read it. Fix every verdict, reread the page as a reader and fix what is unclear, crowded or misleading, and check again. At most three rounds.
 6. **Submit to the editor.** Mechanical checks run first and return to you before any editor call. Address the editor's findings and resubmit, at most two rounds. Unresolved findings are stored and shown in Method.
 
-**Two kinds of feedback.** *Mechanical* verdicts you fix: an unresolved figure key, a typed digit, a block that doesn't render, a doubled unit, an id above the appendix, a caveat with no landing, a confidence form that doesn't match its caveats, a missing appendix or Method. *Interpretive* facts go to the editor, which judges them in context: the recommendation failed a declared gate, a warning on it is unanswered, your call disagrees with `options_dominance`, the weakest margin is missing from Watch, a caveat code attaches to a claim's evidence is carried nowhere, your confidence reads high over caveats it leaves open. Overriding one can be right; the page must say why.
+**Two kinds of feedback.** *Mechanical* verdicts you fix: an unresolved figure key, a typed digit, a block that doesn't render, a doubled unit, an id above the appendix, a caveat with no landing, a confidence form that doesn't match its caveats, a missing appendix or Method. *Interpretive* facts go to the editor, which judges them in context: the recommendation failed a declared gate, a warning on it is unanswered, your call disagrees with `options_dominance`, the weakest margin is missing from Watch (a caveat line citing it answers that when no move within its interval could change the call), a caveat code attaches to a claim's evidence is carried nowhere, your confidence reads high over caveats it leaves open. Overriding one can be right; the page must say why.
 
 ## The report document (`report-doc/1`)
 
 | Field | Purpose |
 |---|---|
 | `story` | The dominant form (`stories.md`). It describes the report; it selects nothing. |
-| `headline` | The answer to the question the campaign asked, with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
+| `headline` | The answer to the question the campaign asked (where it declared none, to what its first grader read), with the figure it turns on, in one sentence of at most 25 words: the call and its reason, or the trade, or what is unresolved. Never the eval's question restated, and never an absence. |
 | `lede` | At most two sentences: the strongest supporting fact, and what would change the answer. |
 | `confidence` | `high`, `high_if_immaterial` or `low`, and every open caveat with its `material_if` clause (`principles.md`). |
-| `decision` | Four slots from the shared vocabulary that fit the story: recommendation, why_not, watch, next; the_trade, where_it_flips, our_lean, what_settles_it; what_is_tangled, known_despite_it. `watch` lists only what could change the call; when every alternative read worse and cost more, it says so in one line and lists nothing. |
+| `decision` | Four slots from the shared vocabulary that fit the story: recommendation, why_not, watch, next; the_trade, where_it_flips, our_lean, what_settles_it; what_is_tangled, known_despite_it. `watch` lists only what could change the call; when every alternative read worse and cost more, it says so in one line and lists nothing else, the weakest margin aside when it could change the call. |
 | `claims` | The story. Order is page order. Each has `text`, `weight` (lead, support, detail) and `evidence`: one block kind, a tool query, a caption. The first claim best carries the headline. |
 | `explore` | Controls for business choices (a margin, a floor, a price per point), what each binds, and in words where the outcome flips, or that it can't. |
 | `omitted` | Each substantial thing you saw and left out, with a one-line reason. The editor checks these. |
 | `next` | Each step names an experiment or a declaration, and `settles` says what its result would decide. |
-| `method` | Term and definition pairs: cases and repeats, what pass means, intervals and correction, the judge, cost basis, what wasn't compared, the source. |
+| `method` | Term and definition pairs: cases and repeats, what pass means, intervals and correction, the judge, cost basis, what was compared, the source. |
 
 A block's `query` uses the tools' query language, so the renderer resolves it from the data and a block can never show a figure that doesn't exist.
 
-**The first screen** (the headline, lede, confidence and decision block) says what the report is, never what it is not. An absence (no margin declared, no recommendation, no question) is a caveat in `confidence`, never the headline and never a sentence of its own. A rate there carries its count through its own key ("20 of 20", never "100%" alone). A term the reader did not bring is defined in plain words at first use, or replaced by them. The editor raises each of these as a must_fix.
+**The page says what the report is, never what it is not.** An absence anywhere on the page (no margin declared, no recommendation, no question, no provider recorded, data a comparison needs) is a caveat line (in the confidence, or beside the one claim it qualifies), with its `material_if` clause: never the headline, never a sentence of its own. Code prints some caveat lines itself; leave them as they are. A rate on the first screen (the headline, lede, confidence and decision block) carries its count through its own key ("20 of 20", never "100%" alone). A term the reader did not bring is defined in plain words at its first use, or replaced by them. The editor raises each of these as a must_fix.
 
 ## Tools
 

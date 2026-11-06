@@ -18,8 +18,12 @@ and the code measures stay comparable.
 **A candidate skill** (``--candidate-skill DIR``) is a directory holding the shipped skill's file set, each file free to
 differ; one missing a file the shipped skill has, or holding one it does not, is refused by name. Its arm is named for
 the directory, the record names it by its skill digest, and the acceptance asks whether the gate reads it as writing
-better reports: the criterion asks ``promote`` and an improved primary. Its ``editor.md`` may differ, so where it does,
-bounces are read by two editors and the criterion does not compare them. Then:
+better reports: the criterion asks ``promote`` and an improved primary. Its ``editor.md`` may differ. Where it does,
+the readings each arm's own editor decides (must-fix and should-fix findings open, report finished) measure two
+instruments, so the criterion reports them uncompared and asks, in place of ``promote``, that no other gated reading
+regressed and every guardrail held, and that the preference over the pairs both stored finished, free of draft
+banners, points the primary's way. Bounces are counted before any editor sees a page, so they are always compared.
+Then:
 
 1. the writer eval (:class:`~threetears.evals.harness.WriterEval`) runs the arms, each launched naming its part of
    the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
@@ -88,7 +92,13 @@ from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.tally import ReportBudget
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side
-from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, EffortWord
+from threetears.evals.ops.report_writer.writer_contract import (
+    BOUNCES_MEASURE,
+    FINISHED_MEASURE,
+    MUST_FIX_OPEN_MEASURE,
+    SHOULD_FIX_OPEN_MEASURE,
+    EffortWord,
+)
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.schema.turns import TurnReply, TurnText
@@ -500,11 +510,19 @@ class FakeDryJudge:
 
 @dataclass(frozen=True)
 class Requirement:
-    """One requirement of the pass criterion: what it asks, what the read shows, and whether it holds."""
+    """One row of the pass criterion: what it asks, what the read shows, and whether it holds; ``None`` for a reading
+    reported and not compared, which decides nothing."""
 
     asks: str
     reads: str
-    holds: bool
+    holds: bool | None
+
+
+#: The readings each arm's own editor decides: with two editors they measure two instruments, so none is compared.
+EDITOR_READINGS: Final = (MUST_FIX_OPEN_MEASURE, FINISHED_MEASURE, SHOULD_FIX_OPEN_MEASURE)
+
+#: What the criterion's table says of an editor's reading when the arms' editors differ.
+NOT_COMPARED: Final = "not compared: each arm's own editor decides it"
 
 
 @dataclass(frozen=True)
@@ -518,14 +536,14 @@ class Criterion:
 
     @property
     def passed(self) -> bool:
-        """Whether every requirement holds."""
-        return all(requirement.holds for requirement in self.requirements)
+        """Whether every requirement holds; a reading not compared decides nothing."""
+        return all(requirement.holds is not False for requirement in self.requirements)
 
     def verdict(self) -> str:
         """The criterion's one line: PASS, or FAIL naming what did not hold."""
         if self.passed:
             return f"PASS: the gate reads {self.noun} as writing {self.expects} reports, on the primary reading."
-        failed = "; ".join(requirement.asks for requirement in self.requirements if not requirement.holds)
+        failed = "; ".join(requirement.asks for requirement in self.requirements if requirement.holds is False)
         settle = (
             ""
             if self.cases_to_settle is None
@@ -564,13 +582,21 @@ def pass_criterion(
     and bounces must not separate, since a variant that changes bounces broke the format rather than the writing. A
     candidate expected better asks the mirror: ``promote``, ``improved``, its interval above 0.
 
+    With two editors (a candidate skill whose ``editor.md`` differs), the readings in :data:`EDITOR_READINGS` measure
+    two instruments: each is reported, not compared. The read's decision folds them in, so in its place the criterion
+    asks that no other gated reading regressed and every guardrail held; and since a stricter editor leaves draft
+    banners the judge sees, the preference over the pairs both stored finished must point the primary's way.
+
     :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
     :param runs: Each arm's run summary, by arm.
     :param variant: The candidate the verdict names.
-    :param one_editor: Whether both arms ran one ``editor.md``; when not, bounces are two editors' and not compared.
+    :param one_editor: Whether both arms ran one ``editor.md``.
     :return: The criterion, each requirement decided.
+    :raises ValueError: Two editors for a variant expected worse, which keeps the control's editor by construction.
     """
     better = variant.expects == "better"
+    if not one_editor and not better:
+        raise ValueError(f"the {variant.name} variant is expected worse, and such a variant runs the control's editor")
     decision, outcome = ("promote", "improved") if better else ("keep", "regressed")
     primary = read.primary
     bounces = next((verdict for verdict in read.verdicts if verdict.name == BOUNCES_MEASURE), None)
@@ -588,7 +614,11 @@ def pass_criterion(
             ran,
             all(run.status == "completed" and run.n_results == run.n_cases * run.k_runs for run in runs.values()),
         ),
-        Requirement(f"the read answers {decision}", read.decision, read.decision == decision),
+        *(
+            (Requirement(f"the read answers {decision}", read.decision, read.decision == decision),)
+            if one_editor
+            else _two_editor_rows(read)
+        ),
         Requirement(
             f"the primary reading reads {outcome}",
             "not read" if primary is None else primary.outcome.replace("_", " "),
@@ -611,15 +641,58 @@ def pass_criterion(
         ),
         Requirement(
             "bounces do not separate",
-            "not compared: the arms' editors differ"
-            if not one_editor
-            else "not read"
-            if bounces is None
-            else bounces.outcome.replace("_", " "),
-            not one_editor or bounces is None or bounces.outcome not in ("improved", "regressed"),
+            "not read" if bounces is None else bounces.outcome.replace("_", " "),
+            bounces is None or bounces.outcome not in ("improved", "regressed"),
         ),
+        *(() if one_editor else _editor_rows(read)),
     )
     return Criterion(requirements, read.cases_to_settle, variant.noun, variant.expects)
+
+
+def _two_editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
+    """With two editors, what stands in for the read's decision: no gated reading but the editors' own regressed and
+    every guardrail held; and the preference over the pairs both stored finished pointing the primary's way."""
+    regressed = [
+        verdict.heading
+        for verdict in read.verdicts
+        if verdict.kind == "contrast" and verdict.outcome == "regressed" and verdict.name not in EDITOR_READINGS
+    ]
+    guardrails = [verdict for verdict in read.verdicts if verdict.kind == "guardrail"]
+    unheld = [verdict.heading for verdict in guardrails if verdict.outcome != "held"]
+    finished = read.finished_only
+    return (
+        Requirement(
+            "no other gated reading regressed, and every guardrail held",
+            "; ".join(
+                [
+                    f"regressed: {', '.join(regressed)}" if regressed else "none regressed",
+                    *(
+                        [f"not held: {', '.join(unheld)}" if unheld else f"{len(guardrails)} guardrails, all held"]
+                        if guardrails
+                        else []
+                    ),
+                ]
+            ),
+            not regressed and not unheld,
+        ),
+        Requirement(
+            "the preference over pairs both finished points the same way",
+            "not read"
+            if finished is None or finished.delta is None
+            else f"{finished.outcome.replace('_', ' ')}, difference {finished.delta:+.3f}",
+            finished is not None and finished.delta is not None and finished.delta > 0,
+        ),
+    )
+
+
+def _editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
+    """Each reading an arm's own editor decides, reported and not compared."""
+    return tuple(
+        Requirement(verdict.heading, verdict.outcome.replace("_", " "), None)
+        for name in EDITOR_READINGS
+        for verdict in read.verdicts
+        if verdict.name == name
+    )
 
 
 # --- the run -----------------------------------------------------------------------------------------------------
@@ -662,7 +735,10 @@ class Acceptance:
         editor = "" if self.editor_model is None else f", its editor on {self.editor_model}"
         yield f"Both arms write on {writer}{editor}; the scoring judge is {result.judge}."
         if self.candidate.editor().digest != self.shipped.editor().digest:
-            yield f"The {self.variant.name} arm's editor.md differs, so each arm's reports are reviewed by its own editor."
+            yield (
+                f"The {self.variant.name} arm's editor.md differs from the control's, so with two editors a keep may be "
+                "an instrument difference rather than a verdict on the writing."
+            )
         if self.variant.revisions != MOST_REVISIONS:
             yield (
                 f"The {self.variant.name} arm is given {self.variant.revisions} revisions and the control "
@@ -694,7 +770,8 @@ class Acceptance:
         yield "| Pass criterion | Reads | Holds |"
         yield "|---|---|---|"
         for requirement in self.criterion.requirements:
-            yield f"| {requirement.asks} | {requirement.reads} | {'yes' if requirement.holds else 'no'} |"
+            holds = NOT_COMPARED if requirement.holds is None else "yes" if requirement.holds else "no"
+            yield f"| {requirement.asks} | {requirement.reads} | {holds} |"
         yield ""
         yield self.criterion.verdict()
         yield from result.disclosures

@@ -4,13 +4,13 @@
 
 **What I noticed first.**
 - Read task by task, the passing model that cost least in this run differs: Brisk-S on billing, Open-70B on small talk, Atlas-M elsewhere. Routing that way would cut blended cost by 34%.
-- Those costs are this run's provider routing's, not the models' own. The snapshot names no provider for any arm, so the routing is unknown, and the page says so wherever it compares them.
+- Those costs are what this run paid, not the models' own. The snapshot names no provider for any arm, so one caveat line says the costs are this run's and another provider may charge differently.
 - Both lower-cost models fail speculation bait (81% and 89% against 95%), and their intervals sit clear below the floor.
 - Atlas-L has the best quality but misses the latency budget on four of five tasks.
 
 **The trap.** The gate matrix invites reading one row at a time and routing each task to its cheapest passing cell. But speculation bait isn't a segment you can route around. It shows up inside billing and small talk too. Any model that receives traffic has to pass it, so the 34% routed plan is blocked, not available. The trap is treating a cross-cutting aspect as one more task. The headline says so before the reader can do the per-row arithmetic.
 
-**Story.** Decision. "Ship Atlas-M on all traffic. It is the only candidate that clears every gate." Confidence is high, if one caveat isn't material: Atlas-M's issue resolution in troubleshooting is 90% at a floor of 90%, interval ±4.4. That is the recommendation clearing its own gate on its point estimate alone. It is material if the true rate is below the floor, since then no single model passes everywhere.
+**Story.** Decision. "Ship Atlas-M on all traffic: it is the only one of 4 candidates that clears every gate." Confidence is high, if one caveat isn't material: Atlas-M's issue resolution in troubleshooting is 90% at a floor of 90%, interval ±4.4. That is the recommendation clearing its own gate on its point estimate alone. It is material if the true rate is below the floor, since then no single model passes everywhere.
 
 **Lead evidence.** The gate matrix: task by candidate, each cell's status with its binding reason, the cheapest passing cell marked, and the speculation row flagged as applying to all traffic. The matrix shows the decision and the reason the obvious saving is unavailable in one view. A score heatmap would hide which criterion failed.
 

@@ -12,13 +12,13 @@ These come from the owner's review of earlier reports. Each has a reason.
 - **No meta-commentary about the document.** Not "this report shows", not "the following section", not "it is worth noting". Say the thing.
 - **No `key=value` labels in human text.** Ids and field names are for machines. Write "cost per 1,000 requests", never `cost_per_1k=0.42`.
 - **Arms by their names, with the control marked.** Use the short names the tools return, the same name everywhere, and mark which arm is the control. A reader should never have to decode a configuration string.
-- **Define each term of art once, or replace it.** If a reader needs "non-inferiority" to follow the page, define it in Method once. Better, say "may be up to 15 points worse".
+- **Define each term of art in plain words at its first use, or replace it.** If a reader needs "non-inferiority" to follow the page, define it where it first appears, which is often the first screen. Better, say "may be up to 15 points worse".
 - **Statistics as one clause.** "Clearly worse (the interval excludes zero)", not a paragraph about coverage. Interval method and correction go in Method.
 - **Measured facts are stated flatly.** Uncertainty belongs to the interval, stated once. "Costs 28% more" is a measurement; don't soften it. Don't hedge a measured fact with "seems" or "appears".
 - **Every number comes through a figure key, never typed.** The renderer formats it from the data, so the prose can't drift from the tables and a rerun updates it. A figure no tool returns isn't written; record the gap. **A count is a number even when written as a word**: "three of the runs", "eight of the ten cells" each come from a key, spelled through the `words` filter (`{count.…|words}`).
 - **A change is cited by its gap, never by a level.** A step's price, a saving or an uplift is the gap between two arms: cite the gap's key (a `price.*` step's cost gap, a `compare.*` difference, a contrast's delta), never one arm's total, which a reader takes for what the move costs.
 - **A saving reads as a saving.** Write a saving or a cost increase as its size (the `abs` filter) with its direction in words: "saves {gap|abs} a month", "costs {gap|abs} more". A signed gap says which arm it is measured from. A sign that contradicts its sentence (a "saving" printed below zero) tells the reader the opposite.
-- **A volume says what it counts.** A declared monthly volume is a count of something: calls, conversations, tasks. Say which wherever the page cites it, Method included. Where the input doesn't say, write that it doesn't and log a `capability_gap`; a monthly figure on an unnamed count can be off by whatever each unit holds.
+- **A volume says what it counts.** A declared monthly volume is a count of something: calls, conversations, tasks. Say which wherever the page cites it, Method included. Where the input doesn't say, that is a caveat line, and log a `capability_gap`; a monthly figure on an unnamed count can be off by whatever each unit holds.
 - **No internal id, hash or measure key above the appendix.** Trial and case ids may appear on example cards as references. The appendix may hold ids.
 - **The page talks about the campaign, never the tools.** No word about tools, blocks, renders, revisions or review rounds anywhere on the page, Method included. If no block can show something, pick another block or state the figure in a sentence through its key, and log the gap with `capability_gap`.
 
@@ -26,7 +26,7 @@ These come from the owner's review of earlier reports. Each has a reason.
 
 A claim's text states what is true, with a subject and a direction. "Refund requests, the largest slice, carry most of the candidate's loss." Never a topic: "Failure analysis". A reader who reads only the claim sentences should get the argument.
 
-The headline is the call (or the trade, or what is unresolved) with its reason. It never restates the question, and it never quotes the campaign's own question text, which is often written in ids.
+The headline answers the question the campaign asked (where it declared none, what its first grader read): the call, the trade or what is unresolved, with the figure it turns on, in one sentence of at most 25 words. It never restates the question, never quotes the campaign's own question text, which is often written in ids, and never states an absence.
 
 ## Names
 
@@ -57,7 +57,8 @@ Run `figure_keys_check` over every key in the draft. Read the first screen alone
 Then check the draft against its own evidence:
 
 - **Read the headline and each claim against its block's values table, row by row and option by option.** "Every option undercuts the baseline", "no option misses the floor", "the gain grows with the budget": find each row that would make the sentence false. If one does, rewrite the sentence. A page its own chart contradicts loses the reader's trust in every other line.
-- **Watch carries the weakest margin by its `weakest.*` keys** (`principles.md`), or says why another margin matters more, in the same terms.
+- **Watch lists only what could change the call.** It carries the weakest margin by its `weakest.*` keys when a move within its interval could change the call (`principles.md`), or says why another margin matters more, in the same terms; when none could, a caveat line cites those keys. When every alternative read worse and cost more, Watch says so in one line and lists nothing else, the weakest margin aside when it could change the call.
+- **No sentence states an absence.** What was not declared, run or recorded is a caveat line.
 - **Every caveat on the deciding evidence is carried** with its direction (`statistics.md`), and no line calls a finding immune or irreversible while one is attached to it.
 - **The headline's action and Next's first step agree.** A headline that says "ship" beside a Next that says "confirm first" leaves the reader two instructions. Say which: ship now and confirm in parallel, or confirm, then ship.
 - **Every sign matches its words**, every measure has one name, and every count comes from a key.

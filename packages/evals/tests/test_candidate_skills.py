@@ -5,8 +5,10 @@ Mutations that turn this file red: a candidate directory missing a file of the s
 not; the door accepting such a directory, both ``--variant`` and ``--candidate-skill``, a directory named for the
 control, or the shipped skill byte for byte; ``headline-answers`` changing a file its README does not name, or its
 README's diff or digests drifting from the files; a candidate's arm not named for its directory, or the record not
-naming it by its skill digest; the criterion asking a candidate skill to read worse; bounces compared across two
-editors; the shipped skill as its own candidate reading anything but not separated.
+naming it by its skill digest; the criterion asking a candidate skill to read worse; with two editors, bounces left
+uncompared, an editor's own reading (must-fix findings open, report finished) deciding, the read's keep standing in for
+the readings it folds in, or the finished pairs not asked to point the primary's way; a live run's refusal coming after
+its directory is made; the shipped skill as its own candidate reading anything but not separated.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import pytest
 
 from packages.evals.tests.fixtures.writer_cases import writer_acceptance
 from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
+    NOT_COMPARED,
     SHIPPED,
     VARIANTS,
     Acceptance,
@@ -36,7 +39,7 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     refuse_unlike_editors,
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
-from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE
+from threetears.evals.ops.report_writer.writer_contract import BOUNCES_MEASURE, MUST_FIX_OPEN_MEASURE
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion
 
 #: Where the candidate skills sit.
@@ -44,6 +47,21 @@ CANDIDATES: Final = Path(__file__).resolve().parent / "fixtures" / "writer_cases
 
 #: The first candidate: the editor's rubric carrying the owner's 2026-11-06 reading.
 HEADLINE_ANSWERS: Final = CANDIDATES / "headline-answers"
+
+#: Every file ``headline-answers`` changes: its README names each; every other file is the shipped skill's.
+HEADLINE_ANSWERS_CHANGES: Final = [
+    "README.md",
+    "SKILL.md",
+    "editor.md",
+    "exemplars/kairo-round2.md",
+    "exemplars/r1-model-selection.md",
+    "exemplars/r2-config-sweep.md",
+    "exemplars/r3-classifier.md",
+    "exemplars/r4-tradeoff.md",
+    "principles.md",
+    "stories.md",
+    "writing.md",
+]
 
 #: The variables a live run reads its keys from: a dry run reads neither.
 KEYS: Final = ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")
@@ -100,7 +118,7 @@ def test_every_candidate_holds_the_shipped_skills_file_set() -> None:
 def test_headline_answers_differs_only_in_the_files_its_readme_names() -> None:
     shipped, candidate = load_skill(), AnalystSkill.at(HEADLINE_ANSWERS)
     named = re.findall(r"^\| `([^`]+)` \|", _readme_section("Files changed"), re.M)
-    assert sorted(named) == files_differing(shipped, candidate) == ["README.md", "SKILL.md", "editor.md", "stories.md"]
+    assert sorted(named) == files_differing(shipped, candidate) == HEADLINE_ANSWERS_CHANGES
     # Both texts a session reads changed; the editor is no longer the control's instrument, and the door allows it.
     assert candidate.analyst().digest != shipped.analyst().digest
     assert candidate.editor().digest != shipped.editor().digest
@@ -119,7 +137,8 @@ def test_the_readmes_diff_and_digests_are_the_files_own() -> None:
                 f"b/{name}",
             )
         )
-        for name in ("SKILL.md", "editor.md", "stories.md")
+        for name in HEADLINE_ANSWERS_CHANGES
+        if name != "README.md"
     )
     assert [line.rstrip() for line in pasted.splitlines()] == [line.rstrip() for line in diff.splitlines()]
     digests = _readme_section("Digests")
@@ -192,11 +211,19 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     }
     assert record["skills"] == {SHIPPED: load_skill().digest, "headline-answers": digest}
     assert record["readout"] == printed.rstrip("\n")
-    assert f"| headline-answers | candidate | {digest[:12]} | README.md, SKILL.md, editor.md, stories.md | " in printed
+    assert f"| headline-answers | candidate | {digest[:12]} | {', '.join(HEADLINE_ANSWERS_CHANGES)} | " in printed
     assert (
-        "The headline-answers arm's editor.md differs, so each arm's reports are reviewed by its own editor." in printed
+        "The headline-answers arm's editor.md differs from the control's, so with two editors a keep may be an "
+        "instrument difference rather than a verdict on the writing." in printed
     )
-    assert "| bounces do not separate | not compared: the arms' editors differ | yes |" in printed
+    # Two editors: bounces, counted before any editor sees a page, are compared; each editor's own readings are not,
+    # and the read's decision, which folds them in, gives way to the readings it would otherwise decide on.
+    assert "| bounces do not separate | not separated | yes |" in printed
+    assert f"| Must-fix findings open | not separated | {NOT_COMPARED} |" in printed
+    assert f"| Report finished | not separated | {NOT_COMPARED} |" in printed
+    assert "| the read answers promote |" not in printed
+    assert "| no other gated reading regressed, and every guardrail held | none regressed | yes |" in printed
+    assert "| the preference over pairs both finished points the same way | " in printed
     # Each arm's recordings are keyed by its own skill digest.
     assert f"recordings/headline-answers-{digest[:12]}-" in printed
     assert f"recordings/{SHIPPED}-{load_skill().digest[:12]}-" in printed
@@ -237,12 +264,71 @@ def test_a_candidate_skill_passes_only_when_the_gate_reads_it_better(
     assert pass_criterion(
         _shaped(found.read, decision="keep", outcome="regressed", low=-0.4, high=-0.1), runs, variant=VARIANTS["hollow"]
     ).passed
-    # Bounces that separate fail a candidate read by one editor, and are not compared across two.
+    # Bounces are counted before any editor sees a page, so they separate a candidate with one editor or two.
     read = _shaped(found.read, decision="promote", outcome="improved", low=0.1, high=0.4)
+    bounced = _with(read, BOUNCES_MEASURE, "regressed")
+    assert not pass_criterion(bounced, runs, variant=variant).passed
+    assert not pass_criterion(_finished(bounced, 0.2), runs, variant=variant, one_editor=False).passed
+    with pytest.raises(ValueError, match="expected worse"):
+        pass_criterion(read, runs, variant=VARIANTS["hollow"], one_editor=False)
+
+
+def _with(read: WriterPromotion, name: str, outcome: str) -> WriterPromotion:
+    """The read with one gated reading's outcome set."""
+    assert any(verdict.name == name for verdict in read.verdicts), name
     verdicts = [
-        verdict.model_copy(update={"outcome": "regressed"}) if verdict.name == BOUNCES_MEASURE else verdict
+        verdict.model_copy(update={"outcome": outcome}) if verdict.name == name else verdict
         for verdict in read.verdicts
     ]
-    bounced = read.model_copy(update={"verdicts": verdicts})
-    assert not pass_criterion(bounced, runs, variant=variant).passed
-    assert pass_criterion(bounced, runs, variant=variant, one_editor=False).passed
+    return read.model_copy(update={"verdicts": verdicts})
+
+
+def _finished(read: WriterPromotion, delta: float) -> WriterPromotion:
+    """The read with its preference over the pairs both stored finished set to ``delta``."""
+    assert read.finished_only is not None
+    return read.model_copy(update={"finished_only": read.finished_only.model_copy(update={"delta": delta})})
+
+
+def test_with_two_editors_the_editors_own_readings_decide_nothing_and_the_finished_pairs_must_agree(
+    like_against_like: tuple[Acceptance, list[object]],
+) -> None:
+    found, _ = like_against_like
+    variant, runs = found.variant, found.result.arms
+    # A stricter editor leaves more must-fix findings open, so the read keeps the control on an instrument difference.
+    kept = _with(
+        _shaped(found.read, decision="keep", outcome="improved", low=0.1, high=0.4), MUST_FIX_OPEN_MEASURE, "regressed"
+    )
+    assert not pass_criterion(_finished(kept, 0.2), runs, variant=variant).passed
+    two = pass_criterion(_finished(kept, 0.2), runs, variant=variant, one_editor=False)
+    assert two.passed, two.verdict()
+    rows = {requirement.asks: requirement for requirement in two.requirements}
+    assert "the read answers promote" not in rows
+    assert rows["Must-fix findings open"].holds is None and rows["Must-fix findings open"].reads == "regressed"
+    assert rows["Report finished"].holds is None
+    # The finished pairs, free of draft banners, must point the primary's way.
+    against = pass_criterion(_finished(kept, -0.1), runs, variant=variant, one_editor=False)
+    assert not against.passed
+    assert "the preference over pairs both finished points the same way" in against.verdict()
+    # Any other gated reading regressed still fails it, by name.
+    judged = next(verdict.name for verdict in kept.verdicts if verdict.reading == "judged")
+    other = pass_criterion(_finished(_with(kept, judged, "regressed"), 0.2), runs, variant=variant, one_editor=False)
+    assert not other.passed
+    assert "no other gated reading regressed, and every guardrail held" in other.verdict()
+    assert (
+        "regressed: "
+        in {requirement.asks: requirement for requirement in other.requirements}[
+            "no other gated reading regressed, and every guardrail held"
+        ].reads
+    )
+
+
+def test_a_live_run_is_refused_by_name_before_its_directory_is_made(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _offline(monkeypatch)
+    short = _shipped_copy(tmp_path / "short")
+    (short / "writing.md").unlink()
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match=r"candidate skill short is missing writing\.md"):
+        writer_acceptance.main(["--candidate-skill", str(short), "--cap-usd", "12", "--out", str(out)])
+    assert not out.exists()

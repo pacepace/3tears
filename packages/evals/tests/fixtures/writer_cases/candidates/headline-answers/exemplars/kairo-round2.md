@@ -7,14 +7,14 @@ The first reasoning note. This is the form every exemplar takes. The point is th
 **What I noticed first.**
 - Neither candidate is better on anything.
 - Both cost more per reply as this run served them, and each paired cost gap against September is clear of zero.
-- Those costs are this run's provider routing's, not the models' own. The snapshot names no provider for any arm, so the routing is unknown, and the cost claim says so.
+- Those costs are what this run paid, not the models' own. The snapshot names no provider for any arm, so a caveat line beside the cost claim says the costs are this run's and another provider may charge differently.
 - That ends the decision before any judged evidence matters. The call rests on cost measured at this run's routing.
 - Measured is not untouched. The snapshot attaches the reasoning-ratio confound to 1017's cost contrast, not only to its judged ones. 1017 spends less of its output reasoning than September (55% against 76%), so at a matched budget it would likely cost more, not less. The confound's likely direction favours the call, and the cost claim carries it and says so.
 - Cost was read on most trials, not all. The cost claim says how many, and that the order holds even if every missing trial cost nothing.
 
 **The trap.** The pipeline reads qwen3.8-flash as "no worse than the margin". That's true, but its interval (−10.8 to −3.4) excludes zero: it is clearly worse, by an amount the margin happens to allow. Leading with the margin verdict would make a regression read as a pass. So the lede states the size first, then the margin.
 
-**Story.** Decision. "Keep September. Both candidates cost more per reply and stay in character less often." Confidence is high, if the caveats aren't material:
+**Story.** Decision. "Keep September: both candidates cost more per reply, and qwen3.8-flash stays in character about 7 points less often." Confidence is high, if the caveats aren't material:
 - **The judge is uncalibrated.** This only matters if it misreads in-character replies, and the deciding finding (cost) doesn't depend on it.
 - **The aspect and control were chosen afterward.** This only matters if a different choice would have favored a candidate.
 - **The late margin:** checked, not open. The call holds at every margin.
@@ -28,9 +28,9 @@ The first reasoning note. This is the form every exemplar takes. The point is th
 **What I left out, and why.**
 - **Depth, pass^k and precision tables.** They describe the method; none changes the call. They go to the appendix.
 - **Small strata** (under 10 cases) with noisy deltas: shown only in the full table, never as leads.
-- **Latency.** Not comparable, because runs shared the machine. One line in Method.
+- **Latency.** Not comparable, because runs shared the machine. Code's own caveat line in the confidence carries it.
 
-**What I'd watch.** 1017 spends much less of its output reasoning (55% against 76%). Its in-character drop may partly be the effort budget, not the model, and its cost may be too: a matched budget would likely raise it. That goes in Watch beside both of 1017's readings, its in-character drop and its cost, not in the page-level flag. The next step that re-runs 1017 at a matched budget settles both.
+**What I'd watch.** 1017 spends much less of its output reasoning (55% against 76%). Its in-character drop may partly be the effort budget, not the model, and its cost may be too: a matched budget would likely raise it. Its likely direction favours the call, so it could not change it: it is a caveat line beside both of 1017's readings, its in-character drop and its cost, not a Watch item and not the page-level flag. The next step that re-runs 1017 at a matched budget settles both.
 
 **Next steps, each with what it settles.**
 - Fix off-lane brush-offs in the directives: does that close most of the gap?
