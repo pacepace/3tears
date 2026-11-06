@@ -100,3 +100,32 @@ so a $0.75 budget admits a few turns and then refuses. Rung 5's finished reports
 The pass criterion `both arms ran every case` read yes because every cell completed, and the pairwise pass counted each
 both-missing pair as a tie, so the primary read on 7 pairs. The budget rule and the criterion are filed as W6 and W7 in
 the reset's backlog. The 25 cases themselves are sound (their Critic verified them before the run).
+
+# Writer acceptance: no-editor against the shipped skill over 25 held-out cases at a $1.50 report budget, 2026-11-06
+
+Files: `20261106-sonnet-no-editor-25-budget150.json` (the result), `20261106-sonnet-no-editor-25-budget150-run.txt` (the
+printed run), `20261106-sonnet-no-editor-25-budget150-refused-cap102.txt` (the first attempt, refused before launch at $0:
+the judge calls price at $0.0101 each, so the arm needed $41.05 against a $40.80 share of a $102 cap). The turn recordings
+and the store are not kept.
+
+## What ran
+
+The same command as the $0.75 run above with `--budget-usd 1.5 --cap-usd 104`, 2026-11-06 21:03 to 21:40 UTC, over the same
+25 cases (s4 and hot-path-scaled re-minted after the margin chunk). Both arms wrote a page on every case.
+
+## Result
+
+| Reading | Figure |
+|---|---|
+| Cases with two pages, paired for the judge | 25 of 25 |
+| Primary (preferred by the judge, side by side) | regressed: the candidate preferred on 0 of 25 pairs |
+| p | 3.1 × 10⁻⁷ |
+| Order consistency | 25 of 25 |
+| Gated readings regressed for no-editor | coherent_story -0.92, confounds_handled -0.92, evidence_fits_claims -1.24, sound_elision -0.56, must-fix findings open +1.48 |
+| Gated readings not separated | actionable_next_steps, first_screen, honest_emphasis, bounces, report finished, the pass rate |
+| Production cost | improved for no-editor (-0.21: it is cheaper) |
+| Spend | shipped $10.95, no-editor $5.67, pairwise pass $0.40 |
+| Verdict | PASS: the gate reads the shipped skill with no editor revisions as writing worse reports |
+
+This is the first run on which the writer gate separated two configurations of the same writer on held-out cases, so the
+pairwise instrument has signal at n=25 (design decision D4, "signal before search").
