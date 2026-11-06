@@ -175,8 +175,9 @@ as a table in the examples' README, rung 0, linked from the package README.
 
 ### evals: the page's models and serializers stop laying out a memo
 
-**Changed:** `TextRole` no longer admits `override`, `what_changed`, `how_sure` or `means`, the four roles only the
-retired memo writer wrote, and both serializers drop the lines that laid them out. No page this version builds held
+**Changed:** `TextRole` (itself removed later in this release, see the memo-era page models entry) no longer admits
+`override`, `what_changed`, `how_sure` or `means`, the four roles only the retired memo writer wrote, and both serializers
+drop the lines that laid them out. No page this version builds held
 one, so no printed page changes. The memo-era fields those models kept (`basis`, `finding_count`, `recommendation`,
 `CampaignAspectFold.summary` and the rest) leave in this release (see the memo-era page models entry). Messages
 reword: the remedy for an analysis of several aspects names `get_analysis` as reading the analysis, a double brace in
@@ -185,7 +186,7 @@ recommendation refusal name the page, not the memo. Nothing stored changes.
 `tests/test_retired_vocabulary.py` holds the page's modules to no identifier or string naming the memo, the
 `"memo"` section literal aside.
 
-**Hosts:** a host that built a `TextBlock` in one of the four roles builds it in another, or leaves it out.
+**Hosts:** nothing to change: `TextBlock` and `TextRole` leave in this release (the memo-era page models entry), so no host builds one.
 
 ### evals: 18 declared names nothing outside the package imports go provisional
 
