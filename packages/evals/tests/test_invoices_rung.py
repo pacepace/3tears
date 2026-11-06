@@ -43,6 +43,8 @@ from packages.evals.tests.page_contract_support import what_runs
 RUNG = EXAMPLES / "3-invoices"
 EXTRACT = RUNG / "extract.py"
 RECORDING = RUNG / "recordings" / "invoices.jsonl"
+#: The question the rung declares, word for word.
+QUESTION = "Does v2 read the currency an invoice charges in right more often than v1?"
 CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
@@ -84,24 +86,29 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
     result = await module.invoices.run(store=":memory:")
     # The first screen, golden: the question, the arms with the control marked, the result, a bare scoreboard.
     lines = report_markdown(result.report).splitlines()
-    # The title is code's: what is compared and on what, the campaign's name the qualifier (no question was declared).
+    # The title is code's: what is compared and on what, the campaign's name the qualifier; the declared question is
+    # quoted under it, and the result reads as asked, never as exploratory.
     assert lines[0] == "# v1 vs v2 · classify (invoices)"
-    assert lines[1].startswith("v1 (control) vs v2 · ")
+    assert lines[1] == f'"{QUESTION}"'
+    assert lines[3].startswith("v1 (control) vs v2 · ")
     # Never "no difference": a contrast not separated claims none.
-    assert lines[3] == (
-        "**Exploratory: nothing separated v2 from v1 on any reading. Not yet shown safe: v2 on no invented total.**"
+    assert lines[5] == (
+        "**Declared question: nothing separated v2 from v1. Not yet shown safe: v2 on no invented total.**"
     )
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
     # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost, so
     # the report-wide line on provider routing sits between the result and the scoreboard (owner, 2026-10-25).
-    assert lines[5] == COST_ROUTING_CAVEAT
-    assert lines[9] == (
+    assert lines[7] == COST_ROUTING_CAVEAT
+    assert lines[11] == (
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
 
     assert len(served.calls) == recorded_spend(RECORDING)[0] == 180, "30 invoices x 2 prompts x k=3"
     assert isinstance(result, Result) and result.control == "v1" and list(result.arms) == ["v1", "v2"]
+    # The question round-trips to the result and to its campaign, the graders' order with it.
+    assert result.question == module.invoices.question == QUESTION
+    assert result.grader_readings == ("accuracy", "number", "due", "total", "no_invented_total")
     for summary in result.arms.values():
         assert summary.status == "completed" and (summary.n_results, summary.n_excluded) == (90, 0)
     assert result.fields == ("currency", "number", "due", "total")
@@ -129,13 +136,15 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "multi-currency",
         "noisy-OCR",
     }
-    # The closing comment's claim: the same runs read against another control, with no run repeated.
+    # The closing comment's claim: the same runs read against another control, with no run repeated, asking the same
+    # question.
     assert result.exit_code() == (4 if result.gate().failed else 0)
     again = await result.against("v2")
     assert again.control == "v2" and again.run_ids == result.run_ids
+    assert again.question == QUESTION and again.grader_readings == result.grader_readings
 
 
-async def test_its_campaign_page_leads_on_accuracy_with_the_guardrail_v2_is_not_shown_safe_on_beside_it(
+async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardrail_v2_is_not_shown_safe_on_beside_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     offline_copy("3-invoices", tmp_path, monkeypatch)
@@ -143,9 +152,12 @@ async def test_its_campaign_page_leads_on_accuracy_with_the_guardrail_v2_is_not_
     result = await module.invoices.run(store=":memory:")
     lines = campaign_report_markdown(result.page).splitlines()
     first_screen = lines[: lines.index(next(line for line in lines if line.startswith("## ")))]
-    # With no question declared the page leads on the first grader, the classifier's accuracy, as the printed line
-    # does; the guardrail warns as loudly as a broken floor, beside the lead and never in its place, and picks no arm.
+    # The page quotes the declared question and leads on its measure, the first grader (the classifier's accuracy), as
+    # the printed line does, decided rather than a lead; the guardrail warns as loudly as a broken floor, beside the
+    # lead and never in its place, and picks no arm.
     assert lines[0] == "# v1 vs v2 · classify (invoices)"
+    assert lines[1] == f'"{QUESTION}"'
+    assert "No question was declared, so every reading is a lead." not in lines
     bold = [line for line in first_screen if line.startswith("**")]
     # The guardrail says what leaves it undecided: one noisy invoice each, and too few cases to bound two points.
     warning = (
@@ -153,16 +165,18 @@ async def test_its_campaign_page_leads_on_accuracy_with_the_guardrail_v2_is_not_
         "v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its "
         "2-point margin or beyond it."
     )
-    assert bold == ["**Accuracy: v2 and v1 not separated, a lead.**", f"**{warning}**"]
+    assert bold == ["**Accuracy: v2 and v1 not separated.**", f"**{warning}**"]
     html = campaign_report_html(result.page)
     assert (
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}' in html
         and 'role="alert"' not in html[: html.index("</header>")]
     )
     assert "not adopted" not in "\n".join(lines)
-    # No margin was declared, so the page says so once and keeps no row of dashes to settle against one.
-    assert "No margin was declared on classify, so no arm is ever shown worse there." in lines
-    assert "To show no worse than the margin" not in "\n".join(lines)
+    # A question asked of a control declares the 5-point margin the pass rate is read against.
+    assert "No margin was declared on classify, so no arm is ever shown worse there." not in lines
+    assert (
+        "| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | 5 | no worse than the margin |"
+    ) in lines
 
 
 def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(

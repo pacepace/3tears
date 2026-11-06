@@ -12,6 +12,7 @@ import pytest
 from threetears.evals import Eval, grader
 from threetears.evals.analysis import (
     CampaignReadings,
+    get_campaign,
     CampaignReport,
     serialize_report,
 )
@@ -38,6 +39,7 @@ from packages.evals.tests.campaign_page_support import (
     kind_page_of,
     page_of,
 )
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, shape_of
 
 
@@ -228,17 +230,59 @@ async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -
     )
 
 
-async def test_with_no_question_and_no_classifier_the_lead_is_the_pass_rate_and_the_guardrail_warns_beside_it() -> None:
-    """The one rule with no question asked and a function grader first, whose order no page can read: the first bold
-    line is the pass rate, naming both arms and marked a lead; the guardrail's warning is the next, never in its
-    place."""
-    page = await _guarded(current=_answering(misses=10, leaks=0), same=_answering(misses=4, leaks=0))
-    (row,) = [reading for reading in page.readings.readings]
+async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_and_the_guardrail_warns_beside_it() -> (
+    None
+):
+    """The one rule with no question asked and a function grader first: the eval files its graders' order on the
+    aspect's design, so the first bold line reads that grader, in the aspect page's words, naming both arms and marked
+    a lead; the guardrail's warning is the next, never in its place."""
+    result = await Eval(
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right, grader(_no_leak, guard=0.05)],
+        k=1,
+    ).run(store=":memory:")
+    page = result.page
+    (right,) = [
+        verdict
+        for verdict in page.aspects[0].report.verdicts
+        if verdict.kind == "contrast" and verdict.name == "_right"
+    ]
     lead, warning = _bold(page)
-    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}, a lead.**"
+    assert lead == f"**{right.heading}: {right.words}, a lead.**"
+    assert "same" in right.words and "current" in right.words
     assert warning.startswith("**same is not yet shown safe on the no leak guardrail")
     html = header_html(page)
     assert html.index('<p class="verdict" data-tone="open">') < html.index('<p class="flag warning">')
+
+
+async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_on_the_pass_rate() -> None:
+    """A campaign stored with no graders' order, as every campaign filed before the order was, asking no question and
+    reading no classifier, leads as it did: on the pass rate, every grader's reading together, marked a lead. The same
+    campaign stating its order leads on its first grader."""
+    result = await Eval(
+        _THIRTY,
+        {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
+        [_right, grader(_no_leak, guard=0.05)],
+        k=1,
+    ).run(store=":memory:")
+    stated = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    unstated = stated.model_copy(
+        update={
+            "aspects": [
+                aspect.model_copy(update={"design": aspect.design.model_copy(update={"measure_order": []})})
+                if aspect.design is not None
+                else aspect
+                for aspect in stated.aspects
+            ]
+        }
+    )
+    reports = {fold.aspect: fold.report for fold in result.page.aspects}
+    (row,) = result.page.readings.readings
+    lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
+    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}, a lead.**"
+    led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
+    assert led.startswith("**Right score: ") and led.endswith(", a lead.**")
 
 
 async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_aspect_page_s_words() -> None:

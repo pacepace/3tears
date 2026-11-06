@@ -220,6 +220,8 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 invoices = Eval(
     "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
     runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
+    # What the comparison answers; the first grader (currency) is its measure, which the verdict and the page lead on.
+    question="Does v2 read the currency an invoice charges in right more often than v1?",
     # A field each; a case's null total means none may be stated. A difference under 5 points on total is too small
     # to act on, so v2 can read "equivalent" there.
     grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],
@@ -235,6 +237,11 @@ if __name__ == "__main__":
 - **A mapping is a comparison.** Each runner is an **arm**, run over the same cases, so each case is compared with
   itself across the arms. The first key is the **control**, usually what runs today, and every other arm is read
   against it on every reading: the difference (delta), its interval, and a verdict.
+- **`question=`** is the one sentence the comparison answers, asked before any reading is seen. Its measure is the
+  first grader, here `currency` (the classifier's accuracy): the printed first line and the page lead on it, and the
+  page quotes the question under its title. A question asked of a control also declares a 5-point margin on the pass
+  rate, how far v2 may fall below v1 before it is shown worse. Leave it out and the readings are leads: the page says
+  "No question was declared, so every reading is a lead" and leads on the same first grader.
 - **`grader("total", margin=0.05)`** is the `total` field, graded with a margin: the largest difference too small to
   act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough". A case
   whose `total` is `null` expects none stated, so an invented total misses there too.
@@ -262,23 +269,23 @@ exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecide
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
-title, the line in the question's place, the lead and the guardrail's warning beside it, the reading, the contrast
-row for `number`, the guardrail's row, and the trials' census:
+title, the question, the lead and the guardrail's warning beside it, the reading, the contrast row for `number`, the
+guardrail's row, and the trials' census:
 
 ```text
 # v1 vs v2 · classify (invoices)
-No question was declared, so every reading is a lead.
-**Accuracy: v2 and v1 not separated, a lead.**
+"Does v2 read the currency an invoice charges in right more often than v1?"
+**Accuracy: v2 and v1 not separated.**
 **v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.**
-| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | unclear, a lead |
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.2, 34.8] pts | v2 and v1 not separated | 30 paired |
+| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | 5 | no worse than the margin |
+| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.8, 35.4] pts | v2 and v1 not separated | 30 paired |
 | No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 
-With no question declared, the page leads on the first grader, the classifier's accuracy, as the printed line does,
-and says beside it what leaves the guardrail undecided. "No question was declared, so every reading is a lead" means nothing was asked before
-the readings were seen, so each one is a lead for a comparison that asks, not an answer.
+The page leads on the question's measure, the first grader's accuracy, as the printed line does, and says beside it
+what leaves the guardrail undecided. Because the question was asked before the readings were seen, each reading is an
+answer, set without ", a lead". v2's pass rate is shown not to fall more than 5 points below v1's.
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,

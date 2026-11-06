@@ -20,6 +20,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals import Eval, Example, Judge, Log, Model, Result, World, grader
+from threetears.evals.analysis import campaign_report_markdown, get_campaign
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED
@@ -27,6 +28,7 @@ from threetears.evals.quick.one_call import CallableArm, callable_host, run_arms
 from threetears.evals.quick.result import LABEL_COLUMNS, TO_LABEL
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import StopReason
+from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.recorded_model_support import CALL_COST_USD, record_model
 
 #: Tickets, each with its expected label, how urgent it is, and the kind of case it is.
@@ -539,3 +541,37 @@ async def test_a_host_of_your_own_holds_the_runs_and_a_store_beside_it_is_refuse
         await ev.run(host=host, store=":memory:")
     with pytest.raises(ValueError, match="declares no measure named short_label"):
         await ev.run(host=as_host([Eval(TICKETS, keywords, ["label"])], store=":memory:"), scope="other")
+
+
+# --- the question ---------------------------------------------------------------------------------------------------
+
+
+def test_a_blank_question_is_refused_where_the_eval_is_written() -> None:
+    with pytest.raises(ValueError, match="question is filed on its campaign, and this one is blank"):
+        Eval(TICKETS, {"keywords": keywords, "crash_first": crash_first}, ["label"], question="  ")
+
+
+async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campaign_asks_it() -> None:
+    """The question is filed on the campaign whole: the result carries it, the page quotes it in place of the line
+    saying none was asked, the aspect reads it as asked (never "names no axis"), and a question asked of a control
+    declares the margin its pass rate is read against. The same eval with none keeps that line."""
+    question = "Does crash_first label tickets right more often than keywords?"
+    arms = {"keywords": keywords, "crash_first": crash_first}
+    asked = await Eval(TICKETS, arms, ["label", short_label], k=1, question=question).run(store=":memory:")
+    unasked = await Eval(TICKETS, arms, ["label", short_label], k=1).run(store=":memory:")
+
+    assert asked.question == question and unasked.question is None
+    asked_page = campaign_report_markdown(asked.page).splitlines()
+    assert asked_page[1] == f'"{question}"'
+    assert "No question was declared, so every reading is a lead." not in asked_page
+    assert "No question was declared, so every reading is a lead." in campaign_report_markdown(unasked.page)
+    (bundle,) = [fold.report.bundle for fold in asked.page.aspects]
+    assert bundle.question_declared and bundle.reading_scope.disclosure is None
+    (row,) = asked.page.readings.readings
+    assert row.margin == 5.0 and row.confirmatory
+    # The graders' order is filed on the aspect's design, so the page can lead on the first, as the printed line does.
+    assert asked.grader_readings == ("accuracy", "short_label")
+    campaign = off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id)
+    assert [aspect.design.measure_order for aspect in campaign.aspects if aspect.design] == [
+        ["accuracy", "short_label"]
+    ]

@@ -55,20 +55,20 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 16
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 7
+PINNED_DURABLE_SCHEMA_MINOR = 8
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "32c35b62d86a1420f59a1c0737ef8c11a1ad56cc945d04892984903e16d3214e",
-    "case_set": "0fc5a5e11386551ad7f455fa3cb0f56c3b0f244baed97286898f5e88b988a2c2",
-    "eval_analyst_gap": "3f2b779d2a91d3c41e4e8e07311a34bbc3be184ef58a648cae0ebbe6ad56f6a8",
-    "eval_campaign": "8f2cb7be256bf880fb2e0757e2111971ad78f96fcab9ddbdfe3cc1a93994ee0b",
-    "eval_template": "81f709a3c700584f580db19866f651d32a85060786a4ebc3244e6574617f59d6",
-    "eval_test_case": "47adc6f735fe5ded8d6296f74714843dda64af3fb3f543ef4ca0681c41dd6e78",
-    "judge_config": "95655c671ce0991ec2adae4a711cfb21f06ce44e767f68bd03cb04e509cded3b",
-    "judge_config_tombstone": "3778f3c8295e9bf984f85856ac1df77989a26c4154d8304d21b7eb2d075b525f",
-    "rubric_dim": "898d90027ab3112b36f3aebd58937686f7e0fa3d80a8c7189939d8d1529b58e2",
-    "rubric_dim_tombstone": "126b42005778bdd42cca1efeb52226da23a87d53017fb624d4636011d7ab564f",
+    "calibration_rating": "a6dceb483dc5076010409c0663d368e0c8d5b43791266a48c6694ab8e1d3a124",
+    "case_set": "0efa44d696c42a64aa4fa26f79ec4af446949a1b05351dc2d9c8fb6b192869bd",
+    "eval_analyst_gap": "c885bd573ff2522d66f2f804ea740c03b42ce7c7d02b99d6c8adc879adde23c7",
+    "eval_campaign": "6f33aa55bd592972e7b81bad53a5f202a4c78fd0b8433280104b8ad9c5800a8c",
+    "eval_template": "93651e55749b9e1b012a77e668df8247edbba0519b1db7d2fbd318a43259d6c1",
+    "eval_test_case": "ded9bc1a7b0b6482ea40ce17b7cbff90b7da3bd76c2f0a707024e122493e5e45",
+    "judge_config": "a80e5873f88f8c5e3b3f2a077abbcc4969f56ea22588f9f6069a4d6f396baae4",
+    "judge_config_tombstone": "2d26dd5ad4ae4b0ca362979011e6f40db770b748c04e42d21d8e3ebcf5cc4983",
+    "rubric_dim": "b3e09823b7564a92f4610ab49ee4adabadb2ae2f6c3a5ce187af5cf10a00bdf8",
+    "rubric_dim_tombstone": "1027784ade5f20c1d02cf2e68a0062623c00b36bbe12fd0b6a56fe69f171ddc9",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.

@@ -5,6 +5,7 @@ frontier."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 
@@ -20,7 +21,8 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import FamilyComparison
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals import Answer, Eval
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
 from threetears.evals.analysis.report.model import (
@@ -798,3 +800,38 @@ def test_every_line_the_scorecard_writes_keeps_the_style_rules(name: str) -> Non
     measures = {reading.name for reading in shape.readings.measures}
     names = [*labels, *(f"▸ {label}" for label in labels), *measures]
     assert lint_page(_scorecard(shape.page()), names=names) == []
+
+
+#: Cases a one-arm eval measures, each answered at a fraction of a cent.
+_PRICED = [{"n": index} for index in range(12)]
+
+
+async def _priced(case: Mapping[str, int]) -> Answer:
+    """Answers right, at a cost under a cent that grows with the case."""
+    return Answer("right", model="m-1", cost_usd=(20 + case["n"]) * 1e-6)
+
+
+def _right(case: Mapping[str, int], answer: str) -> bool:
+    """Whether the answer is right."""
+    return answer == "right"
+
+
+async def test_a_measurement_s_money_reads_in_one_form_with_its_mark_never_a_bare_figure() -> None:
+    """A measurement's spend under a cent a reply carries its form (the money ruling): dollars per 1,000 with the
+    mark, its interval's ends in the same form, in the matrix and in the fold alike, never ``0.0003`` or ``0``."""
+    result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")
+    matrix = _table(result.page, "scorecard")
+    spend = next(column.key for column in matrix.columns if column.header == "Measuring spend, all roles")
+    (row,) = matrix.rows
+    cell = row[spend]
+    assert cell.unit == MONEY and cell.per_thousand and cell.decimals is not None
+    assert cell.text == f"${cell.value * 1000:.{cell.decimals}f}/1000"
+    measures = _table(result.page, "measures")
+    (folded,) = [line for line in measures.rows if line["measure"].text == "Measuring spend, all roles"]
+    assert folded["value"].text == cell.text
+    assert re.fullmatch(r"\[\$\d+\.\d+/1000, \$\d+\.\d+/1000\]", str(folded["interval"].value))
+    # Only the money measures carry money's form; every other figure keeps the number rule.
+    assert {key for key, other in row.items() if other.unit == MONEY} == {
+        spend,
+        "measure:production_replicating_cost",
+    }
