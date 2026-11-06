@@ -48,12 +48,11 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
     short labels, tags, notes, tooltips, legend entries, panel titles, column headings, pill words (a lattice's built
     as markup by ``pill()``), reasons, region labels, a confusion matrix's labels and an example card's every part."""
     h = HOSTILE
-    chart = {"kind": "chart", "section": "memo", "finding": 0, "title": h}
+    chart = {"kind": "chart", "section": "memo", "title": h}
     return [
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "bars",
             "title": h,
             "data": {
@@ -168,7 +167,6 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "scatter_frontier",
             "title": h,
             "data": {
@@ -188,7 +186,6 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "gate_matrix",
             "title": h,
             "data": {
@@ -210,7 +207,6 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "heatmap",
             "title": h,
             "data": {
@@ -226,7 +222,6 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "examples",
             "title": h,
             "data": {
@@ -245,7 +240,6 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
         {
             "kind": "chart",
             "section": "memo",
-            "finding": 0,
             "chart": "lines",
             "title": h,
             "data": {
@@ -260,38 +254,19 @@ def hostile_kit_charts() -> list[dict[str, Any]]:
 
 
 def hostile_report() -> Report:
-    """A report whose every author-written field, every label a chart draws and every trial's text carries markup."""
+    """A report whose every host- or model-filled field, every label a chart draws and every trial's text carries
+    markup."""
     fields: dict[str, Any] = {
-        "basis": "analysis",
         "title": HOSTILE,
-        "finding_count": 1,
         "source": {
-            "analysis_id": "a",
             "campaign_id": "c",
             "scope_id": "s",
             "behavior": "b",
             "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
             "bundle_fingerprint": "f",
         },
         "blocks": [
             {"kind": "disclosure", "section": "header", "source": "verdict", "text": HOSTILE},
-            {"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": HOSTILE},
-            {
-                "kind": "text",
-                "section": "memo",
-                "role": "finding_body",
-                "finding": 0,
-                "body": f"- {HOSTILE}\n- **bold** `code`",
-            },
-            {
-                "kind": "text",
-                "section": "memo",
-                "role": "caveat",
-                "finding": 0,
-                "body": HOSTILE,
-                "facts": [{"name": "Kind", "value": HOSTILE}],
-            },
             {
                 "kind": "chart",
                 "section": "scoreboard",
@@ -302,7 +277,6 @@ def hostile_report() -> Report:
             {
                 "kind": "chart",
                 "section": "memo",
-                "finding": 0,
                 "chart": "interval_rows",
                 "title": HOSTILE,
                 "rows": [{"label": HOSTILE, "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6, "verdict": HOSTILE}],

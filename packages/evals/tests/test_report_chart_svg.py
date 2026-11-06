@@ -43,7 +43,7 @@ _NOT_DRAWN = {"gate_matrix", "lattice", "examples"}
 
 
 def _block(**fields: Any) -> ChartBlock:
-    return ChartBlock.model_validate({"section": "memo", "finding": 0, "title": "Chart", **fields})
+    return ChartBlock.model_validate({"section": "memo", "title": "Chart", **fields})
 
 
 def _svgs(markup: str) -> list[dict[str, str | None]]:
@@ -171,7 +171,7 @@ def test_a_colour_that_is_not_a_token_name_never_reaches_a_style() -> None:
     data = BarsChart.model_construct(
         rows=[BarRow.model_construct(label="a", value=2, color="red;x:url(y)")], domain=(0, 4), fmt="int"
     )
-    smuggled = ChartBlock.model_construct(section="memo", finding=0, title="Chart", chart="bars", data=data)
+    smuggled = ChartBlock.model_construct(section="memo", title="Chart", chart="bars", data=data)
     with pytest.raises(ValueError, match="pattern"):
         chart_drawing(smuggled)
 

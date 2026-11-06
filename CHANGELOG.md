@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the memo-era page models leave: the text block, the recommendation and the empty page fields
+
+**Removed:** `TextBlock`, `TextRole` and `Fact` (`threetears.evals.analysis`), the block of an author's words no page
+has held since the memo writer was retired, with the serializers' branches for it; `ReportBlock` is a table, a chart, a
+trial or a disclosure. `Recommendation`, `FloorOverride`, `BehindOn` and `BarMissed` (`threetears.evals.kernel`). The
+fields every page left empty: `Report.basis` and `.finding_count`, `ReportSource.analysis_id` and `.generator_model`,
+`CampaignReport.finding_count`, `.recommendation`, `.recommended_variant_key` and `.plan_page`, and
+`CampaignAspectFold.summary`. `CampaignReport.basis` and `.analysis_id` stay. A block naming a finding is refused on
+both pages, as on every page built since the memo. No printed page moves.
+
+**Changed:** `campaign.json` and `report_read(format="json")` are `CAMPAIGN_JSON_SHAPE` 6: `recommendation`, always
+null, leaves the object. The arms a report document recommends are its `report_doc.doc.recommends`.
+
+**Hosts:** stop reading the removed fields and the JSON's `recommendation`: each read an empty value. Nothing stored
+changes.
+
 ### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
 
 **Added:** `Eval(question=...)`, the one sentence a comparison answers, as `WriterEval(question=)` takes it (a blank one

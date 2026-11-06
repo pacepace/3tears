@@ -52,9 +52,6 @@ glossary is a ``.method`` list. Light and dark follow the reader's setting, and 
 **A host restyles one thing: ``--host-accent``.** It is a CSS token, not a parameter: a host framing the page
 overrides it (light and dark values) in its own stylesheet, and the series, status and sequential colours stay
 fixed, so a brand colour can never make a fail look like a pass.
-
-The author's words are Markdown; this renders the part of it a report uses — paragraphs, bullet lists, ``**bold**``
-and ``code`` — over text escaped first, so nothing an author wrote can become markup.
 """
 
 from __future__ import annotations
@@ -74,7 +71,6 @@ from threetears.evals.analysis.report.blocks import (
     DisclosureBlock,
     ReportBlock,
     TableBlock,
-    TextBlock,
     TrialBlock,
     fold_anchor,
 )
@@ -86,8 +82,6 @@ from threetears.evals.analysis.report.html_parts import (
     code_html,
     escape,
     glossary_slug,
-    inline_html,
-    markdown_html,
     one_line,
     page_head,
     pill_html,
@@ -95,7 +89,7 @@ from threetears.evals.analysis.report.html_parts import (
     term_link,
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
-from threetears.evals.analysis.report.serialize_md import RESOLUTION_WORDS, trial_summary
+from threetears.evals.analysis.report.serialize_md import trial_summary
 from threetears.evals.analysis.style import GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
@@ -128,7 +122,8 @@ def report_html(report: Report, *, static: bool = False) -> str:
         *page_head(report.title, static=static),
         "<body>",
         '<div class="page">',
-        f'<article data-basis="{escape(report.basis)}">',
+        # An aspect's page is code's alone; the attribute stays, so the page's bytes do not move.
+        '<article data-basis="code_only">',
         "<header>",
         # The title first, then the first screen in order: what warns is under the verdict, never above the title.
         f"<h1>{escape(one_line(report.title))}</h1>",
@@ -151,10 +146,9 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     The first screen is the page's ``<header>``: the title first, then the rest of the first screen in order (the
     question, the answer, what warns, set apart but never announced over the title). The sections the page reads
     before its folds follow, open (the findings, the next steps, Design & provenance); then one closed ``<section>``
-    per aspect, its summary the aspect's label and what code read there, its body any text blocks the fold holds
-    (:attr:`~threetears.evals.analysis.report.model.CampaignAspectFold.summary`, empty on every page built now) and the
-    aspect's own page laid out as its page lays it out, a heading level down. Every id inside an aspect's fold is prefixed with the aspect's, so a link inside it lands inside it
-    (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
+    per aspect, its summary the aspect's label and what code read there, its body the aspect's own page laid out as
+    its page lays it out, a heading level down. Every id inside an aspect's fold is prefixed with the aspect's, so a
+    link inside it lands inside it (``#a-billing-T4``); a glossary link lands on the page's one glossary, which defines every term any fold uses.
 
     A report document's page (``doc_page`` set) is the page its stored document draws
     (:func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html`), static where this page is, written whole:
@@ -237,7 +231,7 @@ _LOCAL_LINK = re.compile(r'href="#(?!g-)([^"]*)"')
 
 
 def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[str]:
-    """One aspect's closed fold: any text blocks the fold holds, then its page's first screen and sections, a heading
+    """One aspect's closed fold: its page's first screen and sections, a heading
     level down, every id in it prefixed ``a-<slug>--``.
 
     Ids derived from the slug join it with ``--``, which :func:`~threetears.evals.analysis.report.blocks.fold_ids`
@@ -251,7 +245,6 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[s
     report = fold.report
     head = fold.head
     body = [
-        *(_block(block, index, static=static) for index, block in enumerate(fold.summary)),
         *(_block(block, index, static=static) for index, block in enumerate(head)),
         *_sections(report, _present_sections(report), static=static),
     ]
@@ -367,8 +360,6 @@ def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[
 def _block(block: ReportBlock, index: int, *, static: bool) -> str:
     """One block as HTML; ``index`` makes a chart's ids unique on the page, and a static page draws its charts as
     inline SVG."""
-    if isinstance(block, TextBlock):
-        return _text(block)
     if isinstance(block, TableBlock):
         return table_html(block)
     if isinstance(block, ChartBlock):
@@ -376,34 +367,6 @@ def _block(block: ReportBlock, index: int, *, static: bool) -> str:
     if isinstance(block, TrialBlock):
         return _trial(block)
     return _disclosure(block)
-
-
-def _text(block: TextBlock) -> str:
-    """An author's words, laid out by what they were written as."""
-    facts = {fact.name: fact.value for fact in block.facts}
-    body = inline_html(one_line(block.body))
-    if block.role == "finding_title":
-        anchor = f' id="{escape(block.anchor)}"' if block.anchor else ""
-        return f'<p class="finding"{anchor}><strong>{body}</strong></p>'
-    if block.role == "answer":
-        lead = RESOLUTION_WORDS.get(facts.get("Resolution", ""), "")
-        return '<p data-role="answer">' + (f"<strong>{escape(lead)}.</strong> " if lead else "") + f"{body}</p>"
-    if block.role == "recommendation":
-        disposition = facts.get("Disposition", "")
-        lead = f"<strong>{escape(disposition[:1].upper() + disposition[1:])}:</strong> " if disposition else ""
-        sure = (
-            f' <span class="facts">({escape(facts["Confidence"])} confidence)</span>' if "Confidence" in facts else ""
-        )
-        return f'<p data-role="recommendation">{lead}{body}{sure}</p>'
-    if block.role == "reason":
-        return f'<p data-role="reason">{body}</p>'
-    if block.role == "next_step":
-        return f'<p data-role="next_step"><strong>Next:</strong> {body}</p>'
-    if block.role == "caveat":
-        return f'<div class="caveat"><strong>Caveat</strong> ({escape(facts.get("Kind", "unkinded"))}): {body}</div>'
-    if block.role == "carried_forward":
-        return f"<p><em>Carried forward:</em> {body}</p>"
-    return f'<div data-role="{escape(block.role)}">{markdown_html(block.body)}</div>'
 
 
 def _trial(block: TrialBlock) -> str:

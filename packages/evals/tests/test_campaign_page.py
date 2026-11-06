@@ -15,7 +15,6 @@ import pytest
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
-    CampaignReport,
     build_code_only_report,
     build_campaign_report,
     campaign_readings,
@@ -26,7 +25,6 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
-    CampaignAspectFold,
     DisclosureBlock,
     TableBlock,
 )
@@ -111,7 +109,7 @@ async def test_json_is_the_readings_and_each_aspect_s_bundle_by_its_fingerprint(
     page = await page_of("billing", "tone")
     document = json.loads(serialize_report(page, "json"))
     assert (document["kind"], document["shape"]) == ("campaign", CAMPAIGN_JSON_SHAPE)
-    assert document["recommendation"] is None
+    assert "recommendation" not in document
     assert document["readings"]["aspects"] == ["billing", "tone"]
     assert [aspect["bundle_fingerprint"] for aspect in document["aspects"]] == [
         fold.report.source.bundle_fingerprint for fold in page.aspects
@@ -138,32 +136,6 @@ async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
         assert verdict not in fold.head
         assert verdict.text not in campaign_report_markdown(page)
         assert 'class="verdict"' not in campaign_report_html(page)
-
-
-async def test_a_code_only_page_refuses_a_fold_that_renders_an_analysis() -> None:
-    page = await page_of("billing")
-    (fold,) = page.aspects
-    analysed = CampaignAspectFold(
-        aspect=fold.aspect,
-        shows=fold.shows,
-        report=fold.report.model_copy(
-            update={
-                "basis": "analysis",
-                "source": fold.report.source.model_copy(update={"analysis_id": "analysis-1", "generator_model": "m"}),
-            }
-        ),
-    )
-    with pytest.raises(ValueError, match="renders an analysis"):
-        CampaignReport(
-            basis="code_only",
-            title=page.title,
-            campaign_id=page.campaign_id,
-            scope_id=page.scope_id,
-            finding_count=0,
-            blocks=page.blocks,
-            aspects=[analysed],
-            readings=page.readings,
-        )
 
 
 async def test_a_fold_s_markdown_heading_is_inert() -> None:

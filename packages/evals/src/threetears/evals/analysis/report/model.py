@@ -11,10 +11,8 @@ of every term of art the page linked. Every count, rate, interval and cost in it
 evidence bundle the report carries (:attr:`Report.bundle`). Every string it prints is held to
 :mod:`~threetears.evals.analysis.style`.
 
-**Who wrote what is part of the shape.** A ``text`` block holds what the analysis's author wrote, and nothing else;
-what code says — the verdict, the basis, a table's caption, a reason something is not drawn — is a ``disclosure``.
-A code-only report (no analysis was generated) holds no ``text`` block at all, and its model refuses one, so a
-reader never takes code's computation for an analyst's judgement, or the reverse.
+**Every word on it is code's.** What code says — the verdict, the basis, a table's caption, a reason something is not
+drawn — is a ``disclosure``; an aspect's page holds no author's words, and its block union has no kind for them.
 
 **One chart, and the intervals drawn inside the tables.** The page's one standalone ``chart`` block is the outcome
 bar (one stacked bar per arm: passed, failed and lost by cause, every segment's count written beside it). Every
@@ -41,12 +39,10 @@ from pydantic import Field, model_validator
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
-from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.base import EvalDocumentModel, VerbatimJsonObject
 from threetears.evals.schema.hashing import round_floats
 from threetears.evals.analysis.report.blocks import (
-    FINDING_ROLES,
     FIRST_SCREEN,
     FOLDED_SECTIONS,
     SECTION_TITLES,
@@ -59,7 +55,6 @@ from threetears.evals.analysis.report.blocks import (
     CostQualityPoint,
     DisclosureBlock,
     DisclosureSource,
-    Fact,
     GuardrailOutcome,
     IntervalRow,
     OutcomeBar,
@@ -70,8 +65,6 @@ from threetears.evals.analysis.report.blocks import (
     TableBlock,
     TableCell,
     TableColumn,
-    TextBlock,
-    TextRole,
     TrialBlock,
     TrialDetail,
     Verdict,
@@ -102,21 +95,15 @@ _CAMPAIGN_SECTION_TITLES: dict[str, str] = {
 
 
 class ReportSource(EvalDocumentModel):
-    """What the report is a report of, and how that analysis was generated — or that none was."""
+    """What the report is a report of: the campaign, and the bundle its numbers were computed from."""
 
-    analysis_id: str | None = Field(
-        default=None, min_length=1, description="The analysis the report renders; None on a code-only report."
-    )
     campaign_id: str = Field(min_length=1, description="The campaign.")
     campaign_name: str | None = Field(default=None, min_length=1, description="The campaign's name, where known.")
     scope_id: str = Field(min_length=1, description="The scope the campaign lives in.")
     behavior: str = Field(min_length=1, description="The behaviour under analysis.")
     generated_at: str = Field(
         min_length=1,
-        description="When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled.",
-    )
-    generator_model: str | None = Field(
-        default=None, min_length=1, description="The model that wrote the analysis; None on a code-only report."
+        description="When the evidence was assembled (ISO-8601).",
     )
     bundle_fingerprint: str = Field(min_length=1, description="The fingerprint of the bundle the report renders.")
 
@@ -128,11 +115,6 @@ ReportFile = Literal["html", "bundle", "markdown"]
 class Report(EvalDocumentModel):
     """A campaign's report: one page, the bundle it was computed from, and the typed verdicts it states."""
 
-    basis: ReportBasis = Field(
-        description=(
-            "`analysis` over a generated analysis; `code_only` over the evidence alone, as every page built now is."
-        )
-    )
     title: str = Field(
         min_length=1,
         description=(
@@ -140,7 +122,6 @@ class Report(EvalDocumentModel):
             "(`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict."
         ),
     )
-    finding_count: int = Field(ge=0, description="How many findings the page holds: 0 on every page built now.")
     source: ReportSource = Field(description="What this is a report of.")
     blocks: list[ReportBlock] = Field(description="The report, in reading order.")
     verdicts: list[Verdict] = Field(
@@ -156,17 +137,12 @@ class Report(EvalDocumentModel):
 
     @model_validator(mode="after")
     def _positions_point_at_findings(self) -> Self:
-        """Refuse a block linked to a finding the report does not hold.
+        """Refuse a block linked to a finding: an aspect's page holds none.
 
-        :raises ValueError: A block's ``finding`` or ``rests_on`` names a position past ``finding_count``.
+        :raises ValueError: A block's ``finding`` or ``rests_on`` names a position.
         """
-        for index, block in enumerate(self.blocks):
-            named = ([block.finding] if block.finding is not None else []) + list(block.rests_on)
-            if stray := sorted({position for position in named if not 0 <= position < self.finding_count}):
-                raise ValueError(
-                    f"block {index} ({block.kind}) is linked to finding position(s) {stray}, and the report holds "
-                    f"{self.finding_count} finding(s)"
-                )
+        if stray := _linked_to_findings(self.blocks):
+            raise ValueError(f"{stray}, and the report holds no finding")
         return self
 
     @model_validator(mode="after")
@@ -203,26 +179,6 @@ class Report(EvalDocumentModel):
             }
         ):
             raise ValueError(f"an aspect's page lays out no section {', '.join(stray)}, and blocks sit in it")
-        return self
-
-    @model_validator(mode="after")
-    def _the_basis_matches_what_the_report_holds(self) -> Self:
-        """Refuse a report whose basis disagrees with its source or its blocks.
-
-        :raises ValueError: An analysis report names no analysis or model, or a code-only report names one or holds a
-            finding or an author's words.
-        """
-        source = self.source
-        if self.basis == "analysis":
-            if source.analysis_id is None or source.generator_model is None:
-                raise ValueError("an analysis report names its analysis_id and generator_model in its source")
-            return self
-        if source.analysis_id is not None or source.generator_model is not None:
-            raise ValueError("a code-only report renders no analysis, so it names no analysis_id or generator_model")
-        if self.finding_count:
-            raise ValueError(f"a code-only report has no findings, and this one counts {self.finding_count}")
-        if authored := [index for index, block in enumerate(self.blocks) if isinstance(block, TextBlock)]:
-            raise ValueError(f"a code-only report holds no author's words, and blocks {authored} are text blocks")
         return self
 
     @property
@@ -289,26 +245,23 @@ class Report(EvalDocumentModel):
 #: shape would misread the new one. 3: each aspect's `question_after_runs` is replaced by `late_criteria`. 4: each
 #: reading and pair in `readings` states both arms' depth and what limits its interval. 5: the page's model gains a
 #: campaign's own sections, a cell's `flag` and the `cost_quality` chart, and the JSON what the page reads across
-#: aspects as it lands; one unreleased shape holds them all.
-CAMPAIGN_JSON_SHAPE = 5
+#: aspects as it lands; one unreleased shape holds them all. 6: `recommendation`, always null since the memo writer
+#: was retired, leaves the JSON.
+CAMPAIGN_JSON_SHAPE = 6
 
 
 class CampaignAspectFold(EvalDocumentModel):
-    """One aspect's fold of a campaign's page: any text blocks it holds over the aspect, then its own page."""
+    """One aspect's fold of a campaign's page: its own page, under its heading and what code read there."""
 
     aspect: str = Field(min_length=1, description="The aspect's label: the fold's heading.")
     shows: str = Field(
         min_length=1,
         description="What code read on the aspect, in a few words beside the heading (`v2 shown worse`).",
     )
-    summary: list[ReportBlock] = Field(
-        default_factory=list,
-        description="Text blocks laid out over the aspect, above its own page; empty on every page built now.",
-    )
     report: Report = Field(
         description=(
-            "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold below the summary "
-            "without its title, its question, its broken floors or its verdict line (:attr:`head`)."
+            "The aspect's own page (`build_code_only_report` over its bundle), laid out in the fold without its title, "
+            "its question, its broken floors or its verdict line (:attr:`head`)."
         )
     )
 
@@ -345,8 +298,7 @@ class CampaignReport(EvalDocumentModel):
     Findings and Next steps, and Design & provenance. Then :attr:`aspects`, one fold each, in the campaign's order,
     and after them how the page was made.
 
-    **Who wrote what is part of the shape**, as on an aspect's page: a ``text`` block holds what the writer wrote and
-    nothing else, and a code-only campaign page, every page built now, holds none.
+    **Every block is code's**, as on an aspect's page: the block union has no kind for a writer's words.
 
     **A report document's page** holds no blocks either: its :attr:`doc_page` is the page its stored report document
     draws on its own snapshot, which the serializers write whole in place of the campaign's page (the document's own
@@ -367,36 +319,12 @@ class CampaignReport(EvalDocumentModel):
     analysis_id: str | None = Field(
         default=None, description="The stored analysis the page was read for; None where it was read for none."
     )
-    finding_count: int = Field(ge=0, description="How many findings the page holds: 0 on every page built now.")
     blocks: list[ReportBlock] = Field(
         description="Every block but the folds': the first screen, then each headed section's, in reading order."
     )
     aspects: list[CampaignAspectFold] = Field(description="One fold per aspect, in the campaign's order.")
     readings: CampaignReadings = Field(description="What code read off the campaign: every row and every floor.")
     call: CampaignCall | None = Field(default=None, description="The person's call; None while none is recorded.")
-    recommendation: Recommendation | None = Field(
-        default=None,
-        description=(
-            "The recommendation the page holds; None on every page built now. A report document's page carries "
-            "none here: the arms its document recommends are `report_doc.doc.recommends`."
-        ),
-    )
-    recommended_variant_key: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "The variant key of the arm the recommendation names, as the analysis recorded it when it was saved "
-            "(`EvalAnalysis.recommended_variant_key`): what a reader matches a call's `variant_key` to, whatever "
-            "later relabels the arm. Set exactly when the page holds a recommendation."
-        ),
-    )
-    plan_page: None = Field(
-        default=None,
-        description=(
-            "Always None: the page a planned analysis's report plan drew, retired with the report planner. A planned "
-            "analysis reads as the code-only page with the retired-writer line; the field leaves in the next minor."
-        ),
-    )
     doc_page: DocPage | None = Field(
         default=None,
         description=(
@@ -441,19 +369,6 @@ class CampaignReport(EvalDocumentModel):
     )
 
     @model_validator(mode="after")
-    def _the_recommendation_is_keyed(self) -> Self:
-        """Refuse a recommendation without its arm's key, and a key with no recommendation to name.
-
-        :raises ValueError: One of ``recommendation`` and ``recommended_variant_key`` is set without the other.
-        """
-        if (self.recommendation is None) != (self.recommended_variant_key is None):
-            raise ValueError(
-                "recommended_variant_key is the key of the arm the recommendation names: set exactly when the page "
-                "holds a recommendation"
-            )
-        return self
-
-    @model_validator(mode="after")
     def _a_document_page_is_an_analysiss_and_holds_no_blocks(self) -> Self:
         """Refuse a report document's page on a code-only page, beside blocks, or without the document it draws; and an
         unread analysis named on any page but a code-only one.
@@ -496,41 +411,22 @@ class CampaignReport(EvalDocumentModel):
         """Refuse a block in the glossary, which the serializers write from the terms the page links: a block there
         would vanish from the page. Every other section is on the first screen or headed (:attr:`section_titles`).
 
-        :raises ValueError: A block, or an aspect's summary block, sits in the glossary.
+        :raises ValueError: A block sits in the glossary.
         """
-        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
-        if any(block.section == "glossary" for block in blocks):
+        if any(block.section == "glossary" for block in self.blocks):
             raise ValueError("the glossary is written from the terms the page links, and blocks sit in it")
         return self
 
     @model_validator(mode="after")
     def _the_basis_matches_what_the_page_holds(self) -> Self:
-        """Refuse a code-only page holding a finding or a writer's words, and a block linked to a finding not held.
+        """Refuse a block linked to a finding, which no page holds, and an analysis named on a code-only page.
 
-        :raises ValueError: A code-only page counts a finding or holds a text block, or a block names a finding
-            position past ``finding_count``.
+        :raises ValueError: A block names a finding position, or a code-only page names an ``analysis_id``.
         """
-        blocks = [*self.blocks, *(block for fold in self.aspects for block in fold.summary)]
-        for index, block in enumerate(blocks):
-            named = ([block.finding] if block.finding is not None else []) + list(block.rests_on)
-            if stray := sorted({position for position in named if not 0 <= position < self.finding_count}):
-                raise ValueError(
-                    f"block {index} ({block.kind}) is linked to finding position(s) {stray}, and the page holds "
-                    f"{self.finding_count} finding(s)"
-                )
-        if self.basis == "code_only":
-            if analysed := [fold.aspect for fold in self.aspects if fold.report.basis != "code_only"]:
-                raise ValueError(
-                    f"a code-only page folds code-only aspect pages, and {', '.join(analysed)} renders an analysis"
-                )
-            if self.analysis_id is not None:
-                raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
-            if self.recommendation is not None:
-                raise ValueError("a code-only page holds no recommendation")
-            if self.finding_count:
-                raise ValueError(f"a code-only page has no findings, and this one counts {self.finding_count}")
-            if authored := [index for index, block in enumerate(blocks) if isinstance(block, TextBlock)]:
-                raise ValueError(f"a code-only page holds no writer's words, and blocks {authored} are text blocks")
+        if stray := _linked_to_findings(self.blocks):
+            raise ValueError(f"{stray}, and the page holds no finding")
+        if self.basis == "code_only" and self.analysis_id is not None:
+            raise ValueError(f"a code-only page lays out no analysis, and this one names {self.analysis_id}")
         return self
 
     @property
@@ -628,11 +524,11 @@ class CampaignReport(EvalDocumentModel):
 
     def json_document(self) -> dict[str, object]:
         """The page's machine form, tagged ``kind: campaign`` at shape :data:`CAMPAIGN_JSON_SHAPE`: code's readings,
-        the recommendation (its arm's label and variant key, and how sure) where the page holds one, the call,
+        the call,
         and each aspect's bundle by its fingerprint and shape, with each criterion set after its readings were visible
         and when (``late_criteria``, empty where none was), since its readings read the same either way; and
         ``report_doc``, the stored report document a document's page draws (:attr:`report_doc`, never a session's
-        transcript; the arms it recommends are ``report_doc.doc.recommends``, ``recommendation`` being None there),
+        transcript; the arms it recommends are ``report_doc.doc.recommends``),
         ``None`` on every other page; and ``needs_regeneration``, the one regenerate line and why, on a code-only page
         standing in for an analysis or a document this version no longer reads, ``None`` on every other.
 
@@ -645,20 +541,12 @@ class CampaignReport(EvalDocumentModel):
         :return: A JSON-ready mapping.
         :rtype: dict[str, object]
         """
-        recommendation = self.recommendation
         document: dict[str, object] = {
             "kind": "campaign",
             "shape": CAMPAIGN_JSON_SHAPE,
             "campaign_id": self.campaign_id,
             "basis": self.basis,
             "analysis_id": self.analysis_id,
-            "recommendation": None
-            if recommendation is None
-            else {
-                "arm": recommendation.arm,
-                "variant_key": self.recommended_variant_key,
-                "confidence": recommendation.confidence,
-            },
             "readings": self.readings.to_dict(),
             "call": self.call.to_dict() if self.call is not None else None,
             "aspects": [
@@ -677,6 +565,16 @@ class CampaignReport(EvalDocumentModel):
         return served
 
 
+def _linked_to_findings(blocks: Sequence[ReportBlock]) -> str | None:
+    """Which of ``blocks`` name a finding position (``finding`` or ``rests_on``), said for a refusal; None for none."""
+    linked = [
+        f"block {index} ({block.kind}) is linked to finding position(s) {named}"
+        for index, block in enumerate(blocks)
+        if (named := sorted({*([block.finding] if block.finding is not None else []), *block.rests_on}))
+    ]
+    return "; ".join(linked) or None
+
+
 def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
     """Every cell of every table among ``blocks``, in reading order."""
     return [cell for block in blocks if isinstance(block, TableBlock) for row in block.rows for cell in row.values()]
@@ -684,7 +582,6 @@ def _cells(blocks: Sequence[ReportBlock]) -> list[TableCell]:
 
 __all__ = [
     "CAMPAIGN_JSON_SHAPE",
-    "FINDING_ROLES",
     "FIRST_SCREEN",
     "FOLDED_SECTIONS",
     "SECTION_TITLES",
@@ -699,7 +596,6 @@ __all__ = [
     "CostQualityPoint",
     "DisclosureBlock",
     "DisclosureSource",
-    "Fact",
     "GuardrailOutcome",
     "IntervalRow",
     "OutcomeBar",
@@ -713,8 +609,6 @@ __all__ = [
     "TableBlock",
     "TableCell",
     "TableColumn",
-    "TextBlock",
-    "TextRole",
     "TrialBlock",
     "TrialDetail",
     "Verdict",

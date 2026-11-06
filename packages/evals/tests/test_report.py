@@ -4,15 +4,14 @@ Driven end to end on the toy host: its corpus campaign is generated through the 
 for the model) and read back as a report through the service. Then:
 
 - **It serializes two ways, from one block list.** Markdown and HTML each carry the title line, the basis line, the
-  verdict, the scoreboard, the author's words, code's numbers and every chart's values; the machine form is the
-  bundle the page was computed from.
-- **Who wrote what stays legible.** An author's caveat is attached to its finding as written; what code adds is a
-  disclosure; the memo is labelled as written by its model, and every number on the page is code's.
-- **A campaign with no analysis is reported from its evidence**, with no author's words at all, and an archived
-  analysis is not the campaign's report.
-- **Every refusal fires** — a block linked to a finding the report does not hold, a table showing more rows than it
-  has or a row keying other columns, a chart drawing the other kind's marks, a finding's words that name no finding,
-  a basis the report disagrees with.
+  verdict, the scoreboard, code's numbers and every chart's values; the machine form is the bundle the page was
+  computed from.
+- **Every word on it is code's.** What code adds is a disclosure, the writer is named in the methods, and a block of
+  an author's words is no block a page holds.
+- **A campaign with no analysis is reported from its evidence**, and an archived analysis is not the campaign's
+  report.
+- **Every refusal fires** — a block linked to a finding, which no page holds, a table showing more rows than it has
+  or a row keying other columns, a chart drawing the other kind's marks.
 
 The HTML's no-script property has its own file, ``test_report_html_no_script.py``.
 """
@@ -36,7 +35,6 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    TextBlock,
     analysis_report,
     build_code_only_report,
     campaign_report,
@@ -156,32 +154,9 @@ def bundle() -> AnalysisContextBundle:
 
 
 def _report(bundle: AnalysisContextBundle, **update: Any) -> Report:
-    """A one-finding analysis report that passes, with ``update`` applied over its fields."""
+    """A report that passes, with ``update`` applied over its fields."""
     fields: dict[str, Any] = {
-        "basis": "analysis",
         "title": "t",
-        "finding_count": 1,
-        "source": {
-            "analysis_id": "a",
-            "campaign_id": "c",
-            "scope_id": "s",
-            "behavior": "b",
-            "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
-            "bundle_fingerprint": "f",
-        },
-        "blocks": [{"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": "t"}],
-        "bundle": bundle,
-    }
-    return Report.model_validate(fields | update)
-
-
-def _code_only(bundle: AnalysisContextBundle, **update: Any) -> Report:
-    """A code-only report that passes, with ``update`` applied over its fields."""
-    fields: dict[str, Any] = {
-        "basis": "code_only",
-        "title": "t",
-        "finding_count": 0,
         "source": {
             "campaign_id": "c",
             "scope_id": "s",
@@ -210,20 +185,19 @@ def _table(**update: Any) -> TableBlock:
 
 class TestTheReportsRefusals:
     def test_the_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
-        assert _report(bundle).finding_count == 1
+        assert [block.kind for block in _report(bundle).blocks] == ["disclosure"]
 
     @pytest.mark.parametrize(
         "block",
         [
-            {"kind": "text", "section": "memo", "role": "finding_body", "finding": 1, "body": "t"},
+            {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "finding": 1},
             {"kind": "disclosure", "section": "memo", "source": "memo", "text": "t", "rests_on": [3]},
         ],
         ids=["finding", "rests_on"],
     )
-    def test_a_block_linked_to_a_finding_the_report_does_not_hold_is_refused(
-        self, bundle: AnalysisContextBundle, block: dict[str, Any]
-    ) -> None:
-        with pytest.raises(ValueError, match=r"is linked to finding position\(s\) \[\d\], and the report holds 1"):
+    def test_a_block_linked_to_a_finding_is_refused(self, bundle: AnalysisContextBundle, block: dict[str, Any]) -> None:
+        linked = r"is linked to finding position\(s\) \[\d\], and the report holds no finding"
+        with pytest.raises(ValueError, match=linked):
             _report(bundle, blocks=[block])
 
     def test_a_table_showing_more_rows_than_it_has_is_refused(self) -> None:
@@ -231,7 +205,7 @@ class TestTheReportsRefusals:
             _table(rows=[table_row({"arm": "a"}), table_row({"arm": "b"})])
 
     def test_a_truncated_table_says_so(self, bundle: AnalysisContextBundle) -> None:
-        markdown = report_markdown(_report(bundle, blocks=[_table(total_rows=4)], finding_count=0))
+        markdown = report_markdown(_report(bundle, blocks=[_table(total_rows=4)]))
         assert "_1 of 4 rows shown._" in markdown
 
     def test_a_row_stating_a_value_no_column_shows_is_refused(self) -> None:
@@ -255,46 +229,17 @@ class TestTheReportsRefusals:
         with pytest.raises(ValueError, match="its interval runs from 2.0 down to 1.0"):
             IntervalRow(label="a", value=1.5, low=2.0, high=1.0, n_cases=5)
 
-    @pytest.mark.parametrize("role", ["finding_title", "finding_body", "caveat", "carried_forward"])
-    def test_a_findings_own_words_that_name_no_finding_are_refused(self, role: str) -> None:
-        with pytest.raises(ValueError, match=f"a {role} block belongs to a finding and names none"):
-            TextBlock(section="memo", role=role, body="t")  # type: ignore[arg-type]
-
-    def test_a_recommendation_belongs_to_no_finding(self) -> None:
-        assert TextBlock(section="memo", role="recommendation", body="t").finding is None
-
     @pytest.mark.parametrize("value", ["words", True, None])
     def test_a_unit_qualifies_only_a_number(self, value: Any) -> None:
         with pytest.raises(ValueError, match="qualifies a number"):
             TableCell(value=value, unit="s")
 
 
-class TestTheBasisIsRefusedWhenTheReportDisagreesWithIt:
-    def test_the_code_only_fixture_passes(self, bundle: AnalysisContextBundle) -> None:
-        assert _code_only(bundle).basis == "code_only"
-
-    @pytest.mark.parametrize("missing", ["analysis_id", "generator_model"])
-    def test_an_analysis_report_names_its_analysis_and_its_writer(
-        self, bundle: AnalysisContextBundle, missing: str
-    ) -> None:
-        source = _report(bundle).source.model_dump() | {missing: None}
-        with pytest.raises(ValueError, match="an analysis report names its analysis_id and generator_model"):
-            _report(bundle, source=source)
-
-    @pytest.mark.parametrize("named", [{"analysis_id": "a"}, {"generator_model": "m"}])
-    def test_a_code_only_report_names_no_analysis(self, bundle: AnalysisContextBundle, named: dict[str, str]) -> None:
-        source = _code_only(bundle).source.model_dump() | named
-        with pytest.raises(ValueError, match="a code-only report renders no analysis"):
-            _code_only(bundle, source=source)
-
-    def test_a_code_only_report_counts_no_findings(self, bundle: AnalysisContextBundle) -> None:
-        with pytest.raises(ValueError, match="has no findings, and this one counts 1"):
-            _code_only(bundle, finding_count=1)
-
-    def test_a_code_only_report_holds_no_authors_words(self, bundle: AnalysisContextBundle) -> None:
+class TestAPageHoldsNoAuthorsWords:
+    def test_a_block_of_an_authors_words_is_refused(self, bundle: AnalysisContextBundle) -> None:
         blocks = [{"kind": "text", "section": "memo", "role": "answer", "body": "words"}]
-        with pytest.raises(ValueError, match=r"blocks \[0\] are text blocks"):
-            _code_only(bundle, blocks=blocks)
+        with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
+            _report(bundle, blocks=blocks)
 
 
 # =============================================================================
@@ -313,14 +258,9 @@ def code_only() -> tuple[EvalHost, Report]:
 class TestACampaignWithNoAnalysisIsReportedFromItsEvidence:
     def test_it_is_code_only_and_its_memo_section_says_so(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
-        assert report.basis == "code_only" and report.finding_count == 0
         (methods,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "methods"]
         assert {"item": "Analysis", "value": NO_ANALYSIS} in methods.values()
         assert "analysis" not in report.title
-
-    def test_it_holds_no_authors_words(self, code_only: tuple[EvalHost, Report]) -> None:
-        _, report = code_only
-        assert not [block for block in report.blocks if isinstance(block, TextBlock)]
 
     def test_it_counts_every_arm_s_trials_on_its_first_screen(self, code_only: tuple[EvalHost, Report]) -> None:
         _, report = code_only
@@ -373,7 +313,7 @@ async def test_a_campaign_with_an_analysis_is_reported_through_it(toy: tuple[Eva
     stored = off_loop(analysis_report, host.storage, analysis.id, analysis.scope_id)
     assert (resolved.basis, resolved.unread_analysis_id) == ("code_only", analysis.id)
     assert (stored.basis, stored.unread_analysis_id) == ("code_only", analysis.id)
-    assert report.basis == "code_only" and report.source.bundle_fingerprint == analysis.aspects[0].bundle_fingerprint
+    assert report.source.bundle_fingerprint == analysis.aspects[0].bundle_fingerprint
 
 
 async def test_an_archived_analysis_is_not_the_campaigns_report(toy: tuple[EvalHost, EvalAnalysis, Report]) -> None:

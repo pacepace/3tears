@@ -106,7 +106,7 @@ async def test_the_first_screen_runs_title_question_warning_call(screen: str, ma
     else:
         whole, warning, table = campaign_report_html(page), '<p class="flag warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
-    assert page.basis == "code_only" and page.finding_count == 0
+    assert page.basis == "code_only"
     # The arms are priced, so the report-wide cost caveat closes what warns, once.
     assert opening(page) == [("memo", NO_RECOMMENDATION), ("cost", COST_ROUTING_CAVEAT)]
 

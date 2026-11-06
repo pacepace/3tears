@@ -86,7 +86,7 @@ def test_every_chart_a_reference_draws_is_a_chart_block_that_gives_back_its_data
     assert {chart["kind"] for chart in kit_charts} == KINDS_DRAWN[name]
     for chart in kit_charts:
         assert chart["drawn"], f"#{chart['id']} was not drawn"
-        block = ChartBlock(section="memo", finding=0, chart=chart["kind"], title=chart["id"], data=chart["data"])
+        block = ChartBlock(section="memo", chart=chart["kind"], title=chart["id"], data=chart["data"])
         assert block.kit_chart() == (chart["kind"], _set(chart["data"])), f"#{chart['id']} ({chart['kind']})"
         headers, rows = block.values_table()
         assert headers and rows and all(len(row) == len(headers) for row in rows), f"#{chart['id']}'s table"
@@ -102,7 +102,7 @@ def test_a_package_page_hands_the_kit_the_data_its_blocks_carry(tmp_path: Path) 
     for name in REFERENCES:
         charts, _ = rendered(KIT / "references" / f"{name}.html", _CHARTS)
         blocks += [
-            ChartBlock(section="memo", finding=0, chart=chart["kind"], title=chart["id"], data=chart["data"])
+            ChartBlock(section="memo", chart=chart["kind"], title=chart["id"], data=chart["data"])
             for chart in charts
             if chart["kind"] is not None
         ]
@@ -134,8 +134,8 @@ def test_a_chart_s_table_is_what_a_reader_sees_where_no_chart_is_drawn(tmp_path:
     rows = [{"label": "a", "value": 1.0, "low": 0.5, "high": 1.5, "n_cases": 6}]
     markup = report_page(
         [
-            {"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "Bars", "data": bars},
-            {"kind": "chart", "section": "memo", "finding": 0, "chart": "interval_rows", "title": "Rows", "rows": rows},
+            {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
+            {"kind": "chart", "section": "memo", "chart": "interval_rows", "title": "Rows", "rows": rows},
         ]
     )
     with_script, without_script = tmp_path / "with.html", tmp_path / "without.html"
@@ -176,11 +176,10 @@ def test_a_static_page_hides_a_drawn_chart_s_table_and_shows_an_undrawn_one(tmp_
         report_html(
             report_of(
                 [
-                    {"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "Bars", "data": bars},
+                    {"kind": "chart", "section": "memo", "chart": "bars", "title": "Bars", "data": bars},
                     {
                         "kind": "chart",
                         "section": "memo",
-                        "finding": 0,
                         "chart": "interval_rows",
                         "title": "Rows",
                         "rows": rows,
@@ -305,9 +304,7 @@ def test_the_kit_refuses_each_bad_chart_draws_nothing_and_says_why(tmp_path: Pat
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     bars = {"rows": [{"label": "a", "value": 2, "color": "--s1"}], "domain": [0, 4], "fmt": "int"}
-    markup = report_page(
-        [{"kind": "chart", "section": "memo", "finding": 0, "chart": "bars", "title": "B", "data": bars}]
-    )
+    markup = report_page([{"kind": "chart", "section": "memo", "chart": "bars", "title": "B", "data": bars}])
     # The package's models refuse a colour that is not a token, so the figure's data is broken in the page itself.
     broken = markup.replace("&quot;--s1&quot;", "&quot;--s1);background:url(x)&quot;")
     assert broken != markup
@@ -349,7 +346,7 @@ def test_a_null_panel_field_inherits_the_chart_s_value_in_the_kit_as_in_the_mode
             },
         ],
     }
-    block = ChartBlock(section="memo", finding=0, chart="bars", title="t", data=data)
+    block = ChartBlock(section="memo", chart="bars", title="t", data=data)
     _, rows = block.values_table()
     assert [row for row in rows if row[1] == "floor 3"] == [["own", "floor 3", "3"], ["null", "floor 3", "3"]]
     page = tmp_path / "nulls.html"
@@ -381,7 +378,7 @@ def test_the_kit_draws_each_kit_money_case_as_the_package_spells_it(tmp_path: Pa
         pytest.skip(f"headless Chromium cannot launch: {reason}")
     cases = json.loads(_NUMBER_CASES.read_text(encoding="utf-8"))["kit_money"]["cases"]
     passed = [{"state": "passed", "label": "passed", "count": 4}]
-    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "outcome_bar", "title": "Outcomes"}
+    block = {"kind": "chart", "section": "memo", "chart": "outcome_bar", "title": "Outcomes"}
     page = tmp_path / "formats.html"
     page.write_text(
         report_page([{**block, "bars": [{"arm": "a", "tag": "P", "short_name": "a", "segments": passed}]}]),
@@ -418,7 +415,7 @@ def test_a_cost_axis_at_a_real_reply_cost_draws_distinct_ticks_none_reading_as_z
         }
         for arm, tag, cost, rate in (("control arm", "P", 0.00042, 80.0), ("cheap arm", "A", 0.00018, 70.0))
     ]
-    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "cost_quality", "title": "Cost", "unit": "usd"}
+    block = {"kind": "chart", "section": "memo", "chart": "cost_quality", "title": "Cost", "unit": "usd"}
     page = tmp_path / "cost.html"
     page.write_text(report_page([{**block, "points": points}]), encoding="utf-8")
     ticks, errors = rendered(page, _COST_TICKS)
@@ -451,7 +448,7 @@ def test_arms_whose_labels_share_a_long_prefix_are_told_apart_on_the_drawn_outco
     ]
     bars = [{"arm": arm, "tag": tag, "short_name": short, "segments": passed} for arm, tag, short in arms]
     page = tmp_path / "arms.html"
-    block = {"kind": "chart", "section": "memo", "finding": 0, "chart": "outcome_bar", "title": "Outcomes"}
+    block = {"kind": "chart", "section": "memo", "chart": "outcome_bar", "title": "Outcomes"}
     page.write_text(report_page([{**block, "bars": bars}]), encoding="utf-8")
     drawn, errors = rendered(page, _BAR_LABELS, width=width)
     assert errors == []
