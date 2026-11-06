@@ -94,6 +94,24 @@ hard-depend on it, so without it they are uninstallable at the new version.
 and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
 so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
 
+### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
+
+**Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
+default. The hub now gives an export 600 s on the warehouse, so a pod gave up on exports the hub
+would still have finished. Its `REQUEST_FAILED` also steered a retry that stacked a second export
+on the first. An export now waits the client's new `export_timeout`. Reads, fingerprints, queries,
+export deletes and export listings keep `timeout`.
+
+- `DatasourceQueryClient(..., export_timeout=...)` takes a `timedelta` or seconds. It defaults to
+  660 s, so a caller that passes nothing needs no change.
+- The default sits above the hub's default export deadline, 600 s, as `DEFAULT_QUERY_TIMEOUT_SECONDS`
+  sits above `QUERY_STATEMENT_TIMEOUT_SECONDS`. It covers 620 s of hub work: a 5 s turn at the
+  datasource, a 5 s pooled connection, the 600 s statement and 10 s for the reply. The other 40 s
+  cover a hub that is slow to start the statement.
+- A hub set to a longer export deadline needs its clients to pass a matching `export_timeout`.
+- `export_part`, `export_partitions`, `export_counted_partitions` and every other caller of
+  `client.export` get the export deadline with no change.
+
 ## v0.92.0 -- 2026-11-06
 
 ### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
