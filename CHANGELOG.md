@@ -18,8 +18,9 @@ measures an eval's graders read, in the order listed; `Eval` files it from `Resu
 
 **Changed:** where a guardrail warns, a campaign page's lead reads the first measure in the design's `measure_order`
 that a contrast tested and that is no cost: the same measure the printed first line leads on, whether a question is
-declared or not (a function listed before the classifier now leads the page too, where it led on the pass rate). A
-campaign stating no order, every one filed before, leads as it did. A measurement's scorecard prints each money
+declared or not (where the page read the classifier's accuracy, or the pass rate). A campaign stating no order, every
+one filed before this version, leads on the classifier's accuracy where the aspect reads one, else on its pass rate.
+This sentence is the lead rule; the two entries below describe the surfaces it reads on. A measurement's scorecard prints each money
 measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
 `$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
 
@@ -28,20 +29,18 @@ joins the question's family, its intervals are corrected together and a verdict 
 interval moves from `[-7.2, 34.8]` to `[-7.8, 35.4]` pts); and the pass rate gains a "no worse than the margin" reading,
 at a fixed 5-point margin for now, which nothing on `Eval` sets yet. A design's `measure_order` naming a measure no
 grader of the aspect reads is refused at the declaration gate, naming every measure it does declare. A script parsing
-the first line of a comparison reads the lead on the first grader, as before; a host
-matching a page's first screen sees the question in place of the no-question line where one is declared, and a lead
-on the first grader where a function is listed before the classifier. A host matching a measurement's scorecard
+the first line of a comparison reads the lead on the first grader (the printed-lines entry below); a host
+matching a page's first screen sees the question in place of the no-question line where one is declared, and the lead
+on the first grader in `measure_order`. A host matching a measurement's scorecard
 reads money cells with `$` and the per-1,000 mark. An older pod reading a campaign at durable v16.8 keeps
 `measure_order` and leads as before.
 
 ### evals: a campaign page leads on its question's reading, and an undecided guardrail says what leaves it undecided
 
 **Changed:** where a guardrail warns on a campaign's page, the first screen states its lead first, under the question,
-as the verdict line: one sentence per candidate, naming the reading and both arms. Where the campaign asks the aspect a
-question, the lead is its pass rate (`Pass rate: v2 against v1 shown better.`, set as decided). Where it asks none,
-the lead is the classifier's accuracy where the aspect reads one, in the aspect page's words (`Accuracy: v2 and v1 not
-separated, a lead.`), the reading the quick path's printed line leads on; with no classifier it is the pass rate,
-marked a lead. Cost never leads, and the guardrail's warning follows the lead rather than taking its place. A page no
+as the verdict line: one sentence per candidate, naming the reading and both arms, in the aspect page's words
+(`Accuracy: v2 and v1 not separated, a lead.`; set as decided, without ", a lead", where the campaign asks a question).
+Which measure it reads is the lead rule the entry above states once: the first grader's. Cost never leads, and the guardrail's warning follows the lead rather than taking its place. A page no
 guardrail warns on is unchanged and leads on its scorecard.
 
 An undecided guardrail says how many cases each arm failed it on, and that the cases are too few to decide it: `v2 is
