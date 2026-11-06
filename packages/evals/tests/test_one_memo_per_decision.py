@@ -34,7 +34,6 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
     create_campaign,
     get_campaign,
-    list_analyses,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.doc_analysis import aspect_analysis
@@ -346,7 +345,7 @@ async def test_seven_stored_campaigns_adopted_into_one_are_one_analysis_one_tabl
     assert {aspect.label: aspect.asked_at for aspect in one.aspects} == ASKED_AT
     analysis_id = await _generated(held, one)
 
-    (analysis,) = off_loop(list_analyses, held.host.storage, one.id, SCOPE)
+    (analysis,) = off_loop(held.host.storage.list_analyses_by_campaign, one.id, SCOPE)
     assert analysis.id == analysis_id and [aspect.label for aspect in analysis.aspects] == list(LABELS)
     page = off_loop(campaign_report, held.host, one.id, SCOPE)
     # The memo is a retired writer's: code's page stands in for it, saying so, and lays out every aspect as one.
@@ -724,7 +723,7 @@ async def test_a_call_on_the_recommended_arm_records_the_key_the_analysis_record
     its memo is the key a call on that arm records."""
     held, two = await _build_two(floor=False, bar=False)
     analysis_id = await _generated(held, two)
-    (analysis,) = off_loop(list_analyses, held.host.storage, two.id, SCOPE)
+    (analysis,) = off_loop(held.host.storage.list_analyses_by_campaign, two.id, SCOPE)
     assert analysis.id == analysis_id and analysis.recommended_variant_key is not None
     recorded = _record(held, two, arm="production", analysis_id=analysis_id)
     assert recorded.call.variant_key == analysis.recommended_variant_key

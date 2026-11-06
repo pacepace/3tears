@@ -25,10 +25,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
-from threetears.evals.analysis.campaign_bundle import (
-    build_campaign_bundle,
-    campaign_evidence_digest,
-)
+from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.campaigns import create_campaign, update_campaign
@@ -231,9 +228,9 @@ def identities(*, named: bool) -> dict[str, str]:
     # leaves the campaign's name out and is pinned beside it.
     v2 = PINNED["campaign fingerprint"]
     found["campaign fingerprint"] = campaign_bundle.fingerprint(like=v2)
-    found["campaign_evidence_digest"] = campaign_evidence_digest(campaign_bundle.to_dict(), like=v2)
+    found["campaign document fingerprint"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint(like=v2)
     found["campaign fingerprint v3"] = campaign_bundle.fingerprint()
-    found["campaign_evidence_digest v3"] = campaign_evidence_digest(campaign_bundle.to_dict())
+    found["campaign document fingerprint v3"] = CampaignBundle.from_dict(campaign_bundle.to_dict()).fingerprint()
     return found
 
 
@@ -302,9 +299,9 @@ PINNED: dict[str, str] = {
     ),
     "bundle schema_version": "65",
     "campaign fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
-    "campaign_evidence_digest": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
+    "campaign document fingerprint": "v2:2b80af43835a82314c267998aa876931b91fd5260c500ce88a39b62d9289235d",
     "campaign fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
-    "campaign_evidence_digest v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
+    "campaign document fingerprint v3": "v3:9708743c9b0a267dee330b57cf812934d63e3cb80d49fd3e6ebdda8f7c4c91a8",
     "case content hash": "2427afda4a091bccfdeffbdc0ef058b06862b1c310f68df406edf30604604ae2",
     # The one entry that moves with the durable minor: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure

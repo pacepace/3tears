@@ -23,7 +23,7 @@ so it can never drift from the runs it summarises.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal, Self, get_args
+from typing import Any, Literal, Self
 
 from pydantic import ConfigDict, Field, computed_field, field_validator, model_validator
 
@@ -80,10 +80,6 @@ log = get_logger(__name__)
 #: tier added to one is a tier of the other.
 ConfidenceTier = Confidence
 
-#: The tiers, strongest first — the order a surface ranks by.
-CONFIDENCE_TIERS: tuple[ConfidenceTier, ...] = get_args(Confidence)
-
-
 _CONFIDENCE_TIER_DESCRIPTION = "How firmly the evidence settles the claim: very_high | high | medium | low."
 
 #: Which kind of per-cell reading a reference names — a measure (``CellFacts.measures``) or a
@@ -130,10 +126,10 @@ def evidence_tier_of(rows: list[JudgedEvidenceTier | None]) -> EvidenceTier:
 class CampaignWindow(EvalDocumentModel):
     """The [start, end] time span a campaign's runs cover — DERIVED, never stored.
 
-    Produced by :func:`derive_window` from the member runs' ``created_at`` values
-    and carried on :class:`CampaignView` in the ``campaign_get`` response. Not a
-    field on :class:`EvalCampaign`: deriving it at read time is what keeps it from
-    drifting as runs join or leave the campaign.
+    Produced by :func:`derive_window` from the member runs' ``created_at`` values, and
+    carried on a context bundle (``AnalysisContextBundle.window``). Not a field on
+    :class:`EvalCampaign`: deriving it at read time is what keeps it from drifting as runs join
+    or leave the campaign.
     """
 
     start: str = Field(description="Earliest member-run created_at (ISO-8601).")
@@ -393,46 +389,6 @@ class EvalCampaign(DurableDocumentModel):
         :rtype: Aspect | None
         """
         return next((aspect for aspect in self.aspects if run_id in aspect.run_ids), None)
-
-
-class CampaignView(EvalDocumentModel):
-    """A campaign plus its read-time-derived window — the ``campaign_get`` payload.
-
-    Computed once by the host's eval service and serialized by every surface that
-    answers ``campaign_get``, so no two of them can answer ``campaign_get`` with different facts. ``window`` is ``None`` when
-    no member runs resolved (no scope supplied, or none of the run ids exist in
-    it) — an honest absence, not a zero span.
-
-    A member run gets exactly one of three fates, and all three are reported:
-    resolved (it feeds the window), archived, or unresolvable. The third used to be
-    a bare ``continue``, so a campaign could claim N memberships, resolve none of
-    them, and print a bare ``Runs: N``.
-    """
-
-    campaign: EvalCampaign
-    window: CampaignWindow | None = Field(
-        default=None,
-        description="Derived from member runs' created_at; None when no runs resolved.",
-    )
-    archived_run_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Member runs an operator archived — still attached, excluded from the window and from "
-            "every cohort a report over this campaign assembles. Empty when no scope_id was "
-            "supplied, since membership cannot be resolved without one."
-        ),
-    )
-    unresolved_run_ids: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Member run_ids that do not exist in the supplied scope — an honest gap, not dropped "
-            "silently. Reported separately from archived_run_ids for the reason ContextBundle already "
-            "records: unresolved is a lookup that failed, archived is a curation that succeeded, and "
-            "pooling them makes a deliberate exclusion read as missing data. Empty when no scope_id "
-            "was supplied, since membership cannot be resolved without one — NOT because every member "
-            "resolved."
-        ),
-    )
 
 
 def derive_window(run_created_ats: list[str]) -> CampaignWindow | None:
@@ -1678,7 +1634,6 @@ class EvalInsight(EvalDocumentModel):
 
 __all__ = [
     "AttemptOutcome",
-    "CampaignView",
     "CampaignWindow",
     "CoverageLens",
     "AspectAnalysis",

@@ -118,13 +118,11 @@ if TYPE_CHECKING:
 
 __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why the aliases are exported
     "declaration_of",
-    "read_as_declared",
     "OUTCOME_DIM_ID",
     "TIME_UNITS",
     "is_latency_measure",
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
-    "HOST_PRODUCED_MEASURES",
     "CODE_GRADED_FAMILIES",
     "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
@@ -2161,19 +2159,6 @@ def declaration_of(descriptor: MetricDescriptor) -> MeasureDeclaration:
     )
 
 
-def read_as_declared(descriptor: MetricDescriptor, declaration: MeasureDeclaration) -> MetricDescriptor:
-    """The descriptor read on a stored declaration: everything the reading host says of it, but how to read it.
-
-    :param descriptor: The reading host's descriptor of the measure.
-    :ptype descriptor: MetricDescriptor
-    :param declaration: How the runs being read were launched to read it (``EvalRun.declared_measures``).
-    :ptype declaration: MeasureDeclaration
-    :return: The descriptor with the declaration's direction, merit axis, guardrail flag, margin and range.
-    :rtype: MetricDescriptor
-    """
-    return descriptor.model_copy(update=declaration.model_dump())
-
-
 #: The core rate measures a run may declare a margin on (``EvalRun.declared_margins``,
 #: :func:`run_margin_refusal`): numeric, on 0 to 1, with a better end and a merit axis (so a comparison tests
 #: them), no guardrail, and no margin of their own. Derived from the descriptors, so a core rate measure added
@@ -2193,13 +2178,6 @@ RUN_MARGIN_MEASURES: frozenset[str] = frozenset(
 if len(METRIC_DESCRIPTORS) != len(_SEED):  # pragma: no cover - import-time invariant
     _dupes = sorted({d.name for d in _SEED if sum(1 for o in _SEED if o.name == d.name) > 1})
     raise RuntimeError(f"Duplicate measure name(s) in the metric seed: {_dupes}")
-
-#: The core measures the ENGINE declares and a host's candidate kind writes: a classifier kind lands
-#: ``match`` and ``confusion_cell`` on each result's ``host_measures``, and the engine only reads them.
-#: Every other name in :data:`METRIC_DESCRIPTORS` has an engine producer, which a test holds: a core
-#: measure that is neither produced by the engine nor named here is a descriptor that renders and is
-#: never filled, so it fails that test rather than sitting empty in every host's catalogue.
-HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
 
 
 def reader_name_defects(descriptors: Iterable[MetricDescriptor]) -> list[str]:

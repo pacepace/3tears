@@ -44,7 +44,7 @@ from threetears.evals.analysis import (
     report_markdown,
     set_campaign_control,
 )
-from threetears.evals.analysis.report.build import analysis_bundle, contrast_rows
+from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
@@ -401,7 +401,10 @@ async def test_a_lever_no_comparison_exercised_is_said_in_words_never_by_its_pat
             "aspects": [aspect.model_copy(update={"bundle": {**aspect.bundle, "unexercised_factors": [unexercised]}})]
         }
     )
-    report = build_code_only_report(analysis_bundle(frozen), assembled_at=analysis.generation.bundle_assembled_at)
+    (held,) = frozen.aspects
+    report = build_code_only_report(
+        AnalysisContextBundle.from_dict(dict(held.bundle)), assembled_at=analysis.generation.bundle_assembled_at
+    )
     markdown = report_markdown(report)
     assert lever not in markdown and "research model: one research call was made, on " in markdown
 

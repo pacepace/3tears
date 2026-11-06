@@ -45,7 +45,6 @@ from threetears.evals.harness.__main__ import PROG
 from threetears.evals.harness.__main__ import main as harness_main
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness.analyse import analyse, analysis_page, recording_path
-from threetears.evals.analysis.service import list_analysis_attempts
 from threetears.evals.ops import campaigns_list, report_read
 from threetears.evals.ops.analyst import report_snapshot_freeze
 from threetears.evals.ops.host import OpsHost
@@ -255,7 +254,7 @@ async def test_analyse_links_its_stored_report_as_the_campaign_s_analysis(
     assert served.doc is not None and served.doc["headline"] == RUNG_ONE_DOC["headline"]
     page = off_loop(report_read, result.host, result.campaign_id, result.scope_id, format="markdown")
     assert RUNG_ONE_DOC["headline"] in page.body
-    (attempt,) = off_loop(list_analysis_attempts, result.host.storage, result.campaign_id, result.scope_id)
+    (attempt,) = off_loop(result.host.storage.list_analysis_attempts_by_campaign, result.campaign_id, result.scope_id)
     assert (attempt.outcome, attempt.analysis_id, attempt.generator_model) == ("stored", served.analysis_id, MODEL)
     (line,) = off_loop(campaigns_list, result.host, result.scope_id).campaigns
     assert line.report_state == "written" and line.report is not None

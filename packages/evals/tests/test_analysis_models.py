@@ -336,7 +336,7 @@ def test_the_stored_tiers_are_the_authored_tiers():
     from threetears.evals.kernel import authored, campaign
 
     assert campaign.ConfidenceTier is authored.Confidence
-    assert campaign.CONFIDENCE_TIERS == get_args(authored.Confidence) == ("very_high", "high", "medium", "low")
+    assert get_args(campaign.ConfidenceTier) == get_args(authored.Confidence) == ("very_high", "high", "medium", "low")
 
 
 # ---------------------------------------------------------------------------

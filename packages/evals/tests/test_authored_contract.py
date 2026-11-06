@@ -86,9 +86,9 @@ class TestOneVocabulary:
     def test_the_confidence_tiers_are_the_analysis_models_tiers(self):
         import typing
 
-        from threetears.evals.kernel.campaign import CONFIDENCE_TIERS
+        from threetears.evals.kernel.campaign import ConfidenceTier
 
-        assert set(typing.get_args(authored.Confidence)) == set(CONFIDENCE_TIERS)
+        assert set(typing.get_args(authored.Confidence)) == set(typing.get_args(ConfidenceTier))
 
     def test_the_reading_kinds_are_the_analysis_models_kinds(self):
         import typing

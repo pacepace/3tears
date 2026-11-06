@@ -22,7 +22,6 @@ from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
     FloorState,
-    analysis_bundle,
     FloorStatus,
     Report,
     assemble_context_bundle,
@@ -39,6 +38,7 @@ from threetears.evals.analysis.bundle.schema import (
     question_axes,
 )
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.report.decision import (
     FloorOutcome,
     aspect_pass_rate,
@@ -380,7 +380,7 @@ def test_an_analysis_over_a_bundle_from_before_aspects_is_refused_with_its_remed
     assert stored["schema_version"] == 54 and "declared_design" in stored
     analysis = make_analysis(aspects=[analysed_aspect().model_copy(update={"bundle": stored})])
     with pytest.raises(RefusedInput, match="shape 54, from before a bundle read one aspect") as refused:
-        analysis_bundle(analysis)
+        analysis_campaign_bundle(analysis)
     assert "analysis_generate" in refused.value.remedy
 
 
