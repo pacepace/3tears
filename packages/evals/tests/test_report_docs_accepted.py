@@ -87,12 +87,22 @@ def _inputs() -> dict[str, ReportInput]:
     }
 
 
+#: A snapshot the live run was written on -> the id the fixtures build for it now, re-pinned where a change moved the
+#: input's id and none of its evidence, so the document is still checked against what it was written on. Each with
+#: its reason; any other move of the input still fails, and is recorded again.
+_REPINNED: dict[str, str] = {
+    # 2026-11-06 (removal wave R2): `meta.kind_means` names the report where it named the retired memo. Its meaning,
+    # every figure, arm, aspect and id are unchanged, and the run's recording replays to the same document on it.
+    "report-snapshot:7f4771294a60ba16d58f771e91533101": "report-snapshot:983c28aa6bfbed1f3e99c2753cae103d",
+}
+
+
 def _input(name: str) -> ReportInput:
     """The report input of the fixture snapshot the run was written on, which the fixtures must still build."""
     snapshot_of, recorded = _replay(name)["snapshot_of"], _live_record(name)["snapshot_id"]
     built = snapshot_ids()[snapshot_of]
 
-    assert built == recorded, (
+    assert built == _REPINNED.get(recorded, recorded), (
         f"{name}: written on {recorded}, but the fixtures now build {snapshot_of!r} as {built}; the fixture input "
         "changed since the run, so its document would be checked against evidence it was not written on"
     )
