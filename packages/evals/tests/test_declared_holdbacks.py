@@ -5,16 +5,22 @@ it (``docs/surface.md`` states the rule). The ledger, ``tests/fixtures/declared_
 names whose reason the tree alone does not show, one ``<name> | <reason>`` per line:
 
 - ``discodon-tests-only``: Discodon's tests import it and nothing else does; no shipped page names it and no
-  declared signature reaches it. Which of Discodon's imports are its tests' is read from Discodon, not from here
-  (``tests/fixtures/host_imports/discodon.txt`` holds its imports from both), so this holds the rest: nothing in this
-  repository imports the name, no page names it, no declared signature reaches it, and it is not a port.
-- ``port``: a protocol or an abstract class, which a host implements. Every declared one is listed, whatever else
-  holds it.
+  declared signature reaches it. ``tests/fixtures/host_imports/discodon.txt`` mixes Discodon's production and test
+  imports, so which are its tests' alone is read from Discodon, not from here. This holds the rest: Discodon's list
+  carries the name, nothing in this repository imports it, no page names it, no declared signature reaches it, and it
+  is no protocol.
+- ``port-host-implements``: a declared protocol or abstract class a host's code implements and hands the engine (a
+  store, a client, a kind, a pricer).
+- ``protocol-engine-provides``: a declared protocol the engine implements and hands a host's code (a cell's sink, a
+  delivery's recorder), or that the engine's own storage satisfies over the host's store. Which of the two a protocol
+  is, is the ledger's judgement; this holds that every declared protocol is one or the other.
 - ``unreached``: declared, and nothing imports it, names it or reaches it. There are none, and this holds that.
 
-A page is read as :mod:`test_guide_names_are_declared` reads it, qualified, attributed and bare, without the lines
-that only list the declared names (the reference's entries and ``docs/surface.md``'s rungs), since those name every
-declared name by construction. A declared signature reaches a name when the name is a word of another declared
+A page is read as :mod:`test_guide_names_are_declared` reads it, qualified, attributed and bare, and every word of its
+code blocks besides, without the lines that only list the declared names (the reference's entries and
+``docs/surface.md``'s rungs), since those name every declared name by construction. An import counts from a shipped
+page, an example, the courier host or another package's source; the toy host's alone does not
+(:mod:`test_api_tiers` says why). A declared signature reaches a name when the name is a word of another declared
 name's signature, of one of its public methods or properties, or of a ``:raises:`` line in their docstrings.
 """
 
@@ -45,11 +51,15 @@ REPO = PACKAGE.parents[1]
 LEDGER = PACKAGE / "tests" / "fixtures" / "declared_holdbacks.txt"
 
 DISCODON_TESTS_ONLY = "discodon-tests-only"
-PORT = "port"
+HOST_IMPLEMENTS = "port-host-implements"
+ENGINE_PROVIDES = "protocol-engine-provides"
 UNREACHED = "unreached"
 
 #: Every reason a ledger line may give.
-REASONS = (DISCODON_TESTS_ONLY, PORT, UNREACHED)
+REASONS = (DISCODON_TESTS_ONLY, HOST_IMPLEMENTS, ENGINE_PROVIDES, UNREACHED)
+
+#: The reasons a declared protocol is listed under.
+PROTOCOL_REASONS = (HOST_IMPLEMENTS, ENGINE_PROVIDES)
 
 #: A reference entry's own name, which the reference prints for every declared name.
 _REFERENCE_ENTRY = re.compile(r"^- \*\*`[^`]+`\*\*", re.M)
@@ -57,6 +67,8 @@ _REFERENCE_ENTRY = re.compile(r"^- \*\*`[^`]+`\*\*", re.M)
 _REFERENCE_SIGNATURE = re.compile(r"^\s*<br>`.*$", re.M)
 #: One root's line on ``docs/surface.md``, which lists that root's declared names.
 _SURFACE_ROOT = re.compile(r"^- `[\w.]+`: .*$", re.M)
+#: A fenced code block on a page.
+_FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 #: An exception a docstring says a callable raises.
 _RAISES = re.compile(r":raises\s+~?([\w.]+)\s*:")
 
@@ -88,8 +100,8 @@ def public_object(name: str) -> Any:
 @cache
 def imported_in_repo() -> frozenset[str]:
     """Every public name something in this repository imports from outside the package's own source: a shipped page,
-    an example, the courier and toy hosts, another package's source."""
-    readers = {*pages.PAGES, *tiers.HOST_GUIDES, *tiers.SHOWN, *tiers.EXERCISER}
+    an example, the courier host, another package's source. Not the toy host: a name only it imports is not held."""
+    readers = {*pages.PAGES, *tiers.HOST_GUIDES, *tiers.SHOWN}
     others = (
         path
         for path in (REPO / "packages").glob("**/src/**/*.py")
@@ -110,7 +122,8 @@ def page_text(page: Path) -> str:
 
 @cache
 def named_on_a_page() -> frozenset[str]:
-    """Every declared name a shipped page names: spelled in full, attributed to its root, or spelled bare."""
+    """Every declared name a shipped page names: spelled in full, attributed to its root, spelled bare, or written in
+    a code block."""
     declared = declared_names()
     by_word: dict[str, set[str]] = {}
     for name in declared:
@@ -119,7 +132,9 @@ def named_on_a_page() -> frozenset[str]:
     for page in pages.PAGES:
         text = page_text(page)
         named |= declared & set(pages.taught_names(page, text=text))
-        for word in pages.bare_names(page, text=text):
+        words = set(pages.bare_names(page, text=text))
+        words |= {word for block in _FENCE.findall(text) for word in re.findall(r"\w+", block)}
+        for word in words:
             named |= by_word.get(word, set())
     return frozenset(named)
 
@@ -198,25 +213,30 @@ def test_the_readers_find_the_names_they_are_written_for() -> None:
         "the signature reader missed a name only a method's return reaches"
     )
     assert "threetears.evals.quick.EXIT_OK" in named_on_a_page(), "the page reader missed a bare name"
+    assert "threetears.evals.testing.StoreConformanceCase" in named_on_a_page(), (
+        "the page reader missed a name only a code block writes"
+    )
     assert "threetears.evals.kernel.host.EvalHost" in imported_in_repo(), "the import reader found nothing"
     assert "threetears.evals.schema.DocumentStore" in ports(), "the port reader missed the store port"
 
 
-def test_the_ledger_lists_every_declared_port() -> None:
-    listed = {name for name, reason in read_ledger().items() if reason == PORT}
+def test_the_ledger_lists_every_declared_protocol_once() -> None:
+    listed = {name for name, reason in read_ledger().items() if reason in PROTOCOL_REASONS}
     assert listed == ports(), (
-        f"{LEDGER}'s ports are not the declared protocols and abstract classes. "
-        f"Not listed: {sorted(ports() - listed)}. Not a declared port: {sorted(listed - ports())}."
+        f"{LEDGER}'s {' and '.join(PROTOCOL_REASONS)} lines are not the declared protocols and abstract classes. "
+        f"Not listed: {sorted(ports() - listed)}. Not a declared protocol: {sorted(listed - ports())}."
     )
 
 
 def test_a_name_only_discodons_tests_import_is_held_by_nothing_else() -> None:
-    """Otherwise it is held by what holds it, and Discodon's re-pin would not free it."""
+    """Discodon's import list carries it, and nothing else holds it, or Discodon's re-pin would not free it."""
+    discodon = {name for _, name in host_imports()}
     held = {
+        "Discodon's import list does not carry it, so Discodon's tests no longer hold it": declared_names() - discodon,
         "imported in this repository": imported_in_repo(),
         "named on a shipped page": named_on_a_page(),
         "reached by a declared signature": reached_by_a_signature(),
-        "a port": ports(),
+        "a protocol": ports(),
     }
     wrong = [
         f"{name}: {why}"
@@ -226,14 +246,14 @@ def test_a_name_only_discodons_tests_import_is_held_by_nothing_else() -> None:
         if name in names
     ]
     assert not wrong, (
-        f"{LEDGER} gives these {DISCODON_TESTS_ONLY}, but something else holds them: drop their lines\n  "
+        f"{LEDGER} gives these {DISCODON_TESTS_ONLY}, but the reason no longer holds: drop their lines\n  "
         + "\n  ".join(wrong)
     )
 
 
 def test_no_declared_name_is_unreached() -> None:
     ledger = read_ledger()
-    discodon = {name for _, name in host_imports()} | {n for n, r in ledger.items() if r == DISCODON_TESTS_ONLY}
+    discodon = {name for _, name in host_imports()}
     unreached = (
         declared_names() - imported_in_repo() - discodon - named_on_a_page() - reached_by_a_signature() - ports()
     )

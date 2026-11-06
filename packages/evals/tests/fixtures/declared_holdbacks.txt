@@ -1,68 +1,74 @@
 # The declared names held back, for tests/test_declared_holdbacks.py, which says what holds each reason to the tree.
-# One `<name> | <reason>` per line, sorted. A declared name not listed is held by something the tree shows: an
-# import here or by Discodon (tests/fixtures/host_imports/discodon.txt), a shipped page, or a declared signature.
+# One `<name> | <reason>` per line, sorted. A declared name not listed is held by something the tree shows: an import
+# here (a shipped page, an example, the courier host, another package), Discodon's import list
+# (tests/fixtures/host_imports/discodon.txt, its production and test imports mixed), a shipped page's prose or code,
+# or a declared signature.
 #
-#   discodon-tests-only  Discodon's tests import it and nothing else does: no page names it, no declared signature
-#                        reaches it. It goes provisional once Discodon re-pins without it.
-#   port                 A declared protocol or abstract class, which a host implements. Every one is listed.
-#   unreached            Declared, and nothing imports, names or reaches it. None.
+#   discodon-tests-only       Only Discodon's tests import it: no page names it, no declared signature reaches it.
+#                             It goes provisional once Discodon re-pins without it.
+#   port-host-implements      A declared protocol a host's code implements and hands the engine.
+#   protocol-engine-provides  A declared protocol the engine implements and hands a host's code, or that the engine's
+#                             own storage satisfies over the host's store.
+#   unreached                 Declared, and nothing imports, names or reaches it. None.
 #
 # Computed 2026-11-06 over this tree at a3f15bfd8 and Discodon develop at e5a7f2a56 (2026-11-03): a Discodon test is
 # a file under tests/, a conftest.py or a test_*.py; the rest is its production code, which also reads the three
 # seed defaults (gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT, gen.EVAL_PROPOSER_TEMPLATE_DEFAULT,
-# analysis.EVAL_ANALYSIS_GEN_DEFAULT) by name. 24 discodon-tests-only, 31 port, 0 unreached.
+# analysis.EVAL_ANALYSIS_GEN_DEFAULT) by name. 25 discodon-tests-only, 18 port-host-implements,
+# 13 protocol-engine-provides, 0 unreached.
 threetears.evals.analysis.ABSENT | discodon-tests-only
 threetears.evals.analysis.MIN_CASES | discodon-tests-only
 threetears.evals.analysis.assemble_campaign_bundle | discodon-tests-only
 threetears.evals.analysis.generate_analysis | discodon-tests-only
 threetears.evals.analysis.serialize_report | discodon-tests-only
 threetears.evals.kernel.ACCURACY_MEASURE | discodon-tests-only
-threetears.evals.kernel.ActionSeam | port
-threetears.evals.kernel.CandidateKind | port
-threetears.evals.kernel.CassetteStore | port
-threetears.evals.kernel.CellCassettes | port
-threetears.evals.kernel.CellSink | port
-threetears.evals.kernel.CellSpanWindow | port
-threetears.evals.kernel.DefinitionStore | port
-threetears.evals.kernel.DeliveryRecorder | port
-threetears.evals.kernel.DeliveryReplay | port
-threetears.evals.kernel.DeliverySeam | port
-threetears.evals.kernel.DeliveryTicket | port
+threetears.evals.kernel.ActionSeam | port-host-implements
+threetears.evals.kernel.CandidateKind | port-host-implements
+threetears.evals.kernel.CassetteStore | protocol-engine-provides
+threetears.evals.kernel.CellCassettes | protocol-engine-provides
+threetears.evals.kernel.CellSink | protocol-engine-provides
+threetears.evals.kernel.CellSpanWindow | protocol-engine-provides
+threetears.evals.kernel.DefinitionStore | protocol-engine-provides
+threetears.evals.kernel.DeliveryRecorder | protocol-engine-provides
+threetears.evals.kernel.DeliveryReplay | protocol-engine-provides
+threetears.evals.kernel.DeliverySeam | port-host-implements
+threetears.evals.kernel.DeliveryTicket | protocol-engine-provides
 threetears.evals.kernel.ENGINE_FAMILIES | discodon-tests-only
 threetears.evals.kernel.FIND_CAMPAIGN | discodon-tests-only
 threetears.evals.kernel.FIND_RUN | discodon-tests-only
 threetears.evals.kernel.INCOMPLETE_STOP_REASONS | discodon-tests-only
-threetears.evals.kernel.JobStore | port
+threetears.evals.kernel.JobStore | protocol-engine-provides
 threetears.evals.kernel.MeasureSummary | discodon-tests-only
-threetears.evals.kernel.Recordable | port
-threetears.evals.kernel.ResultStore | port
-threetears.evals.kernel.RunRecordStore | port
-threetears.evals.kernel.RunStore | port
+threetears.evals.kernel.Recordable | port-host-implements
+threetears.evals.kernel.ResultStore | protocol-engine-provides
+threetears.evals.kernel.RunRecordStore | protocol-engine-provides
+threetears.evals.kernel.RunStore | protocol-engine-provides
 threetears.evals.kernel.TURN_BUDGET_ENDED_KEY | discodon-tests-only
 threetears.evals.kernel.classifier_label_measure | discodon-tests-only
 threetears.evals.kernel.count_substituted | discodon-tests-only
 threetears.evals.kernel.count_substituted_deliveries | discodon-tests-only
-threetears.evals.kernel.host.CompletionClients | port
-threetears.evals.kernel.host.TemplateCaseFields | port
+threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER | discodon-tests-only
+threetears.evals.kernel.host.CompletionClients | port-host-implements
+threetears.evals.kernel.host.TemplateCaseFields | protocol-engine-provides
 threetears.evals.kernel.host.UNSEATED_LEVEL | discodon-tests-only
 threetears.evals.kernel.judge_case_of | discodon-tests-only
+threetears.evals.kernel.resolve_variant_identity | discodon-tests-only
 threetears.evals.ops.run_job_id | discodon-tests-only
-threetears.evals.providers.Pricer | port
-threetears.evals.run.CellExecutor | port
-threetears.evals.run.KindFactory | port
+threetears.evals.providers.Pricer | port-host-implements
+threetears.evals.run.CellExecutor | port-host-implements
+threetears.evals.run.KindFactory | port-host-implements
 threetears.evals.run.callers_missing_the_constructor | discodon-tests-only
 threetears.evals.run.rejudge_result | discodon-tests-only
 threetears.evals.run.resolve_constructor | discodon-tests-only
-threetears.evals.schema.AsyncDocumentStore | port
-threetears.evals.schema.AsyncStoreClock | port
-threetears.evals.schema.BoundCompletionClient | port
-threetears.evals.schema.CompletionClient | port
-threetears.evals.schema.CompletionResult | port
-threetears.evals.schema.DocumentStore | port
-threetears.evals.schema.ProviderFailureDescriber | port
-threetears.evals.schema.StoreClock | port
-threetears.evals.schema.ToolTurnClient | port
-threetears.evals.schema.TraceSink | port
+threetears.evals.schema.AsyncDocumentStore | port-host-implements
+threetears.evals.schema.AsyncStoreClock | port-host-implements
+threetears.evals.schema.BoundCompletionClient | port-host-implements
+threetears.evals.schema.CompletionClient | port-host-implements
+threetears.evals.schema.CompletionResult | port-host-implements
+threetears.evals.schema.DocumentStore | port-host-implements
+threetears.evals.schema.ProviderFailureDescriber | port-host-implements
+threetears.evals.schema.StoreClock | port-host-implements
+threetears.evals.schema.ToolTurnClient | port-host-implements
+threetears.evals.schema.TraceSink | port-host-implements
 threetears.evals.testing.READER_CONFORMANCE_CASES | discodon-tests-only
 threetears.evals.testing.ReaderConformanceCase | discodon-tests-only
-threetears.evals.testing.StoreConformanceCase | discodon-tests-only

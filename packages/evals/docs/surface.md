@@ -16,12 +16,13 @@ A declared name goes provisional once nothing outside the package imports it, un
 - it is a stable name only a known host's tests import: it stays declared until that host re-pins.
 
 The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt), lists the
-names only Discodon's tests hold and every declared port; `tests/test_declared_holdbacks.py` holds it to the tree.
+names only Discodon's tests hold and every declared protocol; `tests/test_declared_holdbacks.py` holds it to the tree.
 
 | Reason | What holds the name | Names |
 |---|---|---|
-| `discodon-tests-only` | Discodon's tests import it, and nothing else imports, names or reaches it | 24 |
-| `port` | A protocol a host implements | 31 |
+| `discodon-tests-only` | Discodon's tests import it, and nothing else imports, names or reaches it | 25 |
+| `port-host-implements` | A protocol a host implements and hands the engine | 18 |
+| `protocol-engine-provides` | A protocol the engine implements and hands a host, or its storage satisfies | 13 |
 | `unreached` | Nothing | 0 |
 
 Each line below is one root, `threetears.evals.` dropped from its name. `tests/test_api_tiers.py` holds this page
