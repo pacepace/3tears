@@ -30,6 +30,8 @@ class _Queue:
         self.marks: dict[int, str] = dict(enumerate(marks, start=1))
         self.missing = list(missing or [])
         self.created: list[str] = []
+        #: the function and old-trigger statements an install ran before its triggers
+        self.replaced: list[str] = []
         self.lock_free = True
         self._locked = False
         self.ddl_without_lock: list[str] = []
@@ -81,6 +83,11 @@ class _Queue:
         return page
 
     async def execute(self, query: str, *args: Any) -> str:
+        if query.startswith(("CREATE OR REPLACE FUNCTION", "DROP TRIGGER")):
+            if not self._locked:
+                self.ddl_without_lock.append(query)
+            self.replaced.append(query)
+            return query.split(" ", 2)[0]
         if query.startswith("CREATE TRIGGER"):
             if not self._locked:
                 self.ddl_without_lock.append(query)
@@ -188,14 +195,29 @@ async def test_only_the_tables_without_the_trigger_get_one() -> None:
     assert queue.missing == []
 
 
-def test_the_trigger_fires_per_statement_on_every_write_into_the_one_queue() -> None:
+def test_the_trigger_fires_per_row_and_marks_a_transaction_once_into_the_one_queue() -> None:
+    # per row, so a statement that changed no row marks nothing; once per table per transaction behind a
+    # transaction-local setting, so a bulk write costs one mark
     sql = write_mark_trigger_sql(marks_schema="platform", table_schema="agent_a", table="groups")
     assert "AFTER INSERT OR UPDATE OR DELETE" in sql
-    assert "FOR EACH STATEMENT" in sql
+    assert "FOR EACH ROW" in sql
     assert '"platform"."threetears_mark_collection_write"()' in sql
     table, function = write_marks_ddl("platform")
     assert '"platform"."collection_write_marks"' in table
     assert 'INSERT INTO "platform"."collection_write_marks"' in function
+    assert "current_setting('threetears.write_mark.t' || TG_RELID::text, true) = '1'" in function
+    assert "set_config('threetears.write_mark.t' || TG_RELID::text, '1', true)" in function
+
+
+async def test_an_install_replaces_the_function_and_the_statement_trigger_before_its_row_trigger() -> None:
+    queue = _Queue([], missing=[("platform", "groups")])
+
+    await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))  # type: ignore[arg-type]
+
+    assert queue.replaced[0].startswith('CREATE OR REPLACE FUNCTION "platform"."threetears_mark_collection_write"')
+    assert queue.replaced[1] == 'DROP TRIGGER IF EXISTS "threetears_collection_write_mark" ON "platform"."groups"'
+    assert queue.created and "FOR EACH ROW" in queue.created[0]
+    assert queue.ddl_without_lock == []
 
 
 class _Lease:

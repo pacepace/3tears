@@ -63,14 +63,14 @@ from threetears.nats import (
 )
 from threetears.observe import get_logger
 
-from .operator import relay_stream
+from .operator_relay import relay_stream
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
     from collections.abc import AsyncIterator
 
     from threetears.nats import NatsClient, PipeStream
 
-    from .operator import DisplayEndpoint, DisplayTransport
+    from .operator_relay import DisplayEndpoint, DisplayTransport
     from .operator_session import SessionClaim
 
 __all__ = ["serve_display"]

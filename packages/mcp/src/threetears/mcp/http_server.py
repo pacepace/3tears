@@ -31,6 +31,7 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import Any
 
+import uvicorn
 from mcp.server import Server as _SdkServer
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
@@ -335,8 +336,6 @@ async def serve_mcp_http(
     :return: nothing
     :rtype: None
     """
-    import uvicorn
-
     config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(config)
     await server.serve()

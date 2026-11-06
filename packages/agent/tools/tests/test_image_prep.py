@@ -5,7 +5,10 @@ from __future__ import annotations
 import io
 
 import base64
+import json
+import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -157,11 +160,29 @@ class TestAFailedResizeIsReported:
         assert caught.value.mime_type == "image/heic"
         assert caught.value.size_bytes == len(data)
 
-    def test_a_missing_pillow_is_reported_rather_than_sending_the_original(self, monkeypatch):
+    def test_a_missing_pillow_is_reported_rather_than_sending_the_original(self):
+        """Pillow is imported at the module's top, so its absence is simulated in a fresh interpreter."""
         big = _make_jpeg(100, 100) + b"\x00" * (SIZE_THRESHOLD + 1)
-        monkeypatch.setitem(sys.modules, "PIL", None)
-        with pytest.raises(ImagePrepError, match="ModuleNotFoundError"):
-            prepare_image_for_vision(big, "image/jpeg")
+        probe = textwrap.dedent(
+            """
+            import json
+            import sys
+            sys.modules["PIL"] = None
+            from threetears.agent.tools.builtin.image_prep import ImagePrepError, prepare_image_for_vision
+            big = sys.stdin.buffer.read()
+            try:
+                prepare_image_for_vision(big, "image/jpeg")
+            except ImagePrepError as exc:
+                print(json.dumps({"refused": str(exc)}))
+            else:
+                print(json.dumps({"answered": True}))
+            """
+        )
+        proc = subprocess.run([sys.executable, "-c", probe], input=big, capture_output=True, timeout=120, check=False)
+        assert proc.returncode == 0, proc.stderr.decode()
+        outcome = json.loads(proc.stdout.decode().strip().splitlines()[-1])
+        assert "refused" in outcome, outcome
+        assert "ModuleNotFoundError" in outcome["refused"]
 
     @pytest.mark.asyncio
     async def test_no_exception_message_reaches_the_agent(self, monkeypatch):

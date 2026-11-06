@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from threetears.observe.text_block import under
 from threetears.observe import get_logger, traced
 
@@ -184,8 +186,6 @@ class ToolRouter:
 
         # Create model and invoke
         model = await self._factory.create_chat_model(purpose="routing")
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         messages = [
             SystemMessage(content=prompt_text),
             HumanMessage(content=user_message),

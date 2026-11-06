@@ -2,20 +2,44 @@
 
 LangChain-native shape (3tears v0.6.0+): :func:`create_voyageai_embedding`
 returns a configured ``VoyageAIEmbeddings`` instance, which already
-inherits from :class:`langchain_core.embeddings.Embeddings`. The factory
+inherits from :class:`langchain_core.embeddings.Embeddings`. This module
 applies a Python 3.14 compatibility shim that the upstream voyageai SDK
-needs (see :mod:`._voyageai_compat`).
+needs (see :mod:`._voyageai_compat`) before it imports the upstream package.
 """
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from importlib.util import find_spec
+from typing import Any
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
-if TYPE_CHECKING:
+
+def _voyageai_installed() -> bool:
+    """whether the voyageai extra's package can be imported, found without importing it.
+
+    :return: True when ``langchain_voyageai`` is installed
+    :rtype: bool
+    """
+    try:
+        return find_spec("langchain_voyageai") is not None
+    except ValueError, ImportError:
+        # NOSILENT: a module set to None in sys.modules, or one a finder refuses, is one this process cannot import
+        return False
+
+
+# the shim goes in before the upstream package loads, or its multimodal models crash the import; only where the
+# extra is installed, so a process without it gets no stub module in sys.modules
+if _voyageai_installed():
+    apply_voyageai_compat()
+
+_VOYAGEAI_IMPORT_ERROR: ImportError | None = None
+try:
     from langchain_voyageai import VoyageAIEmbeddings
+except ImportError as _exc:  # NOSILENT: the voyageai extra is optional; the factory names it
+    _VOYAGEAI_IMPORT_ERROR = _exc
 
 __all__ = [
     "VOYAGEAI_PROVIDER_NAME",
@@ -36,9 +60,9 @@ def create_voyageai_embedding(
 ) -> VoyageAIEmbeddings:
     """creates a configured ``VoyageAIEmbeddings`` instance.
 
-    applies the Python 3.14 voyageai compat shim before importing the
-    upstream package so the legacy Pydantic-v1 multimodal models do not
-    explode at import time.
+    the Python 3.14 voyageai compat shim is applied when this module loads,
+    before the upstream package is imported, so the legacy Pydantic-v1
+    multimodal models do not explode at import time.
 
     :param api_key: API key for VoyageAI authentication
     :ptype api_key: str
@@ -52,13 +76,12 @@ def create_voyageai_embedding(
     :ptype extra_kwargs: Any
     :return: configured ``VoyageAIEmbeddings`` instance
     :rtype: VoyageAIEmbeddings
+    :raises ImportError: when the ``voyageai`` extra is not installed
     """
-    from threetears.models.providers._voyageai_compat import apply_voyageai_compat
-
-    apply_voyageai_compat()
-
-    from langchain_voyageai import VoyageAIEmbeddings
-
+    if _VOYAGEAI_IMPORT_ERROR is not None:
+        raise ImportError(
+            "VoyageAI embeddings need the voyageai extra: install 3tears-models[voyageai]",
+        ) from _VOYAGEAI_IMPORT_ERROR
     kwargs: dict[str, Any] = {
         "model": model_name,
         "api_key": api_key,

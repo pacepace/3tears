@@ -22,16 +22,29 @@ caller sent -- even one the adapter forgot to answer for.
 
 Named for what it is, not for the layer that owns it: ``Adapter`` is module
 vocabulary and never a type name (search-spec.md §2).
+
+**One registry, two kinds of declaration.** A provider that answers rather
+than searches declares :class:`~threetears.search.contracts.answer.AnswerCapabilities`
+into this same registry (answers-requirements-design.md §10.1), so a consumer
+queries either kind with the one call. The registry is keyed by
+``(kind, provider)`` rather than by provider alone, because one provider can
+sell both under one name -- Brave's search and its answers share a key and a
+product name -- and keying by name would make the second registration replace
+the first. Every declaration carries its ``kind`` as a literal discriminator;
+``get_capabilities(provider)`` with no kind still answers the search
+declaration, which is every caller written before answers existed.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Final
+from typing import Final, Literal, overload
 
 from pydantic import model_validator
 
 from threetears.search.contracts._base import ContractModel
+from threetears.search.contracts._declarations import disposition_from, qualify_unit, refuse_contradictions
+from threetears.search.contracts.answer import AnswerCapabilities
 from threetears.search.contracts.criteria import Disposition
 
 __all__ = [
@@ -68,6 +81,9 @@ class ProviderCapabilities(ContractModel):
     #: product name -- ``searxng``, ``tavily``. Not an instance name: two
     #: SearXNG deployments are two instances of one set of capabilities.
     provider: str
+    #: which kind of declaration this is, so the one registry can hold a
+    #: provider's search and answer declarations side by side.
+    kind: Literal["search"] = "search"
 
     # --- criteria negotiation (SR-B4, SR-B2) -------------------------------
     #: well-known criterion keys the provider's own API expresses, so the
@@ -130,17 +146,14 @@ class ProviderCapabilities(ContractModel):
     def qualified_unit(self) -> str | None:
         """This provider's metered unit, qualified for :attr:`Spend.provider_unit`.
 
-        The one place ``"<provider>:<unit>"`` is composed, so a second
-        spelling cannot appear beside the first and compare unequal --
-        which would make two spends from the same provider refuse to sum.
+        Composed by the contracts' one qualification rule, shared with
+        :class:`~threetears.search.contracts.answer.AnswerCapabilities`.
 
         :return: ``"<provider>:<metered_unit>"``, or ``None`` when this
             provider meters no weighted unit
         :rtype: str | None
         """
-        if self.metered_unit is None:
-            return None
-        return f"{self.provider}:{self.metered_unit}"
+        return qualify_unit(self.provider, self.metered_unit)
 
     @model_validator(mode="after")
     def _criteria_declarations_do_not_contradict(self) -> ProviderCapabilities:
@@ -155,19 +168,7 @@ class ProviderCapabilities(ContractModel):
         :raises ValueError: when a key appears in more than one of the
             three well-known criterion tuples
         """
-        buckets = (self.pushdown_criteria, self.local_criteria, self.unsatisfiable_criteria)
-        seen: dict[str, int] = {}
-        clashes: list[str] = []
-        for index, bucket in enumerate(buckets):
-            for key in bucket:
-                if key in seen and seen[key] != index:
-                    clashes.append(key)
-                seen[key] = index
-        if clashes:
-            raise ValueError(
-                f"provider {self.provider!r} declares {sorted(set(clashes))} under more than one "
-                f"disposition; a criterion has exactly one"
-            )
+        refuse_contradictions(self.provider, (self.pushdown_criteria, self.local_criteria, self.unsatisfiable_criteria))
         return self
 
     def disposition_for(self, criterion_key: str) -> Disposition:
@@ -183,55 +184,98 @@ class ProviderCapabilities(ContractModel):
             ``ignored-unknown`` for anything it has not declared
         :rtype: Disposition
         """
-        if criterion_key in self.pushdown_criteria or criterion_key in self.namespaced_parameters:
-            return "pushdown"
-        if criterion_key in self.local_criteria:
-            return "local"
-        if criterion_key in self.unsatisfiable_criteria:
-            return "unsatisfied"
-        return "ignored-unknown"
+        return disposition_from(
+            criterion_key,
+            pushdown=self.pushdown_criteria,
+            namespaced=self.namespaced_parameters,
+            local=self.local_criteria,
+            unsatisfiable=self.unsatisfiable_criteria,
+        )
 
 
 _REGISTRY_LOCK = threading.Lock()
-_REGISTRY: dict[str, ProviderCapabilities] = {}
+#: one registry, held as one map per kind so each answers in its own type.
+_SEARCH_REGISTRY: dict[str, ProviderCapabilities] = {}
+_ANSWER_REGISTRY: dict[str, AnswerCapabilities] = {}
 
 
-def register_capabilities(capabilities: ProviderCapabilities) -> None:
-    """Record ``capabilities`` under its own provider name.
+def register_capabilities(capabilities: ProviderCapabilities | AnswerCapabilities) -> None:
+    """Record ``capabilities`` under its own kind and provider name.
 
     Adapters call this at import time, following the ``3tears-models``
     precedent, so a consumer can query a provider's shape without
     constructing one (which would need a base URL and a transport).
-    Re-registering a provider replaces the previous entry wholesale.
+    Re-registering a provider's declaration of one kind replaces the previous
+    entry of that kind wholesale, and leaves the other kind alone.
 
-    :param capabilities: the provider's declaration
-    :ptype capabilities: ProviderCapabilities
+    :param capabilities: the provider's declaration, of either kind
+    :ptype capabilities: ProviderCapabilities | AnswerCapabilities
     """
     with _REGISTRY_LOCK:
-        _REGISTRY[capabilities.provider] = capabilities
+        if capabilities.kind == "answer":
+            _ANSWER_REGISTRY[capabilities.provider] = capabilities
+        else:
+            _SEARCH_REGISTRY[capabilities.provider] = capabilities
 
 
-def get_capabilities(provider: str) -> ProviderCapabilities | None:
-    """Return the registered declaration for ``provider``, if any.
+@overload
+def get_capabilities(provider: str) -> ProviderCapabilities | None: ...
 
-    ``None`` means no adapter for that provider has been imported -- which
-    is a different fact from "the provider can do nothing", so it is not
+
+@overload
+def get_capabilities(provider: str, kind: Literal["search"]) -> ProviderCapabilities | None: ...
+
+
+@overload
+def get_capabilities(provider: str, kind: Literal["answer"]) -> AnswerCapabilities | None: ...
+
+
+def get_capabilities(
+    provider: str, kind: Literal["search", "answer"] = "search"
+) -> ProviderCapabilities | AnswerCapabilities | None:
+    """Return the registered declaration of ``kind`` for ``provider``, if any.
+
+    ``None`` means no adapter for that provider and kind has been imported --
+    which is a different fact from "the provider can do nothing", so it is not
     flattened into an empty declaration.
 
-    :param provider: product name (``searxng``, ``tavily``)
+    :param provider: product name (``searxng``, ``tavily``, ``brave``)
     :ptype provider: str
+    :param kind: which declaration -- ``search`` (the default, and every
+        caller written before answers existed) or ``answer``
+    :ptype kind: Literal["search", "answer"]
     :return: the declaration, or ``None`` when nothing registered it
-    :rtype: ProviderCapabilities | None
+    :rtype: ProviderCapabilities | AnswerCapabilities | None
     """
     with _REGISTRY_LOCK:
-        return _REGISTRY.get(provider)
+        if kind == "answer":
+            return _ANSWER_REGISTRY.get(provider)
+        return _SEARCH_REGISTRY.get(provider)
 
 
-def list_capabilities() -> dict[str, ProviderCapabilities]:
-    """Return every registered declaration, keyed by provider name.
+@overload
+def list_capabilities() -> dict[str, ProviderCapabilities]: ...
 
-    :return: a copy of the registry -- mutating it changes nothing
-    :rtype: dict[str, ProviderCapabilities]
+
+@overload
+def list_capabilities(kind: Literal["search"]) -> dict[str, ProviderCapabilities]: ...
+
+
+@overload
+def list_capabilities(kind: Literal["answer"]) -> dict[str, AnswerCapabilities]: ...
+
+
+def list_capabilities(
+    kind: Literal["search", "answer"] = "search",
+) -> dict[str, ProviderCapabilities] | dict[str, AnswerCapabilities]:
+    """Return every registered declaration of ``kind``, keyed by provider name.
+
+    :param kind: which declarations -- ``search`` (the default) or ``answer``
+    :ptype kind: Literal["search", "answer"]
+    :return: a copy of that part of the registry -- mutating it changes nothing
+    :rtype: dict[str, ProviderCapabilities] | dict[str, AnswerCapabilities]
     """
     with _REGISTRY_LOCK:
-        return dict(_REGISTRY)
+        if kind == "answer":
+            return dict(_ANSWER_REGISTRY)
+        return dict(_SEARCH_REGISTRY)

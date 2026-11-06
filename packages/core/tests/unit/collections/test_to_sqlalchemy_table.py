@@ -34,12 +34,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import subprocess
+import sys
+
+
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.core.collections.schema_backed import (
     BIGINT_TYPE,
     BOOL_TYPE,
     BYTES_TYPE,
+    DATETIMETZ_TYPE,
     ENUM_TYPE,
     INT_TYPE,
     NUMERIC_TYPE,
@@ -301,48 +307,36 @@ def test_to_sqla_server_default_propagates() -> None:
     assert str(sd.arg) == "image"
 
 
-def test_to_sqla_pgvector_unavailable_raises_at_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_to_sqla_pgvector_unavailable_raises_at_call() -> None:
     """when ``pgvector`` cannot be imported and a schema declares a
     VECTOR_TYPE column, ``to_sqlalchemy_table`` raises ``ImportError``
     at call time (mirrors the v0.7.5 factory behaviour -- the failure
     is legible at registration time, not deep inside INSERT).
+
+    pgvector is probed when ``schema_backed`` is imported, so the absence is a fresh interpreter's in
+    which it cannot be imported.
     """
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _failing_import(
-        name: str,
-        globals: Any = None,
-        locals: Any = None,
-        fromlist: Any = (),
-        level: int = 0,
-    ) -> Any:
-        if name.startswith("pgvector"):
-            raise ImportError(
-                "simulated: pgvector not installed",
-            )
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", _failing_import)
-
-    schema = TableSchema(
-        name="t",
-        primary_key="a",
-        columns=[
-            Column("a", UUID_TYPE),
-            Column(
-                "emb",
-                VECTOR_TYPE,
-                vector_dim=8,
-                nullable=True,
-            ),
-        ],
-    )
-    with pytest.raises(ImportError, match="pgvector"):
-        schema.to_sqlalchemy_table(sa.MetaData())
+    script = """
+import sys
+sys.modules["pgvector"] = None
+sys.modules["pgvector.sqlalchemy"] = None
+import sqlalchemy as sa
+from threetears.core.collections.schema_backed import UUID_TYPE, VECTOR_TYPE, Column, TableSchema
+schema = TableSchema(
+    name="t",
+    primary_key="a",
+    columns=[Column("a", UUID_TYPE), Column("emb", VECTOR_TYPE, vector_dim=8, nullable=True)],
+)
+try:
+    schema.to_sqlalchemy_table(sa.MetaData())
+except ImportError as exc:
+    print("refused:", exc)
+    sys.exit(0)
+sys.exit(1)
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "pgvector" in result.stdout
 
 
 def test_to_sqla_numeric_precision_scale() -> None:
@@ -689,6 +683,48 @@ def test_parity_helper_catches_using_regression() -> None:
         assert_tables_equivalent(a, b)
 
 
+def _keyed_by_optional(*, nulls_not_distinct: bool) -> sa.Table:
+    """A table whose unique key has an optional column, NULLs distinct or not."""
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("owner", UUID_TYPE, nullable=True),
+            Column("key", STRING_TYPE),
+        ],
+        indexes=(Index("ix_t_owner_key", "owner", "key", unique=True, nulls_not_distinct=nulls_not_distinct),),
+    )
+    return schema.to_sqlalchemy_table(sa.MetaData())
+
+
+def test_nulls_not_distinct_emits_the_dialect_kwarg() -> None:
+    """``nulls_not_distinct=True`` reaches SQLAlchemy as ``postgresql_nulls_not_distinct``, and the DDL says so."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    table = _keyed_by_optional(nulls_not_distinct=True)
+    (idx,) = table.indexes
+    assert idx.dialect_kwargs.get("postgresql_nulls_not_distinct") is True
+    assert "NULLS NOT DISTINCT" in str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    (plain,) = _keyed_by_optional(nulls_not_distinct=False).indexes
+    assert "NULLS NOT DISTINCT" not in str(CreateIndex(plain).compile(dialect=postgresql.dialect()))
+
+
+def test_parity_helper_catches_nulls_not_distinct_regression() -> None:
+    """Two unique indexes that differ only in how they compare NULLs are not the same index."""
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _keyed_by_optional(nulls_not_distinct=True), _keyed_by_optional(nulls_not_distinct=False)
+        )
+
+
+def test_nulls_not_distinct_on_an_index_that_is_not_unique_is_refused() -> None:
+    """``nulls_not_distinct`` says how a unique index compares NULLs; on any other index it is a mistake."""
+    with pytest.raises(ValueError, match="not unique"):
+        Index("ix_t_owner", "owner", nulls_not_distinct=True)
+
+
 # ---------------------------------------------------------------------------
 # v0.8.1: UniqueConstraintDef (alembic auto-gen distinguishes UNIQUE
 # constraint from unique index even though pg_indexes does not)
@@ -796,3 +832,135 @@ def test_unique_constraint_def_rejects_name_collision_with_index() -> None:
             indexes=(Index("dup_name", "b"),),
             unique_constraints=(UniqueConstraint("dup_name", "b"),),
         )
+
+
+# ---------------------------------------------------------------------------
+# descending index columns: the declaration says what the migration's
+# ``<column> DESC`` says, so Alembic auto-gen sees no index diff
+# ---------------------------------------------------------------------------
+
+
+def _desc_schema(desc: tuple[str, ...] | str = ("date_created",), *columns: str) -> TableSchema:
+    """a table whose history index covers ``columns`` (default agent_id, date_created)."""
+    return TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("agent_id", UUID_TYPE),
+            Column("date_created", DATETIMETZ_TYPE),
+        ],
+        indexes=(Index("ix_t_history", *(columns or ("agent_id", "date_created")), desc=desc),),
+    )
+
+
+def test_to_sqla_desc_column_emits_descending_index() -> None:
+    """a ``desc`` column is emitted as ``column.desc()``: the compiled
+    ``CREATE INDEX`` equals the migration's ``(agent_id, date_created DESC)``.
+    """
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    t = _desc_schema().to_sqlalchemy_table(sa.MetaData())
+    (idx,) = t.indexes
+    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created DESC)"
+
+
+def test_to_sqla_index_without_desc_stays_ascending() -> None:
+    """an index that names no ``desc`` column compiles with no ``DESC``."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    t = _desc_schema(()).to_sqlalchemy_table(sa.MetaData())
+    (idx,) = t.indexes
+    compiled = str(CreateIndex(idx).compile(dialect=postgresql.dialect()))
+    assert compiled == "CREATE INDEX ix_t_history ON t (agent_id, date_created)"
+
+
+def test_index_desc_accepts_a_bare_string_and_a_sequence() -> None:
+    """``desc="x"`` and ``desc=("x",)`` store the same tuple."""
+    assert Index("i", "a", "b", desc="b").desc == ("b",)
+    assert Index("i", "a", "b", desc=["a", "b"]).desc == ("a", "b")
+
+
+def test_index_def_rejects_desc_column_not_covered() -> None:
+    """a ``desc`` name the index does not cover is refused at declaration."""
+    with pytest.raises(ValueError, match="desc names"):
+        Index("i", "a", desc="b")
+
+
+def test_index_def_rejects_desc_on_a_column_with_an_operator_class() -> None:
+    """SQLAlchemy drops a descending column's operator class, so the pair is refused at declaration."""
+    with pytest.raises(ValueError, match="both an operator class and desc"):
+        Index("i", "a", "b", desc="b", ops={"b": "text_pattern_ops"})
+    assert Index("i", "a", "b", desc="b", ops={"a": "text_pattern_ops"}).desc == ("b",)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"desc": "date_created"},
+        {"where": "agent_id IS NOT NULL"},
+        {"using": "brin"},
+        {"ops": {"agent_id": "uuid_ops"}},
+        {"pg_with": {"fillfactor": "70"}},
+    ],
+    ids=["desc", "where", "using", "ops", "pg_with"],
+)
+def test_table_def_for_refuses_index_options_it_cannot_carry(options: dict[str, Any]) -> None:
+    """the coordination DDL definition has columns and uniqueness only; anything more is refused, not dropped."""
+    from threetears.core.coordination.tables import table_def_for
+
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", STRING_TYPE),
+            Column("agent_id", STRING_TYPE),
+            Column("date_created", DATETIMETZ_TYPE),
+        ],
+        indexes=(Index("ix_t_history", "agent_id", "date_created", **options),),
+    )
+    with pytest.raises(ValueError, match="cannot carry"):
+        table_def_for(schema)
+    plain = TableSchema(
+        name="t", primary_key="a", columns=list(schema.columns), indexes=(Index("ix_t_history", "agent_id"),)
+    )
+    assert [index.name for index in table_def_for(plain).indexes] == ["ix_t_history"]
+
+
+def test_parity_helper_catches_index_direction_regression() -> None:
+    """two tables that differ only in a column's sort direction are not
+    equivalent -- the drift metallm's schema guard caught on
+    ``idx_identity_variant_history``.
+    """
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _desc_schema().to_sqlalchemy_table(sa.MetaData()),
+            _desc_schema(()).to_sqlalchemy_table(sa.MetaData()),
+        )
+
+
+def test_parity_helper_catches_index_column_order_regression() -> None:
+    """``(agent_id, date_created)`` is not ``(date_created, agent_id)``."""
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(
+            _desc_schema((), "agent_id", "date_created").to_sqlalchemy_table(sa.MetaData()),
+            _desc_schema((), "date_created", "agent_id").to_sqlalchemy_table(sa.MetaData()),
+        )
+
+
+def test_parity_helper_reads_a_textual_desc_reference_as_descending() -> None:
+    """a hand-written reference that mirrors the DDL text,
+    ``text("date_created DESC")``, equals the emitted ``column.desc()``.
+    """
+    reference = sa.Table(
+        "t",
+        sa.MetaData(),
+        sa.Column("a", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        sa.Column("agent_id", PgUUID(as_uuid=True), nullable=False),
+        sa.Column("date_created", sa.DateTime(timezone=True), nullable=False),
+        sa.Index("ix_t_history", "agent_id", sa.text("date_created DESC")),
+    )
+    assert_tables_equivalent(reference, _desc_schema().to_sqlalchemy_table(sa.MetaData()))

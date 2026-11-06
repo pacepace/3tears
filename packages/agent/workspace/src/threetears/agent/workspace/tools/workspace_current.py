@@ -36,7 +36,7 @@ from threetears.agent.tools.namespace_discovery_client import (
     DiscoveryClientError,
     NamespaceDiscoveryClient,
 )
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 
 __all__ = [
     "WorkspaceCurrentTool",

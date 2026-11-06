@@ -4,11 +4,11 @@
 :class:`Driver`. direct instantiation of concrete driver classes is
 discouraged -- the factory enforces:
 
-- **lazy import of backend libraries** (DS-09-08, DS-09-09).
-  ``asyncpg``, ``redshift_connector``, ``snowflake.connector`` and
-  ``google.cloud.bigquery`` are imported inside the ``match`` arm
-  that dispatches to the driver using them. a Hub that never queries
-  Snowflake doesn't pay the snowflake-connector-python import cost.
+- **no import on the serving path.** every driver module is imported when this module is (owner
+  ruling, 2026-10-24: no lazy imports in serving code), so building a driver on the event loop
+  loads nothing. Redshift's is imported under ``try/except ImportError``: without the redshift
+  extra the package imports, and a Redshift config raises the driver module's ImportError, which
+  names the extra. The Snowflake and BigQuery drivers are stubs that import no backend library.
 - **discriminated dispatch on ``config.datasource_type``** -- pydantic
   has already routed the incoming config to the right ConnectionConfig
   member; the factory just selects the matching driver class.
@@ -34,12 +34,20 @@ from threetears.observe import get_logger
 from threetears.datasources.config import ConnectionConfig
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.connect_guard import ConnectGuard
+from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
+from threetears.datasources.drivers.bigquery_driver import BigQueryDriver
+from threetears.datasources.drivers.snowflake_driver import SnowflakeDriver
 from threetears.datasources.entities import DataSourceType
 
 if TYPE_CHECKING:
-    # type-only import: keeps asyncpg out of the runtime module graph
-    # so the lazy-import contract holds.
     import asyncpg
+
+#: why the Redshift driver could not be imported (the redshift extra is not installed), or None
+_redshift_missing: ImportError | None = None
+try:
+    from threetears.datasources.drivers.redshift_driver import RedshiftDriver
+except ImportError as exc:  # NOSILENT: the redshift extra is optional; a Redshift config says so when it is built
+    _redshift_missing = exc
 
 __all__ = ["create_driver"]
 
@@ -55,10 +63,8 @@ def create_driver(
 ) -> Driver:
     """dispatch to the concrete :class:`Driver` for ``config``.
 
-    every backend lib is imported inside its matching ``case`` arm
-    (DS-09-08). importing this module does NOT pull any backend lib
-    into ``sys.modules`` -- the lazy-import audit verifies the
-    contract across all three package roots (DS-09-09).
+    every driver module was imported with this module, so this builds the driver and loads
+    nothing. without the redshift extra a Redshift config raises the ImportError naming it.
 
     :param config: per-driver connection config (discriminated on
         ``datasource_type``); pydantic has already routed the incoming
@@ -100,43 +106,25 @@ def create_driver(
     driver: Driver
     match config.datasource_type:
         case DataSourceType.POSTGRES | DataSourceType.YUGABYTE:
-            from threetears.datasources.drivers.asyncpg_driver import (
-                AsyncpgDriver,
-            )
-
             driver = AsyncpgDriver(config, datasource_name=datasource_name, connect_guard=connect_guard)
         case DataSourceType.AGENT_INTERNAL:
             if hub_l3_pool is None:
                 raise ValueError(
                     "AGENT_INTERNAL driver requires hub_l3_pool; the agent-internal variant borrows Hub's L3 pool"
                 )
-            from threetears.datasources.drivers.asyncpg_driver import (
-                AsyncpgDriver,
-            )
-
             driver = AsyncpgDriver(
                 config,
                 external_pool=hub_l3_pool,
                 datasource_name=datasource_name,
             )
         case DataSourceType.REDSHIFT:
-            from threetears.datasources.drivers.redshift_driver import (
-                RedshiftDriver,
-            )
-
+            if _redshift_missing is not None:
+                raise ImportError(str(_redshift_missing)) from _redshift_missing
             driver = RedshiftDriver(config, datasource_name=datasource_name, connect_guard=connect_guard)
         case DataSourceType.SNOWFLAKE:
-            from threetears.datasources.drivers.snowflake_driver import (
-                SnowflakeDriver,
-            )
-
             _log_unhonoured_guard(connect_guard, config.datasource_type, datasource_name)
             driver = SnowflakeDriver(config, datasource_name=datasource_name)
         case DataSourceType.BIGQUERY:
-            from threetears.datasources.drivers.bigquery_driver import (
-                BigQueryDriver,
-            )
-
             _log_unhonoured_guard(connect_guard, config.datasource_type, datasource_name)
             driver = BigQueryDriver(config, datasource_name=datasource_name)
         case _:

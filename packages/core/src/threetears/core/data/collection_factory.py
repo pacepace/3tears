@@ -7,10 +7,15 @@ from decimal import Decimal
 from typing import Any, ClassVar
 from uuid import UUID
 
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, String, Table
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB
+from sqlalchemy.sql.sqltypes import UUID as SAUuid
+
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import require_pgvector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -193,19 +198,6 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     :return: SQLAlchemy MetaData containing table definition
     :rtype: Any
     """
-    from sqlalchemy import (
-        Boolean,
-        Column,
-        DateTime,
-        Integer,
-        MetaData,
-        Numeric,
-        String,
-        Table,
-    )
-    from sqlalchemy.dialects.postgresql import BYTEA, JSONB
-    from sqlalchemy.sql.sqltypes import UUID as SAUuid
-
     sa_type_map: dict[str, Any] = {
         "text": String(255),
         "integer": Integer(),
@@ -223,11 +215,8 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     sa_columns: list[Column[Any]] = []
     for col in table_def.columns:
         if col.column_type == "vector":
-            # lazy pgvector import (raises a legible ImportError at
-            # collection construction when pgvector is not installed)
-            from threetears.core.collections.schema_backed import _require_pgvector
-
-            sa_type = _require_pgvector()(col.vector_dim)
+            # raises a legible ImportError at collection construction when pgvector is not installed
+            sa_type = require_pgvector()(col.vector_dim)
         else:
             sa_type = sa_type_map.get(col.column_type, String(255))
         sa_columns.append(Column(col.name, sa_type, primary_key=col.primary_key, nullable=col.nullable))

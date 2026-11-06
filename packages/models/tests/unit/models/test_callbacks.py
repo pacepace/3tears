@@ -6,6 +6,9 @@ the locked OTel span attributes and the locked Prometheus instruments.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 import threading
 from collections.abc import Sequence
 from decimal import Decimal
@@ -249,39 +252,48 @@ class TestPrometheusEmission:
         # must not raise; instruments are well-formed.
         tracker.record(usage)
 
-    def test_record_noops_when_prometheus_missing(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_record_noops_when_prometheus_missing(self) -> None:
         """``UsageTracker.record`` does not raise when prometheus_client is missing.
 
-        simulates the missing-dep case by hiding ``prometheus_client`` from the
-        import system before building a tracker for a registry no tracker has
-        used yet, so its emitter is built -- and fails its import -- now, and
-        resolves to its no-op state.
+        prometheus_client is imported when :mod:`threetears.models.tracking` loads, so the
+        missing-dep case is simulated in a fresh interpreter: a registry is made first, then
+        ``prometheus_client`` is hidden from the import system before the tracking module is
+        imported, so the tracker built for that registry resolves its emitter to the no-op state.
         """
-        import sys
+        pytest.importorskip("prometheus_client")
+        probe = textwrap.dedent(
+            """
+            import sys
 
-        prometheus_client = pytest.importorskip("prometheus_client")
-        registry = prometheus_client.CollectorRegistry()
+            import prometheus_client
 
-        # hide prometheus_client from the import system for the emitter this tracker builds.
-        monkeypatch.setitem(sys.modules, "prometheus_client", None)
-        tracker = UsageTracker(prom_registry=registry)
-        usage = UsageRecord(
-            model_name="m",
-            provider_name="p",
-            purpose=LlmPurpose.CHAT,
-            input_tokens=1,
-            output_tokens=2,
-            total_tokens=3,
-            latency_ms=4,
+            registry = prometheus_client.CollectorRegistry()
+            sys.modules["prometheus_client"] = None
+
+            from threetears.models.tracking import LlmPurpose, UsageRecord, UsageTracker
+
+            tracker = UsageTracker(prom_registry=registry)
+            usage = UsageRecord(
+                model_name="m",
+                provider_name="p",
+                purpose=LlmPurpose.CHAT,
+                input_tokens=1,
+                output_tokens=2,
+                total_tokens=3,
+                latency_ms=4,
+            )
+            tracker.record(usage)  # must not raise.
+            sys.modules["prometheus_client"] = prometheus_client
+
+            # and it emitted nothing: the instruments were never registered.
+            assert not [family for family in registry.collect() if family.name.startswith("threetears_llm_")]
+            print("no-op")
+            """
         )
-        tracker.record(usage)  # must not raise.
-        monkeypatch.undo()
+        result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
 
-        # and it emitted nothing: the instruments were never registered.
-        assert not [family for family in registry.collect() if family.name.startswith("threetears_llm_")]
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "no-op"
 
 
 class TestCircuitBreakerCallback:

@@ -253,8 +253,18 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
     return {
         "packages/agent/audit/src/threetears/agent/audit/persist.py::start_audit_persister": _ON_THE_INBOX,
         "packages/agent/tools/src/threetears/agent/tools/server.py::ToolServer.serve": {
-            Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)), str(Subjects.tools_probe(inprocess))),
-            Principal.TOOL_POD: (str(Subjects.tools_internal(_TOOL_POD_ID)), str(Subjects.tools_probe(_TOOL_POD_ID))),
+            Principal.AGENT_POD: (str(Subjects.tools_probe(inprocess)),),
+            Principal.TOOL_POD: (str(Subjects.tools_probe(_TOOL_POD_ID)),),
+        },
+        # the call subject, which serve() subscribes at once or, for a pod holding its calls, once it opens them
+        "packages/agent/tools/src/threetears/agent/tools/server.py::ToolServer._subscribe_calls": {
+            Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)),),
+            Principal.TOOL_POD: (str(Subjects.tools_internal(_TOOL_POD_ID)),),
+        },
+        # the same call subject in the held queue group: a held replica answering its control tools
+        "packages/agent/tools/src/threetears/agent/tools/server.py::ToolServer._join_held_when_asked": {
+            Principal.AGENT_POD: (str(Subjects.tools_internal(inprocess)),),
+            Principal.TOOL_POD: (str(Subjects.tools_internal(_TOOL_POD_ID)),),
         },
         "packages/channels/src/threetears/channels/presence/fanout.py::RoomFanout._subscribe_locked": _NOT_WIRED,
         "packages/core/src/threetears/core/collections/registry.py::CollectionRegistry.start_invalidation_listener": every,
@@ -493,6 +503,12 @@ def _publish_sites() -> dict[Principal, tuple[_Site, ...]]:
                 "packages/nats/src/threetears/nats/collection_key_requests.py",
                 "Subjects.hub_collection_keys_purge()",
                 str(Subjects.hub_collection_keys_purge()),
+            ),
+            # a pod tells the hub a CDN-cached index it serves moved, so the hub purges the customer's copy
+            _here(
+                "packages/nats/src/threetears/nats/cache_index_requests.py",
+                "Subjects.hub_cache_index_moved()",
+                str(Subjects.hub_cache_index_moved()),
             ),
             _here(
                 "packages/agent/tools/src/threetears/agent/tools/object_resolver.py",

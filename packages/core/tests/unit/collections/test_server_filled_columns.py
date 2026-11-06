@@ -286,19 +286,22 @@ class TestASynchronousWriteCachesTheRowL3Holds:
     async def test_a_whole_row_is_cached_without_reading_l3_back(self) -> None:
         nats, store = FakeNatsClient(), _FakeDefaultingStore(_SCHEMA)
         coll = _ledger(nats, store)
-        await coll.save_entity(
-            coll.create({"id": _ID, "label": "whole", "target_version": 3, "max_tables": 7, "note": "n"})
-        )
+        whole = {"id": _ID, "label": "whole", "target_version": 3, "max_tables": 7, "note": "n", "date_updated": None}
+        await coll.save_entity(coll.create(whole))
         assert store.fetches == 0, "a whole row was read back"
         l1 = coll.get_row_sync(_ID)
         assert l1 is not None and l1["target_version"] == 3
 
     @pytest.mark.asyncio
-    async def test_a_row_leaving_out_only_known_nulls_is_completed_without_reading_l3_back(self) -> None:
+    async def test_a_row_leaving_out_a_nullable_column_is_read_back(self) -> None:
+        """an upsert may land on a stored row, whose update keeps a column the row leaves out (v0.78.0).
+
+        So its value is not known to be ``NULL`` until it is read: a new row's is, and is cached so.
+        """
         nats, store = FakeNatsClient(), _FakeDefaultingStore(_SCHEMA)
         coll = _ledger(nats, store)
         await coll.save_entity(coll.create({"id": _ID, "label": "nulls", "target_version": 3, "max_tables": 7}))
-        assert store.fetches == 0, "a row of known nulls was read back"
+        assert store.fetches == 1, "a row leaving out a nullable column was cached without a read back"
         l2 = await _l2_row(nats)
         assert l2 is not None and "note" in l2 and l2["note"] is None, "L2 holds the row without its nulls"
 
@@ -403,6 +406,26 @@ class TestAWriteAheadOfL3RefusesARowTheDatabaseWouldComplete:
         outcome = await coll.l2_cas_mutate(_ID, lambda _row: ("upsert", dict(whole)))
         assert outcome.action == "created"
         assert store.rows[_ID]["label"] == "swapped"
+
+
+class TestACompareAndSwapWithoutL2WritesTheRowItWasGiven:
+    @pytest.mark.asyncio
+    async def test_a_column_the_callback_leaves_out_is_written_null_as_with_l2(self) -> None:
+        """with no L2 the swap falls back to a save, whose update would keep a column left out (v0.78.0).
+
+        With L2 the swap sends that column as ``None`` and writes ``NULL``; the fallback must not
+        differ by keeping the stored value.
+        """
+        store = _FakeDefaultingStore(_SCHEMA)
+        coll = _Ledger(_registry(None, store, _SCHEMA), _config())  # type: ignore[arg-type]
+        whole = {"id": _ID, "label": "first", "target_version": 1, "max_tables": 2, "note": "stored"}
+        await coll.l2_cas_mutate(_ID, lambda _row: ("upsert", dict(whole)))
+        assert store.rows[_ID]["note"] == "stored"
+        without_note = {"id": _ID, "label": "second", "target_version": 1, "max_tables": 2}
+        await coll.l2_cas_mutate(_ID, lambda _row: ("upsert", dict(without_note)))
+
+        assert store.rows[_ID]["label"] == "second"
+        assert store.rows[_ID]["note"] is None, "the fallback kept a column the callback left out"
 
 
 class _L2OnlyLedger(_Ledger):

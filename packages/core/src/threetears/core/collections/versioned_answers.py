@@ -3,12 +3,19 @@
 A read whose answer is a pure function of (the data's version, the request) -- a report's rows at a
 version of its copy, say -- need be computed once per version, by one replica, and read by the rest.
 :class:`VersionedAnswers` is that cache: a :class:`~threetears.core.collections.derived.DerivedCollection`
-keyed by ``(version, request digest)`` whose value is the answer gzip-compressed, held in L2 alone.
+keyed by ``(version, request digest)`` whose value is the answer gzip-compressed, held in L2 and in
+each replica's L1.
 
-- **L2 only.** The shared ``{ns}-collections`` bucket, under the owner's key scope, is what every
-  replica reads; there is no L3 (the answer is derived, and rebuilt on any miss) and no L1
-  (:attr:`~BaseCollection.caches_in_l1` is off; a caller keeps its own in-process copy if it wants
-  one).
+- **Shared in L2, read from L1.** The shared ``{ns}-collections`` bucket, under the owner's key scope,
+  is what every replica reads; there is no L3 (the answer is derived, and rebuilt on any miss). Each
+  replica keeps the answers it read, and the index, in its L1 as well (when its registry offers one):
+  an answer is a pure function of its key, so a copy is never stale, and :meth:`VersionedAnswers.answer`
+  answers a key its L1 holds with no L2 round trip and no index write (whoever stored it recorded it).
+- **Coherent by the epoch system, no lifetimes.** Both tables change only by compare-and-set, whose
+  broadcast evicts every peer's copy, and keep their write generation in L2
+  (:data:`~threetears.core.collections.generation.L2_WRITE_GENERATION`): a replica that missed a
+  broadcast drops its copies at the next catch-up pass (``CollectionRegistry.catch_up_l2_generations``,
+  run by ``threetears.epoch.generation_catchup_tick``), which its host schedules.
 - **Computed once.** A miss computes under the in-process gate and the cross-pod build lock, so one
   replica derives a key and the others wait for its value. A tool pod passes a
   :class:`~threetears.core.collections.derived.LeaseBuildLock`: it may not declare a bucket.
@@ -17,7 +24,10 @@ keyed by ``(version, request digest)`` whose value is the answer gzip-compressed
   epoch system, never by a TTL). Each version comes with an ``order`` that grows with the data (the
   caller's: for a copy of epochs, their sum), because versions are digests and say nothing of which
   is newer. :meth:`current_version` retires every version of a LOWER order, never a higher one, so a
-  replica still on an older copy cannot delete the answers the rest have moved on to.
+  replica still on an older copy cannot delete the answers the rest have moved on to. Each scope
+  (``scope=``, for data whose versions are ordered on scales of their own: one state's copy and
+  another's) is its own line of versions with its own floor, so one scope's move retires nothing of
+  another's; a version belongs to one scope.
 - **Retirement reads an index, never a listing.** A pod's grant on the shared bucket is key-addressed
   (get, put, compare-and-set, delete under its own scope; no consumer), so the entries cannot be
   listed. The owner keeps an index as rows of a small L2-only collection beside the answers, changed
@@ -47,33 +57,69 @@ keyed by ``(version, request digest)`` whose value is the answer gzip-compressed
   that cannot be reached (a hub older than the request), the markers stay and the miss is logged once:
   space, never a wrong answer. Purging happens only after the compare-and-set delete, on keys of a
   version below the floor, which no writer may record again.
+- **Says how each answer was given.** :meth:`VersionedAnswers.answer_with_outcome` returns the
+  :class:`AnswerOutcome` beside the answer: read, computed under the build lock, computed after a peer
+  held it, or not stored (and why), so a host counts it without knowing how the lock is keyed.
+- **An announced version only rises.** A host whose replicas each name a version in an index a CDN
+  caches keeps one record per scope beside the index (:meth:`VersionedAnswers.announce`): the newest
+  version any replica announced, by compare-and-set so it only rises, and the version it replaced.
+  Every replica names the record's version once it is newer than its own, so the index never steps
+  back across replicas, and retirement keeps the version replaced: a page that read the index a
+  moment ago is still answered.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import codecs
 import gzip
 import hashlib
+import io
+import itertools
 import json
+import math
 import re
-from collections.abc import Awaitable, Callable, Coroutine
+import uuid
+from collections.abc import Awaitable, Buffer, Callable, Coroutine, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Literal
+from dataclasses import dataclass, field
+from decimal import Decimal
+from enum import StrEnum
+from typing import Any, ClassVar, Final, Literal, SupportsIndex, cast
 
 from pydantic import ValidationError
+from sqlalchemy import MetaData
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.derived import BuildLock, BuildLockHeld, DerivedCollection
+from threetears.core.collections.generation import L2_WRITE_GENERATION, WriteGenerationDeclaration
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
+    DATETIMETZ_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    Column,
+    TableSchema,
+)
+from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.exceptions import ConcurrentModificationError, GenerationUnavailableError
 from threetears.nats.collection_key_requests import MAX_PURGED_KEYS, CollectionKeysRequestError
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
 
-__all__ = ["AnswerNotComputable", "VersionedAnswer", "VersionedAnswers"]
+__all__ = [
+    "Announced",
+    "AnnouncedVersion",
+    "AnswerNotComputable",
+    "AnswerOutcome",
+    "GivenAnswer",
+    "VersionedAnswer",
+    "VersionedAnswers",
+    "answer_json",
+]
 
 log = get_logger(__name__)
 
@@ -81,11 +127,29 @@ log = get_logger(__name__)
 #: parts with it) or ``.`` (a shard's name is ``{version}.{digit}``)
 _VERSION: Final = re.compile(r"^[-=a-zA-Z0-9]+$")
 
-#: the name of the index row holding each version's order and the floor
+#: the name of the index row holding each version's order and the floor, for the default scope; another
+#: scope's row is ``versions_{scope}`` (a version holds no ``_``, so no shard and no other row is named so)
 _VERSIONS: Final = "versions"
 
-#: what a write to the index can raise: transport, a grant refusal, or the retry budget spent
-_INDEX_ERRORS: Final = (KvError, ConcurrentModificationError)
+
+def _versions_row(scope: str) -> str:
+    """the index row holding ``scope``'s versions and floor.
+
+    :param scope: the scope, ``""`` for the default
+    :ptype scope: str
+    :return: the row's name
+    :rtype: str
+    """
+    return _VERSIONS if not scope else f"{_VERSIONS}_{scope}"
+
+
+#: what a write to the index can raise: transport, a grant refusal, the retry budget spent, or a write
+#: that landed and could not advance its table's write generation
+_INDEX_ERRORS: Final = (KvError, ConcurrentModificationError, GenerationUnavailableError)
+
+#: the index row holding a scope's announced version is ``announced_{scope}``: a version holds no ``_``,
+#: so it is neither ``versions`` nor a shard
+_ANNOUNCED: Final = "announced_"
 
 _Action = tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]
 
@@ -108,12 +172,169 @@ class AnswerNotComputable(LookupError):
     """a read reached ``compute`` without :meth:`VersionedAnswers.answer`: only it knows how to compute."""
 
 
+class AnswerOutcome(StrEnum):
+    """how one answer was given.
+
+    :cvar READ: read from the cache (this replica's L1, or L2), computed by nobody here
+    :cvar COMPUTED: computed here under the key's build lock, and stored
+    :cvar PEER_FALLBACK: computed here after a peer held the build lock and its value never landed
+        (it finished as this replica retook the lock, or it died and its lease lapsed), and stored
+    :cvar RETIRED: computed here and not stored: its version was retired, before the compute or while it ran
+    :cvar INDEX_UNWRITABLE: computed here and not stored: the index could not record it
+    """
+
+    READ = "read"
+    COMPUTED = "computed"
+    PEER_FALLBACK = "peer_fallback"
+    RETIRED = "retired"
+    INDEX_UNWRITABLE = "index_unwritable"
+
+    @property
+    def stored(self) -> bool:
+        """whether the answer is in the cache for the next read.
+
+        :return: ``False`` for :attr:`RETIRED` and :attr:`INDEX_UNWRITABLE`
+        :rtype: bool
+        """
+        return self not in (AnswerOutcome.RETIRED, AnswerOutcome.INDEX_UNWRITABLE)
+
+
+@dataclass(frozen=True)
+class GivenAnswer:
+    """an answer, and how it was given.
+
+    :ivar body: the answer, gzip bytes
+    :ivar outcome: how it was given
+    """
+
+    body: bytes
+    outcome: AnswerOutcome
+
+
+@dataclass(frozen=True)
+class AnnouncedVersion:
+    """a version a replica named in an index, with whatever its host keeps beside it.
+
+    :ivar version: the version
+    :ivar order: where it stands among the data's versions: higher is newer
+    :ivar detail: the host's own JSON beside it (what a replica following it needs to answer at it)
+    """
+
+    version: str
+    order: int
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    def as_json(self) -> dict[str, Any]:
+        """the version as the record stores it.
+
+        :return: ``version``, ``order`` and ``detail``
+        :rtype: dict[str, Any]
+        """
+        return {"version": self.version, "order": self.order, "detail": dict(self.detail)}
+
+
+@dataclass(frozen=True)
+class Announced:
+    """a scope's announced-version record: the newest version any replica announced, and the one it replaced.
+
+    :ivar latest: the newest version announced
+    :ivar previous: the version it replaced; ``None`` for a scope's first
+    """
+
+    latest: AnnouncedVersion
+    previous: AnnouncedVersion | None = None
+
+    @property
+    def versions(self) -> tuple[AnnouncedVersion, ...]:
+        """the versions a page may be reading at because an index named them: the newest, then the one before.
+
+        :return: the latest, then the previous when there is one
+        :rtype: tuple[AnnouncedVersion, ...]
+        """
+        return (self.latest,) if self.previous is None else (self.latest, self.previous)
+
+    def as_json(self) -> dict[str, Any]:
+        """the record as the index stores it.
+
+        :return: ``latest`` and ``previous``
+        :rtype: dict[str, Any]
+        """
+        return {"latest": self.latest.as_json(), "previous": None if self.previous is None else self.previous.as_json()}
+
+
+def _announced_version(body: Any) -> AnnouncedVersion | None:
+    """a stored version, or ``None`` for none.
+
+    :raises KeyError, TypeError, ValueError: when it is not one
+    """
+    if body is None:
+        return None
+    return AnnouncedVersion(str(body["version"]), int(body["order"]), dict(body.get("detail") or {}))
+
+
+#: the member a :meth:`VersionedAnswers.forget` writes in a scope's announced-version key while it works, where no
+#: record was: an announce replaces it, as it would no record
+_FORGETTING: Final = "forgetting"
+
+
+def _forgetting(row: dict[str, Any] | None) -> bool:
+    """whether an announced-version row is a forget's marker, not a record.
+
+    :param row: the row, or ``None``
+    :ptype row: dict[str, Any] | None
+    :return: whether it is the marker
+    :rtype: bool
+    """
+    members = row.get("members") if row is not None else None
+    return isinstance(members, dict) and _FORGETTING in members
+
+
+def _announced_from(row: dict[str, Any] | None, table: str) -> Announced | None:
+    """the record a row holds; ``None`` for none, and for one that cannot be read (it is then replaced).
+
+    :param row: the index row, or ``None``
+    :ptype row: dict[str, Any] | None
+    :param table: the index's table, for the log
+    :ptype table: str
+    :return: the record
+    :rtype: Announced | None
+    """
+    if row is None or _forgetting(row):
+        # a forget at work: no record, which the next announcement replaces
+        return None
+    try:
+        body = row["members"]
+        latest = _announced_version(body["latest"])
+        return None if latest is None else Announced(latest, _announced_version(body.get("previous")))
+    except (KeyError, TypeError, ValueError) as exc:
+        # NOSILENT: an unreadable record is replaced by the next announcement
+        log.warning("an announced-version record could not be read; it is replaced: table=%s error=%s", table, exc)
+        return None
+
+
+@dataclass
+class _Retirement:
+    """one scope's background retirement on this replica.
+
+    :ivar retired_below: the highest order this replica has retired below, or ``None``
+    :ivar wanted: the highest order it has been asked to retire below, or ``None``
+    :ivar task: the retirement running, or ``None``
+    """
+
+    retired_below: int | None = None
+    wanted: int | None = None
+    task: asyncio.Task[None] | None = None
+
+
 @dataclass
 class _Pending:
-    """the compute one :meth:`VersionedAnswers.answer` call brought, and whether it ran."""
+    """the compute one :meth:`VersionedAnswers.answer` call brought, whether it ran, and after a peer."""
 
-    compute: Callable[[], Awaitable[str]]
+    compute: Callable[[], Awaitable[str | bytes | bytearray]]
     ran: bool = False
+    after_peer: bool = False
+    #: the row :meth:`VersionedAnswers.compute` encoded on a worker thread, for ``serialize`` and the answer
+    encoded: _EncodedRow | None = None
 
 
 #: the compute of the :meth:`VersionedAnswers.answer` call this task is inside, for ``compute`` to find:
@@ -127,6 +348,536 @@ class VersionedAnswer(BaseEntity):
     primary_key_field: str = "request"
 
 
+#: the most list items :func:`answer_json` writes in one encoder call
+_JSON_PIECE: Final = 256
+
+#: the most work :func:`answer_json` gives one encoder call, in units of :func:`_heft`: a value, a
+#: mapping's key, or 64 characters of text each one. The C encoder writes about ten thousand a millisecond (a row of
+#: twenty mixed values is about forty), so a call holds the interpreter lock for a millisecond or two
+_JSON_BUDGET: Final = 8192
+
+#: how many of a list's items :func:`answer_json` weighs whole to learn how deep its items run
+_JSON_SAMPLES: Final = 16
+
+#: the characters of text one unit of :func:`_heft` stands for
+_JSON_TEXT_UNIT: Final = 64
+
+
+def _json_default(value: Any) -> Any:
+    """what an answer's JSON writes for a value ``json`` has no type for.
+
+    A ``Decimal`` is a JSON number, the one its ``float`` writes: a reader parses a number into a
+    double either way, and an exact L1 hands back the ``Decimal`` a float copy used to hold. A
+    ``NaN`` or infinite one, which JSON has no number for, is ``null``. Anything else is its ``str``.
+
+    :param value: the value
+    :ptype value: Any
+    :return: the value ``json`` writes in its place
+    :rtype: Any
+    """
+    written: Any = str(value)
+    if isinstance(value, Decimal):
+        written = float(value) if value.is_finite() else None
+    return written
+
+
+def _finite(value: Any) -> Any:
+    """``value`` with every ``NaN`` or infinite ``float`` in it, at any depth, replaced by ``None``.
+
+    :param value: an answer, or a part of one
+    :ptype value: Any
+    :return: the same structure, every float in it finite or ``None``
+    :rtype: Any
+    """
+    result: Any = value
+    if isinstance(value, float) and not math.isfinite(value):
+        result = None
+    elif isinstance(value, dict):
+        result = {key: _finite(item) for key, item in value.items()}
+    elif isinstance(value, (list, tuple)):
+        result = [_finite(item) for item in value]
+    return result
+
+
+def _dumps(value: Any) -> str:
+    """``value`` as JSON, written by :func:`_json_default`, with a non-finite float as ``null``.
+
+    ``json`` writes a ``NaN`` or infinite float as ``NaN`` or ``Infinity``, which no JSON parser
+    reads. The common answer holds none and is written in one pass; one that does is written again
+    with each replaced by ``null``.
+
+    :param value: the value
+    :ptype value: Any
+    :return: its JSON
+    :rtype: str
+    """
+    try:
+        text = json.dumps(value, default=_json_default, allow_nan=False)
+    except ValueError:
+        text = json.dumps(_finite(value), default=_json_default, allow_nan=False)
+    return text
+
+
+def _heft(value: Any, cap: int) -> int:
+    """the work of writing ``value`` as JSON, in :data:`_JSON_BUDGET`'s units, counted until it passes ``cap``.
+
+    A list or mapping longer than :data:`_JSON_PIECE` counts as past ``cap`` whatever it holds, so no one call
+    writes one.
+
+    :param value: an answer, or a part of one
+    :ptype value: Any
+    :param cap: where counting stops
+    :ptype cap: int
+    :return: the work, or more than ``cap`` once it passes
+    :rtype: int
+    """
+    total = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            total += 1 + len(item) // _JSON_TEXT_UNIT
+        elif isinstance(item, dict):
+            if len(item) > _JSON_PIECE or len(item) > cap - total:
+                return cap + 1
+            total += 1 + len(item)
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            if len(item) > _JSON_PIECE or len(item) > cap - total:
+                return cap + 1
+            total += 1
+            stack.extend(item)
+        else:
+            total += 1
+        if total > cap:
+            return total
+    return total
+
+
+def _key_text(key: Any) -> str:
+    """a mapping's key as ``json.dumps`` writes it: text quoted, a number, ``true``/``false`` or ``null`` as text.
+
+    :param key: the key
+    :ptype key: Any
+    :return: the key's JSON, quoted
+    :rtype: str
+    :raises TypeError: for a key ``json`` refuses (a tuple, say)
+    """
+    if isinstance(key, str):
+        return json.dumps(key)
+    # json turns a number, a bool or None into text the way it writes any mapping's key
+    return json.dumps({key: 0}, allow_nan=False)[1:-4]
+
+
+#: the types whose values are one unit each, whatever they hold
+_JSON_SCALARS: Final = frozenset({int, float, bool, type(None)})
+
+#: the scalars and text
+_JSON_FLAT: Final = _JSON_SCALARS | {str}
+
+
+def _flat_work(held: list[Any]) -> int | None:
+    """a run's work (:func:`_heft`'s units) when its items hold nothing deeper than plain values and
+    text, counted by C-level passes over it (``map``, ``chain``), never an item at a time; None for any other run.
+
+    Text held inside an item counts as a unit, however long: how long a list's text runs is weighed from the
+    samples that size its runs (:func:`_write_run`). What this catches is an item deeper than the samples -- a row
+    holding a list or a mapping -- which is then weighed whole.
+
+    :param held: the run's items, or its entries' values
+    :ptype held: list[Any]
+    :return: the work, or None when an item holds a list or a mapping, or is of a type this does not weigh
+    :rtype: int | None
+    """
+    kinds = set(map(type, held))
+    work: int | None = None
+    if kinds <= _JSON_SCALARS:
+        work = len(held)
+    elif kinds == {str}:
+        work = len(held) + sum(map(len, held)) // _JSON_TEXT_UNIT
+    elif (kinds <= {list, tuple} or kinds == {dict}) and max(map(len, held)) <= _JSON_PIECE:
+        mappings = kinds == {dict}
+        inner = itertools.chain.from_iterable(map(dict.values, held) if mappings else held)
+        if set(map(type, inner)) <= _JSON_FLAT:
+            # a mapping's key is a unit beside its value, as in _heft
+            work = len(held) + sum(map(len, held)) * (2 if mappings else 1)
+    return work
+
+
+class _Run:
+    """a list's items, or a mapping's entries, written into the answer's text as pieces with a comma between.
+
+    :param out: the answer's text so far
+    :ptype out: _AnswerJson
+    :param mapping: whether the items are a mapping's ``(key, value)`` entries
+    :ptype mapping: bool
+    """
+
+    def __init__(self, out: _AnswerJson, *, mapping: bool) -> None:
+        self.out = out
+        self.mapping = mapping
+        self.started = False
+
+    def _comma(self) -> None:
+        if self.started:
+            self.out.append(", ")
+        self.started = True
+
+    def dump(self, items: list[Any]) -> None:
+        """write ``items`` in one encoder call.
+
+        :param items: items, or entries
+        :ptype items: list[Any]
+        :return: nothing
+        :rtype: None
+        """
+        if items:
+            self._comma()
+            self.out.append(_dumps(dict(items) if self.mapping else items)[1:-1])
+
+    def open(self, item: Any) -> None:
+        """write one item too large for a run by :func:`_write`, which opens it.
+
+        :param item: an item, or an entry
+        :ptype item: Any
+        :return: nothing
+        :rtype: None
+        """
+        self._comma()
+        if self.mapping:
+            key, item = item
+            self.out.append(_key_text(key))
+            self.out.append(": ")
+        _write(item, self.out)
+
+    def weighed(self, items: list[Any], values: list[Any]) -> None:
+        """write ``items`` weighing each whole (:func:`_heft`): together until the next would pass the
+        budget, and one past the budget alone, opened.
+
+        :param items: items, or entries
+        :ptype items: list[Any]
+        :param values: the items, or the entries' values
+        :ptype values: list[Any]
+        :return: nothing
+        :rtype: None
+        """
+        start = 0
+        weight = 0
+        for index, value in enumerate(values):
+            cost = _heft(value, _JSON_BUDGET)
+            if index > start and weight + cost > _JSON_BUDGET:
+                self.dump(items[start:index])
+                start, weight = index, 0
+            if cost > _JSON_BUDGET:
+                self.open(items[index])
+                start, weight = index + 1, 0
+            else:
+                weight += cost
+        self.dump(items[start:])
+
+
+def _write_run(value: dict[Any, Any] | list[Any] | tuple[Any, ...], out: _AnswerJson) -> None:
+    """a mapping or a list too large for one encoder call, written into ``out`` a run of entries or items at a time.
+
+    A few items, spread through it, are weighed whole, and a run is as many items as half the budget holds at the
+    heaviest of them, never more than :data:`_JSON_PIECE`. A run whose items hold only plain values and text is
+    weighed by C-level passes (:func:`_flat_work`) and, within the budget, written in one encoder call: rows,
+    as lists or as mappings, cost no Python an item. Any other run -- items holding lists or mappings, or heavier
+    than the samples said -- is weighed an item at a time (:meth:`_Run.weighed`), and an item past the budget is
+    opened in turn.
+
+    :param value: the mapping or list
+    :ptype value: dict[Any, Any] | list[Any] | tuple[Any, ...]
+    :param out: the text so far
+    :ptype out: _AnswerJson
+    :return: nothing
+    :rtype: None
+    """
+    mapping = isinstance(value, dict)
+    count = len(value)
+    # pointers copied, never an item made: a mapping's entries are taken a run at a time from its own iterator
+    values: list[Any] = (
+        list(value.values()) if isinstance(value, dict) else value if type(value) is list else list(value)
+    )
+    entries = iter(value.items()) if isinstance(value, dict) else None
+    stride = max(1, count // _JSON_SAMPLES)
+    heaviest = max(_heft(values[index], _JSON_BUDGET) for index in (*range(0, count, stride), count - 1))
+    # half the budget at the heaviest sample: a run of items a little heavier than the samples still fits
+    size = max(1, min(_JSON_PIECE, _JSON_BUDGET // (2 * max(1, heaviest))))
+    run = _Run(out, mapping=mapping)
+    out.append("{" if mapping else "[")
+    for start in range(0, count, size):
+        held = values[start : start + size]
+        items = held if entries is None else list(itertools.islice(entries, size))
+        work = _flat_work(held)
+        if work is not None and work <= _JSON_BUDGET:
+            run.dump(items)
+        else:
+            run.weighed(items, held)
+    out.append("}" if mapping else "]")
+
+
+def _write(value: Any, out: _AnswerJson) -> None:
+    """``value``'s JSON appended to ``out``: in one encoder call when it is within :data:`_JSON_BUDGET`, else a
+    run of entries or items at a time (:func:`_write_run`).
+
+    :param value: an answer, or a part of one
+    :ptype value: Any
+    :param out: the text so far
+    :ptype out: _AnswerJson
+    :return: nothing
+    :rtype: None
+    """
+    if isinstance(value, (dict, list, tuple)) and _heft(value, _JSON_BUDGET) > _JSON_BUDGET:
+        _write_run(value, out)
+    else:
+        out.append(_dumps(value))
+
+
+#: the most characters :meth:`_AnswerJson.__eq__` compares in one call: a slice of a large answer, never all of it
+_COMPARED_SLICE: Final = 1 << 20
+
+
+class _AnswerJson(bytearray):
+    """an answer's JSON: ``json.dumps``' text, which is all ASCII, held as its bytes, one byte a character.
+
+    :func:`answer_json` appends each piece as it is written (:meth:`append`), so no one call ever copies the whole
+    answer: a ``"".join`` of the pieces into one ``str`` of 51 MB held the interpreter lock for 5 ms on a laptop
+    and 32-40 ms on a 4-core CI runner (fresh pages faulted in, one copy), and an ``encode`` of that ``str`` for
+    gzip was a second copy as long. This grows a few kilobytes a call, and its bytes go to gzip (``zlib`` lets go
+    of the lock while it compresses) as they are.
+
+    It reads as the text too: it equals the ``str`` it holds (compared a slice at a time), ``in`` finds text in
+    it, ``len`` is its characters, :meth:`encode` to UTF-8 or ASCII is itself, and ``json.loads`` and ``str``
+    read it (each a copy of the whole: for a small answer, or a test).
+    """
+
+    def append(self, piece: str) -> None:  # type: ignore[override]
+        """add ``piece``, a run of the answer's JSON, to the end.
+
+        :param piece: JSON text, ASCII
+        :ptype piece: str
+        :return: nothing
+        :rtype: None
+        """
+        self.extend(piece.encode("ascii"))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            size = len(self)
+            return len(other) == size and all(
+                self[start : start + _COMPARED_SLICE] == other[start : start + _COMPARED_SLICE].encode("utf-8")
+                for start in range(0, size, _COMPARED_SLICE)
+            )
+        return bytearray.__eq__(self, other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __contains__(self, key: object, /) -> bool:
+        # the text is ASCII, so text that is not never matches its UTF-8; anything else is bytearray's to refuse
+        needle = key.encode("utf-8") if isinstance(key, str) else key
+        return super().__contains__(cast("SupportsIndex | Buffer", needle))
+
+    def __str__(self) -> str:
+        return self.decode("ascii")
+
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes | bytearray:
+        """the text in ``encoding``: itself for UTF-8, ASCII or Latin-1, which spell ASCII as ASCII.
+
+        :param encoding: the encoding
+        :ptype encoding: str
+        :param errors: as ``str.encode``'s
+        :ptype errors: str
+        :return: the encoded text
+        :rtype: bytes | bytearray
+        """
+        if codecs.lookup(encoding).name in _ASCII_SUPERSETS:
+            return self
+        return str(self).encode(encoding, errors)
+
+
+#: the codecs that write ASCII text as its ASCII bytes
+_ASCII_SUPERSETS: Final = frozenset({"utf-8", "ascii", "latin-1", "iso8859-1"})
+
+
+def answer_json(answer: Any) -> _AnswerJson:
+    """``json.dumps(answer, default=str)``, the same text, written a piece at a time; a ``Decimal`` is a number.
+
+    The C JSON encoder holds the interpreter lock for its whole call, so an answer of megabytes written in
+    one call holds every other thread for as long, the event loop among them, whichever thread writes it.
+    Each piece here is a call of at most :data:`_JSON_BUDGET` (a millisecond or two) and never more than
+    :data:`_JSON_PIECE` list items, and the loop runs between them: a mapping or a list too large for one
+    call is written a run of entries or items at a time (whatever its keys' types), and an item too large for a
+    run is opened in turn, however deep it sits (a short list of long series, say). The bytes are ``json``'s
+    own: each run is one ``json.dumps`` call with its brackets taken off. Each piece is added to the answer as
+    it is written, so nothing ever copies the whole answer in one call (:class:`_AnswerJson`).
+
+    :param answer: the answer
+    :ptype answer: Any
+    :return: its JSON, exactly as ``json.dumps`` writes it with :func:`_json_default`, but a ``NaN``
+        or infinite number, ``float`` or ``Decimal``, is ``null``: JSON has no number for it
+    :rtype: _AnswerJson
+    """
+    out = _AnswerJson()
+    _write(answer, out)
+    return out
+
+
+def _gzipped(text: str | bytes | bytearray) -> bytes:
+    """an answer's text gzipped with no time in its header, so equal answers are equal bytes.
+
+    Run on a worker thread (``asyncio.to_thread``), never the event loop: a large answer takes tens of
+    milliseconds, and zlib lets go of the interpreter lock while it compresses. Bytes (:func:`answer_json`'s)
+    are compressed as they are, never copied first.
+
+    :param text: the answer's text
+    :ptype text: str | bytes | bytearray
+    :return: the gzip bytes
+    :rtype: bytes
+    """
+    return gzip.compress(text if isinstance(text, bytes | bytearray) else text.encode("utf-8"), mtime=0)
+
+
+#: the most base64 text one call decodes: a multiple of 4, so each slice decodes on its own to its share of the bytes
+_BASE64_TEXT_SLICE: Final = 1 << 20
+
+#: the most bytes one call encodes as base64: a multiple of 3, so each slice's text is its share of the whole's
+_BASE64_DATA_SLICE: Final = 3 << 18
+
+
+def _unbase64(body: str | bytes) -> bytes:
+    """a row's ``body`` back to its gzip bytes, a slice per call, so no one call decodes a large answer whole.
+
+    ``base64.b64decode`` holds the interpreter lock for its whole call (9-15 ms at 12.5 MB); each slice here is
+    about a millisecond, and the bytes grow in place (``BytesIO.getvalue`` hands its buffer over, no copy).
+
+    :param body: the base64 text
+    :ptype body: str | bytes
+    :return: the gzip bytes, exactly ``base64.b64decode(body)``'s
+    :rtype: bytes
+    """
+    out = io.BytesIO()
+    for start in range(0, len(body), _BASE64_TEXT_SLICE):
+        out.write(base64.b64decode(body[start : start + _BASE64_TEXT_SLICE]))
+    return out.getvalue()
+
+
+async def _given_body(body: str | bytes) -> bytes:
+    """a row's ``body`` decoded (:func:`_unbase64`): a small one here, a large one on a worker thread, never the loop.
+
+    :param body: the base64 text
+    :ptype body: str | bytes
+    :return: the gzip bytes
+    :rtype: bytes
+    """
+    if len(body) <= _BASE64_TEXT_SLICE:
+        decoded = base64.b64decode(body)
+    else:
+        decoded = await asyncio.to_thread(_unbase64, body)
+    return decoded
+
+
+#: what precedes a row's body in its L2 JSON, after its version and request
+_BODY_OPENS: Final = b', "body": "'
+
+#: what follows it
+_BODY_CLOSES: Final = b'"}'
+
+
+@dataclass(frozen=True)
+class _EncodedRow:
+    """an answer encoded for its row, on a worker thread: the gzip bytes, the row's base64 ``body``, and the row's
+    L2 bytes, exactly ``VersionedAnswers.serialize``'s.
+    """
+
+    gzipped: bytes
+    body: str
+    stored: bytes
+
+
+def _encoded_row(version: str, digest: str, text: str | bytes | bytearray) -> _EncodedRow:
+    """an answer gzipped (:func:`_gzipped`) and written as its row and the row's L2 bytes. Run on a worker thread.
+
+    The base64 is written a slice per call into the L2 bytes, which grow in place, and the row's ``body`` is read
+    back out of them: no call encodes the whole answer, and ``serialize`` hands the bytes on rather than run
+    ``json.dumps`` over megabytes on the event loop (16 ms at 12.5 MB).
+
+    :param version: the answer's version
+    :ptype version: str
+    :param digest: the request's digest
+    :ptype digest: str
+    :param text: the answer's text
+    :ptype text: str | bytes | bytearray
+    :return: the encodings
+    :rtype: _EncodedRow
+    """
+    gzipped = _gzipped(text)
+    head = json.dumps({"version": version, "request": digest})[:-1].encode("utf-8") + _BODY_OPENS
+    out = io.BytesIO()
+    out.write(head)
+    view = memoryview(gzipped)
+    for start in range(0, len(gzipped), _BASE64_DATA_SLICE):
+        out.write(base64.b64encode(view[start : start + _BASE64_DATA_SLICE]))
+    out.write(_BODY_CLOSES)
+    stored = out.getvalue()
+    body = str(memoryview(stored)[len(head) : -len(_BODY_CLOSES)], "ascii")
+    return _EncodedRow(gzipped, body, stored)
+
+
+def _answers_schema(table_name: str) -> TableSchema:
+    """the L1 table of the answers: every column either tier writes (the row's, and the times a swap stamps).
+
+    :param table_name: the answers' table
+    :ptype table_name: str
+    :return: the schema
+    :rtype: TableSchema
+    """
+    return TableSchema(
+        name=table_name,
+        primary_key=("version", "request"),
+        columns=[
+            Column("version", STRING_TYPE),
+            Column("request", STRING_TYPE),
+            Column("body", STRING_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, nullable=True),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+        ],
+    )
+
+
+def _index_schema(table_name: str) -> TableSchema:
+    """the L1 table of an index: a row's name, its members (JSON) and, on ``versions``, the floor.
+
+    :param table_name: the index's table
+    :ptype table_name: str
+    :return: the schema
+    :rtype: TableSchema
+    """
+    return TableSchema(
+        name=table_name,
+        primary_key="name",
+        columns=[
+            Column("name", STRING_TYPE),
+            Column("members", JSONB_TYPE, nullable=True),
+            Column("floor", BIGINT_TYPE, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, nullable=True),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
+        ],
+    )
+
+
+def _l1_metadata(schema: TableSchema) -> Any:
+    """the metadata an L1 backend is initialised with for one table.
+
+    :param schema: the table
+    :ptype schema: TableSchema
+    :return: SQLAlchemy metadata holding it
+    :rtype: Any
+    """
+    return schema.to_sqlalchemy_table(MetaData()).metadata
+
+
 class _IndexRow(BaseEntity):
     """one row of the index: ``name``, ``members``, and on ``versions`` the ``floor``."""
 
@@ -134,10 +885,13 @@ class _IndexRow(BaseEntity):
 
 
 class _AnswerIndex(BaseCollection[_IndexRow]):
-    """the index of a :class:`VersionedAnswers`: rows in L2 alone, changed only by compare-and-set."""
+    """the index of a :class:`VersionedAnswers`: rows in L2 and L1, changed only by compare-and-set."""
 
     primary_key_column: str | tuple[str, ...] = ("name",)
-    caches_in_l1: ClassVar[bool] = False
+    #: a copy in L1 is coherent: every change is a compare-and-set, whose broadcast evicts the peers'
+    #: copies, and the generation kept beside the rows catches a broadcast missed
+    caches_in_l1: ClassVar[bool] = True
+    write_generation: ClassVar[WriteGenerationDeclaration] = L2_WRITE_GENERATION
     #: derived: the index is rebuilt by the answers it indexes, and it changes only by
     #: compare-and-set, which raises on its own
     l2_is_the_store: bool = False
@@ -147,6 +901,18 @@ class _AnswerIndex(BaseCollection[_IndexRow]):
         super().__init__(registry, config, nats_client, None)
         # L2 alone: the index is rebuilt by the answers it indexes, never read through from a store
         self.l3_pool = None
+        if self._l1 is not None:
+            self._l1.initialize(_l1_metadata(_index_schema(table_name)))
+
+    async def read_l2(self, name: str) -> dict[str, Any] | None:
+        """one row as L2 holds it, past this replica's L1: for retirement, which must see every digest.
+
+        :param name: the row's name
+        :ptype name: str
+        :return: the row, or ``None`` when L2 holds none or cannot be read
+        :rtype: dict[str, Any] | None
+        """
+        return await self._get_from_l2(name)
 
     @property
     def table_name(self) -> str:
@@ -225,9 +991,12 @@ class _AnswerIndex(BaseCollection[_IndexRow]):
 
 
 class VersionedAnswers(DerivedCollection[VersionedAnswer]):
-    """gzip answers keyed by ``(version, request digest)``, in L2 alone, retired when the version moves.
+    """gzip answers keyed by ``(version, request digest)``, in L2 and L1, retired when the version moves.
 
-    :param registry: the owner's registry, carrying its L2 client and key scope
+    Without an L1 backend on the registry the answers and index are kept in L2 alone.
+
+    :param registry: the owner's registry, carrying its L2 client and key scope, and the L1 backend each
+        table binds, when it keeps one
     :ptype registry: CollectionRegistry
     :param config: core configuration
     :ptype config: CoreConfig
@@ -244,7 +1013,12 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("version", "request")
-    caches_in_l1: ClassVar[bool] = False
+    #: an answer is a pure function of its key, so a copy in L1 is never stale; retirement deletes by
+    #: compare-and-set, whose broadcast evicts the peers' copies
+    caches_in_l1: ClassVar[bool] = True
+    write_generation: ClassVar[WriteGenerationDeclaration] = L2_WRITE_GENERATION
+    #: a miss that finds a peer's answer reads it from L2, where answers live
+    derived_values_tier: ClassVar[ReadTier] = ReadTier.L2
     #: derived: a miss computes the answer again, and answers are written by compare-and-set,
     #: which raises on its own
     l2_is_the_store: bool = False
@@ -264,13 +1038,13 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         self._markers_kept_logged = False
         self._background: set[asyncio.Task[None]] = set()
         super().__init__(registry, config, nats_client, None, build_lock=build_lock)
-        # L2 alone: no durable tier to pull through (a miss computes)
+        # no durable tier to pull through (a miss computes)
         self.l3_pool = None
+        if self._l1 is not None:
+            self._l1.initialize(_l1_metadata(_answers_schema(table_name)))
         self._index = _AnswerIndex(registry, config, nats_client, table_name=f"{table_name}_index")
-        #: the highest order this replica has retired below, and the highest it has been asked to
-        self._retired_below: int | None = None
-        self._wanted: int | None = None
-        self._retiring: asyncio.Task[None] | None = None
+        #: per scope, this replica's background retirement
+        self._retirements: dict[str, _Retirement] = {}
 
     @property
     def table_name(self) -> str:
@@ -294,27 +1068,83 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
     # the public surface
     # ------------------------------------------------------------------
 
-    async def answer(self, version: str, request: str, compute: Callable[[], Awaitable[str]], *, order: int) -> bytes:
+    async def answer(
+        self,
+        version: str,
+        request: str,
+        compute: Callable[[], Awaitable[str | bytes | bytearray]],
+        *,
+        order: int,
+        scope: str = "",
+    ) -> bytes:
         """the answer to ``request`` at ``version``, gzip-compressed: cached, or computed once and cached.
+
+        :meth:`answer_with_outcome`, without the outcome.
 
         :param version: the data's version the answer is at
         :ptype version: str
         :param request: the request, whole (digested for the key): two requests asking the same thing
             must spell it the same
         :ptype request: str
-        :param compute: computes the answer's text at exactly ``version``; it raises rather than answer
-            at another, and whatever it raises reaches the caller uncached
-        :ptype compute: Callable[[], Awaitable[str]]
+        :param compute: computes the answer's JSON at exactly ``version``, as text or as its UTF-8 bytes
+            (:func:`answer_json`'s, a ``bytearray``); it raises rather than answer at another, and whatever
+            it raises reaches the caller uncached
+        :ptype compute: Callable[[], Awaitable[str | bytes | bytearray]]
         :param order: where ``version`` stands among the data's versions: higher is newer
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: the answer, gzip bytes
         :rtype: bytes
         :raises ValueError: when ``version`` cannot be a key segment
         """
+        return (await self.answer_with_outcome(version, request, compute, order=order, scope=scope)).body
+
+    async def answer_with_outcome(
+        self,
+        version: str,
+        request: str,
+        compute: Callable[[], Awaitable[str | bytes | bytearray]],
+        *,
+        order: int,
+        scope: str = "",
+    ) -> GivenAnswer:
+        """the answer to ``request`` at ``version``, gzip-compressed, and how it was given.
+
+        A key this replica's L1 holds is answered from it: no L2 round trip and no index write, since
+        whoever stored the answer recorded it. Anything else records the request in the index, then
+        reads L2 or computes.
+
+        :param version: the data's version the answer is at
+        :ptype version: str
+        :param request: the request, whole (digested for the key): two requests asking the same thing
+            must spell it the same
+        :ptype request: str
+        :param compute: computes the answer's JSON at exactly ``version``, as text or as its UTF-8 bytes
+            (:func:`answer_json`'s, a ``bytearray``); it raises rather than answer at another, and whatever
+            it raises reaches the caller uncached
+        :ptype compute: Callable[[], Awaitable[str | bytes | bytearray]]
+        :param order: where ``version`` stands among the data's versions: higher is newer
+        :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
+        :return: the answer, gzip bytes, and its :class:`AnswerOutcome`
+        :rtype: GivenAnswer
+        :raises ValueError: when ``version`` cannot be a key segment
+        """
         key = self.key_of(version, request)
-        if not await self._recorded(version, key[1], order):
+        # no await between this read and the answer: a broadcast evicting the key cannot land between
+        held = self._select_from_l1(key)
+        if held is not None:
+            record_tier_read(self.table_name, ReadTier.L1)
+            # the row is read: an eviction from here on takes nothing this answer needs
+            return GivenAnswer(await _given_body(held["body"]), AnswerOutcome.READ)
+        refused = await self._recorded(version, key[1], order, scope)
+        if refused is not None:
             # retired, older than what was retired, or the index unreachable: answered, not stored
-            return gzip.compress((await compute()).encode("utf-8"), mtime=0)
+            return GivenAnswer(await asyncio.to_thread(_gzipped, await compute()), refused)
         pending = _Pending(compute)
         token = _PENDING.set(pending)
         try:
@@ -323,9 +1153,19 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             _PENDING.reset(token)
         if row is None:
             raise RuntimeError(f"{self.table_name}: no answer for {key}; compute returned nothing")
+        outcome = AnswerOutcome.READ
         if pending.ran:
-            await self._confirm(version, key[1])
-        return base64.b64decode(row["body"])
+            if await self._confirm(version, key[1], scope):
+                outcome = AnswerOutcome.RETIRED
+            else:
+                outcome = AnswerOutcome.PEER_FALLBACK if pending.after_peer else AnswerOutcome.COMPUTED
+        encoded = pending.encoded
+        if encoded is not None and row["body"] is encoded.body:
+            # computed here: the gzip bytes are in hand
+            body = encoded.gzipped
+        else:
+            body = await _given_body(row["body"])
+        return GivenAnswer(body, outcome)
 
     def _in_background(self, work: Coroutine[Any, Any, None]) -> None:
         """run ``work`` off the read path, keeping a reference until it ends.
@@ -367,40 +1207,227 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             raise ValueError(f"{version!r} cannot be a version key segment: KV-grammar characters, no '_' or '.'")
         return version, hashlib.sha256(request.encode("utf-8")).hexdigest()
 
-    def current_version(self, version: str, order: int) -> None:
-        """note the data's current version; when it is newer than any seen, retire the older ones.
+    def current_version(self, version: str, order: int, *, scope: str = "") -> None:
+        """note the data's current version; when it is newer than any seen, retire the scope's older ones.
 
         Cheap to call on every read that learns the version: it does nothing for an order this
-        replica has already retired below or asked to, and otherwise starts (or extends) the one
-        background retirement. A retirement that fails is tried again on the next call.
+        replica has already retired below or asked to in the scope, and otherwise starts (or extends)
+        the scope's one background retirement. A retirement that fails is tried again on the next call.
 
         :param version: the version the caller's read is at
         :ptype version: str
         :param order: its order: higher is newer
         :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
         :return: nothing
         :rtype: None
         """
         del version
-        if self._wanted is not None and order <= self._wanted:
+        retirement = self._retirements.setdefault(scope, _Retirement())
+        if retirement.wanted is not None and order <= retirement.wanted:
             return
-        self._wanted = order
-        if self._retiring is None or self._retiring.done():
-            self._retiring = asyncio.get_running_loop().create_task(self._retire_until_current())
+        retirement.wanted = order
+        if retirement.task is None or retirement.task.done():
+            retirement.task = asyncio.get_running_loop().create_task(self._retire_until_current(retirement, scope))
 
-    async def retire_older_than(self, order: int) -> int:
-        """delete every answer this owner holds at a version of a lower order.
+    async def announce(
+        self, version: str, order: int, *, scope: str = "", detail: Mapping[str, Any] | None = None
+    ) -> tuple[AnnouncedVersion, Announced | None]:
+        """the version an index names for ``scope``: the newer of this replica's and the recorded one.
 
-        :param order: the order of the version now current
+        The record holds the newest version any replica announced for the scope, and the one it
+        replaced. This replica's version is recorded when it is newer than the record's, by
+        compare-and-set, so the record only rises; otherwise the recorded one is followed. Retirement
+        then goes below the version the record replaced (:meth:`current_version`), so a page still
+        reading at it is answered; a host that announces leaves retirement to this call. Each scope is
+        its own line of versions, recorded and retired on its own (pass the same ``scope`` to
+        :meth:`answer`); anything that makes two versions incomparable -- another conversion of the
+        same data -- belongs in the scope.
+
+        A record that cannot be read or written is logged, and this replica's own version is announced.
+
+        :param version: the version this replica would announce on its own
+        :ptype version: str
+        :param order: its order: higher is newer
         :ptype order: int
-        :return: how many answers were deleted
-        :rtype: int
-        :raises KvError: when the index or an entry could not be read or changed
+        :param scope: which index the version is announced in
+        :ptype scope: str
+        :param detail: the host's own JSON kept beside the version, for a replica that follows it
+        :ptype detail: Mapping[str, Any] | None
+        :return: the version to announce, and the record as it stands after (``None`` when it could not
+            be read or written)
+        :rtype: tuple[AnnouncedVersion, Announced | None]
+        """
+        own = AnnouncedVersion(version, order, dict(detail or {}))
+        name = f"{_ANNOUNCED}{scope}"
+        found: Announced | None = None
+        proposed: Announced | None = None
+
+        def rise(row: dict[str, Any] | None) -> _Action:
+            nonlocal found, proposed
+            found = _announced_from(row, self._index.table_name)
+            if found is not None and found.latest.order >= order:
+                proposed = None
+                return ("noop", None)
+            proposed = Announced(own, None if found is None else found.latest)
+            return ("upsert", {"name": name, "members": proposed.as_json()})
+
+        try:
+            await self._index.l2_cas_mutate(name, rise)
+        except _INDEX_ERRORS as exc:
+            # NOSILENT: unrecorded, this replica announces its own version, as with no record at all
+            log.warning(
+                "the announced version could not be shared; this replica's own is announced: "
+                "table=%s scope=%s error=%s",
+                self.table_name,
+                scope,
+                exc,
+            )
+            return own, None
+        record = proposed if proposed is not None else found
+        assert record is not None  # narrow: a noop needs a record found
+        if record.previous is not None:
+            self.current_version(record.previous.version, record.previous.order, scope=scope)
+        announced = record.latest if record.latest.order > order else own
+        return announced, record
+
+    async def announced(self, scope: str = "") -> Announced | None:
+        """the announced-version record for ``scope``, as :meth:`announce` keeps it.
+
+        :param scope: which index
+        :ptype scope: str
+        :return: the record; ``None`` when there is none, or it cannot be read
+        :rtype: Announced | None
+        """
+        return _announced_from(await self._index.ensure(f"{_ANNOUNCED}{scope}"), self._index.table_name)
+
+    async def forget(self, scope: str) -> bool:
+        """retire a scope a host no longer announces: its announced-version record goes, and so does every answer its
+        versions row names, leaving only the row's floor.
+
+        For a host whose scopes come and go (one a deploy, nothing reading at it once the next is out): each left a
+        record, a versions row and its answers that nothing else removed, so they grew by the scopes of every
+        release. Every change is a compare-and-set through the index, as every other change here.
+
+        The record's key is the call's gate. A record is deleted only as this call read it; with none, the call
+        takes the key with a marker of its own (create-if-absent). An :meth:`announce` that lands at any point
+        before the call is done replaces either and is newer than the call: the call then lets the scope be, puts
+        the floor back where it found it, and answers ``False``. The gate is looked at again after the floor rises,
+        before any answer is deleted, and last of all, so an announce before the answers go loses no answer and one
+        after them is answered and stored again once the floor is put back. The answers are retired below the order the record
+        held (with no record, the versions row's newest), so a version answered past it is kept.
+
+        The versions row stays, naming no version and holding the floor: a replica still reading at a retired
+        version is answered and never stores it, where with no floor it wrote the row and its answers back. One
+        row of a few bytes a forgotten scope is left, not its answers. This replica's own background retirement of
+        the scope is let finish first. A scope with nothing left is ``True``: forgetting one twice is the same as
+        once. The keys deleted are purged, as a retirement's are.
+
+        :param scope: the scope, as :meth:`announce` and :meth:`answer` were given it
+        :ptype scope: str
+        :return: whether the scope is retired: ``False`` when an announce kept it, or a version past the record's
+            (or one still being written) is still named; a later call finishes it
+        :rtype: bool
+        :raises KvError: when the index could not be read or changed
         :raises ConcurrentModificationError: when the index kept changing past the retry budget
-        :raises Exception: whatever the purger raises outside its contract (:data:`KeyPurger`), once
-            every retired version is cleared
+        """
+        retirement = self._retirements.pop(scope, None)
+        if retirement is not None and retirement.task is not None:
+            # its failures are recorded by itself: here only its end matters
+            await asyncio.gather(retirement.task, return_exceptions=True)
+        name, row_name = f"{_ANNOUNCED}{scope}", _versions_row(scope)
+        touched: list[str] = []
+        read = await self._index.read_l2(name)
+        record = None if _forgetting(read) else _announced_from(read, self._index.table_name)
+        marker: dict[str, Any] | None = None
+
+        async def overtaken() -> bool:
+            # an announce holds the gate: a record in place of the one this call deleted, or of its own marker
+            row = await self._index.read_l2(name)
+            return row is not None and not (row.get("members") == marker if marker else _forgetting(row))
+
+        if record is not None and read is not None:
+            seen = read["members"]
+
+            def drop_as_read(row: dict[str, Any] | None) -> _Action:
+                # an announce since the read changed the record: it is newer than this call, and it stays
+                if row is None or row.get("members") != seen:
+                    return ("noop", None)
+                return ("delete", None)
+
+            if (await self._index.l2_cas_mutate(name, drop_as_read)).action == "deleted":
+                touched.append(self._relative(self._index.l2_key(name)))
+            elif await overtaken():
+                return False
+        else:
+            marker = {_FORGETTING: uuid.uuid7().hex}
+
+            def take(row: dict[str, Any] | None) -> _Action:
+                # the key is this call's while it works; a record an announce wrote is not
+                if row is not None and not _forgetting(row):
+                    return ("noop", None)
+                return ("upsert", {"name": name, "members": marker})
+
+            if (await self._index.l2_cas_mutate(name, take)).action == "noop":
+                return False
+
+        retired = True
+        raised: tuple[int | None, int | None] | None = None
+        versions = await self._index.read_l2(row_name)
+        if versions is not None:
+            members: dict[str, int] = dict(versions["members"])
+            bound = record.latest.order if record is not None else max(members.values(), default=None)
+            if bound is not None:
+                taken, before, after = await self._raise_floor(bound + 1, row_name)
+                raised = (after, before)
+                if await overtaken():
+                    await self._lower_floor(row_name, after, before)
+                    return False
+                try:
+                    await self._clear_versions(taken, touched, row_name)
+                finally:
+                    await self._purge(touched)
+                    touched = []
+                if await overtaken():
+                    await self._lower_floor(row_name, after, before)
+                    return False
+            remaining = await self._index.read_l2(row_name)
+            retired = remaining is None or not remaining["members"]
+        if marker is not None:
+
+            def drop_marker(row: dict[str, Any] | None) -> _Action:
+                return ("delete", None) if row is not None and row.get("members") == marker else ("noop", None)
+
+            if (await self._index.l2_cas_mutate(name, drop_marker)).action == "deleted":
+                touched.append(self._relative(self._index.l2_key(name)))
+            else:
+                # an announce replaced the marker after the last look: it is newer than this call
+                marker = None
+        await self._purge(touched)
+        # the last look: an announce that landed after the answers went holds the gate, so the floor goes back and
+        # the versions it answers are stored again
+        if (marker is None and record is None) or await overtaken():
+            if raised is not None:
+                await self._lower_floor(row_name, *raised)
+            retired = False
+        log.info("forgot a scope: table=%s scope=%s retired=%s", self.table_name, scope, retired)
+        return retired
+
+    async def _raise_floor(self, order: int, row_name: str) -> tuple[dict[str, int], int | None, int | None]:
+        """raise a versions row's floor to ``order - 1``, by compare-and-set: from here no replica records a version
+        at or below it.
+
+        :param order: the order retired below
+        :ptype order: int
+        :param row_name: the versions row
+        :ptype row_name: str
+        :return: each version below ``order`` with its order, and the floor before and after
+        :rtype: tuple[dict[str, int], int | None, int | None]
         """
         taken: dict[str, int] = {}
+        floors: list[int | None] = [None, None]
 
         def raise_floor(row: dict[str, Any] | None) -> _Action:
             nonlocal taken
@@ -408,18 +1435,63 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             floor = row.get("floor") if row else None
             taken = {version: older for version, older in members.items() if older < order}
             new_floor = order - 1 if floor is None else max(floor, order - 1)
+            floors[:] = [floor, new_floor]
             if row is not None and new_floor == floor:
                 return ("noop", None)
-            return ("upsert", {"name": _VERSIONS, "members": members, "floor": new_floor})
+            return ("upsert", {"name": row_name, "members": members, "floor": new_floor})
 
+        await self._index.l2_cas_mutate(row_name, raise_floor)
+        return taken, floors[0], floors[1]
+
+    async def _lower_floor(self, row_name: str, raised: int | None, back: int | None) -> None:
+        """put a versions row's floor back to ``back``, if it is still the ``raised`` a :meth:`forget` left there.
+
+        For a forget an announce overtook: the scope is in use, and the versions its announcer answers must be
+        stored again. A floor anything else has raised since stays.
+
+        :param row_name: the versions row
+        :ptype row_name: str
+        :param raised: the floor the forget set
+        :ptype raised: int | None
+        :param back: the floor before it
+        :ptype back: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if raised == back:
+            return
+
+        def lower(row: dict[str, Any] | None) -> _Action:
+            if row is None or row.get("floor") != raised:
+                return ("noop", None)
+            return ("upsert", {"name": row_name, "members": dict(row["members"]), "floor": back})
+
+        await self._index.l2_cas_mutate(row_name, lower)
+
+    async def retire_older_than(self, order: int, *, scope: str = "") -> int:
+        """delete every answer this owner holds at a version of the scope of a lower order.
+
+        :param order: the order of the version now current
+        :ptype order: int
+        :param scope: the line of versions ``version`` belongs to: each scope's orders are compared and
+            retired on their own, so one scope's move never retires another's answers
+        :ptype scope: str
+        :return: how many answers were deleted
+        :rtype: int
+        :raises KvError: when the index or an entry could not be read or changed
+        :raises ConcurrentModificationError: when the index kept changing past the retry budget
+        :raises Exception: whatever the purger raises outside its contract (:data:`KeyPurger`), once
+            every retired version is cleared
+        """
+        row_name = _versions_row(scope)
         # first the floor: from here no replica records a version below it, so what is listed is final
-        await self._index.l2_cas_mutate(_VERSIONS, raise_floor)
+        taken, _, _ = await self._raise_floor(order, row_name)
         # the purge runs once every version is cleared, so a purger that fails outside its contract
         # cannot leave a version's answers behind; keys already deleted are purged even when a later
         # version fails, since a forgotten version is never visited again
         touched: list[str] = []
         try:
-            deleted = await self._clear_versions(taken, touched)
+            deleted = await self._clear_versions(taken, touched, row_name)
         except Exception:
             await self._purge(touched)
             raise
@@ -428,13 +1500,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             log.info("retired old answers: table=%s below=%d deleted=%d", self.table_name, order, deleted)
         return deleted
 
-    async def _clear_versions(self, taken: dict[str, int], touched: list[str]) -> int:
+    async def _clear_versions(self, taken: dict[str, int], touched: list[str], row_name: str) -> int:
         """delete every answer of the versions taken below the floor, forgetting each one emptied.
 
         :param taken: each version below the floor, with its order
         :ptype taken: dict[str, int]
         :param touched: the keys deleted, relative to the owner's scope, to purge
         :ptype touched: list[str]
+        :param row_name: the index row holding the versions and the floor
+        :ptype row_name: str
         :return: how many answers were deleted
         :rtype: int
         """
@@ -448,14 +1522,14 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if emptied:
                 # every digest is accounted for: the version is forgotten; otherwise the next retirement
                 # finishes it, once the writers still at work have written or gone
-                await self._index.l2_cas_mutate(_VERSIONS, _forget(version, older))
+                await self._index.l2_cas_mutate(row_name, _forget(row_name, version, older))
         return deleted
 
     # ------------------------------------------------------------------
     # the index
     # ------------------------------------------------------------------
 
-    async def _recorded(self, version: str, digest: str, order: int) -> bool:
+    async def _recorded(self, version: str, digest: str, order: int, scope: str) -> AnswerOutcome | None:
         """record ``version`` and the digest in the index before computing, unless it is retired.
 
         :param version: the version
@@ -464,11 +1538,15 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :ptype digest: str
         :param order: the version's order
         :ptype order: int
-        :return: ``True`` when the answer may be stored; ``False`` when its version is at or below the
-            floor, or the index could not be written (logged)
-        :rtype: bool
+        :param scope: the version's scope
+        :ptype scope: str
+        :return: ``None`` when the answer may be stored; why not, when its version is at or below the
+            floor (:attr:`AnswerOutcome.RETIRED`) or the index could not be written (logged,
+            :attr:`AnswerOutcome.INDEX_UNWRITABLE`)
+        :rtype: AnswerOutcome | None
         """
         refused = False
+        row_name = _versions_row(scope)
 
         def add_version(row: dict[str, Any] | None) -> _Action:
             nonlocal refused
@@ -478,35 +1556,40 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
             if refused or members.get(version) == order:
                 return ("noop", None)
             members[version] = order
-            return ("upsert", {"name": _VERSIONS, "members": members, "floor": floor})
+            return ("upsert", {"name": row_name, "members": members, "floor": floor})
 
         try:
-            await self._index.l2_cas_mutate(_VERSIONS, add_version)
+            await self._index.l2_cas_mutate(row_name, add_version)
             if not refused:
                 shard = f"{version}.{digest[0]}"
                 await self._index.l2_cas_mutate(shard, _add_member(shard, digest))
         except _INDEX_ERRORS as exc:
             # NOSILENT: the read is answered uncached; an answer the index does not name is never stored
             log.warning("answer index unwritable; answering uncached: table=%s error=%s", self.table_name, exc)
-            return False
-        return not refused
+            return AnswerOutcome.INDEX_UNWRITABLE
+        return AnswerOutcome.RETIRED if refused else None
 
-    async def _confirm(self, version: str, digest: str) -> None:
+    async def _confirm(self, version: str, digest: str, scope: str) -> bool:
         """after this replica's answer landed: if its version was retired meanwhile, take the answer back.
 
-        A floor that cannot be read counts as retired: the answer was already returned to its caller,
-        and taking back an answer still wanted costs one recompute, while keeping one retired would
-        outlive its version. The purge of what was taken back runs off the read path.
+        The floor is read from L2, past this replica's L1, as retirement reads it: a copy a broadcast
+        has not yet evicted could hide the retirement. A floor that cannot be read counts as retired:
+        the answer was already returned to its caller, and taking back an answer still wanted costs
+        one recompute, while keeping one retired would outlive its version. The purge of what was
+        taken back runs off the read path.
 
         :param version: the version
         :ptype version: str
         :param digest: the request's digest
         :ptype digest: str
-        :return: nothing
-        :rtype: None
+        :param scope: the version's scope
+        :ptype scope: str
+        :return: whether the answer was taken back
+        :rtype: bool
         """
+        retired = False
         try:
-            versions = await self._index.ensure(_VERSIONS)
+            versions = await self._index.read_l2(_versions_row(scope))
             floor = versions.get("floor") if versions else None
             retired = versions is None or floor is not None and versions["members"].get(version, floor) <= floor
             if retired:
@@ -518,6 +1601,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                     taken_back.append(self._relative(self._index.l2_key(shard)))
                 self._in_background(self._purge(taken_back))
         except _INDEX_ERRORS as exc:
+            retired = False
             # NOSILENT: the digest stays in its shard, so the next retirement deletes this answer
             log.warning(
                 "answer landed on a retired version and could not be taken back now: table=%s version=%s error=%s",
@@ -525,6 +1609,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 version,
                 exc,
             )
+        return retired
 
     async def _clear_shard(self, name: str, touched: list[str]) -> tuple[int, bool]:
         """delete every answer a shard names and drop the digests accounted for; keep those still being written.
@@ -537,7 +1622,7 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :rtype: tuple[int, bool]
         """
         version = name.split(".", 1)[0]
-        row = await self._index.ensure(name)
+        row = await self._index.read_l2(name)
         deleted = 0
         handled: set[str] = set()
         for digest in sorted(row["members"]) if row else ():
@@ -625,26 +1710,31 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                     what=f"retired answers' keys could not be purged; their delete markers stay: table={self.table_name} error={exc}",
                 )
 
-    async def _retire_until_current(self) -> None:
-        """retire below the highest order asked for, until it is reached or a retirement fails.
+    async def _retire_until_current(self, retirement: _Retirement, scope: str) -> None:
+        """retire ``scope`` below the highest order asked for, until it is reached or a retirement fails.
 
+        :param retirement: the scope's retirement state
+        :ptype retirement: _Retirement
+        :param scope: the scope
+        :ptype scope: str
         :return: nothing
         :rtype: None
         """
-        while self._wanted is not None and (self._retired_below is None or self._wanted > self._retired_below):
-            target = self._wanted
+        while (target := retirement.wanted) is not None and (
+            retirement.retired_below is None or target > retirement.retired_below
+        ):
             try:
-                await self.retire_older_than(target)
+                await self.retire_older_than(target, scope=scope)
             except Exception as exc:  # noqa: BLE001 -- a retirement that fails for any reason must be tried again, not wedge the next ones
                 # NOSILENT: the old answers wait for the next call, which tries again
                 contain(
                     exc,
                     log=log,
-                    what=f"retiring old answers failed: table={self.table_name} below={target} error={exc}",
+                    what=f"retiring old answers failed: table={self.table_name} scope={scope} below={target} error={exc}",
                 )
-                self._wanted = self._retired_below
+                retirement.wanted = retirement.retired_below
                 return
-            self._retired_below = target
+            retirement.retired_below = target
 
     # ------------------------------------------------------------------
     # DerivedCollection's contract
@@ -687,15 +1777,17 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
                 f"{self.table_name}: an answer is computed only through answer(), which brings its compute"
             )
         pending.ran = True
+        pending.after_peer = self.deriving_after_peer()
         version, digest = self.normalize_pk(entity_id)
         text = await pending.compute()
-        body = gzip.compress(text.encode("utf-8"), mtime=0)
-        return {"version": version, "request": digest, "body": base64.b64encode(body).decode("ascii")}
+        encoded = await asyncio.to_thread(_encoded_row, version, digest, text)
+        pending.encoded = encoded
+        return {"version": version, "request": digest, "body": encoded.body}
 
     async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
         """write the answer to L2 while the computing replica still holds the key's build lock.
 
-        L2 is the only tier. Written here, under the lock, rather than by the read's seed after it, so
+        Written here, under the lock, rather than by the read's seed after it, so
         a retirement that finds no answer and can take the lock knows none is still coming.
 
         :param data: the row
@@ -708,7 +1800,12 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         :rtype: int
         """
         del original_timestamp, conn
-        await self.l2_cas_mutate((data["version"], data["request"]), lambda _row: ("upsert", data))
+        try:
+            await self.l2_cas_mutate((data["version"], data["request"]), lambda _row: ("upsert", data))
+        except GenerationUnavailableError as exc:
+            # NOSILENT: the answer landed; only a replica that misses its broadcast cannot tell (logged
+            # where the advance failed), and what it keeps is an answer that never changes
+            log.warning("answer stored without advancing its write generation: table=%s error=%s", self.table_name, exc)
         return 1
 
     async def delete_from_store(self, entity_id: Any) -> None:
@@ -722,24 +1819,49 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         del entity_id
 
     def serialize(self, data: dict[str, Any]) -> bytes:
-        """a row as L2 holds it: JSON.
+        """a row as L2 holds it: JSON, ``{"version": ..., "request": ..., "body": ...}``.
+
+        The row :meth:`compute` just encoded on a worker thread is handed on as it was written there
+        (:func:`_encoded_row`): this runs on the event loop, where ``json.dumps`` of a large body held it 16 ms.
 
         :param data: the row
         :ptype data: dict[str, Any]
         :return: JSON bytes
         :rtype: bytes
         """
+        pending = _PENDING.get()
+        encoded = None if pending is None else pending.encoded
+        if encoded is not None and data["body"] is encoded.body:
+            return encoded.stored
         return json.dumps({key: data[key] for key in ("version", "request", "body")}).encode("utf-8")
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         """a row back from L2.
+
+        Runs on the event loop. ``json.loads`` scans a large body character by character (9-10 ms at 12.5 MB),
+        so a row as :meth:`serialize` writes it -- its base64 body last, which holds no character JSON escapes
+        -- is read by its layout: the version and request through ``json``, the body taken as it stands. Anything
+        else goes through ``json.loads``.
 
         :param data: JSON bytes
         :ptype data: bytes
         :return: the row
         :rtype: dict[str, Any]
         """
-        row: dict[str, Any] = json.loads(data)
+        row: dict[str, Any] | None = None
+        opens = data.find(_BODY_OPENS)
+        start, end = opens + len(_BODY_OPENS), len(data) - len(_BODY_CLOSES)
+        plain = data.find(b'"', start, end) < 0 and data.find(b"\\", start, end) < 0
+        if 0 < opens and start <= end and data.endswith(_BODY_CLOSES) and plain:
+            try:
+                head: Any = json.loads(data[:opens] + b"}")
+                if isinstance(head, dict) and head.keys() == {"version", "request"}:
+                    row = {**head, "body": str(memoryview(data)[start:end], "ascii")}
+            except ValueError:
+                # not a row serialize wrote (UnicodeDecodeError is a ValueError): json reads it, or says why not
+                row = None
+        if row is None:
+            row = json.loads(data)
         return row
 
 
@@ -795,9 +1917,11 @@ def _remove_member(name: str, member: str) -> Callable[[dict[str, Any] | None], 
     return change
 
 
-def _forget(version: str, order: int) -> Callable[[dict[str, Any] | None], _Action]:
-    """a ``versions`` change taking ``version`` off, once its shards are empty.
+def _forget(row_name: str, version: str, order: int) -> Callable[[dict[str, Any] | None], _Action]:
+    """a versions-row change taking ``version`` off, once its shards are empty.
 
+    :param row_name: the versions row
+    :ptype row_name: str
     :param version: the version retired
     :ptype version: str
     :param order: its order, as retirement read it
@@ -811,6 +1935,6 @@ def _forget(version: str, order: int) -> Callable[[dict[str, Any] | None], _Acti
         if members.get(version) != order or row is None:
             return ("noop", None)
         del members[version]
-        return ("upsert", {"name": _VERSIONS, "members": members, "floor": row.get("floor")})
+        return ("upsert", {"name": row_name, "members": members, "floor": row.get("floor")})
 
     return change

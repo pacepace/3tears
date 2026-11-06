@@ -52,6 +52,8 @@ from threetears.evals.kernel.job_timeout import EvalJobTimeout, JobTimeoutFactor
 from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, LeasedJobKind
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.schema.logs import contain, get_logger
+from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
+from threetears.evals.run.runner import NothingMeasuredError
 
 log = get_logger(__name__)
 
@@ -1127,9 +1129,6 @@ class EvalJobManager:
         the manager-level default. ``slot`` is the launch group's shared slot, taken in
         place of one of the manager's own.
         """
-        from threetears.evals.run.budget import AccountExhaustedError, BudgetStoppedError
-        from threetears.evals.run.runner import NothingMeasuredError
-
         budget_s = job_timeout_s if job_timeout_s is not None else self._job_timeout_s
         # A job waits here for a slot, and jobs are cancellable while they wait: a
         # sweep of ten arms parks eight at the semaphore. Whether the work function

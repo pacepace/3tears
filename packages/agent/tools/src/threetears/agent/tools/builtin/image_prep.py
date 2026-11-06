@@ -21,6 +21,13 @@ from typing import Any
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import contain, get_logger
 
+try:
+    from PIL import Image
+
+    _HAS_PILLOW = True
+except ImportError:  # NOSILENT: the vision extra is optional; a resize raises naming it
+    _HAS_PILLOW = False
+
 __all__ = [
     "ImagePrepError",
     "ImagePrepTool",
@@ -96,8 +103,8 @@ def prepare_image_for_vision(
         return data, mime_type
 
     try:
-        from PIL import Image
-
+        if not _HAS_PILLOW:
+            raise ModuleNotFoundError("image resizing needs Pillow: install 3tears-agent-tools[vision]")
         opened = Image.open(io.BytesIO(data))
 
         # Convert to RGB for JPEG output

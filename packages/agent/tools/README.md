@@ -135,9 +135,25 @@ from threetears.agent.tools import register_builtins, ToolRegistry
 
 registry = ToolRegistry()
 register_builtins(registry)
-# Registers: calculator, unit_converter, dice_roller, date_time,
-#            random_number, web_fetch, text_transform, parse_document
+# Registers: calculator, context_recall, unit_converter, timezone_converter,
+#            dictionary, current_date, date_math, web_search, web_fetch,
+#            web_answer, analyze_media
 ```
+
+A builtin whose dependency is missing is skipped with a warning. `web_answer`
+needs a host-supplied Brave key (`config["api_key"]`) and reads through a
+streaming transport.
+
+An agent's `access.tools` grants builtins by group alias
+(`threetears.agent.tools.aliases.GROUP_ALIASES`):
+
+| Alias | Grants |
+|---|---|
+| `standard` | calculator, context_recall, current_date, date_math, dictionary, unit_converter, timezone_converter |
+| `web` | web_search, web_fetch |
+| `answers` | web_answer -- paid per call, so never part of `web` |
+| `media` | media_analyze, parse_document, image_prep |
+| `workspace` (`.fs`, `.doc`, `.lifecycle`) | the `threetears.workspace.*` tools |
 
 ### Todo Tools
 

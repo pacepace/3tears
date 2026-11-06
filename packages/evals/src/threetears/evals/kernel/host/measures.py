@@ -28,10 +28,13 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from threetears.evals.kernel.host.attribution import HostAttributed
+from threetears.evals.kernel.metrics import (
+    ENGINE_FAMILIES,
+    METRIC_DESCRIPTORS,
+    containment_defects,
+    reader_name_defects,
+)
 
-# The metric vocabulary is read for annotations here and called once, inside a method, so the import
-# stays deferred. At module level it closed a cycle while the stored models imported leaves of this
-# package (``metrics`` loads ``models``); since the schema split they import none.
 if TYPE_CHECKING:
     from threetears.evals.kernel.metrics import MeasureFamily, MeritAxis, MetricDescriptor
 
@@ -76,8 +79,6 @@ class MeasureRegistry(HostAttributed):
 
     def _family_defects(self) -> list[str]:
         """Name every way the host's own families contradict the engine's or each other."""
-        from threetears.evals.kernel.metrics import ENGINE_FAMILIES
-
         defects: list[str] = []
         names = [family.name for family in self._families]
         defects.extend(
@@ -93,13 +94,6 @@ class MeasureRegistry(HostAttributed):
 
     def _defects(self) -> list[str]:
         """Name every way the catalogue contradicts what this registry promises."""
-        from threetears.evals.kernel.metrics import (
-            ENGINE_FAMILIES,
-            METRIC_DESCRIPTORS,
-            containment_defects,
-            reader_name_defects,
-        )
-
         defects: list[str] = self._family_defects()
         # Every rendered surface heads a measure by what a reader calls it, so a host measure with no reader name
         # would print its key there — refused here, at startup, rather than discovered on a chart. Checked with the

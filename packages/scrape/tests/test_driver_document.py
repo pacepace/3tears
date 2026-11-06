@@ -256,18 +256,15 @@ class TestParseDocumentBytesToHtmlOcrImages:
 
     async def test_no_exception_message_reaches_the_lost_images_fault(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Through the real renderer: its library's message stays in the log, out of the result."""
-        import sys
-        from types import ModuleType
-
         fake_result = DocumentResult(text="Scanned letter text", title=None, page_count=1, word_count=3, was_ocr=True)
         monkeypatch.setattr("threetears.scrape.drivers.document.parse_document", AsyncMock(return_value=fake_result))
-        fake_pdf2image = ModuleType("pdf2image")
 
         def _planted(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("PLANTED-77ab poppler said something")
 
-        fake_pdf2image.convert_from_bytes = _planted  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        # pdf2image (the agent-tools ``ocr`` extra) is imported at the document module's top, so the renderer's
+        # library is replaced by the name it calls there.
+        monkeypatch.setattr("threetears.agent.tools.document.convert_from_bytes", _planted)
 
         parsed = await parse_document_bytes_to_html(b"fake-pdf-bytes", content_type="application/pdf", filename="x.pdf")
         with pytest.raises(DocumentDriverError) as caught:

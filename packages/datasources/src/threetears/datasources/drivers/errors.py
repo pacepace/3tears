@@ -26,7 +26,7 @@ password reference into the password it sends, and so where that refusal is made
 live beside the types they raise so every driver refuses the same way.
 
 imports nothing backend-specific: the backend exception is read by shape, so importing
-this module keeps the lazy-import contract of :mod:`threetears.datasources.drivers`.
+this module loads no backend library.
 """
 
 from __future__ import annotations

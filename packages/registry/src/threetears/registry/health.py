@@ -34,6 +34,11 @@ from threetears.nats import Subjects
 from threetears.nats.errors import KvError
 from threetears.observe import PeriodicTask, contain, get_logger
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.config import (
+    get_heartbeat_check_interval,
+    get_heartbeat_max_misses,
+    get_heartbeat_timeout,
+)
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 
@@ -61,10 +66,18 @@ class HeartbeatSubscriber:
     ``"unresponsive"`` in the Collection before being purged.
 
     the subscriber holds no persistent state itself. ``_known_pod_ids``
-    is an in-memory set mirroring the Collection's primary keys for
-    the lifetime of this process; after a restart the set repopulates
-    from incoming heartbeats (and, incidentally, from L2 pull-through
-    the first time the Collection resolves a known pod). on clean
+    is an in-memory set of the pods this process heard or its catalog
+    holds a copy for; after a restart it repopulates from incoming
+    heartbeats and, at every sweep, from the catalog -- so copies loaded
+    from the bucket for a pod that died before this process started are
+    swept too.
+
+    several registry replicas run side by side: each hears every
+    heartbeat, shares the heartbeat rows, and counts a pod's missed
+    sweeps itself, so a pod is evicted after the same number of sweeps
+    whatever the number of replicas. a pod one replica evicts (its row
+    deleted) is dropped from every other replica's catalog at its next
+    sweep. on clean
     shutdown the subscriber unsubscribes from NATS and cancels the
     health-check task; the Collection's rows stay in L1/L2 so a
     restarting registry can pick up the catalog view without waiting
@@ -108,12 +121,6 @@ class HeartbeatSubscriber:
             heartbeat revives it without re-registration
         :ptype max_consecutive_misses: int | None
         """
-        from threetears.registry.config import (
-            get_heartbeat_check_interval,
-            get_heartbeat_max_misses,
-            get_heartbeat_timeout,
-        )
-
         self._catalog = catalog
         self._collection = collection
         self._namespace = namespace
@@ -343,9 +350,12 @@ class HeartbeatSubscriber:
 
         asks the Collection for each known pod and compares its
         ``date_last_heartbeat`` against the configured liveness
-        timeout. a pod that exceeds the timeout has its
-        ``consecutive_misses`` incremented and its status set to
-        ``"unresponsive"`` in the Collection.
+        timeout. a pod that exceeds the timeout has this registry's own
+        count of its missed sweeps incremented (written to the row's
+        ``consecutive_misses``) and its status set to ``"unresponsive"``
+        in the Collection. a pod with no row was evicted by a peer, and
+        its copies leave this catalog too, unless it was heard or
+        registered within the timeout and its row is not yet written.
 
         eviction is HYSTERETIC, gated on ``max_consecutive_misses``:
 
@@ -366,10 +376,14 @@ class HeartbeatSubscriber:
         :return: nothing
         :rtype: None
         """
+        # every pod the catalog holds a copy for is swept, not only those heard here: a replica that
+        # started after a pod died (its copies loaded from the bucket) would otherwise keep them forever
+        registered = self._track_catalog_pods()
         if not self._known_pod_ids:
             return
         now = datetime.now(UTC)
         to_remove: list[str] = []
+        forgotten: list[str] = []
         for pod_id in list(self._known_pod_ids):
             heard = self._heard_at.get(pod_id)
             try:
@@ -389,18 +403,29 @@ class HeartbeatSubscriber:
                 misses = self._local_misses.get(pod_id, 0) + 1
             else:
                 if entity is None:
-                    # peer registry already evicted (an outage raises above, so this is a real
-                    # absence); drop from our set
-                    to_remove.append(pod_id)
+                    # no row (an outage raises above, so this is a real absence): a peer registry
+                    # evicted the pod, unless it was heard or registered within the timeout and its
+                    # row is not written yet
+                    seen = [moment for moment in (heard, registered.get(pod_id)) if moment is not None]
+                    if not seen or (now - max(seen)).total_seconds() > self._timeout:
+                        await self._evicted_by_a_peer(pod_id)
+                        forgotten.append(pod_id)
                     continue
                 last = entity.date_last_heartbeat
-                misses = int(entity.consecutive_misses) + 1
                 if heard is not None and heard > last:
                     # heard here, but the write of it did not land: this registry's record is newer
                     last = heard
-                    misses = self._local_misses.get(pod_id, 0) + 1
+                # counted by THIS registry, one per its own sweep: every replica hears every
+                # heartbeat and sweeps on its own interval, so each count is the one a lone registry
+                # keeps. A count shared through the row would rise once per replica per interval and
+                # evict N times sooner.
+                misses = self._local_misses.get(pod_id, 0) + 1
             elapsed = (now - last).total_seconds()
             if elapsed <= self._timeout:
+                if self._local_misses.get(pod_id):
+                    # revived by a heartbeat a peer wrote and this registry did not hear
+                    self._local_misses[pod_id] = 0
+                    self._catalog.mark_pod_endpoints_available(pod_id)
                 continue
             self._local_misses[pod_id] = misses
             if entity is not None:
@@ -460,6 +485,38 @@ class HeartbeatSubscriber:
                 # every peer still reads; the rest of the sweep goes on
                 contain(exc, log=log, what="evicted pod's heartbeat row not deleted from L2", extra={"pod_id": pod_id})
                 continue
+            forgotten.append(pod_id)
+        for pod_id in forgotten:
             self._known_pod_ids.discard(pod_id)
             self._heard_at.pop(pod_id, None)
             self._local_misses.pop(pod_id, None)
+
+    def _track_catalog_pods(self) -> dict[str, datetime]:
+        """track every pod the catalog holds a copy for.
+
+        :return: each such pod, by when its latest copy last registered or heartbeat -- the freshness
+            of a pod whose heartbeat row is not yet written
+        :rtype: dict[str, datetime]
+        """
+        registered: dict[str, datetime] = {}
+        for entry in self._catalog.search():
+            for endpoint in entry.endpoints:
+                held = registered.get(endpoint.pod_id)
+                if held is None or endpoint.date_last_heartbeat > held:
+                    registered[endpoint.pod_id] = endpoint.date_last_heartbeat
+        self._known_pod_ids.update(registered)
+        return registered
+
+    async def _evicted_by_a_peer(self, pod_id: str) -> None:
+        """drop the copies of a pod a peer registry evicted, as that peer dropped its own.
+
+        :param pod_id: the pod whose heartbeat row the peer deleted
+        :ptype pod_id: str
+        :return: nothing
+        :rtype: None
+        """
+        removed = await self._catalog.deregister_pod(pod_id)
+        log.info(
+            "pod evicted by a peer registry; its endpoints removed here too",
+            extra={"extra_data": {"pod_id": pod_id, "removed_tools": removed}},
+        )

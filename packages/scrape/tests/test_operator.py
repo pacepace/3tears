@@ -22,8 +22,9 @@ from threetears.scrape.operator import TOKEN_SUBPROTOCOL_PREFIX, relay_stream, t
 def test_the_module_imports_without_the_optional_web_framework() -> None:
     """`hitl` is an extra, so a deployment that never needs a human never installs FastAPI.
 
-    The import has to stay clean for that to be true, which is why the router builder imports
-    FastAPI inside the function rather than at module scope. A stray top-level import would
+    The import has to stay clean for that to be true, which is why FastAPI is imported only by
+    ``operator_routes``, which ``operator`` imports under an ``ImportError`` guard. A stray
+    top-level import of FastAPI here would
     make the extra a lie -- every consumer of this package would start needing a web framework,
     and nothing would fail until an install somewhere had a smaller dependency set than this
     repo's own venv.
@@ -43,6 +44,32 @@ def test_the_module_imports_without_the_optional_web_framework() -> None:
     # module is legitimately loaded and the honest form would fail for a reason that says nothing
     # about the extra. The source check above is the whole of the claim; a tautology dressed as a
     # second one only makes the first look weaker than it is.
+
+
+def test_without_the_extra_the_module_imports_and_the_router_builder_names_it() -> None:
+    """In an interpreter where FastAPI cannot be imported, the module still imports, and asking
+    for a router fails with an ``ImportError`` that names the ``hitl`` extra."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import sys
+        sys.modules["fastapi"] = None
+        import threetears.scrape.operator as operator
+        try:
+            operator.build_operator_router(authorize=None, display=None)
+        except ImportError as exc:
+            print("REFUSED", exc)
+        else:
+            print("BUILT")
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)  # noqa: S603
+    assert result.returncode == 0, result.stderr
+    assert "REFUSED" in result.stdout, result.stdout
+    assert "hitl" in result.stdout, result.stdout
 
 
 class TestTheTokenIsReadFromTheSubprotocol:

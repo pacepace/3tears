@@ -37,6 +37,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final
 
 from threetears.observe import BuildOnce, get_logger
+from threetears.scheduled_jobs.metrics import TIMING_BUCKETS
+
+try:
+    from prometheus_client import REGISTRY, Counter, Histogram
+
+    _PROMETHEUS = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; without it emits are no-ops
+    _PROMETHEUS = False
 
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry
@@ -163,16 +171,15 @@ class WakeMetricsEmitter:
         self._initialise()
 
     def _initialise(self) -> None:
-        """Import ``prometheus_client`` + register the locked instruments.
+        """Register the locked instruments with ``prometheus_client``.
 
-        On import failure (extra not installed) leaves ``_available``
-        as ``False``; subsequent emit calls then become no-ops.
-        Resolves the registry once so :meth:`unregister_from_registry`
-        survives ``sys.modules`` monkeypatching in tests.
+        When the ``prometheus`` extra is not installed (the module-top
+        import failed) leaves ``_available`` as ``False``; subsequent
+        emit calls then become no-ops. Resolves the registry once so
+        :meth:`unregister_from_registry` uses the registry the
+        instruments were registered with.
         """
-        try:
-            from prometheus_client import REGISTRY, Counter, Histogram
-        except ImportError:
+        if not _PROMETHEUS:
             log.debug(
                 "prometheus_client not installed -- agent-wake metrics disabled",
             )
@@ -219,11 +226,13 @@ class WakeMetricsEmitter:
         self._drift = Histogram(
             WAKE_DRIFT_SECONDS,
             "Wake fire drift (actual_fired_at - scheduled_fire_at) in seconds",
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._yield_duration = Histogram(
             WAKE_YIELD_DURATION_SECONDS,
             "Wake-yield duration (actual_fired_at -> yield point) in seconds",
+            buckets=TIMING_BUCKETS,
             **_kwargs(()),
         )
         self._webhook_received = Counter(

@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from threetears.core.collections.generation import announce_unheard_writes
+from threetears.core.collections.generation import announce_unheard_writes, tables_with_write_generation
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
 
@@ -167,8 +167,6 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
             )
             failure = failure or exc
     # only a switched-on table has followers to tell, and only it may be advanced
-    from threetears.core.collections.base import tables_with_write_generation  # noqa: PLC0415 -- base imports this module
-
     unheard = [table for table in unheard if table in tables_with_write_generation()]
     source = None if registry is None else registry.generation_source
     if unheard and source is not None:

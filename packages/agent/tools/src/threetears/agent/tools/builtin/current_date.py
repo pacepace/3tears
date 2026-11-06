@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.call_scope import current_scope
 
 __all__ = [
@@ -49,8 +50,6 @@ def create_current_date_tool(config: dict[str, Any], description: str) -> Struct
     :class:`ToolCallScope` / :class:`CallContext` regardless of
     registration path.
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     user_timezone = config.get("_user_timezone") or config.get("timezone")
     return to_langchain_tool(
         CurrentDateTool(timezone=user_timezone),

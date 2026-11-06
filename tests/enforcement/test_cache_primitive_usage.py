@@ -49,6 +49,10 @@ _CONFIG = CacheEnforcementConfig(
             # opened the nested ``packages/agent/*`` tree. the helper now recurses
             # to any depth, and the site it names is live.
             "packages/agent/tools/src/threetears/agent/tools/l1_cache.py",
+            # the tier-parity gate: it builds a fresh, empty SQLite L1 per collection to test what
+            # that tier hands back for the collection's schema, and resets it at once. It caches
+            # nothing; the backend under test IS the subject, so no factory can stand in for it.
+            "packages/core/src/threetears/core/testing/tier_parity.py",
         }
     ),
     collection_table_allowlist={

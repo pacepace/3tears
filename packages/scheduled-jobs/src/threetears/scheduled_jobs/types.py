@@ -131,6 +131,12 @@ class JobTrigger:
     :ivar scheduled_fire_at: the schedule's ``next_fire_at`` at claim
         time (the planned fire instant; drift = ``fired_at`` minus this)
     :ivar name: optional human-readable schedule name
+    :ivar claimed_next_fire_at: the ``next_fire_at`` the claim wrote
+        (``None`` for a terminal one-shot)
+    :ivar claimed_status: the ``status`` the claim wrote; ``None`` when
+        the trigger was not built from a claim. With ``fired_at`` (which
+        the claim wrote as ``last_fired_at`` and ``date_updated``) it is
+        what an undo of the claim checks the row still holds
     """
 
     job_id: UUID
@@ -141,6 +147,8 @@ class JobTrigger:
     scheduled_fire_at: datetime
     payload: dict[str, Any] = field(default_factory=dict)
     name: str | None = None
+    claimed_next_fire_at: datetime | None = None
+    claimed_status: ScheduleStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +181,13 @@ class JobFireResult:
         :class:`~threetears.scheduled_jobs.background.BackgroundDispatch`
         sets it; a callback that finishes its work before returning leaves
         it ``False``.
+    :ivar retry_after_seconds: on a ``'failed'`` result, ask the engine to run
+        the same fire once more after this many seconds (capped by the
+        engine's own ceiling), for a failure that a moment fixes (a
+        tool whose pods are being replaced; the hub's scheduled tool call asks
+        it on ``TOOL_UNAVAILABLE``). The retry runs off the tick, which goes on
+        to its other due fires. The second result is final, whatever it asks.
+        ``None`` (the default) records the failure at once.
     """
 
     status: str = "succeeded"
@@ -180,3 +195,4 @@ class JobFireResult:
     latency_ms: int | None = None
     error: str | None = None
     handed_off: bool = False
+    retry_after_seconds: float | None = None

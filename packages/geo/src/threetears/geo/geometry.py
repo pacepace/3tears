@@ -20,6 +20,7 @@ from typing import Any
 
 from shapely import wkb as shapely_wkb
 from shapely.errors import ShapelyError
+from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 
 from threetears.geo.tiles import BoundingBox
@@ -103,8 +104,6 @@ def point_geometry(row: dict[str, Any], longitude_column: str, latitude_column: 
     :rtype: BaseGeometry | None
     :raises UndecodableGeometry: when a coordinate is present but is not a number
     """
-    from shapely.geometry import Point
-
     longitude = row.get(longitude_column)
     latitude = row.get(latitude_column)
     if longitude is None or latitude is None:

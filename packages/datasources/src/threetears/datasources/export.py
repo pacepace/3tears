@@ -39,8 +39,7 @@ none of it on its own: :mod:`threetears.datasources.export_read` checks the file
 manifest, the rows against that count, and the count against a fingerprint of the relation taken
 before and after.
 
-Imports nothing backend-specific, so the lazy-import contract of
-:mod:`threetears.datasources.drivers` holds.
+Imports nothing backend-specific, so it loads no backend library.
 """
 
 from __future__ import annotations

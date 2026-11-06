@@ -14,8 +14,9 @@ with one line added under each ``URL:``: the result's date and the engines
 that found it (:func:`result_facts`), because a model handed undated results
 reported a two-year-old page as this week's news. The lines are rendered
 from typed candidates, which is what lets the structure ride alongside
-instead of being re-parsed out of the text, and a closing note names any
-criterion that could not be honoured.
+instead of being re-parsed out of the text, and a note ahead of the results
+names any criterion that could not be honoured, so a reader keeping only the
+head of a long result still has it.
 
 **Nothing raises past here** (D10). Every typed failure becomes a failed
 result carrying its spend, because the far side of the tool envelope has no
@@ -30,6 +31,7 @@ constructs its own.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time
 from typing import Any, Final
@@ -44,6 +46,7 @@ from threetears.search.contracts import (
     BudgetPort,
     Candidate,
     CandidateSet,
+    CriterionDisposition,
     FailureRecord,
     RateLimiterPort,
     SearchFailure,
@@ -62,6 +65,7 @@ __all__ = [
     "bind_candidate_set",
     "bind_failure",
     "bind_search",
+    "could_not_do_note",
     "project_failure_metadata",
     "project_metadata",
     "render_prose",
@@ -192,7 +196,8 @@ def render_prose(
     :ptype zone: str | None
     :return: the numbered list, or :data:`NO_RESULTS_PROSE` when the search
         found nothing. Unhonoured criteria and provider degradations are
-        named in a closing note rather than left for the caller to notice
+        named in a note before the results rather than left for the caller
+        to notice
     :rtype: str
     """
     lines: list[str] = []
@@ -205,11 +210,13 @@ def render_prose(
             lines.extend(under(candidate.snippet, "   "))
         lines.append("")
     body = "\n".join(lines).strip() if lines else NO_RESULTS_PROSE
-    footnotes = _footnotes(candidate_set)
-    return f"{body}\n\n{footnotes}" if footnotes else body
+    # the note leads: a reader keeping only the head of a long result keeps
+    # the sentence saying what the search could not do, not just the results.
+    notes = _notes(candidate_set)
+    return f"{notes}\n\n{body}" if notes else body
 
 
-def _footnotes(candidate_set: CandidateSet) -> str:
+def _notes(candidate_set: CandidateSet) -> str:
     """State what the search could not do, for a reader who only gets prose.
 
     A model handed ten results has no way to know the domain filter was
@@ -222,20 +229,47 @@ def _footnotes(candidate_set: CandidateSet) -> str:
     :return: the note, or the empty string when everything was honoured
     :rtype: str
     """
-    unmet = [
-        disposition
-        for disposition in candidate_set.dispositions
-        if disposition.disposition in {"unsatisfied", "ignored-unknown"}
-    ]
-    notes: list[str] = []
-    for disposition in unmet:
+    return could_not_do_note("search", candidate_set.dispositions, candidate_set.notices, constraint="filter")
+
+
+def could_not_do_note(
+    subject: str,
+    dispositions: Sequence[CriterionDisposition],
+    notices: Sequence[str],
+    *,
+    constraint: str,
+) -> str:
+    """The note naming what a call could not do: unhonoured criteria, then the provider's notices.
+
+    The one builder of the note every rendering here leads with, so a search
+    and an answer word an unmet criterion and a notice the same way, and a
+    change to that wording lands for both.
+
+    :param subject: what the call was, as the heading names it (``search``, ``answer``)
+    :ptype subject: str
+    :param dispositions: the per-criterion answers; only the unhonoured are named
+    :ptype dispositions: Sequence[CriterionDisposition]
+    :param notices: the degradations to state
+    :ptype notices: Sequence[str]
+    :param constraint: what a criterion is called in this rendering (``filter``, ``constraint``)
+    :ptype constraint: str
+    :return: ``What this <subject> could not do:`` and one line per item, or
+        the empty string when there is nothing to say
+    :rtype: str
+    """
+    lines: list[str] = []
+    for disposition in dispositions:
+        if disposition.disposition not in {"unsatisfied", "ignored-unknown"}:
+            continue
         detail = one_line(disposition.detail or "")
-        notes.append(f"- the {disposition.criterion_key} filter was not applied" + (f": {detail}" if detail else ""))
+        lines.append(
+            f"- the {disposition.criterion_key} {constraint} was not applied" + (f": {detail}" if detail else "")
+        )
     # a notice with nothing in it says nothing: no bare "- " line
-    notes.extend(f"- {notice}" for notice in (one_line(str(n)) for n in candidate_set.notices) if notice)
-    if not notes:
+    lines.extend(f"- {notice}" for notice in (one_line(str(n)) for n in notices) if notice)
+    if not lines:
         return ""
-    return "What this search could not do:\n" + "\n".join(notes)
+    return f"What this {subject} could not do:\n" + "\n".join(lines)
 
 
 def project_metadata(query: str, candidate_set: CandidateSet) -> dict[str, Any]:

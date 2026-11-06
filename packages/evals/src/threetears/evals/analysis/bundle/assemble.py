@@ -64,7 +64,7 @@ from threetears.evals.analysis.cells import (
     pool_observations,
     subject_key_instabilities,
 )
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
     model_identity_disclosure,
     project_score_records,
@@ -86,6 +86,7 @@ from threetears.evals.kernel.metrics import (
     MetricDescriptor,
     declaration_of,
 )
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     CalibrationRating,
     EvalResult,
@@ -160,11 +161,15 @@ from threetears.evals.analysis.bundle.judges import _judge_change
 from threetears.evals.analysis.bundle.trials import trials_and_census
 from threetears.evals.analysis.bundle.time_axis import _time_axis
 from threetears.evals.analysis.bundle.surface import _measure_catalog
+from threetears.evals.kernel.host.measures import MeasureRegistry
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.campaign import EvalCampaign
     from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
     from threetears.evals.schema.models import EvalCaseStratum, EvalRun, EvalTemplate, JudgeEvidence
+
+
+log = get_logger(__name__)
 
 
 class CampaignReadStore(Protocol):
@@ -588,6 +593,8 @@ def assemble_context_bundle(
     bundle = AnalysisContextBundle(
         campaign_id=view.campaign_id,
         aspect=view.aspect,
+        short_name=view.short_name,
+        goal_check_names=_check_names(runs, templates),
         subject_id=view.subject_id,
         subject_kind=view.subject_kind,
         behavior=view.behavior,
@@ -881,6 +888,34 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
     return criteria
 
 
+def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
+    """Each goal check's display name as the member runs' templates declare it, by the check's expression.
+
+    A template that no longer resolves names nothing, and a check no template names is absent, printed as its
+    expression. A check two templates name differently is absent too, so it prints whole rather than under a name one
+    template chose, and the warning log names the check and each template's name for it: picking one would print a
+    name the other template's author never gave it.
+    """
+    given: dict[str, dict[str, str]] = {}
+    for template_id in sorted({run.template_id for run in runs if run.template_id}):
+        template = templates.get(template_id)
+        if template is None:
+            continue
+        for check, name in template.goal_check_names.items():
+            given.setdefault(check, {})[template_id] = name
+    names: dict[str, str] = {}
+    for check, by_template in given.items():
+        if len(set(by_template.values())) == 1:
+            names[check] = next(iter(by_template.values()))
+        else:
+            log.warning(
+                "eval.check_names_differ check=%r names=%s: printed as its expression until its templates name it alike",
+                check,
+                ", ".join(f"{template_id}={name!r}" for template_id, name in sorted(by_template.items())),
+            )
+    return names
+
+
 def _package_version() -> str | None:
     """The installed 3tears-evals version, or None when this build carries no distribution metadata.
 
@@ -926,8 +961,6 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
         the reader declares it.
     :rtype: tuple[HostProfile, list[str]]
     """
-    from threetears.evals.kernel.host.measures import MeasureRegistry
-
     recorded = [run for run in runs if run.declared_measures]
     if not recorded:
         return profile, []

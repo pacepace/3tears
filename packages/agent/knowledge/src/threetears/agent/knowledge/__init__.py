@@ -16,6 +16,7 @@ from __future__ import annotations
 # where the package isn't installed via importlib.metadata (e.g. running directly
 # from a checked-out source tree without ``uv sync``); the fallback keeps imports
 # working but reports ``unknown`` rather than crashing.
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _version
 from typing import TYPE_CHECKING
@@ -91,8 +92,6 @@ def __getattr__(name: str) -> object:
     entry = _LAZY.get(name)
     if entry is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
-
     module_name, attr = entry
     value: object = getattr(import_module(module_name), attr)
     globals()[name] = value

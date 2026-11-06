@@ -30,8 +30,8 @@ public surface (per shard DS-07-10):
   :class:`DatasourceQueryError`: how a process holding no warehouse
   credential queries a hub-served datasource on its own identity
 
-driver implementations live in the ``drivers`` subpackage and are
-imported lazily via the factory:
+driver implementations live in the ``drivers`` subpackage, built through
+the factory:
 
     from threetears.datasources.drivers import create_driver, Driver
 """

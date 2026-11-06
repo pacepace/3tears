@@ -37,14 +37,57 @@ not in the cache key otherwise.
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable
 from enum import StrEnum
+from typing import Final
 
 from threetears.observe import get_logger
 
 __all__ = [
+    "SCOPE_QUALIFIER_SEPARATOR",
     "CacheClass",
     "narrow_cache_class",
+    "qualified_scope",
+    "scope_qualifier",
 ]
+
+#: what joins a scope to its qualifier in a URL and an edge token (``va.3f9a1c2b7e04``): never the
+#: ``-`` that joins a URL's scopes, and never a character a namespace segment carries
+SCOPE_QUALIFIER_SEPARATOR: Final = "."
+
+#: hex characters of the qualifier's digest: 48 bits, far past any count of distinct child sets
+_QUALIFIER_HEX: Final = 12
+
+
+def scope_qualifier(children: Iterable[str]) -> str:
+    """the fingerprint of a reader's children beneath a REST affordance's ``scope_qualifier_node``.
+
+    The hub, filling an edge token, and a tool, building a cache URL, each compute it from the
+    children the same discovery lists, so the two name one scope. Order and repeats do not change it.
+
+    :param children: the child segments the reader sees (report ids)
+    :ptype children: Iterable[str]
+    :return: twelve lower-case hex characters
+    :rtype: str
+    """
+    joined = ",".join(sorted(set(children)))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:_QUALIFIER_HEX]
+
+
+def qualified_scope(scope: str, qualifier: str | None) -> str:
+    """a scope as a reader with ``qualifier`` reads it: unchanged when the reader sees every child.
+
+    :param scope: the scope ``scope_node`` names (``va``)
+    :ptype scope: str
+    :param qualifier: :func:`scope_qualifier` of the reader's children, or ``None`` when the reader sees
+        every child of the qualifier node
+    :ptype qualifier: str | None
+    :return: ``va``, or ``va.3f9a1c2b7e04``
+    :rtype: str
+    """
+    return scope if qualifier is None else f"{scope}{SCOPE_QUALIFIER_SEPARATOR}{qualifier}"
+
 
 log = get_logger(__name__)
 

@@ -26,6 +26,7 @@ from pydantic import (
 )
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
+from threetears.agent.tools.server import CallAccepted, CallRequest
 from threetears.core.security.freshness import DEFAULT_PROOF_MAX_AGE, ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.security.identity_token import (
     IDENTITY_REFUSED,
@@ -57,6 +58,7 @@ from threetears.nats import (
 from threetears.observe import InflightRequestsGauge, clear_context, contain, counter, get_logger
 from threetears.registry.auth import AgentToolAuthorizer, EndpointUsageEmitter, LimitGuard
 from threetears.registry.catalog import ToolCatalog, ToolDefinition
+from threetears.registry.config import get_call_timeout
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
@@ -78,7 +80,6 @@ _RESULT_DELIVERY_ATTEMPTS = 3
 _RESULT_DELIVERY_RETRY_SECONDS = 2.0
 
 if TYPE_CHECKING:
-    from threetears.agent.tools.server import CallAccepted
     from threetears.core.coordination.replay_guard import ReplayGuard
     from threetears.core.security import DelegatedTokenSigner, ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
@@ -435,8 +436,6 @@ class CallProxy:
         :raises ValueError: when ``pop_replay_guard`` is sized for a smaller verifier future
             tolerance than :data:`~threetears.core.security.ISSUE_TIME_FUTURE_TOLERANCE`
         """
-        from threetears.registry.config import get_call_timeout
-
         self._catalog = catalog
         self._namespace = namespace
         self.timeout = timeout if timeout is not None else get_call_timeout()
@@ -1497,6 +1496,21 @@ class CallProxy:
                         }
                     },
                 )
+                # TOOL_NOT_READY, not TOOL_UNAVAILABLE: the tool exists and has an endpoint, which
+                # did not take this call -- a pod restarting, or too busy to acknowledge inside the
+                # accept window. The call never started, so retrying it is safe, and the caller
+                # must be told to retry rather than that the tool does not exist (the hub answers
+                # TOOL_UNAVAILABLE with 404, and TOOL_NOT_READY with 503).
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"tool {full_name} did not take the call and no other endpoint can; "
+                        f"the call did not run, retry shortly: {response.error}"
+                    ),
+                    error_code="TOOL_NOT_READY",
+                    context=request.context,
+                )
                 break
             log.warning(
                 "tool endpoint unreachable; failing over to another pod",
@@ -2213,8 +2227,6 @@ def _build_internal_payload(
     :return: serialized internal call request bytes
     :rtype: bytes
     """
-    from threetears.agent.tools.server import CallRequest
-
     internal_request = CallRequest(
         tool_name=request.tool_name,
         tool_version=request.tool_version,
@@ -2255,8 +2267,6 @@ def _parse_pod_accept(payload: bytes) -> "CallAccepted | None":
     :return: the parsed acknowledgement, or ``None`` when the body is a full answer instead
     :rtype: CallAccepted | None
     """
-    from threetears.agent.tools.server import CallAccepted
-
     result: CallAccepted | None = None
     try:
         decoded = json.loads(payload)

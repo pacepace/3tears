@@ -35,16 +35,20 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from threetears.observe import PeriodicTask, contain, get_logger
 
-if TYPE_CHECKING:
-    # LocalGrantAuthorizer's collaborators come from the ``grants`` extra. Nothing else in this
-    # module needs them, and a server with its own Authorizer must import this module without them.
-    from threetears.epoch import EpochClient, EpochListener
-    from threetears.nats import Subject
+# LocalGrantAuthorizer's collaborators come from the ``grants`` extra. Nothing else in this module
+# needs them, and a server with its own Authorizer must import this module without them, so their
+# absence is recorded here and LocalGrantAuthorizer refuses to build, naming the extra.
+_GRANTS_IMPORT_ERROR: ImportError | None = None
+try:
+    from threetears.epoch import EpochClient, EpochListener, catchup_tick
+    from threetears.nats import Subject, Subjects
+except ImportError as _exc:  # NOSILENT: the grants extra is optional; LocalGrantAuthorizer names it
+    _GRANTS_IMPORT_ERROR = _exc
 
 __all__ = [
     "Authorizer",
@@ -374,15 +378,12 @@ def _require_grants_extra() -> None:
 
     :return: nothing
     :rtype: None
-    :raises ImportError: when ``threetears.epoch`` or ``threetears.nats`` cannot be imported
+    :raises ImportError: when ``threetears.epoch`` or ``threetears.nats`` could not be imported
     """
-    try:
-        import threetears.epoch  # noqa: F401
-        import threetears.nats  # noqa: F401
-    except ImportError as exc:
+    if _GRANTS_IMPORT_ERROR is not None:
         raise ImportError(
             "LocalGrantAuthorizer is the MCP grant store, which needs the grants extra: install 3tears-mcp[grants]",
-        ) from exc
+        ) from _GRANTS_IMPORT_ERROR
 
 
 def _rbac_epoch_subject() -> Subject:
@@ -391,8 +392,6 @@ def _rbac_epoch_subject() -> Subject:
     :return: the subject
     :rtype: Subject
     """
-    from threetears.nats import Subjects
-
     return Subjects.mcp_rbac_epoch()
 
 
@@ -644,7 +643,6 @@ class LocalGrantAuthorizer:
         """
         # only ever started under epoch_mode, so the listener is non-None here.
         assert self._epoch_listener is not None
-        from threetears.epoch import catchup_tick
 
         if self._reload_owed:
             # the bump that asked for the failed load is already counted as seen, so the epoch

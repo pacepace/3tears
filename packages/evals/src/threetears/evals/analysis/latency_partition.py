@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import model_validator
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema.base import EvalBaseModel
 
 if TYPE_CHECKING:

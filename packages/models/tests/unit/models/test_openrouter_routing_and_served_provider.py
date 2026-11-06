@@ -277,12 +277,41 @@ class TestDeclaringTheFieldIsSafe:
         assert ChatResult.model_fields == fields
         assert "provider" in fields
 
-    def test_a_class_that_moved_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_class_that_moved_fails_loud(self) -> None:
+        """The SDK classes are imported when the provider module loads, so a moved one is simulated in a
+        fresh interpreter: the SDK loads as installed, then the class's module is swapped for one
+        without it before the provider module is imported. The import still succeeds; the call raises."""
+        import subprocess
         import sys
-        import types
+        import textwrap
 
-        from threetears.models.providers.openrouter import declare_served_provider
+        probe = textwrap.dedent(
+            """
+            import sys
+            import types
 
-        monkeypatch.setitem(sys.modules, "openrouter.components.chatstreamchunk", types.ModuleType("moved"))
-        with pytest.raises(ImportError):
-            declare_served_provider()
+            # the SDK as installed, every module the provider reads from it loaded, before the class moves
+            import langchain_openrouter  # noqa: F401
+            import openrouter.components.chatrequest  # noqa: F401
+            import openrouter.components.chatresult  # noqa: F401
+            import openrouter.components.chatstreamchunk  # noqa: F401
+            import openrouter.components.chatstreamingresponse  # noqa: F401
+            import openrouter.operations.sendchatcompletionrequest  # noqa: F401
+            import openrouter.types  # noqa: F401
+
+            sys.modules["openrouter.components.chatstreamchunk"] = types.ModuleType("moved")
+
+            from threetears.models.providers.openrouter import declare_served_provider
+
+            try:
+                declare_served_provider()
+            except ImportError:
+                print("raised")
+            else:
+                raise AssertionError("declare_served_provider did not raise")
+            """
+        )
+        result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=False)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "raised"

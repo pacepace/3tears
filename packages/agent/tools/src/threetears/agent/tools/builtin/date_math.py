@@ -16,6 +16,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.builtin.time_words import Clock, ReadError, parse_date, read_zone, system_clock
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.utils import tool_error
@@ -193,8 +194,6 @@ def create_date_math_tool(config: dict[str, Any], description: str) -> Structure
     :return: the LangChain tool
     :rtype: StructuredTool
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     return to_langchain_tool(
         DateMathTool(timezone=config.get("_user_timezone") or config.get("timezone")),
         description=description,

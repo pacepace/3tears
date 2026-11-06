@@ -53,6 +53,98 @@ _SRC_ROOTS = (
 #: Genuinely ephemeral, non-serializable, or the infrastructure itself -- never migrating.
 _ALLOWLIST = (
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="MappedTables",
+        attr_name="_by_inode",
+        rationale=(
+            "each memory-mapped file's Arrow table by device and inode, lent to the next version's mapping so it "
+            "maps only changed files; tables over this process's own address space, which no backend can hold, "
+            "and gone with the mapping"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowReader",
+        attr_name="_lend",
+        rationale=(
+            "the mapped tables of a let-go version that the current version shares, kept for its first read to "
+            "take instead of mapping again; memory maps of this process, which no backend can hold, and a "
+            "restart maps afresh"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="_KeptVersions",
+        attr_name="_kept",
+        rationale=(
+            "the memory map a worker process holds of the version it read last, per store directory; a map is "
+            "an open handle on this process's own address space, which no backend can hold, and a restart "
+            "maps again on its next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_slots",
+        rationale=(
+            "the result slots this process reserved for its own worker processes and has not yet claimed or "
+            "discarded, each with the bytes it may take; a slot names files in this pod's own memory-backed "
+            "directory that a worker of this process is writing, so another pod has nothing to do with it, and a "
+            "restart takes the directory over and removes every result in it"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_claimed_bytes",
+        rationale=(
+            "the bytes each result this process claimed still holds in its own memory-backed directory, until "
+            "the sweep removes its files; it counts this pod's own files against this process's byte cap, so "
+            "another pod has nothing to do with it, and a restart takes the directory over and removes every "
+            "result in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handing",
+        rationale=(
+            "the hand-offs this process is writing now into its own memory-backed directory for its own worker "
+            "processes, each with the bytes it may take; another pod has nothing to do with them, and a restart "
+            "takes the directory over and removes every hand-off in it, as _slots"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/shared_arrow.py",
+        class_name="SharedArrowStore",
+        attr_name="_handed_bytes",
+        rationale=(
+            "the bytes each hand-off this process wrote still holds in its own memory-backed directory, until the "
+            "sweep removes its files; it counts this pod's own files against this process's byte cap, as "
+            "_claimed_bytes"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/search/src/threetears/search/standalone.py",
+        class_name="_Breakers",
+        attr_name="_circuits",
+        rationale=(
+            "one live circuit-breaker state machine per failing upstream of this transport, guarded "
+            "by a lock and read off a monotonic clock; a breaker protects this process's own calls, "
+            "so state shared across pods or kept across a restart would trip one replica for another"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/versioned_answers.py",
+        class_name="VersionedAnswers",
+        attr_name="_retirements",
+        rationale=(
+            "one background retirement task per scope this replica has been told the current version of; "
+            "the floors it drives are in L2 (the index's versions rows), and a restart that forgets the tasks "
+            "is asked again by the next read"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/security/door_proof.py",
         class_name="DoorProofModes",
         attr_name="_switches",
@@ -226,6 +318,25 @@ _ALLOWLIST = (
         rationale=("schema metadata for type-aware serialization, infrastructure"),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_keyless",
+        rationale=(
+            "schema metadata: each key-less table's key columns, read from its declaration when the table is "
+            "created, as _schema_info is; every pod derives the same map from the same metadata"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_not_null",
+        rationale=(
+            "schema metadata: each table's NOT NULL columns (its declared primary key's), read from its declaration "
+            "when the table is created, as _schema_info and _keyless are; every pod derives the same map from the "
+            "same metadata"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/server.py",
         class_name="ToolServer",
         attr_name="_tools",
@@ -253,6 +364,21 @@ _ALLOWLIST = (
             "the VERIFIED customer so no cross-tenant reuse; genuinely ephemeral per-pod (no "
             "cross-instance coherence needed precisely because the mappings are immutable). Its "
             "sibling engagement resolver deliberately has NO cache because scope IS mutable"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/langgraph/src/threetears/langgraph/checkpoint.py",
+        class_name="ThreeTierCheckpointSaver",
+        attr_name="_l2_write_bypassed",
+        rationale=(
+            "this process's record of the L2 keys whose own write and then delete both failed, "
+            "so the key may still hold an older checkpoint. It is per process on purpose: it "
+            "describes this worker's failed writes, and the worker reads those keys from L3 until "
+            "one of its writes or deletes of the key lands. Other workers are protected by the "
+            "delete, not by this record, so sharing it would add nothing. Bounded by "
+            "4096 keys (oldest dropped, with a WARNING); a restart forgets it and costs "
+            "at most one read of a stale L2 entry per key, the state before the bypass existed. "
+            "Kept apart from the purge bypass (a set), which only a successful purge lifts"
         ),
     ),
     DictStateAllowlistEntry(
@@ -311,6 +437,16 @@ _ALLOWLIST = (
             "the revision of each deleted key's marker -- the other half of the double's storage "
             "beside _entries, since a real delete publishes a message whose revision a fenced "
             "write depends on. Same test-double rationale as FakeKvBucket._entries above"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/testing/kv.py",
+        class_name="FakeKvBucket",
+        attr_name="_marker_expiry",
+        rationale=(
+            "when each marker given a lifetime (delete's marker_ttl) is removed, on the double's own "
+            "clock -- the lifetime half of _markers, cleared with it. Same test-double rationale as "
+            "FakeKvBucket._entries above"
         ),
     ),
     DictStateAllowlistEntry(
@@ -472,6 +608,17 @@ _ALLOWLIST = (
     DictStateAllowlistEntry(
         file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
         class_name="ScopedSnapshot",
+        attr_name="_diff_reads",
+        rationale=(
+            "the groups this replica's own last judged diffs read, (table, scope) -> group -> L3's count and "
+            "stamp of it and how many diffs in a row read it, kept only so a read this L1 did not keep stops "
+            "after two; another replica's diffs bound their own reads, a restart reads at most twice more, "
+            "and L3's count and stamp, not this map, are the state it judges by"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
         attr_name="_waiting",
         rationale=(
             "the waits this process's own control flows (its worker pass, a catch-up) have outstanding, "
@@ -489,10 +636,61 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_rebuilt",
+        rationale=(
+            "the scopes this replica's own rebuilds published from its own L1, scope -> epoch, kept across "
+            "the rebuild's waits; it names what this process's DuckDB L1 holds, which no other replica holds "
+            "and a restart loses with it, so it is checked against that L1 and the pointer at each use"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_waits",
+        rationale=(
+            "the log cadence of the waits this process's own control flows have outstanding, wait -> (when it "
+            "began, when it was last said) on this process's monotonic clock; it decides only how often this "
+            "replica logs a wait, a monotonic time means nothing in another process, and a restart has no waits"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_said_before",
+        rationale=(
+            "when this process last logged a wait that has ended, wait -> monotonic time, so the next short wait "
+            "under its key keeps the once-a-minute cadence; this replica's own log cadence on its own clock, "
+            "meaningless in another process and correctly empty after a restart"
+        ),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/collections/scoped_snapshot.py",
+        class_name="ScopedSnapshot",
+        attr_name="_unrecovered",
+        rationale=(
+            "this replica's own retry backoff, scope -> (monotonic time its recovery here last left the scope "
+            "behind, why), so it asks L3 of a scope it cannot diff at most once a minute; another replica judges "
+            "its own copy, and a restart rightly tries every scope again at once"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/catalog.py",
         class_name="ToolCatalog",
         attr_name="_entries",
         rationale=("synced from NATS KV on load, not a local-only cache"),
+    ),
+    DictStateAllowlistEntry(
+        file="packages/registry/src/threetears/registry/catalog.py",
+        class_name="ToolCatalog",
+        attr_name="_written",
+        rationale=(
+            "what THIS process last wrote to each catalog key and saw land, key -> content digest, so a "
+            "re-registration that changes nothing is not written again. it describes this process's own "
+            "writes, so no other replica may share it; it is cleared whenever a bucket is bound and dropped "
+            "per key on any failed write or delete, and a restart correctly starts it empty and writes once"
+        ),
     ),
     DictStateAllowlistEntry(
         file="packages/registry/src/threetears/registry/health.py",

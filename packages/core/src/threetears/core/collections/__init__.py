@@ -34,6 +34,7 @@ from threetears.core.collections.bucket import (
 )
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction
+from threetears.core.collections.declared_table import DeclaredTableCollection, RowCannotBeInsertedError
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.generation import (
@@ -116,6 +117,7 @@ __all__ = [
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
+    "DeclaredTableCollection",
     "DerivedCacheRegistration",
     "DerivedCollection",
     "DurableStoreCollection",
@@ -133,6 +135,7 @@ __all__ = [
     "REAPPLY_BACKOFF_SECONDS",
     "REAPPLY_MAX_ATTEMPTS",
     "STRING_TYPE",
+    "RowCannotBeInsertedError",
     "SchemaBackedCollection",
     "TableSchema",
     "UUID_TYPE",

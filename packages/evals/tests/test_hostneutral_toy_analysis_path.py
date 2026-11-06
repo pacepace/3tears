@@ -42,7 +42,7 @@ from threetears.evals.analysis.generator import (
     prompt_content_version,
     refuse_an_undescribable_arm_table,
 )
-from threetears.evals.analysis.numbers import WRITTEN_FROM, format_number
+from threetears.evals.kernel.numbers import WRITTEN_FROM, format_number
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalInsight
 from threetears.evals.kernel.declaration import BarOverride, refuse_an_undeclarable_design
 from threetears.evals.kernel.metrics import WITHHELD_PARTITION_INCOMPLETE

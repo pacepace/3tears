@@ -44,6 +44,7 @@ normal admin grant API. The role itself is platform-wide.
 
 from __future__ import annotations
 
+import json as _json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
@@ -161,8 +162,6 @@ async def ensure_platform_builtin_tool_user_role(
     # NATS-proxy L3 backend register a JSONB codec); passing the
     # dict directly matches the pattern used by every other 3tears
     # caller that writes a roles-shaped permissions payload.
-    import json as _json  # noqa: PLC0415
-
     # cache-bypass: a row no tier holds yet, written once at platform bootstrap;
     # a later read by id pulls it through the Collection's tiers.
     await pool.execute(

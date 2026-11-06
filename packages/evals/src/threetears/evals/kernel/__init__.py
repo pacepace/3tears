@@ -229,6 +229,7 @@ from threetears.evals.kernel.judge_profiles import (
     JudgeProfileStore,
     judge_profile_id,
 )
+from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
 from threetears.evals.kernel.metrics import (
     ACCURACY_MEASURE,
     CLASSIFIER_FAMILY,
@@ -377,6 +378,7 @@ from threetears.evals.kernel.storage import (
     UnreadableRecordError,
     UnreadableRunError,
 )
+from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.kernel.surface import (
     STRATUM_MIN_CASES,
     ArmGuardrails,
@@ -431,6 +433,9 @@ __all__ = [
     "write_held_record",
     "running_job",
     "JobFenced",
+    "ABSENT",
+    "format_number",
+    "format_signed",
     "EvalJobTimeout",
     "JobTimeoutFactory",
     "default_job_timeout",
@@ -691,6 +696,7 @@ __all__ = [
     "ReplayedDelivery",
     "ResolvedControl",
     "ResolvedUsage",
+    "ResultKey",
     "ResultStore",
     "ResultCondition",
     "ResultOutcome",

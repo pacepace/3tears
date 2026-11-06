@@ -188,11 +188,17 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # analysis and insight models, the campaign declaration, the decision surface, the authored
     # document shape, and the analysis measures). `kernel/` is split, so each is listed.
     "kernel/campaign.py",
+    # The package's one number rule, in kernel so `run` and `analysis` both spell figures by it.
+    "kernel/numbers.py",
+    # How a run's stored results are read a page at a time: its keys once, then pages by id.
+    "kernel/run_pages.py",
     # The step a stored campaign is upgraded by, in the schema package with the version chain that registers it.
     "schema/campaign_upgrade.py",
     # The one rule naming an aspect after its campaign's behavior, which every site that does so calls.
     "schema/aspect_label.py",
     "kernel/declaration.py",
+    # The measure names one result carries, read off the result model, below the declaration and the host profile.
+    "kernel/carried_measures.py",
     "kernel/surface.py",
     "kernel/authored.py",
     "kernel/analysis_measures.py",
@@ -229,6 +235,9 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # as text the host renders, so a second consumer drafts with them verbatim, and a host noun here
     # would be the subject's shape leaking back into the drafting code it was rendered out of.
     "gen/proposers.py",
+    # The output contract a rubric proposal is written for, below the proposers and their default prompts; shared
+    # contract for the reason `gen/proposers.py` is.
+    "gen/proposal_contract.py",
     # The run package's public root, its exports scanned; declared module by module for the
     # reason `gen/__init__.py` is.
     "run/__init__.py",

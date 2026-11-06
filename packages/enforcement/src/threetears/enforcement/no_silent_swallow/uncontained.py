@@ -9,6 +9,10 @@ runtime:
   ``contain(...)``. ``BaseException`` must re-raise; containing it is not allowed, because it
   is what a cancellation, ``KeyboardInterrupt`` and ``SystemExit`` are. a
   ``suppress(Exception)`` is flagged too: the fall-through form is ``with contained(...)``.
+- **ignore_errors** (``no_silent_swallow.ignore_errors``): a call passing ``ignore_errors=True``
+  (``shutil.rmtree`` above all) also passes ``onexc=`` or ``onerror=``. it is ``suppress(Exception)``
+  spelled as an argument: a removal that fails says nothing, and whatever counts the tree's bytes or
+  retries it carries on blind. ``threetears.observe.remove_tree`` is the recorded form.
 - **cancel** (``no_silent_swallow.cancel``): an ``except`` naming ``CancelledError``
   re-raises, and ``suppress(CancelledError)`` is flagged. absorbing a cancellation leaves the
   task running after it was told to stop, and breaks every ``asyncio.timeout`` and
@@ -36,6 +40,7 @@ __all__ = ["find_uncontained"]
 
 BROAD_CATEGORY = "no_silent_swallow.broad"
 CANCEL_CATEGORY = "no_silent_swallow.cancel"
+IGNORE_ERRORS_CATEGORY = "no_silent_swallow.ignore_errors"
 
 _BROAD = frozenset({"Exception", "BaseException"})
 _CANCELLED = "CancelledError"
@@ -194,6 +199,29 @@ def _suppress_violation(call: ast.Call, module_path: Path) -> Violation | None:
     return None
 
 
+def _ignore_errors_violation(call: ast.Call, module_path: Path) -> Violation | None:
+    """the violation a call passing ``ignore_errors=True`` with no ``onexc``/``onerror`` commits, if any.
+
+    :param call: the call
+    :ptype call: ast.Call
+    :param module_path: the file it sits in
+    :ptype module_path: Path
+    :return: the violation, or ``None``
+    :rtype: Violation | None
+    """
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
+    ignored = keywords.get("ignore_errors")
+    if not (isinstance(ignored, ast.Constant) and ignored.value is True) or {"onexc", "onerror"} & set(keywords):
+        return None
+    return Violation(
+        category=IGNORE_ERRORS_CATEGORY,
+        file=module_path,
+        line=call.lineno,
+        symbol="ignore_errors=True",
+        reason="ignore_errors=True records nothing; use threetears.observe.remove_tree, or pass onexc= that says so",
+    )
+
+
 def find_uncontained(
     src_roots: tuple[Path, ...],
     contain_names: frozenset[str],
@@ -221,6 +249,8 @@ def find_uncontained(
                 elif is_suppress_call(node):
                     assert isinstance(node, ast.Call)
                     violation = _suppress_violation(node, module_path)
+                elif isinstance(node, ast.Call):
+                    violation = _ignore_errors_violation(node, module_path)
                 if violation is not None:
                     found.append(violation)
             violations.extend(sorted(found, key=lambda v: v.line))

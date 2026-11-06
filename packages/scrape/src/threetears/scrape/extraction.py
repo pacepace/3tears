@@ -23,11 +23,12 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, NamedTuple
 
 from bs4 import BeautifulSoup, Comment
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, create_model
 from pydantic import Field as PydanticField
 import soupsieve
 from soupsieve.util import SelectorSyntaxError
-from threetears.models import LlmPurpose
+from threetears.models import LlmPurpose, format_vision_content
 from threetears.observe import get_logger
 
 from .bounded_regex import bounded_matches
@@ -1806,9 +1807,6 @@ async def extract_fields_from_images(
     if not images:
         return None
 
-    from langchain_core.messages import HumanMessage
-    from threetears.models import format_vision_content
-
     content: list[Any] = []
     for image_bytes in images:
         content.extend(format_vision_content(image_bytes, "image/png", "")[:-1])
@@ -1935,9 +1933,6 @@ async def extract_multi_row_fields_from_images(
     """
     if not images:
         return None
-
-    from langchain_core.messages import HumanMessage
-    from threetears.models import format_vision_content
 
     content: list[Any] = []
     for image_bytes in images:

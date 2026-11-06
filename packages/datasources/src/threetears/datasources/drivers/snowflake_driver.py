@@ -13,11 +13,9 @@ implementation:
 Backend library
     `snowflake-connector-python <https://pypi.org/project/snowflake-connector-python/>`_
     (Apache-2.0, Snowflake-maintained). minimum version 3.0. installed
-    via the ``[snowflake]`` extras key on this package; the factory
-    lazy-imports this module only when a
-    :class:`SnowflakeConnectionConfig` actually dispatches, so
-    Hub/agent consumers that never use Snowflake never pay the
-    import cost.
+    via the ``[snowflake]`` extras key on this package. this stub imports
+    no backend library, so the factory imports it with every other driver
+    and a consumer that never uses Snowflake loads none of it.
 
 Connection lifecycle
     stateful + pooled. ``snowflake.connector.connect(account=..,

@@ -31,14 +31,16 @@ from pydantic import ValidationError
 
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.prompts.catalogue import BOUNDARY_GEN_PROMPT, PROPOSER_PROMPT
-from threetears.evals.kernel.prompts.contract import OutputContract, require_output_contract, template_text
-from threetears.evals.schema.models import SCALE_LEVELS, RubricAxis, RubricProposal
+from threetears.evals.kernel.prompts.contract import require_output_contract, template_text
+from threetears.evals.schema.models import RubricAxis, RubricProposal
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.out_of_run import AdmittedCall, PlannedCall
-from threetears.evals.kernel.authored import strict_response_format
 from threetears.evals.kernel.provider import extract_json
 from threetears.evals.kernel.inner_ceilings import PROPOSER_MAX_TOKENS
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.gen.proposal_contract import PROPOSAL_RESPONSE_FORMAT, RUBRIC_PROPOSAL_CONTRACT
+from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
+from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.out_of_run import OutOfRunBudget
@@ -51,48 +53,6 @@ _REFUSAL_SUBJECT: dict[str, str] = {
     "capability": "proposer",
     "boundary": "boundary proposer",
 }
-
-#: Every level any scale answers: what a drafted dimension's scoring guide may describe.
-_GUIDE_LEVELS: tuple[str, ...] = tuple(dict.fromkeys(level for levels in SCALE_LEVELS.values() for level in levels))
-
-
-def _proposal_schema() -> dict[str, Any]:
-    """:class:`~threetears.evals.schema.models.RubricProposal`'s JSON schema, its one map field closed.
-
-    A strict schema admits no object with arbitrary keys, and ``RubricDim.scoring_guide`` maps a scale's levels to
-    descriptors. Which levels depends on the dimension's own ``scale``, which a strict schema cannot condition on,
-    so the guide is sent as an object holding every level any scale has, each a descriptor or ``null``: the
-    unwritten levels are dropped before the draft is validated (:func:`_drop_unwritten_levels`), and the model
-    still refuses a guide describing a level its dimension's scale does not have.
-
-    A dimension's ``judge`` declaration is left out: which judge scores a dimension is the operator's to declare when
-    the draft becomes a template (``create_template`` refuses a dimension that declares none), never a proposer's to
-    guess, and leaving it out keeps the contract every stored proposer prompt was written against.
-    """
-    schema = RubricProposal.model_json_schema()
-    del schema["$defs"]["RubricDim"]["properties"]["judge"]
-    schema["$defs"]["RubricDim"]["properties"]["scoring_guide"] = {
-        "type": "object",
-        "description": "Each level of the dimension's scale mapped to what earns it; null for a level not described "
-        "and for every level its scale does not have.",
-        "properties": {level: {"anyOf": [{"type": "string"}, {"type": "null"}]} for level in _GUIDE_LEVELS},
-    }
-    return schema
-
-
-#: What a proposal asks for: the draft model as a strict schema, so a provider that enforces it cannot write a
-#: draft the model refuses — a dimension with no ``scale``, say — whatever the stored prompt says.
-_PROPOSAL_RESPONSE_FORMAT: dict[str, Any] = strict_response_format("rubric_proposal", _proposal_schema())
-
-#: The output contract both proposer prompts are written for: the draft's schema as the call sends it, and a
-#: revision for the rule it is refused by that the schema cannot state (a dimension name's ``<context>.<dim>``
-#: namespacing, :data:`~threetears.evals.schema.models.DimName`). Bump the revision when such a rule changes. Each
-#: shipped default ends with its line, and :func:`plan_draft` refuses a stored prompt that does not
-#: (:mod:`threetears.evals.kernel.prompts.contract`); ``tests/test_prompt_contract.py`` pins its fingerprint, so a
-#: change that moves it — and so refuses every stored proposer prompt until it is reset — is made on purpose.
-RUBRIC_PROPOSAL_CONTRACT = OutputContract.of(
-    "rubric_proposal", _PROPOSAL_RESPONSE_FORMAT["json_schema"]["schema"], revision=1
-)
 
 #: The prompt each axis's proposal is steered by, as the refusal of a stale one names it.
 _AXIS_PROMPT: dict[str, str] = {
@@ -119,10 +79,6 @@ def default_system_prompt(axis: RubricAxis) -> str:
         which carries :data:`RUBRIC_PROPOSAL_CONTRACT`'s line.
     :rtype: str
     """
-    # The defaults state this module's contract line, so they import it; read here, after both modules load.
-    from threetears.evals.gen.prompts.boundary_gen import EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
-    from threetears.evals.gen.prompts.proposer import EVAL_PROPOSER_TEMPLATE_DEFAULT
-
     default = EVAL_PROPOSER_TEMPLATE_DEFAULT if axis == "capability" else EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT
     return template_text(default.sections)
 
@@ -181,7 +137,7 @@ def plan_draft(
     return PlannedCall(
         system=system_prompt,
         user=f"{subject_feed}\n{catalog_feed}".rstrip() + "\n",
-        response_format=_PROPOSAL_RESPONSE_FORMAT,
+        response_format=PROPOSAL_RESPONSE_FORMAT,
     )
 
 

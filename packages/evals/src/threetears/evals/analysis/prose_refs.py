@@ -20,7 +20,7 @@ A figure in a SENTENCE is spelled for a reader who reads it once, not for one co
 (:func:`prose_number`): a goal-state check's pass rate is its count (``8 of 12``, which is what a
 reader asks of a rate over a dozen tries), money carries its sign (``$0.012``), and every other
 value is rounded to what a sentence can use (``0.22 rounds``, ``129 s``). Tables and charts keep
-:func:`~threetears.evals.analysis.numbers.format_number`'s four figures.
+:func:`~threetears.evals.kernel.numbers.format_number`'s four figures.
 
 A reference is STRUCTURE, not prose: it has a grammar, and what it names either resolves or is
 refused. A malformed one, or one naming a cell, reading or statistic the surface does not hold, is
@@ -53,7 +53,7 @@ from typing import Literal, TypeVar, get_args
 from pydantic import BaseModel
 
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.numbers import ABSENT, format_number
+from threetears.evals.kernel.numbers import ABSENT, format_number
 from threetears.evals.analysis.references import cell_aliases, cell_of_alias, require_cell, resolve_reading
 from threetears.evals.analysis.report.figures import MeasureRuler, report_rulers
 from threetears.evals.analysis.quantities import UNSPACED_UNITS, is_money
@@ -96,7 +96,7 @@ def prose_number(value: float | None) -> str:
 
     :param value: The number, or ``None`` when there is none.
     :ptype value: float | None
-    :return: Its text; :data:`~threetears.evals.analysis.numbers.ABSENT` for ``None``, NaN or an infinity.
+    :return: Its text; :data:`~threetears.evals.kernel.numbers.ABSENT` for ``None``, NaN or an infinity.
     :rtype: str
     """
     if value is None or not math.isfinite(value):

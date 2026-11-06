@@ -2436,7 +2436,8 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
     :param n_future: How many new observations the total sums, at least one.
     :ptype n_future: int
     :return: ``(low, high)``, or ``None`` with fewer than two observations or any that is not positive — the
-        log scale cannot read a zero, and a caller that has some falls back to a band that can.
+        log scale cannot read a zero, and a caller that has some falls back to a band that can. Observations all
+        equal give a band of no width at exactly ``n_future`` times their value.
     :rtype: tuple[float, float] | None
     :raises ValueError: ``n_future`` is below one.
     """
@@ -2445,10 +2446,18 @@ def lognormal_sum_prediction_band(history: Sequence[float], n_future: int) -> tu
     n = len(history)
     if n < 2 or any(value <= 0.0 for value in history):
         return None
+    if min(history) == max(history):
+        # Equal draws have no spread, and their total is exact; read through their logs, the mean of the logs rounds
+        # away from each one, the spread comes out a few ulps above zero, and both ends drift off the total.
+        total = n_future * history[0]
+        return total, total
     logs = [math.log(value) for value in history]
     centre = math.fsum(logs) / n
     spread = math.fsum((value - centre) ** 2 for value in logs) / (n - 1)
     if spread == 0.0:
+        # Unequal draws whose logs are equal: where a log is 2 or more in magnitude (a value under about 0.14 or over
+        # about 7.4) its ulp is wider than the gap between two adjacent values, so 0.1 and the float after it share one
+        # log. The mixture below would divide by a zero scale.
         total = n_future * math.exp(centre)
         return total, total
     df = n - 1

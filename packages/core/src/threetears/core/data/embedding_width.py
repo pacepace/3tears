@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from threetears.core.collections.schema_backed import VECTOR_TYPE, IndexDef, TableSchema
+from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
 __all__ = [
@@ -405,8 +406,6 @@ async def resize_embedding_columns(
     :raises ValueError: when the width is out of range, or above what the database can index
     :raises LookupError: when a column is missing (the migrations have not run)
     """
-    from threetears.core.data.store import DataStore
-
     check_embedding_dim(embedding_dim)
     cleared = 0
     if isinstance(store, DataStore) and not store.holds_ddl_lock:
@@ -536,7 +535,8 @@ def _declared_index_sql(table: str, index: IndexDef) -> str:
         opclass = ops.get(name)
         if opclass is not None and "." not in opclass:
             opclass = f"public.{opclass}"
-        parts.append(_quote(name) if opclass is None else f"{_quote(name)} {opclass}")
+        part = _quote(name) if opclass is None else f"{_quote(name)} {opclass}"
+        parts.append(f"{part} DESC" if name in index.desc else part)
     unique = "UNIQUE " if index.unique else ""
     using = f" USING {index.using}" if index.using else ""
     with_clause = ""

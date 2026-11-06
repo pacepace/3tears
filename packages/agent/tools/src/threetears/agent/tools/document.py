@@ -8,7 +8,9 @@ A document that cannot be read raises :class:`DocumentParseError`. It is never
 answered with a result whose text describes the failure: a caller cannot tell
 such text from the document's own, and had to string-match it.
 
-Optional dependencies:
+Optional dependencies, imported at module top; a parse that needs a missing
+one raises :class:`ModuleNotFoundError` naming the extra, which the parser
+refuses as a :class:`DocumentParseError`:
 - ``pdf``: PyMuPDF (fitz) for PDF parsing
 - ``docx``: python-docx for DOCX parsing
 - ``xlsx``: openpyxl for XLSX parsing
@@ -33,6 +35,44 @@ from threetears.agent.tools.text_window import WindowedInput, window_text
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import contain, get_logger, traced
+
+try:
+    import pymupdf
+
+    #: PyMuPDF, imported by its own name: its ``fitz`` alias prints a deprecation notice on stdout when imported.
+    #: Its partial stubs disagree with how this module reads a document, so it is read untyped, as ``fitz`` was
+    fitz: Any = pymupdf
+    _HAS_FITZ = True
+except ImportError:  # NOSILENT: the pdf extra is optional; a PDF parse raises naming it
+    _HAS_FITZ = False
+
+try:
+    from docx import Document
+
+    _HAS_DOCX = True
+except ImportError:  # NOSILENT: the docx extra is optional; a DOCX parse raises naming it
+    _HAS_DOCX = False
+
+try:
+    from openpyxl import load_workbook
+
+    _HAS_OPENPYXL = True
+except ImportError:  # NOSILENT: the xlsx extra is optional; an XLSX parse raises naming it
+    _HAS_OPENPYXL = False
+
+try:
+    from pdf2image import convert_from_bytes
+
+    _HAS_PDF2IMAGE = True
+except ImportError:  # NOSILENT: the ocr extra is optional; OCR and page renders raise naming it
+    _HAS_PDF2IMAGE = False
+
+try:
+    import pytesseract
+
+    _HAS_PYTESSERACT = True
+except ImportError:  # NOSILENT: the ocr extra is optional; an OCR call raises naming it
+    _HAS_PYTESSERACT = False
 
 __all__ = [
     "DocumentParseError",
@@ -280,8 +320,8 @@ def _parse_pdf(
 ) -> DocumentResult:
     """Parse PDF using PyMuPDF with OCR fallback for scanned pages, up to ``max_pages`` pages."""
     try:
-        import fitz  # PyMuPDF
-
+        if not _HAS_FITZ:
+            raise ModuleNotFoundError("PDF parsing needs PyMuPDF: install 3tears-agent-tools[pdf]")
         doc = fitz.open(stream=data, filetype="pdf")
         try:
             sections: list[DocumentSection] = []
@@ -601,9 +641,8 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str, psm: int) -> str | 
         tesseract missing, the page unrenderable); :func:`_parse_pdf` records it on the page's
         :attr:`DocumentResult.page_faults`, so a scanned page is never answered as blank
     """
-    from pdf2image import convert_from_bytes
-    import pytesseract
-
+    if not (_HAS_PDF2IMAGE and _HAS_PYTESSERACT):
+        raise ModuleNotFoundError("OCR needs pdf2image and pytesseract: install 3tears-agent-tools[ocr]")
     images = convert_from_bytes(
         pdf_data,
         first_page=page_num + 1,
@@ -651,10 +690,8 @@ def render_pdf_pages_to_images(
         with no pages"; the caller decides whether the images were optional, and says so.
     """
     try:
-        import io
-
-        from pdf2image import convert_from_bytes
-
+        if not _HAS_PDF2IMAGE:
+            raise ModuleNotFoundError("PDF page rendering needs pdf2image: install 3tears-agent-tools[ocr]")
         images = convert_from_bytes(pdf_data, dpi=dpi, first_page=1, last_page=max_pages)
         encoded: list[bytes] = []
         for image in images:
@@ -678,10 +715,8 @@ def _parse_docx(
 ) -> DocumentResult:
     """Parse DOCX using python-docx."""
     try:
-        import io
-
-        from docx import Document
-
+        if not _HAS_DOCX:
+            raise ModuleNotFoundError("DOCX parsing needs python-docx: install 3tears-agent-tools[docx]")
         doc = Document(io.BytesIO(data))
         sections: list[DocumentSection] = []
         full_parts: list[str] = []
@@ -833,10 +868,8 @@ def _parse_xlsx(
 ) -> DocumentResult:
     """Parse XLSX using openpyxl."""
     try:
-        import io
-
-        from openpyxl import load_workbook
-
+        if not _HAS_OPENPYXL:
+            raise ModuleNotFoundError("XLSX parsing needs openpyxl: install 3tears-agent-tools[xlsx]")
         wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
         try:
             sections: list[DocumentSection] = []

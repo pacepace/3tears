@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import base64
+import json
+import subprocess
 import sys
+import textwrap
 from types import ModuleType
 from typing import Any
 
 import fitz  # PyMuPDF
 import pytest
 
+import threetears.agent.tools.document as document_module
 from threetears.agent.tools.document import (
     DocumentParseError,
     DocumentResult,
@@ -22,6 +26,26 @@ from threetears.agent.tools.document import (
     parse_document,
     render_pdf_pages_to_images,
 )
+
+
+def _in_an_interpreter_without(module: str, body: str) -> Any:
+    """run *body* in a fresh interpreter where *module* cannot be imported, answering its last line.
+
+    the document module imports its optional extras at module top, so an absent extra is
+    simulated where it is real: a new process whose ``sys.modules`` blocks the import
+    before the document module loads.
+
+    :param module: the import name to block
+    :ptype module: str
+    :param body: python source; its last printed line is JSON
+    :ptype body: str
+    :return: the decoded last line
+    :rtype: Any
+    """
+    script = f"import sys\nsys.modules[{module!r}] = None\n" + textwrap.dedent(body)
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 # -- OcrConfig ---------------------------------------------------------------
@@ -42,11 +66,10 @@ class TestOcrConfig:
 
 
 # -- OCR fallback ----------------------------------------------------------------
-# pytesseract/pdf2image are lazily imported by the PDF parser's OCR fallback (an optional
-# "ocr" extra, not installed in this package's own default test env) -- fake modules
-# injected via sys.modules so these tests run regardless of whether the real packages
-# happen to be installed, matching how the parser itself resolves them. the PDF is a real
-# one-page blank document, so the page carries no text and the fallback engages.
+# pytesseract/pdf2image (the optional "ocr" extra) are imported at the document module's
+# top; the fakes replace the names the parser calls on that module, so these tests never
+# need the real Tesseract binary or poppler. the PDF is a real one-page blank document,
+# so the page carries no text and the fallback engages.
 
 
 def _blank_pdf() -> bytes:
@@ -84,8 +107,8 @@ def _install_fake_ocr(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any])
 
     fake_pytesseract.image_to_string = fake_image_to_string  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+    monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
+    monkeypatch.setattr(document_module, "pytesseract", fake_pytesseract)
 
 
 class TestOcrFallback:
@@ -120,8 +143,8 @@ class TestOcrFallback:
 
 
 # -- render_pdf_pages_to_images -------------------------------------------------
-# Same lazy-import-fake pattern as TestOcrPage -- pdf2image is an optional "ocr"
-# extra, not installed in this package's own default test env.
+# Same fake pattern as the OCR fallback above -- pdf2image is the optional "ocr" extra,
+# and the fake replaces the name the renderer calls on the document module.
 
 
 # parity-exempt: hand-rolled subset stub of PIL's third-party Image (only save(), the only surface render_pdf_pages_to_images calls)
@@ -146,7 +169,7 @@ class TestRenderPdfPagesToImages:
             return [_FakePILImage("page0"), _FakePILImage("page1")]
 
         fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
 
         result = render_pdf_pages_to_images(b"fake-pdf-bytes", dpi=150, max_pages=3)
 
@@ -163,17 +186,29 @@ class TestRenderPdfPagesToImages:
             raise RuntimeError("boom")
 
         fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
 
         with pytest.raises(DocumentParseError, match=r"could not be rendered \(RuntimeError\)"):
             render_pdf_pages_to_images(b"fake-pdf-bytes")
 
-    def test_a_missing_renderer_is_refused_by_name(self, monkeypatch):
+    def test_a_missing_renderer_is_refused_by_name(self):
         """``pdf2image`` not installed is the same refusal, not an empty list."""
-        monkeypatch.setitem(sys.modules, "pdf2image", None)
+        refusal = _in_an_interpreter_without(
+            "pdf2image",
+            """
+            import json
+            from threetears.agent.tools.document import DocumentParseError, render_pdf_pages_to_images
+            try:
+                answer = render_pdf_pages_to_images(b"fake-pdf-bytes")
+            except DocumentParseError as exc:
+                print(json.dumps({"refused": str(exc)}))
+            else:
+                print(json.dumps({"answered": repr(answer)}))
+            """,
+        )
 
-        with pytest.raises(DocumentParseError, match=r"could not be rendered \(ModuleNotFoundError\)"):
-            render_pdf_pages_to_images(b"fake-pdf-bytes")
+        assert "refused" in refusal, refusal
+        assert "could not be rendered (ModuleNotFoundError)" in refusal["refused"]
 
     def test_a_page_that_will_not_encode_fails_the_render_rather_than_dropping_the_page(self, monkeypatch):
         """One page that cannot be encoded must not leave the others answering for the whole document."""
@@ -185,7 +220,7 @@ class TestRenderPdfPagesToImages:
                 raise OSError("encoder missing")
 
         fake_pdf2image.convert_from_bytes = lambda *a, **kw: [_FakePILImage("page0"), _UnsavableImage()]  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
 
         with pytest.raises(DocumentParseError, match=r"could not be rendered \(OSError\)"):
             render_pdf_pages_to_images(b"fake-pdf-bytes")
@@ -200,7 +235,7 @@ class TestRenderPdfPagesToImages:
             return []
 
         fake_pdf2image.convert_from_bytes = fake_convert_from_bytes  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
+        monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
 
         render_pdf_pages_to_images(b"fake-pdf-bytes")
 
@@ -638,8 +673,8 @@ class TestParseDocumentInput:
 # Mississippi's real quarterly WARN Act PDF, confirmed before/after against the
 # real file (git-stashed the fix, re-ran, saw the fragmented rows this fixes).
 #
-# driven through parse_document: PyMuPDF is imported lazily by the PDF parser, so
-# a fake ``fitz`` module in sys.modules hands it a page whose find_tables() answers
+# driven through parse_document: the PDF parser calls PyMuPDF through the document
+# module's ``fitz`` name, so a fake ``fitz`` put there hands it a page whose find_tables() answers
 # exactly the rows under test, and the table comes back as the markdown the parser
 # appends to the page's text.
 
@@ -712,7 +747,7 @@ async def _parse_pdf_page(monkeypatch: pytest.MonkeyPatch, page: _FakePdfPage, *
     """
     fake_fitz = ModuleType("fitz")
     fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    monkeypatch.setattr(document_module, "fitz", fake_fitz)
     result = await parse_document(b"%PDF-stub", "application/pdf", merge_wrapped_table_rows=merge)
     assert result.text.startswith(_PAGE_TEXT)
     return result.text[len(_PAGE_TEXT) :].removeprefix("\n\n")
@@ -891,7 +926,7 @@ class TestPdfTables:
         fake_fitz = ModuleType("fitz")
         page = _FakePdfPage([_FakeExtractedTable([list(r) for r in self._WRAPPED_ROWS])])
         fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setattr(document_module, "fitz", fake_fitz)
         result = await parse_document(b"%PDF-stub", "application/pdf")
         assert "| 4/14/2026 | Greenwood Leflore Hospital | 622110 – General |" in result.text
         assert "|  |  | Medical and Surgical Hospital |" in result.text
@@ -917,15 +952,54 @@ class TestPdfTables:
         result = await _parse_one_page(monkeypatch, _FakePdfPage([]))
         assert result.page_faults == []
 
-    async def test_an_ocr_that_cannot_run_is_recorded_on_the_result(self, monkeypatch):
+    def test_an_ocr_that_cannot_run_is_recorded_on_the_result(self):
         """OCR that could not run (pdf2image / poppler / tesseract absent) used to leave a scanned
         page reading as blank, with nothing on the result to say OCR never happened."""
-        monkeypatch.setitem(sys.modules, "pdf2image", None)
-        result = await _parse_one_page(monkeypatch, _FakePdfPage([]), ocr=OcrConfig(enabled=True))
-        assert result.text == _PAGE_TEXT
-        assert result.was_ocr is False
-        assert len(result.page_faults) == 1
-        assert result.page_faults == ["page 1: OCR could not run (ModuleNotFoundError)"]
+        result = _in_an_interpreter_without(
+            "pdf2image",
+            f"""
+            import asyncio
+            import json
+            import threetears.agent.tools.document as document
+
+            class Tables:
+                tables = []
+
+            class Page:
+                def get_text(self, option="text"):
+                    return {{"blocks": []}} if option == "dict" else {_PAGE_TEXT!r}
+
+                def find_tables(self):
+                    return Tables()
+
+            class Pdf:
+                metadata = {{}}
+
+                def __len__(self):
+                    return 1
+
+                def __getitem__(self, index):
+                    return Page()
+
+                def close(self):
+                    return None
+
+            class Fitz:
+                @staticmethod
+                def open(*args, **kwargs):
+                    return Pdf()
+
+            document.fitz = Fitz
+            parsed = asyncio.run(
+                document.parse_document(b"%PDF-stub", "application/pdf", ocr_config=document.OcrConfig(enabled=True))
+            )
+            print(json.dumps({{"text": parsed.text, "was_ocr": parsed.was_ocr, "page_faults": parsed.page_faults}}))
+            """,
+        )
+        assert result["text"] == _PAGE_TEXT
+        assert result["was_ocr"] is False
+        assert len(result["page_faults"]) == 1
+        assert result["page_faults"] == ["page 1: OCR could not run (ModuleNotFoundError)"]
 
     async def test_an_ocr_engine_failure_is_recorded_on_the_result(self, monkeypatch):
         """The packages present but the engine failing (tesseract not on PATH) is the same fault."""
@@ -937,8 +1011,8 @@ class TestPdfTables:
             raise OSError("tesseract is not installed or it's not in your PATH")
 
         fake_pytesseract.image_to_string = _no_tesseract  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "pdf2image", fake_pdf2image)
-        monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+        monkeypatch.setattr(document_module, "convert_from_bytes", fake_pdf2image.convert_from_bytes)
+        monkeypatch.setattr(document_module, "pytesseract", fake_pytesseract)
         result = await _parse_one_page(monkeypatch, _FakePdfPage([]), ocr=OcrConfig(enabled=True))
         assert result.page_faults == ["page 1: OCR could not run (OSError)"]
 
@@ -946,7 +1020,7 @@ class TestPdfTables:
         """The fault reaches the agent in the tool's own output, not only the result object."""
         fake_fitz = ModuleType("fitz")
         fake_fitz.open = lambda *a, **kw: _FakePdfDocument(_FakePdfPage([], tables_raise=True))  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setattr(document_module, "fitz", fake_fitz)
         tool = create_parse_document_tool({}, "Parse documents")
         content = base64.b64encode(b"%PDF-stub").decode()
         output = await tool.ainvoke({"content_base64": content, "filename": "scan.pdf"})
@@ -968,7 +1042,7 @@ class TestPdfTables:
 
         fake_fitz = ModuleType("fitz")
         fake_fitz.open = lambda *a, **kw: _FakePdfDocument(_PlantedPage([]))  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setattr(document_module, "fitz", fake_fitz)
         tool = create_parse_document_tool({}, "Parse documents")
         content = base64.b64encode(b"%PDF-stub").decode()
         output = await tool.ainvoke({"content_base64": content, "filename": "scan.pdf"})
@@ -983,7 +1057,7 @@ class TestPdfTables:
             raise RuntimeError("PLANTED-9c1d cannot open broken document")
 
         fake_fitz.open = _refuse  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+        monkeypatch.setattr(document_module, "fitz", fake_fitz)
         tool = create_parse_document_tool({}, "Parse documents")
         output = await tool.ainvoke({"content_base64": base64.b64encode(b"%PDF-stub").decode(), "filename": "x.pdf"})
         assert "PDF parsing failed (RuntimeError)" in output
@@ -1006,5 +1080,5 @@ async def _parse_one_page(
     """
     fake_fitz = ModuleType("fitz")
     fake_fitz.open = lambda *a, **kw: _FakePdfDocument(page)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    monkeypatch.setattr(document_module, "fitz", fake_fitz)
     return await parse_document(b"%PDF-stub", "application/pdf", ocr_config=ocr)

@@ -21,8 +21,8 @@ Concrete drivers live alongside the ABC, one module per backend:
 Concrete classes are **never re-exported** from
 `threetears.datasources` or `threetears.datasources.drivers`. Callers
 construct them exclusively through `create_driver(config, hub_l3_pool=...)`.
-The factory holds the lazy-import contract; re-exporting the classes at
-either package root would break it.
+The factory is the one dispatch on a config's type; the package roots
+export only the ABC, the factory and the TypedDicts.
 
 ## What the ABC promises callers
 
@@ -244,29 +244,29 @@ carry `"unknown"`).
 When `opentelemetry.metrics` isn't installed at runtime, the decorator
 is a pure passthrough (single bool check per call). No-op cost.
 
-## Lazy-import discipline
+## Import discipline
 
-The lazy-import contract from DS-09-09 says: importing
-`threetears.datasources`, `threetears.datasources.drivers`, or
-`threetears.datasources.drivers.factory` MUST NOT load any of
-`asyncpg`, `redshift_connector`, `snowflake.connector`, or
-`google.cloud.bigquery` into `sys.modules`.
+Owner ruling, 2026-10-24: no lazy imports in serving code. A driver is
+built on the event loop, so an import that runs when it is built holds
+the loop for the whole import. The contract (it replaces DS-09-09's):
 
-Concretely:
-
-- The backend lib import lives inside the `case` arm of
-  `create_driver` that dispatches to the driver using it. NOT at
-  module top of `factory.py`. NOT at module top of the driver module
-  if you can help it (deferred imports inside the driver's
-  `__init__` or first-use method are fine).
+- `factory.py` imports every driver module **at its top**. Building a
+  driver imports nothing.
+- A driver module imports its backend library **at its top**. When the
+  library belongs to an optional extra, the factory imports that driver
+  module under `try/except ImportError`, so without the extra the
+  package still imports and a config of that type raises the
+  ImportError naming the extra when it is built (see Redshift).
+- Never import inside a function or method: not in `create_driver`,
+  not in a driver's `__init__` or first-use method.
+  `tests/enforcement/test_no_function_level_imports.py` fails any such
+  import.
 - `drivers/__init__.py` exports ONLY the ABC, factory, and
   TypedDicts. No concrete driver class is re-exported here.
-- `sync_bridge.py` is the ONE place permitted to import
-  `ThreadPoolExecutor` at module top. Everything else is lazy.
 
-`tests/unit/test_lazy_imports.py` audits this in a fresh subprocess
-on every test run. If your driver adds a backend-lib import somewhere
-that pollutes the package roots, that test fails.
+`tests/unit/test_driver_imports.py` audits this in fresh subprocesses:
+the package roots import every driver module, and without the redshift
+extra they still import and a Redshift config names the extra.
 
 ## close() concurrency
 
@@ -304,8 +304,9 @@ Live under `tests/enforcement/`:
 - `test_no_hardcoded_pool_params.py` -- AST walker; pool / executor /
   timeout kwargs must be read from `ConnectionConfig` fields, not
   inlined literals.
-- `tests/unit/test_lazy_imports.py` -- runtime audit; package roots
-  do not load backend libs.
+- `tests/unit/test_driver_imports.py` -- runtime audit; the package
+  roots import every driver module, and import without an extra that
+  is not installed.
 - (planned) AST walker forbidding direct `ThreadPoolExecutor`
   instantiation outside `sync_bridge.py`.
 - (planned) AST walker forbidding `try: ... except asyncio.CancelledError:`
@@ -425,5 +426,7 @@ are the canonical reference.
 
 Stubs MUST NOT `import snowflake.connector` or `import
 google.cloud.bigquery` or equivalent. They're stubs — they don't
-need the backend lib. The real impl adds the import when it lands.
-The lazy-import contract (`test_lazy_imports.py`) verifies this.
+need the backend lib. The real impl adds the import at its module top when it lands, and
+the factory then imports it under `try/except ImportError` as it does
+Redshift's (`test_driver_imports.py` verifies the stubs load no
+backend library).

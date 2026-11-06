@@ -14,7 +14,7 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.observe import PeriodicTask
+from threetears.observe import NextDelay, PeriodicTask
 
 _LOG = logging.getLogger("test.periodic")
 
@@ -168,13 +168,13 @@ async def test_a_returned_delay_overrides_only_the_next_sleep() -> None:
     loop = asyncio.get_running_loop()
     second = asyncio.Event()
 
-    async def tick() -> float | None:
+    async def tick() -> NextDelay | None:
         stamps.append(loop.time())
         if len(stamps) == 2:
             second.set()
-        return 0.01 if len(stamps) == 1 else None
+        return NextDelay(0.01) if len(stamps) == 1 else None
 
-    periodic = PeriodicTask(tick, interval=10, name="fast-once", logger=_LOG, first_delay=0)
+    periodic = PeriodicTask(tick, interval=10, name="fast-once", logger=_LOG, first_delay=0, min_delay=0.01)
     periodic.start()
     try:
         await _wait_for(second)
@@ -273,7 +273,7 @@ async def test_concurrent_stops_both_wait_for_the_loop_to_end() -> None:
     assert _tasks_named("slow-stop") == []
 
 
-@pytest.mark.parametrize("returned", [True, -1.0, float("nan"), "soon"])
+@pytest.mark.parametrize("returned", [0, 0.0, 7, 2.5, True, -1.0, float("nan"), "soon", ["conn-1"]])
 async def test_a_returned_value_that_is_not_a_delay_keeps_the_interval(returned: object) -> None:
     async def tick() -> object:
         return returned
@@ -283,8 +283,8 @@ async def test_a_returned_value_that_is_not_a_delay_keeps_the_interval(returned:
 
 
 async def test_run_once_returns_the_requested_delay() -> None:
-    async def tick() -> float:
-        return 2.5
+    async def tick() -> NextDelay:
+        return NextDelay(2.5)
 
     assert await PeriodicTask(tick, interval=10, name="delay", logger=_LOG).run_once() == 2.5
 
@@ -297,3 +297,95 @@ async def test_a_failed_tick_is_logged_with_the_callers_message(caplog: pytest.L
     with caplog.at_level(logging.WARNING, logger="test.periodic"):
         await periodic.run_once()
     assert [r.getMessage() for r in caplog.records] == ["presence sweep failed"]
+
+
+class _SleepClock:
+    """stands in for ``asyncio.sleep``: records each delay the loop asks for and returns at once, so a test reads
+    the loop's cadence with no real waiting. After ``ticks`` sleeps it parks the loop and sets ``done``."""
+
+    def __init__(self, ticks: int) -> None:
+        self.delays: list[float] = []
+        self.done = asyncio.Event()
+        self._ticks = ticks
+        self._real_sleep = asyncio.sleep
+
+    async def __call__(self, delay: float, result: object = None) -> object:
+        self.delays.append(delay)
+        if len(self.delays) >= self._ticks:
+            self.done.set()
+            await self._real_sleep(3600)
+        else:
+            await self._real_sleep(0)
+        return result
+
+
+async def _cadence(monkeypatch: pytest.MonkeyPatch, periodic: PeriodicTask, sleeps: int) -> list[float]:
+    """the first ``sleeps`` delays ``periodic``'s loop sleeps, read off a fake clock."""
+    clock = _SleepClock(sleeps)
+    monkeypatch.setattr(asyncio, "sleep", clock)
+    periodic.start()
+    try:
+        await asyncio.wait_for(clock.done.wait(), timeout=1.0)
+    finally:
+        await periodic.stop()
+    return clock.delays[:sleeps]
+
+
+@pytest.mark.parametrize("returned", [0, 0.0, 7, 2.5])
+async def test_a_returned_number_does_not_change_the_interval(monkeypatch: pytest.MonkeyPatch, returned: float) -> None:
+    """A pass that returns how much it did (a catch-up returning 0 tables dropped) must not re-tick at once."""
+
+    async def tick() -> float:
+        return returned
+
+    periodic = PeriodicTask(tick, interval=30, name="counts", logger=_LOG, first_delay=0)
+    assert await _cadence(monkeypatch, periodic, 4) == [0, 30, 30, 30]
+
+
+async def test_an_explicit_next_delay_is_honoured_for_the_next_sleep_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    async def tick() -> NextDelay | None:
+        nonlocal calls
+        calls += 1
+        return NextDelay(5) if calls == 1 else None
+
+    periodic = PeriodicTask(tick, interval=30, name="explicit", logger=_LOG, first_delay=0)
+    assert await _cadence(monkeypatch, periodic, 4) == [0, 5, 30, 30]
+
+
+async def test_a_timedelta_next_delay_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def tick() -> NextDelay:
+        return NextDelay(timedelta(seconds=90))
+
+    periodic = PeriodicTask(tick, interval=30, name="explicit-td", logger=_LOG, first_delay=0)
+    assert await _cadence(monkeypatch, periodic, 3) == [0, 90, 90]
+
+
+async def test_an_explicit_zero_delay_is_floored_at_one_second(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def tick() -> NextDelay:
+        return NextDelay(0)
+
+    periodic = PeriodicTask(tick, interval=30, name="zero", logger=_LOG, first_delay=0)
+    assert periodic.min_delay == 1.0
+    assert await _cadence(monkeypatch, periodic, 4) == [0, 1.0, 1.0, 1.0]
+
+
+async def test_min_delay_sets_the_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def tick() -> NextDelay:
+        return NextDelay(0.5)
+
+    periodic = PeriodicTask(tick, interval=30, name="floor", logger=_LOG, first_delay=0, min_delay=timedelta(seconds=2))
+    assert await _cadence(monkeypatch, periodic, 3) == [0, 2.0, 2.0]
+
+
+@pytest.mark.parametrize("min_delay", [0, -1, float("nan"), timedelta(0)])
+def test_min_delay_must_be_positive(min_delay: float | timedelta) -> None:
+    with pytest.raises(ValueError, match="min_delay"):
+        PeriodicTask(lambda: asyncio.sleep(0), interval=10, name="bad-floor", logger=_LOG, min_delay=min_delay)
+
+
+@pytest.mark.parametrize("seconds", [-1, float("nan"), float("inf"), timedelta(seconds=-1)])
+def test_a_next_delay_must_be_finite_and_non_negative(seconds: float | timedelta) -> None:
+    with pytest.raises(ValueError, match="NextDelay"):
+        NextDelay(seconds)

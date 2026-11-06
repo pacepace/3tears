@@ -14,8 +14,8 @@ from threetears.core.config import CoreConfig, DefaultCoreConfig
 from threetears.observe import get_logger, traced
 
 from threetears.core.data.collection_factory import create_dynamic_collection
-from threetears.core.data.migrations.ddl_lock import DdlLockPolicy, database_ddl_lock
-from threetears.core.data.migrations.session import ConnectionSession, MigrationSession
+from threetears.core.ddl.ddl_lock import DdlLockPolicy, database_ddl_lock
+from threetears.core.ddl.session import ConnectionSession, MigrationSession
 from threetears.core.data.schema import TableDef
 from threetears.core.data.sql_builder import build_create_index_sql, build_create_table_sql
 

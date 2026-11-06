@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -92,6 +94,48 @@ _ROWS = [
     {"race": "s2", "votes": None, "at": datetime(2026, 11, 3, 13, tzinfo=UTC)},
     {"race": "s3", "votes": Decimal("0E-12"), "at": None},
 ]
+
+
+_FIRST_READ = """
+import asyncio, io, json, sys
+from decimal import Decimal
+import pyarrow as pa, pyarrow.parquet as pq
+from threetears.datasources.export_read import read_export
+from threetears.datasources.query_client import DatasourceExportResult
+from threetears.nats.subjects import set_default_namespace
+
+set_default_namespace("3tears")
+dataset_before = "pyarrow.dataset" in sys.modules
+sink = io.BytesIO()
+pq.write_table(pa.Table.from_pylist([{"race": "s1", "votes": Decimal("1.5")}]), sink)
+key, prefix, bucket = "p/0000_part_00.parquet", "p/", "b"
+objects = {key: sink.getvalue()}
+objects["p/manifest"] = json.dumps(
+    {"entries": [{"url": f"s3://{bucket}/{key}", "meta": {"content_length": len(objects[key]), "record_count": 1}}]}
+).encode()
+
+
+class Store:
+    async def open_read(self, name):
+        yield objects[name]
+
+
+rows = asyncio.run(
+    read_export(Store(), DatasourceExportResult(row_count=1, bucket=bucket, object_prefix=prefix, manifest_path="p/manifest"), bucket=bucket)
+)
+assert rows == [{"race": "s1", "votes": Decimal("1.5")}], rows
+print(json.dumps({"before": dataset_before, "after": "pyarrow.dataset" in sys.modules}))
+"""
+
+
+def test_a_parquet_file_is_read_natively_never_through_the_dataset_machinery() -> None:
+    """an export's files are read with the native parquet reader over their bytes: the dataset machinery a
+    ``pq.read_table`` goes through is never imported (its first import, on a reader thread, holds the interpreter
+    lock), and no read calls back into a Python file object. Six threads reading an export's files at once that way
+    held the event loop 0.1 s (cobalt prod, 2026-10-31)."""
+    done = subprocess.run([sys.executable, "-c", _FIRST_READ], capture_output=True, text=True, check=True)  # noqa: S603
+    seen = json.loads(done.stdout.strip().splitlines()[-1])
+    assert seen == {"before": False, "after": False}, seen
 
 
 class TestReadExport:

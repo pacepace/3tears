@@ -578,7 +578,7 @@ class TestCamoufoxDriverLazyLaunch:
             async def __aexit__(self, *exc_info):
                 return None
 
-        monkeypatch.setattr("camoufox.async_api.AsyncCamoufox", _FakeAsyncCamoufox)
+        monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _FakeAsyncCamoufox)
 
         driver = CamoufoxDriver(headless=True)
         await driver.render("https://example.gov/one")
@@ -607,7 +607,7 @@ class TestCamoufoxDriverLazyLaunch:
             async def __aexit__(self, *exc_info):
                 exited.append(True)
 
-        monkeypatch.setattr("camoufox.async_api.AsyncCamoufox", _FakeAsyncCamoufox)
+        monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _FakeAsyncCamoufox)
 
         driver = CamoufoxDriver()
         await driver.render("https://example.gov")
@@ -636,7 +636,7 @@ async def _launch_options(driver: CamoufoxDriver, monkeypatch) -> dict:
         async def __aexit__(self, *exc_info):
             return None
 
-    monkeypatch.setattr("camoufox.async_api.AsyncCamoufox", _RecordingAsyncCamoufox)
+    monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _RecordingAsyncCamoufox)
     await driver.render("https://example.gov")
     await driver.close()
     assert len(launched) == 1

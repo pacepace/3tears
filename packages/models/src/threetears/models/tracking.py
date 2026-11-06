@@ -41,6 +41,20 @@ from threetears.observe import BuildOnce, contain, get_logger
 
 from threetears.models.enums import ModelTier
 
+try:
+    from prometheus_client import Counter, Histogram
+
+    _PROMETHEUS = True
+except ImportError:  # NOSILENT: the prometheus extra is optional; the emitter logs it and stays a no-op
+    _PROMETHEUS = False
+
+try:
+    from opentelemetry import trace
+
+    _OPENTELEMETRY = True
+except ImportError:  # NOSILENT: the tracing extra is optional; the tracker logs it and emits no spans
+    _OPENTELEMETRY = False
+
 __all__ = [
     "USAGE_METADATA_PREFIX",
     "LlmPurpose",
@@ -578,16 +592,14 @@ class _PrometheusEmitter:
         self._initialise()
 
     def _initialise(self) -> None:
-        """imports prometheus_client and registers the locked instruments.
+        """registers the locked instruments, when prometheus_client is installed.
 
-        on import failure (extra not installed) leaves ``_available`` as
-        False so subsequent calls become no-ops. when ``self._registry``
+        when it is not (the extra did not import with this module) leaves
+        ``_available`` as False so subsequent calls become no-ops. when ``self._registry``
         is ``None`` the instruments register against the default global
         registry; otherwise they register against the supplied one.
         """
-        try:
-            from prometheus_client import Counter, Histogram
-        except ImportError:
+        if not _PROMETHEUS:
             logger.debug(
                 "prometheus_client not installed -- LLM Prometheus emission disabled",
             )
@@ -734,12 +746,10 @@ class UsageTracker:
         self._pending_sinks: set[asyncio.Task[None]] = set()
         self._audit_sink = audit_sink
         self._counter_sink = counter_sink
-        try:
-            from opentelemetry import trace
-
+        if _OPENTELEMETRY:
             self._tracer = trace.get_tracer("threetears.models.tracking")
             self._otel_available = True
-        except ImportError:
+        else:
             logger.debug(
                 "opentelemetry not installed -- LLM span emission disabled",
             )

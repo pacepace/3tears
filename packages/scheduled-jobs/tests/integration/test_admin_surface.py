@@ -33,14 +33,8 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
-from threetears.core.collections.asyncpg_init import init_connection
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
-from threetears.core.data.migrations import MigrationRunner
-from threetears.scheduled_jobs.collections import JobFireCollection, ScheduledJobCollection
-from threetears.scheduled_jobs.migrations import register as register_scheduled_jobs
 
-from .conftest import AsyncpgStore
+from .conftest import apply_schema, build_stores
 
 
 pytestmark = pytest.mark.integration
@@ -48,38 +42,6 @@ pytestmark = pytest.mark.integration
 
 def _new_uuid() -> UUID:
     return UUID(str(uuid7()))
-
-
-async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
-    """Apply the scheduled-jobs migration into ``schema`` and return a pool."""
-    setup_conn = await asyncpg.connect(url)
-    try:
-        await setup_conn.execute(f'SET search_path TO "{schema}", public')
-        runner = MigrationRunner()
-        register_scheduled_jobs(runner)
-        store = AsyncpgStore(setup_conn)
-        await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
-    finally:
-        await setup_conn.close()
-    pool = await asyncpg.create_pool(
-        url,
-        min_size=2,
-        max_size=8,
-        server_settings={"search_path": f"{schema}, public"},
-        init=init_connection,
-    )
-    assert pool is not None
-    return pool
-
-
-def _build_stores(pool: asyncpg.Pool) -> tuple[ScheduledJobCollection, JobFireCollection]:
-    registry = CollectionRegistry()
-    registry.configure(l3_pool=pool)
-    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
-    return (
-        ScheduledJobCollection(registry=registry, config=cfg, nats_client=None),
-        JobFireCollection(registry=registry, config=cfg, nats_client=None),
-    )
 
 
 async def _seed_job(
@@ -154,9 +116,9 @@ class TestListJobs:
         view: it would return exactly one job.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="alpha")
             await _seed_job(pool, kind="beta")
             await _seed_job(pool, kind="gamma")
@@ -171,9 +133,9 @@ class TestListJobs:
     async def test_it_includes_paused_and_expired_jobs(self, pg_schema: tuple[str, str]) -> None:
         """Status-blind by default: a paused job is the one you came to find."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="active_one", status="active")
             await _seed_job(pool, kind="paused_one", status="paused")
             await _seed_job(pool, kind="expired_one", status="expired")
@@ -187,9 +149,9 @@ class TestListJobs:
     async def test_filters_are_sql_predicates_not_python(self, pg_schema: tuple[str, str]) -> None:
         """A filter applied after the fetch would still page over everything."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="alpha", status="active")
             await _seed_job(pool, kind="alpha", status="paused")
             await _seed_job(pool, kind="beta", status="active")
@@ -212,9 +174,9 @@ class TestListJobs:
         zero kinds ends up operating on the whole deployment.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="alpha")
 
             assert await jobs.list_jobs(kinds=[]) == []
@@ -226,9 +188,9 @@ class TestListJobs:
     async def test_it_pages_deterministically(self, pg_schema: tuple[str, str]) -> None:
         """Ordering is total, so paging cannot repeat or skip a row."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             for index in range(5):
                 await _seed_job(pool, kind=f"kind_{index}")
 
@@ -245,9 +207,9 @@ class TestListJobs:
     async def test_count_matches_the_same_filters(self, pg_schema: tuple[str, str]) -> None:
         """A count that disagreed with the listing would mis-page the caller."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="alpha", status="active")
             await _seed_job(pool, kind="alpha", status="paused")
             await _seed_job(pool, kind="beta", status="active")
@@ -270,9 +232,9 @@ class TestSetStatus:
         WHEN the job resumes, which is a different operation from stopping it.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             fire_at = datetime.now(UTC) + timedelta(hours=3)
             partition, job = await _seed_job(pool, next_fire_at=fire_at)
 
@@ -296,9 +258,9 @@ class TestSetStatus:
     async def test_resume_restores_the_job_to_the_tick(self, pg_schema: tuple[str, str]) -> None:
         """After a resume the tick engine's own due-scan sees the job again."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             due = datetime.now(UTC) - timedelta(minutes=1)
             partition, job = await _seed_job(pool, status="paused", next_fire_at=due)
 
@@ -319,9 +281,9 @@ class TestSetStatus:
     async def test_a_missing_job_reports_no_change(self, pg_schema: tuple[str, str]) -> None:
         """The caller needs to tell "paused it" from "there was nothing there"."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             changed = await jobs.set_status(
                 partition_key=_new_uuid(),
                 job_id=_new_uuid(),
@@ -338,9 +300,9 @@ class TestSetStatus:
     ) -> None:
         """The table's CHECK would reject it; a clear error beats a raw one."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             partition, job = await _seed_job(pool)
             with pytest.raises(ValueError, match="status"):
                 await jobs.set_status(
@@ -360,9 +322,9 @@ class TestSetStatus:
         wrong in ways a multi-row fixture can show.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             partition, job = await _seed_job(pool, kind="target")
             _, other = await _seed_job(pool, kind="bystander")
 
@@ -389,9 +351,9 @@ class TestUpdateSchedule:
         """A cadence change that left ``next_fire_at`` alone would not take effect
         until the old cadence fired once more."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             far_future = datetime.now(UTC) + timedelta(days=30)
             partition, job = await _seed_job(
                 pool,
@@ -427,9 +389,9 @@ class TestUpdateSchedule:
         next fire the engine would never have produced.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             partition, job = await _seed_job(
                 pool,
                 schedule_type="every_n_hours",
@@ -452,9 +414,9 @@ class TestUpdateSchedule:
     async def test_a_config_the_schedule_type_rejects_raises(self, pg_schema: tuple[str, str]) -> None:
         """Validation comes from the engine's own maths, not a second copy of it."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             partition, job = await _seed_job(pool, schedule_type="interval")
 
             with pytest.raises(ValueError):
@@ -469,9 +431,9 @@ class TestUpdateSchedule:
 
     async def test_a_missing_job_reports_no_change(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             updated = await jobs.update_schedule(
                 partition_key=_new_uuid(),
                 job_id=_new_uuid(),
@@ -489,9 +451,9 @@ class TestRequestImmediateFire:
     async def test_it_brings_an_active_job_forward(self, pg_schema: tuple[str, str]) -> None:
         """After the request the engine's due-scan picks the job up."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             partition, job = await _seed_job(pool, next_fire_at=datetime.now(UTC) + timedelta(days=1))
 
             now = datetime.now(UTC)
@@ -514,9 +476,9 @@ class TestRequestImmediateFire:
         takes deliberately rather than a side effect of asking for one run.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             fire_at = datetime.now(UTC) + timedelta(days=1)
             partition, job = await _seed_job(pool, status="paused", next_fire_at=fire_at)
 
@@ -534,9 +496,9 @@ class TestRequestImmediateFire:
 
     async def test_a_missing_job_reports_no_change(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             requested = await jobs.request_immediate_fire(
                 partition_key=_new_uuid(),
                 job_id=_new_uuid(),
@@ -553,9 +515,9 @@ class TestLatestForJobs:
     async def test_it_returns_the_newest_fire_for_each_job(self, pg_schema: tuple[str, str]) -> None:
         """An older success must not mask a newer failure."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, fires = _build_stores(pool)
+            jobs, fires = build_stores(pool)
             now = datetime.now(UTC)
             partition_a, job_a = await _seed_job(pool, kind="alpha")
             partition_b, job_b = await _seed_job(pool, kind="beta")
@@ -586,9 +548,9 @@ class TestLatestForJobs:
         """Absence is the caller's signal; a null entry would need the same check
         plus a way to distinguish it from a fire with no fields."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            _, fires = _build_stores(pool)
+            _, fires = build_stores(pool)
             _, job = await _seed_job(pool)
 
             latest = await fires.latest_for_jobs([job])
@@ -599,9 +561,9 @@ class TestLatestForJobs:
 
     async def test_an_empty_request_makes_no_query(self, pg_schema: tuple[str, str]) -> None:
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            _, fires = _build_stores(pool)
+            _, fires = build_stores(pool)
             assert await fires.latest_for_jobs([]) == {}
         finally:
             await pool.close()
@@ -618,9 +580,9 @@ class TestGetByJobId:
         partition-scoped mutators.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool, kind="decoy")
             partition, job = await _seed_job(pool, kind="wanted", name="the-one")
             await _seed_job(pool, kind="another_decoy")
@@ -637,9 +599,9 @@ class TestGetByJobId:
     async def test_an_unknown_id_is_none(self, pg_schema: tuple[str, str]) -> None:
         """A miss is the caller's 404, not an exception."""
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             await _seed_job(pool)
             assert await jobs.get_by_job_id(_new_uuid()) is None
         finally:
@@ -653,9 +615,9 @@ class TestGetByJobId:
         not match would make the pause a silent no-op.
         """
         url, schema = pg_schema
-        pool = await _apply_schema(url, schema)
+        pool = await apply_schema(url, schema)
         try:
-            jobs, _ = _build_stores(pool)
+            jobs, _ = build_stores(pool)
             _, job = await _seed_job(pool)
 
             found = await jobs.get_by_job_id(job)

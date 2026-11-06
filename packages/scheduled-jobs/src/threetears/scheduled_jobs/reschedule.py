@@ -35,14 +35,10 @@ design notes
   claim, so anchoring there would collapse ``'catch_up'`` back into
   ``'coalesce'``.
 - **APScheduler is a cron-only utility.** The ``'cron'`` branch is the
-  only place APScheduler enters; its ``CronTrigger`` is imported lazily
-  inside the branch so non-cron consumers pay no import cost. APScheduler
-  is declared as a hard dependency (small dep, ``cron`` is part of the
-  public ``ScheduleType`` surface) but the lazy import keeps the cost of
-  merely importing this module at zero. The function raises
-  ``RuntimeError`` with install guidance if the import fails, so
-  consumers running a stripped wheel see a clear message instead of a
-  bare ``ImportError``.
+  only place APScheduler enters. APScheduler is declared as a hard
+  dependency (small dep, ``cron`` is part of the public ``ScheduleType``
+  surface), and its ``CronTrigger`` is imported at module top so no
+  import runs mid-request.
 """
 
 from __future__ import annotations
@@ -51,6 +47,8 @@ import random
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, Final
 from zoneinfo import ZoneInfo
+
+from apscheduler.triggers.cron import CronTrigger
 
 __all__ = ["compute_next_fire_at"]
 
@@ -372,22 +370,9 @@ def _next_cron(
 
     Config: ``{"expr": str}``. Uses APScheduler's ``CronTrigger`` as a
     pure utility import (NOT as scheduler infrastructure -- the tick body
-    is APScheduler-agnostic). APScheduler is a hard dep; the import is
-    lazy here so non-cron consumers pay no import cost. Raises
-    ``RuntimeError`` with install guidance if APScheduler is missing
-    (e.g. stripped wheel).
+    is APScheduler-agnostic). APScheduler is a hard dependency, imported
+    at module top.
     """
-    try:
-        from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
-    except ImportError as exc:
-        msg = (
-            "cron schedule_type requires apscheduler; install it via "
-            "`uv add apscheduler` (it ships as a hard dep of "
-            "3tears-scheduled-jobs, so this should only happen on a "
-            "stripped wheel)"
-        )
-        raise RuntimeError(msg) from exc
-
     expr = config["expr"]
     # Pin the cron to the configured timezone (UTC by default), matching
     # every other schedule type's use of ``_tz(config)``. Without an

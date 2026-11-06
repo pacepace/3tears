@@ -22,7 +22,7 @@ Seeded empty-slot-only; the store is master once set.
 
 from __future__ import annotations
 
-from threetears.evals.gen.proposers import RUBRIC_PROPOSAL_CONTRACT
+from threetears.evals.gen.proposal_contract import RUBRIC_PROPOSAL_CONTRACT
 from threetears.evals.kernel.prompts.catalogue import PROPOSER_PROMPT
 from threetears.evals.kernel.prompts.seed import SeedSection, SeedTemplate
 

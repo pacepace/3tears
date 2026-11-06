@@ -8,8 +8,9 @@ provider, and it behaves like any other 3tears model (the factory attaches the u
 callbacks).
 
 Runtime: needs Node + the Claude Code CLI on PATH (the SDK shells out to it). ``langchain-claude-code``
-is an optional extra (``3tears-models[claude-cli]``), imported lazily here so the base install stays
-free of it.
+is an optional extra (``3tears-models[claude-cli]``): it and the Claude Agent SDK are imported when this
+module loads, guarded so the base install imports it without them, and building a subscription model
+without the extra raises an ``ImportError`` naming it.
 
 The token is passed per **instance** (``oauth_token=…``), which the package threads into the SDK's
 per-subprocess ``ClaudeAgentOptions.env`` — NOT a global ``os.environ`` write. That matters for
@@ -189,6 +190,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, Field
 
 from threetears.models.claude_cli_isolation import claude_cli_isolation
@@ -207,6 +209,26 @@ from threetears.models.tool_name_translation import NameMangledToolProxy, build_
 from threetears.tool_schema import self_contained_input_schema
 
 from threetears.observe import get_logger
+
+#: why the claude-cli extra is unavailable, when it is not installed
+_CLAUDE_CLI_IMPORT_ERROR: ImportError | None = None
+try:
+    import claude_agent_sdk
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ResultMessage,
+        StreamEvent,
+        TextBlock,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+        create_sdk_mcp_server,
+    )
+    from claude_agent_sdk import tool as sdk_tool
+    from langchain_claude_code import ClaudeCodeChatModel
+except ImportError as _exc:  # NOSILENT: the claude-cli extra is optional; a subscription model names it
+    _CLAUDE_CLI_IMPORT_ERROR = _exc
 
 __all__ = ["OAUTH_TOKEN_PREFIX", "is_subscription_token", "create_subscription_chat"]
 
@@ -605,8 +627,6 @@ def _pooled_launch_options(options: Any) -> Any:
     :return: a new options object; the call's own is not mutated
     :rtype: Any
     """
-    from claude_agent_sdk import create_sdk_mcp_server  # noqa: PLC0415
-
     per_tool_prefix = f"mcp__{TOOL_SERVER_NAME}__"
     allowed = [t for t in (options.allowed_tools or []) if not str(t).startswith(per_tool_prefix)]
     server_rule = f"mcp__{TOOL_SERVER_NAME}"
@@ -623,10 +643,20 @@ def _pooled_launch_options(options: Any) -> Any:
 
 
 def _subscription_model_cls() -> type:
-    """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed (lazy import)."""
-    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, StreamEvent, TextBlock, UserMessage
-    from claude_agent_sdk import tool as sdk_tool
-    from langchain_claude_code import ClaudeCodeChatModel
+    """The ``ClaudeCodeChatModel`` subclass with the bound-tool wrapper fixed.
+
+    ``ClaudeSDKClient`` is read off :mod:`claude_agent_sdk` here, when the class is built, so the
+    class drives whatever client the SDK module holds at that moment.
+
+    :return: the subscription chat model class
+    :rtype: type
+    :raises ImportError: when the ``claude-cli`` extra is not installed
+    """
+    if _CLAUDE_CLI_IMPORT_ERROR is not None:
+        raise ImportError(
+            "a Claude subscription model needs the claude-cli extra: install 3tears-models[claude-cli]",
+        ) from _CLAUDE_CLI_IMPORT_ERROR
+    sdk_client_cls = claude_agent_sdk.ClaudeSDKClient
 
     class _SubscriptionChatModel(ClaudeCodeChatModel):
         """``ClaudeCodeChatModel`` whose bound-tool wrapper invokes via the public ``ainvoke`` API.
@@ -683,8 +713,6 @@ def _subscription_model_cls() -> type:
                 cli_env[_MAX_OUTPUT_TOKENS_ENV] = cap
             if "output_config" in overrides:
                 overrides["output_format"] = _output_format(overrides.pop("output_config"))
-            from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
-
             # The base class keeps only keys ClaudeAgentOptions declares and drops the rest without
             # a word. A dropped key is a directive the caller believes was sent -- which is how a
             # schema went missing -- so each one is named.
@@ -865,7 +893,7 @@ def _subscription_model_cls() -> type:
                 if client is None:
                     # started without forking the worker, as a pooled CLI is (_claude_cli_spawn)
                     spawn_clis_without_fork()
-                    client = await stack.enter_async_context(ClaudeSDKClient(options=options))
+                    client = await stack.enter_async_context(sdk_client_cls(options=options))
                 try:
                     yield client
                 except ModelProviderError as failure:
@@ -887,8 +915,6 @@ def _subscription_model_cls() -> type:
             :return: LangChain tool calls
             :rtype: list[dict[str, Any]]
             """
-            from claude_agent_sdk import ToolUseBlock  # noqa: PLC0415
-
             canonical = {
                 bound.name: (bound.canonical_name if isinstance(bound, NameMangledToolProxy) else bound.name)
                 for bound in (self._bound_tools or [])
@@ -1157,8 +1183,6 @@ class _StructuredAttempts:
         :param blocks: the assistant message's content blocks
         :ptype blocks: list[Any]
         """
-        from claude_agent_sdk import ToolUseBlock  # noqa: PLC0415
-
         for block in blocks:
             if isinstance(block, ToolUseBlock) and block.name == _STRUCTURED_OUTPUT_TOOL:
                 self._inputs[block.id] = dict(block.input or {})
@@ -1169,8 +1193,6 @@ class _StructuredAttempts:
         :param message: a ``UserMessage`` the CLI sent
         :ptype message: Any
         """
-        from claude_agent_sdk import ToolResultBlock  # noqa: PLC0415
-
         if not isinstance(message.content, list):
             return
         for block in message.content:
@@ -1200,8 +1222,6 @@ def _placeholder_answer(attempt: dict[str, Any], schema: dict[str, Any]) -> Any 
     :return: the parsed answer, or ``None``
     :rtype: Any | None
     """
-    from jsonschema import Draft202012Validator  # noqa: PLC0415
-
     if len(attempt) != 1:
         return None
     [(key, wrapped)] = attempt.items()

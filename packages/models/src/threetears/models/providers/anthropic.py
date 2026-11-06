@@ -28,19 +28,20 @@ json matching this schema". Dispatch across providers lives in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from anthropic import transform_schema
+from langchain_anthropic import ChatAnthropic
 from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.providers._name_translation_mixin import NameTranslatingChatMixin
-from threetears.models.providers.structured_output import StructuredOutputSchemaError
+from threetears.models.providers._structured_output_schema import StructuredOutputSchemaError
+from threetears.models.providers.claude_cli import create_subscription_chat, is_subscription_token
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from langchain_anthropic import ChatAnthropic
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
     from langchain_core.messages import AIMessage
     from langchain_core.runnables import Runnable
@@ -133,12 +134,6 @@ def anthropic_structured_output_kwargs(
     :raises StructuredOutputSchemaError: when json_schema cannot be
         translated into Anthropic's structured-output schema form
     """
-    # imported inside the function so the module-scope import stays
-    # metadata-only: threetears.models eagerly imports this module to
-    # populate the capability registry and must not require any provider
-    # SDK to be installed for that side-effect import to succeed.
-    from anthropic import transform_schema
-
     try:
         transformed = transform_schema(json_schema)
     except (AssertionError, ValueError, AttributeError, TypeError, RecursionError) as exc:
@@ -170,62 +165,45 @@ def anthropic_structured_output_kwargs(
     }
 
 
-def _build_translating_chat_class() -> type[ChatAnthropic]:
-    """build the :class:`ChatAnthropic` subclass with name-translation hooks.
+class _NameTranslatingChatAnthropic(NameTranslatingChatMixin, ChatAnthropic):
+    """``ChatAnthropic`` with dot<->underscore tool-name translation at the
+    wire boundary (Anthropic validates names against
+    ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot).
 
-    Defined inside a function so the langchain-anthropic import stays
-    lazy -- :mod:`threetears.models.providers.anthropic` is imported
-    eagerly at package load to populate the capability registry, and
-    we must not require ``langchain-anthropic`` to be installed for
-    that side-effect import to succeed (it is an optional dependency
-    selected via ``3tears-models[anthropic]``).
+    All translation hooks live in :class:`NameTranslatingChatMixin`
+    (mixed in ahead of ``ChatAnthropic`` so ``super()`` resolves to it);
+    this subclass only supplies the per-instance reverse-map slot.
 
-    :return: name-translating ChatAnthropic subclass
-    :rtype: type[ChatAnthropic]
+    :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
+        populated at ``bind_tools`` time.
+    :ptype _name_reverse_map: dict[str, str]
     """
-    from langchain_anthropic import ChatAnthropic
 
-    class _NameTranslatingChatAnthropic(NameTranslatingChatMixin, ChatAnthropic):
-        """``ChatAnthropic`` with dot<->underscore tool-name translation at the
-        wire boundary (Anthropic validates names against
-        ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot).
+    _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
 
-        All translation hooks live in :class:`NameTranslatingChatMixin`
-        (mixed in ahead of ``ChatAnthropic`` so ``super()`` resolves to it);
-        this subclass only supplies the per-instance reverse-map slot.
+    def bind_tools(
+        self,
+        tools: Sequence[Any],
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Bind tools, spelling "must call a tool" the way Anthropic does.
 
-        :ivar _name_reverse_map: underscored-wire -> canonical-dotted map,
-            populated at ``bind_tools`` time.
-        :ptype _name_reverse_map: dict[str, str]
+        ``tool_choice="required"`` is the OpenAI spelling, and callers use
+        it across providers. ``ChatAnthropic.bind_tools`` passes ``any`` and
+        ``auto`` through and treats every other string as a tool's name, so
+        ``required`` reached the API as "call the tool named required" and
+        was refused with a 400. Anthropic's word for it is ``any``.
+
+        :param tools: the tools to bind
+        :ptype tools: Sequence[Any]
+        :param kwargs: passthrough, ``tool_choice`` included
+        :ptype kwargs: Any
+        :return: runnable bound to the tools
+        :rtype: Runnable[LanguageModelInput, AIMessage]
         """
-
-        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
-
-        def bind_tools(
-            self,
-            tools: Sequence[Any],
-            **kwargs: Any,
-        ) -> Runnable[LanguageModelInput, AIMessage]:
-            """Bind tools, spelling "must call a tool" the way Anthropic does.
-
-            ``tool_choice="required"`` is the OpenAI spelling, and callers use
-            it across providers. ``ChatAnthropic.bind_tools`` passes ``any`` and
-            ``auto`` through and treats every other string as a tool's name, so
-            ``required`` reached the API as "call the tool named required" and
-            was refused with a 400. Anthropic's word for it is ``any``.
-
-            :param tools: the tools to bind
-            :ptype tools: Sequence[Any]
-            :param kwargs: passthrough, ``tool_choice`` included
-            :ptype kwargs: Any
-            :return: runnable bound to the tools
-            :rtype: Runnable[LanguageModelInput, AIMessage]
-            """
-            if kwargs.get("tool_choice") == "required":
-                kwargs["tool_choice"] = "any"
-            return super().bind_tools(tools, **kwargs)
-
-    return _NameTranslatingChatAnthropic
+        if kwargs.get("tool_choice") == "required":
+            kwargs["tool_choice"] = "any"
+        return super().bind_tools(tools, **kwargs)
 
 
 #: Retries of a failed request on the HTTP route when a caller sets none: the Anthropic SDK's own default.
@@ -270,16 +248,12 @@ def create_anthropic_chat(
     """
     # A Claude subscription OAuth token (``claude setup-token``) routes to the CLI/Agent-SDK backend
     # instead of the HTTP API — the SAME Anthropic model ids, no separate provider. An API key
-    # (``sk-ant-api…``) takes the ChatAnthropic path below. Imported lazily so the optional
-    # ``langchain-claude-code`` dep is only pulled when a subscription token is actually used.
-    from threetears.models.providers.claude_cli import create_subscription_chat, is_subscription_token
-
+    # (``sk-ant-api…``) takes the ChatAnthropic path below. The subscription path needs the optional
+    # ``claude-cli`` extra, and building that model without it raises an ImportError naming the extra.
     if is_subscription_token(api_key):
         if max_retries is not None:
             extra_kwargs["max_retries"] = max_retries
         return create_subscription_chat(model_name, api_key, **extra_kwargs)
-
-    chat_cls = _build_translating_chat_class()
 
     cleaned_base_url = strip_v1_suffix(base_url) if base_url else None
 
@@ -293,7 +267,7 @@ def create_anthropic_chat(
         kwargs["base_url"] = cleaned_base_url
     kwargs.update(extra_kwargs)
 
-    model: ChatAnthropic = chat_cls(**kwargs)
+    model: ChatAnthropic = _NameTranslatingChatAnthropic(**kwargs)
     return model
 
 

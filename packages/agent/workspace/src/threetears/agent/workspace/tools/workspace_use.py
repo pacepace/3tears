@@ -20,7 +20,7 @@ from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
 )
 from threetears.agent.workspace.collections import WorkspaceCollection
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.tools.helpers import authorize_workspace
 
 __all__ = [
@@ -176,7 +176,7 @@ def _build(**kwargs: Any) -> WorkspaceUseTool:
 
     consumes ``workspace_collection``, ``agent_id``, and
     ``context_provider``; ignores the rest. registered with
-    :mod:`threetears.agent.workspace.factory` on import so
+    :mod:`threetears.agent.workspace.tool_registry` on import so
     :func:`build_workspace_tools` emits this tool.
 
     :param kwargs: full factory dependency bundle

@@ -93,7 +93,7 @@ def backup_container() -> Iterator[str]:
     if major is None:
         pytest.skip("could not determine the local pg_dump major version")
 
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
 
     with PostgresContainer(f"postgres:{major}") as container:
         # testcontainers hands back a SQLAlchemy-style URL; asyncpg wants a

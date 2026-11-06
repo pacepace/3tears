@@ -35,7 +35,9 @@ then never name the host::
   evidence — whose verdict, on its first screen, is code's either way. ``--format`` is ``markdown`` (the
   default), ``html`` (one page that needs no script) or ``json`` (the evidence bundle the report was computed
   from, as ``bundle`` prints it); ``--out DIR`` writes all three into ``DIR`` instead (``report.html``,
-  ``report.md`` and ``bundle.json``, through :meth:`~threetears.evals.analysis.Report.write`). No model is called.
+  ``report.md`` and ``bundle.json``, through :meth:`~threetears.evals.analysis.Report.write`). ``--trials all`` lays
+  out each failed or lost trial's full record beside its row (``table``, the default, as ``report_read``'s). No model
+  is called.
 - ``bundle`` prints the campaign's analysis bundle as JSON
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
@@ -107,6 +109,7 @@ from threetears.evals.analysis import (
     GATE_TOKENS,
     FrontierResult,
     ReportFormat,
+    TrialDetail,
     campaign_report,
     campaign_verdicts,
     frontier,
@@ -120,7 +123,13 @@ from threetears.evals.analysis import (
     serialize_report,
 )
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OUT_OF_RUN_PURPOSES
-from threetears.evals.kernel import DEFAULT_TEMPERATURE_REPEATS, EvalServiceError, JobLeases, RefusedInput
+from threetears.evals.kernel import (
+    DEFAULT_TEMPERATURE_REPEATS,
+    EvalServiceError,
+    JobLeases,
+    RefusedInput,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.analysis.summary import summarize_run
 from threetears.evals.run import (
@@ -342,6 +351,12 @@ def build_parser(
         help="markdown (default), html (one page, needs no script) or json (the bundle the report was computed from)",
     )
     report.add_argument(
+        "--trials",
+        choices=get_args(TrialDetail),
+        default="table",
+        help="table (default): each failed or lost trial's row and stored result; all: each one's full record too",
+    )
+    report.add_argument(
         "--out",
         type=Path,
         metavar="DIR",
@@ -514,16 +529,29 @@ def run_cli(
                 )
             )
         elif args.command == "frontier":
-            ranked = FrontierResult.model_validate(
-                frontier(
-                    eval_host.storage,
-                    args.scope,
-                    list_runs=partial(list_runs, eval_host),
-                    bar=args.bar,
-                    subject_id=args.subject,
-                    profile=eval_host.profile,
+            try:
+                ranked = FrontierResult.model_validate(
+                    frontier(
+                        eval_host.storage,
+                        args.scope,
+                        list_runs=partial(list_runs, eval_host),
+                        bar=args.bar,
+                        subject_id=args.subject,
+                        profile=eval_host.profile,
+                    )
                 )
-            )
+            except ValidationFailedError as refused:
+                if "result_budget" not in refused.details:
+                    raise
+                # The remedy names the action's and Python's filter; here it is a flag, or nothing narrower.
+                budget = refused.details["result_budget"]
+                raise _Refused(
+                    f"{refused.message}; this subject alone holds about {refused.details['results_estimated']} "
+                    f"results, past the budget of {budget}, and the frontier command has no narrower filter"
+                    if args.subject
+                    else f"{refused.message}; filter it to one subject with --subject: a frontier of one subject "
+                    f"reads only that subject's runs, and is answered when they hold {budget} results or fewer"
+                ) from refused
             _say(ranked.model_dump_json(indent=2) if args.json else frontier_text(ranked))
         else:
             _say(inspect_campaign_bundle(eval_host, args.campaign, args.scope).model_dump_json(indent=2))
@@ -632,7 +660,7 @@ def _report(host: EvalHost, args: argparse.Namespace) -> None:
 
     :raises _Refused: ``--out`` cannot be written.
     """
-    report = campaign_report(host, args.campaign, args.scope)
+    report = campaign_report(host, args.campaign, args.scope, trials=args.trials)
     if args.out is None:
         # Markdown and HTML end in a newline already; the bundle's JSON does not, and a terminal wants one.
         sys.stdout.write(serialize_report(report, args.format) + ("\n" if args.format == "json" else ""))

@@ -64,6 +64,7 @@ from threetears.evals.schema.values import (
     Scale,
     SweepableValue,
 )
+from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult, EvalRun
@@ -1782,8 +1783,6 @@ def _candidate_model_departs(run: EvalRun, _results: Sequence[EvalResult]) -> bo
     origin = (run.model_role_provenance or {}).get("candidate")
     if origin is None:
         return None
-    # Imported here: the models module imports from this package, so a module-level import would cycle.
-    from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
 
     if origin not in ROLE_MODEL_ORIGINS:
         # An origin a newer build recorded: whether it moved the model is that build's to say, and reading

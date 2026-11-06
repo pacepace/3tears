@@ -18,6 +18,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.utils import tool_error
 
 __all__ = [
@@ -226,8 +227,6 @@ def create_calculator_tool(config: dict[str, Any], description: str) -> Structur
     in the signature for :func:`register_builtins` factory-shape
     parity.
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     return to_langchain_tool(
         CalculatorTool(),
         description=description,

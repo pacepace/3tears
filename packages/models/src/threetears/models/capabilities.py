@@ -48,6 +48,7 @@ __all__ = [
     "get_capabilities",
     "get_capability_override",
     "get_published_capabilities",
+    "get_registered_capabilities",
     "list_capabilities",
     "register_capabilities",
     "register_capability_override",
@@ -484,6 +485,22 @@ def get_published_capabilities(model_id: str) -> CapabilityOverride | None:
     """
     with _REGISTRY_LOCK:
         result = _PUBLISHED.get(model_id)
+    return result
+
+
+def get_registered_capabilities(model_id: str) -> ModelCapabilities | None:
+    """return the static registry entry for ``model_id``, with no published facts or override applied.
+
+    reads the bottom layer alone, under the registry lock, so a caller that needs the bare entry
+    never lifts the other layers off to reach it (which a concurrent reader would see).
+
+    :param model_id: public identifier for the model
+    :ptype model_id: str
+    :return: the entry a provider registered, or ``None`` when none registered the id
+    :rtype: ModelCapabilities | None
+    """
+    with _REGISTRY_LOCK:
+        result = _REGISTRY.get(model_id)
     return result
 
 

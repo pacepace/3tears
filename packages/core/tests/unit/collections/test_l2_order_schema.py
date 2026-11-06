@@ -97,7 +97,7 @@ class TestTheSchemaDeclaresBothColumnsOrNeither:
 class TestTheOrderedUpsert:
     def test_it_updates_only_over_a_strictly_older_stored_order(self) -> None:
         schema = _schema(*l2_order_columns())
-        row = with_l2_order({"id": "s", "members": "[]"}, L2Order(_EPOCH, 7))
+        row = with_l2_order({"id": "s", "members": "[]", "date_updated": _EPOCH}, L2Order(_EPOCH, 7))
         sql = schema_sql.build_ordered_upsert_sql(schema, row)
         assert sql == (
             "INSERT INTO member_sets (id, members, date_created, date_updated, l2_epoch, l2_revision) "
@@ -109,6 +109,11 @@ class TestTheOrderedUpsert:
         )
         params = schema_sql.build_insert_params(schema, row)
         assert params[4:] == [_EPOCH, 7]
+
+    def test_it_updates_only_the_columns_the_row_names(self) -> None:
+        row = with_l2_order({"id": "s"}, L2Order(_EPOCH, 7))
+        sql = schema_sql.build_ordered_upsert_sql(_schema(*l2_order_columns()), row)
+        assert "DO UPDATE SET l2_epoch = EXCLUDED.l2_epoch, l2_revision = EXCLUDED.l2_revision WHERE" in sql
 
     def test_a_row_without_its_order_is_refused(self) -> None:
         with pytest.raises(RuntimeError, match="l2_epoch"):

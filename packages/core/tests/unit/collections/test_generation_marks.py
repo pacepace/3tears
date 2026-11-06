@@ -175,3 +175,42 @@ class TestTheOptOutCarriesAReason:
     def test_an_empty_reason_is_refused(self, reason: str) -> None:
         with pytest.raises(ValueError, match="reason"):
             NoWriteGeneration(reason=reason)
+
+
+class TestTheNewestGenerationHeard:
+    def test_it_is_the_mark_when_nothing_waits(self) -> None:
+        marks = _followed("inc-a:4")
+        assert marks.highest_heard(_TABLE) == "inc-a:4"
+
+    def test_an_advance_waiting_on_a_gap_is_heard_past_the_mark(self) -> None:
+        marks = _followed("inc-a:4")
+        marks.hear(_TABLE, "inc-a:7", 1)
+        assert marks.recorded(_TABLE) == "inc-a:4"
+        assert marks.highest_heard(_TABLE) == "inc-a:7"
+
+    def test_a_table_never_sighted_has_none(self) -> None:
+        marks = GenerationMarks()
+        marks.follow(_TABLE)
+        marks.hear(_TABLE, "inc-a:2", 1)
+        assert marks.highest_heard(_TABLE) is None
+
+
+class TestAdoptingAnotherSetOfMarks:
+    def test_the_copy_agrees_on_everything_heard_before_it(self) -> None:
+        source = _followed("inc-a:4")
+        source.hear(_TABLE, "inc-a:6", 2)
+        source.hear(_TABLE, "inc-a:6", 2)
+        copy = GenerationMarks()
+        copy.adopt(_TABLE, source)
+        assert copy.follows(_TABLE)
+        assert copy.recorded(_TABLE) == "inc-a:4"
+        # the gap at 5 heard by the copy alone moves it past both, as it would the source
+        copy.hear(_TABLE, "inc-a:5", 1)
+        assert copy.recorded(_TABLE) == "inc-a:6"
+        assert source.recorded(_TABLE) == "inc-a:4"
+
+    def test_a_table_the_source_does_not_follow_is_followed_unsighted(self) -> None:
+        copy = GenerationMarks()
+        copy.adopt(_TABLE, GenerationMarks())
+        assert copy.follows(_TABLE)
+        assert copy.recorded(_TABLE) is None

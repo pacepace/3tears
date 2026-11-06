@@ -23,7 +23,7 @@ import statistics
 
 from pydantic import Field
 
-from threetears.evals.analysis.numbers import format_number
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (

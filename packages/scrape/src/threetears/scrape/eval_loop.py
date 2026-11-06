@@ -37,9 +37,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, TypeVar, get_args
 
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
-from threetears.models import LlmPurpose
+from threetears.models import LlmPurpose, format_vision_content
 from threetears.observe import contain, get_logger
 
 from .challenge import DEFAULT_CLASSIFIER_MODEL_ID, PageVerdictKind, classify_failed_page
@@ -1399,8 +1400,6 @@ def _build_per_document_judge_prompt(text: str, extracted: dict[str, Any], schem
 def _build_per_document_vision_judge_content(
     images: list[bytes], extracted: dict[str, Any], schema: FieldSchema
 ) -> list[Any]:
-    from threetears.models import format_vision_content
-
     field_lines = ", ".join(schema.keys())
     content: list[Any] = []
     for image_bytes in images:
@@ -1466,8 +1465,6 @@ async def _judge_one_document_extraction(
     """
     prompt_or_messages: str | list[Any]
     if document.was_ocr:
-        from langchain_core.messages import HumanMessage
-
         content = _build_per_document_vision_judge_content(document.images, extracted, schema)
         prompt_or_messages = [HumanMessage(content=content)]
         model_id = DEFAULT_VISION_MODEL_ID
@@ -1514,8 +1511,6 @@ class _MultiRowJudgeVerdict(BaseModel):
 def _build_multi_row_judge_content(
     images: list[bytes], records: list[dict[str, Any]], schema: FieldSchema
 ) -> list[Any]:
-    from threetears.models import format_vision_content
-
     field_lines = ", ".join(schema.keys())
     record_lines = "\n".join(f"[{i}] {record}" for i, record in enumerate(records))
     content: list[Any] = []
@@ -1579,8 +1574,6 @@ async def _judge_multi_row_extraction(
     if not records:
         return set()
     content = _build_multi_row_judge_content(images, records, schema)
-    from langchain_core.messages import HumanMessage
-
     verdict = await _judge(
         [HumanMessage(content=content)],
         response_model=_MultiRowJudgeVerdict,

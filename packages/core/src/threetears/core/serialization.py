@@ -15,6 +15,7 @@ package and self-registers on module import.
 from __future__ import annotations
 
 import json
+import types
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -33,6 +34,7 @@ __all__ = [
     "handler_for",
     "json_datetime",
     "register_handler",
+    "resolve_base_type",
     "serialize_to_json",
     "to_stored_json",
 ]
@@ -184,15 +186,18 @@ def serialize_to_json(data: dict[str, Any]) -> bytes:
     return json.dumps(data, default=_json_serializer).encode("utf-8")
 
 
-def _resolve_base_type(type_hint: Any) -> type | None:
+def resolve_base_type(type_hint: Any) -> type | None:
     """Extract the concrete type from a possibly-Optional type hint.
 
     For ``UUID | None`` returns ``UUID``. For ``list[float]`` returns ``list``.
+
+    :param type_hint: a field's type hint, as a field-type map holds it
+    :ptype type_hint: Any
+    :return: the concrete type, or ``None`` for a hint of ``None`` alone
+    :rtype: type | None
     """
     origin = get_origin(type_hint)
     if origin is not None:
-        import types
-
         if origin is types.UnionType:
             args = get_args(type_hint)
             non_none = [a for a in args if a is not type(None)]
@@ -209,7 +214,8 @@ def deserialize_from_json(data: bytes, field_types: dict[str, Any]) -> dict[str,
     """Deserialize JSON bytes from cache back to entity data dictionary.
 
     Converts string representations back to their native Python types
-    based on the entity's field type annotations.
+    based on the entity's field type annotations. A ``Decimal`` field is a ``Decimal`` whether the
+    JSON holds it as a string, as :func:`serialize_to_json` writes it, or as a number.
     """
     raw: dict[str, Any] = json.loads(data.decode("utf-8"))
     result: dict[str, Any] = {}
@@ -217,13 +223,15 @@ def deserialize_from_json(data: bytes, field_types: dict[str, Any]) -> dict[str,
         if value is None:
             result[key] = None
             continue
-        base_type = _resolve_base_type(field_types.get(key))
+        base_type = resolve_base_type(field_types.get(key))
         if base_type is UUID and isinstance(value, str):
             result[key] = UUID(value)
         elif base_type is datetime and isinstance(value, str):
             result[key] = datetime.fromisoformat(value)
-        elif base_type is Decimal and isinstance(value, str):
-            result[key] = Decimal(value)
+        elif base_type is Decimal and isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            # a JSON number too: a writer that sent a float, or an L1 that held REAL, cached one.
+            # a float is taken by its shortest repr, the decimal it was written from
+            result[key] = Decimal(repr(value) if isinstance(value, float) else str(value))
         elif base_type is bytes and isinstance(value, str):
             result[key] = bytes.fromhex(value)
         elif base_type is int and isinstance(value, (int, float)):

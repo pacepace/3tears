@@ -45,6 +45,7 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
+from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.context import ToolContextManager
 from threetears.nats import Subjects
 from threetears.observe import contain, get_logger
@@ -56,7 +57,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileVersionCollection,
 )
 from threetears.agent.workspace.config import ValidatorEntry
-from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tool_registry import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import _resolve_validators
 from threetears.agent.workspace.validators import (
@@ -325,11 +326,7 @@ class WorkspaceCreateTool(TearsTool):
                 # swallow.
                 try:
                     if self._namespace is not None:
-                        from threetears.agent.tools.call_scope import (
-                            current_scope as _current_scope,
-                        )
-
-                        _scope = _current_scope()
+                        _scope = current_scope()
                         if _scope is None:
                             raise RuntimeError(
                                 "workspace_create audit: no ToolCallScope "
@@ -547,8 +544,6 @@ class WorkspaceCreateTool(TearsTool):
         # row ends up with a NULL customer_id, which the authorize
         # helper treats as unroutable, and downstream tool calls will
         # deny until the migration backfill lands the right value.
-        from threetears.agent.tools.call_scope import current_scope
-
         scope = current_scope()
         customer_id: UUID | None = (
             scope.context.customer_id
@@ -724,7 +719,7 @@ def _build(**kwargs: Any) -> WorkspaceCreateTool:
     ``workspace_file_version_collection``, ``sandbox``,
     ``context_provider``, ``agent_id``, ``db_pool``, ``nats_client``,
     and ``namespace``; ignores the rest. registered with
-    :mod:`threetears.agent.workspace.factory` on import so
+    :mod:`threetears.agent.workspace.tool_registry` on import so
     :func:`build_workspace_tools` emits this tool.
 
     ``nats_client`` and ``namespace`` are required keys -- the tool

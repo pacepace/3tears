@@ -43,6 +43,16 @@
 # so don't, ask uv.
 FROM python:3.14-slim AS wheels
 
+# A compiler, in this stage only. indexed-zstd (3tears-scrape -> camoufox -> fpgen) ships no
+# linux/aarch64 wheel, so an arm64 build -- every local build on a Mac -- builds it from its sdist,
+# against libzstd. The venv is built here and copied into the runtime stage, which carries no
+# compiler. CXX: this Python's build config names gcc as its C++ compiler, so setuptools would link
+# the C++ extension without libstdc++ and it would fail at import (the testament image hit the same).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libzstd-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV CXX=g++
+
 # uv, not pip. This platform is uv-only everywhere else (see the "uv-Only" rule
 # in the consuming repos' CLAUDE.md) and the image builds were the last holdout
 # -- which is exactly where it hurt: pip's resolver backtracks across the
@@ -72,6 +82,21 @@ COPY uv.lock /build/uv.lock
 RUN uv export --frozen --all-packages --all-extras --no-emit-workspace --no-dev --no-hashes --no-header \
         --output-file /wheels-constraints.txt
 
+# The venv, built here where the compiler is. /opt/threetears/.venv is the shared convention for any
+# 3tears-consuming app; the runtime stage takes it whole, at the same path, on the same Python.
+RUN python -m venv /opt/threetears/.venv
+ENV VIRTUAL_ENV=/opt/threetears/.venv
+ENV PATH="/opt/threetears/.venv/bin:${PATH}"
+
+# Build tooling INTO the venv so downstream consumer Dockerfiles
+# (aibots-base, hub, admin, schema, future 3tears apps) can `python -m build`
+# and install /app from a source tree without spinning their own builder stage.
+# Must be inside the venv because PATH puts venv-bin first; a system-installed
+# `build` would be invisible to `python -m build`.
+RUN uv pip install --no-cache hatchling build
+
+RUN uv pip install --no-cache --constraint /wheels-constraints.txt /wheels/*.whl
+
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
@@ -96,9 +121,9 @@ RUN groupadd --system --gid 1001 appuser \
 COPY --from=wheels /wheels /threetears-wheels
 COPY --from=wheels /wheels-constraints.txt /threetears-constraints.txt
 
-# Canonical venv path. /opt/threetears/.venv is the shared convention for any
-# 3tears-consuming app. Sub-images install into the same venv.
-RUN python -m venv /opt/threetears/.venv
+# Canonical venv path, built in the wheels stage (it holds the compiled extensions). Sub-images
+# install into the same venv.
+COPY --from=wheels /opt/threetears/.venv /opt/threetears/.venv
 ENV VIRTUAL_ENV=/opt/threetears/.venv
 ENV PATH="/opt/threetears/.venv/bin:${PATH}"
 
@@ -127,18 +152,6 @@ ENV PATH="/opt/threetears/.venv/bin:${PATH}"
 # and it would leave this image shipping a resolver older than the locks it is
 # handed.
 COPY --from=ghcr.io/astral-sh/uv:0.11.1 /uv /usr/local/bin/uv
-
-# Build tooling INTO the venv so downstream consumer Dockerfiles
-# (aibots-base, hub, admin, schema, future 3tears apps) can `python -m build`
-# and install /app from a source tree without spinning their own builder stage.
-# Must be inside the venv because PATH puts venv-bin first; a system-installed
-# `build` would be invisible to `python -m build`.
-#
-# UV_PROJECT_ENVIRONMENT + the VIRTUAL_ENV set above make `uv pip install` target
-# this venv without an explicit --python on every call.
-RUN uv pip install --no-cache hatchling build
-
-RUN uv pip install --no-cache --constraint /threetears-constraints.txt /threetears-wheels/*.whl
 
 # The family-from-base helper ships WITH the base, because every consumer that
 # inherits this image runs the same check against the same family. Copied per

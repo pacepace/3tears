@@ -21,10 +21,10 @@ from threetears.evals.analysis.reporter_kind import reporter_case_of
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_TEST_CASE
+from threetears.evals.schema.models import EvalTestCase
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.schema.models import EvalTestCase
 
 log = get_logger(__name__)
 
@@ -102,8 +102,6 @@ def set_reporter_case_archived(
         decided).
     :raises StorageError: The updated case could not be persisted.
     """
-    from threetears.evals.schema.models import EvalTestCase
-
     current = storage.load_test_case(test_case_id, scope_id)
     if current is None:
         raise NotFoundError("test case", test_case_id, remedy=FIND_TEST_CASE)

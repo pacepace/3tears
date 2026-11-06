@@ -39,7 +39,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from threetears.nats import Subjects
-from threetears.observe import contain, PeriodicTask, get_logger
+from threetears.observe import contain, NextDelay, PeriodicTask, get_logger
 
 from threetears.core.security.door_proof import DoorProofSwitch, process_door_proofs
 from threetears.core.security.jwks_trust import (
@@ -199,6 +199,8 @@ class CachedHubJwksProvider:
                     # the interval is only the fallback.
                     interval=self._refresh_interval,
                     first_delay=self._next_delay(),
+                    # the two cadences are the provider's own validated configuration, so neither is floored
+                    min_delay=min(self._initial_retry_interval, self._refresh_interval),
                     name="hub-jwks-refresh",
                     logger=log,
                 )
@@ -306,15 +308,15 @@ class CachedHubJwksProvider:
         """
         return self._refresh_interval if self._warmed else self._initial_retry_interval
 
-    async def _refresh_pass(self) -> float:
+    async def _refresh_pass(self) -> NextDelay:
         """one refresh; returns the delay before the next.
 
         :meth:`refresh` already keeps-last-good and logs the failures it models. This belt-and-braces
         guard catches anything else (a future programming error in the body) so the pass still returns
         the cadence the provider's state calls for: short until warm, steady after.
 
-        :return: seconds until the next pass
-        :rtype: float
+        :return: the delay until the next pass
+        :rtype: NextDelay
         """
         try:
             await self.refresh()
@@ -325,4 +327,4 @@ class CachedHubJwksProvider:
                 what="hub jwks refresh loop iteration failed; loop continues",
                 extra={"reason": type(exc).__name__, "detail": str(exc)},
             )
-        return self._next_delay()
+        return NextDelay(self._next_delay())

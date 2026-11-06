@@ -74,8 +74,13 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
+from langchain_core.language_models.chat_models import agenerate_from_stream
+from langchain_core.outputs import ChatGeneration
+from langchain_core.runnables.config import ensure_config, merge_configs
+
 from threetears.models.errors import ModelCallTimeout
 from threetears.models.providers._junk_tool_calls import JunkToolCallStreamFilter, drop_junk_tool_calls
+from threetears.models.providers._tool_call_provider_extra import StreamExtraResolver
 from threetears.models.tool_name_translation import (
     build_name_translation,
     forward_translate_input,
@@ -173,8 +178,6 @@ class NameTranslatingChatMixin:
         :return: async iterator of translated AIMessageChunks
         :rtype: AsyncIterator[AIMessageChunk]
         """
-        from langchain_core.runnables.config import ensure_config, merge_configs
-
         merged_config = merge_configs(ensure_config(None), config)
         wire_input = forward_translate_input(input)
         async for chunk in super().astream(  # type: ignore[misc]
@@ -207,6 +210,11 @@ class NameTranslatingChatMixin:
     ) -> AsyncIterator[ChatGenerationChunk]:
         """The parent's stream without junk-named tool calls, ended when nothing arrives within the deadline.
 
+        Each chunk first goes through a
+        :class:`~threetears.models.providers._tool_call_provider_extra.StreamExtraResolver`, which keys a
+        tool call's provider fields by call id (a no-op for a provider that stashes none), so the filter,
+        the run manager and every consumer see only the resolved form.
+
         A long reply may stream for longer than :meth:`call_deadline_s`; what cannot
         happen is a wait that long with nothing arriving. Each chunk goes through
         :class:`~threetears.models.providers._junk_tool_calls.JunkToolCallStreamFilter`
@@ -229,6 +237,7 @@ class NameTranslatingChatMixin:
         """
         stream = super()._astream(messages, stop=stop, **kwargs)  # type: ignore[misc]
         junk = JunkToolCallStreamFilter()
+        extras = StreamExtraResolver()
         try:
             ended = False
             while not ended:
@@ -236,10 +245,11 @@ class NameTranslatingChatMixin:
                 try:
                     async with asyncio.timeout(self.call_deadline_s()):
                         chunk = await anext(stream)
-                    released = junk.feed(chunk)
+                    released = junk.feed(extras.resolve(chunk))
                 except StopAsyncIteration:
                     # NOSILENT: the parent's stream ended; what the filter still holds goes out last.
                     ended = True
+                    extras.finish()
                     released = junk.finish()
                 except TimeoutError as exc:
                     raise ModelCallTimeout(f"no chunk within {self.call_deadline_s()} s") from exc
@@ -274,6 +284,7 @@ class NameTranslatingChatMixin:
         :rtype: Iterator[ChatGenerationChunk]
         """
         junk = JunkToolCallStreamFilter()
+        extras = StreamExtraResolver()
         stream: Iterator[ChatGenerationChunk] = super()._stream(messages, stop=stop, **kwargs)  # type: ignore[misc]
 
         def released() -> Iterator[ChatGenerationChunk]:
@@ -283,7 +294,8 @@ class NameTranslatingChatMixin:
             :rtype: Iterator[ChatGenerationChunk]
             """
             for chunk in stream:
-                yield from junk.feed(chunk)
+                yield from junk.feed(extras.resolve(chunk))
+            extras.finish()
             yield from junk.finish()
 
         for out in released():
@@ -330,8 +342,6 @@ class NameTranslatingChatMixin:
                 **kwargs,
             )
         else:
-            from langchain_core.language_models.chat_models import agenerate_from_stream
-
             result = await agenerate_from_stream(
                 self._astream(wire, stop=stop, run_manager=run_manager, **kwargs),
             )
@@ -363,8 +373,6 @@ class NameTranslatingChatMixin:
         :return: LLMResult with canonical (dotted) tool-call names
         :rtype: Any
         """
-        from langchain_core.outputs import ChatGeneration
-
         result = await super().agenerate(messages, *args, **kwargs)  # type: ignore[misc]
         for generations in result.generations:
             for generation in generations:
@@ -393,8 +401,6 @@ class NameTranslatingChatMixin:
         :return: LLMResult with canonical (dotted) tool-call names
         :rtype: Any
         """
-        from langchain_core.outputs import ChatGeneration
-
         result = super().generate(messages, *args, **kwargs)  # type: ignore[misc]
         for generations in result.generations:
             for generation in generations:
@@ -430,8 +436,6 @@ class NameTranslatingChatMixin:
         :return: response message with canonical (dotted) tool-call names
         :rtype: AIMessage
         """
-        from langchain_core.runnables.config import ensure_config, merge_configs
-
         merged_config = merge_configs(ensure_config(None), config)
         result = await super().ainvoke(  # type: ignore[misc]
             forward_translate_input(input),
@@ -465,8 +469,6 @@ class NameTranslatingChatMixin:
         :return: response message with canonical (dotted) tool-call names
         :rtype: AIMessage
         """
-        from langchain_core.runnables.config import ensure_config, merge_configs
-
         merged_config = merge_configs(ensure_config(None), config)
         result = super().invoke(  # type: ignore[misc]
             forward_translate_input(input),

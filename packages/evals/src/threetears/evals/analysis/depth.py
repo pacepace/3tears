@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal, NamedTuple
 
@@ -56,6 +57,7 @@ __all__ = [
     "depths_differ",
     "pass_hat_k_over",
     "precision",
+    "repeats_sentence",
     "times",
     "unmeasured_sentence",
 ]
@@ -90,6 +92,36 @@ ARM_TIMES = "{arm} {times}"
 #: The arms ran to several depths.
 DEPTH_EACH = (
     "On {aspect} the arms ran each case {said}; extra repeats tighten an arm's own estimate, not the comparison much."
+)
+
+#: The most arms one sentence names as running to another depth than the rest, in place of the depth table.
+REPEATS_NAMED = 3
+
+#: Every arm ran every case alike: on every aspect, or on the one.
+EVERY_ARM_EVERY_ASPECT = "Every arm ran each case {times} on every aspect."
+EVERY_ARM_ON = "Every arm ran each case {times} on {aspect}."
+
+#: Every arm ran every case alike on every aspect, but for the few the sentence names.
+EVERY_ARM_BUT = (
+    "Every arm ran each case {times} on every aspect but {exceptions}; extra repeats tighten an arm's own estimate, "
+    "not the comparison much."
+)
+
+#: One arm and aspect that ran to another depth than the rest, as :data:`EVERY_ARM_BUT` names them.
+ARM_TIMES_ON = "{arm} {times} on {aspect}"
+
+#: The one arm a campaign measures ran every case alike: on every aspect, on the one, or on every aspect but a few.
+ONE_ARM_EVERY_ASPECT = "{arm} ran each case {times} on every aspect."
+ONE_ARM_ON = "{arm} ran each case {times} on {aspect}."
+ONE_ARM_BUT = "{arm} ran each case {times} on every aspect but {exceptions}."
+
+#: One aspect the one arm ran to another depth on, as :data:`ONE_ARM_BUT` names them.
+TIMES_ON = "{times} on {aspect}"
+
+#: The common depth at 1 on every aspect and every subject, with no case left out and no arm short.
+COMMON_DEPTH_ONE_EVERYWHERE = (
+    "On every aspect, pass^k is compared at depth 1, the fewest runs any arm gave a shared case, so it compares pass "
+    "rates, not reliability."
 )
 
 #: The arms share no case, so pass^k compares nothing.
@@ -211,6 +243,51 @@ def depth_sentence(aspect: str, depths: Mapping[str, Depth | None]) -> str | Non
         )
     said = ", ".join(ARM_TIMES.format(arm=label, times=times(depth)) for label, depth in known.items())
     return DEPTH_EACH.format(aspect=aspect, said=said)
+
+
+def repeats_sentence(depths: Mapping[str, Mapping[str, Depth]]) -> str | None:
+    """The one sentence that says every arm's depth on every aspect, where it loses no figure a depth table would
+    print; None where a table is needed.
+
+    It says them where every arm ran each of its cases the same number of times, every arm on one aspect ran as many
+    cases, and all but at most :data:`REPEATS_NAMED` arm-and-aspect pairs, fewer than the rest, ran to one depth;
+    the sentence names those few. ``Every arm ran each case once on every aspect but v3 twice on tone; extra repeats
+    tighten an arm's own estimate, not the comparison much.``
+
+    :param depths: Each aspect's arms' depths, by the names a reader calls them, aspect then arm.
+    :ptype depths: Mapping[str, Mapping[str, Depth]]
+    :return: The sentence, or None.
+    :rtype: str | None
+    """
+    rows = [(aspect, arm, depth) for aspect, arms in depths.items() for arm, depth in arms.items()]
+    if not rows or not all(depth.uniform() for _, _, depth in rows):
+        return None
+    if any(len({depth.cases for depth in arms.values()}) > 1 for arms in depths.values()):
+        return None
+    counts = Counter(depth.repeats_min for _, _, depth in rows)
+    ((usual, alike),) = counts.most_common(1)
+    others = [(aspect, arm, depth) for aspect, arm, depth in rows if depth.repeats_min != usual]
+    if others and (len(others) > REPEATS_NAMED or len(others) >= alike):
+        return None
+    labels = list(dict.fromkeys(arm for _, arm, _ in rows))
+    aspects = [aspect for aspect, held_arms in depths.items() if held_arms]
+    said = _times(usual)
+    if len(labels) == 1:
+        if others:
+            named = ", ".join(TIMES_ON.format(times=times(depth), aspect=aspect) for aspect, _, depth in others)
+            return ONE_ARM_BUT.format(arm=labels[0], times=said, exceptions=named)
+        if len(aspects) == 1:
+            return ONE_ARM_ON.format(arm=labels[0], times=said, aspect=aspects[0])
+        return ONE_ARM_EVERY_ASPECT.format(arm=labels[0], times=said)
+    if len(aspects) == 1:
+        if others:
+            # On one aspect, the sentence its own depth says where its arms differ is the one sentence.
+            return depth_sentence(aspects[0], depths[aspects[0]])
+        return EVERY_ARM_ON.format(times=said, aspect=aspects[0])
+    if others:
+        named = ", ".join(ARM_TIMES_ON.format(arm=arm, times=times(depth), aspect=on) for on, arm, depth in others)
+        return EVERY_ARM_BUT.format(times=said, exceptions=named)
+    return EVERY_ARM_EVERY_ASPECT.format(times=said)
 
 
 class CommonDepth(NamedTuple):

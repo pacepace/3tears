@@ -40,7 +40,7 @@ from threetears.evals.analysis.reads import (
     pivot,
 )
 
-from threetears.evals.analysis.numbers import format_number, format_signed
+from threetears.evals.kernel.numbers import format_number, format_signed
 
 from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
 
@@ -55,7 +55,12 @@ from threetears.evals.analysis.stats import (
 
 from threetears.evals.analysis.measurement_windows import measurement_window, measurement_window_disclosure
 from threetears.evals.analysis.cassette_mode import cassette_mode_disclosure
-from threetears.evals.analysis.lenses.cost_estimate import COST_ESTIMATE_MIN_BASIS, compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import (
+    COST_BAND_SAFETY_MARGIN,
+    COST_ESTIMATE_MIN_BASIS,
+    CostObservation,
+    compute_estimate_cost,
+)
 from threetears.evals.analysis.significance import format_significance
 from threetears.evals.analysis.completeness import completeness_disclosure
 
@@ -90,6 +95,7 @@ from threetears.evals.run.reads import list_runs
 
 from threetears.evals.analysis.lens_text import exclusion_lines
 from threetears.evals.kernel.remedies import FIND_RUN, FIND_TEMPLATE
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 def _lister(host: EvalHost) -> RunLister:
@@ -144,7 +150,8 @@ def scope_pivot(
     :return: The table.
     :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
-        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate.
+        :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     plan: list[PlannedCost] | None = None
     if predicted_cost is not None:
@@ -209,7 +216,8 @@ def scope_history(
     :ptype status: str | None
     :return: The series.
     :rtype: HistoryResult
-    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's.
+    :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
+        :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
     return history(
         host.storage,
@@ -244,13 +252,16 @@ def scope_frontier(
     :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
     :ptype bar: float | str | None
-    :param subject_id: Only this subject's variants; others are counted as filtered out.
+    :param subject_id: Only this subject's variants; what the others count as is
+        :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
     :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
     :ptype status: str | None
     :return: The frontier.
     :rtype: FrontierResult
-    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's.
+    :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
+        past :data:`~threetears.evals.analysis.READ_TIER_ROW_BUDGET` and ``subject_id`` does not narrow it to runs
+        that fit.
     """
     return FrontierResult.model_validate(
         frontier(
@@ -272,8 +283,15 @@ def scope_export(
     format: str | None = None,
     status: str | None = "completed",
     run_ids: list[str] | None = None,
+    after_run_id: str | None = None,
+    after_case_id: str | None = None,
 ) -> ScoreExport:
-    """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere.
+    """The scope's observations as flat rows, in CSV or JSON, for analysis elsewhere, a page at a time when large.
+
+    A scope whose runs' matrices hold more than :data:`~threetears.evals.analysis.EXPORT_PAGE_RESULTS` results is
+    exported in pages of whole runs, oldest first, and a run past it in pages of its cases: each page's
+    ``page.next_after_run_id`` is the ``after_run_id`` of the next, and its ``page.next_after_case_id`` the
+    ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
     :ptype host: EvalHost
@@ -283,11 +301,19 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named.
+    :param run_ids: Only these runs — archived ones included, since they were named. Two or more whose results
+        would pass the ceiling are refused; one past it is paged by its cases.
     :ptype run_ids: list[str] | None
+    :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
+    :ptype after_run_id: str | None
+    :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
+        ``after_run_id``.
+    :ptype after_case_id: str | None
     :return: The export.
     :rtype: ScoreExport
-    :raises ValidationFailedError: The format is not one there is, or the status is no run's.
+    :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
+        the ceiling, ``after_run_id`` is no run in the scope or is given with ``run_ids`` other than inside the one
+        run they name, or ``after_case_id`` is given alone or is no case of that run.
     """
     return export_results(
         host.storage,
@@ -296,6 +322,8 @@ def scope_export(
         fmt=format,
         status=status,
         run_ids=run_ids,
+        after_run_id=after_run_id,
+        after_case_id=after_case_id,
         profile=host.profile,
     )
 
@@ -484,10 +512,13 @@ class ArmEstimate(EvalBaseModel):
     :ivar case_source: ``stored`` for an arm over the template's stored cases, ``generated`` for one whose cases
         its launch generates.
     :ivar n_observations: ``case_count × k_runs``, the observations it would make; ``None`` with no plan.
-    :ivar predicted_usd: The figure the launch holds to the arm's cap — a range pricer's upper end — or ``None``
-        when nothing predicts it (unknown, never $0).
+    :ivar predicted_usd: The arm's cap figure, what the launch checks its cap against — at least a range pricer's
+        upper end, and for ``history_launch_pricer`` the greater of that end and the central estimate plus its 3%
+        safety margin — or ``None`` when nothing predicts it (unknown, never $0).
     :ivar central_usd: A range pricer's central estimate, never held to the cap; ``None`` for a single figure.
     :ivar low_usd: A range pricer's lower end; ``None`` otherwise.
+    :ivar band_high_usd: A range pricer's upper end as its evidence computed it, where ``predicted_usd`` may stand
+        above it by a safety margin (:attr:`~threetears.evals.run.ArmPrice.band_high_usd`); ``None`` otherwise.
     :ivar method_id: The estimator, or ``None`` for a pricer that names none.
     :ivar basis: How the prediction was made, or why there is none.
     :ivar outcome: What the launch's one pricing rule makes of it (:data:`~threetears.evals.run.ArmOutcome`).
@@ -515,6 +546,7 @@ class ArmEstimate(EvalBaseModel):
     outcome: ArmOutcome
     refusal: str | None
     remedy: str | None = None
+    band_high_usd: float | None = None
     call_ceiling_usd: float | None = None
     call_ceiling_lower_bound: bool = False
 
@@ -646,7 +678,8 @@ class LaunchEstimate(EvalBaseModel):
         :ptype run_ids: Sequence[str]
         :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
             and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
-            band then running from its lower to its upper end) and its single figure otherwise.
+            band then running from its lower end to its band's own upper end, never to a cap's safety margin above
+            it) and its single figure otherwise.
         :rtype: list[PlannedCost]
         """
         planned: list[PlannedCost] = []
@@ -654,6 +687,7 @@ class LaunchEstimate(EvalBaseModel):
             if arm.candidate_model is None or arm.n_observations is None or arm.predicted_usd is None:
                 continue
             ranged = arm.central_usd is not None
+            band_high = arm.band_high_usd if arm.band_high_usd is not None else arm.predicted_usd
             planned.append(
                 PlannedCost(
                     model=arm.candidate_model,
@@ -663,7 +697,7 @@ class LaunchEstimate(EvalBaseModel):
                     predicted=PredictedValue(
                         value=arm.central_usd if arm.central_usd is not None else arm.predicted_usd,
                         interval_low=arm.low_usd if ranged else None,
-                        interval_high=arm.predicted_usd if ranged else None,
+                        interval_high=band_high if ranged else None,
                         method_id=arm.method_id or LAUNCH_PRICER_METHOD,
                         computed_at=self.computed_at,
                     ),
@@ -917,6 +951,7 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         predicted_usd=price.predicted_usd,
         central_usd=price.central_usd,
         low_usd=price.low_usd,
+        band_high_usd=price.band_high_usd,
         method_id=price.method_id,
         basis=price.basis,
         outcome=arm.outcome,
@@ -924,6 +959,31 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
         remedy=arm.remedy,
         call_ceiling_usd=plan.call_ceiling.usd if plan is not None and plan.call_ceiling is not None else None,
         call_ceiling_lower_bound=plan is not None and plan.call_ceiling is not None and plan.call_ceiling.lower_bound,
+    )
+
+
+def _band_from_history(low: float, centre: float, high: float) -> str:
+    """A band as the history computed it, for a basis whose cap reads a margin above it: its ends, and how far each
+    sits from the centre, so a reader can judge whether one or two percent matters.
+
+    :param low: The band's lower end.
+    :ptype low: float
+    :param centre: The central estimate.
+    :ptype centre: float
+    :param high: The band's upper end.
+    :ptype high: float
+    :return: The words, after "the band from history".
+    :rtype: str
+    """
+    if low == high:
+        return f"has no width, at {format_number(centre, prefix='$')}"
+
+    def share(gap: float) -> str:
+        return f"{format_number(100 * gap / centre)}%"
+
+    return (
+        f"is {format_number(low, prefix='$')}-{format_number(high, prefix='$')} ({share(centre - low)} below to "
+        f"{share(high - centre)} above {format_number(centre, prefix='$')})"
     )
 
 
@@ -949,9 +1009,14 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     and **its prediction is the band's upper end**, since the launch holds that figure to the arm's cap
     (:class:`~threetears.evals.run.ArmPrice`): a central estimate admits an arm that then runs past its cap
     about as often as the run lands above the centre. The central estimate and the lower end ride along beside
-    it. A history too thin to band (fewer than :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced
-    past results) bounds nothing, and predicts nothing, as does a scope with no priced history of the
-    condition — the launch reads both as unknown.
+    it. **The prediction is never less than the central estimate plus the cost estimate's safety margin**
+    (``COST_BAND_SAFETY_MARGIN``) of it: a history with no spread, or almost none, bands an arm at its estimate,
+    which would cap it there. Where that floor stands above the band's upper end, the prediction is the floor, the
+    band's own upper end rides along as :attr:`~threetears.evals.run.ArmPrice.band_high_usd`, and the basis states
+    both: the band from history, with how far each end sits from the estimate, and the cap the margin sets, with how
+    far it stands above the band's end. A history too thin to band (fewer than
+    :data:`~threetears.evals.analysis.COST_ESTIMATE_MIN_BASIS` priced past results) bounds nothing, and predicts
+    nothing, as does a scope with no priced history of the condition — the launch reads both as unknown.
 
     **A template's new revision prices from the revision before it** while it has no priced result of its own. A
     revision a reset writes (:func:`~threetears.evals.run.reset_definitions`) is a new record, so its own history
@@ -977,10 +1042,17 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
             for run in list_runs(host, quote.scope_id, include_archived=True)
             if run.template_id == template_id and not _launch_differences(run, quote)
         ]
-        results = [result for run in runs for result in host.storage.query_eval_results_by_run(run.id, quote.scope_id)]
+        # Each run read a page at a time, and of each of the arm's model's results only what the estimate reads: a
+        # template's history is every result of every run of it, which no launch, nor a take-up's replay, holds whole.
+        observations = [
+            CostObservation.of(result)
+            for run in runs
+            for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+            if result.model == quote.candidate_model
+        ]
         estimate = compute_estimate_cost(
             runs,
-            results,
+            observations,
             models=[quote.candidate_model],
             k_runs=quote.k_runs,
             n_test_cases=quote.case_count,
@@ -1000,19 +1072,32 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
                 predicted_usd=None,
                 basis=(
                     f"{drawn_on}{cell.n_historical} priced past result(s) of {condition} are too few to bound the arm "
-                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at ${predicted.value:.2f})"
+                    f"(a band needs {COST_ESTIMATE_MIN_BASIS}; their mean alone puts it at "
+                    f"{format_number(predicted.value, prefix='$')})"
                 ),
             )
+        low, centre, high = predicted.interval_low or 0.0, predicted.value, predicted.interval_high
+        floor = centre * (1 + COST_BAND_SAFETY_MARGIN)
+        if floor > high:
+            held = (
+                f"the band from history {_band_from_history(low, centre, high)}; the cap reads "
+                f"{format_number(floor, prefix='$')}, the {COST_BAND_SAFETY_MARGIN:.0%} safety margin above the "
+                f"estimate, wider than the band by {format_number(floor - high, prefix='$')}"
+            )
+        else:
+            held = (
+                f"the upper end of the band {format_number(low, prefix='$')}-{format_number(high, prefix='$')} around "
+                f"{format_number(centre, prefix='$')}"
+            )
         return ArmPrice(
-            predicted_usd=predicted.interval_high,
-            central_usd=predicted.value,
+            predicted_usd=max(high, floor),
+            central_usd=centre,
             low_usd=predicted.interval_low,
+            band_high_usd=high,
             method_id=predicted.method_id,
             basis=(
-                f"{drawn_on}the upper end of the band ${predicted.interval_low or 0.0:.2f}-"
-                f"${predicted.interval_high:.2f} around ${predicted.value:.2f}, method {predicted.method_id}, from "
-                f"{cell.n_historical} priced past result(s) of {condition}"
-                + (f" ({cell.band_basis})" if cell.band_basis else "")
+                f"{drawn_on}{held}, method {predicted.method_id}, from {cell.n_historical} priced past result(s) of "
+                f"{condition}" + (f" ({cell.band_basis})" if cell.band_basis else "")
             ),
         )
 
@@ -1136,7 +1221,9 @@ def _closest_priced_differences(host: EvalHost, quote: ArmQuote, template: EvalT
     for run in list_runs(host, quote.scope_id, include_archived=True):
         if run.template_id != template.id:
             continue
-        if not any(r.cost_usd is not None for r in host.storage.query_eval_results_by_run(run.id, quote.scope_id)):
+        # Read a page at a time, and only until a priced result is met.
+        pages = iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE)
+        if not any(result.cost_usd is not None for result in pages):
             continue
         differences = _launch_differences(run, quote)
         if closest is None or len(differences) < len(closest):
@@ -1201,6 +1288,8 @@ def pivot_text(table: PivotTable) -> str:
         f"{table.weighting}: {table.n_observations} observation(s), {table.n_filtered_out} filtered out",
         f"formula: {table.formula}",
     ]
+    if table.narrowed_read_disclosure:
+        lines.append(table.narrowed_read_disclosure)
     for cell in table.cells:
         spread = f", sem {format_number(cell.sem)}" if cell.sem is not None else ""
         unmeasured = f", {cell.n_unmeasured} unmeasured" if cell.n_unmeasured else ""
@@ -1283,6 +1372,8 @@ def history_text(result: HistoryResult) -> str:
             "materiality threshold); a step reads equivalent only when shown inside it"
         ),
     ]
+    if result.narrowed_read_disclosure:
+        lines.append(result.narrowed_read_disclosure)
     if result.attribution_disclosure:
         lines.append(result.attribution_disclosure)
     if result.identity_span_disclosure:
@@ -1355,7 +1446,7 @@ def estimate_text(estimate: LaunchEstimate) -> str:
     ]
     for arm in estimate.arms:
         figure = (
-            f"{format_number(arm.predicted_usd, prefix='$')}"
+            f"cap figure {format_number(arm.predicted_usd, prefix='$')}"
             + (f" (central {format_number(arm.central_usd, prefix='$')})" if arm.central_usd is not None else "")
             if arm.predicted_usd is not None
             else "unpriced"
@@ -1366,9 +1457,9 @@ def estimate_text(estimate: LaunchEstimate) -> str:
             lines.append(f"  refused: {arm.refusal}")
             lines.append(f"  remedy: {arm.remedy}")
     if estimate.total_predicted_usd is None:
-        lines.append("total: none — an arm has no prediction, so no total is the launch's")
+        lines.append("total cap figure: none — an arm has no prediction, so no total is the launch's")
     else:
-        lines.append(f"total: {format_number(estimate.total_predicted_usd, prefix='$')}")
+        lines.append(f"total cap figure: {format_number(estimate.total_predicted_usd, prefix='$')}")
     lines.append("would launch" if estimate.would_launch else "would be refused")
     if estimate.detectable_effect is not None:
         lines += detectable_effect_lines(estimate.detectable_effect)
@@ -1402,11 +1493,47 @@ def detectable_effect_lines(block: DetectableEffects) -> list[str]:
     return lines
 
 
-def export_text(export: ScoreExport) -> str:
-    """An export as text: a line of its row count and what it left out, then the body itself."""
+def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
+    """An export as text: a line of its row count and what it left out, its page, then the body itself.
+
+    :param export: The export.
+    :ptype export: ScoreExport
+    :param next_call: How the calling surface spells the call that reads the next page, set under the page's lines;
+        ``None`` names none.
+    :ptype next_call: str | None
+    :return: The text.
+    :rtype: str
+    """
     lines = [f"export ({export.format}, {export.n_records} row(s))"]
     lines += exclusion_lines(export.exclusions)
     lines += _completeness(export.completeness_disclosures)
+    page = export.page
+    if page is not None:
+        total = page.runs_before + len(page.run_ids) + page.runs_after
+        held = (
+            f"runs {page.runs_before + 1}-{page.runs_before + len(page.run_ids)} of {total}"
+            if page.run_ids
+            else f"no runs, of {total}"
+        )
+        if page.case_ids is not None:
+            cases = page.cases_before + len(page.case_ids) + page.cases_after
+            held = (
+                f"run {page.runs_before + 1} of {total}, its cases "
+                f"{page.cases_before + 1}-{page.cases_before + len(page.case_ids)} of {cases}"
+            )
+        lines.append(f"page: {held}, oldest first; at most {page.result_ceiling} results a page")
+        unread = [
+            f"{count} {what}"
+            for count, what in (
+                (page.archived_runs, "archived run(s)"),
+                (page.runs_outside_status, "run(s) of another status"),
+            )
+            if count
+        ]
+        if unread:
+            lines.append("left out, not read: " + ", ".join(unread))
+        if page.next_after_run_id is not None and next_call is not None:
+            lines.append(next_call)
     return "\n".join(lines) + "\n\n" + export.body
 
 

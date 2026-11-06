@@ -44,6 +44,7 @@ from uuid import UUID
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from threetears.agent.wake import webhook_adapter
 from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.observe import contain, get_logger
 
@@ -311,13 +312,6 @@ class WebhookReceiver:
             diagnostic ``message`` field
         :rtype: Response
         """
-        # Lazy imports keep this module's load cost cheap when the
-        # consumer doesn't actually mount webhooks (CLI tools, test
-        # runners that only touch other channel adapters). Same
-        # pattern as agent-wake's dispatch module uses for its
-        # CollectionRegistry import.
-        from threetears.agent.wake.webhook_adapter import record_webhook_refusal, webhook_receive  # noqa: PLC0415
-
         body = await request.body()
         if len(body) > self._max_payload_bytes:
             return JSONResponse(
@@ -343,7 +337,7 @@ class WebhookReceiver:
             # not-found / paused outcome shape (404). Skipping
             # verification here is safe because the adapter will
             # short-circuit before any payload work.
-            result = await webhook_receive(
+            result = await webhook_adapter.webhook_receive(
                 subscription_id=subscription_id,
                 payload_bytes=body,
                 signature_header=signature,
@@ -369,7 +363,7 @@ class WebhookReceiver:
                     },
                 },
             )
-            await record_webhook_refusal(
+            await webhook_adapter.record_webhook_refusal(
                 self._subscriptions, sub, reason="unknown_scheme", status_code=400, detail=f"scheme {scheme}"
             )
             return JSONResponse(
@@ -385,7 +379,9 @@ class WebhookReceiver:
             # outcome the wake adapter would produce on its own). Skip
             # the verifier so vendor verifiers don't have to defend
             # against ``None`` / empty inputs.
-            await record_webhook_refusal(self._subscriptions, sub, reason="missing_signature", status_code=401)
+            await webhook_adapter.record_webhook_refusal(
+                self._subscriptions, sub, reason="missing_signature", status_code=401
+            )
             return JSONResponse(
                 status_code=401,
                 content={"fire_id": None, "message": "missing signature header"},
@@ -423,13 +419,15 @@ class WebhookReceiver:
                     },
                 },
             )
-            await record_webhook_refusal(self._subscriptions, sub, reason="bad_signature", status_code=403)
+            await webhook_adapter.record_webhook_refusal(
+                self._subscriptions, sub, reason="bad_signature", status_code=403
+            )
             return JSONResponse(
                 status_code=403,
                 content={"fire_id": None, "message": "invalid signature"},
             )
 
-        result = await webhook_receive(
+        result = await webhook_adapter.webhook_receive(
             subscription_id=subscription_id,
             payload_bytes=body,
             signature_header=signature,

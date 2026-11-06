@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
 import pytest
@@ -26,6 +26,9 @@ from threetears.agent.acl import (
     RoleCollection,
     ScopeType,
 )
+
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections.scan_cache import ScanCache
 
 from .collection_support import make_collection
 
@@ -855,6 +858,72 @@ class TestNamespaceGetByName:
         assert result is None
 
 
+class TestNamespaceGetByNameIsCached:
+    """the broker resolves a request's namespace by name on every statement (cobalt dev, 2026-10-29: 56 a
+    second against L3); a name resolved once is served from the scan cache until ``namespaces`` is written."""
+
+    @staticmethod
+    def _collection(row: dict[str, Any] | None) -> tuple[Any, AsyncMock, ScanCache]:
+        # an L1 of its own: the backend's default database is shared by every backend in the process
+        cache = ScanCache(SQLiteBackend(f"ns_by_name_{uuid7().hex}"), trusted=lambda _tables: True)
+        pool = AsyncMock()
+        pool.fetchrow.return_value = row
+        registry = MagicMock()
+        registry.get_l1_backend.return_value = None
+        registry.get_l3_pool.return_value = pool
+        registry.register.return_value = None
+        registry.scan_cache = cache
+        config = MagicMock()
+        config.collection_flush = "ALWAYS"
+        config.collection_flush_tables = ""
+        # no NATS: the row is read by its key from L3, where the pod's L1/L2 would serve it
+        coll = NamespaceCollection(registry=registry, config=config, nats_client=None)
+        return coll, pool, cache
+
+    @staticmethod
+    def _by_name(pool: AsyncMock) -> int:
+        return sum(1 for call in pool.fetchrow.await_args_list if "WHERE name = $1" in call.args[0])
+
+    @pytest.mark.asyncio
+    async def test_a_name_resolved_once_is_not_read_by_name_again(self) -> None:
+        coll, pool, _ = self._collection(_namespace_row(name="ws.acme"))
+        first = await coll.get_by_name("ws.acme")
+        second = await coll.get_by_name("ws.acme")
+        assert first is not None and second is not None
+        assert second.name == "ws.acme" and second.id == first.id
+        assert self._by_name(pool) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_write_to_namespaces_has_the_name_read_again(self) -> None:
+        coll, pool, cache = self._collection(_namespace_row(name="ws.acme"))
+        await coll.get_by_name("ws.acme")
+        cache.drop_for_table("namespaces")
+        await coll.get_by_name("ws.acme")
+        assert self._by_name(pool) == 2
+
+    @pytest.mark.asyncio
+    async def test_an_absent_name_is_read_every_time(self) -> None:
+        """a namespace may be created by SQL no collection write announces, so absence is never held."""
+        coll, pool, _ = self._collection(None)
+        assert await coll.get_by_name("missing") is None
+        assert await coll.get_by_name("missing") is None
+        assert self._by_name(pool) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_held_name_whose_row_no_longer_carries_it_is_read_by_name(self) -> None:
+        row = _namespace_row(name="ws.acme")
+        coll, pool, _ = self._collection(row)
+        await coll.get_by_name("ws.acme")
+        renamed = {**row, "name": "ws.renamed"}
+
+        async def answer(sql: str, *args: Any) -> dict[str, Any] | None:
+            return None if "WHERE name = $1" in sql else renamed
+
+        pool.fetchrow.side_effect = answer
+        assert await coll.get_by_name("ws.acme") is None
+        assert self._by_name(pool) == 2
+
+
 class TestNamespaceGetByOwnerAndCustomer:
     """``NamespaceCollection.get_by_owner_and_customer`` triple lookup."""
 
@@ -912,6 +981,36 @@ class TestNamespaceListAllIds:
         assert result == ids
 
 
+class TestGroupMemberLoadForGroups:
+    """``GroupMemberCollection.load_for_groups`` reads a whole level of parent edges at once."""
+
+    @pytest.mark.asyncio
+    async def test_empty_input_no_round_trip(self) -> None:
+        pool = AsyncMock()
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        assert await coll.load_for_groups([]) == []
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_many_children_are_one_read_of_group_edges(self) -> None:
+        children = [uuid7(), uuid7(), uuid7()]
+        parent, customer = uuid7(), uuid7()
+        pool = AsyncMock()
+        pool.fetch.return_value = [
+            {"group_id": parent, "member_type": "group", "member_id": children[1], "customer_id": customer}
+        ]
+        coll = make_collection(GroupMemberCollection, l3_pool=pool)
+        result = await coll.load_for_groups(children)
+        assert result == [
+            GroupMembership(group_id=parent, member_type=MemberType.GROUP, member_id=children[1], customer_id=customer)
+        ]
+        pool.fetch.assert_awaited_once()
+        sql, ids = pool.fetch.await_args.args
+        assert "member_type = 'group'" in sql
+        assert "member_id = ANY($1::uuid[])" in sql
+        assert ids == children
+
+
 class TestGroupMembershipCycleGuard:
     """``membership_would_cycle`` keeps group-in-group edges acyclic.
 
@@ -953,3 +1052,21 @@ class TestGroupMembershipCycleGuard:
         pool.fetch.return_value = []
         coll = make_collection(GroupMemberCollection, l3_pool=pool)
         assert await coll.membership_would_cycle(group_id=uuid7(), member_group_id=uuid7()) is False
+
+
+class TestSchemasDeclareTheHubTablesDefaults:
+    """the schemas carry the defaults the hub migrates onto the access tables (hub v001).
+
+    Found by the hub's live tier-parity gate. A default the schema does not declare is a column a
+    save that leaves it out lets the database fill without reading the stored value back.
+    ``namespaces.metadata`` keeps its declared ``'{}'::jsonb`` (generated writes leave it out when a
+    row does not name it, so an update never clears it) and ``face_rest_declaration`` its ``NULL``,
+    for the same reason.
+    """
+
+    @pytest.mark.parametrize("collection", [NamespaceCollection, GroupCollection, RoleAssignmentCollection])
+    def test_row_scope_defaults_to_customer(self, collection: Any) -> None:
+        assert collection.schema.column("row_scope").server_default == "'customer'"
+
+    def test_an_assignment_is_managed_manually_by_default(self) -> None:
+        assert RoleAssignmentCollection.schema.column("managed_by").server_default == "'manual'"

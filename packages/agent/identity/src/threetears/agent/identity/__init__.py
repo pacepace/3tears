@@ -10,6 +10,7 @@ from __future__ import annotations
 # Version derived from pyproject.toml so the metadata is the single source
 # of truth. The except guard handles running from a source tree without an
 # installed distribution (reports ``unknown`` rather than crashing).
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _version
 from typing import TYPE_CHECKING
@@ -65,6 +66,8 @@ if TYPE_CHECKING:
         IdentityBlockKey,
         IdentityTier,
         IdentityVersionStatus,
+        check_variant,
+        variant_label,
     )
 
 # public attribute -> (defining module, attribute name in that module)
@@ -75,6 +78,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "IDENTITY_BLOCK_TIERS": ("threetears.agent.identity.types", "IDENTITY_BLOCK_TIERS"),
     "IDENTITY_NAMESPACE_TYPE": ("threetears.agent.identity.authorize", "IDENTITY_NAMESPACE_TYPE"),
     "IDENTITY_STATUS_VALUES": ("threetears.agent.identity.types", "IDENTITY_STATUS_VALUES"),
+    "check_variant": ("threetears.agent.identity.types", "check_variant"),
+    "variant_label": ("threetears.agent.identity.types", "variant_label"),
     "IdentityAccessDenied": ("threetears.agent.identity.authorize", "IdentityAccessDenied"),
     "IdentityAppliedEvent": ("threetears.agent.identity.events", "IdentityAppliedEvent"),
     "IdentityAuthorizerDependencies": (
@@ -137,6 +142,7 @@ __all__ = [
     "IdentityVersionStatus",
     "IdentityVersionsCollection",
     "authorize_identity_access",
+    "check_variant",
     "consent",
     "content_hash",
     "identity_namespace_name",
@@ -147,6 +153,7 @@ __all__ = [
     "reject",
     "rollback",
     "seed_active",
+    "variant_label",
 ]
 
 
@@ -162,8 +169,6 @@ def __getattr__(name: str) -> object:
     entry = _LAZY.get(name)
     if entry is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from importlib import import_module
-
     module_name, attr = entry
     value: object = getattr(import_module(module_name), attr)
     globals()[name] = value

@@ -26,6 +26,10 @@ from threetears.observe import get_logger
 from threetears.models.capabilities import ModelCapabilities, get_capabilities
 from threetears.models.circuit_breaker import CircuitBreaker, CircuitBreakerRegistry
 from threetears.models.enums import ModelType
+from threetears.models.providers.anthropic import create_anthropic_chat
+from threetears.models.providers.openai import create_openai_chat, create_openai_embedding
+from threetears.models.providers.openrouter import create_openrouter_chat
+from threetears.models.providers.voyageai import create_voyageai_embedding
 from threetears.models.tracking import LlmPurpose, UsageTracker, default_usage_tracker
 
 if TYPE_CHECKING:
@@ -353,16 +357,10 @@ def _invoke_chat_factory(
     :raises ValueError: when the provider does not expose a chat factory
     """
     if provider_name == "anthropic":
-        from threetears.models.providers.anthropic import create_anthropic_chat
-
         return create_anthropic_chat(model_name, api_key, **provider_kwargs)
     if provider_name == "openai":
-        from threetears.models.providers.openai import create_openai_chat
-
         return create_openai_chat(model_name, api_key, **provider_kwargs)
     if provider_name == "openrouter":
-        from threetears.models.providers.openrouter import create_openrouter_chat
-
         return create_openrouter_chat(model_name, api_key, **provider_kwargs)
 
     raise ValueError(f"Provider '{provider_name}' has no chat factory")
@@ -390,12 +388,8 @@ def _invoke_embedding_factory(
     :raises ValueError: when the provider does not expose an embedding factory
     """
     if provider_name == "openai":
-        from threetears.models.providers.openai import create_openai_embedding
-
         return create_openai_embedding(model_name, api_key, **provider_kwargs)
     if provider_name == "voyageai":
-        from threetears.models.providers.voyageai import create_voyageai_embedding
-
         return create_voyageai_embedding(api_key, model_name=model_name, **provider_kwargs)
 
     raise ValueError(f"Provider '{provider_name}' has no embedding factory")

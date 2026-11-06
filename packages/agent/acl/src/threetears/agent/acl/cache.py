@@ -279,6 +279,19 @@ class AclCache:
             self._ever_followed = True
 
     @property
+    def followed(self) -> bool:
+        """whether something follows the cache now: bound to the access tables, its watches judging them.
+
+        A scratch cache nobody follows is :attr:`trusted` and drops nothing it holds; an answer derived
+        through one and shared beyond this process could carry a withdrawn grant.
+
+        :return: ``True`` while a follower is set
+        :rtype: bool
+        """
+        with self._lock:
+            return self._ever_followed and self._watching is not None
+
+    @property
     def trusted(self) -> bool:
         """whether entries may be served and stored now.
 

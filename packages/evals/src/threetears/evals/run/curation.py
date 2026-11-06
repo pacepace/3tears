@@ -36,11 +36,13 @@ from threetears.evals.kernel.errors import NotFoundError, StorageError, Validati
 from threetears.evals.kernel.storage import LeaseClock
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, UNREADABLE_LEASE
+from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage, RefusedRow
     from threetears.evals.kernel.host.profile import HostProfile
-    from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign, EvalInsight
+    from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
     from threetears.evals.schema.models import EvalResult, EvalRun
 
 log = get_logger(__name__)
@@ -410,8 +412,6 @@ def set_analysis_archived(
     :raises NotFoundError: No analysis with that id in the scope.
     :raises StorageError: The updated analysis failed to persist.
     """
-    from threetears.evals.kernel.campaign import EvalAnalysis
-
     current = storage.load_analysis(analysis_id, scope_id)
     if current is None:
         raise NotFoundError("analysis", analysis_id, remedy=FIND_ANALYSIS)
@@ -533,8 +533,6 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
     :raises StorageError: A result, a campaign detach, or the run itself failed to
         persist; the message names how far the delete got.
     """
-    from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
-
     run_id = run.id
     require_delete_confirmation("run", run_id, confirm)
     if run.status in NON_TERMINAL_RUN_STATUSES:
@@ -653,8 +651,6 @@ def delete_unreadable_run(
     :raises StorageError: A result, a campaign detach, or the run itself failed to persist; the message names how far
         the delete got.
     """
-    from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
-
     require_delete_confirmation("run", run_id, confirm)
     if row.status in NON_TERMINAL_RUN_STATUSES and row.lease_stated:
         held_until = _lease_expiry(row.lease_expires_at)

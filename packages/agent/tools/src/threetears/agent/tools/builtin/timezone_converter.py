@@ -15,6 +15,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.builtin.time_words import (
     Clock,
     ReadError,
@@ -144,8 +145,6 @@ def create_timezone_converter_tool(config: dict[str, Any], description: str) -> 
     execution body. ``config["_user_timezone"]`` (legacy ``"timezone"``)
     is the person's zone, used for a zone the call leaves out.
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     return to_langchain_tool(
         TimezoneConverterTool(timezone=config.get("_user_timezone") or config.get("timezone")),
         description=description,

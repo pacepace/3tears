@@ -18,7 +18,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, TYPE_CHECKING
 
-from threetears.core.data.migrations.errors import DuplicateVersionError
+from threetears.core.collections.generation import WriteGeneration
+from threetears.core.ddl.errors import DuplicateVersionError
 from threetears.core.data.migrations.scope import MigrationScope
 
 __all__ = [
@@ -115,8 +116,6 @@ class PackageMigrations:
         :rtype: None
         :raises ValueError: for a ``TableSchema`` that does not declare ``write_generation=WRITE_GENERATION``
         """
-        from threetears.core.collections.generation import WriteGeneration  # noqa: PLC0415 - collections import this package
-
         for table in tables:
             if isinstance(table, str):
                 self._write_generation_tables.append(table)

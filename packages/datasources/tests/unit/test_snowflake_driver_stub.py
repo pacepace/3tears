@@ -131,8 +131,9 @@ class TestStubDoesNotImportBackend:
 
     the stub doesn't need the backend lib -- when the impl lands, the
     backend import goes in then. shipping the stub with an eager
-    backend import would break the lazy-import contract verified by
-    :mod:`tests.unit.test_lazy_imports`.
+    backend import would load the library into every process that
+    imports the package (the factory imports every driver module), which
+    :mod:`tests.unit.test_driver_imports` checks.
     """
 
     def test_snowflake_connector_not_loaded_after_stub_import(self) -> None:

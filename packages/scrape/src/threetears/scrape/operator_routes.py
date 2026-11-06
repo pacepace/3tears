@@ -2,9 +2,9 @@
 
 **This module exists because of where annotations are resolved, which is not obvious and cost a
 silently broken route to find.** :mod:`threetears.scrape.operator` uses
-``from __future__ import annotations``, so every annotation in it is a string at runtime, and it
-imports FastAPI *inside* ``build_operator_router`` to keep the ``hitl`` extra genuinely optional.
-Those two facts do not compose. FastAPI resolves a handler's annotations against the handler's
+``from __future__ import annotations``, so every annotation in it is a string at runtime, and an
+earlier shape imported FastAPI *inside* ``build_operator_router`` to keep the ``hitl`` extra
+optional. Those two facts do not compose. FastAPI resolves a handler's annotations against the handler's
 own ``__globals__`` -- the defining MODULE's namespace -- so ``websocket: "WebSocket"`` could not
 be resolved from a name that only ever existed as a local variable. FastAPI then treated the
 parameter as a request field, failed to validate it, and closed every upgrade with 1008.
@@ -14,10 +14,11 @@ gets. A broken route and a rejected operator were indistinguishable from the out
 route was never once exercised end to end until a test mounted it.
 
 The fix is structural rather than a workaround: FastAPI is imported at module scope HERE, so
-annotations resolve, and ``operator.py`` imports this module lazily instead of importing FastAPI
-lazily. The extra stays exactly as optional as before -- nothing reaches this module until a
-caller actually asks for a router -- and the shape that caused the bug is gone rather than
-worked around.
+annotations resolve, and ``operator.py`` imports this module at its own top under an
+``ImportError`` guard. The extra stays optional -- without it ``operator`` still imports, and
+``build_operator_router`` names the missing extra -- and the shape that caused the bug is gone
+rather than worked around. The framework-free pieces this module serves live in
+:mod:`threetears.scrape.operator_relay`, so neither module imports the other in a cycle.
 """
 
 from __future__ import annotations
@@ -31,10 +32,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 from threetears.observe import contain, contained, get_logger
 
-from .operator import relay_stream, token_from_subprotocols
+from .operator_relay import relay_stream, token_from_subprotocols
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only
-    from .operator import ClaimLookup, DisplayEndpoint, DisplayTransport, SessionAuthorizer
+    from .operator_relay import ClaimLookup, DisplayEndpoint, DisplayTransport, SessionAuthorizer
 
 __all__ = ["build_router"]
 

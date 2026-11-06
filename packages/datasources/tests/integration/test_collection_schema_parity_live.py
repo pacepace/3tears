@@ -43,10 +43,11 @@ from typing import Any
 
 import asyncpg
 import pytest
-from threetears.core.collections import init_connection
+from threetears.core.collections import DeclaredTableCollection, init_connection
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.tier_parity import live_tier_parity_findings
 
 from threetears.datasources.collections import (
     CapabilitySourceCollection,
@@ -672,6 +673,45 @@ async def test_every_table_column_is_owned_by_the_collection_or_listed_as_hub_ow
     assert table_columns, f"no columns found for {case.table}, so this check would pass vacuously"
     accounted = set(case.row()) | set(case.hub_owned) | _STAMPED
     assert accounted == table_columns
+
+
+async def test_every_tier_of_every_collection_is_its_migrated_table(store: _Store) -> None:
+    """the tier-parity gate, live: each table as migrated, its schema, and asyncpg's read of a row of it."""
+    async with store.pool.acquire() as conn:
+        findings = await live_tier_parity_findings(
+            conn,
+            [case.collection for case in _CASES],
+            # the hub writes these itself, and the collection's generated reads never select them
+            not_owned={CapabilitySourceCollection: _CAPABILITY_SOURCE_HUB_OWNED},
+        )
+    assert not findings, "\n".join(findings)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [case for case in _CASES if issubclass(case.collection, DeclaredTableCollection)],
+    ids=lambda case: case.table,
+)
+async def test_the_declared_schema_is_the_table(store: _Store, case: _Case) -> None:
+    """the ``TableSchema`` a Collection declares, which its L1 table is generated from, is the hub's table.
+
+    Every column, its nullability, and whether it has a server default: a column missing from the
+    schema is missing from every L1, and a default it does not declare is a column a save leaves to
+    the database without reading it back.
+    """
+    live = {
+        row["column_name"]: (row["is_nullable"] == "YES", row["column_default"] is not None)
+        for row in await store.pool.fetch(
+            "SELECT column_name, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = $1",
+            case.table,
+        )
+    }
+    assert live, f"no columns found for {case.table}, so this check would pass vacuously"
+    schema = case.collection.schema  # type: ignore[attr-defined]
+    declared = {column.name: (column.nullable, column.server_default is not None) for column in schema.columns}
+    assert declared == live
+    assert schema.pk_columns == (case.pk,)
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.table)

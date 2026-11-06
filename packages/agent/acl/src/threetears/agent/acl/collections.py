@@ -48,6 +48,7 @@ from typing import ClassVar
 from uuid import UUID, uuid7
 
 from threetears.core.collections import DeleteCascade
+from threetears.core.collections.scan_cache import ScanCacheKey
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -73,14 +74,17 @@ from threetears.agent.acl.entities import (
     RoleEntity,
     row_scope_for_customer,
 )
+from threetears.agent.acl.evaluator import evaluate_decision
 from threetears.agent.acl.types import (
     MAX_GROUP_MEMBERSHIP_DEPTH,
+    EvaluationContext,
     GroupMembership,
     MemberType,
     Role,
     RoleAssignment,
     ScopeType,
 )
+from threetears.agent.acl.types import Namespace as AclNamespace
 
 log = get_logger(__name__)
 
@@ -255,7 +259,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "group_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             # unique per scope: the platform DDL owns a partial unique index
@@ -642,6 +646,9 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         {
             "load_for_user",
             "load_for_agent",
+            # rationale: the evaluator's parent walk reads every row naming a level of child
+            # groups as a MEMBER; the parents those rows name are the answer, not a key
+            "load_for_groups",
             "delete_from_store",
             "save_entity",
         }
@@ -805,6 +812,43 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             ]
         return result
 
+    async def load_for_groups(
+        self,
+        group_ids: Sequence[UUID],
+    ) -> list[GroupMembership]:
+        """resolve every one of ``group_ids`` to the memberships naming it as a GROUP member.
+
+        :meth:`load_for_group` over a whole level of the evaluator's walk in one read, so a
+        level of fifty groups costs one round trip rather than fifty. empty input
+        short-circuits without a SQL round trip.
+
+        :param group_ids: child group UUIDs to resolve
+        :ptype group_ids: Sequence[UUID]
+        :return: memberships naming any of ``group_ids`` as a group member
+        :rtype: list[GroupMembership]
+        """
+        result: list[GroupMembership] = []
+        if self.l3_pool is not None and len(group_ids) > 0:
+            rows = await self.l3_pool.fetch(
+                """
+                SELECT group_id, member_type, member_id, customer_id
+                  FROM group_members
+                 WHERE member_type = 'group'
+                   AND member_id = ANY($1::uuid[])
+                """,
+                list(group_ids),
+            )
+            result = [
+                GroupMembership(
+                    group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
+                    member_type=MemberType(row["member_type"]),
+                    member_id=_coerce_uuid(row["member_id"]),  # type: ignore[arg-type]
+                    customer_id=_coerce_uuid(row["customer_id"]),
+                )
+                for row in rows
+            ]
+        return result
+
     async def membership_would_cycle(
         self,
         *,
@@ -816,7 +860,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         a group inside itself is refused outright; beyond that, the
         check asks whether ``group_id`` is already reachable from
         ``member_group_id`` by walking group edges DOWNWARD (children of
-        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` levels.
+        children), out to :data:`MAX_GROUP_MEMBERSHIP_DEPTH` hops.
         cheap by construction: the cap bounds the walk, and writers are
         expected to call this BEFORE inserting a ``member_type='group'``
         row -- an admin surface that skips it can still write a cycle,
@@ -1185,7 +1229,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "assignment_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("assignment_id", UUID_TYPE),
             Column("role_id", UUID_TYPE, immutable=True),
             Column("group_id", UUID_TYPE, immutable=True),
@@ -1209,7 +1253,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # ``managed_by`` declares assignment provenance. default
             # ``'manual'`` covers admin-authored rows; agent-side
             # automation passes ``'auto:agent-yaml'``.
-            Column("managed_by", STRING_TYPE),
+            Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
     )
 
@@ -1804,7 +1848,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         write_generation=WRITE_GENERATION,
         primary_key=("row_scope", "namespace_id"),
         columns=[
-            Column("row_scope", STRING_TYPE, partition=True),
+            Column("row_scope", STRING_TYPE, partition=True, server_default="'customer'"),
             Column("namespace_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),
@@ -2246,17 +2290,29 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     async def get_by_name(self, name: str) -> NamespaceEntity | None:
         """look up namespace by unique name.
 
-        searches L3 for namespace matching name. promotes found
-        namespace into L1/L2 caches.
+        A name found is held in the registry's scan cache as the row's key, and the row read by that key
+        through the collection's tiers, until ``namespaces`` is written: the broker resolves a request's
+        namespace by name for every statement it runs. A row the held key no longer names by ``name`` is
+        looked up by name again. An absent name is read from L3 every time, since a namespace can be
+        created by SQL that no collection write announces. Found rows are promoted into L1/L2.
 
         :param name: unique namespace name
         :ptype name: str
         :return: namespace entity or ``None`` if not found
         :rtype: NamespaceEntity | None
         """
-        read_ticket = self.scan_ticket()  # before the first await
         result: NamespaceEntity | None = None
-        if self.l3_pool is not None:
+        registry = self.registry
+        cache = None if registry is None else registry.scan_cache
+        key = ScanCacheKey("namespaces", "by_name", name)
+        held = None if cache is None else cache.get(key)
+        if held:
+            found = await self.get((held[0]["row_scope"], UUID(held[0]["namespace_id"])))
+            if found is not None and found.name == name:
+                result = found
+        if result is None and self.l3_pool is not None:
+            read_ticket = self.scan_ticket()  # before the first await
+            token = None if cache is None else cache.begin_read(("namespaces",))
             row = await self.l3_pool.fetchrow(
                 "SELECT * FROM namespaces WHERE name = $1",
                 name,
@@ -2265,6 +2321,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 data = self._coerce_row(dict(row))
                 self.write_to_cache_sync(data, read_since=read_ticket)
                 result = self.entity_class(data, is_new=False, collection=self)
+                if cache is not None and token is not None:
+                    cache.put(
+                        key,
+                        [{"row_scope": data["row_scope"], "namespace_id": str(data["namespace_id"])}],
+                        token=token,
+                    )
         return result
 
     async def get_by_agent_id(
@@ -2717,17 +2779,6 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             )
             for row in rows
         ]
-        # local imports keep this collection module free of a
-        # circular dep on the evaluator stack: types -> cache ->
-        # collections -> evaluator -> types would close the loop if
-        # we imported at module scope. the per-call cost is one
-        # attribute lookup, dwarfed by the fetch above.
-        from threetears.agent.acl.evaluator import evaluate_decision  # noqa: PLC0415
-        from threetears.agent.acl.types import (  # noqa: PLC0415
-            EvaluationContext,
-            Namespace as AclNamespace,
-        )
-
         for entity in candidates:
             data = entity.to_dict()
             ns = AclNamespace(

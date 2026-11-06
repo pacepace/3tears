@@ -55,9 +55,13 @@ import time
 from typing import Any, Final, get_args
 from uuid import UUID
 
+from threetears.agent.skills.collections import AgentSkillCollection
 from threetears.core.collections import CallerTransaction
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.observe import get_logger
 
+from threetears.agent.wake.collections import WakeFireCollection, WakeScheduleCollection
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG, WakeConfig
 from threetears.agent.wake.events import (
     EVENT_FIRE_LIFE_OFF,
@@ -391,11 +395,6 @@ async def _start_fire_conversation(
     :rtype: WakeTrigger
     :raises FireNoLongerInFlight: when the row is no longer ``'dispatching'``
     """
-    # local imports keep the registry plumbing off the no-hook path.
-    from threetears.agent.wake.collections import WakeFireCollection  # noqa: PLC0415
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     fires = WakeFireCollection(
@@ -470,16 +469,6 @@ async def _resolve_context_from(
         return ()
     if pool is None:
         return ()
-    # local imports keep the dispatch module's import cost identical
-    # to the no-context-from path -- the registry / config / collection
-    # plumbing only loads when a wake actually uses the feature.
-    from threetears.agent.wake.collections import (  # noqa: PLC0415
-        WakeFireCollection,
-        WakeScheduleCollection,
-    )
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
@@ -585,13 +574,6 @@ async def _resolve_attached_skill(
         return None
     if pool is None:
         return None
-    # local imports keep the no-skill path's import cost identical to
-    # the skill path's -- the skills collection only loads when a
-    # wake actually has a skill attached.
-    from threetears.agent.skills.collections import AgentSkillCollection  # noqa: PLC0415
-    from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
-    from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
-
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")

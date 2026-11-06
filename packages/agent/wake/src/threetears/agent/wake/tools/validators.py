@@ -17,6 +17,9 @@ from datetime import UTC, datetime, tzinfo
 from typing import Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from apscheduler.triggers.cron import CronTrigger
+
 from threetears.observe import get_logger
 
 log = get_logger(__name__)
@@ -195,15 +198,12 @@ def _validate_cron(config: dict[str, Any]) -> str | None:
         except ZoneInfoNotFoundError, ValueError:
             return f"cron 'tz' {tz!r} is not a known IANA zone; use a name such as 'America/Los_Angeles' or 'UTC'"
     # APScheduler parses + validates; we surface its raise as a tool
-    # error rather than letting it explode at tick time. Lazy import so
-    # the validator costs nothing for non-cron schedule types. The zone is
+    # error rather than letting it explode at tick time. The zone is
     # passed, as the scheduler passes it: without one, from_crontab reads
     # the host's local zone, and a host whose TZ it cannot load would raise
     # for a valid expression. An invalid expression is a ValueError -- the
     # only type from_crontab raises for one -- and anything else is not
     # the expression's fault, so it propagates.
-    from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
-
     try:
         CronTrigger.from_crontab(expr, timezone=zone)
     except ValueError as exc:

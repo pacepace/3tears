@@ -84,11 +84,14 @@ from threetears.search.contracts import (
     CRITERION_MAX_RESULTS,
     EGRESS_DIRECT,
     PRICING_PER_WEIGHTED_UNIT,
+    AnswerProvider,
+    AnswerRequest,
     BudgetDecision,
     BudgetPort,
     CandidateSet,
     Criterion,
     CriterionDisposition,
+    GroundedAnswer,
     LocalCapExceeded,
     RateLimited,
     RateLimiterPort,
@@ -163,7 +166,9 @@ def _bounded_criteria(request: SearchRequest, *, max_results_ceiling: int) -> tu
 
 
 def _completed_dispositions(
-    request: SearchRequest, result: CandidateSet, provider: SearchProvider
+    request: SearchRequest | AnswerRequest,
+    result: CandidateSet | GroundedAnswer,
+    provider: SearchProvider | AnswerProvider,
 ) -> tuple[CriterionDisposition, ...]:
     """Guarantee one disposition per criterion the caller sent (SR-B2).
 
@@ -174,12 +179,15 @@ def _completed_dispositions(
     declaration -- which is still the provider speaking, not a guess -- so a
     criterion can never reach a caller unanswered.
 
+    Shared with the answer call layer, whose requests, results and providers
+    carry criteria and declarations of the same shape.
+
     :param request: the caller's request, holding the criteria to answer for
-    :ptype request: SearchRequest
+    :ptype request: SearchRequest | AnswerRequest
     :param result: what the provider returned
-    :ptype result: CandidateSet
+    :ptype result: CandidateSet | GroundedAnswer
     :param provider: the provider, for its capability declaration
-    :ptype provider: SearchProvider
+    :ptype provider: SearchProvider | AnswerProvider
     :return: the adapter's dispositions plus one per unanswered criterion
     :rtype: tuple[CriterionDisposition, ...]
     """
@@ -249,7 +257,7 @@ def _estimate(provider: SearchProvider) -> Spend:
     )
 
 
-def _refusal(decision: BudgetDecision, *, provider: SearchProvider, egress: str) -> LocalCapExceeded:
+def _refusal(decision: BudgetDecision, *, provider: SearchProvider | AnswerProvider, egress: str) -> LocalCapExceeded:
     """Turn a budget's refusal into this layer's typed failure (SR-D3, D5).
 
     The port returns a decision rather than raising, so the taxonomy mapping
@@ -262,8 +270,9 @@ def _refusal(decision: BudgetDecision, *, provider: SearchProvider, egress: str)
     :param decision: the refusal, carrying which scope said no and what it
         had consumed
     :ptype decision: BudgetDecision
-    :param provider: the provider the refused call was bound for
-    :ptype provider: SearchProvider
+    :param provider: the provider the refused call was bound for -- a search
+        or an answers provider, which the answer call layer shares this with
+    :ptype provider: SearchProvider | AnswerProvider
     :param egress: the exit the refused call would have left by (D20)
     :ptype egress: str
     :return: the failure to raise
@@ -286,7 +295,7 @@ def _refusal(decision: BudgetDecision, *, provider: SearchProvider, egress: str)
 async def _pace(
     limiter: RateLimiterPort,
     *,
-    provider: SearchProvider,
+    provider: SearchProvider | AnswerProvider,
     egress: str,
     budget_seconds: float,
     started: float,
@@ -311,8 +320,10 @@ async def _pace(
 
     :param limiter: the injected pacing seam
     :ptype limiter: RateLimiterPort
-    :param provider: the provider about to be called, for its instance name
-    :ptype provider: SearchProvider
+    :param provider: the provider about to be called, for its instance name --
+        a search or an answers provider, which the answer call layer shares
+        this pacing with (AR-D1)
+    :ptype provider: SearchProvider | AnswerProvider
     :param egress: the exit the call will leave by (D20)
     :ptype egress: str
     :param budget_seconds: what is left of the caller's bound

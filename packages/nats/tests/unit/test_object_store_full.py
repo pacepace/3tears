@@ -17,13 +17,19 @@ from threetears.nats.object_store import NatsObjectStore
 
 
 class _JetStream:
-    """JetStream as the store's put meets it: the name is free, and every publish is refused."""
+    """JetStream as the store's put meets it: the name is free, the stream shows room (unbounded), and every
+    publish is refused -- the server's own refusal, which a writer racing past the room check meets."""
 
     def __init__(self, error: BaseException) -> None:
         self._error = error
 
     async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
         raise NotFoundError
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(state=SimpleNamespace(bytes=0), config=SimpleNamespace(max_bytes=-1))
 
     async def publish(self, subject: str, payload: bytes, *, headers: Any = None) -> None:
         raise self._error
@@ -104,3 +110,132 @@ async def test_an_unparseable_recorded_mtime_is_warned_with_the_object_named(cap
         info = await store.info("a/b")
     assert info is not None and info.mtime is None
     assert any("a/b" in r.getMessage() and "does not parse" in r.getMessage() for r in caplog.records)
+
+
+# parity-exempt: a JetStream stand-in answering only the stream info a name listing reads; a consumer create fails the test
+class _SubjectsJetStream:
+    """JetStream holding metadata subjects for some names; counts STREAM.INFO and refuses consumers."""
+
+    def __init__(self, bucket: str, names: list[str]) -> None:
+        import base64
+
+        self.infos: list[str | None] = []
+        self._subjects = {f"$O.{bucket}.M.{base64.urlsafe_b64encode(n.encode()).decode()}": 1 for n in names}
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        self.infos.append(subjects_filter)
+        return SimpleNamespace(state=SimpleNamespace(subjects=dict(self._subjects)))
+
+    async def add_consumer(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a name listing created a consumer: it reads one message per object")
+
+
+async def test_listing_names_reads_one_stream_info_and_creates_no_consumer() -> None:
+    """listing names is one STREAM.INFO, however many objects the bucket holds: the sweeper lists per publish,
+    and a consumer listing delivers one message per object to every caller."""
+    names = ["enr/TX/1/results", "enr/TX/2/results", "enr/NV/1/results", "enrp/TX/1/results"]
+    js = _SubjectsJetStream("pod-objects", names)
+
+    class _Client:
+        def jetstream_context(self) -> _SubjectsJetStream:
+            return js
+
+    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
+    assert await store.list_names() == sorted(names)
+    assert await store.list_names(prefix="enr/TX/") == ["enr/TX/1/results", "enr/TX/2/results"]
+    assert js.infos == ["$O.pod-objects.M.>", "$O.pod-objects.M.>"]
+
+
+class _NoClaims:
+    async def list_keys(self) -> list[str]:
+        return []
+
+
+# parity-exempt: a JetStream stand-in answering only the stream infos the orphan sweep reads
+class _ChunksJetStream(_SubjectsJetStream):
+    """JetStream holding named objects and some chunk subjects; a consumer create fails the test."""
+
+    def __init__(self, bucket: str, names: list[str], chunks: list[str]) -> None:
+        super().__init__(bucket, names)
+        self._chunks = {f"$O.{bucket}.C.{nuid}": 1 for nuid in chunks}
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        self.infos.append(subjects_filter)
+        held = self._chunks if subjects_filter and ".C." in subjects_filter else self._subjects
+        return SimpleNamespace(state=SimpleNamespace(subjects=dict(held)))
+
+
+async def test_the_orphan_sweep_reads_no_metadata_while_no_more_chunk_subjects_than_objects_stand() -> None:
+    """the declarer sweeps on every retire it answers; while every chunk subject can belong to an object
+    (no more of them than objects), there is no orphan to find and the metadata is not read."""
+    js = _ChunksJetStream("pod-objects", ["a", "b"], ["n1", "n2"])
+
+    class _Client:
+        def jetstream_context(self) -> _ChunksJetStream:
+            return js
+
+    store = NatsObjectStore(client=_Client(), full_name="pod-objects")  # type: ignore[arg-type]
+    assert await store.purge_orphan_chunks(pointers=_NoClaims()) == 0  # type: ignore[arg-type]
+    assert js.infos == ["$O.pod-objects.C.>", "$O.pod-objects.M.>"]
+
+
+# parity-exempt: a JetStream stand-in answering only what a put reads and writes: the name check, the stream's size and bound, and its publishes
+class _BoundedJetStream:
+    """a stream at ``held`` of ``max_bytes`` (``None`` or -1: unbounded); records every publish, writes nothing."""
+
+    def __init__(self, *, held: int, max_bytes: int | None) -> None:
+        self._held = held
+        self._max_bytes = max_bytes
+        self.published: list[str] = []
+
+    async def get_last_msg(self, stream: str, subject: str, *, direct: bool = False) -> Any:
+        raise NotFoundError
+
+    async def stream_info(self, name: str, subjects_filter: str | None = None) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            state=SimpleNamespace(bytes=self._held), config=SimpleNamespace(max_bytes=self._max_bytes)
+        )
+
+    async def publish(self, subject: str, payload: bytes, *, headers: Any = None) -> None:
+        self.published.append(subject)
+
+
+def _bounded_store(js: _BoundedJetStream) -> NatsObjectStore:
+    class _Client:
+        def jetstream_context(self) -> _BoundedJetStream:
+            return js
+
+    return NatsObjectStore(client=_Client(), full_name="pod-objects", chunk_bytes=1024)  # type: ignore[arg-type]
+
+
+async def test_a_put_the_store_has_no_room_for_is_refused_before_any_chunk_is_written() -> None:
+    """a put JetStream refused part way left the chunks it had written, which no object names and the declarer purges
+    only while no write claim stands -- never while the writer that met the full store holds its own (cobalt prod,
+    2026-11-01: 'unnamed object chunks kept: a write is in flight', 51 claims). Refused before its first chunk, a put
+    the store cannot hold leaves nothing."""
+    js = _BoundedJetStream(held=10_000, max_bytes=12_000)
+    with pytest.raises(ObjectStoreFullError) as raised:
+        await _bounded_store(js).put("enr/TX/1/r", b"x" * 4096)
+    assert js.published == [], "a refused put wrote chunks no object names"
+    assert (raised.value.bucket, raised.value.name) == ("pod-objects", "enr/TX/1/r")
+    assert "max_bytes" in str(raised.value)
+
+
+async def test_a_put_the_store_has_room_for_writes_its_chunks_and_then_its_metadata() -> None:
+    js = _BoundedJetStream(held=10_000, max_bytes=10_000 + 64 * 1024)
+    await _bounded_store(js).put("enr/TX/1/r", b"x" * 4096)
+    assert len(js.published) == 5
+    assert all(".C." in s for s in js.published[:4]) and ".M." in js.published[4]
+
+
+@pytest.mark.parametrize("unbounded", [None, -1, 0])
+async def test_an_unbounded_store_writes_whatever_it_holds(unbounded: int | None) -> None:
+    js = _BoundedJetStream(held=10**12, max_bytes=unbounded)
+    await _bounded_store(js).put("enr/TX/1/r", b"x" * 4096)
+    assert len(js.published) == 5

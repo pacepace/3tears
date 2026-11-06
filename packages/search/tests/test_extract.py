@@ -11,6 +11,10 @@ Extract's choices rather than httpx's.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 from typing import Any
 
 from collections.abc import Mapping
@@ -32,11 +36,13 @@ from threetears.search.extract import (
     EXTRACTION_REASON_FACET,
     EXTRACTION_METHOD_FACET,
     EXTRACTION_STATUS_FACET,
-    EXTRACTOR_UNAVAILABLE_SCOPE,
     extract,
 )
 
 from packages.search.tests.search_instances import PROVENANCE
+
+#: the checkout root, from which ``packages.search.tests`` imports in a fresh interpreter.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _PAGE_URL = "https://example.org/capybaras"
 _ROBOTS_URL = "https://example.org/robots.txt"
@@ -519,7 +525,7 @@ async def test_robots_can_be_turned_off_by_configuration() -> None:
     assert transport.requested == [_PAGE_URL]
 
 
-async def test_a_missing_extract_extra_refuses_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_missing_extract_extra_refuses_by_name() -> None:
     """The one outcome that raises, because it is not per-candidate.
 
     A caller handed prose must be able to tell whether a real extractor
@@ -528,28 +534,51 @@ async def test_a_missing_extract_extra_refuses_by_name(monkeypatch: pytest.Monke
     candidate identically, it raises once instead of marking a hundred
     candidates ``refused`` and hiding one fixable cause behind them.
 
-    :param monkeypatch: fixture used to hide the installed extractor
-    :ptype monkeypatch: pytest.MonkeyPatch
+    The extractor is imported when the module loads, so its absence is
+    simulated in a fresh interpreter that has ``trafilatura`` blocked before
+    ``threetears.search.extract`` is first imported.
     """
-    import builtins
+    probe = textwrap.dedent(
+        """
+        import asyncio
+        import sys
 
-    real_import = builtins.__import__
+        sys.modules["trafilatura"] = None
+        sys.modules["trafilatura.metadata"] = None
 
-    def _refuse_trafilatura(name: str, *args: object, **kwargs: object) -> object:
-        if name == "trafilatura":
-            raise ImportError("No module named 'trafilatura'")
-        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+        from threetears.search.contracts.errors import LocalCapExceeded
+        from threetears.search.extract import EXTRACTOR_UNAVAILABLE_SCOPE, extract
 
-    monkeypatch.setattr(builtins, "__import__", _refuse_trafilatura)
-    transport = ScriptedFetchTransport({_ROBOTS_URL: _allowed(), _PAGE_URL: _ok(_ARTICLE)})
+        from packages.search.tests import test_extract as t
 
-    with pytest.raises(LocalCapExceeded) as caught:
-        await extract(_candidate(), transport=transport)
 
-    assert caught.value.scope == EXTRACTOR_UNAVAILABLE_SCOPE
-    assert "3tears-search[extract]" in str(caught.value)
-    assert caught.value.remediation is not None
-    assert "3tears-search[extract]" in caught.value.remediation
+        async def main() -> None:
+            transport = t.ScriptedFetchTransport({t._ROBOTS_URL: t._allowed(), t._PAGE_URL: t._ok(t._ARTICLE)})
+            try:
+                await extract(t._candidate(), transport=transport)
+            except LocalCapExceeded as caught:
+                assert caught.scope == EXTRACTOR_UNAVAILABLE_SCOPE
+                assert "3tears-search[extract]" in str(caught)
+                assert caught.remediation is not None
+                assert "3tears-search[extract]" in caught.remediation
+                print("refused")
+                return
+            raise AssertionError("extract did not refuse")
+
+
+        asyncio.run(main())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=_REPO_ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "refused"
 
 
 async def test_the_extra_is_checked_before_anything_is_fetched() -> None:

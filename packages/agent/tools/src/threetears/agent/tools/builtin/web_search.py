@@ -37,6 +37,8 @@ from urllib.parse import urlsplit
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.search_transport import TracedSearchTransport
+from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.search.adapters.searxng import (
     SEARXNG_CATEGORIES,
     SEARXNG_NAMESPACE,
@@ -111,8 +113,6 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
     :rtype: StructuredTool
     :raises ValueError: when ``base_url`` is absent
     """
-    from threetears.agent.tools.langchain_adapter import to_langchain_tool
-
     base_url = config.get("base_url")
     if not base_url:
         raise ValueError("web_search requires 'base_url' in config")
@@ -217,8 +217,6 @@ class WebSearchTool(TearsTool):
         """
         self.base_url = base_url.rstrip("/")
         if transport is None:
-            from threetears.agent.tools.search_transport import TracedSearchTransport
-
             transport = TracedSearchTransport(base_url=self.base_url, timeout_seconds=timeout_seconds)
         self._transport = transport
         self._provider = SearxngAdapter(base_url=self.base_url, transport=transport)

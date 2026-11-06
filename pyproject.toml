@@ -31,13 +31,25 @@ exclude-newer = "14 days"
 # so a fresh CI/Docker install source-builds it and fails (no libxml2/libxslt
 # dev headers on the runner). This is the resolver-level fix so the drift can
 # never recur on a re-lock; keep it mirrored in every consumer repo's pyproject.
-constraint-dependencies = ["lxml>=6.1.0,<7"]
+#
+# pytest 9.1 keys a conftest's fixtures to the Directory node collected for its
+# directory, and re-collecting a parent directory (a file argument directly in it)
+# builds fresh child nodes the fixtures are not keyed to. A run whose arguments go
+# sub/test_a.py, test_b.py, sub/test_c.py -- what testament's batches and any id
+# list look like -- then fails test_c with "fixture ... not found" and drops sub's
+# autouse fixtures (#999; pytest-dev/pytest#14635, fixed in 9.2.0).
+# tests/enforcement/test_conftest_fixtures_survive_recollection.py holds it. Unlike
+# lxml, this is a test-runner bug, not an install failure: a consumer repo needs the
+# same constraint only if it runs its tests through testament or another id list.
+constraint-dependencies = ["lxml>=6.1.0,<7", "pytest!=9.1.*"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2.3",
     # the unit suite runs on four workers, one package per worker (see the root conftest)
     "pytest-xdist>=3.6",
+    # CI shards the evals session three ways (scripts/ci-unit-tests.sh --shard evals-N)
+    "pytest-split>=0.10",
     "mypy>=1.8",
     # jsonschema ships no inline types, and threetears.models validates every
     # structured-output schema through it. Stubs here rather than a blanket
@@ -98,8 +110,9 @@ dev-dependencies = [
     "httpx2",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
-    # against the in-memory FakeDataStore).
-    "testcontainers[postgres]>=4.0",
+    # against the in-memory FakeDataStore). 4.15.0 is the first release with
+    # testcontainers.community, where the containers now live.
+    "testcontainers[postgres]>=4.15.0",
     # prometheus-client installed in dev so packages/models tracking +
     # callbacks tests exercise the real prometheus integration rather
     # than getting skipped. declared in models as an optional extra
@@ -317,6 +330,11 @@ ignore = ["N818", "N811"]
 # tree -- collecting it here fails at import on a ``nodriver`` that the
 # workspace venv will never install.
 addopts = "--import-mode=importlib --ignore=packages/scrape/sidecar"
+# A test that runs past this fails with every thread's stack printed, instead of spinning a run
+# for hours: a test double that re-raised one stored exception made each logged traceback longer
+# than the last, and a 4,097-call loop held a CPU at 99% until it was killed. Well above any
+# single test's runtime; a test that needs longer says so with @pytest.mark.timeout.
+timeout = 600
 # Multiple packages carry a same-named ``tests`` package (e.g.
 # ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
 # both define ``tests/integration/conftest.py``). Under importlib mode
@@ -379,6 +397,15 @@ filterwarnings = [
     # waits the supported way. An error, so a test that reaches for the deprecated path again
     # fails instead of adding a warning nobody reads.
     'error::DeprecationWarning:testcontainers\..*',
+    # 4.15.0 moved every container to ``testcontainers.community.*`` and left a shim at the old
+    # path whose warning is attributed to the IMPORTING module (stacklevel=2), so the filter above
+    # never sees it. An error too, so an import of the old path fails rather than warns.
+    'error:testcontainers\.[a-z_]+ is deprecated:DeprecationWarning',
+    # FastMCP 4 reads MCP SDK 2's snake_case fields and warns on the old camelCase ones
+    # (``readOnlyHint``, ``inputSchema``); shapely 2.2 deprecates ``shapely.ops.transform``.
+    # Both were moved off; errors, so a return to either fails rather than warns.
+    "error:Accessing `[A-Za-z.]+` is deprecated; MCP SDK v2 renamed:DeprecationWarning",
+    "error:The 'shapely.ops.transform\\(\\)' function is deprecated:DeprecationWarning",
     # discord.py 2.7.1, the newest release, calls ``asyncio.iscoroutinefunction`` inside its own
     # ``Client.event``; nothing on our side can change the call. Remove when discord.py does.
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:discord.client",
@@ -392,6 +419,10 @@ markers = [
     # had no test that could fail when it regressed.
     "real_robots_fetch: exercise the real robots default fetcher rather than the offline stub",
     "enforcement: a structural rule over the source tree rather than a behaviour",
+    # A wall-clock bound on the event loop is a bound on the machine as much as the code: beside three busy xdist
+    # workers on a four-core runner the kernel preempts the thread holding the interpreter lock and the loop waits
+    # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
+    "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
     "paid: spends money at a model provider; skipped unless opted in (THREETEARS_EVALS_PAID=1) with a provider key",
 ]
@@ -562,8 +593,16 @@ module = [
     # pyarrow ships no py.typed marker; the scoped snapshot's chunk codec, the export reader
     # (a warehouse export's parquet files) and the SQL store's direct load from files import it.
     "threetears.core.collections.scoped_snapshot",
+    # and the L3 rail's replies read as Arrow (an Arrow read of a whole table, and its parse)
+    "threetears.core.collections.complete_copy",
+    "threetears.core.backends.arrow_reply",
     "threetears.core.backends.sql",
     "threetears.datasources.export_read",
+    "threetears.datasources.partitioned_export",
+    # and the CPU-quota helper, which sizes pyarrow's thread pools
+    "threetears.core.utils.cpu_quota",
+    # and the shared-memory Arrow store, which writes and maps Arrow IPC files
+    "threetears.core.shared_arrow",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
     # redshift_connector ships no py.typed/stubs; suppress its import-untyped

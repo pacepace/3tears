@@ -11,12 +11,14 @@ usage: python -m threetears.registry.server
 from __future__ import annotations
 
 import asyncio
+import importlib
 import importlib.metadata
 import inspect
 import os
 import signal
+import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.bucket import (
@@ -42,7 +44,15 @@ from threetears.nats import (
     Subjects,
     kv_key_scope_for,
 )
-from threetears.observe import HealthCheck, HealthServer, HealthTier, InflightRequestsGauge, get_logger
+from threetears.observe import (
+    HealthCheck,
+    HealthServer,
+    HealthTier,
+    InflightRequestsGauge,
+    cancel_and_wait,
+    configure_logging,
+    get_logger,
+)
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.catalog_persistence import catalog_bucket
@@ -53,21 +63,25 @@ from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import (
     AgentToolAuthorizer,
+    AllowAllAuthorizer,
     AllowAllLimitGuard,
+    DenyAllAuthorizer,
     EndpointUsageEmitter,
     LimitGuard,
     RegistryIdentity,
     ToolPodAuthenticator,
 )
 from threetears.registry.config import (
+    get_call_timeout,
+    get_heartbeat_check_interval,
+    get_heartbeat_timeout,
     get_jwks_request_timeout,
     get_delegated_token_signing_key_ref,
     get_proxy_assertion_signing_key_ref,
 )
+from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
+from threetears.registry.rbac_stack import RegistryRbacStack, build_registry_rbac_stack
 from threetears.registry.registration import RegistrationHandler
-
-if TYPE_CHECKING:
-    from threetears.registry.rbac_stack import RegistryRbacStack
 
 __all__ = [
     "IdentityTokenProvider",
@@ -99,6 +113,9 @@ _logger = get_logger(__name__)
 # so this covers it with room to spare. it is not the wipe-refusal reach, which follows the
 # future tolerance alone.
 _POP_NONCE_TTL_SECONDS = 120
+
+#: how often a starting replica looks whether the copies its catalog warm-loaded are routable again
+_LOADED_COPIES_POLL_SECONDS = 0.25
 
 
 def build_heartbeat_collection_registry(
@@ -356,8 +373,6 @@ class RegistryServer:
             body's ``version`` null
         :ptype version: str | None
         """
-        from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
-
         self._nats_url = nats_url or os.environ.get(
             "THREETEARS_NATS_URL",
             "nats://localhost:4222",
@@ -415,6 +430,8 @@ class RegistryServer:
         self._health_server: HealthServer | None = None
         self._inflight_gauge: InflightRequestsGauge | None = None
         self._shutdown_event = asyncio.Event()
+        #: the handlers' start-up, which a shutdown stops when it lands first (it can wait a heartbeat timeout)
+        self._starting: asyncio.Task[None] | None = None
 
     async def open_collections_bucket(self, nc: "NatsClient") -> None:
         """bind the shared L2 collections bucket before any collection is wired against it.
@@ -672,7 +689,13 @@ class RegistryServer:
             "registry.result_stream_declare",
         )
 
-        await self._start_handlers()
+        self._starting = asyncio.create_task(self._start_handlers(), name="registry-start-handlers")
+        await asyncio.wait({self._starting})
+        if self._starting.cancelled():
+            # a shutdown landed while the handlers were starting: it stopped them and closes what was started
+            await self._shutdown_event.wait()
+            return
+        self._starting.result()
 
         self._install_signal_handlers()
 
@@ -878,18 +901,75 @@ class RegistryServer:
             pop_replay_guard=pop_replay_guard,
         )
         self._call_proxy = call_proxy
+
+        # canonical health endpoints -- consumed by docker compose + k8s probes +
+        # the consumer's devx preflight. port 8000 matches the inherited upstream
+        # hub Dockerfile HEALTHCHECK so the same probe works whether the container
+        # runs as the hub, the registry, or any other consumer of that base. Started before the
+        # proxy joins its calls, so the probes are answered (not ready) while it waits.
+        health_server = self._build_health_server(inflight_gauge)
+        await health_server.start()
+        self._health_server = health_server
+        # a replica joins the call queue group only once the copies its catalog warm-loaded are routable
+        # again: until each pod's next heartbeat they are unavailable, and a call this replica took then
+        # was refused TOOL_UNAVAILABLE while every other replica could route it. The other replicas take
+        # the calls meanwhile, and a pod that died is waited for no longer than a live pod's heartbeat
+        # could take (the heartbeat timeout).
+        await self._hold_calls_for_loaded_copies()
         await retry_with_backoff(
             lambda: call_proxy.start(nc),
             "registry.call_proxy.start",
         )
 
-        # canonical health endpoints -- consumed by docker compose + k8s probes +
-        # the consumer's devx preflight. port 8000 matches the inherited upstream
-        # hub Dockerfile HEALTHCHECK so the same probe works whether the container
-        # runs as the hub, the registry, or any other consumer of that base.
-        health_server = self._build_health_server(inflight_gauge)
-        await health_server.start()
-        self._health_server = health_server
+    async def _hold_calls_for_loaded_copies(self) -> None:
+        """return once the catalog's warm load has landed, and the copies it brought in are routable again, gone, or
+        past waiting for (each wait bounded by the heartbeat timeout).
+
+        Says what it waits on when it starts, and how it ended: settled, or the heartbeat timeout passed with the
+        copies still unrouted (named -- their pods never came back), so a replica held not-ready for the whole
+        window is explained in its own log.
+
+        :return: nothing
+        :rtype: None
+        """
+        window = self._heartbeat_timeout
+        # the warm load runs in the background (catalog_persistence): a replica that looked before it landed
+        # would find nothing loaded, nothing to wait for, and join with its copies about to arrive unavailable
+        bucket = self._catalog_bucket
+        if bucket is not None and not await bucket.wait_loaded(timeout=window):
+            _logger.warning(
+                "registry joins its call group before its catalog bucket could be loaded",
+                extra={"extra_data": {"bucket": bucket.name, "waited_seconds": window}},
+            )
+            return
+        pending = self._catalog.loaded_copies_pending()
+        if self._catalog.loaded_copies_settled(window):
+            return
+        started = time.monotonic()
+        _logger.info(
+            "registry holds its calls until the copies its catalog warm-loaded are routable again",
+            extra={"extra_data": {"copies_waiting": len(pending), "window_seconds": window}},
+        )
+        while not self._catalog.loaded_copies_settled(window):
+            await asyncio.sleep(_LOADED_COPIES_POLL_SECONDS)
+        unrouted = sorted(self._catalog.loaded_copies_pending())
+        waited = round(time.monotonic() - started, 3)
+        if unrouted:
+            _logger.warning(
+                "registry joins its call group with warm-loaded copies whose pods never announced again",
+                extra={
+                    "extra_data": {
+                        "waited_seconds": waited,
+                        "window_seconds": window,
+                        "unrouted": [f"{full_name}@{pod_id}" for full_name, pod_id in unrouted],
+                    }
+                },
+            )
+        else:
+            _logger.info(
+                "registry joins its call group: every warm-loaded copy is routable again or gone",
+                extra={"extra_data": {"waited_seconds": waited}},
+            )
 
     def _build_health_server(self, inflight_gauge: InflightRequestsGauge) -> HealthServer:
         """build the registry's canonical health server, NOT yet started.
@@ -934,12 +1014,21 @@ class RegistryServer:
                 ),
                 # a replica whose catalog writes keep failing answers every registration with
                 # CATALOG_UNAVAILABLE, so it leaves rotation after a short streak of failed writes
-                # and returns at the next write that lands -- pods re-register every heartbeat, so
-                # a write is always coming. NOT liveness, for the reason the two checks above are
+                # and returns at the next write that lands -- while it is out, every registration
+                # writes its entry whether or not it changed, so any pod's next heartbeat brings a
+                # write even on an idle platform (a failed delete is never retried itself: its entry
+                # is gone from memory). NOT liveness, for the reason the two checks above are
                 # not: the usual cause is a NATS outage, which a restart does not fix, and a
                 # terminal close is already the `nats` check's to report -- the catalog's bucket
                 # writes through the client's current connection, so its writes fail on a closed
                 # connection only when the client's own connection is closed.
+                # NOT-READY while a warm-loaded copy waits for its pod's heartbeat (at most the heartbeat
+                # timeout), so a rollout keeps the replicas that can route until this one can too
+                HealthCheck(
+                    name="catalog_revived",
+                    probe=lambda: self._catalog.loaded_copies_settled(self._heartbeat_timeout),
+                    tier=HealthTier.READY,
+                ),
                 HealthCheck(
                     name="catalog_persisting",
                     probe=lambda: self._catalog.persisting,
@@ -978,6 +1067,11 @@ class RegistryServer:
         closes NATS connection.
         """
         _logger.info("shutting down registry server")
+
+        # a start-up still under way (holding its calls for the warm-loaded copies, say) is stopped first, or it
+        # keeps starting handlers on the connection being closed below
+        if self._starting is not None:
+            await cancel_and_wait(self._starting)
 
         if self._health_server is not None:
             await self._health_server.stop()
@@ -1055,8 +1149,6 @@ def _run_server() -> None:
     purely as a panic-button kill switch for misconfigured prod
     deployments.
     """
-    from threetears.observe import configure_logging
-
     configure_logging(level="INFO")
 
     allow_all = (
@@ -1085,16 +1177,12 @@ def _run_server() -> None:
     built_rbac_stacks: list["RegistryRbacStack"] = []
 
     if allow_all:
-        from threetears.registry.auth import AllowAllAuthorizer
-
         authorizer = AllowAllAuthorizer()
         _logger.warning(
             "registry running in allow-all mode (THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true)",
             extra={"extra_data": {"mode": "allow_all"}},
         )
     elif force_deny:
-        from threetears.registry.auth import DenyAllAuthorizer
-
         authorizer = DenyAllAuthorizer()
         _logger.warning(
             "registry running in forced deny-all mode "
@@ -1108,21 +1196,9 @@ def _run_server() -> None:
         # against it. the placeholder denies any dispatch that races
         # the wiring (a cold-start window of milliseconds); once the
         # rbac stack is live the server swaps in the real authorizer.
-        from threetears.registry.auth import DenyAllAuthorizer
-
         authorizer = DenyAllAuthorizer()
 
         async def _rbac_factory(nc: NatsClient, identity_token: IdentityTokenProvider | None) -> AgentToolAuthorizer:
-            from threetears.registry.l1_cache import (
-                create_registry_l1_backend,
-            )
-            from threetears.registry.rbac_authorizer import (
-                RbacEvaluatorAuthorizer,
-            )
-            from threetears.registry.rbac_stack import (
-                build_registry_rbac_stack,
-            )
-
             namespace = os.environ.get(
                 "THREETEARS_NATS_SUBJECT_NAMESPACE",
                 "3tears",
@@ -1205,8 +1281,6 @@ def _resolve_identity_factory() -> "Callable[[NatsClient], Awaitable[RegistryIde
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured identity plugin must crash startup, never silently drop to unidentified)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_IDENTITY_TOKEN_PROVIDER_FACTORY", "").strip()
     result: "Callable[[NatsClient], Awaitable[RegistryIdentity]] | None" = None
     if spec:
@@ -1247,8 +1321,6 @@ def _resolve_pod_authenticator_factory() -> (
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured authenticator plugin must crash startup, never silently drop to open mode)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_POD_AUTHENTICATOR_FACTORY", "").strip()
     result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[ToolPodAuthenticator | None]] | None" = None
     if spec:
@@ -1286,8 +1358,6 @@ def _resolve_limit_guard_factory() -> (
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured limit-guard plugin must crash startup, never silently drop to allow-all)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_LIMIT_GUARD_FACTORY", "").strip()
     result: "Callable[[NatsClient, IdentityTokenProvider | None], Awaitable[LimitGuard | None]] | None" = None
     if spec:
@@ -1339,8 +1409,6 @@ def _resolve_usage_emitter_factory() -> "UsageEmitterFactory | LegacyUsageEmitte
     :raises ImportError / AttributeError: when the path does not resolve (fail loud -- a
         misconfigured emitter plugin must crash startup, never silently drop usage events)
     """
-    import importlib
-
     spec = os.environ.get("THREETEARS_REGISTRY_USAGE_EMITTER_FACTORY", "").strip()
     result: "UsageEmitterFactory | LegacyUsageEmitterFactory | None" = None
     if spec:

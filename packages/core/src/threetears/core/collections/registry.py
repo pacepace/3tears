@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import uuid7
 
 from pydantic import BaseModel, ValidationError
@@ -13,12 +16,15 @@ from threetears.nats.errors import PublishError
 from threetears.core.collections.generation import (
     GenerationMarks,
     GenerationVerdict,
+    L2WriteGeneration,
     NoWriteGeneration,
     WriteGeneration,
     source_reads,
 )
+from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.scan_cache import ScanCache
-from threetears.core.exceptions import InvalidL2ScopeError, L2ScopeNotConfiguredError
+from threetears.core.exceptions import GenerationUnavailableError, InvalidL2ScopeError, L2ScopeNotConfiguredError
 from threetears.observe import contain, get_logger
 
 if TYPE_CHECKING:
@@ -50,9 +56,6 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     ``NatsProxyL3Backend``) is wrapped in a ``SqlL3Backend`` so it gains the
     structured ops (which generate SQL). ``None`` passes through.
 
-    Imported lazily to keep this module free of an import-time dependency on the
-    backends package.
-
     :param l3_pool: a raw transport, a ``DurableStore`` backend, or ``None``.
     :ptype l3_pool: Any
     :return: a ``DurableStore``-capable backend, or ``None``.
@@ -60,9 +63,6 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     """
     if l3_pool is None:
         return None
-    from threetears.core.backends.protocol import DurableStore
-    from threetears.core.backends.sql import SqlL3Backend
-
     if isinstance(l3_pool, DurableStore):
         return l3_pool
     return SqlL3Backend(l3_pool)
@@ -151,22 +151,29 @@ class DerivedCacheRegistration:
 
 
 def _write_generation_kind(collection: Any) -> str:
-    """which of the three write-generation declarations a collection carries.
+    """which of the write-generation declarations a collection carries.
 
     Read off the instance rather than assumed, because a registry holds whatever was registered
     with it: a stand-in with no declaration is undeclared.
 
     :param collection: a registered collection, or a stand-in for one
     :ptype collection: Any
-    :return: ``"on"``, ``"opted_out"`` or ``"undeclared"``
+    :return: ``"on"``, ``"on_in_l2"``, ``"opted_out"`` or ``"undeclared"``
     :rtype: str
     """
     declared = getattr(collection, "write_generation", None)
     if isinstance(declared, WriteGeneration):
         return "on"
+    if isinstance(declared, L2WriteGeneration):
+        return "on_in_l2"
     if isinstance(declared, NoWriteGeneration):
         return "opted_out"
     return "undeclared"
+
+
+#: how long a registry follows a table whose generation is kept in L2 with no catch-up pass judging it
+#: before it says so (and again each time as long), unless the registry is told otherwise
+L2_CATCH_UP_OVERDUE: Final = timedelta(minutes=2)
 
 
 class CollectionRegistry:
@@ -206,6 +213,7 @@ class CollectionRegistry:
         # The write generation a negative-caching collection stamps its absences with. One per
         # registry: every collection on it answers to the same principal's view of the world.
         self._generation_source: GenerationSource | None = None
+        self._write_marks_schema: str | None = None
         # Per followed table, the last write generation whose writes this registry has accounted
         # for. Empty until a table is followed (:meth:`follow_generation`).
         self._generation_marks = GenerationMarks()
@@ -213,6 +221,11 @@ class CollectionRegistry:
         self._watching: dict[str, list[Callable[[], bool]]] = {}
         # table_name -> the caches derived from it, in registration order.
         self._derived_caches: dict[str, list[DerivedCacheRegistration]] = {}
+        #: when the last catch_up_l2_generations pass ran, by time.monotonic(); None while none has
+        self._l2_caught_up_at: float | None = None
+        #: how long a followed L2-kept table may go unjudged before the registry warns
+        self.l2_catch_up_overdue: timedelta = L2_CATCH_UP_OVERDUE
+        self._l2_overdue_check: asyncio.TimerHandle | None = None
         # Per-registry (effectively per-pod) identity stamped on every
         # invalidation this registry publishes, so its own listener can
         # skip self-published messages and avoid evicting rows it just
@@ -377,6 +390,12 @@ class CollectionRegistry:
                     f"the same write_generation on both"
                 )
         self._collections[table] = collection
+        if getattr(collection, "keeps_write_generation_in_l2", False) is True:
+            # its generation is in L2 beside its rows, read by catch_up_l2_generations: following it is
+            # what makes this registry count the table's broadcasts and its own advances, and a pass the
+            # host never schedules is said (_arm_l2_overdue_check)
+            self.follow_generation(table)
+            self._arm_l2_overdue_check()
         if l1_backend or l2_client or l3_pool:
             self._overrides[table] = {}
             if l1_backend:
@@ -476,6 +495,34 @@ class CollectionRegistry:
         """
         self._generation_source = source
 
+    def set_write_marks_schema(self, schema: str | None) -> None:
+        """name the schema holding the database's write-mark queue, so a writer clears the marks its advance covers.
+
+        A switched-on table's trigger marks each write in the write's transaction, and the reconciler
+        advances the table's generation from each mark (:mod:`threetears.core.collections.write_marks`).
+        A writer that advances after its own commit, and broadcasts, was followed by a second advance from
+        its mark that no follower heard, so every follower dropped the table. With the queue named, the
+        writer reads the table's marks after its commit, advances, and deletes exactly the marks it read:
+        each committed before its advance, which covers it. A writer that dies before the delete leaves
+        them to the reconciler. Unset, as before: the reconciler drains every mark. Only a process whose
+        L3 holds the queue (the hub over its own database) sets it.
+
+        :param schema: the schema, or ``None`` to leave every mark to the reconciler
+        :ptype schema: str | None
+        :return: nothing
+        :rtype: None
+        """
+        self._write_marks_schema = schema
+
+    @property
+    def write_marks_schema(self) -> str | None:
+        """the schema holding the write-mark queue a writer clears its own marks from, or ``None``.
+
+        :return: the schema, or ``None`` when unset
+        :rtype: str | None
+        """
+        return self._write_marks_schema
+
     @property
     def generation_source(self) -> GenerationSource | None:
         """the write generation source wired on this registry, or ``None``.
@@ -515,6 +562,120 @@ class CollectionRegistry:
         :rtype: None
         """
         self._generation_marks.follow(table_name)
+
+    def generation_kept_in_l2(self, table_name: str) -> bool:
+        """whether ``table_name``'s write generation is kept in L2 by the collection registered for it.
+
+        Such a table's generation is not in the epoch bucket: :meth:`catch_up_l2_generations` judges it,
+        and a pass over the epoch bucket leaves it alone.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :return: ``True`` when the registered collection keeps its generation in L2
+        :rtype: bool
+        """
+        collection = self._collections.get(table_name)
+        return getattr(collection, "keeps_write_generation_in_l2", False) is True
+
+    async def catch_up_l2_generations(self) -> int:
+        """one catch-up pass over the followed tables whose write generation is kept in L2, returning how many it dropped.
+
+        Each table's generation is read from L2 (``BaseCollection.l2_write_generation``) and judged
+        against this registry's mark (:meth:`settle_generation`), which drops the table here when a
+        row broadcast was missed or the bucket was replaced: what this process holds of the table
+        goes, and the next read of it goes to L2. A table seen for the first time is dropped once,
+        since nothing says what was cached before its mark was taken. A generation that cannot be
+        read is logged and that table is left as it was; the next pass reads again. The caller's
+        scheduler drives the cadence, as for ``threetears.epoch.generation_catchup_tick``, which
+        runs this pass too.
+
+        :return: how many tables were dropped
+        :rtype: int
+        """
+        dropped = 0
+        judged = False
+        for table_name in self._generation_marks.followed:
+            collection = self._collections.get(table_name)
+            if not self.generation_kept_in_l2(table_name) or collection is None:
+                continue
+            try:
+                token = await collection.l2_write_generation()
+            except GenerationUnavailableError as exc:
+                # NOSILENT: nothing is dropped and the mark does not move; the next pass reads again
+                log.warning(
+                    "write generation unavailable in L2; the table is left as it is and the next pass reads again",
+                    extra={"extra_data": {"table": table_name, "error": str(exc)}},
+                )
+                continue
+            judged = True
+            if self.settle_generation(table_name, token).drops:
+                dropped += 1
+        if judged:
+            # a pass that could read no generation judged nothing, and leaves the overdue warning to say so
+            self._l2_caught_up_at = time.monotonic()
+        return dropped
+
+    @property
+    def l2_catch_up_age(self) -> timedelta | None:
+        """how long since the last :meth:`catch_up_l2_generations` pass ran here, for a health surface.
+
+        :return: the time since it ran; ``None`` when no pass has run
+        :rtype: timedelta | None
+        """
+        if self._l2_caught_up_at is None:
+            return None
+        return timedelta(seconds=time.monotonic() - self._l2_caught_up_at)
+
+    def _l2_kept_tables(self) -> list[str]:
+        """the followed tables whose generation is kept in L2.
+
+        :return: their names
+        :rtype: list[str]
+        """
+        return [table for table in self._generation_marks.followed if self.generation_kept_in_l2(table)]
+
+    def _arm_l2_overdue_check(self) -> None:
+        """once a table whose generation is kept in L2 is followed, check on the running loop that a pass judges it.
+
+        Following counts broadcasts; only a pass acts on one missed. A host that schedules none would keep
+        a missed write's stale rows in L1 for good and never hear of it, so the registry warns, each
+        :attr:`l2_catch_up_overdue`, while no pass has run within that time. Armed when such a table is
+        registered on a running loop, and again when the invalidation listener starts.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._l2_overdue_check is not None or not self._l2_kept_tables():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # NOSILENT: no loop yet (a registry built before the process serves); start_invalidation_listener arms it
+            return
+        self._l2_overdue_check = loop.call_later(self.l2_catch_up_overdue.total_seconds(), self._check_l2_overdue)
+
+    def _check_l2_overdue(self) -> None:
+        """warn when no catch-up pass has judged the L2-kept tables within the bound, then check again later.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._l2_overdue_check = None
+        age = self.l2_catch_up_age
+        if age is None or age > self.l2_catch_up_overdue:
+            log.warning(
+                "tables whose write generation is kept in L2 are followed and no catch-up pass has judged them; "
+                "a missed broadcast leaves their stale rows in L1. Schedule catch_up_l2_generations or "
+                "threetears.epoch.generation_catchup_tick",
+                extra={
+                    "extra_data": {
+                        "tables": self._l2_kept_tables(),
+                        "last_pass_seconds_ago": None if age is None else round(age.total_seconds(), 1),
+                        "overdue_after_seconds": self.l2_catch_up_overdue.total_seconds(),
+                    }
+                },
+            )
+        self._arm_l2_overdue_check()
 
     def watched_by(self, table_name: str, watching: Callable[[], bool]) -> None:
         """say that a follower watches ``table_name``'s generation, and how to ask whether it still does.
@@ -841,6 +1002,7 @@ class CollectionRegistry:
         :raises SubscribeError: if the underlying subscribe fails to
             register (transport / config error)
         """
+        self._arm_l2_overdue_check()
         if self._invalidation_subscription is not None:
             log.debug(
                 "Invalidation listener already running",
@@ -1048,6 +1210,10 @@ class CollectionRegistry:
         :return: nothing
         :rtype: None
         """
+        if self._l2_overdue_check is not None:
+            # the process is shutting down; a restarted listener arms the check again
+            self._l2_overdue_check.cancel()
+            self._l2_overdue_check = None
         subscription = self._invalidation_subscription
         nats_client = self._nats_client
         if subscription is None or nats_client is None:

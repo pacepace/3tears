@@ -44,7 +44,7 @@ Otherwise a change landing while the hub answers would be evicted from an empty 
 answer stored after it.
 
 :class:`CallerNamespaces` is the answer this was built for: the namespaces the hub's
-``namespace.discover`` lists for a caller, asked with the caller's own tokens, failing closed.
+``namespace.discover`` lists for a caller, asked with the call's own credential, failing closed.
 
 Bind and follow it in one call with :func:`follow_caller_access_cache`, once the registry's
 invalidation listener is running; it hears the rows, and the follower drops what a missed broadcast
@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
+    from threetears.core.security.door_request import DoorCredential
 
 __all__ = [
     "CallerAccessCache",
@@ -78,6 +79,7 @@ __all__ = [
     "DEFAULT_CALLER_CACHE_MAX_ENTRIES",
     "NamespaceDiscovery",
     "bind_caller_cache_to_access_tables",
+    "bind_caller_cache_to_memberships",
 ]
 
 log = get_logger(__name__)
@@ -308,7 +310,7 @@ class CallerAccessCache(Generic[V]):
 
 def bind_caller_cache_to_access_tables(
     registry: CollectionRegistry,
-    cache: CallerAccessCache[object],
+    cache: CallerAccessCache[V],
     *,
     degraded: DegradedEvictions | None = None,
 ) -> Callable[[], None]:
@@ -360,6 +362,49 @@ def bind_caller_cache_to_access_tables(
     return remove
 
 
+def bind_caller_cache_to_memberships(
+    registry: CollectionRegistry,
+    cache: CallerAccessCache[V],
+    *,
+    degraded: DegradedEvictions | None = None,
+) -> Callable[[], None]:
+    """make ``cache`` a cache of each caller's own membership rows, derived from ``group_members`` alone.
+
+    For an answer that is a principal's direct memberships and nothing more -- the person's access
+    shape (:class:`threetears.agent.acl.access_shapes.AccessShape`), or the groups a person is in --
+    so no other access table can make it stale, and a nested group's row changes no one's direct
+    rows. A row naming a user or an agent drops that principal's entries; a ``group`` member's row
+    drops nothing; a row that does not say what it names, and a dropped table, drop every entry.
+
+    Followed by :func:`threetears.agent.acl.generation_follow.follow_caller_memberships`.
+
+    :param registry: the registry whose invalidation listener hears ``group_members``' row broadcasts
+    :ptype registry: CollectionRegistry
+    :param cache: the cache to drop from
+    :ptype cache: CallerAccessCache
+    :param degraded: where rows that did not say what they name are counted; a new record when ``None``
+    :ptype degraded: DegradedEvictions | None
+    :return: a call that removes the registration
+    :rtype: Callable[[], None]
+    """
+    record = degraded if degraded is not None else DegradedEvictions()
+
+    def on_group_member(message: CacheInvalidationMessage) -> None:
+        columns = message.columns or {}
+        kind = columns.get("member_type")
+        member = _uuid(columns.get("member_id"))
+        if kind in _CALLER_KINDS and member is not None:
+            cache.evict_principal(kind, member)
+        elif kind != MemberType.GROUP.value or member is None:
+            # a nested group's row moves which groups a group reaches, never anyone's direct rows
+            record.record(_GROUP_MEMBERS, "no member_type and member_id it parses")
+            cache.invalidate_all()
+
+    return registry.register_derived_cache(
+        _GROUP_MEMBERS, on_row=on_group_member, on_table_dropped=cache.invalidate_all
+    )
+
+
 def _uuid(value: str | None) -> UUID | None:
     """a broadcast's string value as a UUID, or ``None`` when absent or not one.
 
@@ -387,8 +432,12 @@ class NamespaceDiscovery(Protocol):
         identity_token: str | None = None,
         user_identity_token: str | None = None,
         namespace_type: Any = None,
+        credential: DoorCredential | None = None,
     ) -> Sequence[Any]:
-        """the namespaces the caller whose tokens these are can see; each has a ``name``."""
+        """the namespaces the caller whose tokens these are can see; each has a ``name``.
+
+        ``credential`` is ``identity_token`` with the key that proves it, passed only when it proves.
+        """
         ...
 
 
@@ -409,7 +458,12 @@ class CallerNamespaces:
     access tables say otherwise.
 
     The hub answers ``namespace.discover`` about whoever signed the tokens forwarded to it, so the
-    answer is about THIS caller; nothing here names a principal. The answer is kept in a
+    answer is about THIS caller; nothing here names a principal. A tool pod that proves delegation is
+    sent the call's delegated token in place of the agent's token and the person's assertion; that
+    token names both the agent and the person, so discovery asked with it answers the person's grants
+    narrowed by the agent's, never wider. Pass the call's credential
+    (:meth:`threetears.agent.tools.call_scope.ToolCallScope.door_credential`) so that token is asked
+    with; the forwarded tokens alone are empty on such a call and it is refused. The answer is kept in a
     :class:`CallerAccessCache` keyed by the verified agent and person, which the pod binds and follows
     (:func:`threetears.agent.acl.generation_follow.follow_caller_access_cache`). It fails closed: a pod
     not connected yet, a call with no token, a failed or refused discovery all raise
@@ -443,6 +497,7 @@ class CallerNamespaces:
         identity_token: str | None,
         user_identity_token: str | None,
         correlation_id: UUID | None = None,
+        credential: DoorCredential | None = None,
     ) -> frozenset[str]:
         """the names of the namespaces the hub lists for this caller.
 
@@ -456,6 +511,10 @@ class CallerNamespaces:
         :ptype user_identity_token: str | None
         :param correlation_id: the call's correlation id, for tracing; a fresh one when ``None``
         :ptype correlation_id: UUID | None
+        :param credential: what the call presents at a platform door: its delegated token proven with
+            the pod's key, or its forwarded identity token. Discovery is asked with its token in place
+            of ``identity_token``; ``None`` asks with ``identity_token``
+        :ptype credential: DoorCredential | None
         :return: the namespace names
         :rtype: frozenset[str]
         :raises CallerNamespacesUnavailable: when the answer cannot be had
@@ -469,15 +528,18 @@ class CallerNamespaces:
         client = self._discovery()
         if client is None:
             raise CallerNamespacesUnavailable("the pod is not connected to the hub yet")
-        if not identity_token and not user_identity_token:
+        token = credential.token if credential is not None else identity_token
+        if not token and not user_identity_token:
             raise CallerNamespacesUnavailable("the call carried no hub credential to ask discovery with")
         fence = self._cache.read_fence()
         try:
             items = await client.discover(
                 correlation_id=correlation_id if correlation_id is not None else uuid7(),
-                identity_token=identity_token,
+                identity_token=token or None,
                 user_identity_token=user_identity_token,
                 namespace_type=self._namespace_type,
+                # the credential rides only when it proves, so a stand-in written before it keeps working
+                **({"credential": credential} if credential is not None and credential.proves else {}),
             )
         # prawduct:allow prawduct/broad-except -- the hub's answer is the authority; any failure to have it is a refusal
         except Exception as exc:  # noqa: BLE001

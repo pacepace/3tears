@@ -21,10 +21,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 import mapbox_vector_tile
-from shapely import clip_by_rect
+from shapely import clip_by_rect, transform
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform
 
 from threetears.geo.bands import UNDECODABLE_PROPERTY, TileFeature
 from threetears.geo.tiles import TILE_EXTENT, MAX_MERCATOR_LATITUDE, TileId, tile_bounds
@@ -82,14 +81,22 @@ def project_to_tile(geometry: BaseGeometry, tile: TileId) -> BaseGeometry:
     bottom = _mercator_y(bounds.min_lat)
     y_span = bottom - top
 
-    def _project(x: Any, y: Any, z: Any = None) -> tuple[float, float]:
+    def _project(x: float, y: float) -> tuple[float, float]:
         local_x = (x - bounds.min_lon) / lon_span * TILE_EXTENT
         # (mercator_y - top) already increases southward, so no extra flip:
         # the downward direction comes from the projection itself.
         local_y = (_mercator_y(y) - top) / y_span * TILE_EXTENT
         return (local_x, local_y)
 
-    return transform(_project, geometry)
+    def _project_arrays(xs: Any, ys: Any) -> tuple[list[float], list[float]]:
+        # shapely hands the x and y columns as float64 arrays; each coordinate goes through the
+        # scalar ``math`` projection, so every value is the one the projection has always
+        # produced (numpy's vectorised trig can differ in the last bit). include_z=False drops a
+        # third dimension, as tile coordinates are 2-D.
+        projected = [_project(x, y) for x, y in zip(xs.tolist(), ys.tolist(), strict=True)]
+        return [px for px, _ in projected], [py for _, py in projected]
+
+    return transform(geometry, _project_arrays, include_z=False, interleaved=False)
 
 
 def clip_to_tile(projected: BaseGeometry, buffer: int = TILE_BUFFER) -> BaseGeometry:

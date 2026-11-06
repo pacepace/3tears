@@ -13,10 +13,13 @@ it is the reason the workflow classifies with shell ``case`` rather than
 ``grep -qv``: "some line did not match" and "no line matched" read alike and
 differ exactly here.
 
-This test extracts the real ``scope`` step out of the workflow and runs it,
-rather than restating its logic -- a copy of the rule here could agree with
-itself forever while the workflow drifted. The git-diff line is swapped for a
-fixture file, which is the only substitution made.
+The classifier lives in ``scripts/ci-scope.sh``, the one file both the
+``check`` job and every ``unit`` shard run as their ``scope`` step: a shard
+that ran a different rule could skip a suite ``check`` believes ran. This test
+pins that both jobs' ``scope`` steps run that script, then runs the script
+itself rather than restating its logic -- a copy of the rule here could agree
+with itself forever while the script drifted. The git-diff line is swapped for
+a fixture file, which is the only substitution made.
 """
 
 from __future__ import annotations
@@ -30,6 +33,10 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_SCOPE_SCRIPT = "scripts/ci-scope.sh"
+
+#: the jobs whose suite the doc-only skip governs; each must classify with the shared script.
+_SCOPED_JOBS = ("check", "unit")
 
 #: changesets and whether the suite MUST run for them. The mixed entries are
 #: the point of the file; the pure-docs ones stop the skip from becoming a
@@ -51,24 +58,55 @@ _CASES = [
 ]
 
 
-def _scope_script() -> str:
-    """Return the workflow's ``scope`` step, ready to run against a fixture.
+def _scope_step(job: str) -> dict[str, object]:
+    """Return *job*'s ``scope`` step from the workflow.
 
-    :return: the step's shell body with the git-diff line reading a fixture
-    :rtype: str
-    :raises AssertionError: when the step, or the line to swap, has been
-        renamed -- which means this test is no longer checking the real rule
+    :param job: the job name in ci.yml
+    :ptype job: str
+    :return: the step mapping
+    :rtype: dict[str, object]
+    :raises AssertionError: when the job or its ``scope`` step has gone
     """
     workflow = yaml.safe_load(_WORKFLOW.read_text())
-    steps = [step for step in workflow["jobs"]["check"]["steps"] if step.get("id") == "scope"]
-    assert steps, "ci.yml has no step with id 'scope'; this test no longer checks the real classifier"
-    body: str = steps[0]["run"]
+    assert job in workflow["jobs"], f"ci.yml has no job {job!r}; this test no longer checks the real classifier"
+    steps = [step for step in workflow["jobs"][job]["steps"] if step.get("id") == "scope"]
+    assert steps, f"ci.yml job {job!r} has no step with id 'scope'; this test no longer checks the real classifier"
+    step: dict[str, object] = steps[0]
+    return step
 
+
+@pytest.mark.parametrize("job", _SCOPED_JOBS)
+def test_every_scoped_job_classifies_with_the_shared_script(job: str) -> None:
+    """``check`` and every unit shard run the one classifier, fed the event and the PR base.
+
+    :param job: the job name in ci.yml
+    :ptype job: str
+    :return: nothing
+    :rtype: None
+    """
+    step = _scope_step(job)
+    assert str(step.get("run", "")).strip() == f"./{_SCOPE_SCRIPT}", (
+        f"ci.yml job {job!r}'s scope step must run ./{_SCOPE_SCRIPT}, the classifier this test exercises"
+    )
+    env = step.get("env")
+    assert isinstance(env, dict)
+    assert env.get("EVENT_NAME") == "${{ github.event_name }}"
+    assert env.get("BASE_SHA") == "${{ github.event.pull_request.base.sha }}"
+
+
+def _scope_script() -> str:
+    """Return the shared ``scope`` classifier, ready to run against a fixture.
+
+    :return: the script's shell body with the git-diff line reading a fixture
+    :rtype: str
+    :raises AssertionError: when the line to swap has been renamed -- which
+        means this test is no longer checking the real rule
+    """
+    body = (_REPO_ROOT / _SCOPE_SCRIPT).read_text()
     marker = "changed=$(git diff"
-    assert marker in body, f"the scope step no longer contains {marker!r}; update this test with the workflow"
+    assert marker in body, f"{_SCOPE_SCRIPT} no longer contains {marker!r}; update this test with the script"
     lines = ['changed=$(cat "$FIXTURE")' if line.startswith(marker) else line for line in body.splitlines()]
-    # The event-name guard is a GitHub expression the shell cannot evaluate.
-    return "\n".join(lines).replace("${{ github.event_name }}", "pull_request")
+    return "\n".join(lines)
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="the workflow step is bash; none on this host")
@@ -96,6 +134,7 @@ def test_the_ci_scope_step_classifies_a_changeset(changed: list[str], suite_requ
             "PATH": "/usr/bin:/bin:/usr/local/bin",
             "FIXTURE": str(fixture),
             "GITHUB_OUTPUT": str(output),
+            "EVENT_NAME": "pull_request",
         },
         capture_output=True,
         text=True,

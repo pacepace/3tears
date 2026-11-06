@@ -149,9 +149,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 import asyncpg
 
@@ -176,6 +177,7 @@ from threetears.datasources.drivers.sql_fragments import (
     build_search_path_value,
     build_set_local_statement_timeout_sql,
 )
+
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -183,7 +185,8 @@ from threetears.datasources.drivers.base import (
     RelationFingerprint,
     TableRow,
     Transaction,
-    _check_otel_metrics,
+    _OTEL_METRICS,
+    _drivers_meter,
     _instrument_cache,
     check_max_rows,
     log_unselectable_relations,
@@ -417,7 +420,7 @@ def _get_cancellation_fired_counter() -> Any:
     :rtype: Any
     """
     result: Any = None
-    if _check_otel_metrics():
+    if _OTEL_METRICS:
         key = ("asyncpg", "datasource.driver.cancellation.fired")
 
         def _build() -> Any:
@@ -427,9 +430,7 @@ def _get_cancellation_fired_counter() -> Any:
             :return: the new OTel instrument
             :rtype: Any
             """
-            from opentelemetry import metrics
-
-            meter = metrics.get_meter("threetears.datasources.drivers")
+            meter = _drivers_meter()
             instrument = meter.create_counter(
                 name="datasource.driver.cancellation.fired",
                 description="datasource driver cancellation fired count",
@@ -451,12 +452,157 @@ def _get_cancellation_fired_counter() -> Any:
 BORROWED_POOL_ACQUIRE_TIMEOUT_SECONDS: Final = 5.0
 
 
+#: the declared Postgres types whose text a datasource rail carries for a value JSON cannot (a timestamp, a date,
+#: a UUID, a decimal), and which asyncpg refuses as text: a page's last key comes back as a parameter in that form.
+#: Postgres casts each from text itself (``$n::text::type``), so a value means what Postgres's own text cast makes
+#: of it, the session's time zone included
+_CAST_FROM_TEXT: Final[frozenset[str]] = frozenset(
+    {
+        "timestamp",
+        "timestamptz",
+        "date",
+        "time",
+        "timetz",
+        "interval",
+        "uuid",
+        "numeric",
+        "int2",
+        "int4",
+        "int8",
+        "float4",
+        "float8",
+        "bool",
+    }
+)
+
+#: the statements whose refused text parameters were bound as their declared types, most recent last: each is
+#: logged once while it is among the last :data:`_RETRIED_SHAPES_KEPT`, so the record stays bounded
+_RETRIED_SHAPES: Final[OrderedDict[str, None]] = OrderedDict()
+_RETRIED_SHAPES_KEPT: Final = 1024
+
+_BoundT = TypeVar("_BoundT")
+
+
+def _refused_bind(exc: BaseException) -> bool:
+    """whether ``exc`` is asyncpg's own refusal to encode a parameter, raised before the statement is sent.
+
+    asyncpg raises that refusal as a bare ``DataError`` caused by its codec's error. A server's data error -- a
+    division by zero, a bad value the server parsed -- is a subclass, or carries the server's own fields, and is
+    never one: the statement ran, and running it again could run it twice.
+
+    :param exc: what a statement raised
+    :ptype exc: BaseException
+    :return: True only for the client-side bind refusal
+    :rtype: bool
+    """
+    return (
+        type(exc) is asyncpg.exceptions.DataError
+        and exc.__cause__ is not None
+        and getattr(exc, "server_source_function", None) is None
+    )
+
+
+async def _as_declared(conn: Any, sql: str, params: Sequence[Any]) -> tuple[Any, ...] | None:
+    """``params`` with each text value cast by Postgres to the type it declares for its placeholder.
+
+    The casts run in one statement inside a savepoint (or a transaction of their own), so text that is no value
+    of its type rolls back cleanly and leaves a caller's transaction as it was.
+
+    :param conn: the connection the statement runs on
+    :ptype conn: Any
+    :param sql: the statement, ``$N`` placeholders
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :return: the converted parameters; ``None`` when no text value has a type to convert to, or one is no value
+        of its type (the caller's own refusal then stands)
+    :rtype: tuple[Any, ...] | None
+    """
+    statement = await conn.prepare(sql)
+    casts = [
+        (index, declared.name)
+        for index, (value, declared) in enumerate(zip(params, statement.get_parameters(), strict=False))
+        if isinstance(value, str) and declared.name in _CAST_FROM_TEXT
+    ]
+    if not casts:
+        return None
+    # the type names are this module's own allowlist, so the cast list is no caller's text
+    select = ", ".join(f"${position}::text::{name}" for position, (_, name) in enumerate(casts, start=1))
+    try:
+        async with conn.transaction():
+            row = await conn.fetchrow(f"SELECT {select}", *(params[index] for index, _ in casts))
+    except asyncpg.exceptions.DataError:
+        # NOSILENT: not this type's text; the caller re-raises the driver's own refusal of it
+        return None
+    converted = list(params)
+    for position, (index, _) in enumerate(casts):
+        converted[index] = row[position]
+    return tuple(converted)
+
+
+def _note_typed_retry(sql: str) -> None:
+    """say, once per statement, that its refused text parameters were bound as their declared types.
+
+    :param sql: the statement
+    :ptype sql: str
+    :return: nothing
+    :rtype: None
+    """
+    if sql in _RETRIED_SHAPES:
+        _RETRIED_SHAPES.move_to_end(sql)
+        return
+    _RETRIED_SHAPES[sql] = None
+    while len(_RETRIED_SHAPES) > _RETRIED_SHAPES_KEPT:
+        _RETRIED_SHAPES.popitem(last=False)
+    log.info(
+        "a statement's text parameters were refused and bound as their declared types; each such call pays "
+        "a prepare and a cast round trip",
+        extra={"extra_data": {"statement": sql[:200]}},
+    )
+
+
+async def _bound_as_declared(
+    conn: Any,
+    sql: str,
+    params: Sequence[Any],
+    run: Callable[[Sequence[Any]], Awaitable[_BoundT]],
+) -> _BoundT:
+    """run a statement; when asyncpg refuses a text parameter, once more with each cast to its declared type.
+
+    Only asyncpg's own bind refusal is retried (:func:`_refused_bind`): it is raised before the statement is
+    sent, so a transaction it runs in is unharmed and the statement has not run. A server's error is raised
+    as it is, and the statement never runs twice. Only a refused bind pays the extra round trips.
+
+    :param conn: the connection
+    :ptype conn: Any
+    :param sql: the statement
+    :ptype sql: str
+    :param params: its parameters
+    :ptype params: Sequence[Any]
+    :param run: runs the statement with the parameters it is given
+    :ptype run: Callable[[Sequence[Any]], Awaitable[_BoundT]]
+    :return: what ``run`` returns
+    :rtype: _BoundT
+    :raises asyncpg.exceptions.DataError: when the parameters do not bind even as their declared types
+    """
+    try:
+        return await run(params)
+    except asyncpg.exceptions.DataError as exc:
+        if not _refused_bind(exc):
+            raise
+        declared = await _as_declared(conn, sql, params)
+        if declared is None:
+            raise
+        _note_typed_retry(sql)
+        return await run(declared)
+
+
 class AsyncpgDriver(Driver):
     """concrete :class:`Driver` backed by ``asyncpg.Pool``.
 
     construct via :func:`threetears.datasources.drivers.create_driver`
     rather than directly -- the factory wires the borrowed-pool kwarg
-    for the agent-internal case and enforces the lazy-import contract.
+    for the agent-internal case.
 
     pool lifecycle:
 
@@ -1000,7 +1146,7 @@ class AsyncpgDriver(Driver):
         # consistent across drivers.
         translated = translate_placeholders(sql, "asyncpg")
         records = await self._acquire_and_run(
-            lambda conn: conn.fetch(translated, *params),
+            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.fetch(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1039,7 +1185,9 @@ class AsyncpgDriver(Driver):
         async def _bounded(conn: Any) -> Any:
             # a cursor lives in a transaction; nested in the timeout's own one, this is a savepoint
             async with conn.transaction():
-                cursor = await conn.cursor(translated, *params)
+                cursor = await _bound_as_declared(
+                    conn, translated, params, lambda bound: conn.cursor(translated, *bound)
+                )
                 return await cursor.fetch(max_rows)
 
         records = await self._acquire_and_run(_bounded, timeout_seconds=timeout_seconds)
@@ -1071,7 +1219,7 @@ class AsyncpgDriver(Driver):
             build_set_local_statement_timeout_sql(timeout_seconds)
         translated = translate_placeholders(sql, "asyncpg")
         await self._acquire_and_run(
-            lambda conn: conn.execute(translated, *params),
+            lambda conn: _bound_as_declared(conn, translated, params, lambda bound: conn.execute(translated, *bound)),
             timeout_seconds=timeout_seconds,
         )
 
@@ -1147,7 +1295,9 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         records = await self._with_cancellation(
-            lambda: checkout.conn.fetch(translated, *params),
+            lambda: _bound_as_declared(
+                checkout.conn, translated, params, lambda bound: checkout.conn.fetch(translated, *bound)
+            ),
             cancel_callback=self._observe_cancellation,
         )
         result: list[dict[str, Any]] = [dict(r) for r in records]
@@ -1179,7 +1329,9 @@ class AsyncpgDriver(Driver):
         translated = translate_placeholders(sql, "asyncpg")
         await self._apply_transaction_timeout(checkout, timeout_seconds)
         await self._with_cancellation(
-            lambda: checkout.conn.execute(translated, *params),
+            lambda: _bound_as_declared(
+                checkout.conn, translated, params, lambda bound: checkout.conn.execute(translated, *bound)
+            ),
             cancel_callback=self._observe_cancellation,
         )
 
@@ -1268,8 +1420,24 @@ class AsyncpgDriver(Driver):
             async with conn.transaction():
                 # ``Connection.cursor`` returns a server-side cursor;
                 # this is the WHOLE reason we override the ABC default.
-                async for record in conn.cursor(translated, *params):
-                    yield dict(record)
+                # a stream binds inside its first step: a refused bind is retried there, as the other paths
+                # retry theirs, before any row was yielded
+                bound: Sequence[Any] = params
+                for attempt in range(2):
+                    yielded = False
+                    try:
+                        async for record in conn.cursor(translated, *bound):
+                            yielded = True
+                            yield dict(record)
+                        break
+                    except asyncpg.exceptions.DataError as exc:
+                        if yielded or attempt or not _refused_bind(exc):
+                            raise
+                        declared = await _as_declared(conn, translated, params)
+                        if declared is None:
+                            raise
+                        _note_typed_retry(translated)
+                        bound = declared
 
     # -------------------------------------------------------------------
     # Driver ABC: introspection surface

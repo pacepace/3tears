@@ -18,6 +18,13 @@ both registers it with ``depends_on=("agent_acl",)``.
 
 from __future__ import annotations
 
+from threetears.agent.acl.collections import (
+    GroupCollection,
+    GroupMemberCollection,
+    NamespaceCollection,
+    RoleAssignmentCollection,
+    RoleCollection,
+)
 from threetears.agent.acl.migrations.v001_create_acl_tables import ACL_TABLES_DDL, create_acl_tables
 from threetears.core.data.migrations import MigrationRunner, MigrationScope, PackageMigrations
 
@@ -36,14 +43,6 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg = PackageMigrations(name=PACKAGE_NAME, scope=MigrationScope.PLATFORM)
     pkg.version(1)(create_acl_tables)
     # the five access tables are switched on: each carries the write-mark trigger from this run
-    from threetears.agent.acl.collections import (  # noqa: PLC0415 - the collections import the migrations' DDL
-        GroupCollection,
-        GroupMemberCollection,
-        NamespaceCollection,
-        RoleAssignmentCollection,
-        RoleCollection,
-    )
-
     pkg.mark_write_generation(
         GroupCollection.schema,
         GroupMemberCollection.schema,

@@ -27,6 +27,11 @@ use:
   real delete publishes one; :meth:`FakeKvBucket.create` lands over it.
 - :meth:`FakeKvBucket.delete` accepts an optional ``revision`` and
   returns ``True`` on success or absent key, ``False`` on CAS mismatch.
+- :meth:`FakeKvBucket.delete` accepts an optional ``marker_ttl``: its marker
+  is removed once the bucket's clock passes it (:meth:`FakeKvBucket.advance_clock`),
+  leaving the key nothing, as the real wrapper's lapsing purge marker is.
+  :attr:`FakeKvBucket.stored_messages` and :attr:`FakeKvBucket.stored_bytes`
+  report what the bucket holds, markers included.
 - :meth:`FakeKvBucket.date_created` reports when the bucket was created, and
   :meth:`FakeKvBucket.wipe` empties it, moves that time forward and restarts
   its revisions at 1, which is what a broker restart does to a memory-backed
@@ -196,6 +201,9 @@ class FakeKvBucket:
         self._stored_bytes = 0
         # the revision of each deleted key's marker: its latest message once its value is gone.
         self._markers: dict[str, int] = {}
+        # the bucket-clock time the server removes a marker given a lifetime (``delete``'s
+        # ``marker_ttl``), by key; a marker absent here lives as long as the bucket.
+        self._marker_expiry: dict[str, timedelta] = {}
         self._revision = 0
         self._date_created = datetime.now(UTC)
         # set by vanish(): the stream is gone until the next operation recreates it.
@@ -237,6 +245,7 @@ class FakeKvBucket:
             self._date_created = datetime.now(UTC)
             self._revision = 0
             self._markers.clear()
+            self._marker_expiry.clear()
 
     def advance_clock(self, delta: timedelta) -> None:
         """move this bucket's clock forward, lapsing any per-entry TTL it passes.
@@ -276,7 +285,10 @@ class FakeKvBucket:
         :rtype: int
         """
         entry = self._live(key)
-        return entry.revision if entry is not None else self._markers.get(key, 0)
+        if entry is not None:
+            return entry.revision
+        marker = self._marker(key)
+        return marker if marker is not None else 0
 
     def _write(self, key: str, value: bytes, ttl: timedelta | None) -> int:
         """append one message for ``key`` and return its revision.
@@ -295,21 +307,31 @@ class FakeKvBucket:
         self._revision += 1
         self._entries[key] = _Entry(value=value, revision=self._revision, expires_at=expires_at)
         self._markers.pop(key, None)
+        self._marker_expiry.pop(key, None)
         self._notify(KvKeyUpdate(key=key, value=value, revision=self._revision))
         return self._revision
 
-    def _mark_deleted(self, key: str) -> None:
+    def _mark_deleted(self, key: str, ttl: timedelta | None = None) -> None:
         """append the deletion marker a real delete publishes, the key's latest message from now on.
 
         :param key: the deleted key
         :ptype key: str
+        :param ttl: the marker's lifetime on this bucket's clock, after which it is removed and the
+            key holds nothing; ``None`` keeps it as long as the bucket
+        :ptype ttl: timedelta | None
         :return: None
         :rtype: None
         :raises KvError: when the marker would bring a bounded bucket to its bound
+        :raises ValueError: when ``ttl`` is under one second, as the real wrapper refuses
         """
+        expires_at = self._expiry(ttl)
         self._store_size(key, len(_DELETE_MARKER_HEADERS))
         self._revision += 1
         self._markers[key] = self._revision
+        if expires_at is None:
+            self._marker_expiry.pop(key, None)
+        else:
+            self._marker_expiry[key] = expires_at
         self._notify(KvKeyUpdate(key=key, value=None, revision=self._revision))
 
     def _store_size(self, key: str, payload: int) -> None:
@@ -331,6 +353,8 @@ class FakeKvBucket:
                 # the server removes an expired message on its own, so a lapsed entry frees its
                 # room whether or not its key is read again
                 self._live(held)
+            for marked in list(self._marker_expiry):
+                self._marker(marked)
         old = self._sizes.get(key)
         if bound is not None and bound > 0 and self._stored_bytes + size >= bound and (old is None or old < size):
             raise KvError(
@@ -349,6 +373,45 @@ class FakeKvBucket:
         :rtype: None
         """
         self._stored_bytes -= self._sizes.pop(key, 0)
+
+    def _marker(self, key: str) -> int | None:
+        """the revision of ``key``'s deletion marker, or ``None`` once it has none or it lapsed.
+
+        :param key: key to look up
+        :ptype key: str
+        :return: the marker's revision, or ``None``
+        :rtype: int | None
+        """
+        expires_at = self._marker_expiry.get(key)
+        if expires_at is not None and self._elapsed >= expires_at:
+            # the server removes a lapsed marker as it does a lapsed entry, leaving the key nothing
+            del self._marker_expiry[key]
+            del self._markers[key]
+            self._forget_size(key)
+        return self._markers.get(key)
+
+    @property
+    def stored_messages(self) -> int:
+        """how many messages the bucket holds: each key's latest, live value or deletion marker.
+
+        :return: the count, after removing every lapsed entry and marker
+        :rtype: int
+        """
+        for key in list(self._entries):
+            self._live(key)
+        for key in list(self._marker_expiry):
+            self._marker(key)
+        return len(self._entries) + len(self._markers)
+
+    @property
+    def stored_bytes(self) -> int:
+        """the bytes the bucket holds, as a bounded bucket counts them (see the module docstring).
+
+        :return: the total, after removing every lapsed entry and marker
+        :rtype: int
+        """
+        _ = self.stored_messages
+        return self._stored_bytes
 
     def _notify(self, update: KvKeyUpdate) -> None:
         """hand one new message to every open watch of its key.
@@ -370,7 +433,7 @@ class FakeKvBucket:
         :rtype: KvKeyUpdate | None
         """
         entry = self._live(key)
-        marker = self._markers.get(key)
+        marker = self._marker(key)
         latest: KvKeyUpdate | None = None
         if entry is not None:
             latest = KvKeyUpdate(key=key, value=entry.value, revision=entry.revision)
@@ -487,6 +550,7 @@ class FakeKvBucket:
             raise ValueError("FakeKvBucket.wipe requires a timezone-aware date_created")
         self._entries.clear()
         self._markers.clear()
+        self._marker_expiry.clear()
         self._sizes.clear()
         self._stored_bytes = 0
         self._date_created = date_created if date_created is not None else datetime.now(UTC)
@@ -511,6 +575,7 @@ class FakeKvBucket:
         """
         self._entries.clear()
         self._markers.clear()
+        self._marker_expiry.clear()
         self._sizes.clear()
         self._stored_bytes = 0
         self._vanished = True
@@ -713,7 +778,8 @@ class FakeKvBucket:
         await self._arrive()
         entry = self._live(key)
         if entry is None:
-            return (None, self._markers.get(key, 0))
+            marker = self._marker(key)
+            return (None, marker if marker is not None else 0)
         return (entry.value, entry.revision)
 
     async def update(self, *, key: str, value: bytes, revision: int, ttl: timedelta | None = None) -> int | None:
@@ -735,13 +801,17 @@ class FakeKvBucket:
             return None
         return self._write(key, value, ttl)
 
-    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+    async def delete(self, *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None) -> bool:
         """delete a key, optionally guarded by a CAS revision.
 
         :param key: key to remove
         :ptype key: str
         :param revision: expected current revision; ``None`` skips CAS
         :ptype revision: int | None
+        :param marker_ttl: the marker's lifetime on this bucket's clock (see :meth:`advance_clock`),
+            after which it is removed and the key holds nothing, as the real wrapper's lapsing purge
+            marker is; ``None`` keeps it as long as the bucket
+        :ptype marker_ttl: timedelta | None
         :return: ``True`` on success; ``False`` on CAS mismatch, INCLUDING when the key is
             already gone. an unguarded delete of an absent key is still ``True`` (idempotent).
         :rtype: bool
@@ -755,13 +825,13 @@ class FakeKvBucket:
             # passed a concurrency test. An unguarded one still publishes a marker, as the real
             # server does: a delete is a message whether or not the key held anything.
             if revision is None:
-                self._mark_deleted(key)
+                self._mark_deleted(key, marker_ttl)
             return revision is None
         if revision is not None and entry.revision != revision:
             return False
         # a real delete publishes a marker, which is the key's latest message from now on. marked
         # first: a bounded bucket may refuse the marker, and then the value stays.
-        self._mark_deleted(key)
+        self._mark_deleted(key, marker_ttl)
         del self._entries[key]
         return True
 

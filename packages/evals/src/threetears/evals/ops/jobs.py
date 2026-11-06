@@ -40,7 +40,7 @@ reads the run's record for each), as its writes of the record are: a cell in fli
 the run stored before the loss stays, and its status, completeness and ending are the loss's; no renewal and no
 write of the lost holder ever revives it.
 
-**The one way back is a resume** (:func:`job_resume`), asked for and never made on its own. A run's job that was
+**The one way back is a resume** (:func:`~threetears.evals.ops.resume.job_resume`), asked for and never made on its own. A run's job that was
 lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again as the same run,
 under its lease's next epoch: the cells it has not measured run, and it ends as an uninterrupted run would have
 (:func:`~threetears.evals.run.resume_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
@@ -63,7 +63,7 @@ from pydantic import Field, ValidationError
 
 from threetears.evals.schema.base import EvalBaseModel, EvalDocumentModel
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
-from threetears.evals.kernel.storage import UnreadableRecordError, UnreadableRunError
+from threetears.evals.kernel.storage import EvalStorage, UnreadableRecordError, UnreadableRunError
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep
 from threetears.evals.schema.models import EvalRun
@@ -77,15 +77,14 @@ from threetears.evals.kernel.job_leases import (
     settle_job_record,
 )
 from threetears.evals.run.lifecycle import require_cancellable
-from threetears.evals.run.resume import resume_launch, resume_run
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.host.eval_host import CompletionRole
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import KnownOutOfRunPurpose
-from threetears.evals.analysis.agreement import InterJudgeAgreement, inter_judge_agreement
-from threetears.evals.analysis.judge_drift import JudgeDrift, judge_drift
+from threetears.evals.analysis.agreement import InterJudgeAgreement, InterJudgeTally
+from threetears.evals.analysis.judge_drift import JudgeDrift, JudgeDriftTally
 from threetears.evals.analysis.judge_temperature import read_judge_temperatures
 from threetears.evals.analysis.summary import budget_stop_line
 from collections.abc import Awaitable, Callable
@@ -104,6 +103,7 @@ from threetears.evals.run.judge_second import SECOND_JUDGE_JOB, EvalSecondJudgeP
 from threetears.evals.run.judge_temperature import JUDGE_TEMPERATURE_JOB, EvalJudgeTemperatureCheck
 from threetears.evals.run.launch_job import LAUNCH_JOB, EvalLaunch
 from threetears.evals.kernel.remedies import FIND_JOB, FIND_RUN
+from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 #: What a job's work is: a launch (its arms prepared and its runs run), one launched run, an analysis generation, a
 #: sweep launching its arms in order, a second judge's pass, a judge temperature comparison, or a host action's work.
@@ -551,6 +551,21 @@ async def _settled_attempt(
     return attempt
 
 
+def _second_judge_readings(
+    storage: EvalStorage, run_id: str, pass_id: str, scope_id: str
+) -> tuple[InterJudgeAgreement, JudgeDrift]:
+    """A second judge pass's agreement and drift, read off its run a page at a time
+    (:func:`~threetears.evals.kernel.run_pages.iter_run_results`), so a poll of a large run's pass never holds the run.
+    A run deleted since the pass leaves no result to read, as a read of its results by run found none.
+    """
+    agreement, drift = InterJudgeTally(pass_id=pass_id), JudgeDriftTally(pass_id=pass_id)
+    if (run := storage.load_eval_run(run_id, scope_id)) is not None:
+        for result in iter_run_results(storage, run, page_results=RUN_RESULTS_PAGE):
+            agreement.add(result)
+            drift.add(result)
+    return agreement.agreement(), drift.drift()
+
+
 async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     """Where a job stands, read from the record its work writes — the same answer in every process.
 
@@ -603,14 +618,15 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
             raise NotFoundError("second judge pass", target_id, remedy=FIND_JOB)
         read: dict[str, Any] | None = None
         if judged.outcome == "completed" and judged.report is not None and judged.lost is None:
-            results = await run_blocking(
-                eval_host.blocking_executor, eval_host.storage.query_eval_results_by_run, judged.run_id, scope_id
+            agreement, drift = await run_blocking(
+                eval_host.blocking_executor,
+                _second_judge_readings,
+                eval_host.storage,
+                judged.run_id,
+                judged.id,
+                scope_id,
             )
-            read = SecondJudgeRead(
-                report=judged.report,
-                agreement=inter_judge_agreement(results, pass_id=judged.id),
-                drift=judge_drift(results, pass_id=judged.id),
-            ).model_dump(mode="json")
+            read = SecondJudgeRead(report=judged.report, agreement=agreement, drift=drift).model_dump(mode="json")
         return _record_status(job_id, kind, judged, run_id=judged.run_id, result=read)
     if kind == "judge_temperature":
         check = await _settled(host, JUDGE_TEMPERATURE_JOB, target_id, scope_id)
@@ -681,65 +697,6 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     else:
         manager.cancel_task(record_id)
     return await job_poll(host, job_id, scope_id)
-
-
-async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd: float | None = None) -> JobsStarted:
-    """Take an interrupted job up again as the same job, and start it: a run's, a sweep's or a launch's.
-
-    A run that was lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again
-    (:func:`~threetears.evals.run.resume_run`); its cells not yet measured run as its job, polled by the run's own job
-    id. A sweep (``sweep:<id>``) or a launch (``launch:<id>``) that was lost, cancelled, or stopped by its own time
-    budget is taken up as a whole: each arm's unfinished run is taken up again, each arm of a sweep that never
-    launched is launched, and the arm schedule is kept — an interleaved sweep's or launch's arms run in one group under
-    its original launch group, so they take their cells in turn in the order they always had
-    (:func:`~threetears.evals.ops.sweeps.sweep_resume`, :func:`~threetears.evals.run.resume.resume_launch`). Its job is
-    polled by its own id, and reads ``completed`` once every arm has.
-
-    Everything that could refuse it is decided in the call, before anything is spent: a job that completed, failed or
-    is still live is refused, as is a run its budget stopped at its cap unless ``max_cost_usd`` is above what it
-    spent, and one a launch of which would now measure otherwise than it did — the refusal names every difference,
-    and for a sweep or a launch, every arm's. Any other kind of job is started again by the action that started it.
-
-    :param host: The host whose launcher wires the runs again and whose job manager runs them.
-    :ptype host: OpsHost
-    :param job_id: The job's id, as its start returned it or ``resumable_jobs`` lists it.
-    :ptype job_id: str
-    :param scope_id: The scope the job lives in.
-    :ptype scope_id: str
-    :param max_cost_usd: The cost cap to resume under — every arm's, for a sweep or a launch — above what was spent;
-        ``None`` keeps each run's recorded cap. Not part of the measurement: each holding records the cap it ran
-        under.
-    :ptype max_cost_usd: float | None
-    :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``).
-    :rtype: JobsStarted
-    :raises ValidationFailedError: The id names no job, or a job of a kind not resumed; the job cannot be taken up, or
-        would measure otherwise now (every difference named); or a launch of a run would be refused now.
-    :raises NotFoundError: No such job in the scope, or a template is gone.
-    :raises ConflictError: Another resume of it won, or another writer moved it, while this one prepared; nothing
-        was started.
-    :raises AdmissionRefusedError: The host has no room for the runs.
-    """
-    kind, target_id, _ = parse_job_id(job_id)
-    if kind == "sweep":
-        # Imported here: the sweep's operations import this module's job contract.
-        from threetears.evals.ops.sweeps import sweep_resume
-
-        return await sweep_resume(host, target_id, scope_id, max_cost_usd=max_cost_usd)
-    if kind == "launch":
-        launch = await resume_launch(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
-        label = ", ".join(launch.models) or "the kind's default model"
-        return JobsStarted(
-            jobs=[JobHandle(job_id=launch_job_id(launch.id), kind="launch", target_id=launch.template_id, label=label)]
-        )
-    if kind != "run":
-        raise ValidationFailedError(
-            f"{kind} job {job_id!r} is not resumed; only a run's, a sweep's or a launch's job is",
-            remedy="start the work again with the action that started it",
-        )
-    run = await resume_run(host.launch, target_id, scope_id, max_cost_usd=max_cost_usd)
-    return JobsStarted(
-        jobs=[JobHandle(job_id=run_job_id(run.id), kind="run", target_id=run.id, label=run.candidate_model)]
-    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -974,7 +931,6 @@ __all__ = [
     "analysis_job_id",
     "generation_key",
     "job_cancel",
-    "job_resume",
     "parse_job_id",
     "job_poll",
     "run_job_id",
