@@ -152,7 +152,7 @@
 "threetears.evals.schema.KnownMeteredCallOrigin": "provisional",
 "threetears.evals.schema.KnownModelRoleOrigin": "provisional",
 "threetears.evals.schema.KnownOutOfRunPurpose": "host-contract",
-"threetears.evals.schema.KnownReasoningEffort": "host-contract",
+"threetears.evals.schema.KnownReasoningEffort": "provisional",
 "threetears.evals.schema.KnownRefusalKind": "host-contract",
 "threetears.evals.schema.KnownRoleModelOrigin": "provisional",
 "threetears.evals.schema.KnownSimulatorPurpose": "host-contract",

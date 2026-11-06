@@ -1138,7 +1138,7 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, 515 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, 514 names, mapped by rung in [the surface](surface.md). A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
 only a known host's tests import, until that host re-pins (the rules, in full: [the surface](surface.md)). Otherwise

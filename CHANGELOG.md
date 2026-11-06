@@ -12,24 +12,26 @@ packages (bumped in lock-step).
 `threetears.evals.analysis`, 7 from `threetears.evals.ops`); `StyleProfile`, `ToneRegister`, `HostProfile.style` and
 `HostProfile.caveat_kinds`; the in-cell cost cap's `CostCapReached`, `CellReservation`, `CellSink.reserve` and
 `CellSink.cost_cap_reached`; and `Ceilings.generation_ceiling_s`. The module `__getattr__` hooks that served them go
-too. These names were live in v0.90.0 and v0.91.x, the host-contract `REPORTER_KIND_CONTRACT`, `EVAL_ANALYSIS_GEN_DEFAULT`,
-`analysis_gen_request_settings_for`, `generate_analysis`, `CostCapReached`, `HostProfile.style`,
-`HostProfile.caveat_kinds`, `CellSink.reserve`, `CellSink.cost_cap_reached` and `Ceilings.generation_ceiling_s` among
-them, and no release carried their deprecation, so removing them breaks the host-contract cycle in
-[stability tiers](packages/evals/docs/adopting-a-host.md#stability-tiers). The owner approved the exception on
-2026-11-03, for every deletion of the evals reset, and Discodon, the only production host, confirmed on 2026-11-06
-that it drops every import on its re-pin branch before it moves its pin. A host still importing one breaks on upgrade
-and ports by the Hosts line. `MIGRATIONS.toml` records each name. The declared surface drops from 535 names to 515.
+too. These names, all but `EVAL_REPORT_PLAN_DEFAULT`, which no release exported, were live in v0.90.0 and v0.91.x, the
+host-contract `REPORTER_KIND_CONTRACT`, `EVAL_ANALYSIS_GEN_DEFAULT`, `analysis_gen_request_settings_for`,
+`generate_analysis`, `CostCapReached`, `HostProfile.style`, `HostProfile.caveat_kinds`, `CellSink.reserve`,
+`CellSink.cost_cap_reached` and `Ceilings.generation_ceiling_s` among them, and no release carried their deprecation, so
+removing them breaks the host-contract cycle in [stability
+tiers](packages/evals/docs/adopting-a-host.md#stability-tiers). The owner approved the exception on 2026-11-03, for
+every deletion of the evals reset, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every
+import on its re-pin branch before it moves its pin. A host still importing one breaks on upgrade and ports by the Hosts
+line. `MIGRATIONS.toml` records each name. The declared surface drops from 535 names to 514: `KnownReasoningEffort`
+(`threetears.evals.schema`) goes provisional, since only `analysis_gen_request_settings_for`'s signature reached it.
 Nothing stored changes shape or version, and no printed page changes.
 
 **Hosts:** a host that still imports one changes it as follows. The reporter kind's names: delete the kind's
 registration, launcher and template check, and evaluate the report writer with the `report_writer` kind
 (`writer_template_create`, `writer_case_mint`); a host that named the kind's string writes `"analysis_reporter"` itself.
-`generate_analysis`: call `analysis_generate`.
-`EVAL_ANALYSIS_GEN_DEFAULT`, `EVAL_REPORT_PLAN_DEFAULT`, `analysis_gen_request_settings_for`: drop the slot and the
-client policy. `StyleProfile`, `ToneRegister`, `style=`, `caveat_kinds=`: drop them. `CostCapReached`: drop the
-`except` clause. `reserve`, `cost_cap_reached`, `CellReservation`: call `sink.add_spend(source, cost)` once a call
-returns. `generation_ceiling_s`: use `Ceilings().writer_ceiling_s`.
+`generate_analysis`: call `analysis_generate`. `EVAL_ANALYSIS_GEN_DEFAULT`, `EVAL_REPORT_PLAN_DEFAULT`,
+`analysis_gen_request_settings_for`: drop the slot and the client policy. `StyleProfile`, `ToneRegister`, `style=`,
+`caveat_kinds=`: drop them. `CostCapReached`: drop the `except` clause. `reserve`, `cost_cap_reached`,
+`CellReservation`: call `sink.add_spend(source, cost)` once a call returns. `generation_ceiling_s`: use
+`Ceilings().writer_ceiling_s`.
 
 ### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
 

@@ -14,12 +14,11 @@
 # Computed 2026-11-06 over this tree at a3f15bfd8 and Discodon develop at e5a7f2a56 (2026-11-03): a Discodon test is
 # a file under tests/, a conftest.py or a test_*.py; the rest is its production code, which also reads the three
 # seed defaults (gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT, gen.EVAL_PROPOSER_TEMPLATE_DEFAULT,
-# analysis.EVAL_ANALYSIS_GEN_DEFAULT) by name. 25 discodon-tests-only, 18 port-host-implements,
-# 13 protocol-engine-provides, 0 unreached.
+# analysis.EVAL_ANALYSIS_GEN_DEFAULT) by name. 24 discodon-tests-only (25 less generate_analysis, removed with the
+# shims in R4), 18 port-host-implements, 13 protocol-engine-provides, 0 unreached.
 threetears.evals.analysis.ABSENT | discodon-tests-only
 threetears.evals.analysis.MIN_CASES | discodon-tests-only
 threetears.evals.analysis.assemble_campaign_bundle | discodon-tests-only
-threetears.evals.analysis.generate_analysis | discodon-tests-only
 threetears.evals.analysis.serialize_report | discodon-tests-only
 threetears.evals.kernel.ACCURACY_MEASURE | discodon-tests-only
 threetears.evals.kernel.ActionSeam | port-host-implements

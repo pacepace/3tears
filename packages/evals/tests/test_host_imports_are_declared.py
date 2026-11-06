@@ -34,6 +34,7 @@ REMOVED_BEFORE_REPIN: dict[str, frozenset[str]] = {
             "threetears.evals.analysis.ReporterKind",
             "threetears.evals.analysis.ReporterOverlays",
             "threetears.evals.analysis.analysis_gen_request_settings_for",
+            "threetears.evals.analysis.generate_analysis",
             "threetears.evals.analysis.refuse_undeliverable_reporter_template",
             "threetears.evals.analysis.reporter_cell_timeout_s",
             "threetears.evals.analysis.reporter_kind_contract",

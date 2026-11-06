@@ -758,8 +758,8 @@
     },
     "threetears.evals.schema.KnownReasoningEffort": {
       "kind": "literal",
-      "signature": "'max'` | `'xhigh'` | `'high'` | `'medium'` | `'low'` | `'minimal'` | `'none'",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.KnownRefusalKind": {
       "kind": "literal",
