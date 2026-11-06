@@ -55,14 +55,14 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 16
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 7
+PINNED_DURABLE_SCHEMA_MINOR = 8
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
     "calibration_rating": "32c35b62d86a1420f59a1c0737ef8c11a1ad56cc945d04892984903e16d3214e",
     "case_set": "0fc5a5e11386551ad7f455fa3cb0f56c3b0f244baed97286898f5e88b988a2c2",
     "eval_analyst_gap": "3f2b779d2a91d3c41e4e8e07311a34bbc3be184ef58a648cae0ebbe6ad56f6a8",
-    "eval_campaign": "8f2cb7be256bf880fb2e0757e2111971ad78f96fcab9ddbdfe3cc1a93994ee0b",
+    "eval_campaign": "60db8aaeaa406914fc3ed2b9ebfb28148ece588a3e61276efa09c7cd6e825f37",
     "eval_template": "81f709a3c700584f580db19866f651d32a85060786a4ebc3244e6574617f59d6",
     "eval_test_case": "47adc6f735fe5ded8d6296f74714843dda64af3fb3f543ef4ca0681c41dd6e78",
     "judge_config": "95655c671ce0991ec2adae4a711cfb21f06ce44e767f68bd03cb04e509cded3b",

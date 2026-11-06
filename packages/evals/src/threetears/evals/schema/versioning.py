@@ -778,7 +778,16 @@ DURABLE_SCHEMA_VERSION: int = 16
 #:   An older build never reads the type (every read selects by ``doc_type``); its operator wipe of durable
 #:   documents leaves these in place, and its deletes never reach them (a new doc type's two disclosed costs, above).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 7
+#: - **v16.8** — an aspect's design may list its graders' measures in order: ``AspectDesign.measure_order`` (measure
+#:   keys, each once, default empty), which an eval files in the order it lists its graders so the campaign page's
+#:   lead reads the first of them, as its printed line does. Written only when stated, so a design stating none is
+#:   stored exactly as v16.7 stored it, and every campaign stored before reads as stating none: its page leads as it
+#:   did. It changes no reading, verdict or gate; a campaign bundle's fingerprint reads the design whole, so it is in
+#:   the fingerprint of a campaign stating it, which only a campaign filed at this minor does. An older build (v16.7
+#:   and earlier) reading a campaign at this minor keeps the list opaquely, writes it back, and leads its page as it
+#:   did before the field.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 8
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

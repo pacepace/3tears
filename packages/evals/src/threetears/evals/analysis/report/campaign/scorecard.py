@@ -33,8 +33,8 @@ from functools import reduce
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.quantities import PERCENT, POINTS
+from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign.common import floor_of, points
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
@@ -65,7 +65,7 @@ from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, goal_check_of
 
 __all__ = [
     "BAR_WORDS",
@@ -1115,13 +1115,19 @@ def measure_blocks(
         TableColumn(key="cases", header="Cases", term="cases"),
     ]
     rows = []
+    forms = _money_forms(readings, reports)
     for reading in readings.measures:
+        form = forms.get(reading.measure)
         values: dict[str, CellValue | TableCell] = {
             "aspect": names.cell(reading.aspect),
             "arm": reading.arm_label,
             "measure": _measure_words(reading, reports),
-            "value": _measured(reading.value, reading.passed, reading.trials, reading.cases),
-            "interval": _measured_interval(reading.interval, reading.passed is not None),
+            "value": _measured(reading.value, reading.passed, reading.trials, reading.cases)
+            if form is None
+            else _money_cell(reading.value, None, form),
+            "interval": _measured_interval(reading.interval, reading.passed is not None)
+            if form is None
+            else _money_interval(reading.interval, form),
             "cases": reading.cases,
         }
         if by_rig:
@@ -1182,6 +1188,7 @@ def _measure_matrix(
     measures: dict[str, MeasureReading] = {}
     for reading in readings.measures:
         measures.setdefault(reading.measure, reading)
+    forms = _money_forms(readings, reports)
     columns = [
         TableColumn(key="aspect", header="Aspect", term="aspect"),
         *([TableColumn(key="arm", header="Arm")] if len(arms) > 1 else []),
@@ -1205,7 +1212,7 @@ def _measure_matrix(
                 cells["arm"] = TableCell(value=labels[arm])
             for key in measures:
                 found = [reading for reading in held if reading.measure == key]
-                cells[f"measure:{key}"] = _measure_cell(found)
+                cells[f"measure:{key}"] = _measure_cell(found, forms.get(key))
             rows.append(cells)
     return TableBlock(
         section="scorecard",
@@ -1219,14 +1226,17 @@ def _measure_matrix(
     )
 
 
-def _measure_cell(found: Sequence[MeasureReading]) -> TableCell:
-    """One measure on one aspect: its value with its interval, a pass rate in percent; a dash where it was not read,
-    and a marked dash where it was read under several test setups, whose figures the fold holds."""
+def _measure_cell(found: Sequence[MeasureReading], form: MoneyForm | None = None) -> TableCell:
+    """One measure on one aspect: its value with its interval, a pass rate in percent, money in its measure's one form
+    (``form``); a dash where it was not read, and a marked dash where it was read under several test setups, whose
+    figures the fold holds."""
     if not found:
         return TableCell(value=None)
     if len(found) > 1:
         return TableCell(value=None, flag="split by setup")
     (reading,) = found
+    if form is not None:
+        return _money_cell(reading.value, reading.interval, form)
     scale = 100.0 if reading.passed is not None else 1.0
     places = 1 if reading.passed is not None else 4
     if reading.value is None:
@@ -1235,6 +1245,39 @@ def _measure_cell(found: Sequence[MeasureReading]) -> TableCell:
     if reading.interval is None:
         return TableCell(value=value)
     return TableCell(value=value, low=scale * reading.interval[0], high=scale * reading.interval[1])
+
+
+def _money_forms(readings: CampaignReadings, reports: Mapping[str, Report]) -> dict[str, MoneyForm]:
+    """Each money measure's one form, by its key, chosen from every figure the scorecard states of it, its intervals'
+    ends included (:func:`~threetears.evals.kernel.numbers.money_form`): dollars per reply, or, where a figure is
+    under a cent, per 1,000 replies with its mark (``$0.30/1000``), as the measure's figures read on every row."""
+    held: dict[str, list[float]] = {}
+    for reading in readings.measures:
+        described = reports[reading.aspect].bundle.measure_catalog.get(reading.measure) or METRIC_DESCRIPTORS.get(
+            reading.measure
+        )
+        if reading.passed is not None or described is None or not is_money(described.unit or ""):
+            continue
+        figures = held.setdefault(reading.measure, [])
+        figures += [figure for figure in (reading.value, *(reading.interval or ())) if figure is not None]
+    return {key: money_form(figures) for key, figures in held.items()}
+
+
+def _money_cell(value: float | None, interval: tuple[float, float] | None, form: MoneyForm) -> TableCell:
+    """A money figure in dollars, in its measure's one form, its interval where given."""
+    if value is None:
+        return TableCell(value=None)
+    cell = TableCell(value=value, unit=MONEY, decimals=form.decimals, per_thousand=form.per_thousand)
+    if interval is None:
+        return cell
+    return cell.model_copy(update={"low": interval[0], "high": interval[1]})
+
+
+def _money_interval(interval: tuple[float, float] | None, form: MoneyForm) -> str | None:
+    """A money figure's interval as the fold's table states it, its ends in the figure's one form."""
+    if interval is None:
+        return None
+    return f"[{form.spell(interval[0])}, {form.spell(interval[1])}]"
 
 
 def _measured(value: float | None, passed: int | None, trials: int | None, cases: int) -> CellValue:

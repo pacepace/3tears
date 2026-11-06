@@ -195,6 +195,7 @@ class Eval:
     :ivar max_cost_usd: The most the whole eval may spend, in US dollars, shared equally between its arms; ``None``
         runs uncapped, which every summary states.
     :ivar measure_latency: Declare latency under test: the cases run one at a time, the arms one after another.
+    :ivar question: The one sentence the eval answers, filed as its campaign's question; ``None`` asks none.
     """
 
     def __init__(
@@ -207,6 +208,7 @@ class Eval:
         name: str | None = None,
         max_cost_usd: float | None = None,
         measure_latency: bool = False,
+        question: str | None = None,
     ) -> None:
         """Declare the eval; nothing runs until :meth:`run`.
 
@@ -227,10 +229,19 @@ class Eval:
         :ptype max_cost_usd: float | None
         :param measure_latency: Declare latency under test.
         :ptype measure_latency: bool
-        :raises ValueError: No cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
+        :param question: The one sentence a comparison answers (``"Does v2 read the currency right more often than
+            v1?"``), as a writer eval's ``question`` is: filed as the campaign's question, so its page quotes it and
+            reads its readings as asked rather than as leads, and the aspect declares a 5-point margin on the pass
+            rate, how far a candidate may fall below the control before it is shown worse. The question's measure is
+            the first grader: the printed first line and the page's lead read it. ``None`` asks none, and every
+            reading is a lead.
+        :ptype question: str | None
+        :raises ValueError: A blank question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
             known form, or an expression grader with no world with state to read.
         """
+        if question is not None and not question.strip():
+            raise ValueError("an eval's question is filed on its campaign, and this one is blank")
         self.cases = load_cases(cases)
         source = Path(cases) if isinstance(cases, str | os.PathLike) else None
         if isinstance(runner, Mapping):
@@ -271,6 +282,7 @@ class Eval:
         self.k = k
         self.max_cost_usd = max_cost_usd
         self.measure_latency = measure_latency
+        self.question = question
 
     def __repr__(self) -> str:
         """The eval, by name, cases and arms."""
@@ -456,12 +468,13 @@ class Eval:
                 ],
                 measure_latency=self.measure_latency,
                 declared_at=declared_at,
+                question=self.question,
+                measure_order=self.plan.readings,
             )
             return replace(
                 result,
                 store=where,
                 fields=tuple(self.plan.fields),
-                grader_readings=tuple(self.plan.readings),
                 judge=judge,
                 disclosures=disclosures,
                 calibrations=tuple(calibrate(judge, host, keyed, scope_id)),

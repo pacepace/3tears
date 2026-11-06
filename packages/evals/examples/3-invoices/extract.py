@@ -45,6 +45,8 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 invoices = Eval(
     "invoices.jsonl",  # each case's stratum splits every reading by kind of invoice in the report
     runner={"v1": model.prompt(V1, Invoice), "v2": model.prompt(V2, Invoice)},  # the first key is the control
+    # What the comparison answers; the first grader (currency) is its measure, which the verdict and the page lead on.
+    question="Does v2 read the currency an invoice charges in right more often than v1?",
     # A field each; a case's null total means none may be stated. A difference under 5 points on total is too small
     # to act on, so v2 can read "equivalent" there.
     grader=["currency", "number", "due", grader("total", margin=0.05), no_invented_total],

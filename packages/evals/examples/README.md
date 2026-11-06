@@ -121,7 +121,9 @@ Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 120 judge
 
 [`extract.py`](3-invoices/extract.py) reads 30 invoices ([`invoices.jsonl`](3-invoices/invoices.jsonl)) in three
 strata (clean, multi-currency, noisy OCR) with two prompts, as `runner={"v1": model.prompt(V1, Invoice), "v2": ...}`;
-the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict. A field
+the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict.
+`question="Does v2 read the currency an invoice charges in right more often than v1?"` is the one sentence it
+answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. A field
 grader per field, `grader("total", margin=0.05)` declaring a margin for equivalence (a case whose `total` is `null`
 expects none stated), and `@grader(guard=0.02) no_invented_total`, a guardrail decided apart from the rest. `result.write("report")` writes the HTML report for a reviewer, and `gate()`
 fails the run in CI on a regression or a guardrail not shown held. Its docstring points on to a grid of factors: arms named
@@ -129,18 +131,19 @@ as `k=v` pairs, read against another control with `result.against()`.
 
 What the recorded run said: accuracy did not separate v2 from v1, nothing else did, and the guardrail is undecided for v2, so it exits 4, its last line saying why in the report's words
 (`exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
-screen leads on the classifier's accuracy, with the guardrail's warning beside it, and reads v2 against v1 in one row
+screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
+it, and reads v2 against v1 in one row
 
 ```text
 # v1 vs v2 · classify (invoices)
-...
-**Accuracy: v2 and v1 not separated, a lead.**
+"Does v2 read the currency an invoice charges in right more often than v1?"
+**Accuracy: v2 and v1 not separated.**
 ...
 **v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.**
 ...
 | Aspect | Cases | ▸ v1 (%) | v2 (pts) |
 |---|---|---|---|
-| classify | 30 | 81.1 | 16.7 (unclear, a lead) |
+| classify | 30 | 81.1 | 16.7 (no worse than the margin) |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not

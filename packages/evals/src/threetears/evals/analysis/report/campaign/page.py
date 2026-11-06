@@ -4,10 +4,11 @@ then one fold per aspect.
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. This page is code's: the
 writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
 The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
-(:mod:`.provenance`); where a guardrail warns, **the lead** under it: one sentence per candidate on the question's
-measure, the aspect's pass rate, or with no question asked on the first grader as far as the evidence names it (the
-classifier's accuracy), so the guardrail's warning sits beside the lead and never in its place (a page no guardrail
-warns on leads on its scorecard); one line on where the campaign's
+(:mod:`.provenance`); where a guardrail warns, **the lead** under it: one sentence per candidate on the first measure
+the aspect's design lists in its graders' order, the one an eval's question asks and its printed line leads on; with no
+order listed, on the question's measure, the aspect's pass rate, or with no question asked on the classifier's
+accuracy; so the guardrail's warning sits beside the lead and never in its place (a page no guardrail warns on leads on
+its scorecard); one line on where the campaign's
 report is: the report document it is stored as, the analysis this version no longer reads or a retired writer wrote,
 or that no recommendation was written (:mod:`.answer_blocks`); then **what warns**, one line per arm for the bars it
 misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`), and each report-wide caveat
@@ -66,9 +67,10 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import CampaignArm, CampaignCall
+from threetears.evals.analysis.quantities import is_money
+from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 
 __all__ = ["build_campaign_report"]
 
@@ -198,28 +200,29 @@ def _lead_blocks(
     """The page's lead, its verdict line, one sentence per candidate on each aspect in the campaign's order, naming
     the reading and both arms: never a cost reading, and never a guardrail's, whose warning follows it.
 
-    Where the campaign asks the aspect a question, the lead is the question's measure, the aspect's pass rate
-    (``Pass rate: v2 against v1 shown better.``). Where it asks none, the lead is the first grader, as far as the
-    evidence names it: the classifier's accuracy where the aspect reads one, in the aspect page's own words
-    (``Accuracy: v2 and v1 not separated, a lead.``), the reading the quick path's printed line leads on too. The
-    order a host listed its other graders in is stored nowhere a page reads (a bundle sorts its measures), so with no
-    classifier the lead is the pass rate, every grader's reading together. An aspect with no candidate read against
-    a control says what its fold heads it with. The tone is decided where every aspect is asked a question, else
-    open."""
+    Where the aspect's design lists its graders' measures (``AspectDesign.measure_order``, which an eval files in the
+    order it lists its graders), the lead is the first of them a contrast tested that is no cost, in the aspect page's
+    own words (``Accuracy: v2 and v1 not separated, a lead.``): the measure an eval's printed line leads on, and the
+    one its question asks, where it asks one. Where it lists none, the lead is the classifier's accuracy where the
+    aspect reads one and no question is asked of it; else the question's measure, the aspect's pass rate (``Pass rate:
+    v2 against v1 shown better.``), or with no question the pass rate as every grader's reading together. An aspect
+    with no candidate read against a control says what its fold heads it with. The tone is decided where every
+    aspect is asked a question, else open."""
     several = len(campaign.aspects) > 1
     sentences: list[str] = []
     for aspect in campaign.aspects:
         bundle = reports[aspect.label].bundle
         on = f" on {names(aspect.label)}" if several else ""
-        accuracy = [
+        lead = _lead_measure(aspect, reports[aspect.label])
+        led = [
             verdict
             for verdict in reports[aspect.label].verdicts
-            if verdict.kind == "contrast" and verdict.reading == "measure" and verdict.name == ACCURACY_MEASURE
+            if verdict.kind == "contrast" and verdict.reading != "trial" and verdict.name == lead
         ]
-        if accuracy and not bundle.question_declared:
+        if led:
             sentences += [
                 f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None else ', a lead'}."
-                for verdict in accuracy
+                for verdict in led
             ]
         elif rows := readings.on_aspect(aspect.label):
             sentences += [
@@ -236,6 +239,25 @@ def _lead_blocks(
             section="answer", source="verdict", text=" ".join(sentences), tone=DisclosureBlock.verdict_tone(rule)
         )
     ]
+
+
+def _lead_measure(aspect: Aspect, report: Report) -> str | None:
+    """The measure an aspect's lead reads: the first its design's ``measure_order`` lists that a contrast tested and
+    that is no cost; with no order listed, the classifier's accuracy where no question is asked of the aspect; None
+    where neither names one, and the lead reads the pass rate."""
+    order = aspect.design.measure_order if aspect.design is not None else []
+    if not order:
+        return None if report.bundle.question_declared else ACCURACY_MEASURE
+    tested = {
+        verdict.name for verdict in report.verdicts if verdict.kind == "contrast" and verdict.reading != "trial"
+    }
+    return next((name for name in order if name in tested and not _a_cost(name, report)), None)
+
+
+def _a_cost(measure: str, report: Report) -> bool:
+    """Whether a measure is a cost: money, or on the cost merit axis, as the aspect's catalog describes it."""
+    described = report.bundle.measure_catalog.get(measure) or METRIC_DESCRIPTORS.get(measure)
+    return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
 
 
 def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:

@@ -96,6 +96,10 @@ from threetears.evals.run import get_result_trace, list_results
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
 
+#: The margin, in points of a 0-100 pass rate, an eval asking a question declares on its aspect: how far a candidate
+#: may fall below the control before it is shown worse there, as a writer eval declares by default.
+_QUESTION_MARGIN = 5.0
+
 #: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
 _UNPREFIXED = frozenset({CANDIDATE_MODEL_LEVER, ARM_LEVER})
 
@@ -206,6 +210,8 @@ class Result:
     :ivar grader_readings: The measure each grader reads, in the order the eval lists its graders: the classifier's
         ``accuracy``, any other field's or function's own name, a judge's every dimension. A comparison's first line
         leads on the first of these the contrasts tested; empty when the result was built without them.
+    :ivar question: The one sentence the comparison answers, as the eval declared it and its campaign asks it; ``None``
+        when none was declared, and every reading is a lead.
     :ivar judge: The eval's judge, or ``None``.
     :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
         made, a logged runner's file.
@@ -243,6 +249,7 @@ class Result:
     arm_variants: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
     labelled_arms: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
     grader_readings: tuple[str, ...] = field(default=(), repr=False, compare=False)
+    question: str | None = None
 
     # --- one arm, or the arm named ----------------------------------------------------------------------------------
 
@@ -825,12 +832,13 @@ class Result:
                 created_by=created_by,
                 guardrail_margins=design.guardrail_margins if design is not None else (),
                 measure_latency=design.measure_latency if design is not None else False,
+                question=self.question,
+                measure_order=self.grader_readings,
             )
             return replace(
                 again,
                 store=self.store,
                 fields=self.fields,
-                grader_readings=self.grader_readings,
                 judge=self.judge,
                 disclosures=self.disclosures,
                 calibrations=self.calibrations,
@@ -1105,8 +1113,16 @@ def declare(
     guardrail_margins: Sequence[GuardrailMargin] = (),
     measure_latency: bool = False,
     declared_at: str | None = None,
+    question: str | None = None,
+    measure_order: Sequence[str] = (),
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
+
+    ``question`` is the one sentence the comparison answers, filed as the campaign's question: every reading on the
+    aspect is then read as asked rather than as a lead, and the aspect declares a 5-point margin
+    on the pass rate, which a question asked of a control needs. ``None`` asks none. ``measure_order`` is each
+    grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
+    the campaign's page leads on the first of them, as the printed line does; empty files none.
 
     ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
     fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
@@ -1142,15 +1158,19 @@ def declare(
         design["measure_latency"] = True
     if guardrail_margins:
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
+    if measure_order:
+        design["measure_order"] = list(dict.fromkeys(measure_order))
     # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
-    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). The eval
-    # asks no question, so it declares no margin on the pass rate and none is assumed: its readings are never shown
-    # worse.
+    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). An eval
+    # asking no question declares no margin on the pass rate and none is assumed: its readings are never shown worse.
+    # One asking a question declares the margin a question asked of a control needs.
     aspect: dict[str, Any] = {
         "label": aspect_label_for(behavior),
         "run_ids": [summary.run_id for summary in arms.values()],
         "design": design,
     }
+    if question is not None:
+        aspect["margin"] = _QUESTION_MARGIN
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
     # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
@@ -1167,6 +1187,8 @@ def declare(
     }
     if stored != name:
         defined["description"] = name
+    if question is not None:
+        defined["question"] = question
     campaign = create_campaign(
         host.storage,
         defined,
@@ -1215,6 +1237,8 @@ def declare(
         guardrail_readings=bundle.guardrails,
         arm_variants=arm_variants,
         labelled_arms=labelled_arms,
+        grader_readings=tuple(measure_order),
+        question=question,
     )
 
 

@@ -684,12 +684,33 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "is refused when the design is declared."
         ),
     )
+    measure_order: list[str] = Field(
+        default_factory=list,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda order: not order,
+        description=(
+            "The measures this aspect's graders read, by key, in the order the host listed its graders: where a "
+            "guardrail warns, the campaign page's lead reads the first of them a contrast tested that is no cost. "
+            "Empty = no order stated, and the lead reads the classifier's accuracy where the aspect has one, else the "
+            "pass rate. It changes no reading."
+        ),
+    )
 
     @field_validator("merit_axes")
     @classmethod
     def _each_axis_once(cls, axes: list[MeritAxis] | None) -> list[MeritAxis] | None:
         """Refuse an axis named twice: the list is a set of axes an answer moves, and a repeat says nothing."""
         return None if axes is None else _each_merit_axis_once(axes)
+
+    @field_validator("measure_order")
+    @classmethod
+    def _each_measure_once(cls, order: list[str]) -> list[str]:
+        """Refuse a blank measure, or one named twice: the list is an order, and a repeat says nothing."""
+        if any(not measure.strip() for measure in order):
+            raise ValueError("measure_order names a blank measure; name each measure by its key")
+        if duplicates := sorted({measure for measure in order if order.count(measure) > 1}):
+            raise ValueError(f"measure_order names {', '.join(duplicates)} more than once; name each measure once")
+        return order
 
     @model_validator(mode="after")
     def _axes_and_bars_are_keyed_too(self) -> AspectDesign:

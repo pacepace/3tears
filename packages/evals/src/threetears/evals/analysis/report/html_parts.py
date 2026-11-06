@@ -21,6 +21,7 @@ from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, is_money, number_in, with_unit
 from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.kernel.numbers import money_form
 from threetears.evals.schema.hashing import round_floats
 
 #: The kit's stylesheet, read once from the package: tokens for light and dark, type, the page and prose columns,
@@ -371,7 +372,11 @@ def _scale_line(block: TableBlock, scales: dict[tuple[str, str], tuple[float, fl
         scales = {("", unit): scale for (_, unit), scale in scales.items()}
         headers[""] = "Each column"
     for (key, unit), (low, high) in scales.items():
-        if unit == PERCENT or is_money(unit):
+        if is_money(unit):
+            # Both ends in one form, as the column's own money reads (a scale under a cent per 1,000, with its mark).
+            form = money_form([low, high])
+            ends = f"{form.spell(low)} to {form.spell(high)}"
+        elif unit == PERCENT:
             ends = f"{with_unit(low, unit)} to {with_unit(high, unit)}"
         else:
             ends = f"{number_in(low, unit)} to {number_in(high, unit)}" + (f" {unit}" if unit else "")
