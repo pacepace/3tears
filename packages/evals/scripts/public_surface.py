@@ -1125,7 +1125,8 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
         # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
-        # `tests/test_host_imports_are_declared.py`): nothing a host imports is provisional.
+        # `tests/test_host_imports_are_declared.py`): nothing a host's PRODUCTION code imports is provisional; the names only
+        # its tests import are provisional by its own word (`PROVISIONAL_FOR_HOST_TESTS` in that test).
         "threetears.evals.actions.ConformanceSample",
         "threetears.evals.actions.Refusal",
         "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",

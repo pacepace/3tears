@@ -12,8 +12,8 @@ that host's file and must be gone from the snapshot, so the set empties as the h
 
 A name only a host's tests import, which the host accepted may move, is provisional and listed in
 :data:`PROVISIONAL_FOR_HOST_TESTS`, by host file, with the date and the host's word. Each listed name must still be in
-that host's file and must be provisional in the snapshot, so the set empties as the host re-records its list or the
-name is declared again.
+that host's file and must be provisional in the snapshot. A name leaves the set when the host's list no longer holds
+it or when it is declared again; a name the host's tests keep importing stays listed, by the host's own word.
 """
 
 from __future__ import annotations
