@@ -66,7 +66,6 @@ from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, declared_name, utc_now_iso
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN, FIND_RUN, FIND_TEMPLATE, SCHEMA_REMEDY
 from threetears.evals.kernel.declaration import NO_TEMPLATE_REMEDY, DesignRefused, refuse_an_undeclarable_design
-from threetears.evals.kernel.campaign import CampaignView, derive_window
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_variant_identity
 
 if TYPE_CHECKING:
@@ -1409,69 +1408,6 @@ def get_campaign(storage: CampaignStore, campaign_id: str, scope_id: str) -> Eva
     return campaign
 
 
-def get_campaign_view(storage: CampaignStore, campaign_id: str, scope_id: str) -> CampaignView:
-    """Load a campaign and enrich it with its read-time-derived window.
-
-    The window (a campaign's [start, end] time span) is DERIVED from the
-    member runs' ``created_at`` rather than stored, so it never drifts as runs
-    join or leave. Deriving it means reading the runs — only their id, archived
-    flag and start time (``CampaignStore.load_eval_run_stamps``), in one batch,
-    within the campaign's scope, which is where its members live.
-
-    **A member run that does not resolve is REPORTED, not skipped.** All three
-    fates are disclosed — resolved (feeds the window), archived, unresolvable —
-    because the third one is not rare: bulk eval-schema wipes delete runs
-    without going through the run-delete cascade, which is what detaches
-    memberships, so a campaign outlives its runs. A campaign can claim a
-    score of members and resolve none of them. Expect it to recur on
-    every rebuild; the disclosure is the durable answer, not a cleanup pass.
-
-    Every surface that reads one campaign reaches this, so they all answer
-    with the same facts.
-
-    :param storage: The campaign store.
-    :ptype storage: CampaignStore
-    :param campaign_id: Campaign to load.
-    :ptype campaign_id: str
-    :param scope_id: The scope the campaign and its member runs live in.
-    :ptype scope_id: str
-    :return: A :class:`~threetears.evals.kernel.campaign.CampaignView` — the campaign
-        plus its derived window (or ``None``).
-    :rtype: CampaignView
-    :raises NotFoundError: No campaign with that id in the scope.
-    """
-    campaign = get_campaign(storage, campaign_id, scope_id)
-    archived_run_ids: list[str] = []
-    unresolved_run_ids: list[str] = []
-    created_ats: list[str] = []
-    # One batch read of the three scalars the window needs, reduced in the store: a
-    # member run is mostly the host's frozen payload, and a campaign has many of them.
-    loaded = {stamp.id: stamp for stamp in storage.load_eval_run_stamps(campaign.run_ids, scope_id)}
-    for run_id in campaign.run_ids:
-        run = loaded.get(run_id)
-        if run is None:
-            # Recorded rather than dropped: membership is refused outside the scope, so a
-            # member that does not resolve is a run destroyed outside the delete cascade —
-            # a fact about the campaign the reader needs, and not visible from run_ids.
-            unresolved_run_ids.append(run_id)
-            continue
-        # The window describes the COHORT — the runs a report over this
-        # campaign would actually read — so an archived member must not
-        # stretch it. Naming those members beside it keeps the narrower
-        # window from reading as missing data.
-        if run.archived:
-            archived_run_ids.append(run_id)
-        else:
-            created_ats.append(run.created_at)
-    window = derive_window(created_ats)
-    return CampaignView(
-        campaign=campaign,
-        window=window,
-        archived_run_ids=archived_run_ids,
-        unresolved_run_ids=unresolved_run_ids,
-    )
-
-
 def list_campaigns(
     storage: CampaignStore,
     scope_id: str,
@@ -2028,7 +1964,6 @@ __all__ = [
     "create_campaign",
     "declarable_axes",
     "get_campaign",
-    "get_campaign_view",
     "list_campaigns",
     "remove_runs_from_campaign",
     "set_campaign_control",

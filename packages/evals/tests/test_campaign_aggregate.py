@@ -32,7 +32,6 @@ from threetears.evals.analysis.campaign_bundle import (
     CAMPAIGN_BUNDLE_SHAPE,
     CampaignBundle,
     build_campaign_bundle,
-    campaign_evidence_digest,
 )
 from threetears.evals.analysis.campaign_readings import AggregateWeighting
 from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW
@@ -410,7 +409,11 @@ def test_a_bundle_and_a_frame_frozen_at_shape_2_read_as_this_shape_fingerprintin
     assert CAMPAIGN_BUNDLE_SHAPE == 3 and bundle.readings.aggregate is not None
     frozen = _at_shape_2(bundle.to_dict())
     # The figures across aspects add no evidence, so the shape-2 document fingerprints as this shape's bundle does.
-    assert campaign_evidence_digest(frozen) == bundle.fingerprint() == campaign_evidence_digest(bundle.to_dict())
+    assert (
+        CampaignBundle.from_dict(frozen).fingerprint()
+        == bundle.fingerprint()
+        == CampaignBundle.from_dict(bundle.to_dict()).fingerprint()
+    )
     read = CampaignBundle.from_dict(frozen)
     assert read.schema_version == CAMPAIGN_BUNDLE_SHAPE
     assert read.readings == bundle.readings and read.fingerprint() == bundle.fingerprint()

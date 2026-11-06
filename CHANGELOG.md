@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report input names the report, not the memo, and sixteen names nothing called are removed
+
+**Changed:** a report input's `meta.kind_means`, the sentence the analyst reads for what a campaign's kind asks of
+its report, names the report where it named the retired memo, and the choice kind's sentence no longer names the
+memo's `behind_on` field. The meaning is unchanged.
+
+**Removed:** `analysis_bundle`, `cell_label`, `get_campaign_view`, `list_analyses` and `list_analysis_attempts`
+(`threetears.evals.analysis`); `CONFIDENCE_TIERS`, `CampaignView` and `HOST_PRODUCED_MEASURES`
+(`threetears.evals.kernel`); `ObligationRow` and `obligation_rows` (`threetears.evals.kernel.host`); and six no root
+exported: `campaign_evidence_digest`, `in_writer_terms`, `analysis_rulers`, `REFERENCE_MARK`, `read_as_declared` and
+`MIN_PAIRS_FOR_DETERMINISTIC_GAP`. Nothing in the package called any of them. `MIGRATIONS.toml` says where a host goes
+for each.
+
+**Hosts:** a report snapshot frozen from now has a new content address (`report_input_digest`, and so a new snapshot
+id) for the same evidence, since `kind_means` is part of the input. A stored snapshot keeps its text and its id, and
+reads as before.
+
 ### evals: an eval declares its question, the page leads on the grader listed first, and a measurement's money carries its form
 
 **Added:** `Eval(question=...)`, the one sentence a comparison answers, as `WriterEval(question=)` takes it (a blank one

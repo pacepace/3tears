@@ -7,9 +7,8 @@ years with nothing in the package computing them, so they rendered, were never f
 The guard is the search that found them, made a test: a declared name is PRODUCED when engine code
 outside the catalogue names it as code — a string literal that is not a docstring (a row key, a measure
 name a summary is built under) or a field a model declares. A name that appears only in prose, or only in
-the catalogue itself, is produced by nothing. The one exemption is
-:data:`~threetears.evals.kernel.metrics.HOST_PRODUCED_MEASURES`: core measures a host's candidate kind
-writes and the engine only reads.
+the catalogue itself, is produced by nothing. The one exemption is :data:`HOST_PRODUCED_MEASURES`: core
+measures a host's candidate kind writes and the engine only reads.
 """
 
 from __future__ import annotations
@@ -19,7 +18,11 @@ from pathlib import Path
 
 import threetears.evals as evals_package
 from threetears.evals.kernel import metrics
-from threetears.evals.kernel.metrics import HOST_PRODUCED_MEASURES, METRIC_DESCRIPTORS
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
+
+#: The core measures the engine declares and a host's candidate kind writes: a classifier kind lands ``match`` and
+#: ``confusion_cell`` on each result's ``host_measures``, and the engine only reads them.
+HOST_PRODUCED_MEASURES: frozenset[str] = frozenset({"match", "confusion_cell"})
 
 _SOURCE_ROOT = Path(evals_package.__file__).parent
 _CATALOGUE = Path(metrics.__file__)
@@ -64,7 +67,7 @@ def test_every_declared_core_measure_has_an_engine_producer_or_is_host_produced(
     assert not unproduced, (
         "these core measures are declared and nothing in the engine produces them, so they render and are never "
         f"filled: {unproduced}. Produce each, remove its declaration, or (if a host's kind writes it) add it to "
-        "HOST_PRODUCED_MEASURES"
+        "HOST_PRODUCED_MEASURES in this test"
     )
 
 
