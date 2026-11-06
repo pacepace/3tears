@@ -1466,11 +1466,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.BarMissed": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.BarName": {
       "kind": "dataclass",
       "signature": "",
@@ -1492,11 +1487,6 @@
       "tier": "stable"
     },
     "threetears.evals.kernel.BarVerdict": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.BehindOn": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -2116,11 +2106,6 @@
       "signature": "Floor(aspect: str, clause: DecisionClause, declared_at: str | None = None)",
       "tier": "host-contract"
     },
-    "threetears.evals.kernel.FloorOverride": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.fold_phase_timings": {
       "kind": "function",
       "signature": "fold_phase_timings(accumulator: dict[str, float], *, source_tool: str, timings: Any) -> list[str]",
@@ -2718,11 +2703,6 @@
     },
     "threetears.evals.kernel.REASONING_RATIO_KEY": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.Recommendation": {
-      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -5098,7 +5078,7 @@
     },
     "threetears.evals.analysis.CampaignReport": {
       "kind": "model",
-      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, finding_count: int, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, recommendation: Recommendation | None = None, recommended_variant_key: str | None = None, plan_page: None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
+      "signature": "CampaignReport(basis: ReportBasis, title: str, campaign_id: str, campaign_name: str | None = None, scope_id: str, analysis_id: str | None = None, blocks: list[ReportBlock], aspects: list[CampaignAspectFold], readings: CampaignReadings, call: CampaignCall | None = None, doc_page: DocPage | None = None, report_doc: VerbatimJsonObject | None = None, unread_analysis_id: str | None = None, needs_regeneration: str | None = None, doc_trials: bool = False)",
       "tier": "stable"
     },
     "threetears.evals.analysis.CampaignStore": {
@@ -5542,11 +5522,6 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.ExportPage": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.Fact": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -6403,7 +6378,7 @@
     },
     "threetears.evals.analysis.Report": {
       "kind": "model",
-      "signature": "Report(basis: ReportBasis, title: str, finding_count: int, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
+      "signature": "Report(title: str, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
       "tier": "host-contract"
     },
     "threetears.evals.analysis.report_html": {
@@ -6723,16 +6698,6 @@
     },
     "threetears.evals.analysis.TemperatureSide": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.TextBlock": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.TextRole": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },

@@ -205,6 +205,7 @@ def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:
 
 
 @pytest.mark.parametrize("name", ["s1", "s2"])
-def test_the_page_json_is_shape_5(name: str) -> None:
+def test_the_page_json_is_shape_6(name: str) -> None:
     document = json.loads(serialize_report(SHAPES[name]().page(), "json"))
-    assert CAMPAIGN_JSON_SHAPE == 5 and document["shape"] == 5
+    assert CAMPAIGN_JSON_SHAPE == 6 and document["shape"] == 6
+    assert "recommendation" not in document, "shape 6: the always-null recommendation left the JSON"

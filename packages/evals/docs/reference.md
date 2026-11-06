@@ -1095,9 +1095,7 @@ A campaign's report: one page, the bundle it was computed from, and the typed ve
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `basis` | `ReportBasis` | required | `analysis` over a generated analysis; `code_only` over the evidence alone, as every page built now is. |
 | `title` | `str` | required | The title line: what the campaign compares and on what, with its name as a qualifier, built by code (`v1 vs v2 · pass rate (invoices)`); never a call, a recommendation or a verdict. |
-| `finding_count` | `int` | required | How many findings the page holds: 0 on every page built now. |
 | `source` | `ReportSource` | required | What this is a report of. |
 | `blocks` | `list[ReportBlock]` | required | The report, in reading order. |
 | `verdicts` | `list[Verdict]` | `[]` | Every verdict code reaches, typed — the guardrails, then each bar on each cell, then the contrasts against the control — the source each printed verdict is rendered from. |
@@ -1107,34 +1105,16 @@ Its `source`, and each kind of block in `blocks`:
 
 #### `ReportSource`
 
-What the report is a report of, and how that analysis was generated — or that none was.
+What the report is a report of: the campaign, and the bundle its numbers were computed from.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `analysis_id` | `str \| None` | `None` | The analysis the report renders; None on a code-only report. |
 | `campaign_id` | `str` | required | The campaign. |
 | `campaign_name` | `str \| None` | `None` | The campaign's name, where known. |
 | `scope_id` | `str` | required | The scope the campaign lives in. |
 | `behavior` | `str` | required | The behaviour under analysis. |
-| `generated_at` | `str` | required | When the analysis was generated (ISO-8601); on a code-only report, when the evidence was assembled. |
-| `generator_model` | `str \| None` | `None` | The model that wrote the analysis; None on a code-only report. |
+| `generated_at` | `str` | required | When the evidence was assembled (ISO-8601). |
 | `bundle_fingerprint` | `str` | required | The fingerprint of the bundle the report renders. |
-
-#### `TextBlock`
-
-What the analysis's author wrote, exactly as written, with the facts code states beside it.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
-| `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
-| `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
-| `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
-| `kind` | `Literal['text']` | `'text'` | Which kind of block this is. |
-| `role` | `TextRole` | required | What the author wrote it as. |
-| `body` | `ModelProse` | required | The author's words, Markdown allowed; empty where the author left a required field blank. |
-| `facts` | `list[Fact]` | `[]` | Facts code states beside the words, in reading order. |
 
 #### `TableBlock`
 

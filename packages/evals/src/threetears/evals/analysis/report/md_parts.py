@@ -52,11 +52,8 @@ def inert(line: str) -> str:
 
 
 def paragraphs(text: str) -> list[str]:
-    """An author's words as the page lays them out: paragraphs on one line each and bullet lists, nothing else.
-
-    The page (:func:`~threetears.evals.analysis.report.html_parts.markdown_html`) renders only those, with bold and code inside them; a heading, a quote or a
-    fence an author's words carry reads there as the text it is, and here as the same text, escaped.
-    """
+    """An author's words laid out as paragraphs on one line each and bullet lists, nothing else: a heading, a quote or
+    a fence they carry reads as the same text, escaped."""
     out: list[str] = []
     for paragraph in re.split(r"\n\s*\n", text.strip()):
         lines = [line.strip() for line in paragraph.splitlines() if line.strip()]

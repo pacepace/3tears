@@ -102,29 +102,22 @@ def rendered(page: Path, probe: str, *, width: int = 1200) -> tuple[Any, list[st
 
 
 def report_of(blocks: Sequence[ReportBlock] | Sequence[dict[str, Any]]) -> Report:
-    """A report holding ``blocks`` in its memo under one finding, over the toy host's bundle."""
+    """A report holding ``blocks``, over the toy host's bundle."""
     fields: dict[str, Any] = {
-        "basis": "analysis",
         "title": "Charts",
-        "finding_count": 1,
         "source": {
-            "analysis_id": "a",
             "campaign_id": "c",
             "scope_id": "s",
             "behavior": "b",
             "generated_at": "2026-10-05T00:00:00+00:00",
-            "generator_model": "m",
             "bundle_fingerprint": "f",
         },
-        "blocks": [
-            {"kind": "text", "section": "memo", "role": "finding_title", "finding": 0, "body": "Charts"},
-            *blocks,
-        ],
+        "blocks": list(blocks),
         "bundle": toyhost_bundle(),
     }
     return Report.model_validate(fields)
 
 
 def report_page(blocks: Sequence[ReportBlock] | Sequence[dict[str, Any]]) -> str:
-    """The page of a report holding ``blocks`` in its memo under one finding (:func:`report_of`)."""
+    """The page of a report holding ``blocks`` (:func:`report_of`)."""
     return report_html(report_of(blocks))

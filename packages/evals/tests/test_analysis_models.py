@@ -17,7 +17,6 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.campaign import (
     CampaignDeclaration,
     CoverageLens,
@@ -63,13 +62,14 @@ def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overri
     return fields
 
 
-def _recommendation(**overrides: Any) -> Recommendation:
-    """A recommendation of the control, resting on nothing unless a caller says otherwise."""
+def _recommendation(**overrides: Any) -> dict[str, Any]:
+    """A recommendation of the control as the retired memo writer stored one, resting on nothing unless a caller says
+    otherwise."""
     fields: dict[str, Any] = dict(
         arm="control", reasons=[], confidence="medium", rests_on=[], floors_overridden=[], behind_on=[], bars_missed=[]
     )
     fields.update(overrides)
-    return Recommendation(**fields)
+    return fields
 
 
 def _summary(aspect: str = "planning", **overrides: Any) -> dict[str, Any]:
@@ -108,7 +108,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     ]
     authored_findings = overrides.pop("findings", None)
     findings = list(authored_findings or default_findings)
-    recommendation: Recommendation = overrides.pop(
+    recommendation: dict[str, Any] = overrides.pop(
         "recommendation",
         _recommendation(
             arm="alpha-2",
@@ -119,7 +119,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
     )
     document: dict[str, Any] = dict(
         findings=findings,
-        recommendation=[recommendation.model_dump(mode="json")],
+        recommendation=[recommendation],
         aspect_summaries=overrides.pop("aspect_summaries", [_summary()]),
         summary=overrides.pop("summary", "Alpha-2 is much faster at equal quality, so it is the planner to run."),
         next=overrides.pop(
@@ -186,7 +186,7 @@ def _make_analysis(**overrides: Any) -> EvalAnalysis:
             aspects=[Aspect(label="planning")],
             floors=[],
         ),
-        recommended_variant_key=f"variant-of-{recommendation.arm}",
+        recommended_variant_key=f"variant-of-{recommendation['arm']}",
         aspects=[aspect],
         campaign_bundle={
             "schema_version": 1,
@@ -309,7 +309,6 @@ def test_insight_storage_round_trip_preserves_every_field():
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(lambda c: _recommendation(confidence=c), id="Recommendation"),
         pytest.param(
             lambda c: EvalInsight(
                 scope_id="uni-1",
@@ -324,7 +323,7 @@ def test_insight_storage_round_trip_preserves_every_field():
     ],
 )
 def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
-    """A recommendation's confidence is a tier, and so is what an insight stores; a typed probability is refused."""
+    """What an insight stores as its confidence is a tier; a typed probability is refused."""
     with pytest.raises(ValidationError):
         build(bad)
 

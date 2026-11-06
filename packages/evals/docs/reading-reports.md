@@ -30,9 +30,9 @@ files = page.write("eval-report")  # report.html, report.md, campaign.json, bund
 `report.html` needs nothing beside it: no stylesheet, no image, no URL but `#` links to places on the page and the
 kit's fonts. It carries exactly one script, the package's own `kit.js`, which draws each chart from the JSON beside
 it; without it, every chart reads as its values table. Drill-down is `<details>`. `report.md` is the same page as Markdown, each mark
-printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the recommendation's arm
-(by label and variant key) and confidence, the call, and each aspect's bundle by its fingerprint
-([its shape](serving.md#the-campaign-json)). Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
+printed as the text it draws. `campaign.json` is the page's machine form: code's readings, the call, and each
+aspect's bundle by its fingerprint ([its shape](serving.md#the-campaign-json)); the arms a report document recommends
+are its `report_doc.doc.recommends`. Each aspect's evidence bundle is written whole beside it as `bundle-<aspect>.json`, with its `schema_version`;
 `AnalysisContextBundle.from_json(...).fingerprint(like=named)` over the file returns the fingerprint the page names
 (`like` computes it in the named one's version: see below). A host that
 wants its own pictures reads the bundles. `report_read(format="json")` and the command line's `--format json` return

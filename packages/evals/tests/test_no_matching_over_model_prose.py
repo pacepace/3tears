@@ -193,7 +193,7 @@ class TestThePopulationIsDerivedFromTypes:
     def test_the_marked_fields_are_found(self):
         """Non-empty and containing a known marked field — an empty population passes every scan."""
         names = prose_field_names()
-        assert {"statement", "reasons", "invalidation_trigger"} <= names, sorted(names)
+        assert {"statement", "lede", "invalidation_trigger"} <= names, sorted(names)
 
     def test_a_newly_typed_field_joins_the_population_without_a_list_edit(self):
         from threetears.evals.schema.prose import ModelProse

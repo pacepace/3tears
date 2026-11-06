@@ -315,7 +315,7 @@ def build_code_only_report(
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
         default, or ``table`` for their table alone.
     :ptype trials: TrialDetail
-    :return: The report, ``basis="code_only"``.
+    :return: The aspect's page, code's alone.
     :rtype: Report
     """
     source = ReportSource(
@@ -477,9 +477,7 @@ def _page(
     blocks.sort(key=lambda block: order.index(block.section))
     blocks = [_in_one_form(block) for block in _anchored(blocks)]
     return Report(
-        basis="code_only",
         title=_title(bundle, name, arm, arm_short_names or {}),
-        finding_count=0,
         source=source,
         blocks=blocks,
         verdicts=[*guardrails_read, *bars_read, *contrasts_read],

@@ -1,16 +1,12 @@
 """The strict structured-output contract every package call whose reply is read into a typed model sends, and the
-shape a retired memo's recommendation had.
+confidence words an author states.
 
 **The strict projection.** :func:`strict_schema` projects a pydantic JSON schema onto the portable strict subset
 (:data:`PORTABLE_STRICT_KEYWORDS`) both major providers' strict structured-output modes accept, and
 :func:`strict_response_format` wraps it as the ``json_schema`` directive the judge, the simulator, the proposer and the
 out-of-run calls send.
 
-**The retired memo's recommendation.** The memo writer is retired, and its memo is stored as JSON
-(``EvalAnalysis.document``), never read. :class:`Recommendation` and the models it nests (:class:`FloorOverride`,
-:class:`BehindOn`, :class:`BarMissed`) stay for this minor because ``CampaignReport.recommendation`` still types its
-field with them; no page fills it, and the next minor removes the field and them. :data:`Confidence` is the four
-confidence words the report writer's document and the stored analyses share.
+:data:`Confidence` is the four confidence words the report writer's document and the stored analyses share.
 """
 
 from __future__ import annotations
@@ -18,73 +14,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from threetears.evals.schema.prose import ModelProse
-
 #: How sure the author is of a finding or a decision.
 Confidence = Literal["very_high", "high", "medium", "low"]
 #: What a piece of evidence reads: a ``measure``, or a ``judged`` dimension.
 Reading = Literal["measure", "judged"]
-
-
-class _Authored(BaseModel):
-    """A closed object: the schema sent is strict, the check on return is strict, and so is a stored read."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class FloorOverride(_Authored):
-    """A broken floor the recommended arm is recommended over, named by its key, and why breaking it is acceptable."""
-
-    floor: str = Field(description="The broken floor's `floor` key, spelled as the bundle spells it.")
-    why: ModelProse = Field(description="Why recommending the arm over this broken floor is acceptable here.")
-
-
-class BehindOn(_Authored):
-    """An aspect on which code showed another arm ahead of the one a choice recommends, and why it is picked anyway."""
-
-    aspect: str = Field(description="The aspect's label, spelled as the bundle spells it.")
-    ahead_arm: str = Field(description="The arm code showed ahead there, by its label.")
-    why: ModelProse = Field(description="Why the recommended arm is picked over it all the same.")
-
-
-class BarMissed(_Authored):
-    """An absolute bar the recommended arm missed on one aspect, and why it is recommended all the same."""
-
-    aspect: str = Field(description="The aspect's label, spelled as the bundle spells it.")
-    measure: str = Field(description="The bar's measure, spelled as the bundle spells it.")
-    why: ModelProse = Field(description="Why recommending the arm below this bar is acceptable here.")
-
-
-class Recommendation(_Authored):
-    """The one call a retired memo recommended for a campaign: which arm, why, how sure, and the findings it rests on.
-
-    Kept as the type of ``CampaignReport.recommendation``, which no page fills now that the memo writer is retired;
-    the next minor removes the field and this model. ``floors_overridden``, ``behind_on`` and ``bars_missed`` were the
-    memo's answers to what code warned of on the recommended arm; ``rests_on`` named the findings it rested on.
-    """
-
-    arm: str = Field(
-        description=(
-            "The arm recommended, by its label as the campaign bundle names it; the control's label to keep it. Code "
-            "stores the arm's variant key beside the memo (``EvalAnalysis.recommended_variant_key``)."
-        )
-    )
-    reasons: list[ModelProse] = Field(description="Why, one reason each, strongest first.")
-    confidence: Confidence
-    rests_on: list[int] = Field(
-        description="Positions in `findings` this rests on; at least one, except when keeping the control."
-    )
-    floors_overridden: list[FloorOverride] = Field(
-        description="Every floor broken on the recommended arm, each once, with why; empty when it broke none."
-    )
-    behind_on: list[BehindOn] = Field(
-        description="Every aspect a choice's pair readings show another arm ahead of this one, with why; else empty."
-    )
-    bars_missed: list[BarMissed] = Field(
-        description="Every absolute bar the recommended arm missed, each once, with why; empty when it missed none."
-    )
 
 
 class MapFieldInSchema(TypeError):
@@ -250,13 +183,9 @@ def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, An
 
 
 __all__ = [
-    "BarMissed",
-    "BehindOn",
     "Confidence",
-    "FloorOverride",
     "MapFieldInSchema",
     "Reading",
-    "Recommendation",
     "strict_response_format",
     "strict_schema",
 ]

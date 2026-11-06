@@ -32,11 +32,7 @@ from threetears.evals.kernel.analysis_measures import (
     MeasureSummary,
 )
 from threetears.evals.kernel.authored import (
-    BarMissed,
-    BehindOn,
-    Recommendation,
     Confidence,
-    FloorOverride,
     MapFieldInSchema,
     PORTABLE_STRICT_KEYWORDS,
     UnportableSchema,
@@ -544,8 +540,7 @@ __all__ = [
     "AttemptOutcome",
     "AttributionScope",
     # The campaign of aspects: one question, its arms, per aspect the design it is read under, its floors and the
-    # call a person records; and the retired memo's recommendation, which CampaignReport.recommendation still types
-    # (debt: always None; the next minor removes the field and these three with Recommendation).
+    # call a person records.
     "ArmRole",
     "Aspect",
     "AspectDesign",
@@ -554,9 +549,6 @@ __all__ = [
     "CampaignCall",
     "Floor",
     "OverriddenBar",
-    "BarMissed",
-    "BehindOn",
-    "Recommendation",
     "resolve_control_arm",
     "BarAdjudication",
     "BarDecision",
@@ -642,7 +634,6 @@ __all__ = [
     "EvidenceRow",
     "EvidenceTier",
     "ExternalRateTable",
-    "FloorOverride",
     "FindingResolution",
     "GenerationProvenance",
     "JobStore",

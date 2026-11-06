@@ -16,10 +16,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
-from threetears.evals.analysis.report.model import (
-    DisclosureBlock,
-    TextBlock,
-)
+from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
 
 from packages.evals.tests.campaign_support import (
@@ -44,17 +41,17 @@ async def test_with_no_report_the_page_says_no_recommendation_was_written_and_ho
     page = await page_of("billing", "tone")
     assert page.basis == "code_only"
     assert NO_RECOMMENDATION in first_screen_markdown(page)
-    assert not [block for block in page.blocks if isinstance(block, TextBlock)]
-    with pytest.raises(ValueError, match="holds no writer's words"):
-        CampaignReport(
-            basis=page.basis,
-            title=page.title,
-            campaign_id=page.campaign_id,
-            scope_id=page.scope_id,
-            finding_count=0,
-            blocks=[*page.blocks, TextBlock(section="header", role="reason", body="a reason")],
-            aspects=page.aspects,
-            readings=page.readings,
+    with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
+        CampaignReport.model_validate(
+            {
+                "basis": page.basis,
+                "title": page.title,
+                "campaign_id": page.campaign_id,
+                "scope_id": page.scope_id,
+                "blocks": [*page.blocks, {"kind": "text", "section": "header", "role": "reason", "body": "a reason"}],
+                "aspects": page.aspects,
+                "readings": page.readings,
+            }
         )
 
 
@@ -95,7 +92,7 @@ async def test_a_call_that_keeps_the_control_overrides_nothing() -> None:
 
 async def test_a_choice_with_no_report_says_no_recommendation_was_written_then_the_cost_caveat_then_the_pairs() -> None:
     page = await kind_page_of("billing", "refunds")
-    assert page.readings.kind == "choice" and page.recommendation is None
+    assert page.readings.kind == "choice" and "recommendation" not in page.json_document()
     # The arms are priced, so the report-wide cost caveat follows, once.
     assert opening(page) == [("memo", NO_RECOMMENDATION), ("cost", COST_ROUTING_CAVEAT)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.

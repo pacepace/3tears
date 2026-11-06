@@ -452,26 +452,6 @@ def glossary_slug(term: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-")
 
 
-def markdown_html(text: str) -> str:
-    """The Markdown an author's words use — paragraphs, bullet lists, bold, code — over text escaped first.
-
-    :param text: An author's words.
-    :ptype text: str
-    :return: The HTML.
-    :rtype: str
-    """
-    out: list[str] = []
-    for paragraph in re.split(r"\n\s*\n", text.strip()):
-        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
-        if not lines:
-            continue
-        if all(line[:2] in ("- ", "* ") for line in lines):
-            out.append("<ul>" + "".join(f"<li>{inline_html(line[2:])}</li>" for line in lines) + "</ul>")
-        else:
-            out.append("<p>" + " ".join(inline_html(line) for line in lines) + "</p>")
-    return "".join(out)
-
-
 def inline_html(text: str) -> str:
     """Escape ``text``, then turn its bold and code spans into markup."""
     return _CODE.sub(r"<code>\1</code>", _BOLD.sub(r"<strong>\1</strong>", escape(text)))
@@ -534,7 +514,6 @@ __all__ = [
     "glossary_slug",
     "grid_html",
     "inline_html",
-    "markdown_html",
     "one_line",
     "page_head",
     "pill_html",

@@ -39,6 +39,7 @@ from threetears.evals.analysis import KIT_CHARTS, campaign_report_html, report_h
 from threetears.evals.analysis.report import Report
 from threetears.evals.analysis.report.blocks import ChartBlock, ChartKind, CostQualityPoint
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE
+from threetears.evals.analysis.report.html_parts import inline_html
 from packages.evals.tests.hostile_page_support import (
     HOSTILE,
     HOSTILE_ASPECT,
@@ -102,8 +103,8 @@ def test_markup_an_author_wrote_is_text_not_markup() -> None:
     assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in parsed(page).text), "so is the copied font link"
 
 
-def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
-    """``basis``, a text block's ``role`` and a disclosure's ``source`` are closed vocabularies, and still escaped.
+async def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
+    """A campaign page's ``basis`` and a disclosure's ``source`` are closed vocabularies, and still escaped.
 
     A report built without validation (``model_construct``, ``model_copy``) can carry anything in them, and the
     page's "every attribute escaped" holds of the page, not of the model that usually guards it.
@@ -111,24 +112,23 @@ def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
     breakout = '"><script>alert(1)</script><p x="'
     report = hostile_report()
     blocks = [
-        block.model_copy(update={"role": breakout})
-        if block.kind == "text"
-        else block.model_copy(update={"source": breakout})
-        if block.kind == "disclosure"
-        else block
+        block.model_copy(update={"source": breakout}) if block.kind == "disclosure" else block
         for block in report.blocks
     ]
-    page = report_html(report.model_copy(update={"basis": breakout, "blocks": blocks}))
+    page = report_html(report.model_copy(update={"blocks": blocks}))
 
     assert what_runs(page) == []
     assert font_links(page) == list(FONT_LINKS)
-    assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in parsed(page).tags if tag == "article")
+    campaign = campaign_report_html((await hostile_campaign_page()).model_copy(update={"basis": breakout}))
+    assert what_runs(campaign) == []
+    assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in parsed(campaign).tags if tag == "article")
 
 
-def test_the_markdown_a_memo_uses_still_renders() -> None:
-    """Escaping first is not escaping everything: a list, bold and code still become structure."""
-    tags = [tag for tag, _ in parsed(report_html(hostile_report())).tags]
-    assert {"ul", "li", "strong", "code"} <= set(tags)
+def test_inline_markdown_still_renders_over_escaped_text() -> None:
+    """Escaping first is not escaping everything: bold and code in an author's words still become structure."""
+    words = inline_html("**bold <script>alert(1)</script>** and `code <iframe src=x>`")
+    assert [tag for tag, _ in parsed(words).tags] == ["strong", "code"]
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in words and "&lt;iframe src=x&gt;" in words
 
 
 def _chart_data(page: str) -> list[tuple[str, Any]]:
@@ -186,7 +186,6 @@ def _with_cost_quality(report: Report) -> Report:
     point = {"cost": 0.01, "cost_low": 0.008, "cost_high": 0.012, "pass_rate_low": 70, "pass_rate_high": 90}
     chart = ChartBlock(
         section="memo",
-        finding=0,
         chart="cost_quality",
         title=HOSTILE,
         unit="usd",
