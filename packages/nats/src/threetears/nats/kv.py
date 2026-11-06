@@ -2844,7 +2844,7 @@ class _KeyWatchConsumer:
         heartbeat: timedelta,
         retry: timedelta,
         op_timeout_seconds: float,
-        absence: _StreamAbsence | None = None,
+        absence: _StreamAbsence,
     ) -> _KeyWatchConsumer | None:
         """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
 
@@ -2868,9 +2868,8 @@ class _KeyWatchConsumer:
         :ptype retry: timedelta
         :param op_timeout_seconds: the bucket's ceiling on one KV operation, which bounds the create
         :ptype op_timeout_seconds: float
-        :param absence: the watch's record of its bucket being absent, kept across its creates; ``None``
-            gives this create one of its own
-        :ptype absence: _StreamAbsence | None
+        :param absence: the watch's record of its bucket being absent, kept across its creates
+        :ptype absence: _StreamAbsence
         :return: the consumer, or ``None`` when it could not be created
         :rtype: _KeyWatchConsumer | None
         :raises KvError: when the NATS connection is closed
@@ -2893,8 +2892,6 @@ class _KeyWatchConsumer:
             mem_storage=True,
         )
         js = client.jetstream_context()
-        if absence is None:
-            absence = _StreamAbsence(subject=subject, stream=stream)
         consumer: _KeyWatchConsumer | None = None
         try:
             info = await run_bounded(
