@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from threetears.evals.analysis.report.build import (
     NO_ANALYSIS,
-    analysis_bundle,
     analysis_verdict,
     build_code_only_report,
 )
@@ -234,7 +233,6 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
-    "analysis_bundle",
     "analysis_verdict",
     "build_campaign_report",
     "build_code_only_report",

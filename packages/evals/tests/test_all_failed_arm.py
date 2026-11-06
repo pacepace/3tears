@@ -56,7 +56,6 @@ from threetears.evals.analysis import (
     inspect_campaign_bundle,
 )
 from threetears.evals.analysis.arms import short_digest
-from threetears.evals.analysis.report.build import analysis_bundle
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.schema import CellCoordinate
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
@@ -547,7 +546,8 @@ class TestAnArmWhereNoResultTookATurn:
         assert loaded is not None
 
         # Its aspect's page is code's, over the bundle frozen with it.
-        table = _table(_code_only(analysis_bundle(loaded)), "scoreboard")
+        (held,) = loaded.aspects
+        table = _table(_code_only(AnalysisContextBundle.from_dict(dict(held.bundle))), "scoreboard")
         assert _row(table, _REFUSING)["other"] == 4
         assert _row(table, _REFUSING)["cost"] is None
 

@@ -378,37 +378,6 @@ def surface_order(cells: Iterable[CellFacts], *, control: str | None, names: Map
     return sorted(cells, key=key)
 
 
-def cell_label(
-    variant_key: str,
-    apparatus_class_id: str,
-    *,
-    index: Mapping[str, VariantIndexEntry],
-    multi_rig: frozenset[str],
-) -> str:
-    """Name one cell — an arm under one rig — from the index and the multi-rig population.
-
-    The composition every surface naming a cell makes: the arm's name over the whole index (or the
-    fact that the index cannot place it), and the rig's short digest exactly when the arm was measured
-    under more than one rig in the caller's population.
-
-    :param variant_key: The cell's variant coordinate.
-    :ptype variant_key: str
-    :param apparatus_class_id: The rig it was measured under.
-    :ptype apparatus_class_id: str
-    :param index: Variant key → index entry.
-    :ptype index: Mapping[str, VariantIndexEntry]
-    :param multi_rig: The variants measured under more than one rig, as :func:`multi_rig_variants` returns them.
-    :ptype multi_rig: frozenset[str]
-    :return: The label, as :func:`arm_label` spells it.
-    :rtype: str
-    """
-    return arm_label(
-        variant_key,
-        arm_names(list(index.values())),
-        rig=short_digest(apparatus_class_id) if variant_key in multi_rig else None,
-    )
-
-
 __all__ = [
     "DIGEST_CHARS",
     "ELISION",
@@ -420,7 +389,6 @@ __all__ = [
     "arm_levels",
     "arm_levers",
     "arm_names",
-    "cell_label",
     "distinguishing_axes",
     "elide_level",
     "multi_rig_variants",

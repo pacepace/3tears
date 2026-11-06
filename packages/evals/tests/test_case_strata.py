@@ -38,7 +38,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES, analysis_bundle
+from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
 from threetears.evals.analysis.report.figures import SURFACE_ORDER_NO_CONTROL
 from threetears.evals.kernel import (
     STRATUM_MIN_CASES,
@@ -389,7 +389,8 @@ class TestTheReportCarriesStrata:
             ],
         )
         # An analysis's aspect page is code's, over the bundle frozen with it.
-        report = _code_only(analysis_bundle(analysis))
+        (held,) = analysis.aspects
+        report = _code_only(AnalysisContextBundle.from_dict(dict(held.bundle)))
 
         table = _strata_table(report)
         assert [column.header for column in table.columns][2:] == ["All cases", "lookalike", "plain", NO_STRATUM]

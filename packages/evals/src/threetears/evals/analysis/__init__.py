@@ -86,7 +86,7 @@ from threetears.evals.analysis.judge_profiles import (
     judged_criteria,
     tiers_with_judge_profiles,
 )
-from threetears.evals.analysis.arms import ArmLevel, cell_label, multi_rig_variants, short_digest
+from threetears.evals.analysis.arms import ArmLevel, multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
@@ -127,7 +127,6 @@ from threetears.evals.analysis.campaigns import (
     create_campaign,
     declarable_axes,
     get_campaign,
-    get_campaign_view,
     list_campaigns,
     remove_runs_from_campaign,
     set_campaign_control,
@@ -265,7 +264,6 @@ from threetears.evals.analysis.report import (
     VerdictReason,
     NO_ANALYSIS,
     ReportBasis,
-    analysis_bundle,
     analysis_verdict,
     build_campaign_report,
     build_code_only_report,
@@ -298,8 +296,6 @@ from threetears.evals.analysis.service import (
     get_analysis,
     inspect_analysis_bundle,
     inspect_campaign_bundle,
-    list_analyses,
-    list_analysis_attempts,
     list_insights,
     running_analysis_attempt,
 )
@@ -572,7 +568,6 @@ __all__ = [
     "ReportFile",
     "TrialBlock",
     "TrialDetail",
-    "analysis_bundle",
     "analysis_verdict",
     "DisclosureBlock",
     "DisclosureSource",
@@ -780,7 +775,6 @@ __all__ = [
     "campaign_verdicts",
     "record_campaign_call",
     "assemble_context_bundle",
-    "cell_label",
     "compare_two_runs",
     "comparison_sets",
     "component_carrier",
@@ -796,7 +790,6 @@ __all__ = [
     "frontier",
     "get_analysis",
     "get_campaign",
-    "get_campaign_view",
     "history",
     "insight_standing",
     "inspect_analysis_bundle",
@@ -820,8 +813,6 @@ __all__ = [
     "tiers_with_judge_profiles",
     "JudgeProfileDrafts",
     "SkippedJudgeProfile",
-    "list_analyses",
-    "list_analysis_attempts",
     "list_campaigns",
     "list_insights",
     "measure_movement",

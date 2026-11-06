@@ -800,16 +800,6 @@ def get_analysis(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Eva
     return analysis
 
 
-def list_analyses(storage: AnalysisStore, campaign_id: str, scope_id: str) -> list[EvalAnalysis]:
-    """List every analysis attached to a campaign in a scope, newest first."""
-    return storage.list_analyses_by_campaign(campaign_id, scope_id)
-
-
-def list_analysis_attempts(storage: AnalysisStore, campaign_id: str, scope_id: str) -> list[EvalAnalysisAttempt]:
-    """List every generation attempt recorded against a campaign in a scope, newest first — stored and failed alike."""
-    return storage.list_analysis_attempts_by_campaign(campaign_id, scope_id)
-
-
 # ---------------------------------------------------------------------------
 # Bundle inspection — the free read of the input a paid generation reads.
 #
@@ -1740,8 +1730,6 @@ __all__ = [
     "campaign_verdicts",
     "record_campaign_call",
     "inspect_campaign_bundle",
-    "list_analyses",
-    "list_analysis_attempts",
     "running_analysis_attempt",
     "list_insights",
     "record_written_generation",

@@ -29,7 +29,6 @@ from pydantic import Field, field_validator, model_validator
 from threetears.evals.analysis.arms import arm_names, short_digest
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
-    evidence_digest,
     fingerprint_digest,
     refuse_a_bundle_of_another_shape,
 )
@@ -85,18 +84,20 @@ _DERIVED_READINGS = frozenset({"aggregate"})
 
 #: What each kind of campaign asks of its report, as the report input says it (``report_input_build``).
 KIND_MEANS: dict[str, str] = {
-    "measurement": "One arm, measured: there is nothing to choose between, so the memo recommends no arm.",
+    "measurement": "One arm, measured: there is nothing to choose between, so the report recommends no arm.",
     "choice": (
-        "Several arms and no control: the memo picks the arm the evidence favours, or recommends none when no arm "
+        "Several arms and no control: the report picks the arm the evidence favours, or recommends none when no arm "
         "stood out (no clear winner); a pick of an arm shown ahead on no pair rests on cost or simplicity, at low "
-        "confidence. A pick names every aspect another arm is shown ahead on, in `behind_on`."
+        "confidence. A pick names every aspect another arm is shown ahead on."
     ),
-    "change": "A control and candidates: the memo recommends a candidate the evidence separated, or keeps the control.",
+    "change": (
+        "A control and candidates: the report recommends a candidate the evidence separated, or keeps the control."
+    ),
 }
 
 
 class CampaignBundle(EvalDocumentModel):
-    """A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
+    """A campaign's whole evidence for its one report: the question, arms and floors, code's readings, every aspect.
 
     In memory, never stored as itself: a stored analysis keeps each aspect's bundle and this bundle's
     :meth:`frame`. Its :meth:`fingerprint` is the one a generation records.
@@ -420,28 +421,6 @@ class CampaignBundle(EvalDocumentModel):
         return short_digest(variant_key)
 
 
-def campaign_evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> str:
-    """A whole campaign bundle document's fingerprint, as :meth:`CampaignBundle.fingerprint` computes it.
-
-    For a reader holding the stored document rather than the model: a frozen reporter case checks the bundle it
-    holds against the fingerprint it recorded, before anything is rebuilt.
-
-    :param document: A campaign bundle, as :meth:`CampaignBundle.to_dict` wrote it.
-    :ptype document: Mapping[str, Any]
-    :param like: The fingerprint recorded beside it, to compute this one in that one's version; None for the
-        current version.
-    :ptype like: str | None
-    :return: The fingerprint.
-    :rtype: str
-    """
-    frame = {key: value for key, value in document.items() if key != "aspects"}
-    frame["aspects"] = [
-        {"aspect": aspect.get("aspect"), "fingerprint": evidence_digest(aspect, like=_aspects_like(like))}
-        for aspect in document.get("aspects") or []
-    ]
-    return _campaign_digest(frame, like=like)
-
-
 def _aspects_like(like: str | None) -> str | None:
     """The version a campaign fingerprint in ``like``'s version names its aspects' bundles in: their current one under
     version 3 (which changed only the campaign's own evidence), else ``like``'s."""
@@ -570,7 +549,6 @@ def campaign_trial_ids(aspects: Iterable[tuple[str, Sequence[str]]]) -> dict[str
 __all__ = [
     "CAMPAIGN_BUNDLE_SHAPE",
     "CampaignBundle",
-    "campaign_evidence_digest",
     "build_campaign_bundle",
     "campaign_trial_ids",
 ]

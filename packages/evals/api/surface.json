@@ -1556,11 +1556,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.CampaignView": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.CampaignWindow": {
       "kind": "model",
       "signature": "",
@@ -1718,11 +1713,6 @@
     },
     "threetears.evals.kernel.Confidence": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.CONFIDENCE_TIERS": {
-      "kind": "constant (tuple)",
       "signature": "",
       "tier": "provisional"
     },
@@ -2233,11 +2223,6 @@
     },
     "threetears.evals.kernel.GuardrailReadings": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.HOST_PRODUCED_MEASURES": {
-      "kind": "constant (frozenset)",
       "signature": "",
       "tier": "provisional"
     },
@@ -3520,16 +3505,6 @@
       "kind": "dataclass",
       "signature": "MemberActsOn(members: tuple[tuple[str, str], ...])",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.host.obligation_rows": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.host.ObligationRow": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.host.obligations": {
       "kind": "function",
@@ -4871,11 +4846,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.analysis_bundle": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.analysis_report": {
       "kind": "function",
       "signature": "",
@@ -5128,11 +5098,6 @@
     },
     "threetears.evals.analysis.Cell": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.cell_label": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -5741,11 +5706,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.get_campaign_view": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.GLOSSARY": {
       "kind": "constant (dict)",
       "signature": "",
@@ -6050,16 +6010,6 @@
       "kind": "function",
       "signature": "lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]",
       "tier": "stable"
-    },
-    "threetears.evals.analysis.list_analyses": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.list_analysis_attempts": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.analysis.list_campaigns": {
       "kind": "function",

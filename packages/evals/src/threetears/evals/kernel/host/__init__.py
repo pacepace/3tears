@@ -110,13 +110,11 @@ from threetears.evals.kernel.host.world import (
 from threetears.evals.kernel.host.world_conformance import (
     CheckName,
     ConformanceResult,
-    ObligationRow,
     Outcome,
     Qualification,
     WorldConformanceError,
     WorldConformanceReport,
     check_world_conformance,
-    obligation_rows,
     obligations,
 )
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError, schema_violations
@@ -161,7 +159,6 @@ __all__ = [
     "MeasureRegistrationError",
     "MeasureRegistry",
     "MemberActsOn",
-    "ObligationRow",
     "Ordinal",
     "Outcome",
     "ProductionDepartureReader",
@@ -197,7 +194,6 @@ __all__ = [
     "check_world_conformance",
     "default_cell_timeout",
     "freeze",
-    "obligation_rows",
     "obligations",
     "schema_violations",
     "served_models_by_score",

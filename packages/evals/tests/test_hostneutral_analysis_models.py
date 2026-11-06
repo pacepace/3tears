@@ -24,8 +24,8 @@ from threetears.evals.kernel import authored
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
 from threetears.evals.kernel.authored import Recommendation
 from threetears.evals.kernel.campaign import (
-    CONFIDENCE_TIERS,
     CampaignDeclaration,
+    ConfidenceTier,
     EvalAnalysis,
     EvidenceRow,
     FindingResolution,
@@ -161,16 +161,16 @@ def _analysis(*, confidence: Any = "high", recommendation: Recommendation | None
 
 
 class TestConfidenceIsATier:
-    @pytest.mark.parametrize("tier", CONFIDENCE_TIERS)
+    @pytest.mark.parametrize("tier", get_args(ConfidenceTier))
     def test_every_tier_is_accepted(self, tier: str) -> None:
         assert _recommendation(confidence=tier).confidence == tier
 
     def test_the_tiers_are_the_four_named_ones_in_order(self) -> None:
-        assert CONFIDENCE_TIERS == ("very_high", "high", "medium", "low")
+        assert get_args(ConfidenceTier) == ("very_high", "high", "medium", "low")
 
     def test_the_authored_contract_offers_exactly_the_stored_tiers(self) -> None:
         """The confidence words the authored models declare and the tiers every surface ranks by are one set."""
-        assert set(get_args(authored.Confidence)) == set(CONFIDENCE_TIERS)
+        assert set(get_args(authored.Confidence)) == set(get_args(ConfidenceTier))
 
     @pytest.mark.parametrize(
         "bad", ["certain", 0.8, 1.5], ids=["a-word-that-is-no-tier", "a-probability", "out-of-range"]

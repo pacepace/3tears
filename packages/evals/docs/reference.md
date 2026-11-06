@@ -628,7 +628,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 **Classes**
 
 - **`AnalysisContextBundle`** · *host contract* · model · The closed context bundle a generation prompt runs over.
-- **`CampaignBundle`** · model · A campaign's whole evidence for its one memo: the question, arms and floors, code's readings, every aspect.
+- **`CampaignBundle`** · model · A campaign's whole evidence for its one report: the question, arms and floors, code's readings, every aspect.
 - **`CampaignReadings`** · model · Everything code reads off a campaign, by its kind: for a change, one row per aspect × candidate and one status per floor × candidate; for a choice, one reading per pair of arms per aspect; for a measurement, each arm's measures; for every kind, each arm against each absolute bar.
 - **`CampaignReport`** · model · A campaign's page: the decision first, then what code read across its aspects, the findings and next steps, how the campaign was set up, then one fold per aspect.
 - **`ChartBlock`** · *host contract* · model · One of the charts a report draws, with every value it draws, so it prints as a table too.

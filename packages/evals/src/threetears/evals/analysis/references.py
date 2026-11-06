@@ -39,7 +39,7 @@ module makes; it reads the one the width was computed at.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from typing import NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -186,34 +186,6 @@ def campaign_cell_aliases(aspects: Sequence[tuple[str, Iterable[CellFacts]]]) ->
         for ref in cell_aliases(cells).values():
             addresses[f"{CELL_ALIAS_PREFIX}{len(addresses) + 1}"] = CellAddress(label, ref)
     return addresses
-
-
-def in_writer_terms(text: str, aliases: Mapping[str, CellAddress]) -> str:
-    """Name every cell in a refusal the way the writer names it — by alias, never by its full ``cell_ref``.
-
-    Everything below the alias seam speaks full refs, so a refusal raised there (a measure a real cell
-    does not carry, a statistic it lacks) quotes the digest pair. That text is sent back on the repair
-    round, and a writer shown the handle it was never taught to use can copy it — which is refused. So
-    the generator passes a refusal through here where it hands it to the writer — the repair round and
-    the provenance of the analysis that round produced — and nowhere else: the tally and the attempt
-    record keep the full refs, since an alias is meaningful only against the bundle it was minted from.
-
-    A ref that is a cell in several aspects is named by each of its aliases (``c2 or c5``): the text does not say
-    which aspect it meant, and naming one would point the writer at the wrong cell half the time.
-
-    :param text: The refusal as the resolver worded it.
-    :ptype text: str
-    :param aliases: The campaign's aliases (:func:`campaign_cell_aliases`).
-    :ptype aliases: Mapping[str, CellAddress]
-    :return: The text with each full ``cell_ref`` replaced by its alias, or aliases.
-    :rtype: str
-    """
-    named: dict[str, list[str]] = {}
-    for alias, address in aliases.items():
-        named.setdefault(address.cell_ref, []).append(alias)
-    for ref, said in named.items():
-        text = text.replace(ref, " or ".join(said))
-    return text
 
 
 def cell_index(surface: DecisionSurface) -> dict[str, CellFacts]:
@@ -470,7 +442,6 @@ __all__ = [
     "cell_aliases",
     "cell_index",
     "cell_of_alias",
-    "in_writer_terms",
     "require_cell",
     "resolve_reading",
 ]

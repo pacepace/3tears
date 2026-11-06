@@ -36,7 +36,6 @@ from typing import Any, Literal
 
 import pytest
 
-import threetears.evals.analysis.service as analysis_service
 import threetears.evals.ops.analysis as analysis_ops
 from packages.evals.tests.doc_writer_support import (
     ANALYST_MODEL,
@@ -739,10 +738,7 @@ async def test_a_report_the_store_refuses_fails_the_job_with_its_record_kept(mon
     assert "StorageError: the store is read-only" in attempt.error, "it failed for the store's reason"
     assert "under report document" in attempt.error and "delete_report_doc" in attempt.error
     assert attempt.calls == 2
-    assert (
-        off_loop(analysis_service.list_analyses, fixture.host.eval_host.storage, fixture.campaign.id, TOYHOST_SCOPE)
-        == []
-    )
+    assert off_loop(fixture.host.eval_host.storage.list_analyses_by_campaign, fixture.campaign.id, TOYHOST_SCOPE) == []
 
 
 # -- refusals before anything is sent ---------------------------------------------------------------------------------
