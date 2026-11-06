@@ -719,7 +719,8 @@ class CircuitBreakerRegistry:
         # every provider ever asked for, so status() keeps reporting one whose
         # breakers were all dropped as idle (they were CLOSED) instead of losing it
         self._providers: set[str] = set()
-        self._fingerprint_key = secrets.token_bytes(32)
+        # drawn on the first fingerprint, never at construction: the default registry is built at import
+        self._fingerprint_key: bytes | None = None
         self._lock = threading.Lock()
 
     def _fingerprint(self, credential: str | None) -> str | None:
@@ -732,7 +733,11 @@ class CircuitBreakerRegistry:
         """
         if credential is None:
             return None
-        return hashlib.blake2b(credential.encode(), key=self._fingerprint_key, digest_size=8).hexdigest()
+        with self._lock:
+            if self._fingerprint_key is None:
+                self._fingerprint_key = secrets.token_bytes(32)
+            key = self._fingerprint_key
+        return hashlib.blake2b(credential.encode(), key=key, digest_size=8).hexdigest()
 
     def get(self, provider_name: str, *, credential: str | None = None, model: str | None = None) -> CircuitBreaker:
         """returns the circuit breaker for a provider (and credential), creating one if needed.

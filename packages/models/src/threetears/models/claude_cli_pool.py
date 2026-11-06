@@ -1196,17 +1196,29 @@ class PooledCliSession:
             error.structural = True  # type: ignore[attr-defined]
             raise error
 
-    async def dispose(self, *, grace_seconds: float) -> None:
+    async def dispose(self, *, grace_seconds: float, abandoned: bool = False) -> None:
         """Disconnect, then make sure the process and its children are gone. Idempotent.
+
+        A session whose call was ABANDONED -- it left by an exception, a timeout or a cancellation,
+        mostly while the CLI was still answering -- is killed first and disconnected after. Such a CLI
+        is mid-turn and does not exit on the end of its input: the SDK's disconnect waits 5 s for it
+        before signalling it, and the 5 s bound here ran out in that same wait every time (three times
+        a week in production, each one a session stopped about 30 s into a call its caller had
+        stopped waiting for), so the kill was what stopped it anyway, 5 s late. With the process gone
+        the disconnect only releases the client's own tasks and returns at once.
 
         :param grace_seconds: how long SIGTERM gets before SIGKILL
         :ptype grace_seconds: float
+        :param abandoned: the session's call did not finish cleanly, so its CLI may be mid-turn
+        :ptype abandoned: bool
         """
         if self.closed:
             return
         self.closed = True
-        # NOSILENT: whatever disconnect raises, the process-tree kill below is what guarantees the CLI
-        # is gone; a disconnect failure changes nothing about that outcome.
+        if abandoned:
+            await asyncio.to_thread(self._kill_if_still_ours, grace_seconds)
+        # NOSILENT: whatever disconnect raises, the process-tree kill is what guarantees the CLI is
+        # gone; a disconnect failure changes nothing about that outcome.
         with contained("Claude CLI disconnect failed; the process-tree kill follows", log=_logger):
             await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
         await asyncio.to_thread(self._kill_if_still_ours, grace_seconds)
@@ -1636,6 +1648,8 @@ class ClaudeCliPool:
         async with self._condition:
             self._closing = True
             sessions = list(self._all)
+            # a session not idle is on loan, its call still running: stopped as abandoned
+            idle = {waiting.session for queue in self._idle.values() for waiting in queue}
             self._stopping.update(sessions)
             self._all.clear()
             self._idle.clear()
@@ -1653,7 +1667,7 @@ class ClaudeCliPool:
             await cancel_and_wait(self._reaper)
             self._reaper = None
         for session in sessions:
-            await session.dispose(grace_seconds=self._kill_grace)
+            await session.dispose(grace_seconds=self._kill_grace, abandoned=session not in idle)
             self._stopping.discard(session)
         if stranded:
             await self._abandon(stranded)
@@ -1926,7 +1940,7 @@ class ClaudeCliPool:
         # The spare's launch options are taken before the dispose: a key's last CLI takes the key's
         # learned prompts with it (see :meth:`_forget`), and the spare must define them all.
         spare_options = self._launch_options(key, copy.copy(options))
-        await self._dispose(key, session)
+        await self._dispose(key, session, abandoned=not clean)
         if clean and not self._closing and not self._broken:
             self._start_spare(key, spare_options)
 
@@ -2029,15 +2043,17 @@ class ClaudeCliPool:
             if not self._live.get(key):
                 self._prompts.pop(key, None)
 
-    async def _dispose(self, key: str, session: PooledCliSession) -> None:
+    async def _dispose(self, key: str, session: PooledCliSession, *, abandoned: bool = False) -> None:
         """Stop one session and release its slot once the process is actually gone.
 
         :param key: the launch key
         :ptype key: str
         :param session: the session to stop
         :ptype session: PooledCliSession
+        :param abandoned: its call did not finish cleanly, so its CLI may be mid-turn
+        :ptype abandoned: bool
         """
-        await session.dispose(grace_seconds=self._kill_grace)
+        await session.dispose(grace_seconds=self._kill_grace, abandoned=abandoned)
         await self._forget(key, session)
         _logger.info("Stopped a pooled Claude CLI", extra={"extra_data": {"pid": session.pid, "live": self._total}})
 

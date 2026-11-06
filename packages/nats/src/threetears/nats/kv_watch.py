@@ -24,6 +24,7 @@ from typing import Final, Protocol, runtime_checkable
 __all__ = [
     "DEFAULT_KEY_WATCH_HEARTBEAT",
     "DEFAULT_KEY_WATCH_RETRY",
+    "KEY_WATCH_ABSENT_WARN_AFTER",
     "KvKeyUpdate",
     "KvKeyWatching",
 ]
@@ -35,6 +36,13 @@ DEFAULT_KEY_WATCH_HEARTBEAT: Final[timedelta] = timedelta(seconds=5)
 
 #: how long a key watch waits after a consumer create failed before trying again.
 DEFAULT_KEY_WATCH_RETRY: Final[timedelta] = timedelta(seconds=5)
+#: How long a key watch's bucket may stay absent before the watch says so at WARNING. A broker
+#: restart on memory storage takes the bucket's stream with it, and the watch's consumer creates
+#: answer "stream not found" until the bucket's declarer creates it again: about 45 s across a
+#: production NATS restart (2026-11-05). That wait is said once at INFO; a bucket still absent past
+#: this is one nobody is recreating, and the operator is told. Read when the watch checks, so a
+#: deployment (or a test) may set it.
+KEY_WATCH_ABSENT_WARN_AFTER: timedelta = timedelta(seconds=120)
 
 
 @dataclass(frozen=True, slots=True)

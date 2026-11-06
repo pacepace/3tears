@@ -2546,6 +2546,417 @@ arm declaring none takes the computed one. `campaign_create` takes `short_name` 
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
+### agent-tools: a pod that makes long requests holds its replaced connection for them across a renewal, `longest_request_seconds`
+
+**Fixed:** a tool pod renews its NATS credential about once a day by moving to a new connection. It
+kept the old one open only for the 30 s synchronous reply budget. A request the pod itself was
+waiting on is answered on the connection it was sent on. So a request older than 30 s when the
+renewal landed, such as a warehouse export, lost its reply and failed at its own timeout as
+`REQUEST_FAILED`.
+
+- `ToolServer(..., longest_request_seconds=...)` is the longest request the pod makes. A renewal
+  keeps the replaced connection open that long: its subscriptions for that long, then the
+  connection for that long again. It also renews that much earlier in the credential's lifetime.
+  It defaults to `SYNC_REPLY_BUDGET_SECONDS`, today's 30 s, so a pod that passes nothing is
+  unchanged.
+- It must be finite and at least the reply budget, because a shorter hold would cut off replies the
+  pod owes. It is refused beside an injected `nats_client`, whose owner sets its own renewal.
+- Cost, measured with nats-py on NATS 2.12: one extra idle connection for twice the hold, once per
+  renewal. That is about 22 KiB of Python heap, plus about 4.6 KiB for each subscription during
+  the first half of the hold. A 700 s hold at the platform's 24 h TTL means two connections for
+  about 23 minutes a day, under 1 MiB even with 200 subscriptions. The server sees one more
+  connection for that time. Messages are not doubled: each subscription's two halves share one
+  queue group.
+
+### scrape: `discover_links_labeled` follows an attribute other than `href`
+
+**Added:** `discover_links_labeled(..., attribute="href")`. A listing that names its documents in another
+attribute, such as a contest dropdown whose `<option value>` is each page's id, is walked with
+`attribute="value"`; the element's text is the label, and a match without the attribute is skipped as an
+anchor without `href` is. `base_url=""` returns the raw value for a caller that fills its own URL template.
+The default keeps every existing call unchanged. An API addition, so it ships in the next minor.
+
+### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
+
+**Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
+default. The hub now gives an export 600 s on the warehouse, so a pod gave up on exports the hub
+would still have finished. Its `REQUEST_FAILED` also steered a retry that stacked a second export
+on the first. An export now waits the client's new `export_timeout`. Reads, fingerprints, queries,
+export deletes and export listings keep `timeout`.
+
+- `DatasourceQueryClient(..., export_timeout=...)` takes a `timedelta` or seconds. It defaults to
+  660 s, so a caller that passes nothing needs no change.
+- The default sits above the hub's default export deadline, 600 s, as `DEFAULT_QUERY_TIMEOUT_SECONDS`
+  sits above `QUERY_STATEMENT_TIMEOUT_SECONDS`. It covers 620 s of hub work: a 5 s turn at the
+  datasource, a 5 s pooled connection, the 600 s statement and 10 s for the reply. The other 40 s
+  cover a hub that is slow to start the statement.
+- A hub set to a longer export deadline needs its clients to pass a matching `export_timeout`.
+- `export_part`, `export_partitions`, `export_counted_partitions` and every other caller of
+  `client.export` get the export deadline with no change.
+
+## v0.92.0 -- 2026-11-06
+
+### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
+
+**Changed (behaviour consumers must know about):** when the epoch bucket is replaced (a broker restart
+on memory storage), `EpochListener` now resets EVERY ephemeral registration. A registration made
+without `on_reset` used to be skipped; it is now reset by calling its `on_bump(0, None)`. A consumer
+whose `on_bump` reloads whatever the epoch (metallm's capabilities registry, scriob's principal status)
+needs no change and now reloads after a restart. **A consumer whose `on_bump` ignores an epoch at or
+below one it has seen must pass `on_reset`**, or it will discard this call and stay stale, as every
+consumer did before. **Fixed:** skipping such a consumer lost any bump whose broadcast it had missed,
+and the catch-up compared against the last-seen the reset had just cleared, so its cache stayed stale
+until its subject bumped again (production 2026-11-05: `registrations: 1, notified: 0`). The reset's
+WARNING now says how many consumers were told and how many through their bump callback.
+
+### nats: a key watch waiting for its bucket's stream says so once, without a traceback
+
+**Fixed:** after a broker restart on memory storage, every consumer create of `watch_key` /
+`watch_prefix` answers "stream not found" (`err_code` 10059) until the bucket's declarer creates it
+again, and each retry was logged with a full traceback and a hint to check the principal's grant
+(~296 tracebacks per worker in 45 s, 2026-11-05). The watch now logs that wait once at INFO, once at
+WARNING if it lasts past 120 s, and once at INFO when the stream is back. Every other create failure
+keeps its traceback and the grant hint.
+
+### models: a pooled Claude CLI whose call was abandoned is killed before it is disconnected
+
+**Fixed:** a CLI still answering does not exit on the end of its input, the SDK's disconnect waits 5 s
+for it, and `PooledCliSession.dispose` bounded the disconnect at the same 5 s, so a session stopped
+after its caller gave up logged `Claude CLI disconnect failed` and was killed 5 s late. **Added:**
+`PooledCliSession.dispose(..., abandoned=False)`; the pool passes `abandoned=True` for a call that
+left by an exception or a cancellation and for a session on loan when the pool closes, and kills
+those first. A session that finished cleanly is still disconnected first.
+
+### core: the SQLite and DuckDB caches keep `Date` and `Time` columns
+
+**Fixed:** a `sqlalchemy.Time` or `sqlalchemy.Date` column fell through both cache type mappers to plain
+text, logging `Unknown SQLAlchemy type ... defaulting to TEXT` / `VARCHAR` three times per column at every
+start (metallm's `users.config_sleep_from` / `config_sleep_until`) and reading a `time` or `date` back as a
+string. Both are now ISO text decoded on read (`TEXT_DATE` / `TEXT_TIME` / `TEXT_TIMETZ`, `VARCHAR_*` in
+DuckDB) and round-trip exactly, microseconds included. A `Time` column keeps the wall clock and drops a
+zone, as Postgres `time` does through asyncpg; a `Time(timezone=True)` column keeps a fixed offset and
+refuses a naive or `ZoneInfo` time, as asyncpg does. A `datetime` written to a `Date` column keeps its date,
+as asyncpg writes it to a Postgres `date`. **Added:** `threetears.core.cache.base.stored_time` and `stored_date`.
+After this no type in metallm's metadata or any 3tears schema reaches the mapper's default, so the warning
+fires only for a genuinely new type.
+
+### core: an index declaration can say a column sorts descending
+
+**Added:** `Index(..., desc="date_created")` (a name or a sequence; stored as `IndexDef.desc`, each name
+one of the index's columns). `TableSchema.to_sqlalchemy_table` emits it as `column.desc()`, so the
+declared index equals a migration's `(..., date_created DESC)` and Alembic auto-gen reports no
+remove/add pair for it; `embedding_width`'s rebuild from a declaration keeps the `DESC` too.
+**Fixed:** `idx_identity_variant_history` (agent-identity) and `idx_intentions_open_ranked`
+(agent-intention) now declare the `DESC` their migrations create; metallm's schema drift guard caught the
+identity one. **Changed:** `threetears.core.testing.sqla_parity.index_signature` compares an index's
+columns in order and with direction (it compared an unordered set of names, so neither drift could fail
+parity); a textual reference element such as `text("date_created DESC")` reads as that column descending.
+A column cannot be both `desc` and in `ops` (`ValueError`): SQLAlchemy drops a descending column's operator
+class. `coordination.tables.table_def_for` refuses an index that declares `desc`, `where`, `using`, `ops` or
+`pg_with` (`ValueError`), which its DDL definition cannot carry; it dropped them silently.
+
+### scheduled-jobs: the undo of a fire cut off on close is a public function
+
+**Added:** `threetears.scheduled_jobs.bring_back_cut_off_fire(schedule_store, trigger, fire_id)`, the
+undo `BackgroundDispatch.aclose` runs for each fire it cancels, now callable by any dispatcher that
+hands fires off the tick. It calls `ClaimUndoStore.undo_claim` (the compare-and-swap on what the
+claim wrote), logs `EVENT_FIRE_DUE_AGAIN` when the job is due again and a WARNING when it is left as it
+is, returns whether it was undone, and never raises. `BackgroundDispatch` behaves as before; its log
+lines now start `scheduled_jobs:` rather than `scheduled_jobs background:`.
+
+### agent-memory: automatic extraction, ambient recall and consolidation each have a switch
+
+**Added:** three fields on `MemoryConfig`, all default `True`, so a host that sets none sees no
+change. `extraction_enabled=False` makes `MemoryExtractor.extract` answer `SKIPPED` with the new
+`ExtractionGate.DISABLED` before any stage runs, so a turn writes no memory. `ambient_recall_enabled=False`
+makes `MemoryRetriever.retrieve` / `retrieve_with_candidates` answer an empty result, so
+`retrieve_memories` and `MemoryInjectionMiddleware` hand the model nothing. `consolidation_enabled=False`
+makes `DreamService.run_consolidation` answer an empty `ConsolidationResult` without loading a
+candidate. Each logs the reason once per call at DEBUG. The explicit memory tools do not read the
+switches: an agent with all three off still saves, searches, recalls and retires memories through them.
+`MemoryRetriever` is the ambient path: a host's own recall tool built on one gives it a config with
+`ambient_recall_enabled` on.
+
+### agent-tools, agent-memory: context items and memory refs are kept per agent
+
+**Added:** `context_items.agent_id` (agent-tools migration v005) and `conversation_memory_refs.agent_id`
+(agent-memory migration v032), backfilled; reads and upserts take the agent, so two agents in one conversation keep
+separate tool results and separate recalled memories. An index declaration can say `NULLS NOT DISTINCT`.
+
+## v0.91.4 -- 2026-11-06
+
+### nats: a large object is hashed off the event loop
+
+**Fixed:** an Object Store put or get hashed the whole object on the event loop. On cobalt prod reports pods
+(2026-11-06) the loop watchdog caught the stall; a 256 MB put and get held the loop 176 ms. An object of 1 MiB or more
+is now cut into chunks and hashed (put), or joined and hashed (get), on a worker thread; smaller objects stay inline.
+The worst wake for the same put and get is about 14 ms.
+
+### core: evicting many L1 keys runs off the event loop
+
+**Fixed:** `invalidate_cache_many`, `save_rows` and `delete_rows` evicted every key from L1 on the event loop; a
+100k-key eviction held it 228 ms. At 64 keys or more, the fence keys are made and the L1 delete runs on worker threads.
+The fence hears every key on the loop before the delete, and listeners hear them after it. A cancel waits for the
+eviction to finish and is raised after, so L1 never keeps a row a commit replaced. The worst wake is about 19 ms.
+
+### evals: a job lease's log shows a sub-second lease as it is
+
+**Fixed:** the lease renewal and lost-lease log lines rounded a sub-second lease to "0s"; they now print it as set
+("0.3s"). The job-lease cancel test no longer races a 0.3 s lease on a loaded machine: it failed 19 of 20 concurrent
+runs before and passes 40 of 40 after.
+
+## v0.91.3 -- 2026-11-05
+
+### core: a diff names its groups in one array only when the group column's type allows it
+
+**Fixed:** 0.91.2's batched diff read chose its array type by how the group values looked, not by the column. The
+rail binds a group's values as text, so a diff grouped by a timestamp column sent `= ANY($n::text[])`, and L3
+refused it (`operator does not exist: timestamp with time zone = text`). On cobalt dev (2026-11-06) six states never
+came forward. The array type now comes from the group column's L1 type: VARCHAR -> `text[]`, BIGINT/INTEGER ->
+`bigint[]`; any other column is read a value at a time, as before 0.91.2.
+
+## v0.91.2 -- 2026-11-05
+
+### core: one scope's bad copy in L2 never rebuilds the snapshot
+
+**Fixed:** `ScopedSnapshot` rebuilt every scope whole from L3 when one scope's copy in L2 could not be used. On cobalt
+prod (2026-11-05) one chunk holding another count than its pointer made every new pod rebuild all 52 states, about four
+hours each. Now a cold load loads every scope L2 can give and reads from L3, on its own, only a scope it cannot (a
+chunk gone, of another count or corrupt; a pointer gone, unreadable or of other columns; a scope a partial index does
+not name), publishing it so L2 is whole again. A ready copy brings such a scope forward on its own too, and makes a
+partial index whole scope by scope. The one rebuild of every scope left is NATS holding no index at all, pinned by a
+test of the code's shape. A scope a rebuild cannot apply, and a pointer that does not decode, is that scope's failure,
+never the rebuild's or the load's.
+
+### core: a chunk written again with other rows gets a name of its own
+
+**Fixed:** a chunk is named by its scope, epoch, table and columns, not its rows, and a copy whose retention moves with
+the clock writes other rows of the same epoch later. The later writer found the name taken, reused the chunk, and
+recorded its own count on its pointer: the chunk and the pointer disagreed (prod: 471 rows where its pointer said 218).
+A chunk is reused only when it holds the same bytes; other rows go under a name of their own, and a same-epoch pointer
+of other counts is moved past.
+
+### core: a diff reads its changed groups in a few statements, and holds a scope's rows once
+
+**Changed:** a diff read each changed group in a statement of its own (cobalt dev 2026-11-05: AK's feed tables 900-plus
+partitions each, about 300 rows a second). The groups whose rows together fit a page are read in one statement
+(`= ANY($n)`, one array parameter, at most `groups_per_read`, 500), split back by value; a NULL group and a group of
+more than a page are read alone. A recovery asks every table's partition values before it reads anything, so an ask
+that fails reads nothing; reads its base a table at a time, letting each go once composed; and counts the copy's
+groups with Arrow, never a Python object a held row (dev pods were OOMKilled at 20 GiB recovering a state).
+
+### core: a read NATS failed never turns into a read from L3; a watch that ends is followed again
+
+**Fixed:** a chunk read NATS failed (a timeout, a slow consumer cut off) counted toward the failures that bring a
+scope forward from L3, and a recovery whose base L2 could not read took it for no copy: both read the scope whole from
+L3. Each is read from L2 again instead. A replica whose pointer watch ended was FAILED for good; it now serves its
+copy as it is, says so, and follows the pointers again after a backoff (`rewatch_backoff`).
+
+## v0.91.1 -- 2026-11-05
+
+### core: a cold load bounds the chunk bytes it reads at once, under NATS's pending bound
+
+**Fixed:** `ScopedSnapshot` bounded the chunks it read from the object store at once (`chunk_reads`), not their bytes:
+a few large chunks together passed the server's pending bound for a connection (64 MiB), and NATS cut the pod off as
+a slow consumer (cobalt prod 2026-11-05). The chunk bytes in flight are now held to `chunk_read_bytes` (32 MiB by
+default); a chunk larger than that is read alone. A chunk's bytes come from its pointer, or from the store's object
+info when the pointer records none.
+
+### core: a cold load whose chunk reads fail loads from L2 again, never rebuilds whole from L3
+
+**Fixed:** `ScopedSnapshot` took any chunk it could not read for a lost snapshot and rebuilt every scope whole from
+L3. On cobalt prod (2026-11-05) NATS cut two new pods off as slow consumers mid-load; each rebuilt the snapshot from
+L3 at about 4 rows a second while L2 held the copy. A read that failed (`ObjectStoreError`) now leaves the copy in L2:
+the load is tried again after 5, 10, 20, 40, then every 60 s, and the replica stays not ready meanwhile. A chunk that
+is gone, or holds another count, is still rebuilt from L3.
+
+### core: a diff recovery's partition reads count as progress and run eight at a time
+
+**Fixed:** `ScopedSnapshot`'s stall bound (`rebuild_stall`) watched a catch-up by what it landed, and a diff
+recovery lands nothing until a scope is done. On cobalt dev (2026-11-05) a recovery of 45,113 rows over 940
+partitions was let go at the bound, 39,026 rows in, and the next replica began it again from the start, without end.
+A partition read now counts as a landing: the partitions are a finite count, so a run that keeps finishing them is
+getting through, and one stuck on a read is still let go. The diff's group reads run `_DIFF_READS_AT_ONCE` (8) at a
+time, answered in order, where one after another took about four partitions a second.
+
+### nats: a put the Object Store has no room for is refused before any chunk is written
+
+**Fixed:** `NatsObjectStore.put` wrote its chunks before its metadata, and a store at its `max_bytes` refused it part
+way: the chunks already written stayed, named by no object, until the declarer's orphan purge, which runs only while
+no write claim stands. The writer that met the full store holds its own claim, so on a busy store they stayed (cobalt
+prod, 2026-11-01: the reports pod's store at its 1 GiB bound, "unnamed object chunks kept: a write is in flight" with
+51 claims, one purge of 4 subjects all night; against a live server a refused 1 MB put left 524 KB behind). A put now
+reads the stream's size and bound first (one `STREAM.INFO`) and raises `ObjectStoreFullError` before its first chunk
+when the bytes it adds -- counted as the server counts them, `stored_bytes_of_put` -- would pass the bound; the store
+holds exactly what it held. Writers racing past the check meet the server's refusal, as before. A store with no bound
+(`max_bytes` 0 or -1) is not checked. A principal putting into a store now needs `STREAM.INFO` on it, which every pod
+granted its own store already holds (it binds with it). New public name: `threetears.nats.object_store.stored_bytes_of_put`.
+
+## v0.91.0 -- 2026-11-04
+
+### core: a scoped snapshot recovers a behind copy from the diff, never by reading a scope whole from L3
+
+**Fixed:** on election night (cobalt prod, 2026-11-04) the copy fell behind L3 again and again (a full shared store,
+writers killed mid-write by pod rolls, a write racing its own copy), and every recovery re-read each behind scope's
+whole night from L3: 47 states, then 30, tens of minutes each, while pages went stale. Four paths led there: a writer
+killed between its stage and its publish left no record of its stage (one was kept only after a commit, and only for
+a pointer found behind); a writer whose own copy was behind staged the scope whole from L3 (`stage_from_l3`) or read
+the tables its stage left out from L3 (`_filled_from_l3`); a catch-up threw away every scope it read once ANY write
+had committed meanwhile, so writes every few seconds kept it from finishing; and a scope with no record was rebuilt
+from L3 whole. Now:
+
+- **Records before the commit.** `ScopedSnapshot.record_staged(staged, carry_at=)` keeps each stage as the change it
+  is (from the scope's rows at `carry_at` to its epoch) before the writer commits. Whatever happens to the writer
+  after, any replica carries the scope's pointer on from L2 in seconds. A record is never carried past the scope's
+  epoch in L3 (a write still committing, or one that never will), by a catch-up or by any publish; `discard_staged`
+  drops a write's records with its stages. The writer calls it only once every data transaction of its write that
+  touches the staged scopes has committed: an abandoned write commits what it left at its own number, and a record
+  kept beside an open or rolled-back data transaction would be carried there with rows L3 never held.
+- **Rows from L2.** `ScopedSnapshot.rows_at(scope, epoch, tables=None)` answers a scope's rows at an epoch from this
+  L1, or from the pointer carried there by its records, never from L3; `None` when neither reaches it. A writer
+  whose copy is behind builds its stage from it, or leaves the scope to the recovery.
+- **The diff.** `SnapshotTable.version_column` names the L3 column holding the version of the write that last
+  changed a row. When every table of a snapshot names one, a scope behind L3 is brought forward from the rows a
+  copy holds (its pointer's chunks, or this L1's) and the groups of rows L3 changed since (grouped by
+  `partition_by`, or else the first column the table is read in after the scope): one statement counts each group's
+  rows and those stamped since, and only a group stamped, missing or of another count is read, pinned to its value.
+  A group whose value is NULL (reports' `join_geo_id`) is read from the rows where it is NULL, paged by the other key
+  columns. A table naming `partition_values` diffs only the groups the ask names; when the ask fails, no group the
+  copy does not hold is read unless a write stamped it: a `retained` table is judged as one the copy keeps part of,
+  any other stays behind until an ask answers (tried again a minute later).
+  A table not `retained` must then number L3's rows. `SnapshotTable.retained` marks a table the copy keeps only some
+  rows of (a retention); a diff that finds rows such a table kept gone from L3 cannot bring it forward. Such a scope
+  stays behind, said at ERROR and in the new `CatchUpOutcome.left`, and is never guessed at.
+- **Each scope on its own.** The recovery judges each scope by its own epoch (unchanged, and untouched by a write in
+  progress, before its first read and after its last), so a commit to another scope never throws its work away. It
+  writes L2 before this L1 takes the change, so a copy that cannot take it now (a full store) never holds L2 back.
+- **One whole read left.** In a snapshot whose every table names a version column, a scope is read whole from L3 only
+  to rebuild what L2 holds no copy of: the cold rebuild (NATS lost the snapshot, or never held it), and a scope
+  neither L2 nor this L1 holds. Each says so at ERROR (`rebuilding <scope> whole from L3: L2 holds no copy`). Any
+  other whole read raises a refusal (an internal error, never reaching a caller that stays inside the rule): `stage_from_l3` refuses, a staged publish whose pointer is
+  behind with no record to bridge it leaves the scope to the recovery (its stage kept), and a scope whose chunks
+  cannot be applied is brought forward from the diff over this L1's rows. A snapshot with a table that names no
+  version column keeps the earlier behaviour, whole reads included.
+
+### core: the stall breaker watches what a catch-up lands, and every wait says what it waits on
+
+**Fixed:** election night the rebuild claim was held 04:38:57-04:58Z while its holder's last progress was at
+04:42:31Z: every page its L3 reads answered counted as progress, so the watchdog never let the claim go, and nothing
+said what it waited on. A catch-up in a snapshot that recovers from the diff is now watched by what it LANDS (a scope
+committed or judged, a pointer or the index moved): one that reads on and lands nothing for `rebuild_stall` lets the
+claim go. The cold rebuild is still watched by its every step (a large scope's read is long and correct), and so is
+the whole read of a scope with no copy inside a catch-up: each of its pages counts as landed.
+
+**Added:** every wait says at INFO what it waits for, on whom and since when, when it begins and then at most once a
+minute while it lasts: a catch-up waiting on the rebuild claim (its holder and since when), a flow waiting on a write
+in progress, a staged publish waiting on an earlier write still publishing, a writer's commit running without the
+claim (who holds it), a run under the claim (its last step and last landing), and the reads under way (table, scope,
+pages, rows). Each wait ends where it resolves (a stage's when its scope's pointer moves or its publish ends without
+waiting, the claim's when a catch-up takes it or finds nothing behind, the reads' when the last under way ends), so
+the next one says how long it has waited from its own start.
+
+### core: a scope a host no longer announces can be forgotten
+
+**Added:** `VersionedAnswers.forget(scope)` retires a scope a host no longer announces: its announced-version record
+and every answer its versions row names go, and the row stays naming no version, holding its floor. A host whose
+scopes come and go (reports announces one a deploy) left a record, a versions row and the answers per scope that
+nothing removed, so they grew by the scopes of every release; a forgotten scope now leaves one row of a few bytes.
+The floor is what keeps it so: a replica still reading at a retired version is answered and stores nothing, where
+with no floor it wrote the row and its answers back. Every change is a compare-and-set through the index, and the
+record's key is the call's gate: the record is deleted only as the call read it, or, with none, the key taken with
+a marker of the call's own. An `announce` landing before the call is done replaces either and wins: the call puts
+the floor back where it found it and answers `False`. The gate is looked at again after the floor rises, before
+any answer is deleted, and last of all, so an announce before the answers go loses no answer and one after them is
+stored again once the floor is back. Answers are retired below the order the
+forgotten record held (with no record, the row's newest). Forgetting a retired scope answers `True`, as many times
+as it is called; deleted keys are purged as a retirement's are.
+
+### core: a whole read of a scope never loses a row to a NULL in a column it is paged by
+
+**Fixed:** a scope's L3 read pages by its key (or `read_order`), each page past the last row's values. A NULL in a
+paged column makes that comparison NULL: a page whose last row held one ended the read, and rows holding one were
+dropped from every page after the first, with no count to see it. A `partition_by` value that was NULL was read
+pinned `= NULL` and named no row. The cold rebuild, the one whole read left, would have built a copy missing them.
+Now every key column the L1 does not hold NOT NULL (outside its table's own primary key, the new
+`DuckDBBackend.not_null_columns`) is read NULL-safe: the rows with no NULL in those columns are the keyset read they
+always were, and each pattern of NULLs is read apart, paged by the columns left; a NULL partition value is read from
+the rows where it is NULL; the scope is put back in key order (NULL last). A table whose every paged column is held
+NOT NULL sends the same statements as before. `DuckDBBackend.export_rows` refuses a NULL only in a column its table
+holds NOT NULL, not in every column of the key it is given. A backend that does not say which columns it holds NOT
+NULL is read as before. Reports' snapshot tables hold every key, `read_order` and `partition_by` column NOT NULL, so
+none of their reads change.
+
+### core: a scoped snapshot table can be read from L3 one partition value at a time
+
+**Added:** `SnapshotTable.partition_by`, a key column a scope's rows are read one value at a time (each value's rows
+paged on their own), and `SnapshotTable.partition_values`, an ask of L3 for the values a rebuild reads. On
+YugabyteDB a keyset page over a key of many columns scanned the scope's rows from their start, so a scope's read grew
+with the square of its rows (reports' LSF county projections, election night 2026-11-04: ~1.1 billion keys scanned
+for ~30 million rows). A rebuild whose ask fails reads every value: slower, never fewer rows. A partition column
+that does not lead the key is put back in key order once read.
+
+### core: a diff over a copy that keeps some rows of some partitions reads only what was stamped
+
+**Added:** `SnapshotTable.partial_groups` (with `retained=True` and `partition_values`; refused otherwise): the copy
+keeps only the partitions the ask names, and only some rows of each (reports' `lsf_projections`, keyed by run: a
+thinned set of a night's runs, and of each kept run its history rows). Before, a diff of such a table counted every
+run L3 holds (a `GROUP BY` over the whole night that grew with it), and every kept run whose copy held part of its
+rows was of another count and read again whole. Now:
+
+- **The count names only the asked-for and the held partitions** (`IN` their values, `IS NULL` for a NULL one), so
+  it does not grow with every run L3 holds.
+- **Only what moved is read.** A kept partition a write stamped since the copy's epoch has only its stamped rows
+  read, each replacing the copy's row of its key, both as the L1 types them. One is read whole when the copy holds
+  none of it, when a write stamped its every row (one read), when the copy holds more of its rows than L3 holds
+  unchanged since the copy's epoch (rows it holds went from L3), or when the L1's retention lets go of a stamped row
+  of it. One whose copy holds fewer rows than L3 is no difference and is not read.
+- **Only a partition L3 no longer holds is dropped.** Every partition the copy holds is counted and diffed beside
+  the asked-for ones, named or not: an ask may not yet name a run L3 holds (reports' `lsf_runs` records a run once
+  every state's rows are written), and a diff that dropped it would publish fewer rows than L3 holds. Letting go of
+  a run the thinning no longer names is the L1 retention's job. The count stays bounded by the asked-for and the
+  held partitions.
+- **A failed ask reads nothing:** the scope stays behind and is tried again, never diffed as a plain `retained`
+  table. An ask naming no partition is no failure: every held partition is diffed and kept while L3 holds it, so
+  it thins nothing, and a scope whose partitions L3 dropped comes forward empty.
+- **What each diff dropped, read whole and read stamped-only is said at INFO**, per table and scope.
+- **The writer's obligation:** a delete inside a kept partition that leaves L3 at least as many unchanged rows of it
+  as the copy holds is not seen, so a table set so adds and deletes whole partitions (`lsf_projections` writes and
+  deletes whole runs).
+
+- **No group is read forever.** A group (any diff, `partial_groups` or not) read on two published diffs in a row while
+  L3's count and newest stamp of it stayed the same is a read the L1 did not keep (its retention lets the rows go,
+  or a `retained` table's copy of part never meets L3's count): it is said at ERROR, naming the table, scope, group
+  and why, and is not read again, the copy's rows of it kept as they are, until L3's count or stamp of it changes.
+  Only a diff that publishes, with L3's epoch for the scope unchanged across it, counts: one that fails (another
+  table's ask, a count a racing write upset) or a write left pending counts nothing, so a real change is never
+  skipped. An ask naming a value its column cannot hold (a NUMERIC asked as text that is no number) is said at
+  ERROR with the value and taken as a failed ask.
+- **A failure that repeats backs off.** A scope whose diff fails the same way, its diff seeing the same counts and
+  newest stamps of L3 as the last failed try, is tried again after 1, 2, 4 and 8 minutes, then every 15, said at
+  ERROR at each try with when the next is. A write that moves the scope's epoch in L3 has it tried at the next
+  catch-up, and a try seeing other counts or stamps waits a minute again: a retry is delayed, a change never
+  skipped. A recovery that raises (a publish into a full store, a lost claim) backs off alike, said at ERROR with
+  the error and the next try, and the stuck-chunk recheck waits out a scope's backoff too, taking no claim for a
+  scope the recovery would not try.
+- **A read from L3 says how far it is.** A step's reads from L3 (a rebuild, a diff, a catch-up beside a write) that
+  run a minute or more say at INFO, once a minute: `<phase> from L3, <s> s in: scope <n> of <m> (<scope>), <table>
+  partition <p> of <P>` (or `<table> rows <r> of <R>`) `; <done> of <total> rows read, <rate> rows/s over the last
+  minute, about <N> min left (estimate)`, saying "total not yet counted" until it is; and, once a scope that took a
+  minute is read, `read scope <scope> (<n> of <m>): <rows> rows in <s> s, <rate> rows/s`. A whole read still under way
+  a minute in counts its table and scope's rows once (`SELECT count(*) AS rows_total`, the named partitions only for
+  a `partition_values` table); a diff counts nothing more, its own counts saying what it reads. `SnapshotStatus.reading`
+  (the new `L3ReadProgress`) carries the same: `phase`, `started_at`, `scope`, `table`, `scopes_done`/`scopes_total`,
+  `partitions_done`/`partitions_total`, `table_rows_done`/`table_rows_total`, `rows_done`/`rows_total`,
+  `rows_per_second` and `eta_seconds`, kept a page at a time with no statement of its own.
+- **Values compared as stored.** A diff compares a group's value, the ask's values and a stamped row's key in the
+  L1's stored form, from the one conversion the L1 writes through, now public as
+  `threetears.core.cache.duckdb.stored_value(value, col_type)` (`DuckDBBackend.serialize_value` calls it): a UUID
+  as its text, an instant as its ISO text, a decimal at its column's scale. A run of a `NUMERIC(12, 2)` column asked
+  for as a float is the run the copy holds.
+
+After a diff, a diff with nothing written since counts and reads nothing, whatever brought the first about. A rebuild
+already read only the asked-for partitions, a value at a time, each page handed to the L1's retention.
+
 ## v0.90.0 -- 2026-11-02
 
 ### core: a settling commit evicts its keys from L1 in one write

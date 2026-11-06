@@ -428,6 +428,41 @@ class TestDiscoverLinksLabeled:
         html = '<a class="doc">no href</a><a class="doc" href="/z.pdf">z</a>'
         assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == [("https://h/z.pdf", "z")]
 
+    def test_another_attribute_names_the_link_and_its_element_text_is_the_label(self) -> None:
+        # A dropdown lists the documents: each <option value> is a page, its text the page's name. An
+        # option with no value (or an empty one) is not a link, as an anchor without href is not.
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = (
+            '<select id="race"><option>Select a race</option><option value="">blank</option>'
+            '<option value="60309/">United States Senator</option>'
+            '<option value="/other/60310/">  Attorney\n General </option></select>'
+        )
+        assert discover_links_labeled(
+            html, base_url="https://h/Precincts/", link_selector="#race option", attribute="value"
+        ) == [
+            ("https://h/Precincts/60309/", "United States Senator"),
+            ("https://h/other/60310/", "Attorney General"),
+        ]
+
+    def test_an_empty_base_returns_the_raw_attribute_value(self) -> None:
+        # A caller filling its own URL template needs the value itself; an empty base resolves nothing.
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = '<option class="r" value="60309">Senator</option><option class="r" value="../x">X</option>'
+        assert discover_links_labeled(html, base_url="", link_selector="option.r", attribute="value") == [
+            ("60309", "Senator"),
+            ("../x", "X"),
+        ]
+
+    def test_the_default_attribute_is_href(self) -> None:
+        from threetears.scrape.drivers.multi_document import discover_links_labeled
+
+        html = '<a class="doc" href="/a.pdf" data-id="7">A</a>'
+        assert discover_links_labeled(html, base_url="https://h", link_selector="a.doc") == discover_links_labeled(
+            html, base_url="https://h", link_selector="a.doc", attribute="href"
+        )
+
 
 class TestMultiDocumentSessionStateForwarding:
     """The wrapper neither applies a human's solve nor withholds it -- both halves pinned.

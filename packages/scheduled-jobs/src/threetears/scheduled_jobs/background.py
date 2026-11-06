@@ -104,6 +104,7 @@ __all__ = [
     "UNRECORDED_FIRES_NAMED",
     "BackgroundDispatch",
     "FireNotRecordedError",
+    "bring_back_cut_off_fire",
     "in_flight_lock_key",
 ]
 
@@ -687,64 +688,7 @@ class BackgroundDispatch:
         # the job comes back even when the record could not be written, since its work never ran.
         await self._write(trigger, fire_id, result, failure_reason)
         if due_again:
-            await self._bring_back(trigger, fire_id)
-
-    async def _bring_back(self, trigger: JobTrigger, fire_id: UUID) -> None:
-        """Undo a cancelled fire's claim: its job is active and due at the occurrence it was running.
-
-        Due at ``scheduled_fire_at``, not at the moment of shutdown: the next claim then computes
-        the job's following fire from the same occurrence the cancelled one did, so the schedule
-        keeps its grid and only the cut-off run is repeated. The undo is a compare-and-swap on what
-        the claim wrote, so a row that moved on since is left alone and said so at WARNING.
-        """
-        detail = {
-            "job_id": str(trigger.job_id),  # convert at border: log extra_data field
-            "fire_id": str(fire_id),  # convert at border: log extra_data field
-            "kind": trigger.kind,
-        }
-        if self._schedule_store is None:
-            log.warning(
-                "scheduled_jobs background: a fire cancelled on close is not run again; "
-                "no schedule_store was given to undo its claim",
-                extra={"extra_data": detail},
-            )
-            return
-        if trigger.claimed_status is None:
-            log.warning(
-                "scheduled_jobs background: a fire cancelled on close is not run again; "
-                "its trigger does not say what its claim wrote, so the claim cannot be undone",
-                extra={"extra_data": detail},
-            )
-            return
-        try:
-            undone = await self._schedule_store.undo_claim(
-                partition_key=trigger.partition_key,
-                job_id=trigger.job_id,
-                scheduled_fire_at=trigger.scheduled_fire_at,
-                claimed_at=trigger.fired_at,
-                claimed_next_fire_at=trigger.claimed_next_fire_at,
-                claimed_status=trigger.claimed_status,
-                now=datetime.now(UTC),
-            )
-        except Exception as exc:  # noqa: BLE001 - boundary: shutdown must complete; the job keeps its advanced schedule
-            contain(
-                exc,
-                log=log,
-                what="scheduled_jobs background: could not undo the claim of a fire cancelled on close",
-                extra=detail,
-                level="error",
-            )
-            return
-        if undone:
-            log.info(
-                EVENT_FIRE_DUE_AGAIN, extra={"extra_data": {**detail, "due_at": trigger.scheduled_fire_at.isoformat()}}
-            )
-        else:
-            log.warning(
-                "scheduled_jobs background: a fire cancelled on close is not run again; its job changed after "
-                "the claim (claimed again, retuned, fired by hand, paused or deleted), so it is left as it is",
-                extra={"extra_data": detail},
-            )
+            await bring_back_cut_off_fire(self._schedule_store, trigger, fire_id)
 
     async def _write(self, trigger: JobTrigger, fire_id: UUID, result: JobFireResult, failure_reason: str) -> None:
         failed = result.status == "failed"
@@ -939,3 +883,79 @@ async def _release_in_flight_lock(
 
 def _elapsed_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
+
+
+async def bring_back_cut_off_fire(schedule_store: ClaimUndoStore | None, trigger: JobTrigger, fire_id: UUID) -> bool:
+    """Undo the claim of a fire its dispatcher cut off on close: its job is active and due at the occurrence it was running.
+
+    For any dispatcher that hands fires off the tick (:class:`BackgroundDispatch` calls it for each
+    fire :meth:`BackgroundDispatch.aclose` cancels). The claim had already advanced the job (or
+    expired a one-shot), so without the undo the work waits a whole interval or never runs.
+
+    Due at ``scheduled_fire_at``, not at the moment of shutdown: the next claim then computes the
+    job's following fire from the same occurrence the cut-off one did, so the schedule keeps its
+    grid and only the cut-off run is repeated. The undo is :meth:`ClaimUndoStore.undo_claim
+    <threetears.scheduled_jobs.protocols.ClaimUndoStore.undo_claim>`, a compare-and-swap on what
+    the claim wrote, so a row that moved on since (claimed again, retuned, fired by hand, paused,
+    deleted) is left alone and said so at WARNING. Never raises: a failed undo is logged at ERROR
+    and the job keeps what its claim wrote, so shutdown completes. Call it after the fire's record
+    is written, so the cut-off fire is in the history before its job can run again.
+
+    :param schedule_store: the tick's schedule store; ``None`` leaves the job as its claim left it,
+        at WARNING
+    :ptype schedule_store: ClaimUndoStore | None
+    :param trigger: the cut-off fire's trigger, as the tick's claim stamped it
+    :ptype trigger: JobTrigger
+    :param fire_id: the cut-off fire
+    :ptype fire_id: UUID
+    :return: ``True`` when the job is due again, ``False`` when it was left as it is
+    :rtype: bool
+    """
+    detail = {
+        "job_id": str(trigger.job_id),  # convert at border: log extra_data field
+        "fire_id": str(fire_id),  # convert at border: log extra_data field
+        "kind": trigger.kind,
+    }
+    if schedule_store is None:
+        log.warning(
+            "scheduled_jobs: a fire cancelled on close is not run again; no schedule_store was given to undo its claim",
+            extra={"extra_data": detail},
+        )
+        return False
+    if trigger.claimed_status is None:
+        log.warning(
+            "scheduled_jobs: a fire cancelled on close is not run again; "
+            "its trigger does not say what its claim wrote, so the claim cannot be undone",
+            extra={"extra_data": detail},
+        )
+        return False
+    try:
+        undone = await schedule_store.undo_claim(
+            partition_key=trigger.partition_key,
+            job_id=trigger.job_id,
+            scheduled_fire_at=trigger.scheduled_fire_at,
+            claimed_at=trigger.fired_at,
+            claimed_next_fire_at=trigger.claimed_next_fire_at,
+            claimed_status=trigger.claimed_status,
+            now=datetime.now(UTC),
+        )
+    except Exception as exc:  # noqa: BLE001 - boundary: shutdown must complete; the job keeps its advanced schedule
+        contain(
+            exc,
+            log=log,
+            what="scheduled_jobs: could not undo the claim of a fire cancelled on close",
+            extra=detail,
+            level="error",
+        )
+        return False
+    if undone:
+        log.info(
+            EVENT_FIRE_DUE_AGAIN, extra={"extra_data": {**detail, "due_at": trigger.scheduled_fire_at.isoformat()}}
+        )
+    else:
+        log.warning(
+            "scheduled_jobs: a fire cancelled on close is not run again; its job changed after "
+            "the claim (claimed again, retuned, fired by hand, paused or deleted), so it is left as it is",
+            extra={"extra_data": detail},
+        )
+    return undone
