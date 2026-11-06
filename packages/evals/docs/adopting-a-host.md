@@ -1138,18 +1138,20 @@ release, on:
   below a root. Such a name is promised nothing: it may change or move in any release, and the
   [reference](reference.md#public-api) does not list it.
 
-The first two tiers are the declared surface, 514 names, mapped by rung in [the surface](surface.md). A declared
+The first two tiers are the declared surface, 488 names, mapped by rung in [the surface](surface.md). A declared
 name stays declared while something outside the package imports it, a shipped page teaches it or a declared
 signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
-only a known host's tests import, until that host re-pins (the rules, in full: [the surface](surface.md)). Otherwise
-it is provisional; a name that goes provisional still imports, nothing warns, and `MIGRATIONS.toml` names it.
+only a known host's tests import, until that host accepts that it may move (the rules, in full:
+[the surface](surface.md)). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
+and `MIGRATIONS.toml` names it.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
-and marks each host-contract one *host contract*. Nothing a host imports is provisional: each adopting host's import
-list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on one is provisional. If
-your host binds to a provisional name, send your list to be added: promoting a name costs nothing, and demoting one
-withdraws a promise, so it is recorded.
+and marks each host-contract one *host contract*. Nothing a host's production code imports is provisional: each
+adopting host's import list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on
+one is provisional, unless the host accepted that a name only its tests import may move. If your host binds to a
+provisional name, send your list to be added: promoting a name costs nothing, and demoting one withdraws a promise,
+so it is recorded.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):

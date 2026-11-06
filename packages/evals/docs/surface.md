@@ -4,7 +4,7 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-514 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
+488 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
 them the types a declared signature reaches; they import, and nothing about them is promised.
 
 A declared name goes provisional once nothing outside the package imports it, unless one of these holds:
@@ -13,14 +13,15 @@ A declared name goes provisional once nothing outside the package imports it, un
 - a declared signature reaches it;
 - it is a port or protocol a host implements without importing it by name (a store or client port, a kind's factory
   or launcher), a version constant, or a one-minor shim;
-- it is a stable name only a known host's tests import: it stays declared until that host re-pins.
+- it is a stable name only a known host's tests import: it stays declared until that host accepts that it may move.
 
-The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt), lists the
-names only Discodon's tests hold and every declared protocol; `tests/test_declared_holdbacks.py` holds it to the tree.
+The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt), lists every
+declared protocol and any name only Discodon's tests hold; `tests/test_declared_holdbacks.py` holds it to the tree.
+Discodon accepted on 2026-11-06 that a provisional name its tests import may move, so it holds none.
 
 | Reason | What holds the name | Names |
 |---|---|---|
-| `discodon-tests-only` | Discodon's tests import it, and nothing else imports, names or reaches it | 24 |
+| `discodon-tests-only` | Discodon's tests import it, and nothing else imports, names or reaches it | 0 |
 | `port-host-implements` | A protocol a host implements and hands the engine | 18 |
 | `protocol-engine-provides` | A protocol the engine implements and hands a host, or its storage satisfies | 13 |
 | `unreached` | Nothing | 0 |
@@ -93,7 +94,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 - `kernel`: `AdmissionRefusedError`, `CandidateKind`, `CandidateKindDefect`, `CandidateOutput`, `CandidatePreparationFailed`, `CandidateTelemetry`, `CappedCompletion`, `CassetteStore`, `CellCassettes`, `CellSink`, `CellSpanWindow`, `ConflictError`, `default_job_timeout`, `DefinitionStore`, `EvalCampaign`, `EvalServiceError`, `EvalStorage`, `IDENTITY_VERSION`, `JobStore`, `MetricDescriptor`, `NotFoundError`, `ProviderRefusedError`, `ResultStore`, `RunRecordStore`, `RunStore`, `StorageError`, `strict_response_format`, `UnportableSchema`, `UnreadableRunError`, `ValidationFailedError`, `VariantConfig`, `withhold_failure_detail`, `WorldSession`
 - `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `MemberActsOn`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `TemplateCaseFields`, `TemplateChecks`, `WorldDimension`, `WorldRegistry`
 - `run`: `admit_template`, `Ceilings`, `corpus_digests`, `definition_drift`, `DefinitionReset`, `execute_run`, `JUDGE_REQUEST_SETTINGS`, `KindFactory`, `KindLauncher`, `KindWiring`, `launch_run`, `LaunchableKind`, `LaunchHost`, `LaunchRequest`, `LaunchSettings`, `load_seed_corpus`, `price_subject_call_floor`, `reset_definitions`, `run_blocking`, `RunnerOptions`, `SeedCaseSet`, `SeedJudgeCase`, `SeedTemplateCase`, `SIMULATOR_REQUEST_SETTINGS`, `start_run`, `SubjectResolver`, `UnknownSubject`
-- `analysis`: `MIN_CASES`, `READ_TIER_ROW_BUDGET`
+- `analysis`: `READ_TIER_ROW_BUDGET`
 - `actions`: `definition_drift_actions`, `render_jobs_started`
 - `storage`: `bridge_async_store`, `DocTypeRoute`, `InMemoryDocumentStore`, `RoutedDocumentStore`, `SqliteDocumentStore`
 - `testing`: `check_completion_conformance`, `check_refusal_negotiation`, `CompletionGuard`, `jobs_conformance_cases`, `JobsConformanceHost`, `NegotiationConformanceFailure`, `RecordedCompletions`, `RecordedPrompt`, `RecordingRefused`, `RouterTransport`, `STORE_CONFORMANCE_CASES`, `StoreConformanceCase`
@@ -104,15 +105,15 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 Declared because the production host imports it: launch and judge plumbing, prompt registry, metering, the routed store and the operations its routes call.
 
 - `schema`: `ActorPolicy`, `AsyncDelivery`, `AsyncDeliveryStatus`, `AsyncExternalSpend`, `CaseSetRef`, `CatalogRubricDim`, `ConversationSpec`, `ConversationStopCause`, `CORE_RESET_DOC_TYPES`, `DOC_TYPE_FACTS`, `DURABLE_DOC_TYPES`, `EVAL_DOC_TYPES`, `EvalBaseModel`, `ExternalSpend`, `FailureOwner`, `JudgeConfig`, `nested_schemas`, `NON_TERMINAL_RUN_STATUSES`, `OutOfRunSpend`, `PROSE_SCHEMA_KEY`, `ProviderFailure`, `RESERVED_DIM_IDS`, `RubricAxis`, `RubricProposal`, `RunDisclosure`, `ThinkingBinding`, `ToolResultClearing`, `ToolTurnClient`, `TurnCeiling`, `TurnMessage`, `TurnReply`, `TurnToolSpec`, `utc_now_iso`, `VariationAxis`, `VariationCounts`
-- `kernel`: `ACCURACY_MEASURE`, `ActionSeam`, `AdmittedCall`, `Aspect`, `classifier_label_measure`, `count_substituted`, `count_substituted_deliveries`, `DeliveryRecorder`, `DeliveryReplay`, `DeliverySeam`, `DeliveryTicket`, `ENGINE_FAMILIES`, `EvalJobTimeout`, `ExternalRateTable`, `extract_json`, `extract_json_array`, `FIND_CAMPAIGN`, `FIND_RUN`, `FIND_TEMPLATE`, `fold_phase_timings`, `INCOMPLETE_STOP_REASONS`, `judge_case_of`, `JUDGE_KIND_CONTRACT`, `JUDGE_KIND_MEASURES`, `KIND_TEMPLATE`, `KIND_TEXT`, `MeasureSummary`, `MeritAxis`, `METRIC_DESCRIPTORS`, `OutOfRunBudget`, `PlannedCall`, `production_replicating_cost`, `prompt_drift`, `PromptDrift`, `Recordable`, `ReplayedDelivery`, `resolve_variant_identity`, `RoleUsageLedger`, `seed_digest`, `SEED_PROMPTS`, `SEED_REMEDY`, `SeedPrompt`, `SeedSection`, `SeedTemplate`, `ToolWrap`, `TURN_BUDGET_ENDED_KEY`, `WorldSessionError`
-- `kernel.host`: `BarRegistrationError`, `CANDIDATE_MODEL_LEVER`, `check_seed`, `EvalCellTimeout`, `MeasureRegistrationError`, `ResolvesInto`, `UNSEATED_LEVEL`, `UnsupportedSchemaError`, `WorldConformanceReport`
-- `run`: `AbandonedRunSweepReport`, `assert_preconditions`, `build_judge_service`, `CallCeiling`, `callers_missing_the_constructor`, `CandidateTurn`, `CellContext`, `delete_run`, `drive_conversation`, `fold_metered_cell`, `JUDGE_CALL_ATTEMPTS`, `JUDGE_MAX_TOKENS`, `launch_as_group`, `launchable_judge_kind`, `LaunchGroup`, `metered_cell_tally`, `MeteredCallLedger`, `MeteredCallTally`, `mint_case_set`, `plan_judge`, `precondition_failure_text`, `quote_launch`, `rejudge_result`, `resolve_constructor`, `resolve_judge_pin`, `run_judge_llm`, `seed_eval_definitions`, `SeedCorpus`, `SeedOutcome`, `SimulatorTurn`, `sweep_abandoned_runs`, `TemplateField`, `TurnDriver`
-- `analysis`: `ABSENT`, `assemble_campaign_bundle`, `CampaignBundle`, `dollars_text`, `serialize_report`
+- `kernel`: `ActionSeam`, `AdmittedCall`, `Aspect`, `DeliveryRecorder`, `DeliveryReplay`, `DeliverySeam`, `DeliveryTicket`, `EvalJobTimeout`, `ExternalRateTable`, `extract_json`, `extract_json_array`, `FIND_TEMPLATE`, `fold_phase_timings`, `JUDGE_KIND_CONTRACT`, `JUDGE_KIND_MEASURES`, `KIND_TEMPLATE`, `KIND_TEXT`, `MeritAxis`, `METRIC_DESCRIPTORS`, `OutOfRunBudget`, `PlannedCall`, `production_replicating_cost`, `prompt_drift`, `PromptDrift`, `Recordable`, `ReplayedDelivery`, `RoleUsageLedger`, `seed_digest`, `SEED_PROMPTS`, `SEED_REMEDY`, `SeedPrompt`, `SeedSection`, `SeedTemplate`, `ToolWrap`, `WorldSessionError`
+- `kernel.host`: `BarRegistrationError`, `check_seed`, `EvalCellTimeout`, `MeasureRegistrationError`, `ResolvesInto`, `UnsupportedSchemaError`, `WorldConformanceReport`
+- `run`: `AbandonedRunSweepReport`, `assert_preconditions`, `build_judge_service`, `CallCeiling`, `CandidateTurn`, `CellContext`, `delete_run`, `drive_conversation`, `fold_metered_cell`, `JUDGE_CALL_ATTEMPTS`, `JUDGE_MAX_TOKENS`, `launch_as_group`, `launchable_judge_kind`, `LaunchGroup`, `metered_cell_tally`, `MeteredCallLedger`, `MeteredCallTally`, `mint_case_set`, `plan_judge`, `precondition_failure_text`, `quote_launch`, `resolve_judge_pin`, `run_judge_llm`, `seed_eval_definitions`, `SeedCorpus`, `SeedOutcome`, `SimulatorTurn`, `sweep_abandoned_runs`, `TemplateField`, `TurnDriver`
+- `analysis`: `dollars_text`
 - `gen`: `EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT`, `EVAL_PROPOSER_TEMPLATE_DEFAULT`, `generate_variations`, `plan_draft`, `propose_draft`
 - `storage`: `CoreReset`, `MisplacedDocument`, `RouteChanged`, `ROUTING_RECORD_DOC_TYPE`
-- `ops`: `ANALYSIS_PREPARATION_BUDGET_S`, `AnalysisGeneration`, `AnalystLimits`, `await_job`, `campaign_create`, `CampaignDefinition`, `CampaignLine`, `CampaignListing`, `campaigns_list`, `case_rename`, `case_set_mint`, `case_sets_list`, `CaseRenamed`, `CaseSetLine`, `CaseSetMint`, `EditorLimits`, `EvalSummary`, `history_launch_pricer`, `job_cancel`, `job_poll`, `JobHandle`, `JobsStarted`, `JobStatus`, `judge_case_author`, `JudgeCaseAuthor`, `LaunchArguments`, `report_read`, `ReportBudget`, `run_get`, `run_job_id`, `run_label`, `run_launch`, `RunLine`, `RunListing`, `runs_list`, `SessionLimits`, `start_action_job`, `start_paid_call`, `TemplateListing`, `templates_list`, `WriterLimits`
+- `ops`: `ANALYSIS_PREPARATION_BUDGET_S`, `AnalysisGeneration`, `AnalystLimits`, `await_job`, `campaign_create`, `CampaignDefinition`, `CampaignLine`, `CampaignListing`, `campaigns_list`, `case_rename`, `case_set_mint`, `case_sets_list`, `CaseRenamed`, `CaseSetLine`, `CaseSetMint`, `EditorLimits`, `EvalSummary`, `history_launch_pricer`, `job_cancel`, `job_poll`, `JobHandle`, `JobsStarted`, `JobStatus`, `judge_case_author`, `JudgeCaseAuthor`, `LaunchArguments`, `report_read`, `ReportBudget`, `run_get`, `run_label`, `run_launch`, `RunLine`, `RunListing`, `runs_list`, `SessionLimits`, `start_action_job`, `start_paid_call`, `TemplateListing`, `templates_list`, `WriterLimits`
 - `actions`: `analyst_tools`, `ConformanceSample`, `Refusal`
-- `testing`: `JobsConformanceCase`, `READER_CONFORMANCE_CASES`, `ReaderConformanceCase`, `ReaderSample`
+- `testing`: `JobsConformanceCase`
 - `transports.fastmcp`: `CatalogueTool`
 
 ## Providers
