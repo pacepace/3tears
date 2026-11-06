@@ -18,7 +18,11 @@ The sections below are a change's; a choice's pairs are read by the same step-do
 
 **One family per candidate across its aspects, two directions.** Each candidate's rows, one per aspect, are tested
 as one family at the campaign's α, separately for gains and for drops: a gain is the change tested against zero, a
-drop the change tested against the aspect's margin. Each direction's claims are one-sided, read off a two-sided
+drop the change tested against the aspect's margin. **The question's type decides the margin**: a question asked with
+no margin is a superiority question, its drop tested against zero as its gain is, so its row reads shown better, shown
+worse or neither (the page says not separated); a question with a margin is a non-inferiority question, its drop
+tested against the margin its author declared; an aspect asked nothing (every reading a lead) with no margin tests no
+drop. Each direction's claims are one-sided, read off a two-sided
 interval, so each errs at most α/2 and the gains and drops together at most α, per candidate. **There is no error
 control across candidates**: with several candidates, one of them is shown better or worse by chance more often than
 α. Floors are read intersection-union, each at its nominal level with no correction, since a warning that fires less
@@ -118,8 +122,8 @@ _LABEL_FIELDS = frozenset({"arm_label", "control_label", "first_label", "second_
 #: What one aspect × candidate row shows against the control. ``better``: the gain is shown, its Holm-adjusted p
 #: under the campaign's α. ``worse``: a drop past the aspect's margin is shown, likewise. ``within_margin``: neither,
 #: and the drop is shown to stay within the margin, at the nominal level as a floor reads (the page says "no worse
-#: than the margin"). ``unclear``: none of these. Neither ``worse`` nor ``within_margin`` is read on an aspect with no
-#: margin.
+#: than the margin"). ``unclear``: none of these. ``within_margin`` is never read on an aspect with no margin, and
+#: ``worse`` there only where a question asks the aspect, its drop then tested against zero (a superiority question).
 ShownReading = Literal["better", "worse", "within_margin", "unclear"]
 
 
@@ -137,7 +141,8 @@ class AspectReading(EvalDocumentModel):
     **The reading is decided per direction.** The gain and the drop are two Holm families per candidate, so each
     direction has its own p values and its own interval, read at the level that direction's step read it at: ``better`` is the
     gain shown (its interval wholly above zero), ``worse`` the drop past the margin shown (its interval wholly below
-    minus the margin). A row that is neither reads ``within_margin`` where its interval at the nominal level, the
+    minus the margin, or wholly below zero on an asked aspect with no margin: a superiority question). A row that is
+    neither reads ``within_margin`` where its interval at the nominal level, the
     floor's own and uncorrected, lies wholly above minus the margin (``within_interval``): the candidate is shown no
     worse than the control by more than the margin. ``unclear`` is none of these, and a page showing one shows the
     intervals, so a reader sees how far each side is from settling.
@@ -175,7 +180,8 @@ class AspectReading(EvalDocumentModel):
     drop_interval: tuple[float, float] | None = Field(
         description=(
             "The change's interval in points, low then high, at `drop_confidence`: what `worse` is read on, against "
-            "the margin. None when the arms' cases cannot bound it, or the aspect declares no margin."
+            "the margin, or against zero on an asked aspect with no margin. None when the arms' cases cannot bound "
+            "it, or the aspect declares no margin and is asked no question."
         )
     )
     drop_confidence: float | None = Field(
@@ -207,8 +213,8 @@ class AspectReading(EvalDocumentModel):
     )
     drop_p: float | None = Field(
         description=(
-            "The drop's p past the margin, unadjusted, on its family's grid as `gain_p` is. None when untested, "
-            "which an aspect with no margin always is."
+            "The drop's p past the margin (past zero on an asked aspect with no margin), unadjusted, on its family's "
+            "grid as `gain_p` is. None when untested, which an aspect with no margin asked no question always is."
         )
     )
     drop_p_holm: float | None = Field(
@@ -222,8 +228,8 @@ class AspectReading(EvalDocumentModel):
     )
     margin: float | None = Field(
         description=(
-            "The aspect's margin in points, the drop tested against. None = none declared: the row is never `worse` "
-            "and never `within_margin`."
+            "The aspect's margin in points, the drop tested against. None = none declared: the row is never "
+            "`within_margin`, and `worse` only where a question asks the aspect, its drop tested against zero."
         )
     )
     control_cases: int = Field(ge=0, description="The usable cases the control's rate was read over.")
@@ -787,6 +793,30 @@ class _Row:
             return False
         return rate.interval[0] > 0 and rate.drop_bounds()[1] < 0
 
+    @property
+    def against_zero(self) -> bool:
+        """Whether the drop is tested against zero: a question asks the aspect and declares no margin, so it asks
+        whether the candidate does better (a superiority question), and a drop shown is shown worse."""
+        return self.margin is None and self.confirmatory
+
+    def drop_tested(self) -> bool:
+        """Whether the row's drop is tested at all: against the margin, or against zero under a superiority
+        question; an aspect asked nothing with no margin tests none."""
+        return self.rate.interval is not None and (self.margin is not None or self.against_zero)
+
+    def drop_shown(self, confidence: float) -> bool:
+        """Whether the drop is shown at ``confidence``: past the margin by the floor's own reading
+        (:meth:`drop_verdict`); with no margin under a question, by the rules a gain is read by, mirrored: every arm
+        at the case floor, the interval wholly below zero, and still a drop with every lost trial given its best
+        outcome for the candidate."""
+        if self.margin is not None:
+            return self.drop_verdict(confidence)[0] == "broken"
+        rate = self.at(confidence)
+        fewest = self.fewest()
+        if not self.against_zero or rate.interval is None or fewest is None or fewest < _CASE_FLOOR:
+            return False
+        return rate.interval[1] < 0 and rate.drop_bounds()[0] > 0
+
     def drop_verdict(self, confidence: float) -> tuple[FloorOutcome, str]:
         """The drop against the margin at ``confidence``, and the reason: the floor's own reading
         (:func:`~threetears.evals.analysis.report.decision.read_floor`) on the pass rate alone, at that level.
@@ -985,7 +1015,7 @@ def _reason(
     if reading == "better":
         return f"{arm}'s gain over {control} is shown: its whole interval is above zero"
     if reading == "worse":
-        return drop_reason
+        return drop_reason or f"{arm}'s drop below {control} is shown: its whole interval is below zero"
     if reading == "within_margin":
         nominal, corrected = row.at(INTERVAL_LEVEL), row.at(gain_level)
         if corrected.interval is not None and corrected.interval[0] > 0:
@@ -1007,6 +1037,18 @@ def _reason(
         return f"{fewest} cases are too few: an interval is read only from {_CASE_FLOOR} independent cases"
     if rate.interval[0] > 0:
         return f"{arm}'s gain clears zero, but the lost trials could still take it back"
+    if row.against_zero:
+        # A superiority question: each direction against zero, at the level its family read it at.
+        at_nominal = row.at(INTERVAL_LEVEL).interval or rate.interval
+        if _high(row.at(drop_level)) < 0:
+            return f"{arm}'s drop clears zero, but the lost trials could still take it back"
+        for side, cleared, level in (("drop", at_nominal[1] < 0, drop_level), ("gain", at_nominal[0] > 0, gain_level)):
+            if cleared:
+                return (
+                    f"{arm}'s {side} clears zero at {_percent(INTERVAL_LEVEL)}, not at the {_percent(level)} its "
+                    f"{side}s are read at, corrected across {arm}'s aspects"
+                )
+        return f"its interval reaches zero, so {arm} and {control} are not separated"
     if row.margin is None:
         if rate.interval[1] < 0:
             return f"{arm}'s drop is shown on its interval, but no margin was declared, so it is never shown worse"
@@ -1033,8 +1075,8 @@ def campaign_readings(
     (:func:`~threetears.evals.analysis.report.decision.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
     at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
-    candidates. An aspect with no margin
-    is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
+    candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
+    question: shown better, shown worse or unclear); one asked nothing is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
     the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
     with a margin carries the cases that would show the candidate within it
     (:func:`~threetears.evals.analysis.report.decision.project_rate`, at the nominal level, as a floor's are).
@@ -1127,10 +1169,10 @@ def campaign_readings(
         return row.rate.interval is not None
 
     def drop_kept(row: _Row) -> bool:
-        return row.rate.interval is not None and row.margin is not None
+        return row.drop_tested()
 
     gains = _decided(rows, gain_kept, lambda index, level: rows[index].gain_shown(level), alpha)
-    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_verdict(level)[0] == "broken", alpha)
+    drops = _decided(rows, drop_kept, lambda index, level: rows[index].drop_shown(level), alpha)
     gain_holm = _holm(rows, gain_kept, gains, alpha)
     drop_holm = _holm(rows, drop_kept, drops, alpha)
     readings: list[AspectReading] = []
@@ -1153,7 +1195,7 @@ def campaign_readings(
         drop_reason = row.drop_verdict(drop_level)[1] if drop_level is not None else ""
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
-        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) else None
+        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
         fewest = row.fewest()
         projection = (
             project_rate(within_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)

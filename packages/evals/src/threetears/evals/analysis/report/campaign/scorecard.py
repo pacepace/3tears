@@ -73,6 +73,7 @@ __all__ = [
     "READING_WORDS",
     "aspect_shows",
     "bar_blocks",
+    "row_words",
     "campaign_verdict",
     "frontier_blocks",
     "measure_blocks",
@@ -132,9 +133,29 @@ def _shown_interval(row: AspectReading) -> tuple[tuple[float, float] | None, flo
     return max(sides, key=lambda side: side[1] or 0.0)
 
 
+def _against_zero(row: AspectReading) -> bool:
+    """Whether a row's drop is read against zero: a question asks its aspect and declares no margin (a superiority
+    question)."""
+    return row.margin is None and row.confirmatory
+
+
+def row_words(row: AspectReading) -> str:
+    """What a row shows in the page's words (:data:`READING_WORDS`), unmarked as a lead; under a superiority question
+    (asked with no margin) an unclear row reads ``not separated``, as a contrast neither side of zero does.
+
+    :param row: The row.
+    :ptype row: AspectReading
+    :return: The words.
+    :rtype: str
+    """
+    if row.reading == "unclear" and _against_zero(row):
+        return _CONTRAST_WORDS["not_separated"]
+    return READING_WORDS[row.reading]
+
+
 def _reading_words(row: AspectReading) -> str:
     """What a row shows, a lead marked as one."""
-    words = READING_WORDS[row.reading]
+    words = row_words(row)
     return words if row.confirmatory else f"{words}, a lead"
 
 
@@ -322,7 +343,8 @@ def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, 
         bundle,
         control,
         [read.arm for read in rows],
-        margin=row.margin,
+        # Under a superiority question a drop is read against zero, so a control passing nothing cannot show one.
+        margin=0.0 if _against_zero(row) else row.margin,
         passed=row.control_passed,
         trials=row.control_trials,
     )
@@ -427,8 +449,8 @@ def _level_lines(levels: Sequence[float], readings: CampaignReadings) -> list[st
     whose sentence is :func:`_within_lines`; none where every reading is) and why it is wider than a plain interval,
     then how often one arm is shown better or worse wrongly, and, with several arms, how often some arm is, since the
     correction does not run across them. Each count is the page's own, and counts what is corrected together: an
-    arm's gains are its rows with an interval, its drops those with an interval on an aspect with a margin
-    (``drop_interval``), as its two families are read. One sentence each, every one a whole template."""
+    arm's gains are its rows with an interval, its drops those with an interval on an aspect with a margin or asked a
+    question (``drop_interval``), as its two families are read. One sentence each, every one a whole template."""
     families = Counter(row.arm for row in readings.readings)
     gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
     drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
@@ -574,7 +596,7 @@ def _reconciled(
     # The interval the contrast is drawn on, which is not always the test its p came from: a rate's is its bounded one.
     basis = comparison.interval_basis or ("t" if comparison.basis == "t" else "bounded")
     said = (
-        f"On {aspect}, {row.arm_label}'s row reads {READING_WORDS[row.reading]} and its contrast on {reading} reads "
+        f"On {aspect}, {row.arm_label}'s row reads {row_words(row)} and its contrast on {reading} reads "
         f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "
         f"{_percent(level)}, {own}; the contrast a {basis} interval at {_percent(family_level)}, corrected within the "
         "aspect's family."
@@ -585,14 +607,15 @@ def _reconciled(
 
 
 def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
-    """An aspect no arm was compared on, and an aspect with no margin, which is never shown worse."""
+    """An aspect no arm was compared on, and an aspect with no margin asked no question, which is never shown worse
+    (asked one, its drop is read against zero)."""
     lines: list[str] = []
     for aspect in campaign.aspects:
         rows = readings.on_aspect(aspect.label)
         if not rows:
             named = names(aspect.label)
             lines.append(f"No arm was compared on {named}: the control or every other arm did not run there.")
-        elif aspect.margin is None:
+        elif aspect.margin is None and not any(row.confirmatory for row in rows):
             lines.append(f"No margin was declared on {names(aspect.label)}, so no arm is ever shown worse there.")
     return lines
 

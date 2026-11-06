@@ -236,18 +236,20 @@ def test_an_aspect_naming_a_template_refuses_a_run_of_another(named: bool) -> No
     assert storage.load_campaign(campaign.id, _SCOPE) == campaign, "nothing was attached"
 
 
-def test_each_aspect_infers_its_own_template_and_refuses_a_declared_design_with_no_margin() -> None:
+def test_each_aspect_infers_its_own_template_and_files_a_declared_design_with_no_margin_as_written() -> None:
+    """Owner, 2026-11-06: no margin is ever assumed. A question of a control with none is a superiority question,
+    filed as written; one asking nothing, or naming no control, needs none either."""
     storage, _ = _store()
     inferred = _create(storage, aspects=[{"label": "tone", "run_ids": ["tpl-tone-a", "tpl-tone-b"]}], exploratory=True)
 
     control = [{"label": "a", "role": "control", "from_run_ids": ["tpl-tone-a"]}]
-    with pytest.raises(ValidationFailedError, match="declare a design and no margin, and the campaign asks"):
-        _create(
-            storage,
-            question="Is b as good as a?",
-            aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a", margin=None)],
-            arms=control,
-        )
+    superiority = _create(
+        storage,
+        question="Does b do better than a?",
+        aspects=[_aspect("tone", "tpl-tone", "tpl-tone-a", margin=None)],
+        arms=control,
+    )
+    assert superiority.control is not None and superiority.aspects[0].margin is None
     unasked = _create(storage, aspects=[_aspect("tone", "tpl-tone", margin=None)])
     uncontrolled = _create(storage, question="Which is better?", aspects=[_aspect("tone", "tpl-tone", margin=None)])
 

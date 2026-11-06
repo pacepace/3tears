@@ -385,8 +385,7 @@ def create_campaign(
     :raises NotFoundError: A source campaign, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition fails validation; names no aspect and adopts none; holds a run
         outside the scope, in two aspects, or of two revisions of one template in one aspect; adopts two aspects under
-        one label, or a run two sources hold; names no control and gives a margin or a floor; names a control, asks a
-        question and declares an aspect with no margin; gives a margin
+        one label, or a run two sources hold; names no control and gives a margin or a floor; gives a margin
         for an aspect it did not adopt, or a floor on an aspect that declares no design; says neither declared nor
         exploratory, or both; names an arm from a run no aspect holds, from runs carrying two keys, or one an adopted
         aspect knows under another key; or declares a design this host cannot honour.
@@ -450,7 +449,6 @@ def create_campaign(
     )
     _hold_relative_terms_to_a_control(
         has_control=any(arm.role == "control" for arm in arms),
-        question=question,
         declared=own,
         margins=[f"adopted aspect {label!r}" for label in authored.margins],
         floors=[Floor(aspect=floor.aspect, clause=floor.clause).key for floor in authored.floors],
@@ -734,31 +732,29 @@ _DECLARE_A_BAR = (
 def _hold_relative_terms_to_a_control(
     *,
     has_control: bool,
-    question: str,
     declared: Sequence[Aspect],
     margins: Sequence[str],
     floors: Sequence[str],
 ) -> None:
-    """Refuse a margin or a floor on a campaign naming no control, and a declared aspect without its margin on one
-    that names a control and asks a question.
+    """Refuse a margin or a floor on a campaign naming no control.
 
     A margin is how far a candidate may fall below the control, and every floor is a line read against it (a drop
     from the control's pass rate, a cost below the control's), so on a campaign of one arm (a measurement) or of
     arms with no control (a choice) each is read against nothing: what such a campaign holds its arms to is an
-    absolute bar, which reads each arm on its own. Where there is a control and a question, a declared aspect needs
-    its margin, or nothing would say how far a candidate may fall before it is shown worse.
+    absolute bar, which reads each arm on its own. Where there is a control, a margin is the author's choice and never
+    required: a question with one is a non-inferiority question, its drop read against the margin, and a question
+    without one is a superiority question, its drop read against zero
+    (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`). The engine never picks one.
 
     :param has_control: Whether the campaign the write leaves names a control arm.
     :ptype has_control: bool
-    :param question: The question it asks.
-    :ptype question: str
     :param declared: The aspects the write declares, whose own margins it states.
     :ptype declared: Sequence[Aspect]
     :param margins: Where else the write states a margin, as a refusal names each.
     :ptype margins: Sequence[str]
     :param floors: The keys of the floors the write states.
     :ptype floors: Sequence[str]
-    :raises ValidationFailedError: Naming each margin and floor, or each aspect missing its margin.
+    :raises ValidationFailedError: Naming each margin and floor.
     """
     if not has_control:
         relative = [
@@ -772,14 +768,6 @@ def _hold_relative_terms_to_a_control(
                 "so it would be read against nothing",
                 remedy=_DECLARE_A_BAR,
             )
-        return
-    if question and (missing := [a.label for a in declared if a.design is not None and a.margin is None]):
-        raise ValidationFailedError(
-            f"aspect(s) {', '.join(map(repr, missing))} declare a design and no margin, and the campaign asks a "
-            "question of its control, so nothing would say how far a candidate may fall below the control there "
-            "before it is shown worse",
-            remedy=f"declare margin on each: {_MARGIN_DESCRIPTION}",
-        )
 
 
 def _refuse_floors_on_undeclared_aspects(floors: Sequence[Floor], aspects: Sequence[Aspect]) -> None:
@@ -1149,8 +1137,8 @@ def update_campaign(
     :raises NotFoundError: No campaign with that id in the scope, or an aspect names a template the scope lacks.
     :raises ConflictError: The campaign holds a run, and the update writes the declaration, clears its control, or
         names a control where one is already named (:func:`_refuse_frozen_declaration`).
-    :raises ValidationFailedError: Nothing to change, a field that is not updatable, an aspect holding runs or a
-        declared one with no margin, a floor on an undeclared aspect, a declaration this host cannot honour; a
+    :raises ValidationFailedError: Nothing to change, a field that is not updatable, an aspect holding runs, a floor
+        on an undeclared aspect, a declaration this host cannot honour; a
         withdrawal without ``exploratory``, or ``exploratory`` beside a design; or a control named beside
         ``clear_control``, on an exploratory campaign, or from a run the campaign does not hold.
     :raises LeverCoordinateError: ``control_from_run_id``'s run recorded no lever map, and the host's variant
@@ -1282,7 +1270,6 @@ def update_campaign(
         left = changes.get("arms", arms)
         _hold_relative_terms_to_a_control(
             has_control=any(arm.role == "control" for arm in left),
-            question=question if writes else campaign.question,
             declared=[aspect for aspect in aspects if "aspects" in updates] if writes else [],
             margins=[f"aspect {aspect.label!r}" for aspect in aspects if aspect.margin is not None],
             floors=[floor.key for floor in floors],
@@ -1379,7 +1366,7 @@ def _named(aspects: Sequence[Aspect], short_names: object) -> list[Aspect]:
 def _updated_aspect(storage: CampaignStore, scope_id: str, defined: AspectDefinition, *, label: str, at: str) -> Aspect:
     """An aspect an update declares, as ``label``: no runs (they join through :func:`add_runs_to_campaign`), dated now.
 
-    :raises ValidationFailedError: The aspect names runs, or declares a design and no margin.
+    :raises ValidationFailedError: The aspect names runs.
     """
     if defined.run_ids:
         raise ValidationFailedError(
@@ -1777,7 +1764,6 @@ def set_campaign_control(
     arms = _with_control(storage, campaign, list(campaign.arms), run_id, profile=profile)
     _hold_relative_terms_to_a_control(
         has_control=any(arm.role == "control" for arm in arms),
-        question=campaign.question,
         declared=[],
         margins=[f"aspect {aspect.label!r}" for aspect in campaign.aspects if aspect.margin is not None],
         floors=[floor.key for floor in campaign.floors],

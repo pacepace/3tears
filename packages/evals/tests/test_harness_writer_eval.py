@@ -228,11 +228,11 @@ def _holds_the_cases_template_and_campaign(tmp_path: Path, result: WriterResult)
         "reference",
         "support-triage",
     ]
-    # The campaign holds both arms, the skill axis and the declared margin.
+    # The campaign holds both arms and the skill axis; it asks a superiority question, so it files no margin.
     campaign = storage.load_campaign(result.campaign_id, SCOPE)
     assert campaign is not None
     (aspect,) = campaign.aspects
-    assert aspect.margin == 5.0
+    assert aspect.margin is None, "a writer eval files no margin unless its author writes one"
     assert aspect.design is not None
     assert [axis.axis_id for axis in aspect.design.axes] == ["report_writer.skill"]
 

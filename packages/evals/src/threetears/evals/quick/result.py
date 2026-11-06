@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -96,9 +97,6 @@ from threetears.evals.run import get_result_trace, list_results
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
 
-#: The margin, in points of a 0-100 pass rate, an eval asking a question declares on its aspect: how far a candidate
-#: may fall below the control before it is shown worse there, as a writer eval declares by default.
-_QUESTION_MARGIN = 5.0
 
 #: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
 _UNPREFIXED = frozenset({CANDIDATE_MODEL_LEVER, ARM_LEVER})
@@ -212,6 +210,9 @@ class Result:
         leads on the first of these the contrasts tested; empty when the result was built without them.
     :ivar question: The one sentence the comparison answers, as the eval declared it and its campaign asks it; ``None``
         when none was declared, and every reading is a lead.
+    :ivar margin: How far the pass rate may fall below the control before it is shown worse, in the measure's units (a
+        share of 0 to 1), as the eval declared it: a non-inferiority question's. ``None`` declares none: a question
+        with no margin asks whether a candidate does better (a superiority question), read against zero.
     :ivar judge: The eval's judge, or ``None``.
     :ivar disclosures: What the run must say about how it was run, beside its readings: a tool recording replayed or
         made, a logged runner's file.
@@ -250,6 +251,7 @@ class Result:
     labelled_arms: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
     grader_readings: tuple[str, ...] = field(default=(), repr=False, compare=False)
     question: str | None = None
+    margin: float | None = None
 
     # --- one arm, or the arm named ----------------------------------------------------------------------------------
 
@@ -790,26 +792,51 @@ class Result:
             return ArmGuardrails(breached=[], undecided=[], held=[])
         return self.guardrail_readings.of_arm(variant)
 
-    async def against(self, control: str, *, name: str | None = None, created_by: str = CREATED_BY) -> Result:
-        """The same runs read against another control: a second campaign over them, with no run repeated.
+    async def against(
+        self,
+        control: str,
+        *,
+        name: str | None = None,
+        created_by: str = CREATED_BY,
+        question: str | None = None,
+        margin: float | None = None,
+    ) -> Result:
+        """The same runs read against another control, or a question sharpened once they ran: a second campaign over
+        them, with no run repeated.
 
         The engine tests every arm against one control, so in a factorial the effect of one factor at the control's
         level of the other is in :attr:`report`, and its effect at another level is read here — the prompt's effect on
         the second model is the contrast against the first prompt on that model. Each campaign Holm-corrects its own
         contrasts, so the two reports are two families, not one.
 
-        :param control: The arm to test every other against, by name.
+        A question (or its margin) declared here is asked of runs whose readings already exist, as an exploratory run
+        read again once its question sharpens is: never refused, and read as asked, its page saying once that its
+        criteria were set after the results there existed, so they were not fixed in advance.
+
+        :param control: The arm to test every other against, by name; this result's own control reads the same arms
+            again.
         :ptype control: str
         :param name: The new campaign's name; ``None`` names it after this one and the new control.
         :ptype name: str | None
         :param created_by: Who the campaign and its control are recorded as created by.
         :ptype created_by: str
+        :param question: The question the new campaign asks; ``None`` asks this result's own, with its margin.
+        :ptype question: str | None
+        :param margin: The question's margin, in the measure's units, as :class:`~threetears.evals.Eval`'s ``margin``;
+            ``None`` keeps this result's own where no new question is given, and declares none with a new one.
+        :ptype margin: float | None
         :return: A result over the same arms and runs, against ``control``.
         :rtype: Result
-        :raises ValueError: ``control`` names no arm.
+        :raises ValueError: ``control`` names no arm; a blank question; a margin outside 0 to 1, or with no question
+            to read it under.
         :raises ValidationFailedError: The host refuses the campaign's declaration.
         """
         _refuse_an_unknown_arm(self.arms, control)
+        if question is not None and not question.strip():
+            raise ValueError("an eval's question is filed on its campaign, and this one is blank")
+        asked = question if question is not None else self.question
+        held = margin if margin is not None or question is not None else self.margin
+        refuse_an_unusable_margin(held, asked)
 
         def declared() -> Result:
             campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
@@ -832,7 +859,8 @@ class Result:
                 created_by=created_by,
                 guardrail_margins=design.guardrail_margins if design is not None else (),
                 measure_latency=design.measure_latency if design is not None else False,
-                question=self.question,
+                question=asked,
+                margin=held,
                 measure_order=self.grader_readings,
             )
             return replace(
@@ -860,6 +888,31 @@ def _levels_of(
             pairs[CANDIDATE_MODEL_LEVER] = summary.candidate_model
         levels[arm] = {factor: pairs[factor] for factor in factors}
     return levels
+
+
+def refuse_an_unusable_margin(margin: float | None, question: str | None) -> None:
+    """Refuse a margin no reading could carry: one that is no share strictly between 0 and 1, or one with no question
+    to read it under.
+
+    :param margin: The margin, in the measure's units (a share of 0 to 1); ``None`` declares none.
+    :ptype margin: float | None
+    :param question: The question it would be read under; ``None`` asks none.
+    :ptype question: str | None
+    :raises ValueError: Naming what is wrong with it.
+    """
+    if margin is None:
+        return
+    if isinstance(margin, bool) or not isinstance(margin, int | float) or not math.isfinite(margin):
+        raise ValueError(f"margin= is a share of the pass rate strictly between 0 and 1, not {margin!r}")
+    if not 0 < margin < 1:
+        raise ValueError(
+            f"margin= is a share of the pass rate strictly between 0 and 1 (0.05 is 5 points), not {margin!r}"
+        )
+    if question is None:
+        raise ValueError(
+            "margin= is how far a candidate may fall below the control before the question's answer reads it worse, "
+            "and this eval asks no question for it to apply to: pass question= with it, or leave margin out"
+        )
 
 
 def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
@@ -1114,13 +1167,16 @@ def declare(
     measure_latency: bool = False,
     declared_at: str | None = None,
     question: str | None = None,
+    margin: float | None = None,
     measure_order: Sequence[str] = (),
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
     ``question`` is the one sentence the comparison answers, filed as the campaign's question: every reading on the
-    aspect is then read as asked rather than as a lead, and the aspect declares a 5-point margin
-    on the pass rate, which a question asked of a control needs. ``None`` asks none. ``measure_order`` is each
+    aspect is then read as asked rather than as a lead. ``margin`` (a share of 0 to 1, the measure's units) is the
+    author's own, filed on the aspect in points: a non-inferiority question, the pass rate's drop read against it.
+    ``None`` files none, and nothing is assumed: a question with no margin is a superiority question, its drop read
+    against zero. ``question`` ``None`` asks none, and a margin without one is refused. ``measure_order`` is each
     grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
     the campaign's page leads on the first of them, as the printed line does; empty files none.
 
@@ -1161,16 +1217,16 @@ def declare(
     if measure_order:
         design["measure_order"] = list(dict.fromkeys(measure_order))
     # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
-    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). An eval
-    # asking no question declares no margin on the pass rate and none is assumed: its readings are never shown worse.
-    # One asking a question declares the margin a question asked of a control needs.
+    # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). A margin
+    # on the pass rate is filed only where the eval's author wrote one; none is ever assumed.
     aspect: dict[str, Any] = {
         "label": aspect_label_for(behavior),
         "run_ids": [summary.run_id for summary in arms.values()],
         "design": design,
     }
-    if question is not None:
-        aspect["margin"] = _QUESTION_MARGIN
+    refuse_an_unusable_margin(margin, question)
+    if margin is not None:
+        aspect["margin"] = round(100 * margin, 10)
     if arms[control].template_id is not None:
         aspect["template_id"] = arms[control].template_id
     # The control arm is named as the eval names it, so every page reads `hasty (control) vs careful`.
@@ -1239,6 +1295,7 @@ def declare(
         labelled_arms=labelled_arms,
         grader_readings=tuple(measure_order),
         question=question,
+        margin=margin,
     )
 
 
@@ -1253,4 +1310,5 @@ __all__ = [
     "coordinates",
     "declare",
     "judged_rows",
+    "refuse_an_unusable_margin",
 ]

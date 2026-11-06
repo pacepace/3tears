@@ -145,15 +145,6 @@ async def test_the_control_is_resolved_from_a_run_as_set_campaign_control_resolv
             id="an-arm-from-a-run-outside-the-campaign",
         ),
         pytest.param(
-            {
-                "margin": None,
-                "question": _QUESTION,
-                "campaign_arms": [{"label": "control", "role": "control", "from_run_ids": ["{run}"]}],
-            },
-            "declare a design and no margin",
-            id="a-declared-aspect-with-no-margin-under-a-question-of-a-control",
-        ),
-        pytest.param(
             {"margin": 5},
             "declare an absolute bar instead",
             id="a-margin-on-a-campaign-naming-no-control",
@@ -185,6 +176,27 @@ async def test_a_design_the_host_cannot_honour_is_refused_naming_why(
     assert off_loop(fixture.host.eval_host.storage.list_campaigns, TOYHOST_SCOPE) == before, (
         "a refused create writes nothing"
     )
+
+
+async def test_a_question_of_a_control_with_no_margin_is_a_superiority_question_never_refused(
+    evals: MountedTool,
+) -> None:
+    """Owner, 2026-11-06: the question's type decides the margin. A declared aspect asked a question of a control with
+    no margin is filed as written, a superiority question, and no margin is assumed for it."""
+    fixture = off_loop(ops_fixture)
+    run = fixture.campaign.run_ids[0]
+    outcome = await _create(
+        evals,
+        fixture,
+        question=_QUESTION,
+        campaign_arms=[{"label": "control", "role": "control", "from_run_ids": [run]}],
+        aspects=[_aspect(fixture, margin=None)],
+    )
+
+    assert not outcome.is_error, outcome.text
+    stored = off_loop(fixture.host.eval_host.storage.load_campaign, outcome.structured["id"], TOYHOST_SCOPE)
+    assert stored is not None and stored.control is not None
+    assert [aspect.margin for aspect in stored.aspects] == [None]
 
 
 async def test_an_undeclared_axis_is_named_beside_the_pointer(evals: MountedTool) -> None:

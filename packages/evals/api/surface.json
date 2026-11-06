@@ -18,7 +18,7 @@
     },
     "threetears.evals.Eval": {
       "kind": "class",
-      "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False, question: str | None = None) -> None",
+      "signature": "Eval(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str], runner: Any, grader: Any, *, k: int = 3, name: str | None = None, max_cost_usd: float | None = None, measure_latency: bool = False, question: str | None = None, margin: float | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.Example": {
@@ -53,7 +53,7 @@
     },
     "threetears.evals.Result": {
       "kind": "dataclass",
-      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, page: CampaignReport, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict(), grader_readings: tuple[str, ...] = (), question: str | None = None)",
+      "signature": "Result(name: str, scope_id: str, control: str, arms: dict[str, EvalSummary], report: Report, host: EvalHost, campaign_id: str, page: CampaignReport, factors: tuple[str, ...] = ('model',), store: str = '', fields: tuple[str, ...] = (), judge: Judge | None = None, disclosures: tuple[str, ...] = (), calibrations: tuple[JudgeCalibration, ...] = (), to_label: tuple[dict[str, str], ...] = (), contrast_arms: tuple[str | None, ...] = (), contrast_measures: tuple[str | None, ...] = (), kind: str = 'callable', guardrail_readings: GuardrailReadings = GuardrailReadings(), arm_variants: dict[str, str] = dict(), labelled_arms: dict[str, str | None] = dict(), grader_readings: tuple[str, ...] = (), question: str | None = None, margin: float | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.ROOT_EXTRAS": {
@@ -7323,7 +7323,7 @@
     },
     "threetears.evals.harness.WriterEval": {
       "kind": "class",
-      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', question: str | None = None, k: int = 1, pairwise_share: float = 0.2, turns: int = 40, request_s: float = 120.0, margin: float = 5.0, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None) -> None",
+      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', question: str | None = None, k: int = 1, pairwise_share: float = 0.2, turns: int = 40, request_s: float = 120.0, margin: float | None = None, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.harness.WriterJudge": {

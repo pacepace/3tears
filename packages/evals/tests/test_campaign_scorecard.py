@@ -25,6 +25,7 @@ from threetears.evals import Answer, Eval
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
+from threetears.evals.analysis.report.campaign.scorecard import row_words
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     ChartBlock,
@@ -73,8 +74,20 @@ def _by_arm(table: TableBlock, row: Mapping[str, TableCell]) -> dict[str, TableC
     }
 
 
+def _unasked(label: str) -> Callable[[AnalysisContextBundle], AnalysisContextBundle]:
+    """A bundle change asking ``label`` no question, so every reading on it is a lead."""
+
+    def change(bundle: AnalysisContextBundle) -> AnalysisContextBundle:
+        if bundle.aspect != label:
+            return bundle
+        scope = bundle.reading_scope.model_copy(update={"questions_declared": False})
+        return bundle.model_copy(update={"reading_scope": scope})
+
+    return change
+
+
 async def test_an_aspect_with_no_margin_is_said_never_shown_worse_and_has_no_row_to_settle_against_one() -> None:
-    page = await page_of("billing", "tone", margins={"billing": None})
+    page = await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing"))
     said = _scorecard(page)
     assert "No margin was declared on billing, so no arm is ever shown worse there." in said
     (billing,) = page.readings.on_aspect("billing")
@@ -550,8 +563,24 @@ def test_a_floor_whose_unclear_rate_has_nothing_to_project_names_no_rate_and_no_
 async def test_the_level_line_counts_only_the_readings_corrected_together() -> None:
     """With no margin on billing, v2's drops are read on tone alone while its gains are read on both: the line says
     each family's own size."""
-    said = _scorecard(await page_of("billing", "tone", margins={"billing": None}))
+    said = _scorecard(await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing")))
     assert "Each arm's gains on 2 aspects, and its drops on 1, are each corrected together." in said
+
+
+async def test_an_asked_aspect_with_no_margin_reads_its_drop_against_zero_and_never_says_it_cannot_be_worse() -> None:
+    """A superiority question (asked with no margin): billing's drop joins the drops' family against zero, so both
+    families hold both aspects, no line says billing is never shown worse, and its row reads in the superiority
+    question's words."""
+    page = await page_of("billing", "tone", margins={"billing": None})
+    said = _scorecard(page)
+    assert "No margin was declared on billing" not in said
+    assert "Each arm's 2 readings are corrected together." in said
+    (billing,) = page.readings.on_aspect("billing")
+    assert billing.confirmatory and billing.margin is None and billing.drop_p is not None
+    assert (
+        row_words(billing)
+        == {"better": "shown better", "worse": "shown worse", "unclear": "not separated"}[billing.reading]
+    )
 
 
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:

@@ -828,7 +828,8 @@ def control_cannot_show(
     :ptype control: str
     :param candidates: Each candidate's variant key read against it on the aspect.
     :ptype candidates: Sequence[str]
-    :param margin: The aspect's margin in points; None where none is declared, so no drop is read against one.
+    :param margin: The aspect's margin in points, 0 where a superiority question reads the drop against zero; None
+        where no drop is read against one.
     :ptype margin: float | None
     :param passed: The trials the control passed.
     :ptype passed: int

@@ -143,7 +143,9 @@ the matrix's last row, `All aspects (equal weight)`.
 **The readings.** A change reads each candidate on each aspect as **shown better** (its gain's interval lies wholly
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
 (neither, and its drop's interval at 95%, the floor's own, lies wholly within the margin: `within_margin` in the
-JSON) or **unclear**, and an aspect declaring no margin is never shown worse or no worse than it. "Shown worse" is a
+JSON) or **unclear**. An aspect declaring no margin is never no worse than one: asked a question it is a superiority
+question, shown worse where its drop's interval lies wholly below zero and **not separated** where neither side
+clears; asked none, it is never shown worse. "Shown worse" is a
 drop past the margin, which is worse than the control; "no worse than the margin" says the margin, since within it
 the candidate may still be a little worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval

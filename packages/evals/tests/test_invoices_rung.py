@@ -172,11 +172,15 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
         and 'role="alert"' not in html[: html.index("</header>")]
     )
     assert "not adopted" not in "\n".join(lines)
-    # A question asked of a control declares the 5-point margin the pass rate is read against.
+    # The question asks whether v2 does better and writes no margin (a superiority question): the pass rate is read
+    # against zero both ways, so no line says it is never shown worse, no margin is filed, and the row reads not
+    # separated, its interval reaching below zero.
     assert "No margin was declared on classify, so no arm is ever shown worse there." not in lines
+    assert module.invoices.margin is None and result.margin is None
     assert (
-        "| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | 5 | no worse than the margin |"
+        "| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | not separated |"
     ) in lines
+    assert "no worse than the margin" not in "\n".join(lines)
 
 
 def test_run_as_a_script_it_writes_the_report_and_exits_with_the_gate(

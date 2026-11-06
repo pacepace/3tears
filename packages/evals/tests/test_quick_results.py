@@ -36,7 +36,7 @@ from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import campaign_report_markdown, summarize_run
+from threetears.evals.analysis import campaign_report_markdown, get_campaign, summarize_run
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 
@@ -602,3 +602,85 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     assert bold[1].startswith("**cheap is not yet shown safe on the no leak guardrail")
     assert ("No question was declared, so every reading is a lead." in page) is not asked
     assert result.question == question
+
+
+# --- the question's type decides the margin (owner, 2026-11-06) -----------------------------------------------------
+
+#: Thirty cases, each labelled ``a``.
+_LABELLED = [{"n": index, "label": "a"} for index in range(30)]
+
+#: The question every test below asks of the two arms.
+_BETTER = "Does v2 label cases right more often than v1?"
+
+
+def _missing(misses: int) -> Any:
+    """A runner labelling the first ``misses`` cases wrong and the rest right."""
+
+    async def label(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"label": "b" if case["n"] < misses else "a"}
+
+    return label
+
+
+@pytest.mark.parametrize(
+    ("misses", "reading", "words"),
+    [(0, "better", "shown better"), (30, "worse", "shown worse"), (15, "unclear", "not separated")],
+    ids=["shown-better", "shown-worse", "not-separated"],
+)
+async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_files_no_margin(
+    misses: int, reading: str, words: str
+) -> None:
+    """A question alone is a superiority question: v2's pass rate against v1's (who misses half) is shown better,
+    shown worse or not separated, against zero, and no margin is filed anywhere: not on the aspect, not on the result,
+    and the page never reads "no worse than the margin"."""
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(misses)}, ["label"], k=1, question=_BETTER).run(
+        store=":memory:", scope=SCOPE
+    )
+    campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    assert [aspect.margin for aspect in campaign.aspects] == [None]
+    assert result.margin is None
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin, row.confirmatory) == (reading, None, True)
+    page = campaign_report_markdown(result.page)
+    (cells,) = [line for line in page.splitlines() if line.startswith("| classify | v2 |")]
+    assert cells.endswith(f"| {words} |")
+    assert "no worse than the margin" not in page and "No margin was declared" not in page
+
+
+async def test_an_eval_margin_is_the_author_s_in_the_measure_s_units_and_makes_a_non_inferiority_question() -> None:
+    """``Eval(margin=0.2)`` is 20 points of the pass rate, filed on the aspect: two arms alike read no worse than it."""
+    result = await Eval(
+        _LABELLED, {"v1": _missing(0), "v2": _missing(0)}, ["label"], k=1, question=_BETTER, margin=0.2
+    ).run(store=":memory:", scope=SCOPE)
+    campaign = off_loop(get_campaign, result.host.storage, result.campaign_id, result.scope_id)
+    assert [aspect.margin for aspect in campaign.aspects] == [20.0]
+    assert result.margin == 0.2
+    (row,) = result.page.readings.readings
+    assert (row.reading, row.margin, row.confirmatory) == ("within_margin", 20.0, True)
+    # Read again against the other arm, the same question carries the same margin.
+    again = await result.against("v2")
+    assert again.margin == 0.2 and again.page.readings.readings[0].margin == 20.0
+
+
+@pytest.mark.parametrize(
+    ("arguments", "says"),
+    [
+        ({"margin": 0.05}, "this eval asks no question for it to apply to: pass question= with it"),
+        ({"margin": 5, "question": _BETTER}, r"strictly between 0 and 1 \(0.05 is 5 points\), not 5"),
+        ({"margin": True, "question": _BETTER}, "strictly between 0 and 1, not True"),
+    ],
+    ids=["no-question", "in-points", "not-a-number"],
+)
+def test_a_margin_with_no_question_or_out_of_its_units_is_refused_where_the_eval_is_written(
+    arguments: dict[str, Any], says: str
+) -> None:
+    with pytest.raises(ValueError, match=says):
+        Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], **arguments)
+
+
+async def test_a_margin_read_again_with_no_question_is_refused_naming_why() -> None:
+    result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(0)}, ["label"], k=1).run(
+        store=":memory:", scope=SCOPE
+    )
+    with pytest.raises(ValueError, match="asks no question for it to apply to"):
+        await result.against("v1", margin=0.05)

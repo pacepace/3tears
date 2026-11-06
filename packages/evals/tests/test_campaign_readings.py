@@ -68,8 +68,10 @@ def _read(
     margins: dict[str, float | None] | None = None,
     floors: tuple[tuple[str, float], ...] = (),
     lost: dict[str, int] | None = None,
+    unasked: tuple[str, ...] = (),
 ) -> CampaignReadings:
-    """The readings of a campaign of one aspect per ``shapes`` entry, each its shares, its margin and its floors."""
+    """The readings of a campaign of one aspect per ``shapes`` entry, each its shares, its margin and its floors; an
+    ``unasked`` aspect is asked no question, so every reading on it is a lead."""
     margins = margins or {}
     campaign = campaign_of(
         base,
@@ -79,6 +81,14 @@ def _read(
     bundles = {
         label: varied(base.bundle, aspect=label, control=control, candidate=candidate, lost=(lost or {}).get(label, 0))
         for label, (control, candidate) in shapes.items()
+    }
+    bundles = {
+        label: bundle.model_copy(
+            update={"reading_scope": bundle.reading_scope.model_copy(update={"questions_declared": False})}
+        )
+        if label in unasked
+        else bundle
+        for label, bundle in bundles.items()
     }
     return campaign_readings(campaign, bundles, arms=arms_of(base))
 
@@ -157,9 +167,41 @@ async def test_gains_and_drops_are_corrected_apart() -> None:
     assert by["billing"].within_interval is not None and by["billing"].within_interval[1] < -0.5
 
 
-async def test_an_aspect_with_no_margin_is_never_shown_worse_and_tests_no_drop() -> None:
-    read = _read(await _base(), {"billing": _dropped(15)}, margins={"billing": None})
+async def test_an_asked_aspect_with_no_margin_is_a_superiority_question_its_drop_read_against_zero() -> None:
+    """Owner, 2026-11-06: the question's type decides the margin. Asked with none, a candidate is shown better, shown
+    worse or neither, each against zero and Holm-corrected as a gain is; no margin is assumed, so nothing reads no
+    worse than one and nothing is projected toward one."""
+    base = await _base()
+    (worse,) = _read(base, {"billing": _dropped(15)}, margins={"billing": None}).readings
+    assert worse.confirmatory and worse.margin is None and worse.reading == "worse"
+    assert worse.drop_interval is not None and worse.drop_interval[1] < 0
+    assert worse.drop_p_holm is not None and worse.drop_p_holm <= SIGNIFICANCE_ALPHA
+    assert worse.within_interval is None and worse.projection is None
+    assert worse.reason == "v2's drop below production is shown: its whole interval is below zero"
+    (better,) = _read(base, {"billing": _gained(15)}, margins={"billing": None}).readings
+    assert better.reading == "better" and better.drop_p_holm is not None and better.drop_p_holm > SIGNIFICANCE_ALPHA
+    # Six cases dropped of twenty clear zero at 95%, the level a family of one reads; with a second aspect in the
+    # drops' family the first step reads 97.5%, where six does not clear, so neither direction is shown.
+    (six,) = _read(base, {"billing": _dropped(6)}, margins={"billing": None}).readings
+    assert six.reading == "worse" and six.drop_confidence == pytest.approx(_level(1))
+    pair = _read(base, {"billing": _dropped(6), "tone": _dropped(6)}, margins={"billing": None, "tone": None})
+    by = {row.aspect: row for row in pair.readings}
+    assert by["billing"].reading == by["tone"].reading == "unclear"
+    assert by["billing"].drop_confidence == pytest.approx(_level(2))
+    assert (
+        by["billing"].reason
+        == "v2's drop clears zero at 95%, not at the 97.5% its drops are read at, corrected across v2's aspects"
+    )
+    (even,) = _read(base, {"billing": _dropped(0)}, margins={"billing": None}).readings
+    assert (
+        even.reading == "unclear" and even.reason == "its interval reaches zero, so v2 and production are not separated"
+    )
+
+
+async def test_an_unasked_aspect_with_no_margin_is_never_shown_worse_and_tests_no_drop() -> None:
+    read = _read(await _base(), {"billing": _dropped(15)}, margins={"billing": None}, unasked=("billing",))
     (row,) = read.readings
+    assert not row.confirmatory
     assert row.reading == "unclear"
     assert row.margin is None and row.drop_interval is None and row.drop_p is None and row.drop_p_holm is None
     assert row.projection is None
@@ -351,8 +393,9 @@ async def test_a_reading_and_its_interval_never_contradict() -> None:
             if row.reading == "better":
                 assert row.gain_interval is not None and row.gain_interval[0] > 0
             if row.reading == "worse":
-                assert row.margin is not None and row.drop_interval is not None
-                assert row.drop_interval[1] < -row.margin
+                # Past the margin, or past zero where a question asks the aspect with no margin (superiority).
+                assert (row.margin is not None or row.confirmatory) and row.drop_interval is not None
+                assert row.drop_interval[1] < -(row.margin or 0)
             if row.reading == "within_margin":
                 assert row.margin is not None and row.within_interval is not None
                 assert row.within_interval[0] > -row.margin
