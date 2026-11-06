@@ -161,6 +161,12 @@ class ToolContextManager:
     pod invalidation all stay coherent. retires the bespoke
     :class:`MemoryLedger` wrapper under namespace-task-01 phase 8.5l-2.
 
+    An agent named at construction (``agent_id``) scopes all of it to that
+    agent: in a conversation several agents share, each reads only the
+    variables, tool results, media slots and surfaced refs its own turns
+    wrote, and every row it writes names it. With no agent named, it
+    reads and writes the conversation's rows as one.
+
     Call :meth:`load_context` after construction to populate from storage.
     """
 
@@ -174,6 +180,7 @@ class ToolContextManager:
         var_max_chars: int = 50_000,
         result_limit: int | None = None,
         memory_refs_collection: MemoryRefsCollection | None = None,
+        agent_id: UUID | None = None,
     ) -> None:
         """initialize context manager with required context collection.
 
@@ -197,6 +204,10 @@ class ToolContextManager:
             no-ops (tests + tool smoke fixtures without an agent pod
             configured do not need surfacing persistence)
         :ptype memory_refs_collection: MemoryRefsCollection | None
+        :param agent_id: the agent whose turn this is; every read takes only its
+            rows and every write names it. ``None`` reads and writes the
+            conversation's rows as one
+        :ptype agent_id: UUID | None
         :return: nothing
         :rtype: None
         :raises TypeError: if ``collection`` is ``None`` -- a wiring omission
@@ -220,6 +231,7 @@ class ToolContextManager:
         self._var_max_chars = var_max_chars
         self._result_limit = result_limit
         self._memory_refs = memory_refs_collection
+        self.agent_id = agent_id
 
         # Local projection of collection data for this conversation.
         # Populated by load_context(), updated by write methods.
@@ -249,7 +261,7 @@ class ToolContextManager:
         no collection is wired (unit tests, smoke fixtures) the
         projection stays empty and surfacing operations become no-ops.
         """
-        entities = await self._collection.find_by_conversation(self.conversation_id)
+        entities = await self._collection.find_by_conversation(self.conversation_id, self.agent_id)
         self.items = []
         for entity in entities:
             self.items.append(entity.to_dict())
@@ -257,6 +269,7 @@ class ToolContextManager:
         if self._memory_refs is not None:
             refs = await self._memory_refs.find_by_conversation(
                 self.conversation_id,
+                self.agent_id,
             )
             for ref in refs:
                 # entity.date_created post-v014 (was date_added pre-rename).
@@ -303,6 +316,7 @@ class ToolContextManager:
         data = {
             "context_id": uuid7(),
             "conversation_id": self.conversation_id,
+            "agent_id": self.agent_id,
             "context_type": "variable",
             "key": key,
             "short_desc": value[:200],
@@ -471,6 +485,7 @@ class ToolContextManager:
         data = {
             "context_id": context_id,
             "conversation_id": self.conversation_id,
+            "agent_id": self.agent_id,
             "context_type": context_type,
             "key": key,
             "short_desc": short_desc or result[:200],
@@ -519,7 +534,7 @@ class ToolContextManager:
 
         # LRU eviction
         if self._result_limit is not None:
-            evicted = await self._collection.evict_lru(self.conversation_id, self._result_limit)
+            evicted = await self._collection.evict_lru(self.conversation_id, self._result_limit, self.agent_id)
             if evicted:
                 # Refresh local projection to drop evicted items
                 evicted_ids = {
@@ -658,6 +673,7 @@ class ToolContextManager:
         data: dict[str, Any] = {
             "context_id": context_id,
             "conversation_id": self.conversation_id,
+            "agent_id": self.agent_id,
             "context_type": context_type,
             "key": key,
             "short_desc": short_desc,
@@ -718,6 +734,7 @@ class ToolContextManager:
         data = {
             "context_id": context_id,
             "conversation_id": self.conversation_id,
+            "agent_id": self.agent_id,
             "context_type": "media_slot",
             "key": slot_name,
             "short_desc": kwargs.get("description", slot_name),
@@ -902,6 +919,7 @@ class ToolContextManager:
             entity = self._memory_refs.create(
                 {
                     "conversation_id": self.conversation_id,
+                    "agent_id": self.agent_id,
                     "item_id": UUID(item_id),
                     "item_type": item_type,
                     "short_desc": desc,

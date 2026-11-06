@@ -144,6 +144,31 @@ DEFAULT_QUERY_TIMEOUT_SECONDS: float = 120.0
 #: imports it rather than choosing its own.
 QUERY_STATEMENT_TIMEOUT_SECONDS: int = 100
 
+#: how long the hub lets one export (a warehouse ``UNLOAD``) run before it cancels, by default.
+#:
+#: an export is granted far longer than a read: the warehouse counts its queue time inside the
+#: statement deadline, and a busy one can hold a short export in its queue for most of a read's
+#: deadline. the hub owns and configures it (``FOURTEENAIBOTS_HUB_EXPORT_STATEMENT_TIMEOUT_SECONDS``);
+#: this is its default, here only to set the client's below. a client of a hub set longer passes
+#: ``export_timeout`` to match.
+_HUB_EXPORT_STATEMENT_TIMEOUT_SECONDS: Final = 600
+
+#: how long one export may take, end to end, before the client gives up.
+#:
+#: ABOVE the hub's export deadline, for the reason a read's deadline sits above its statement
+#: deadline: a stuck export must come back as the hub's ``QUERY_TIMEOUT`` refusal, not as the
+#: client's ``REQUEST_FAILED``, which steers a retry that stacks a second export on the first.
+#: before the statement starts the hub may hold the ask for a turn at the datasource (5 s) and a
+#: lent pool's connection (5 s); after it, the cancel, the refusal and the reply need their 10 s.
+#: that is 620 s against the 600 s deadline; the further 40 s covers a hub that is slow to start
+#: the statement (an unload's credentials, a cold connection) without letting a dead bus hold a
+#: caller much past the export it was waiting on.
+#:
+#: like a read, an export is a plain request/reply on the caller's connection: its reply survives a
+#: credential renewal only while the replaced connection is still held, which is the owner's
+#: ``longest_request_seconds`` (:meth:`threetears.nats.NatsClient.renew_credential`).
+_DEFAULT_EXPORT_TIMEOUT_SECONDS: Final = float(_HUB_EXPORT_STATEMENT_TIMEOUT_SECONDS) + 60.0
+
 #: how many pages ``list_own_exports`` follows before it refuses: 200 000 exports at the hub's
 #: page of 200, far past any pod's
 EXPORT_LIST_MAX_PAGES: Final = 1000
@@ -833,8 +858,12 @@ class DatasourceQueryClient:
         hub-minted identity token, read on every call; the holder's bound
         ``get``, never a captured string
     :ptype identity_token: Callable[[], str | None]
-    :param timeout: how long one query may take before the client gives up
+    :param timeout: how long one query may take before the client gives up; every ask but an export
     :ptype timeout: timedelta | float
+    :param export_timeout: how long one export may take before the client gives up; the default,
+        660 s, outlasts the hub's default 600 s export deadline with room for its turn, its
+        connection and the reply
+    :ptype export_timeout: timedelta | float
     :param pop_key: zero-arg provider of the key the identity token binds; with it each request
         carries a proof of possession over its body. ``None`` sends the token alone
     :ptype pop_key: Callable[[], PopKey | None] | None
@@ -853,6 +882,7 @@ class DatasourceQueryClient:
         *,
         identity_token: Callable[[], str | None],
         timeout: timedelta | float = DEFAULT_QUERY_TIMEOUT_SECONDS,
+        export_timeout: timedelta | float = _DEFAULT_EXPORT_TIMEOUT_SECONDS,
         pop_key: Callable[[], PopKey | None] | None = None,
         max_concurrent_asks: int | None = None,
     ) -> None:
@@ -862,8 +892,11 @@ class DatasourceQueryClient:
         :ptype nats_client: NatsClient
         :param identity_token: zero-arg provider returning the current token
         :ptype identity_token: Callable[[], str | None]
-        :param timeout: per-query deadline; a number is seconds
+        :param timeout: per-ask deadline for every ask but an export; a number is seconds
         :ptype timeout: timedelta | float
+        :param export_timeout: per-export deadline; a number is seconds. Apart from ``timeout``
+            because the hub gives an export far longer on the warehouse than a read
+        :ptype export_timeout: timedelta | float
         :param pop_key: zero-arg provider of the key the identity token binds, read on every
             send; with it each request carries a proof of possession over its body
             (:mod:`threetears.core.security.door_request`). ``None`` sends the token alone
@@ -879,6 +912,9 @@ class DatasourceQueryClient:
         self._pop_key = pop_key
         self._unproven_logged = False
         self._timeout = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
+        self._export_timeout = (
+            export_timeout if isinstance(export_timeout, timedelta) else timedelta(seconds=float(export_timeout))
+        )
         # the one way to the bus (_ask) takes its turn here, so no operation can go round the limit
         self._turns = None if max_concurrent_asks is None else asyncio.Semaphore(max_concurrent_asks)
 
@@ -906,7 +942,9 @@ class DatasourceQueryClient:
             )
         return token
 
-    async def _ask(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+    async def _ask(
+        self, subject: Subject, request: DatasourceQueryRequest, *, timeout: timedelta | None = None
+    ) -> DatasourceQueryResponse:
         """send the request at this client's turn, when it limits its asks at once.
 
         The turn is held until the answer is in hand, the waits on a busy hub included: an ask
@@ -916,19 +954,24 @@ class DatasourceQueryClient:
         :ptype subject: Subject
         :param request: the request
         :ptype request: DatasourceQueryRequest
+        :param timeout: how long each send waits for its answer; ``None`` for the client's general deadline
+        :ptype timeout: timedelta | None
         :return: the hub's answer
         :rtype: DatasourceQueryResponse
         :raises RequestError: when the bus fails to deliver or answer
         """
+        deadline = self._timeout if timeout is None else timeout
         response: DatasourceQueryResponse
         if self._turns is None:
-            response = await self._send(subject, request)
+            response = await self._send(subject, request, deadline)
         else:
             async with self._turns:
-                response = await self._send(subject, request)
+                response = await self._send(subject, request, deadline)
         return response
 
-    async def _send(self, subject: Subject, request: DatasourceQueryRequest) -> DatasourceQueryResponse:
+    async def _send(
+        self, subject: Subject, request: DatasourceQueryRequest, timeout: timedelta
+    ) -> DatasourceQueryResponse:
         """send the request, and ask again while the hub answers ``DATASOURCE_BUSY``, a bounded number of times.
 
         A busy refusal means nothing ran, so asking again is safe; the waits grow and are jittered so
@@ -938,6 +981,8 @@ class DatasourceQueryClient:
         :ptype subject: Subject
         :param request: the request
         :ptype request: DatasourceQueryRequest
+        :param timeout: how long each send waits for its answer
+        :ptype timeout: timedelta
         :return: the hub's answer
         :rtype: DatasourceQueryResponse
         :raises RequestError: when the bus fails to deliver or answer
@@ -948,7 +993,7 @@ class DatasourceQueryClient:
             subject=subject,
             message=self._proven(request, subject),
             response_type=DatasourceQueryResponse,
-            timeout=self._timeout,
+            timeout=timeout,
         )
         while response.error_code == DATASOURCE_BUSY and attempts < BUSY_RETRIES:
             attempts += 1
@@ -962,7 +1007,7 @@ class DatasourceQueryClient:
                 subject=subject,
                 message=self._proven(request, subject),
                 response_type=DatasourceQueryResponse,
-                timeout=self._timeout,
+                timeout=timeout,
             )
         return response
 
@@ -1142,6 +1187,9 @@ class DatasourceQueryClient:
         read rail AND that an operator recorded may export from this datasource. A tool pod asks on
         its own identity; there is no user side to an export.
 
+        Waits the client's ``export_timeout``, not its general deadline: the hub gives an export far
+        longer on the warehouse than a read (600 s by default, against a read's 100 s).
+
         :param datasource_name: the datasource's name as the hub holds it
         :ptype datasource_name: str
         :param select: a plain ``SELECT`` with no bind parameters (values written in as literals)
@@ -1172,7 +1220,7 @@ class DatasourceQueryClient:
         )
         subject = Subjects.datasource_query(datasource_name)
         try:
-            response = await self._ask(subject, request)
+            response = await self._ask(subject, request, timeout=self._export_timeout)
         except RequestError as exc:
             raise DatasourceQueryError("REQUEST_FAILED", f"export on {datasource_name!r}: {exc}") from exc
         if not response.success:

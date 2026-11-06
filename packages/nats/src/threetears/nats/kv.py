@@ -76,6 +76,7 @@ from threetears.nats.errors import (
     PublishTimeoutError,
     StreamSubjectsOverlapError,
 )
+from threetears.nats import kv_watch
 from threetears.nats.kv_watch import DEFAULT_KEY_WATCH_HEARTBEAT, DEFAULT_KEY_WATCH_RETRY, KvKeyUpdate
 from threetears.nats.own_consumer import delivered_by_own_consumer, random_consumer_name
 from threetears.nats.raw_errors import is_bucket_not_found
@@ -2394,7 +2395,9 @@ class NatsKvBucket:
 
         A consumer create that fails is logged, naming the grant to check, and retried after
         ``retry``; it is never raised, because the watch's whole job is to outlast the conditions
-        that make a create fail. A closed consumer's server-side state is left to the server to
+        that make a create fail. One the server answers "stream not found" is the bucket being absent
+        -- a broker restart took it, until its declarer creates it again -- and is said once at INFO,
+        then once at WARNING if it lasts, rather than on every retry. A closed consumer's server-side state is left to the server to
         reap -- a key-scoped grant carries no ``CONSUMER.DELETE``.
 
         Close it by stopping iteration -- ``aclose()``, or leaving an ``aclosing`` block -- which
@@ -2419,6 +2422,7 @@ class NatsKvBucket:
         stream = kv_stream_name(self._full_name)
         last: KvKeyUpdate | None = None
         unsequenced = 0
+        absence = _StreamAbsence(subject=subject, stream=stream)
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2427,6 +2431,7 @@ class NatsKvBucket:
                 heartbeat=heartbeat,
                 retry=retry,
                 op_timeout_seconds=self._timings.op_timeout_seconds,
+                absence=absence,
             )
             if consumer is None:
                 await asyncio.sleep(retry.total_seconds())
@@ -2493,6 +2498,7 @@ class NatsKvBucket:
         # starts its sequence again, so a NEW value can arrive on the revision the old one had.
         known: dict[str, tuple[int, bytes]] = {}
         unsequenced = 0
+        absence = _StreamAbsence(subject=subject, stream=stream)
         while True:
             consumer = await _KeyWatchConsumer.open(
                 client=self._client,
@@ -2501,6 +2507,7 @@ class NatsKvBucket:
                 heartbeat=heartbeat,
                 retry=retry,
                 op_timeout_seconds=self._timings.op_timeout_seconds,
+                absence=absence,
             )
             if consumer is None:
                 await asyncio.sleep(retry.total_seconds())
@@ -2831,11 +2838,17 @@ class _KeyWatchConsumer:
         heartbeat: timedelta,
         retry: timedelta,
         op_timeout_seconds: float,
+        absence: _StreamAbsence,
     ) -> _KeyWatchConsumer | None:
         """subscribe a fresh inbox, then create a freshly named consumer delivering to it.
 
         The inbox is subscribed FIRST so nothing the consumer delivers can arrive before anything
         is listening for it.
+
+        A create the server answers with "stream not found" (``err_code`` 10059) is the bucket being
+        absent -- a broker restart on memory storage, until the bucket's declarer creates it again --
+        not a refused grant: it goes to ``absence``, which says so without a traceback. Every other
+        failure is logged as before, naming the grant to check.
 
         :param client: the connected wrapper client
         :ptype client: NatsClient
@@ -2849,6 +2862,8 @@ class _KeyWatchConsumer:
         :ptype retry: timedelta
         :param op_timeout_seconds: the bucket's ceiling on one KV operation, which bounds the create
         :ptype op_timeout_seconds: float
+        :param absence: the watch's record of its bucket being absent, kept across its creates
+        :ptype absence: _StreamAbsence
         :return: the consumer, or ``None`` when it could not be created
         :rtype: _KeyWatchConsumer | None
         :raises KvError: when the NATS connection is closed
@@ -2887,20 +2902,25 @@ class _KeyWatchConsumer:
                 client=client,
                 pending=int(getattr(info, "num_pending", 0) or 0),
             )
-        # NOSILENT: logged naming the grant to check; the caller pauses and creates another
+        # NOSILENT: logged -- an absent bucket by the watch's absence record, anything else naming the
+        # grant to check; the caller pauses and creates another
         except _BOUNDED_CALL_FAILURES as exc:  # a failed create is retried, never raised
-            contain(
-                exc,
-                log=log,
-                what=(
-                    f"key watch consumer {name} on {subject} could not be created; retrying in "
-                    f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check this "
-                    f"principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
-                ),
-                extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
-            )
+            if is_bucket_not_found(exc):
+                absence.absent(retry=retry, error=exc)
+            else:
+                contain(
+                    exc,
+                    log=log,
+                    what=(
+                        f"key watch consumer {name} on {subject} could not be created; retrying in "
+                        f"{retry.total_seconds():.0f}s. an ungranted create blocks to its deadline -- check "
+                        f"this principal's grant on $JS.API.CONSUMER.CREATE.{stream}.*.{subject}: {exc}"
+                    ),
+                    extra={"subject": subject, "stream": stream, "consumer": name, "error": str(exc)},
+                )
             await _drop_subscription(subscription, subject=subject)
         if consumer is not None:
+            absence.present()
             log.debug(
                 "key watch consumer created",
                 extra={"extra_data": {"subject": subject, "stream": stream, "consumer": name}},
@@ -3046,6 +3066,78 @@ def _forget_unseen(known: dict[str, tuple[int, bytes]], seen: set[str]) -> list[
     for key in gone:
         del known[key]
     return [KvKeyUpdate(key=key, value=None, revision=0) for key in gone]
+
+
+class _StreamAbsence:
+    """one key watch's record of its bucket's stream being absent, kept across its consumer creates.
+
+    Each create names a fresh consumer, so "once per consumer" is once per WATCH: the first create
+    answered "stream not found" is logged at INFO, without a traceback, because a bucket on memory
+    storage is gone after a broker restart until its declarer creates it again, and every watch on it
+    sees the same answer meanwhile. A stream still absent after
+    :data:`~threetears.nats.kv_watch.KEY_WATCH_ABSENT_WARN_AFTER` is logged once at WARNING: nothing is recreating it.
+    The create that succeeds again logs the return and arms both lines for the next absence.
+
+    :param subject: the watched subject
+    :ptype subject: str
+    :param stream: the bucket's backing stream
+    :ptype stream: str
+    """
+
+    __slots__ = ("_since", "_stream", "_subject", "_warned")
+
+    def __init__(self, *, subject: str, stream: str) -> None:
+        self._subject = subject
+        self._stream = stream
+        self._since: float | None = None
+        self._warned = False
+
+    def absent(self, *, retry: timedelta, error: BaseException) -> None:
+        """record one create answered "stream not found".
+
+        :param retry: the pause before the next create, for the log line
+        :ptype retry: timedelta
+        :param error: what the create raised, for the log line
+        :ptype error: BaseException
+        """
+        now = time.monotonic()
+        extra = {"subject": self._subject, "stream": self._stream, "error": str(error)}
+        if self._since is None:
+            self._since = now
+            log.info(
+                "key watch on %s waits for stream %s, which does not exist (a broker restart takes a "
+                "memory bucket with it until its declarer creates it again); retrying every %.0fs",
+                self._subject,
+                self._stream,
+                retry.total_seconds(),
+                extra={"extra_data": extra},
+            )
+            return
+        absent_for = now - self._since
+        if not self._warned and absent_for >= kv_watch.KEY_WATCH_ABSENT_WARN_AFTER.total_seconds():
+            self._warned = True
+            log.warning(
+                "key watch on %s: stream %s has not existed for %.0fs; nothing has recreated the bucket, "
+                "so the watch hears no updates until something does",
+                self._subject,
+                self._stream,
+                absent_for,
+                extra={"extra_data": {**extra, "absent_seconds": round(absent_for)}},
+            )
+
+    def present(self) -> None:
+        """record a create that succeeded, logging the stream's return after an absence."""
+        if self._since is None:
+            return
+        log.info(
+            "key watch on %s: stream %s exists again after %.0fs; watching",
+            self._subject,
+            self._stream,
+            time.monotonic() - self._since,
+            extra={"extra_data": {"subject": self._subject, "stream": self._stream}},
+        )
+        self._since = None
+        self._warned = False
 
 
 async def _pause_after_unsequenced(

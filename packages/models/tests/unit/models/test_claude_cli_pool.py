@@ -15,6 +15,7 @@ import asyncio
 import contextvars
 import gc
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -103,6 +104,8 @@ class FakeSession:
         self.prepared: list[tuple[str | None, Any]] = []
         self.rewinds: list[str] = []
         self.disposals = 0
+        #: ``abandoned`` as each dispose was asked it
+        self.abandoned: list[bool] = []
         self.abandons = 0
         self.abandon_raises: BaseException | None = None
         self.alive = True
@@ -161,10 +164,11 @@ class FakeSession:
             raise refusal
         self.rewinds.append(first_message_uuid)
 
-    async def dispose(self, *, grace_seconds: float) -> None:
+    async def dispose(self, *, grace_seconds: float, abandoned: bool = False) -> None:
         del grace_seconds
         if self.closed:
             return
+        self.abandoned.append(abandoned)
         self.dispose_contexts.append(contextvars.copy_context())
         self.closed = True
         if self.dispose_delay:
@@ -554,6 +558,7 @@ class TestResponsesCannotCross:
             async with pool.checkout(Options(), token=TOKEN, tool_server=None):
                 raise RuntimeError("the stream broke mid-answer")
         assert FakeSession.instances[0].disposals == 1
+        assert FakeSession.instances[0].abandoned == [True], "a CLI left mid-answer must be killed, not waited on"
         assert FakeSession.instances[0].released == 0
         assert pool.live_count == 0
         await pool.aclose()
@@ -573,6 +578,7 @@ class TestResponsesCannotCross:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert FakeSession.instances[0].disposals == 1, "a cancelled turn's half-read session went back in the pool"
+        assert FakeSession.instances[0].abandoned == [True], "a cancelled turn's CLI must be killed, not waited on"
         assert pool.live_count == 0
         await pool.aclose()
 
@@ -587,6 +593,7 @@ class TestARefusedRewindStartsASpare:
         first = await _call(pool)
         await _spares_started(pool)
         assert first.disposals == 1, "a session whose rewind was refused was kept"
+        assert first.abandoned == [False], "a call that finished leaves an idle CLI, which is disconnected first"
         assert len(FakeSession.instances) == 2, "no spare was started"
         spare = FakeSession.instances[1]
         assert spare.prepared == [], "a spare is started, never prepared, until a call takes it"
@@ -790,12 +797,14 @@ class TestNothingOutlivesTheProcess:
             pass
         await pool.aclose()
         assert FakeSession.instances[0].disposals == 1
+        assert FakeSession.instances[0].abandoned == [False]
 
     async def test_shutdown_during_a_call_disposes_it_exactly_once(self) -> None:
         pool = _pool()
         async with pool.checkout(Options(), token=TOKEN, tool_server=None):
             await pool.aclose()
         assert FakeSession.instances[0].disposals == 1, "the borrower's cleanup signalled a dead session again"
+        assert FakeSession.instances[0].abandoned == [True], "a CLI on loan at shutdown is mid-call: killed first"
 
     async def test_an_idle_session_past_its_ttl_is_evicted(self) -> None:
         pool = _pool(idle_ttl_seconds=0.01)
@@ -803,6 +812,7 @@ class TestNothingOutlivesTheProcess:
             pass
         await _reaped(FakeSession.instances[0])
         assert FakeSession.instances[0].disposals == 1
+        assert FakeSession.instances[0].abandoned == [False]
         assert pool.live_count == 0
         await pool.aclose()
 
@@ -1844,6 +1854,42 @@ class TestAStrandedSessionIsStoppedWithoutItsLoop:
         asyncio.run(pool.aclose())
         assert (stuck.abandons, stuck.alive) == (1, False), "the next close must finish the interrupted stop"
         assert pool.known_pids() == []
+
+    async def test_an_abandoned_session_is_killed_before_its_disconnect_waits_on_it(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A CLI mid-answer does not exit on the end of its input, and the SDK's disconnect waits 5 s
+        for it before signalling it -- the same 5 s the session's own bound gave the disconnect, which
+        ran out there three times a week in production. Killed first, the disconnect finds the
+        process gone and returns at once, with nothing to warn about."""
+        cli = subprocess.Popen(["sleep", "60"])
+
+        class ClientWaitingForItsCli:
+            def __init__(self) -> None:
+                self.saw_it_running = False
+
+            async def disconnect(self) -> None:
+                for _ in range(200):
+                    if cli.poll() is not None:
+                        return
+                    self.saw_it_running = True
+                    await asyncio.sleep(0.05)
+
+        client = ClientWaitingForItsCli()
+        try:
+            session = PooledCliSession(client, key="k", pid=cli.pid, marker="m")
+            started = time.monotonic()
+            with caplog.at_level(logging.WARNING, logger=claude_cli_pool.__name__):
+                await session.dispose(grace_seconds=0.5, abandoned=True)
+
+            assert cli.poll() is not None, "the abandoned CLI outlived its dispose"
+            assert not client.saw_it_running, "the disconnect waited on a CLI that was still running"
+            assert time.monotonic() - started < 3.0
+            assert "disconnect failed" not in caplog.text
+        finally:
+            if cli.poll() is None:
+                cli.kill()
+                cli.wait(timeout=5)
 
     async def test_abandoning_kills_the_cli_and_never_disconnects(self) -> None:
         disconnects: list[str] = []
