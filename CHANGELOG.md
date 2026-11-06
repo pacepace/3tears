@@ -19,8 +19,8 @@ measures an eval's graders read, in the order listed; `Eval` files it from `Resu
 **Changed:** where a guardrail warns, a campaign page's lead reads the first measure in the design's `measure_order`
 that a contrast tested and that is no cost: the same measure the printed first line leads on, whether a question is
 declared or not (where the page read the classifier's accuracy, or the pass rate). A campaign stating no order, every
-one filed before this version, leads on the classifier's accuracy where the aspect reads one, else on its pass rate.
-This sentence is the lead rule; the two entries below describe the surfaces it reads on. A measurement's scorecard prints each money
+one filed before this version, leads on the classifier's accuracy where the aspect reads one and it asks no question,
+else on its pass rate (one asking a question leads on its pass rate). This sentence is the lead rule; the two entries below describe the surfaces it reads on. A measurement's scorecard prints each money
 measure (`Measuring spend, all roles`, `Production cost`) in one form chosen from all its figures, intervals included:
 `$0.022/1000` where a figure is under a cent, never `0.0003` or `0`. Rung 3 (`examples/3-invoices/extract.py`) declares its question, and the ladder shows it.
 

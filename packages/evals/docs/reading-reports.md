@@ -46,8 +46,8 @@ first screen, which is the decision. Top to bottom, nothing above the title:
 | | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
 |---|---|---|---|
 | 1 | title and question | title and question | title and question |
+| 1a | the lead, where a guardrail warns: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | none | none: one arm compares with nothing |
 | 2 | where the report is | where the report is | where the report is |
-| 2a | the lead, where a guardrail warns: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | the same, per arm | none: one arm compares with nothing |
 | 3 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
 | 4 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
 | 5 | the call | the call | the call, once one is recorded |
