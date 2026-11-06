@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools: a tool pod serves its own metrics on the health port's `/metrics`
+
+**Added:** `ToolServerBootstrap(..., extra_metric_registries=...)`. The health port's `/metrics` now
+serves the tool server's metrics and then each registry passed here, so a pod needs no second metrics
+port and no second scrape. A pod that records through `threetears.observe.metrics` passes
+`prometheus_client.REGISTRY`.
+
+- The registries are read at every scrape, so a metric created after the pod starts is served from
+  the next scrape.
+- A metric name served twice is served once. The tool server's copy wins, then the earlier registry.
+  The left-out copy is logged once as a warning. Without this, Prometheus would reject the whole scrape.
+- `ToolServer.metrics_registry` returns the registry `render_metrics()` renders.
+- A pod that passes nothing serves exactly what it served before.
+
 ### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
 
 **Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by

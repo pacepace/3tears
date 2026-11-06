@@ -261,6 +261,7 @@ class _CallState(enum.Enum):
 
 
 if TYPE_CHECKING:
+    from prometheus_client import CollectorRegistry
     from threetears.core.coordination.replay_anchor import ReplayAnchor
     from threetears.core.security.door_request import PopKey
 
@@ -1674,6 +1675,18 @@ class ToolServer:
         :rtype: tuple[str, bytes]
         """
         return self._inflight_gauge.render()
+
+    @property
+    def metrics_registry(self) -> "CollectorRegistry | None":
+        """return the registry :meth:`render_metrics` renders: the in-flight gauge and the call metrics.
+
+        :class:`ToolServerBootstrap` reads it to serve a pod's own registries beside it on the one
+        ``/metrics`` route, with this registry's families taking precedence on a name clash.
+
+        :return: the server's prometheus registry, or ``None`` when ``prometheus_client`` is absent
+        :rtype: CollectorRegistry | None
+        """
+        return self._inflight_gauge.registry
 
     @property
     def tool_names(self) -> tuple[str, ...]:

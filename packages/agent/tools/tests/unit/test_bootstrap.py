@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 from sqlalchemy import Column, MetaData, String, Table
 
 import threetears.agent.tools.bootstrap as bootstrap_module
@@ -427,6 +428,13 @@ class _ReadinessFakeServer(_FakeToolServer):
         self.tools_count = 1
         self.jwks_warmed = False
         self.serving_calls = True
+        # stands in for the server's own registry: one call counted, as a real pod's would be
+        self.metrics_registry = CollectorRegistry()
+        self.calls = Counter("threetears_tools_calls", "calls finished", ["tool"], registry=self.metrics_registry)
+        self.calls.labels(tool="test.fake").inc()
+
+    def render_metrics(self) -> tuple[str, bytes]:
+        return ("text/plain; version=0.0.4; charset=utf-8", generate_latest(self.metrics_registry))
 
 
 def _free_port() -> int:
@@ -470,6 +478,7 @@ async def _serving_pod(
     *,
     version: str | None = None,
     extra_health_checks: Sequence[HealthCheck] = (),
+    extra_metric_registries: Sequence[CollectorRegistry] = (),
 ) -> AsyncIterator[int]:
     """run a tool pod over ``server`` through ``run_async`` until the block exits.
 
@@ -481,6 +490,8 @@ async def _serving_pod(
     :ptype version: str | None
     :param extra_health_checks: the checks the pod contributes beyond the bootstrap's own
     :ptype extra_health_checks: Sequence[HealthCheck]
+    :param extra_metric_registries: the registries the pod serves beside the tool server's metrics
+    :ptype extra_metric_registries: Sequence[CollectorRegistry]
     :return: an async iterator yielding the pod's health port once it is listening
     :rtype: AsyncIterator[int]
     """
@@ -495,7 +506,11 @@ async def _serving_pod(
 
     run_task = asyncio.create_task(
         _HealthBootstrap(
-            "test-pod", health_port=port, version=version, extra_health_checks=extra_health_checks
+            "test-pod",
+            health_port=port,
+            version=version,
+            extra_health_checks=extra_health_checks,
+            extra_metric_registries=extra_metric_registries,
         ).run_async()
     )
     try:
@@ -673,6 +688,131 @@ class TestAPodContributesItsOwnHealthChecks:
         with pytest.raises(SystemExit) as exited:
             _ConcreteBootstrapWithChecks(server=srv, extra_health_checks=[check]).run()
         assert exited.value.code == EX_CONFIG
+
+
+async def _scrape(port: int) -> tuple[int, str, str]:
+    """GET ``/metrics`` as Prometheus scrapes it.
+
+    :param port: the pod's health port
+    :ptype port: int
+    :return: the HTTP status, the content type and the exposition body
+    :rtype: tuple[int, str, str]
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(b"GET /metrics HTTP/1.1\r\nHost: pod\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        raw = await reader.read()
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    headers = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
+    return int(lines[0].split()[1]), headers.get("content-type", ""), body.decode("utf-8")
+
+
+def _samples(body: str) -> dict[str, float]:
+    """the samples of an exposition body, keyed by sample name with its labels.
+
+    :param body: the exposition body
+    :ptype body: str
+    :return: sample -> value
+    :rtype: dict[str, float]
+    """
+    out: dict[str, float] = {}
+    for line in body.splitlines():
+        if line and not line.startswith("#"):
+            sample, _, value = line.rpartition(" ")
+            out[sample] = float(value)
+    return out
+
+
+class TestAPodServesItsOwnMetricsOnTheHealthPort:
+    """``extra_metric_registries``: a pod's own metrics are scraped from the health port's
+    ``/metrics`` with the tool server's, so a pod needs no second port and no second scrape."""
+
+    async def test_the_pods_metrics_are_served_beside_the_tool_servers(self) -> None:
+        srv = _ReadinessFakeServer()
+        own = CollectorRegistry()
+        Counter("evd_downloads", "downloads", registry=own).inc(3)
+        async with _serving_pod(srv, extra_metric_registries=[own]) as port:
+            status, content_type, body = await _scrape(port)
+        assert status == 200
+        assert content_type.startswith("text/plain; version=")
+        samples = _samples(body)
+        assert samples['threetears_tools_calls_total{tool="test.fake"}'] == 1.0
+        assert samples["evd_downloads_total"] == 3.0
+
+    async def test_a_metric_the_pod_creates_after_it_starts_is_served(self) -> None:
+        """the registries are read at every scrape, so a lazily created metric is not missed."""
+        srv = _ReadinessFakeServer()
+        own = CollectorRegistry()
+        async with _serving_pod(srv, extra_metric_registries=[own]) as port:
+            _status, _type, before = await _scrape(port)
+            Gauge("evd_file_age_seconds", "age", registry=own).set(42)
+            _status, _type, after = await _scrape(port)
+        assert "evd_file_age_seconds" not in before
+        assert _samples(after)["evd_file_age_seconds"] == 42.0
+
+    async def test_a_name_the_tool_server_serves_keeps_the_tool_servers_copy(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """a family served twice makes Prometheus reject the whole scrape; the tool server's copy
+        stays, the pod's is left out, and the clash is logged once rather than on every scrape."""
+        srv = _ReadinessFakeServer()
+        own = CollectorRegistry()
+        Counter("threetears_tools_calls", "a pod's clashing counter", ["tool"], registry=own).labels(
+            tool="test.fake"
+        ).inc(99)
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.bootstrap"):
+            async with _serving_pod(srv, extra_metric_registries=[own]) as port:
+                _status, _type, body = await _scrape(port)
+                await _scrape(port)
+        assert body.count("# TYPE threetears_tools_calls_total counter") == 1
+        assert _samples(body)['threetears_tools_calls_total{tool="test.fake"}'] == 1.0
+        clashes = [r for r in caplog.records if "served twice" in r.getMessage()]
+        assert len(clashes) == 1
+        assert clashes[0].__dict__["extra_data"]["metric"] == "threetears_tools_calls"
+
+    async def test_an_earlier_registry_wins_a_clash_between_two_of_the_pods(self) -> None:
+        srv = _ReadinessFakeServer()
+        first, second = CollectorRegistry(), CollectorRegistry()
+        Counter("evd_downloads", "first", registry=first).inc(1)
+        Counter("evd_downloads", "second", registry=second).inc(5)
+        async with _serving_pod(srv, extra_metric_registries=[first, second]) as port:
+            _status, _type, body = await _scrape(port)
+        assert body.count("# TYPE evd_downloads_total counter") == 1
+        assert _samples(body)["evd_downloads_total"] == 1.0
+
+    @pytest.mark.parametrize(
+        ("build", "printed"),
+        [
+            (lambda r: Gauge("threetears_tools_calls_total", "clashes a counter's sample", registry=r), "_total"),
+            (lambda r: Gauge("threetears_tools_calls_created", "clashes a counter's created", registry=r), "_created"),
+            (lambda r: Histogram("evd_fetch", "a histogram", registry=r), "_count"),
+        ],
+    )
+    async def test_a_name_clash_on_a_printed_name_is_caught_across_types(self, build: Any, printed: str) -> None:
+        """the scrape fails on a name PRINTED twice, and a counter ``x`` prints ``x_total``: a gauge
+        named ``x_total`` clashes with it though the family names differ."""
+        srv = _ReadinessFakeServer()
+        Gauge("evd_fetch_count", "a gauge printing a histogram's name", registry=srv.metrics_registry).set(7)
+        own = CollectorRegistry()
+        build(own)
+        async with _serving_pod(srv, extra_metric_registries=[own]) as port:
+            _status, _type, body = await _scrape(port)
+        type_lines = [line.split()[2] for line in body.splitlines() if line.startswith("# TYPE ")]
+        assert len(type_lines) == len(set(type_lines)), f"a name printed twice: {sorted(type_lines)}"
+        samples = [line.rpartition(" ")[0] for line in body.splitlines() if line and not line.startswith("#")]
+        assert len(samples) == len(set(samples)), f"a sample printed twice ({printed})"
+
+    async def test_with_no_registries_metrics_is_the_tool_servers_render(self) -> None:
+        """a pod that passes nothing serves exactly what it served before, content type included."""
+        srv = _ReadinessFakeServer()
+        async with _serving_pod(srv) as port:
+            _status, content_type, body = await _scrape(port)
+        assert (content_type, body) == (srv.render_metrics()[0], srv.render_metrics()[1].decode("utf-8"))
 
 
 class _ConcreteBootstrapWithChecks(ToolServerBootstrap):
