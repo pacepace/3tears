@@ -1085,8 +1085,6 @@ A table code laid out — its columns, its rows in their stated order, and how m
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
-| `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['table']` | `'table'` | Which kind of block this is. |
@@ -1107,8 +1105,6 @@ One of the charts a report draws, with every value it draws, so it prints as a t
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
-| `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['chart']` | `'chart'` | Which kind of block this is. |
@@ -1129,8 +1125,6 @@ Something code must tell the reader that no author wrote — one idea.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `section` | `ReportSection` | required | The section the block sits in. |
-| `finding` | `int \| None` | `None` | The finding this block belongs to, by its position (0 is the first); None when it belongs to none. |
-| `rests_on` | `list[int]` | `[]` | Positions of the findings this block rests on, as the author linked them. |
 | `anchor` | `str \| None` | `None` | The id a link to this block names (`F1`, `case-3`, `T7`); None when none does. |
 | `fold` | `str \| None` | `None` | The closed fold the block sits in (`Evidence`, `Disclosures`); consecutive blocks naming one fold share it. None for a block shown open. |
 | `kind` | `Literal['disclosure']` | `'disclosure'` | Which kind of block this is. |

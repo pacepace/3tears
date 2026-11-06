@@ -22,6 +22,7 @@ import html
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from threetears.evals.analysis import (
     NO_ANALYSIS,
@@ -195,9 +196,10 @@ class TestTheReportsRefusals:
         ],
         ids=["finding", "rests_on"],
     )
-    def test_a_block_linked_to_a_finding_is_refused(self, bundle: AnalysisContextBundle, block: dict[str, Any]) -> None:
-        linked = r"is linked to finding position\(s\) \[\d\], and the report holds no finding"
-        with pytest.raises(ValueError, match=linked):
+    def test_a_block_naming_a_finding_field_it_no_longer_has_is_refused(
+        self, bundle: AnalysisContextBundle, block: dict[str, Any]
+    ) -> None:
+        with pytest.raises(ValidationError, match="extra_forbidden"):
             _report(bundle, blocks=[block])
 
     def test_a_table_showing_more_rows_than_it_has_is_refused(self) -> None:
