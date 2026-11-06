@@ -572,4 +572,6 @@ async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campa
     # The graders' order is filed on the aspect's design, so the page can lead on the first, as the printed line does.
     assert asked.grader_readings == ("accuracy", "short_label")
     campaign = off_loop(get_campaign, asked.host.storage, asked.campaign_id, asked.scope_id)
-    assert [aspect.design.measure_order for aspect in campaign.aspects if aspect.design] == [["accuracy", "short_label"]]
+    assert [aspect.design.measure_order for aspect in campaign.aspects if aspect.design] == [
+        ["accuracy", "short_label"]
+    ]

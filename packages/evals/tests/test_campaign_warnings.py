@@ -230,7 +230,9 @@ async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -
     )
 
 
-async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_and_the_guardrail_warns_beside_it() -> None:
+async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_and_the_guardrail_warns_beside_it() -> (
+    None
+):
     """The one rule with no question asked and a function grader first: the eval files its graders' order on the
     aspect's design, so the first bold line reads that grader, in the aspect page's words, naming both arms and marked
     a lead; the guardrail's warning is the next, never in its place."""

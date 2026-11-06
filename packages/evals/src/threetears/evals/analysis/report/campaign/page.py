@@ -211,7 +211,6 @@ def _lead_blocks(
     several = len(campaign.aspects) > 1
     sentences: list[str] = []
     for aspect in campaign.aspects:
-        bundle = reports[aspect.label].bundle
         on = f" on {names(aspect.label)}" if several else ""
         lead = _lead_measure(aspect, reports[aspect.label])
         led = [
@@ -248,9 +247,7 @@ def _lead_measure(aspect: Aspect, report: Report) -> str | None:
     order = aspect.design.measure_order if aspect.design is not None else []
     if not order:
         return None if report.bundle.question_declared else ACCURACY_MEASURE
-    tested = {
-        verdict.name for verdict in report.verdicts if verdict.kind == "contrast" and verdict.reading != "trial"
-    }
+    tested = {verdict.name for verdict in report.verdicts if verdict.kind == "contrast" and verdict.reading != "trial"}
     return next((name for name in order if name in tested and not _a_cost(name, report)), None)
 
 
