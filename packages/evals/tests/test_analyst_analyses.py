@@ -198,12 +198,17 @@ def test_a_superiority_candidate_shown_worse_is_never_shown_no_worse_nor_dominan
 
 
 def test_a_question_with_no_margin_floor_or_gate_is_a_declaration_and_raises_no_nothing_declared() -> None:
-    """A superiority question declares what is good enough (shown better); the same input asking nothing does not."""
+    """A superiority question of a control declares what is good enough (shown better than it); the same input asking
+    nothing does not, nor does a choice asking it, which has no control."""
     asked = _superiority("unclear", floors=False)
     assert not asked.criteria and not asked.floors and asked.aspects[0].margin is None
     assert "nothing_declared" not in [caveat.id for caveat in implied_caveats(asked)]
     unasked = _superiority("unclear", asked=False, floors=False)
     assert "nothing_declared" in [caveat.id for caveat in implied_caveats(unasked)]
+    # A choice (no control) has nothing to be shown better than, so its question declares no bar.
+    choice = asked.model_copy(update={"arms": [arm.model_copy(update={"role": "challenger"}) for arm in asked.arms]})
+    assert control_arm(choice) is None
+    assert "nothing_declared" in [caveat.id for caveat in implied_caveats(choice)]
 
 
 # =============================================================================

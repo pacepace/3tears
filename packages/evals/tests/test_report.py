@@ -411,11 +411,12 @@ def test_a_contrast_states_its_figures_on_the_measure_s_one_ruler() -> None:
     (comparisons,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "comparisons"]
     (shown,) = [row for row in comparisons.rows if row["reading"].value == "Turn time"]
     # The level every interval holds at is said once, in the column's header, never in each cell.
-    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4498, 0.5502] s")
-    assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99%)"
+    # Six members, the question's pass rate among them (owner, 2026-11-06), so each interval holds at 1 − α/6.
+    assert (shown["change"].text, shown["interval"].text) == ("0.5 s", "[0.4482, 0.5518] s")
+    assert next(column.header for column in comparisons.columns if column.key == "interval") == "Interval (99.2%)"
     # A program's row has no header, so its interval says its level.
     (row,) = [row for row in contrast_rows(report.bundle) if row["reading"] == "Turn time"]
-    assert row["change"] == "0.5 s [0.4498, 0.5502] s at 99%"
+    assert row["change"] == "0.5 s [0.4482, 0.5518] s at 99.2%"
     # A share on 0–1 is stated as a percent, its cell restated onto that ruler.
     (accuracy,) = [row for row in statistics.rows if row["reading"].value == "Field accuracy"]
     assert (accuracy["arm_mean"].text, accuracy["arm_mean"].unit) == ("91%", "%")

@@ -92,7 +92,7 @@ longer refuses a declared aspect with no margin under a question of a control; s
 against zero both ways (shown better, shown worse, or `not separated` on the page), its drop Holm-corrected as a gain
 is across the candidate's aspects; the pass rate joins every asked question's family, margin or none, so `gate()`,
 `campaign_verdicts` and a writer promotion read it as the page does. An aspect asked nothing with no margin is still
-never shown worse, and a question asked with no margin counts as a declared criterion. `WriterEval(margin=)` defaults
+never shown worse, and a question asked of a control with no margin counts as a declared criterion (no `nothing_declared` caveat), whose candidate shown worse never stands shown no worse. `WriterEval(margin=)` defaults
 to `None` (was 5.0): its question is a superiority question unless its author writes a margin; the recorded writer
 runs replay to the same verdicts.
 
