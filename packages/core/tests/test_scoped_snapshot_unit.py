@@ -255,7 +255,8 @@ def _snapshot(**options: Any) -> tuple[ScopedSnapshot, _Pointers, _Store, _L3]:
 
     async def settled() -> Any:
         if not l3.writing:
-            return dict(l3.epochs)
+            # opaque, as L3's own answer is (cobalt's SqlL3Backend gives a number): only equal or not, never epochs
+            return repr(sorted(l3.epochs.items()))
         if l3.pending is None:
             return Unsettled("a write is in progress")
         return Unsettled("a write is in progress", epochs=dict(l3.epochs), pending=frozenset(l3.pending))
@@ -690,7 +691,9 @@ async def test_a_carry_whose_chunk_is_gone_is_left_for_the_catch_up() -> None:
     await snapshot.stop()
 
 
-async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on_every_look() -> None:
+async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on_every_look(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """L3 never reaches the pointer's epoch: every rebuild of TX publishes nothing (a stale epoch) and
     its pointer's chunk still cannot be read, so TX is behind at every look across many rechecks and
     rebuilds, its reason named, never reported current in between."""
@@ -710,8 +713,12 @@ async def test_a_stuck_scope_whose_l3_epoch_is_below_its_pointer_stays_behind_on
     await _until(lambda: "TX" in snapshot.status().behind, what="TX shown behind")
 
     looks = []
+    # each rebuild waits out the scope's backoff (0.91.2: never one at every recheck), which the clock moves past
+    clock = _Clock()
+    monkeypatch.setattr(scoped_snapshot_module, "time", clock)
     while takes[0] < 2:  # rebuilds of TX ran, each taking and letting go of the claim
         looks.append(snapshot.status())
+        clock.ahead += 3600
         await asyncio.sleep(0.01)
     for _ in range(20):  # and several rechecks after
         looks.append(snapshot.status())
@@ -1397,6 +1404,63 @@ async def test_a_recovery_whose_base_l2_cannot_read_reads_l2_again_and_never_rea
     assert "CA" in outcome.left and "read from L2 again" in outcome.left["CA"], outcome
     await writer.stop()
     await replica.stop()
+
+
+async def test_a_cold_start_after_a_schema_change_rebuilds_each_scope_once_is_l3s_and_stops_within_a_bound() -> None:
+    """every pointer of other columns (a schema change): the new replica rebuilds each scope alone, once, publishes
+    over the old pointers, and is ready as L3's copy; and it stops. Said ready as L2's, the integration test of the
+    change failed before its replica was stopped, and the replica re-watching a closed NATS kept CI's loop alive."""
+    l3 = _ScopedL3([{"county": "c1", "state": "TX", "votes": 1}, {"county": "c2", "state": "DE", "votes": 2}])
+    first, pointers, store, _ = _snapshot(l3=l3)
+    await first.start()
+    await first.wait_ready(timeout=5)
+    await first.stop()
+    # the old version's chunks: other columns, under names of their own (a chunk's name carries its columns)
+    for scope, county, votes in (("TX", "c1", 1), ("DE", "c2", 2)):
+        held = json.loads(pointers.entries[f"enr.s.{scope}"][0])
+        name = f"enr/{scope}/1/results.old"
+        store.objects[name] = encode_chunk(
+            _pa.table({"county": [county], "state": [scope], "votes": [votes]}).drop_columns(["votes"])
+        )
+        old = {**held, "tables": {"results": {"object": name, "rows": 1}}, "schema": {"results": "old"}}
+        pointers.put_now(f"enr.s.{scope}", json.dumps(old).encode())
+    l3.read_of.clear()
+
+    later, _, _, _ = _snapshot(pointers=pointers, store=store, l3=l3)
+    await later.start()
+    await later.wait_ready(timeout=5)
+
+    assert later.status().source is SnapshotSource.L3, "a copy every scope of which was rebuilt was said to be L2's"
+    assert l3.read_of == {"TX": 1, "DE": 1}, f"a scope was rebuilt more than once: {l3.read_of}"
+    for scope in ("TX", "DE"):
+        assert json.loads(pointers.entries[f"enr.s.{scope}"][0])["schema"]["results"] != "old", "not published over"
+    await asyncio.wait_for(later.stop(), timeout=5)
+
+
+async def test_a_watch_whose_nats_connection_closed_is_not_followed_again_and_the_replica_stops() -> None:
+    """a watch the KV layer ends because its NATS connection is closed can never deliver again: followed again, it
+    retried for the life of the process, and a replica nobody stopped kept the event loop alive (CI's integration job
+    hung 18 minutes). It is said, failed, and not followed again; stop() returns."""
+    from threetears.nats import KvError
+
+    snapshot, pointers, _, _ = _snapshot(rewatch_backoff=(0.05, 0.05))
+    watches = [0]
+    real_watch = pointers.watch_prefix
+
+    def counting(*, prefix: str, heartbeat: timedelta) -> AsyncIterator[KvKeyUpdate | None]:
+        watches[0] += 1
+        return real_watch(prefix=prefix, heartbeat=heartbeat)
+
+    pointers.watch_prefix = counting  # type: ignore[method-assign]
+    await snapshot.start()
+    await snapshot.wait_ready(timeout=5)
+    pointers.broadcast(KvError("key watch on $KV.pod-pointers.enr.> ended: the NATS connection is closed"))
+    await _until(lambda: snapshot.status().phase is SnapshotPhase.FAILED, what="the closed connection said")
+    await asyncio.sleep(0.3)  # six backoffs
+
+    assert watches[0] == 1, f"a watch on a closed connection was followed again {watches[0] - 1} times"
+    assert "connection is closed" in snapshot.status().detail
+    await asyncio.wait_for(snapshot.stop(), timeout=5)
 
 
 class _WriteOnceStore(_Store):
@@ -2184,11 +2248,13 @@ def _retiring_snapshot(max_bytes: int = 10**9) -> tuple[ScopedSnapshot, _Pointer
     return snapshot, pointers, store, l3
 
 
-async def _started(snapshot: ScopedSnapshot, pointers: _Pointers) -> None:
+async def _started(snapshot: ScopedSnapshot, pointers: _Pointers, *, timeout: float = 5) -> None:
     """started, ready, and its first rebuild's claim let go, so a catch-up here takes it."""
     await snapshot.start()
-    await snapshot.wait_ready(timeout=5)
-    await _until(lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released")
+    await snapshot.wait_ready(timeout=timeout)
+    await _until(
+        lambda: "enr.rebuild" not in pointers.entries, what="the first rebuild's claim released", timeout=timeout
+    )
 
 
 def _epochs_held(store: _Store, scope: str) -> set[int]:
@@ -6131,12 +6197,17 @@ def _held(snapshot: ScopedSnapshot, scope: str) -> list[tuple[Any, ...]]:
 
 
 async def _geos_snapshot(
-    l3: _SqlL3, table: SnapshotTable, *, backend: DuckDBBackend | None = None, **options: Any
+    l3: _SqlL3,
+    table: SnapshotTable,
+    *,
+    backend: DuckDBBackend | None = None,
+    ready_within: float = 5,
+    **options: Any,
 ) -> ScopedSnapshot:
-    """one snapshot over ``l3``'s one table, ready at epoch 1 from a cold rebuild."""
+    """one snapshot over ``l3``'s one table, ready at epoch 1 from a cold rebuild (``ready_within`` seconds)."""
     snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(table,), backend=backend or _geos_backend(), **options)
     l3.epochs = {"TX": 1}
-    await _started(snapshot, pointers)
+    await _started(snapshot, pointers, timeout=ready_within)
     return snapshot
 
 
@@ -6213,7 +6284,8 @@ async def test_a_diff_of_a_scope_of_many_held_rows_makes_no_python_object_a_held
     rows = [_geo("TX", f"g{i % 20:02d}", f"i{i:06d}", 1) for i in range(200_000)]
     l3 = _SqlL3("geos", ["state", "geo", "item", "votes", "source_version"], rows)
     table = SnapshotTable(name="geos", scope_column="state", key=("geo", "item"), version_column="source_version")
-    snapshot = await _geos_snapshot(l3, table)
+    # the cold build of 200,000 rows a page at a time through SQLite is the test's setup, not what it measures
+    snapshot = await _geos_snapshot(l3, table, ready_within=60)
     l3.db.execute('UPDATE "geos" SET votes = 2, source_version = 2 WHERE item = ?', ("i000000",))
     l3.epochs["TX"] = 2
     gc.collect()

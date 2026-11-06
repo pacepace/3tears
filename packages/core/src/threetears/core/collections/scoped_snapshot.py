@@ -132,7 +132,7 @@ from itertools import islice, product
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
-from threetears.nats import ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
+from threetears.nats import KvError, ObjectExistsError, ObjectNotFoundError, ObjectStoreError, ObjectStoreFullError
 from threetears.nats.object_store_requests import MAX_RETIRED_OBJECTS, WRITE_CLAIM_SEGMENT, bind_pod_object_store
 from threetears.observe import contain, contained, get_logger, retry_with_backoff
 
@@ -1657,6 +1657,17 @@ class _ByteBudget:
                 self._freed.notify_all()
 
 
+def _connection_closed(exc: BaseException) -> bool:
+    """whether a watch ended because its NATS connection is closed for good: the KV watch's own word for it.
+
+    :param exc: why the watch ended
+    :ptype exc: BaseException
+    :return: True for a closed connection
+    :rtype: bool
+    """
+    return isinstance(exc, KvError) and "connection is closed" in str(exc)
+
+
 class _WatchEnded(Exception):
     """the pointer watch ended; it is followed again (:meth:`ScopedSnapshot._watch`)."""
 
@@ -2585,6 +2596,7 @@ class ScopedSnapshot:
         self._caught_up = False
         self._ever_indexed = False
         self._watch_ended: str | None = None
+        self._watch_closed = False
         # What the L1 holds. This, `_behind`, `_rows` and `_progress` are the state a reader on any
         # thread may take (status, read_with_behind, applied_epoch(s)). The event loop is their one
         # writer, and it never changes a value in place: it builds the next one (_updated, replace)
@@ -2656,8 +2668,9 @@ class ScopedSnapshot:
         """
         phase: SnapshotPhase
         if self._watch_ended is not None:
-            # the copy is served as it is while the watch is followed again: waiting, never failed for good
-            phase, detail = SnapshotPhase.WAITING, self._watch_ended
+            # the copy is served as it is while the watch is followed again: waiting; failed only once the NATS
+            # connection is closed for good, when no change can reach it again
+            phase, detail = (SnapshotPhase.FAILED if self._watch_closed else SnapshotPhase.WAITING), self._watch_ended
         elif self._activity is not None:
             phase, detail = self._activity
         elif self._waiting:
@@ -3365,6 +3378,14 @@ class ScopedSnapshot:
             except Exception as exc:  # prawduct:allow prawduct/broad-except -- the watch is the replica's only news of changes; whatever ends it is logged, stated in the status, and the watch followed again
                 contain(exc, log=log, what=f"scoped snapshot {self._name}: the pointer watch ended", level="error")
                 ended = f"the pointer watch ended ({type(exc).__name__}: {exc})"
+                if _connection_closed(exc):
+                    # a closed client never delivers again (the KV watch replaces a failed consumer itself, and ends
+                    # only once its connection is closed): followed again, it would retry for the life of the
+                    # process, and a replica nobody stopped would keep its event loop from ever ending
+                    self._watch_ended = f"{ended}; the NATS connection is closed, so changes are no longer applied"
+                    self._watch_closed = True
+                    self._settle()
+                    return
             self._watch_ended = f"{ended}; the copy is served as it is, and the pointers are watched again"
             self._settle()
             raise _WatchEnded(self._watch_ended)
@@ -3554,7 +3575,36 @@ class ScopedSnapshot:
         if not left:
             self._become_ready(SnapshotSource.L2)
             return True
-        return await self._rebuild_left_out(left)
+        return await self._rebuild_left_out(left, from_l2=any(scope not in left for scope in self._applied))
+
+    async def _repair_partial_index(self, index: frozenset[str], unseen: dict[str, str]) -> None:
+        """under the rebuild claim, find the scopes a partial index lacks or lags and add them to ``unseen``, to be
+        brought forward on their own; make the index whole once none is.
+
+        :param index: the scopes the index names
+        :ptype index: frozenset[str]
+        :param unseen: scope -> why it is behind, added to
+        :ptype unseen: dict[str, str]
+        :return: nothing
+        :rtype: None
+        """
+        settled = await self._settled() if self._settled is not None else None
+        if not isinstance(settled, Unsettled):
+            # a partial index (a rebuild beside a write, or NATS lost the index) is made whole scope by scope once
+            # no write is in progress: each scope L3 holds that it does not name, or whose pointer is behind L3,
+            # is brought forward on its own, and the index is whole once none is
+            # settled() says only whether a write is in progress (its answer is opaque); the epochs are _epochs()'s
+            recorded = dict(await self._epochs())
+            missing = {scope for scope, epoch in recorded.items() if epoch and scope not in index}
+            unseen.update({scope: "the index NATS holds does not name it" for scope in missing})
+            lagging = {
+                scope
+                for scope, epoch in recorded.items()
+                if scope in self._seen and self._seen[scope].epoch < epoch and scope not in missing
+            }
+            unseen.update({scope: "its pointer is behind L3 under a partial index" for scope in lagging})
+            if not missing and not lagging:
+                await self._update_index(whole=True)
 
     async def _mark_unseen(self, index: frozenset[str]) -> None:
         """record behind, to be brought forward on their own, the scopes a ready copy holds whose pointer is not seen
@@ -3575,22 +3625,16 @@ class ScopedSnapshot:
             # write and never published) is brought forward on its own; one L3 no longer holds is a removal
             unseen = {scope: "its pointer is missing or unreadable" for scope in candidates if recorded.get(scope, 0)}
         if self._index_partial:
-            settled = await self._settled() if self._settled is not None else None
-            if not isinstance(settled, Unsettled):
-                # a partial index (a rebuild beside a write, or NATS lost the index) is made whole scope by scope once
-                # no write is in progress: each scope L3 holds that it does not name, or whose pointer is behind L3,
-                # is brought forward on its own, and the index is whole once none is
-                recorded = dict(settled) if settled is not None else dict(await self._epochs())
-                missing = {scope for scope, epoch in recorded.items() if epoch and scope not in index}
-                unseen.update({scope: "the index NATS holds does not name it" for scope in missing})
-                lagging = {
-                    scope
-                    for scope, epoch in recorded.items()
-                    if scope in self._seen and self._seen[scope].epoch < epoch and scope not in missing
-                }
-                unseen.update({scope: "its pointer is behind L3 under a partial index" for scope in lagging})
-                if not missing and not lagging:
-                    await self._update_index(whole=True)
+            claim = self._claim()
+            if not await claim.take():
+                # another replica holds the rebuild claim (it rebuilds since NATS lost the snapshot, or beside a
+                # write): its rebuild makes the index whole; this replica waits on it, reading nothing
+                self._wait("sync", "the index NATS holds is partial; another replica is rebuilding the snapshot")
+                return
+            try:
+                await self._repair_partial_index(index, unseen)
+            finally:
+                await claim.release()
         if unseen:
             self._behind = _updated(
                 self._behind,
@@ -3604,12 +3648,14 @@ class ScopedSnapshot:
         self._failure = None
         self._end_run("sync")
 
-    async def _rebuild_left_out(self, left: Mapping[str, str]) -> bool:
+    async def _rebuild_left_out(self, left: Mapping[str, str], *, from_l2: bool = True) -> bool:
         """rebuild from L3, each whole, the scopes a cold load left out (their chunks gone or wrong), publish them, and
         make the copy ready once every one is in; the other scopes stay as loaded from L2.
 
         :param left: scope -> why the load left it out
         :ptype left: Mapping[str, str]
+        :param from_l2: whether any scope was loaded from L2; a copy every scope of which was rebuilt is L3's
+        :ptype from_l2: bool
         :return: whether the copy is ready
         :rtype: bool
         """
@@ -3652,7 +3698,7 @@ class ScopedSnapshot:
                 extra={"extra_data": {"scopes": missing}},
             )
             return False
-        self._become_ready(SnapshotSource.L2)
+        self._become_ready(SnapshotSource.L2 if from_l2 else SnapshotSource.L3)
         return True
 
     def _why_rebuild(self, index: frozenset[str] | None, complete: bool, mismatched: bool) -> str:
