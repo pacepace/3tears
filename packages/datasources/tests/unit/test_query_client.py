@@ -25,6 +25,7 @@ from threetears.datasources.query_client import (
     DATASOURCE_BUSY,
     DEFAULT_QUERY_TIMEOUT_SECONDS,
     QUERY_STATEMENT_TIMEOUT_SECONDS,
+    DatasourceExportResult,
     DatasourceQueryClient,
     DatasourceQueryError,
     DatasourceQueryRequest,
@@ -625,3 +626,108 @@ class TestALimitOnAsksAtOnce:
     def test_a_limit_below_one_is_refused(self, limit: int) -> None:
         with pytest.raises(ValueError, match="at least 1"):
             DatasourceQueryClient(_FakeNatsClient(), identity_token=lambda: _TOKEN, max_concurrent_asks=limit)  # type: ignore[arg-type]
+
+
+def _exported() -> DatasourceQueryResponse:
+    """a success envelope carrying an export.
+
+    :return: the envelope
+    :rtype: DatasourceQueryResponse
+    """
+    export = DatasourceExportResult(row_count=1, bucket="b", object_prefix="loads/one", manifest_path="loads/one/m")
+    return DatasourceQueryResponse(success=True, export=export, correlation_id=uuid7())
+
+
+#: the client's documented export deadline, and the hub's default export deadline it must outlast
+_EXPORT_WAIT = timedelta(seconds=660)
+_HUB_EXPORT_STATEMENT_SECONDS = 600
+
+
+class TestAnExportWaitsForItsOwnDeadline:
+    """an export waits as long as the hub lets the warehouse write it; every other ask keeps the read deadline.
+
+    The hub gives an export far longer on the warehouse than a read. A client that waited only the
+    read deadline would give up on an export the hub was still writing, and its ``REQUEST_FAILED``
+    would steer a retry that stacks a second export on the first.
+    """
+
+    async def test_the_export_deadline_outlasts_the_hubs_export_statement_deadline(self) -> None:
+        """the hub's turn (5 s), a lent pool's connection (5 s), the statement and the reply (10 s) fit inside it."""
+        fake = _FakeNatsClient(reply=_exported())
+
+        await _client(fake).export("warehouse", "SELECT 1", destination="loads/one")
+
+        hub_budget = timedelta(seconds=5 + 5 + _HUB_EXPORT_STATEMENT_SECONDS + 10)
+        assert fake.calls[0]["timeout"] > hub_budget
+        assert _HUB_EXPORT_STATEMENT_SECONDS > QUERY_STATEMENT_TIMEOUT_SECONDS
+
+    async def test_an_export_on_a_client_built_with_no_timeouts_waits_the_export_default(self) -> None:
+        fake = _FakeNatsClient(reply=_exported())
+
+        await _client(fake).export("warehouse", "SELECT 1", destination="loads/one")
+
+        assert fake.calls[0]["timeout"] == _EXPORT_WAIT
+
+    @pytest.mark.parametrize("export_timeout", [900, 900.0, timedelta(seconds=900)])
+    async def test_an_export_waits_the_configured_export_timeout(self, export_timeout: timedelta | float) -> None:
+        fake = _FakeNatsClient(reply=_exported())
+        client = DatasourceQueryClient(
+            fake,  # type: ignore[arg-type]
+            identity_token=lambda: _TOKEN,
+            timeout=30,
+            export_timeout=export_timeout,
+        )
+
+        await client.export("warehouse", "SELECT 1", destination="loads/one")
+
+        assert fake.calls[0]["timeout"] == timedelta(seconds=900)
+
+    async def test_the_general_timeout_does_not_cap_an_export(self) -> None:
+        """a caller that shortens its reads leaves its exports on the export default."""
+        fake = _FakeNatsClient(reply=_exported())
+        client = DatasourceQueryClient(fake, identity_token=lambda: _TOKEN, timeout=30)  # type: ignore[arg-type]
+
+        await client.export("warehouse", "SELECT 1", destination="loads/one")
+
+        assert fake.calls[0]["timeout"] == _EXPORT_WAIT
+
+    async def test_an_export_asked_again_after_busy_keeps_the_export_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def no_wait(seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr("threetears.datasources.query_client.asyncio.sleep", no_wait)
+        fake = _BusyThen(1, _exported())
+
+        await _client(fake).export("warehouse", "SELECT 1", destination="loads/one")
+
+        assert [call["timeout"] for call in fake.calls] == [_EXPORT_WAIT] * 2
+
+    async def test_a_read_keeps_the_general_timeout_beside_an_export_timeout(self) -> None:
+        fake = _FakeNatsClient(reply=_rows(uuid7(), []))
+        client = DatasourceQueryClient(
+            fake,  # type: ignore[arg-type]
+            identity_token=lambda: _TOKEN,
+            export_timeout=900,
+        )
+
+        await client.query("warehouse", "SELECT 1")
+
+        assert fake.calls[0]["timeout"] == timedelta(seconds=DEFAULT_QUERY_TIMEOUT_SECONDS)
+
+    async def test_a_fingerprint_keeps_the_general_timeout_beside_an_export_timeout(self) -> None:
+        reply = DatasourceQueryResponse(
+            success=True, fingerprint={"row_count": 3, "digest": "9"}, correlation_id=uuid7()
+        )
+        fake = _FakeNatsClient(reply=reply)
+        client = DatasourceQueryClient(
+            fake,  # type: ignore[arg-type]
+            identity_token=lambda: _TOKEN,
+            timeout=12.5,
+            export_timeout=900,
+        )
+
+        await client.relation_fingerprint("warehouse", relation="s.t", key=["a"])
+
+        assert fake.calls[0]["timeout"] == timedelta(seconds=12.5)
