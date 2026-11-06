@@ -729,8 +729,6 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The simulator's own value, which a host's builder applies to its simulator client as the judge's to its judge:
         # what each role is asked for, so a host's client sends what the run records as asked.
         "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS",
-        # The case floor below which no rate or difference is estimated, which a host's seed gate holds its templates to.
-        "threetears.evals.analysis.MIN_CASES",
         "threetears.evals.testing.CompletionGuard",
         "threetears.evals.testing.JobsConformanceHost",
         "threetears.evals.testing.jobs_conformance_cases",
@@ -880,8 +878,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 #:
 #: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
 #: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it) or a shipped page
-#: teaches (``tests/test_guide_names_are_declared.py``), the quick path's whole root, and what Discodon imports, the one
-#: production host, its tests included. The toy host
+#: teaches (``tests/test_guide_names_are_declared.py``), the quick path's whole root, and what Discodon's production
+#: code imports, the one production host. A name only its tests import is provisional: Discodon accepts that such a
+#: name may move (``tests/test_host_imports_are_declared.py`` lists each). The toy host
 #: (``tests/fixtures/toyhost/``) exercises the whole contract and reaches past it, so a name it alone imports is listed
 #: here by choice, not held here: ``tests/test_api_tiers.py`` holds its imports to the public roots only. A name a
 #: declared signature reaches but nobody imports is ``provisional``: still exported, so the surface stays closed
@@ -1126,32 +1125,18 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.storage.ROUTING_RECORD_DOC_TYPE",
         "threetears.evals.storage.RouteChanged",
         # The rest of what Discodon's production code imports (`tests/fixtures/host_imports/discodon.txt`, held by
-        # `tests/test_host_imports_are_declared.py`): nothing a host imports is provisional.
+        # `tests/test_host_imports_are_declared.py`): nothing a host's PRODUCTION code imports is provisional; the names only
+        # its tests import are provisional by its own word (`PROVISIONAL_FOR_HOST_TESTS` in that test).
         "threetears.evals.actions.ConformanceSample",
         "threetears.evals.actions.Refusal",
-        "threetears.evals.analysis.ABSENT",
-        "threetears.evals.analysis.serialize_report",
         "threetears.evals.gen.EVAL_BOUNDARY_GEN_TEMPLATE_DEFAULT",
         "threetears.evals.gen.EVAL_PROPOSER_TEMPLATE_DEFAULT",
-        "threetears.evals.kernel.ACCURACY_MEASURE",
-        "threetears.evals.kernel.ENGINE_FAMILIES",
-        "threetears.evals.kernel.FIND_CAMPAIGN",
-        "threetears.evals.kernel.FIND_RUN",
-        "threetears.evals.kernel.INCOMPLETE_STOP_REASONS",
         "threetears.evals.kernel.METRIC_DESCRIPTORS",
-        "threetears.evals.kernel.MeasureSummary",
-        "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY",
         "threetears.evals.kernel.WorldSessionError",
-        "threetears.evals.kernel.classifier_label_measure",
-        "threetears.evals.kernel.count_substituted",
-        "threetears.evals.kernel.count_substituted_deliveries",
         "threetears.evals.kernel.host.BarRegistrationError",
-        "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER",
         "threetears.evals.kernel.host.MeasureRegistrationError",
         "threetears.evals.kernel.host.WorldConformanceReport",
-        "threetears.evals.kernel.judge_case_of",
         "threetears.evals.kernel.production_replicating_cost",
-        "threetears.evals.kernel.resolve_variant_identity",
         "threetears.evals.ops.CaseSetLine",
         "threetears.evals.ops.CaseSetMint",
         "threetears.evals.ops.JobHandle",
@@ -1160,31 +1145,19 @@ STABLE: frozenset[str] = frozenset(
         "threetears.evals.ops.case_set_mint",
         "threetears.evals.ops.case_sets_list",
         "threetears.evals.ops.judge_case_author",
-        "threetears.evals.ops.run_job_id",
         "threetears.evals.run.LaunchGroup",
-        "threetears.evals.run.callers_missing_the_constructor",
         "threetears.evals.run.launch_as_group",
         "threetears.evals.run.mint_case_set",
-        "threetears.evals.run.rejudge_result",
-        "threetears.evals.run.resolve_constructor",
         "threetears.evals.schema.CORE_RESET_DOC_TYPES",
         "threetears.evals.schema.CaseSetRef",
         "threetears.evals.schema.utc_now_iso",
         "threetears.evals.testing.JobsConformanceCase",
         "threetears.evals.transports.fastmcp.CatalogueTool",
-        # Promoted for Discodon's 2026-10-22 rescan (its tests and fixtures bind to them on purpose): the campaign
-        # bundle its reporter and analysis lanes build, the aspect its campaign fixtures construct, the unseated level
-        # and the launch quote its tests assert, the reader conformance suite it runs, and the failure owner its
-        # ProviderFailure describers type against (#849).
-        "threetears.evals.analysis.CampaignBundle",
-        "threetears.evals.analysis.assemble_campaign_bundle",
+        # Promoted for Discodon's 2026-10-22 rescan: the aspect its campaign fixtures construct, the launch quote its
+        # tests assert, and the failure owner its ProviderFailure describers type against (#849).
         "threetears.evals.kernel.Aspect",
-        "threetears.evals.kernel.host.UNSEATED_LEVEL",
         "threetears.evals.run.quote_launch",
         "threetears.evals.schema.FailureOwner",
-        "threetears.evals.testing.READER_CONFORMANCE_CASES",
-        "threetears.evals.testing.ReaderConformanceCase",
-        "threetears.evals.testing.ReaderSample",
         # Promoted for Discodon's W4 adoption (2026-10-29): the report writer's port, which a host names to write
         # reports at all (its pricer and published rates, its report budget and writer limits, the analyst's tool, the
         # turn client it hands the writer and the turn types that client speaks), and the run disclosure its
@@ -1210,7 +1183,7 @@ STABLE: frozenset[str] = frozenset(
 
 #: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
 #: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 514  # the shims removed (R4, 535 -> 514, 2026-11-06: KnownReasoningEffort goes provisional, since only the removed analysis_gen_request_settings_for's signature reached it; the twenty declared names the retired generations and the in-cell cost cap left leave the package; five are host-contract names live in v0.90.0 and v0.91.x, removed with no released deprecation as an exception the owner approved on 2026-11-03, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every import before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
+DECLARED_CEILING = 488  # the names only Discodon's tests import demoted (R5, 514 -> 488, 2026-11-06: the 24 discodon-tests-only names of the hold-back ledger and CampaignBundle and testing.ReaderSample, which only their signatures reached, go provisional; Discodon confirmed on 2026-11-06 that a provisional name its tests import may move). Before: the shims removed (R4, 535 -> 514, 2026-11-06: KnownReasoningEffort goes provisional, since only the removed analysis_gen_request_settings_for's signature reached it; the twenty declared names the retired generations and the in-cell cost cap left leave the package; five are host-contract names live in v0.90.0 and v0.91.x, removed with no released deprecation as an exception the owner approved on 2026-11-03, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every import before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
 
 
 def tier_of(qualified: str) -> Tier:

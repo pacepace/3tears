@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: 26 declared names only Discodon's tests import go provisional
+
+**Changed:** the declared surface (`host-contract` and `stable`) drops from 514 names to 488. The 24 names the hold-back
+ledger held for Discodon's tests alone go provisional: nothing outside the package imports them except Discodon's tests,
+which assert against the package's definition and accept that a provisional name may move. `CampaignBundle` and
+`testing.ReaderSample` go with them, since only those names' signatures reached them. `MIN_CASES` is the one
+host-contract name; the rest were stable. `MIGRATIONS.toml`'s notes list each by root. Nothing is removed, nothing
+warns, and nothing stored changes.
+
+**Hosts:** nothing to change: every name still imports from its root.
+
 ### evals: a report block no longer carries `finding` or `rests_on`
 
 **Removed:** the `finding` and `rests_on` fields of every report block (`ChartBlock`, host-contract, with no deprecation
