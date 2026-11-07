@@ -8,12 +8,13 @@ nothing about time, runs under :func:`frozen_clock`. A test whose subject is "no
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from freezegun import freeze_time
+
+from tests.clock_isolation import resolve_lazy_names
 
 #: The instant every fixed stamp and frozen clock in the suite reads. A datetime, not an ISO string: freezegun parses
 #: a string with dateutil, and that parse reads the wall clock. Its microsecond is set so it is spelled as a clock
@@ -29,6 +30,8 @@ def frozen_clock(*, step_seconds: float = 0.0) -> Iterator[None]:
     """The wall clock held at :data:`FIXED_INSTANT` while the block runs.
 
     The event loop keeps its own clock, so a timeout or a sleep still ends. Reading the frozen clock reads no clock.
+    Every lazy ``threetears`` name is resolved first (:func:`tests.clock_isolation.resolve_lazy_names`), so the
+    freeze imports nothing under its fakes, at import time as well as in a test.
 
     :param step_seconds: How far each read moves the clock on, for a test that orders documents by their stamps;
         ``0`` holds it still.
@@ -36,23 +39,6 @@ def frozen_clock(*, step_seconds: float = 0.0) -> Iterator[None]:
     :return: Nothing; the clock is frozen until the block ends.
     :rtype: Iterator[None]
     """
-    _import_every_lazy_name()
+    resolve_lazy_names()
     with freeze_time(FIXED_INSTANT, real_asyncio=True, auto_tick_seconds=step_seconds):
         yield
-
-
-def _import_every_lazy_name() -> None:
-    """Resolve every name a loaded ``threetears`` module serves lazily (a module ``__getattr__``), until none is left.
-
-    Freezing reads every attribute of every loaded module after it has swapped ``datetime.date`` for its fake, so a
-    lazy name resolved then imports its module under the fake, and a pydantic model there declaring a ``date`` field
-    fails to build. Resolved here first, the freeze imports nothing.
-    """
-    seen = 0
-    while seen != len(sys.modules):
-        seen = len(sys.modules)
-        for name, module in list(sys.modules.items()):
-            if name.startswith("threetears.") and module is not None and "__getattr__" in vars(module):
-                for attribute in dir(module):
-                    if not attribute.startswith("_"):
-                        getattr(module, attribute)
