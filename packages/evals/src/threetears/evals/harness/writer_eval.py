@@ -124,6 +124,7 @@ hold, and the result says how many cases name one.
 
 from __future__ import annotations
 
+import math
 import os
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -140,6 +141,7 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
     create_campaign,
     gate_verdicts,
+    summarize_run,
     summarize_runs,
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
@@ -394,6 +396,48 @@ class _Pass:
 
 
 @dataclass(frozen=True)
+class _BatchCosts:
+    """What a batch of cases can cost at most: each report at the budget, each judge call at the judge's floor (``None``
+    when it cannot price one yet, which adds nothing)."""
+
+    report: float
+    floor: float | None
+    dims: int
+    judge: str
+
+    def arm(self, cases: int) -> float:
+        """One arm's worst case over ``cases``: its reports and their judging on every dimension, every attempt."""
+        return cases * (self.report + self.dims * JUDGE_CALL_ATTEMPTS * (self.floor or 0.0))
+
+    def pairs(self, cases: int) -> float:
+        """One candidate's pass over ``cases`` pairs at worst: both orders, every attempt."""
+        return cases * 2 * JUDGE_CALL_ATTEMPTS * (self.floor or 0.0)
+
+    def short(
+        self,
+        cases: int,
+        arms: Sequence[str],
+        spent: Mapping[str, float],
+        spent_pass: Mapping[str, float],
+        part: float,
+        pass_part: float,
+    ) -> tuple[str, float, float] | None:
+        """The first part a batch of ``cases`` does not fit, what the batch would reserve of it and what its spend so
+        far leaves of it; ``None`` when it fits every launching arm's part and every launching candidate's part of the
+        pass's reserve.
+
+        :return: ``(whose part, reservation, left)``, or ``None``.
+        """
+        for arm in arms:
+            if spent[arm] + self.arm(cases) > part + 1e-9:
+                return f"{arm}'s part", self.arm(cases), part - spent[arm]
+        for arm in arms[1:]:
+            if spent_pass[arm] + self.pairs(cases) > pass_part + 1e-9:
+                return f"the pass's part for {arm}", self.pairs(cases), pass_part - spent_pass[arm]
+        return None
+
+
+@dataclass(frozen=True)
 class _Held:
     """A candidate settled at its own stop: the promotion read made there (``None`` on the dev side), and the cases
     launched by then."""
@@ -404,7 +448,7 @@ class _Held:
 
 def _guardrails_unheld(read: WriterPromotion) -> bool:
     """Whether a promotion read finds the primary improved and the guardrails not shown held: the one stop that does
-    not decide, so the run goes on to the cap."""
+    not decide, so the run goes on to the last case."""
     primary = read.primary
     improved = (
         primary is not None
@@ -423,7 +467,14 @@ def _report_of(ran: _Pass | None) -> WriterPairwiseReport | None:
 
 
 def _launched_line(
-    launched: int, planned: int, batch: int, side: str, passes: Mapping[str, _Pass], read_on: Mapping[str, int]
+    launched: int,
+    planned: int,
+    batch: int,
+    side: str,
+    passes: Mapping[str, _Pass],
+    read_on: Mapping[str, int],
+    *,
+    capped: str | None = None,
 ) -> str:
     """Where a batched run stopped launching, in one sentence: the cases the gated readings and guardrails are read on,
     and how often. ``read_on`` is the cases each candidate's were read on, at its own stop or the last batch."""
@@ -447,6 +498,11 @@ def _launched_line(
     separated = len(reports) == len(passes) and all(
         report.stopping is not None and report.stopping.stopped_at is not None for report in reports
     )
+    if capped is not None:
+        return (
+            f"{ran}, until the spend cap stopped it (the pass's line says where), so the gated readings and guardrails "
+            f"were read once, on those {launched}."
+        )
     why = "every candidate's preference had separated" if separated else "no candidate's pass could read further"
     return f"{ran}, and stopped once {why}, so the gated readings and guardrails were read once, on those {launched}."
 
@@ -938,17 +994,6 @@ class WriterEval:
             *held_elsewhere,
         ]
         share = self._arm_part
-        if self.budget.usd is not None and len(on_side) * self.k * self.budget.usd > share:
-            raise ValueError(
-                f"{len(on_side) * self.k} report(s) at ${self.budget.usd:.2f} each could pass an arm's ${share:.2f} "
-                f"part of max_cost_usd ${self.max_cost_usd:.2f}, after the pairwise pass's "
-                f"${self.max_cost_usd * self.pairwise_share:.2f} (pairwise_share {self.pairwise_share}); raise "
-                "max_cost_usd or lower budget_usd"
-            )
-        await self._refuse_judging_past_its_part(host, template_id, cases=len(on_side) * self.k)
-        # The design, the question, the margin and the control are fixed here, in the call, before any arm runs: the
-        # campaign, filed once they have, is dated now, so its criteria read as set before its results.
-        declared_at = utc_now_iso()
         # Under a rule to stop, the cases launch in the bet's own order, a batch at a time, so each look reads a
         # prefix of the one bet; otherwise the side's set launches whole, as one batch.
         order = [planned[index] for index in bet_order(len(planned))]
@@ -957,6 +1002,20 @@ class WriterEval:
             if batched
             else [None]
         )
+        # The cap is a budget the run runs under: each batch is launched only when its worst case fits what the
+        # batches before it left, and only a cap that cannot admit the first batch is refused.
+        costs = await self._batch_costs(host, template_id)
+        first = len(planned) if batches[0] is None else len(batches[0])
+        self._refuse_a_first_batch_past_its_part(costs, cases=first * self.k)
+        # The design, the question, the margin and the control are fixed here, in the call, before any arm runs: the
+        # campaign, filed once they have, is dated now, so its criteria read as set before its results.
+        declared_at = utc_now_iso()
+        # What each part has spent so far, as its runs and passes recorded it (a run that priced nothing counts its
+        # whole reservation): the spend cap bounds actual spend, so a batch that came in under its reservation leaves
+        # the rest to the next.
+        spent = {arm: 0.0 for arm in self.arms}
+        spent_pass = {arm: 0.0 for arm in list(self.arms)[1:]}
+        cap_stop: str | None = None
         run_ids: dict[str, list[str]] = {arm: [] for arm in self.arms}
         campaign_id: str | None = None
         passes: dict[str, _Pass] = {}
@@ -966,8 +1025,19 @@ class WriterEval:
         held: dict[str, _Held] = {}
         launched: list[str] = []
         for index, batch in enumerate(batches):
+            size = (len(planned) if batch is None else len(batch)) * self.k
+            arms = [arm for arm in self.arms if arm not in held]
+            short = costs.short(size, arms, spent, spent_pass, share, self._pass_part)
+            if index > 0 and short is not None:
+                whose, reserve, left = short
+                total = math.fsum([*spent.values(), *spent_pass.values()])
+                cap_stop = (
+                    f"Stopped at the spend cap after {len(launched)} of {len(planned)} cases, {spell_dollars(total)} "
+                    f"spent: the next batch of {size // self.k} would reserve {spell_dollars(reserve)} against the "
+                    f"{spell_dollars(max(left, 0.0))} left of {whose}."
+                )
+                break
             ref = case_set
-            part = share
             if batch is not None and len(batches) > 1:
                 ref = await run_blocking(
                     eval_host.blocking_executor,
@@ -979,14 +1049,18 @@ class WriterEval:
                     index,
                     len(batches),
                 )
-                # Each batch's runs are held to its cases' part of the arm's ceiling, so the batches together never
-                # pass it.
-                part = share * len(batch) / len(planned)
             launched += planned if batch is None else batch
-            arms = [arm for arm in self.arms if arm not in held]
-            ran = await self._launch_batch(host, template_id, ref, part, arms)
+            # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
+            # for; one batch of every case runs under the whole part, as it always has. The engine checks a run's cap
+            # between cells, so cells running at the crossing finish past it, and the last batch can take an arm past
+            # its part by what they go on to spend (an unbatched run overshoots the same way: #1111).
+            reservation = costs.arm(size) if len(batches) > 1 else share
+            ran = await self._launch_batch(host, template_id, ref, dict.fromkeys(arms, reservation), arms)
             for arm, run_id in ran.items():
                 run_ids[arm].append(run_id)
+                spent[arm] += await run_blocking(
+                    eval_host.blocking_executor, self._spent, eval_host, run_id, reservation
+                )
             if campaign_id is None:
                 campaign_id = await run_blocking(
                     eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id, declared_at
@@ -1010,12 +1084,31 @@ class WriterEval:
                     past_the_stop=arm in going_on,
                     launched=launched if batched else None,
                 )
+                report = _report_of(passes[arm])
+                spent_pass[arm] = (
+                    spent_pass[arm] + costs.pairs(size)
+                    if report is None or report.cost_usd is None
+                    else report.cost_usd
+                )
             if index == len(batches) - 1:
                 break
             await self._settle(host, campaign_id, passes, going_on, held, launched=len(launched))
             if len(held) == len(self.arms) - 1:
                 break
         assert campaign_id is not None  # one batch at least always launches
+        if cap_stop is not None:
+            # The candidates still reading are read once more, asking nothing, so their records carry the stop.
+            for arm in [arm for arm in list(self.arms)[1:] if arm not in held]:
+                passes[arm] = await self._pairwise(
+                    host,
+                    campaign_id,
+                    arm,
+                    rule,
+                    judged=_report_of(passes.get(arm)),
+                    past_the_stop=arm in going_on,
+                    launched=launched,
+                    out_of_budget=cap_stop,
+                )
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
         disclosures += await run_blocking(
@@ -1031,7 +1124,7 @@ class WriterEval:
         if batched:
             read_on = {arm: held[arm].launched if arm in held else len(launched) for arm in passes}
             launch_line = _launched_line(
-                len(launched), len(planned), self.batch_size, _SIDE_WORDS[self.side], passes, read_on
+                len(launched), len(planned), self.batch_size, _SIDE_WORDS[self.side], passes, read_on, capped=cap_stop
             )
             disclosures.append(launch_line)
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
@@ -1054,12 +1147,17 @@ class WriterEval:
             ),
         )
 
+    def _spent(self, host: EvalHost, run_id: str, reservation: float) -> float:
+        """What a run spent, as its results recorded it; its reservation when any of it went unpriced. Blocking."""
+        cost = summarize_run(host, run_id, self.scope_id).total_cost_usd
+        return reservation if cost is None else cost
+
     async def _launch_batch(
-        self, host: OpsHost, template_id: str, case_set: CaseSetRef, part: float, arms: Sequence[str]
+        self, host: OpsHost, template_id: str, case_set: CaseSetRef, parts: Mapping[str, float], arms: Sequence[str]
     ) -> dict[str, str]:
-        """Launch each of ``arms`` over ``case_set``, each under ``part`` of the ceiling, quoting and refusing every arm
+        """Launch each of ``arms`` over ``case_set``, each under its part of the ceiling, quoting and refusing every arm
         before any starts, and await them; each arm's run, by arm."""
-        launches = {arm: self._launch(template_id, case_set, self.arms[arm], part) for arm in arms}
+        launches = {arm: self._launch(template_id, case_set, self.arms[arm], parts[arm]) for arm in arms}
         for arguments in launches.values():  # every arm is quoted, and refused, before any is started
             await quote_launch(host.launch, **arguments)
         runs = {arm: (await start_run(host.launch, **arguments))[0] for arm, arguments in launches.items()}
@@ -1101,7 +1199,7 @@ class WriterEval:
         """Hold each candidate that reads no further, as it stands at its own stop: a pass that did not complete, or one
         whose preference separated. Its promotion is read there, once (on the held-out side). A candidate whose
         preference separated improved while its guardrails are not shown held on the cases run by then is not held:
-        it goes on to the cap (``going_on``), and its readings have a second look there. The writer template declares
+        it goes on to the last case (``going_on``), and its readings have a second look there. The writer template declares
         no guardrail, so that branch is reached only when the scope's template declares one, as a host's may."""
         for arm, ran in passes.items():
             if arm in held or arm in going_on:
@@ -1210,20 +1308,44 @@ class WriterEval:
         dollars = rated.rates.ceiling(prompt_tokens=prompt_token_bound(text, "", None), output_tokens=max_tokens)
         return TurnCeiling(usd=float(dollars), estimate=not rated.guaranteed)
 
-    async def _refuse_judging_past_its_part(self, host: OpsHost, template_id: str, *, cases: int) -> None:
-        """Refuse the run before any arm launches when the judge's calls, each at its floor, could pass an arm's part
-        beside its reports or a pass's part (the module docstring); nothing is checked for a judge that cannot price a
-        call yet."""
+    async def _batch_costs(self, host: OpsHost, template_id: str) -> _BatchCosts:
+        """What a batch can cost at most, per case: each arm's report at ``budget_usd`` and its judging, each call at
+        the judge's floor, and the pass's two orders of each pair at that floor. A judge that cannot price a call yet
+        (its rates unread) adds nothing here; each pass then refuses, with nothing spent, what its part cannot cover."""
         await refresh_prices(self.judge)
         floor = self.judge.price_ceiling(system="", user="", response_format=None)
-        if floor is None:
-            return
         template = await run_blocking(
             host.eval_host.blocking_executor, host.eval_host.storage.load_template, template_id, self.scope_id
         )
-        dims = 0 if template is None else len(template.rubric)
+        return _BatchCosts(
+            report=self.budget.usd or 0.0,
+            floor=floor,
+            dims=0 if template is None else len(template.rubric),
+            judge=self.judge.model_name,
+        )
+
+    def _refuse_a_first_batch_past_its_part(self, costs: _BatchCosts, *, cases: int) -> None:
+        """Refuse the run before any arm launches when the first batch's worst case could pass an arm's part or the
+        pass's (the module docstring), naming the smallest ``max_cost_usd`` that admits it: the one cap no run under it
+        could keep."""
+        arms, candidates = len(self.arms), len(self.arms) - 1
+        smallest = max(
+            costs.arm(cases) * arms / (1 - self.pairwise_share), costs.pairs(cases) * candidates / self.pairwise_share
+        )
+        admits = f"a max_cost_usd of {spell_dollars(math.ceil(smallest * 100 - 1e-9) / 100)} or more admits it"
+        which = "the first batch's" if self.stop_when == "separated" else "the"
+        if self.budget.usd is not None and cases * self.budget.usd > self._arm_part:
+            raise ValueError(
+                f"{which} {cases} report(s) at ${self.budget.usd:.2f} each could pass an arm's ${self._arm_part:.2f} "
+                f"part of max_cost_usd ${self.max_cost_usd:.2f}, after the pairwise pass's "
+                f"${self.max_cost_usd * self.pairwise_share:.2f} (pairwise_share {self.pairwise_share}); {admits}, or "
+                "lower budget_usd"
+            )
+        floor = costs.floor
+        if floor is None:
+            return
         each = (
-            f"${floor:.4f} each before any page is read ({self.judge.model_name}'s output cap and "
+            f"${floor:.4f} each before any page is read ({costs.judge}'s output cap and "
             f"{PROMPT_FRAMING_TOKENS} prompt tokens)"
         )
         pass_calls = cases * 2 * JUDGE_CALL_ATTEMPTS
@@ -1232,16 +1354,15 @@ class WriterEval:
                 f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
                 f"attempts each) are priced at {each}, ${pass_calls * floor:.2f} in all, above the pass's "
                 f"${self._pass_part:.2f} part of max_cost_usd ${self.max_cost_usd:.2f} (pairwise_share "
-                f"{self.pairwise_share}); raise pairwise_share or max_cost_usd, or lower the judge's max_tokens"
+                f"{self.pairwise_share}); {admits}, or raise pairwise_share or lower the judge's max_tokens"
             )
-        judge_calls = cases * dims * JUDGE_CALL_ATTEMPTS
-        reports = 0.0 if self.budget.usd is None else cases * self.budget.usd
-        if reports + judge_calls * floor > self._arm_part:
+        judge_calls = cases * costs.dims * JUDGE_CALL_ATTEMPTS
+        if costs.arm(cases) > self._arm_part:
             raise ValueError(
                 f"an arm's {cases} report(s) at ${self.budget.usd or 0:.2f} and its {judge_calls} judge call(s) "
-                f"({cases} case(s) x {dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to "
-                f"${reports + judge_calls * floor:.2f}, above the arm's ${self._arm_part:.2f} part of max_cost_usd "
-                f"${self.max_cost_usd:.2f}; raise max_cost_usd, or lower budget_usd or the judge's max_tokens"
+                f"({cases} case(s) x {costs.dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, "
+                f"come to ${costs.arm(cases):.2f}, above the arm's ${self._arm_part:.2f} part of max_cost_usd "
+                f"${self.max_cost_usd:.2f}; {admits}, or lower budget_usd or the judge's max_tokens"
             )
 
     async def _pairwise(
@@ -1254,12 +1375,13 @@ class WriterEval:
         judged: WriterPairwiseReport | None = None,
         past_the_stop: bool = False,
         launched: Sequence[str] | None = None,
+        out_of_budget: str | None = None,
     ) -> _Pass:
         """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
         complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
         a writer's family, no case both arms ran), a job that ended other than completed, or a pass stopped before its
         last pair (an account refusal), whose report is still read. ``judged`` is the candidate's pass over the earlier
-        batches, whose answers stand; ``past_the_stop`` reads on to the cap."""
+        batches, whose answers stand; ``past_the_stop`` reads on to the last case."""
         try:
             started = await writer_pairwise(
                 host,
@@ -1270,6 +1392,7 @@ class WriterEval:
                 judged=judged,
                 past_the_stop=past_the_stop,
                 launched=launched,
+                out_of_budget=out_of_budget,
             )
         except (ValidationFailedError, NotFoundError) as refused:
             return _Pass(status=None, why_not=f"refused before any call: {refused}")

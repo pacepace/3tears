@@ -38,7 +38,7 @@ arm's page of the same case, it shows. This pass asks that question
   it the last pass's report (``judged``): a pair it already answered, the same two results, keeps its answers and is
   not asked again, so each pass asks only the new pairs and is admitted under what the last ones left of the cap. Its
   looks are recomputed from every answer, the same prefix of the same bet. ``past_the_stop`` reads every planned case
-  past the first separation, for a run that went on to the cap to read its guardrails again.
+  past the first separation, for a run that went on to its last planned case to read its guardrails again.
 - **How far the judge can be trusted on it.** Order consistency (the two orders pick the same side), the lean to the
   first slot, and the can't-tell count, over the pages it was actually asked about. A case scored in one order only
   is counted apart and left out of the consistency rate, since one order cannot agree or disagree with itself.
@@ -53,7 +53,7 @@ import math
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -98,6 +98,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     EvalResult,
+    EvalRun,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
@@ -237,15 +238,20 @@ class PairwiseStopping(EvalBaseModel):
         "bet holds no place for them and they are not read."
     )
     stopped_at: int | None = Field(
-        description="The cases judged when the rule stopped the pass; None when it read to the cap."
+        description="The cases judged when the rule stopped the pass; None when it read on to its last case."
     )
     first_separated_at: int | None = Field(
         description="The cases read at the first look that separated; None when none did."
     )
     looks: list[PairwiseLook] = Field(description="The preference after each case, in the order the bet read them.")
+    stopped_on: Literal["separated", "all_cases", "spend_cap"] | None = Field(
+        default=None,
+        description="Why the pass read no further: separated, all_cases (every planned case read) or spend_cap (the run's next "
+        "batch could pass what the spend cap had left); None for a pass with no rule or one read short otherwise.",
+    )
     past_the_stop: bool = Field(
         default=False,
-        description="Whether the pass read on past its first separation to the cap, because the readings read there "
+        description="Whether the pass read on past its first separation to the last planned case, because the readings read there "
         "did not decide: a second look at the gated readings and guardrails.",
     )
     line: str = Field(description="What happened, in one sentence, as the page says it.")
@@ -447,6 +453,21 @@ def _by_case_and_repeat(results: Sequence[EvalResult], arm: CampaignArm) -> dict
     return indexed
 
 
+def _rig_of(host: EvalHost, runs: Sequence[EvalRun], results: Sequence[EvalResult]) -> dict[str, Any]:
+    """Each run's rig, by run id: its provenance and its value on every dimension of the rig the host declares, read as
+    the campaign's apparatus classes read them, so two runs compare equal exactly when they share a rig."""
+    sweepables = host.profile.sweepables
+    names = [declared.name for declared in sweepables.rig_dimensions]
+    by_run: dict[str, list[EvalResult]] = {}
+    for result in results:
+        by_run.setdefault(result.eval_run_id, []).append(result)
+    rigs: dict[str, Any] = {}
+    for run in runs:
+        values = sweepables.read_all(run, by_run.get(run.id, []))
+        rigs[run.id] = (run.apparatus_provenance, [values.get(name) for name in names])
+    return rigs
+
+
 def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) -> _Collected:
     """Read the campaign, its arms, its results paired by case and repeat, and their pages: blocking, so off the loop.
 
@@ -493,17 +514,25 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         )
         for side, keys in ((arm, candidate_keys), (control, control_keys))
     }
-    if any(len(each) != 1 for each in rigs.values()) or rigs[arm.label] != rigs[control.label]:
-        counts = ", ".join(f"{label} under {len(each)}" for label, each in rigs.items())
-        raise ValidationFailedError(
-            f"a pair compares two pages written under one rig, and the arms were not each measured under the same "
-            f"one ({counts})",
-            remedy="take the runs of the other rigs off the campaign (campaign_runs_remove), then ask again",
-        )
+    counts = ", ".join(f"{label} under {len(each)}" for label, each in rigs.items())
+    unlike = ValidationFailedError(
+        f"a pair compares two pages written under one rig, and the arms were not each measured under the same one "
+        f"({counts})",
+        remedy="take the runs of the other rigs off the campaign (campaign_runs_remove), then ask again",
+    )
+    if not rigs[arm.label] or rigs[arm.label] != rigs[control.label]:
+        raise unlike
     results = [result for run in runs for result in results_without_payloads(storage, run.id, scope_id)]
     mine = _by_case_and_repeat([result for result in results if result.variant_key in candidate_keys], arm)
     theirs = _by_case_and_repeat([result for result in results if result.variant_key in control_keys], control)
     shared = sorted(mine.keys() & theirs.keys())
+    if len(rigs[arm.label]) > 1:
+        # A launch made in batches is several runs of each arm, and a batch whose every page went unjudged records no
+        # judge, so it reads as a rig of its own. Its pairs are still two pages written under one rig when each pair's
+        # two runs read the same rig, as the two arms' runs of one batch do.
+        rig = _rig_of(host, runs, results)
+        if any(rig.get(mine[key].eval_run_id) != rig.get(theirs[key].eval_run_id) for key in shared):
+            raise unlike
     if not shared:
         raise ValidationFailedError(
             f"arms {arm.label} and {control.label} ran no case and repeat in common, so no page has a partner",
@@ -567,6 +596,8 @@ class _Prepared:
     past_the_stop: bool
     #: The cases launched so far, for a run launched in batches; None when every case launched at once.
     launched: frozenset[str] | None
+    #: Why the run stopped launching at its spend cap, in one sentence; None when it did not.
+    out_of_budget: str | None
 
 
 def _orders(collected: _Collected, pair: _Pair) -> tuple[JudgeContext, JudgeContext] | None:
@@ -599,6 +630,7 @@ async def _prepare(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call
     no earlier pass (``judged``) answered.
@@ -664,6 +696,7 @@ async def _prepare(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=None if launched is None else frozenset(launched),
+        out_of_budget=out_of_budget,
     )
 
 
@@ -973,6 +1006,7 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         stop_at=stop_at,
         past_the_stop=prepared.past_the_stop,
         launched=prepared.launched,
+        out_of_budget=prepared.out_of_budget,
     )
     spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs: list[float | None] = [spend.cost_usd for spend in spends]
@@ -1052,6 +1086,7 @@ def _stopping(
     stop_at: int | None,
     past_the_stop: bool = False,
     launched: frozenset[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> PairwiseStopping:
     """The record of how the pass ran against its rule, with the sentence the page prints."""
     late = _late(rule, collected.first_result_at)
@@ -1062,6 +1097,13 @@ def _stopping(
     absent = plan.absent if launched is None else [case_id for case_id in plan.absent if case_id in launched]
     if absent or plan.unplanned:
         line += f" {_differs(plan, absent=absent, read=rule is not None and rule.stop_when == 'never')}"
+    stopped_on: Literal["separated", "all_cases", "spend_cap"] | None = None
+    if out_of_budget is not None:
+        stopped_on, line = "spend_cap", f"{line} {out_of_budget}"
+    elif stop_at is not None:
+        stopped_on = "separated"
+    elif rule is not None and reached >= rule.max_cases:
+        stopped_on = "all_cases"
     return PairwiseStopping(
         rule=rule,
         first_result_at=collected.first_result_at,
@@ -1072,6 +1114,7 @@ def _stopping(
         stopped_at=stop_at,
         first_separated_at=first,
         looks=list(looks),
+        stopped_on=stopped_on,
         past_the_stop=past_the_stop,
         line=line,
     )
@@ -1136,7 +1179,7 @@ def _line(
     if past_the_stop:
         return (
             f"Read {of} cases under {timed}: the preference first separated at case {first.cases}, and the run went "
-            "on to the cap because its guardrails were not shown held there, so its gated readings and guardrails had "
+            "on to the last case because its guardrails were not shown held there, so its gated readings and guardrails had "
             "a second look."
         )
     return f"Read {of} cases under {timed}: the preference first separated at case {first.cases}."
@@ -1221,6 +1264,7 @@ async def _writer_pairwise_work(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -1252,6 +1296,9 @@ async def _writer_pairwise_work(
     :param launched: The cases launched so far, for a run launched in batches: a planned case not launched yet is not
         said as not found, and a launched one is; ``None`` when every case launched at once.
     :ptype launched: Collection[str] | None
+    :param out_of_budget: Why the run stopped launching at its spend cap, in one sentence, which the record carries;
+        ``None`` when it did not.
+    :ptype out_of_budget: str | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -1277,6 +1324,7 @@ async def _writer_pairwise_work(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=launched,
+        out_of_budget=out_of_budget,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -1313,6 +1361,7 @@ async def writer_pairwise(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
@@ -1335,11 +1384,13 @@ async def writer_pairwise(
     :param judged: The last pass's report over this campaign's earlier batches, whose answers on the same two results
         stand and whose spend comes off the cap; ``None`` asks every pair.
     :ptype judged: WriterPairwiseReport | None
-    :param past_the_stop: Read every planned case past the first separation, for a run gone on to the cap.
+    :param past_the_stop: Read every planned case past the first separation, for a run gone on to its last case.
     :ptype past_the_stop: bool
     :param launched: The cases launched so far, for a run launched in batches; ``None`` when every case launched at
         once.
     :ptype launched: Collection[str] | None
+    :param out_of_budget: Why the run stopped launching at its spend cap, which the record carries; ``None`` when not.
+    :ptype out_of_budget: str | None
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -1361,6 +1412,7 @@ async def writer_pairwise(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=launched,
+        out_of_budget=out_of_budget,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)

@@ -576,6 +576,22 @@ def test_a_live_run_under_ten_cases_is_not_refused_for_them_and_a_missing_key_is
         assert not out.exists()
 
 
+def test_a_dry_run_rehearses_the_live_readout_its_floor_line_and_its_stop_rule_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry run is the rehearsal of the live command: it prints the floor's line a live run prints before it buys
+    anything, and the readout's line on the stopping rule."""
+    attempts = _offline(monkeypatch)
+    assert writer_acceptance.main(["--dry", "--stop-when", "separated"]) == 0
+    printed = capsys.readouterr()
+    assert printed.err.splitlines() == [
+        "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
+        "every case."
+    ]
+    assert re.search(r"^(Read|Stopped) .* under the rule declared before the first result: ", printed.out, re.M)
+    assert attempts == []
+
+
 def test_a_live_run_under_ten_cases_prints_its_floor_line_before_anything_is_bought(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
