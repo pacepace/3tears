@@ -169,7 +169,7 @@ def _path(node: ast.expr) -> list[str] | None:
             return None
 
 
-#: A literal a call predicate's action is read from: a dotted identifier (``discord.send_message``). Any other text is a
+#: A literal a call predicate's action is read from: a dotted identifier (``support.send_message``). Any other text is a
 #: host's words, never a name's: a name is built from identifiers only, so no literal's markup reaches a page.
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 
@@ -280,8 +280,8 @@ def _top_bool(node: ast.AST) -> ast.boolop | None:
 def _check_subject(expression: str) -> str | None:
     """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
     ``state.refund.amount <= state.order.total`` (and for it guarded by ``state.order.total > 0 and ...``, named by
-    what the guard lets through), ``Send message or reply`` for ``call_count("discord.send_message") >= 1 or
-    call_count("discord.reply") >= 1``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression
+    what the guard lets through), ``Send message or reply`` for ``call_count("support.send_message") >= 1 or
+    call_count("support.reply") >= 1``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression
     does not parse, names no subject, or tests more than two. A call's action is read only from a literal that is a
     dotted identifier, never from other text.
 

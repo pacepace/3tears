@@ -28,6 +28,7 @@ from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report_margins import weakest_margin
+from threetears.evals.analysis.style import check_names
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.numbers import UNPRICED
 
@@ -171,7 +172,8 @@ def test_a_goal_check_with_no_declared_name_is_named_alike_by_every_reader() -> 
         update={"measures": {**held.measures, key: held.measures[key].model_copy(update={"label": check})}}
     )
     printed = measure_words(labelled, key)
-    assert printed == f"`{check}`"
+    # Named by what it tests (the owner's check-name ruling, Q11), never by its expression.
+    assert printed == check_names([check], {})[check] and check not in printed
     assert reader_name("measure", key, labelled) == printed
 
 

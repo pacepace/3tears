@@ -44,7 +44,7 @@ from threetears.evals.analysis.report_input import Factor, Reading, ReportInput
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.kernel.metrics import goal_check_of
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import check_names, humanize
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 
@@ -338,7 +338,7 @@ def test_each_confusion_panel_names_its_axis_and_arm_and_reads_each_cell_by_its_
 
 
 # =============================================================================
-# A check named as the code it is
+# A check whose label is its bare expression, named by what it tests
 # =============================================================================
 
 
@@ -354,11 +354,13 @@ def _bare_checks() -> list[tuple[ReportInput, str, str]]:
     return found
 
 
-def test_a_check_named_by_its_bare_expression_heads_its_column_as_code() -> None:
+def test_a_check_labelled_by_its_bare_expression_heads_its_column_by_its_name() -> None:
+    # The owner's check-name ruling (Q11): a written page's table heads an undeclared check by what it tests, as the
+    # code page does, never by its expression.
     for held, key, check in _bare_checks():
         block = block_render(held, block_kind="table", query=_query("measures", measures=[key]))
-        assert f"`{check}`" in block.columns, block.columns
-        assert check not in [column.strip("`") for column in block.columns if not column.startswith("`")]
+        assert check_names([check], {})[check] in block.columns, block.columns
+        assert not [column for column in block.columns if check in column], block.columns
 
 
 # =============================================================================
