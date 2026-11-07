@@ -479,7 +479,7 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 labels: judge uncalibrated ({labels} is not there yet); next step: rate every output in the "
+        f"judge: 0 labels: judge uncalibrated ({labels.name} is not there yet); next step: rate every output in the "
         "to_label.csv the report writes, which holds 4 per dimension, without looking at the judge's verdict; the "
         "calibrated tier's floor is 20 per dimension, so it needs 16 more judged answers per dimension"
     ]
@@ -504,7 +504,9 @@ async def test_a_judge_is_a_grader_its_answers_written_to_label_and_read_back_as
     # Each label pairs once with the judge's score of the byte-identical answer in the replayed run.
     assert (calibration.dimension, calibration.labels) == ("answer.billing", 4)
     assert calibration.kappa == pytest.approx(1.0)
-    assert again.calibration_lines()[0].startswith(f"judge against {labels}: answer.billing: 4 label(s), kappa 1.00")
+    assert again.calibration_lines()[0].startswith(
+        f"judge against {labels.name}: answer.billing: 4 label(s), kappa 1.00"
+    )
 
 
 def test_a_judge_takes_a_client_that_names_its_model_and_guards_only_its_own_dimensions() -> None:

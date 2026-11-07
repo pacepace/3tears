@@ -911,6 +911,18 @@ def _ends(changes: Sequence[_Change], reference: ChartReference | None, *, inter
         yield reference.value
 
 
+#: The sources whose changes are each an arm less the control, so a change chart's zero is the control.
+_AGAINST_CONTROL = frozenset({"readings", "contrasts"})
+
+
+def _zero_label(context: ChartContext) -> str | None:
+    """What a change chart's zero line is labelled with: the control as a chart row names it (``P · September``), so
+    a reader cold to the page reads zero as the control (the review's H4); None where the changes are not against the
+    control, or the input has none."""
+    control = context.look.control
+    return control.label if control is not None and context.query.source in _AGAINST_CONTROL else None
+
+
 def _forest(context: ChartContext) -> Drawn:
     source = context.query.source
     refusal = unit_refusal(context.spec.kind, context.query, context.report_input)
@@ -933,6 +945,7 @@ def _forest(context: ChartContext) -> Drawn:
         fmt=drawn.fmt,
         level=context.level,
         reference=reference,
+        zero_label=_zero_label(context),
         emphasis=context.emphasis,
     )
     return money_drawn(context, data, notes, money=_drawn_money(context, drawn))
@@ -1025,6 +1038,7 @@ def _diverging(context: ChartContext) -> Drawn:
             fmt=drawn.fmt,
             level=level or None,
             reference=reference,
+            zero_label=_zero_label(context),
             emphasis=context.emphasis,
             panels=[
                 BarsPanel(
@@ -1043,6 +1057,7 @@ def _diverging(context: ChartContext) -> Drawn:
             fmt=drawn.fmt,
             level=level or None,
             reference=reference,
+            zero_label=_zero_label(context),
             emphasis=context.emphasis,
         )
     return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=read_at)

@@ -1075,7 +1075,14 @@ def _campaign_page(
     # the folds and the campaign's own readings alike, the readings the bundle froze left as read.
     # A computed name holding a cut level or a placeholder is read by the arm's tag here, at render time, so the folds
     # and the readings name it alike and its letter is its tag on every chart of the page.
-    tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    # One tag per arm across the code page, its aspects' pages and the report document's page: the campaign's arms in
+    # its declared order first, as its report input lists them.
+    tags = campaign_arm_tags(
+        bundle.aspects,
+        bundle.readings.control,
+        arms=[arm.variant_key for arm in bundle.arms],
+        label_of=bundle.label_of,
+    )
     printed = reader_arm_labels(bundle, tags)
     readings = bundle.readings.relabelled(printed)
     labels = readings.arm_labels()

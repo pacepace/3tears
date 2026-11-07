@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -84,10 +85,15 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, dollars_text
+from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
+from threetears.evals.analysis.quantities import PERCENT, with_unit
+from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, reads_as_rate
+from threetears.evals.kernel.numbers import format_number
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.build import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -367,11 +373,12 @@ class Result:
                 f"judge: 0 labels: judge uncalibrated (Judge(labels=...) names a person's labels){self._next_step()}"
             ]
         if not judge.labels.is_file():
-            return [f"judge: 0 labels: judge uncalibrated ({judge.labels} is not there yet){self._next_step()}"]
+            return [f"judge: 0 labels: judge uncalibrated ({judge.labels.name} is not there yet){self._next_step()}"]
         read = self.calibrations
+        # The sheet by its name, never the path it was read from: a path is the machine's, not the reading's.
         if not read:
-            return [f"judge: 0 labels paired from {judge.labels}: judge uncalibrated{self._next_step()}"]
-        return [f"judge against {judge.labels}: {entry.line()}" for entry in read]
+            return [f"judge: 0 labels paired from {judge.labels.name}: judge uncalibrated{self._next_step()}"]
+        return [f"judge against {judge.labels.name}: {entry.line()}" for entry in read]
 
     def _next_step(self) -> str:
         """What an uncalibrated judge's line ends with: the step that calibrates it, read off the sheet it is taken on.
@@ -413,9 +420,18 @@ class Result:
         :return: The text.
         :rtype: str
         """
+        # Every arm's total in one form, the page's for its test costs (plain dollars to two significant figures), and
+        # every role's share of one in another.
+        totals = money_ruler((summary.total_cost_usd for summary in self.arms.values()), per=0)
+        roles = money_ruler(
+            (role.cost_usd for summary in self.arms.values() for role in summary.spend if role.counted), per=0
+        )
         if full:
             return "\n\n".join(
-                [*(summary.render() for summary in self.arms.values()), campaign_report_markdown(self.page)]
+                [
+                    *(self._full_summary(summary, totals, roles) for summary in self.arms.values()),
+                    campaign_report_markdown(self.page),
+                ]
             )
         one_arm = len(self.arms) == 1
         lines = [self._verdict_line()]
@@ -430,11 +446,15 @@ class Result:
             lines += [f"  {one_line(line)}" for line in self._measure_texts(summary, arm)]
             if summary.confusion:
                 lines.append("  per label:")
-                lines += [f"    {one_line(line)}" for line in summary.label_lines]
-            lines += [f"  {one_line(line)}" for line in summary.dimension_lines]
+                lines += [f"    {one_line(_label_text(statistics))}" for statistics in summary.labels]
+            lines += [f"  {one_line(_dimension_text(dimension))}" for dimension in summary.judged]
             lines += [f"  {one_line(line)}" for line in summary.goal_check_lines]
             # What it cost, priced or not, and the warnings no quiet print drops.
-            for line in (_total_spend(summary), summary.self_judging_warning, summary.model_identity_warning):
+            for line in (
+                _total_spend(summary, totals, roles),
+                summary.self_judging_warning,
+                summary.model_identity_warning,
+            ):
                 if line is not None:
                     lines.append(f"  {one_line(line)}")
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
@@ -447,7 +467,7 @@ class Result:
             key=lambda pair: order(pair[0], pair[1]),
         )
         if misses:
-            lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)}):")
+            lines.append(f"top misses ({min(len(misses), QUIET_MISSES)} of {len(misses)} failed trials):")
             for arm, miss in misses[:QUIET_MISSES]:
                 who = "" if len(self.arms) == 1 else f"{arm}, "
                 lines.append(f"  case {miss.case} ({who}repeat {miss.repeat}): {one_line('; '.join(self._why(miss)))}")
@@ -510,14 +530,59 @@ class Result:
         lines = (
             summary.measure_lines if len(self.arms) == 1 else summary.compared_measure_lines(self._guardrail_said(arm))
         )
+        held = {measure.name: measure for measure in summary.measures}
+        catalog = self.report.bundle.measure_catalog
         for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
+            said = measure.text.removeprefix(measure.name)
+            figures = held.get(measure.name)
+            descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
+            if measure.state == "measured" and figures is not None:
+                rate = measure.name == MATCH_MEASURE or reads_as_rate("measure", measure.name, descriptor=descriptor)
+                said = _measured_text(said, figures.mean, figures.n, rate=rate)
             # Each measure under the name the page gives it, never its key.
-            texts.append(f"{self._printed_name(measure.name)}{measure.text.removeprefix(measure.name)}")
+            texts.append(f"{self._printed_name(measure.name)}{said}")
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
+
+    def _full_summary(self, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
+        """An arm's whole summary as the full print writes it: the run summary's lines
+        (:meth:`~threetears.evals.analysis.summary.EvalSummary.render`), each figure in the form the quiet print and
+        the page state it (the review's P43, A4): a measure, its strata's included, under the page's name, a rate in
+        percent with its count of trials; each label's precision and recall in percent with their intervals; a judged
+        dimension as the quiet print says it; every amount of spend in the form of its set, a total as the page's test
+        cost. Every other line is the summary's own."""
+        said: dict[str, str] = {}
+        said.update(zip(summary.label_lines, (_label_text(statistics) for statistics in summary.labels), strict=True))
+        said.update(
+            zip(summary.dimension_lines, (_dimension_text(dimension) for dimension in summary.judged), strict=True)
+        )
+        if summary.total_spend_text is not None and summary.total_cost_usd is not None:
+            said[summary.total_spend_text] = f"total spend: {totals.spell(summary.total_cost_usd)}, the results' cost"
+        spent = {role.role: role.cost_usd for role in summary.spend if role.cost_usd is not None}
+        lines = []
+        for line in summary.render().splitlines():
+            body = line.lstrip()
+            indent = line[: len(line) - len(body)]
+            if body in said:
+                body = said[body]
+            elif (measured := _FULL_MEASURE.fullmatch(body)) is not None:
+                body = self._full_measure(measured)
+            elif (role := _ROLE_SPEND.fullmatch(body)) is not None and role["role"] in spent:
+                body = f"{role['role']} spend: {roles.spell(spent[role['role']])}{role['rest']}"
+            lines.append(indent + body)
+        return "\n".join(lines)
+
+    def _full_measure(self, measured: re.Match[str]) -> str:
+        """A run summary's measure line as the full print writes it: under the page's name, a rate in percent with its
+        count of trials, any other measure with its trials named (:func:`_measured_text`)."""
+        name = measured["name"]
+        descriptor = self.report.bundle.measure_catalog.get(name) or METRIC_DESCRIPTORS.get(name)
+        rate = not measured["unit"] and (name == MATCH_MEASURE or reads_as_rate("measure", name, descriptor=descriptor))
+        mean = float(measured["mean"]) if rate else 0.0
+        return f"{self._printed_name(name)}{_measured_text(measured['said'], mean, int(measured['n']), rate=rate)}"
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
@@ -881,6 +946,100 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
 
 
+#: A measure's line as the summary writes it: its mean, its count, its range, anything left out, and what follows.
+_MEASURE_LINE = re.compile(
+    r"^: mean (?P<mean>\S+) \(n=(?P<n>\d+), min (?P<low>[^,]+), max (?P<high>[^,)]+)(?P<rest>[^)]*)\)(?P<tail>.*)$"
+)
+
+
+#: A run summary's measure line, its name and what follows it: a measure carried by some result, with its mean.
+_FULL_MEASURE = re.compile(
+    r"^(?P<name>[^\s:]+(?: [^\s:]+)*?)(?P<said>: mean (?P<mean>-?[\d.]+)(?P<unit>[^\s(]*(?: [^\s(]+)?) \(n=(?P<n>\d+), .*)$"
+)
+
+#: A run summary's spend line for one role: ``candidate spend: $0.00175 over 40 call(s)``.
+_ROLE_SPEND = re.compile(r"^(?P<role>[\w-]+) spend: [<>]? ?\$[\d.,]+(?P<rest> over .*)$")
+
+
+def _measured_text(said: str, mean: float | None, n: int, *, rate: bool) -> str:
+    """A measure's figures as the quiet print says them, after its name: a rate in percent with its count of trials
+    (``: 83.3%, 75 of 90 trials``), as the page states a rate; any other measure's mean with its trials named
+    (``: mean 950 ms (90 trials, min 700 ms, max 1.2 s)``). Anything the line leaves out, and what follows it (a
+    guardrail's standing), is kept."""
+    read = _MEASURE_LINE.fullmatch(said)
+    if read is None or mean is None:
+        return said
+    rest, tail = read["rest"].removeprefix(", "), read["tail"]
+    if rate:
+        counted = f"{round(mean * n)} of {n} trials"
+        return f": {with_unit(100 * mean, PERCENT)}, {counted}{f' ({rest})' if rest else ''}{tail}"
+    left = f", {rest}" if rest else ""
+    return f": mean {read['mean']} ({n} trials, min {read['low']}, max {read['high']}{left}){tail}"
+
+
+def _percent_interval(interval: tuple[float, float] | None) -> str:
+    """A rate's interval as the page writes one, in percent: ``[43.8%, 100%]``."""
+    if interval is None:
+        return ""
+    return f", [{with_unit(100 * interval[0], PERCENT)}, {with_unit(100 * interval[1], PERCENT)}]"
+
+
+def _proportion_text(
+    name: str, rate: float | None, hits: int, n: int, cases: int, interval: tuple[float, float] | None
+) -> str:
+    """A rate with its count of trials, its cases where they repeat, and its interval, in percent."""
+    if rate is None:
+        return f"{name} none (no trial)"
+    over = f" over {cases} case{'' if cases == 1 else 's'}" if cases < n else ""
+    return f"{name} {with_unit(100 * rate, PERCENT)} ({hits} of {n} trials{over}{_percent_interval(interval)})"
+
+
+def _label_text(statistics: LabelStatistics) -> str:
+    """One label's line as the quiet print says it: precision and recall in percent with their counts and intervals
+    (``precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])``), then F1 in percent."""
+    label = statistics.label
+    shown = repr(label) if label != label.strip() or len(label.splitlines()) > 1 else label
+    precision = _proportion_text(
+        "precision",
+        statistics.precision,
+        statistics.correct,
+        statistics.predicted,
+        statistics.predicted_cases,
+        statistics.precision_interval,
+    )
+    recall = _proportion_text(
+        "recall",
+        statistics.recall,
+        statistics.correct,
+        statistics.expected,
+        statistics.expected_cases,
+        statistics.recall_interval,
+    )
+    f1 = "F1 none" if statistics.f1 is None else f"F1 {with_unit(100 * statistics.f1, PERCENT)}"
+    return f"{shown}: {precision}, {recall}, {f1}"
+
+
+def _dimension_text(dimension: DimensionSummary) -> str:
+    """One judged dimension's line as the quiet print says it: a pass/fail one in percent with its count of trials, a
+    scored one's mean with its trials named, and how often the judge could not tell."""
+    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
+    line = f"{dimension.name} ({scale}): "
+    if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
+        line += "no result carries a score"
+    elif dimension.scale == "pass_fail":
+        line += (
+            f"{with_unit(100 * dimension.mean, PERCENT)}, {round(dimension.mean * dimension.n)} of {dimension.n} trials"
+        )
+    else:
+        line += (
+            f"mean {format_number(dimension.mean)} ({dimension.n} trials, "
+            f"min {format_number(dimension.minimum)}, max {format_number(dimension.maximum)})"
+        )
+    if dimension.cannot_tell:
+        line += f", the judge could not tell on {dimension.cannot_tell}"
+    return line
+
+
 def _compact(answer: Any) -> str:
     """An answer the graded field cannot be read off, as a miss line shows it, cut by :func:`_cut`: a mapping as
     compact JSON without its ``id``, the text an answer JSON could not hold was stored as (its ``repr``) as it is, and
@@ -897,16 +1056,19 @@ def _cut(text: str) -> str:
     return text if len(text) <= _MISS_ANSWER_CHARS else text[: _MISS_ANSWER_CHARS - 1] + "…"
 
 
-def _total_spend(summary: EvalSummary) -> str | None:
+def _total_spend(summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str | None:
     """The total-spend line, split by role where more than one role the total counts spent, each role's dollars read
-    off its usage rows (:attr:`~threetears.evals.analysis.summary.EvalSummary.spend`): ``total spend: $0.00327, the
-    results' cost (candidate $0.00200, judge $0.00127)``. One role, or a total unknown in full, as the summary says it.
-    """
+    off its usage rows (:attr:`~threetears.evals.analysis.summary.EvalSummary.spend`): the total in ``totals``' one
+    form, the form the page writes the arms' test costs in, each role's in ``roles``': ``total spend: $0.017, the
+    results' cost (candidate $0.0018, judge $0.015)``. A total unknown in full as the summary says it."""
     said = summary.total_spend_text
-    spent = [role for role in summary.spend if role.counted and role.cost_usd]
-    if said is None or summary.total_cost_usd is None or len(spent) < 2:
+    if said is None or summary.total_cost_usd is None:
         return said
-    return f"{said} ({', '.join(f'{role.role} {dollars_text(role.cost_usd)}' for role in spent)})"
+    said = f"total spend: {totals.spell(summary.total_cost_usd)}, the results' cost"
+    spent = [(role.role, role.cost_usd) for role in summary.spend if role.counted and role.cost_usd]
+    if len(spent) < 2:
+        return said
+    return f"{said} ({', '.join(f'{role} {roles.spell(cost)}' for role, cost in spent)})"
 
 
 def _exclusion_causes(summary: EvalSummary) -> list[str]:
@@ -1181,17 +1343,21 @@ def declare(
     bundle = fold.report.bundle
     # The same bundle laid out alone, its arms named by their variants as the eval names them, not by the campaign's
     # labels the page's fold reads.
-    report = build_code_only_report(
-        bundle,
-        assembled_at=fold.report.source.generated_at,
-        campaign_name=campaign.name,
-        measure_order=list(dict.fromkeys(measure_order)),
-    )
     arm_variants = {
         arm: variant
         for arm, summary in arms.items()
         if (variant := variant_key_of_run(list_results(host.storage, summary.run_id, scope_id))) is not None
     }
+    # Its arms tagged as the campaign's page tags them, in the order the eval gives them (the control first, as the
+    # campaign and its report document list them), so an arm is one letter and one colour on all three pages.
+    control_key = next((arm.variant_key for arm in campaign.arms if arm.role == "control"), None)
+    report = build_code_only_report(
+        bundle,
+        assembled_at=fold.report.source.generated_at,
+        campaign_name=campaign.name,
+        arm_tags=campaign_arm_tags([bundle], control_key, arms=list(arm_variants.values())),
+        measure_order=list(dict.fromkeys(measure_order)),
+    )
     arm_of_variant = {variant: arm for arm, variant in arm_variants.items()}
     surface = bundle_decision_surface(bundle)
     labels = report_cell_labels(bundle)

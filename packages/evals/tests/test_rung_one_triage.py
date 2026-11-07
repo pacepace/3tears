@@ -101,15 +101,17 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
     # The classifier is the first field, read per label; the other field and the code grader are pass rates.
     # Each measure is printed as the page names it: the classifier's label match as the Accuracy the page reads.
-    assert "Accuracy: mean 0.9 (n=90" in printed and "per label:" in printed
-    # Each label's precision and recall count answers over cases, since k=3 answers each case three times.
+    assert "Accuracy: 90%, 81 of 90 trials" in printed and "per label:" in printed
+    # Each label's precision and recall count trials over cases, since k=3 answers each case three times, in percent
+    # with their intervals as the page writes a rate.
     assert (
-        "    account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases" in printed
+        "    account: precision 100% (17 of 17 trials over 7 cases, [56.9%, 100%]), recall 81% (17 of 21 trials over 7"
+        " cases" in printed
     )
-    assert "Urgent score: mean 0.8333 (n=90" in printed
-    assert "Escalates score: mean 0.9889 (n=90" in printed
-    assert "top misses (5 of 20):" in printed
-    assert "total spend: $0.00192, the results' cost" in printed
+    assert "Urgent score: 83.3%, 75 of 90 trials" in printed
+    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
+    assert "top misses (5 of 20 failed trials):" in printed
+    assert "total spend: $0.0019, the results' cost" in printed
     assert "stored in .evals/evals.sqlite, scope 'emails'" in printed
     assert (triage_dir / ".evals" / "reports" / "emails" / "report.html").is_file()
     page = (triage_dir / ".evals" / "reports" / "emails" / "report.md").read_text(encoding="utf-8")
@@ -129,8 +131,11 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     above = lines[: lines.index("## classify")]
     assert "**triage by aspect**" in above and not any("control" in line for line in above)
     matrix, *rows = [line for line in above if line.startswith("| classify |")]
-    # The pass rate carries the count it is computed over beside it (presentation build, chunk 1).
-    assert matrix.startswith("| classify | 77.8 (70 of 90 trials, 30 cases) | 0.9 | 1 | 0.9048 | 0.8182 |")
+    # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
+    # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8).
+    assert matrix.startswith(
+        "| classify | 77.8 (70 of 90 trials, 30 cases) | 90 (81 of 90 trials, 30 cases) | 100 (17 of 17 trials, 7 cases) |"
+    )
     assert rows and all(line.startswith("| classify | triage |") for line in rows)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.
     measured = {line.split(" | ")[2] for line in rows}
@@ -146,8 +151,8 @@ def test_the_toml_file_runs_from_another_directory_and_its_symmetric_field_misse
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "Needs human score: mean 0.8111 (n=90" in printed
-    assert "total spend: $0.00199, the results' cost" in printed
+    assert "Needs human score: 81.1%, 73 of 90 trials" in printed
+    assert "total spend: $0.0020, the results' cost" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "triage" / "report.html").is_file()
 
 
@@ -196,7 +201,7 @@ def test_the_program_runs_from_another_directory_through_the_module_entry(
 
     printed = capsys.readouterr().out
     assert "90 result(s): 90 scored" in printed and "excluded" not in printed
-    assert "Escalates score: mean 0.9889 (n=90" in printed
+    assert "Escalates score: 98.9%, 89 of 90 trials" in printed
     assert (triage_dir.parent / ".evals" / "reports" / "emails" / "report.html").is_file()
     assert not (triage_dir / ".evals").exists()
 

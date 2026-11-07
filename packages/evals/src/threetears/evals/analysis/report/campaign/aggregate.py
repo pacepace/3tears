@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.model import (
     TableCell,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.numbers import format_number
 
 __all__ = ["EQUAL_WEIGHT_ROW", "aggregate_blocks", "equal_weight_cells"]
 
@@ -123,8 +124,13 @@ def aggregate_blocks(
     if charted:
         # The campaign's tags, which each aspect's page is built with too, so an arm is one tag, and one colour, on
         # this chart and on every aspect's outcome bar the page lays out.
+        labels = readings.arm_labels()
         tags = campaign_arm_tags(
-            (report.bundle for report in reports.values()), readings.control, also=(arm.arm for arm in aggregate.arms)
+            (report.bundle for report in reports.values()),
+            readings.control,
+            arms=[arm.variant_key for arm in campaign.arms],
+            also=(arm.arm for arm in aggregate.arms),
+            label_of=lambda key: labels.get(key, key),
         )
         declared = declared_arm_names(campaign.arms)
         points = [
@@ -137,6 +143,7 @@ def aggregate_blocks(
                     chart="cost_quality",
                     title=f"Cost and pass rate, {_ACROSS}" if len(readings.aspects) > 1 else "Cost and pass rate",
                     unit=MONEY,
+                    level=f"{format_number(round(aggregate.level * 100, 2))}%",
                     points=points,
                 )
             )

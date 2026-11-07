@@ -6,6 +6,45 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: figures read in one money form at one precision, and charts read cold
+
+**Changed:** money reads one form per figure type at two significant figures (`money_form`, `money_ruler`; owner
+defaults Q3 and Q4 of 2026-11-07). The per-1,000 mark (`$4.13/1000`) is retired: money per reply reads per 1,000
+replies with the count in its header or axis (`Production cost ($/1,000 replies)`, `Cost per 1,000 replies ($)`), the
+scorecard's money columns included; a total reads plain dollars (`Test cost | v1 $0.0041; v2 $0.0063`, which read
+`$4.13/1000`), cents from a dollar up and whole dollars from $10 (`$1,208`), as before. A set takes one decimal more only where two figures would print an
+interval's ends alike (`$0.045 [$0.045, $0.045]` reads `$0.0451 [$0.0448, $0.0453]`). A money standard error reads in dollars to its own two significant figures
+(`$0.046 ± $0.0074`, which read `± 0.007414`). A rate other than the pass rate (an accuracy, a classifier's
+precision) reads in percent beside it with its count (`90 (81 of 90 trials, 30 cases)` under `Accuracy (%)`, which read
+`0.9`). The line under a table of interval glyphs states the data's own ends in the cells' form, a rate's within 0 to
+100 and every span with its unit (`Each column drawn from -1.5 to 25.9 pts and from $0.031 to $0.10`, which read
+`-2.835 to 27.26` and `$0.00002043 to $0.00002371`); each glyph's title reads as its cells do, a score's or a count's ends read to two
+significant figures (`-0.31 to 0.12`), and a glyph under a margin runs its track past the margin's ends and ticks
+them beside its zero tick. A forest's end label is its note, wrapped where it does not fit, never the axis's coarser
+number. A change chart against the control names its zero line with
+the control (`P · September`, the kit data's new `zero_label` on `forest`, `bars` and `diverging_bars`). A campaign's cost/quality scatter draws each arm's two
+intervals as whiskers (the kit's new `x_lo`, `x_hi`, `y_lo`, `y_hi` and the scatter's `level`) and sets both axes to
+the data, its ticks in the chart's money form. One arm carries one tag and one colour on the code page, every aspect's
+page and the report document's page: the campaign's declared arms first (`campaign_arm_tags` takes `arms` and
+`label_of`), the order the report input lists them in. The quick print states rates in percent with their trials
+(`Accuracy: 90%, 81 of 90 trials`, `precision 100% (15 of 15 trials over 5 cases, [43.8%, 100%])`, never `mean 0.9` or
+`CI 0.4377-1`), names the failed trials it counts (`top misses (5 of 28 failed trials)`), names the judge's labels sheet
+by its file name, never its path, and spells each arm's total spend as the page's test cost.
+
+**Hosts:** a reader of a host's code page, aspect page and quick print sees every amount above in its new form, and no
+`/1000` anywhere a page writes; a host matching `$…/1000`, `mean 0.…` or `top misses (n of m)` in a page or a print
+updates its match. The report JSON's money cells carry `decimals` as before and never `per_thousand` (a cell stored with
+it still reads as stored, and the kit still draws a stored `usdpk` format). `ChartBlock` gains an optional `level`
+(the cost/quality chart's interval level), and the kit's chart data gains `zero_label` and the scatter points'
+interval ends; nothing stored changes shape. An arm's letter tag and colour now follow the campaign's declared arm
+order on every page, so a page rendered after this change can tag and colour an arm differently from one rendered before
+it (Kairo's `A` and `B` swap on its code page); a host that shows or caches tags (a listing) reads them anew.
+`money_form` lost its `marked=` keyword and gained `intervals=`; `money_columns` lost `marked=`; `money_ruler` gained
+`intervals=`; `campaign_arm_tags` gained `arms=` and `label_of=`. A figure key spelling a cost per reply under a cent
+with `usd` now carries its count (`+$0.49 per 1,000 replies`, which read `+$0.49/1000`). The cost/quality chart's
+values table writes each cost with its dollar sign under `Cost per 1,000 replies`, and the full print
+(`render(full=True)`) writes its figures as the quiet print does.
+
 ### evals: the report page fits the host that frames it
 
 **Changed:** every table scrolls inside its own frame with a shadow at an edge while more lies past it and its first

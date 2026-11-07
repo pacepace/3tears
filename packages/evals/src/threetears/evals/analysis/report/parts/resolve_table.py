@@ -644,7 +644,7 @@ def _table(context: ChartContext) -> Drawn:
                 header = _prices_drawn(context).label(header, cost_basis(context.report_input).noun)
             columns.append(TableColumn(key=key, header=header))
     # Each money column's head names the count it is drawn per, so no amount carries the mark beside it.
-    columns, rows = _with_intervals(columns, money_columns(rows, marked=False), context.spec.level)
+    columns, rows = _with_intervals(columns, money_columns(rows), context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

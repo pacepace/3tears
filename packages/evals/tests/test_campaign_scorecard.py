@@ -908,20 +908,25 @@ def _right(case: Mapping[str, int], answer: str) -> bool:
     return answer == "right"
 
 
-async def test_a_measurement_s_money_reads_in_one_form_with_its_mark_never_a_bare_figure() -> None:
-    """A measurement's spend under a cent a reply carries its form (the money ruling): dollars per 1,000 with the
-    mark, its interval's ends in the same form, in the matrix and in the fold alike, never ``0.0003`` or ``0``."""
+async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_bare_figure() -> None:
+    """A measurement's spend under a cent a reply carries its form (the money ruling, Q4 of 2026-11-07): drawn per
+    1,000 replies with the count in its header, never a mark on the figure, its interval's ends in the same form, in
+    the matrix and in the fold alike, never ``0.0003`` or ``0``."""
     result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")
     matrix = _table(result.page, "scorecard")
-    spend = next(column.key for column in matrix.columns if column.header == "Measuring spend, all roles")
+    spend = next(
+        column.key for column in matrix.columns if column.header == "Measuring spend, all roles ($/1,000 replies)"
+    )
     (row,) = matrix.rows
     cell = row[spend]
-    assert cell.unit == MONEY and cell.per_thousand and cell.decimals is not None
-    assert cell.text == f"${cell.value * 1000:.{cell.decimals}f}/1000"
+    assert cell.unit == MONEY and not cell.per_thousand and cell.decimals is not None
+    assert cell.text == f"${cell.value:.{cell.decimals}f}" and "/1000" not in cell.text
     measures = _table(result.page, "measures")
-    (folded,) = [line for line in measures.rows if line["measure"].text == "Measuring spend, all roles"]
+    (folded,) = [
+        line for line in measures.rows if line["measure"].text == "Measuring spend, all roles ($/1,000 replies)"
+    ]
     assert folded["value"].text == cell.text
-    assert re.fullmatch(r"\[\$\d+\.\d+/1000, \$\d+\.\d+/1000\]", str(folded["interval"].value))
+    assert re.fullmatch(r"\[\$\d+\.\d+, \$\d+\.\d+\]", str(folded["interval"].value))
     # Only the money measures carry money's form; every other figure keeps the number rule.
     assert {key for key, other in row.items() if other.unit == MONEY} == {
         spend,

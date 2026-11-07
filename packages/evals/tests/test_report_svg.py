@@ -432,7 +432,7 @@ def test_a_cost_axis_at_a_real_reply_cost_prints_distinct_ticks_none_reading_as_
     _, data = _drawn(_cost_chart(*costs))
     count = 1000 if min(costs) * 1000 >= 0.01 else 1_000_000
     assert [p["x"] for p in data["points"]] == pytest.approx([cost * count for cost in costs])
-    assert data["x_title"] == f"Cost per {count:,} replies ($)"
+    assert data["x_title"] == f"Cost per {count:,} replies"
     spec = data["x_fmt"]
     assert re.fullmatch(r"usd:\d", spec)
     labels = [_usd(tick, spec) for tick in _nice_ticks(data["x_domain"][1])]

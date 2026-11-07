@@ -138,12 +138,13 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
         points=[_point("alpha", 0.004, 85.0), _point("beta", 0.0008, 60.0)],
     )
     headers, rows = chart.values_table()
-    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4.
-    assert headers == ["Arm", "Cost per 1,000 replies ($)", "Interval ($)", "Pass rate (%)", "Interval (%)"]
-    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies ($)"  # type: ignore[index]
+    # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4. Each cost carries its
+    # dollar sign as the scoreboard writes it (P17), so the head names the count alone.
+    assert headers == ["Arm", "Cost per 1,000 replies", "Interval", "Pass rate (%)", "Interval (%)"]
+    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies"  # type: ignore[index]
     assert [row[0] for row in rows] == ["alpha", "beta"]
     # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
-    assert (rows[0][1], rows[0][2], rows[1][1]) == ("4.00", "[3.60, 4.40]", "0.80"), rows
+    assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "[$3.60, $4.40]", "$0.80"), rows
     assert rows[0][3] == "85" and rows[0][4] == "[80, 90]"
 
 
@@ -191,7 +192,11 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
         "$4.00 [$3.60, $4.40] per 1,000 replies",
         "pass rate 85% [80%, 90%]",
     ]
-    assert data["y_domain"] == [0, 100] and data["x_domain"][0] == 0, "no axis is cut to flatter a gap"  # type: ignore[index]
+    # Each axis is set to the data (the review's P46): it holds every interval end, within 0 to 100 for the pass rate.
+    x_low, x_high = data["x_domain"]  # type: ignore[misc]
+    y_low, y_high = data["y_domain"]  # type: ignore[misc]
+    assert 0 < x_low <= 0.72 and x_high >= 4.4, data["x_domain"]
+    assert 0 < y_low <= 55 and 90 <= y_high <= 100, data["y_domain"]
 
 
 def test_an_aspect_is_called_by_its_full_label_as_declared() -> None:

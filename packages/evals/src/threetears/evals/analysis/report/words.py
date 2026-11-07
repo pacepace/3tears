@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import typing
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.analysis.arms import (
@@ -299,24 +299,48 @@ def arm_tags(variant_keys: Sequence[str], control: str | None) -> dict[str, str]
 
 
 def campaign_arm_tags(
-    bundles: Iterable[AnalysisContextBundle], control: str | None, *, also: Iterable[str] = ()
+    bundles: Iterable[AnalysisContextBundle],
+    control: str | None,
+    *,
+    arms: Iterable[str] = (),
+    also: Iterable[str] = (),
+    label_of: Callable[[str], str] | None = None,
 ) -> dict[str, str]:
-    """Each arm's letter tag across a campaign's page (:func:`arm_tags`): the arms in the order its aspects'
-    scoreboards list them, then ``also``'s not listed there, so an arm one aspect lacks shifts no other arm's tag, and
-    every chart of the page tags and colours an arm alike.
+    """Each arm's letter tag across a campaign's pages (:func:`arm_tags`), in the one order every page tags arms in:
+    the campaign's own arms as it declares them (``arms``), then the other variants its aspects index, aspect by
+    aspect, then any its scoreboards list besides, then ``also``'s. It is the order a campaign's report input lists
+    its arms in (``report_input_build``), so the code page, every aspect's page and the report document's page tag
+    and colour one arm alike (the review's P40); an arm one aspect lacks shifts no other arm's tag.
 
     :param bundles: Each aspect's bundle, in the campaign's order.
     :ptype bundles: Iterable[AnalysisContextBundle]
     :param control: The campaign's control's variant key; None where there is none.
     :ptype control: str | None
-    :param also: Arms to tag after those the scoreboards list, where they are not among them.
+    :param arms: The campaign's arms' variant keys, in its declared order; none for a page with no campaign.
+    :ptype arms: Iterable[str]
+    :param also: Arms to tag after the others, where they are not among them.
     :ptype also: Iterable[str]
+    :param label_of: Each variant key's arm, where several keys name one arm (the campaign bundle's ``label_of``), so
+        keys of one arm share its tag; None where each key is its own arm.
+    :ptype label_of: Callable[[str], str] | None
     :return: Variant key -> tag.
     :rtype: dict[str, str]
     """
-    listed = dict.fromkeys(board.variant_key for bundle in bundles for board in bundle.scoreboard)
-    listed.update(dict.fromkeys(also))
-    return arm_tags(list(listed), control)
+    held = list(bundles)
+    listed = dict.fromkeys(
+        [
+            *arms,
+            *(entry.variant_key for bundle in held for entry in bundle.variant_index),
+            *(board.variant_key for bundle in held for board in bundle.scoreboard),
+            *also,
+        ]
+    )
+    named = label_of or (lambda key: key)
+    first: dict[str, str] = {}
+    for key in listed:
+        first.setdefault(named(key), key)
+    tagged = arm_tags(list(first.values()), first.get(named(control)) if control is not None else None)
+    return {key: tagged[first[named(key)]] for key in listed}
 
 
 def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:

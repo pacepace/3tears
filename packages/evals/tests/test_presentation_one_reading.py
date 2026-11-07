@@ -144,8 +144,8 @@ def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_n
     )
     # The print names each arm's measures as the page does: the classifier's match is the Accuracy the page leads on.
     printed = str(rung.result)
-    assert "  Accuracy: mean " in printed and "  currency: mean" not in printed
-    assert "  No invented total score: mean " in printed and "  no_invented_total:" not in printed
+    assert "  Accuracy: 100%, 90 of 90 trials" in printed and "  currency:" not in printed
+    assert "  No invented total score: 98.9%, 89 of 90 trials" in printed and "  no_invented_total:" not in printed
 
 
 def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs: dict[str, _Surfaces]) -> None:
@@ -372,7 +372,7 @@ def test_a_measurement_s_scorecard_names_the_pass_rate_as_a_name_and_one_figure_
     headers = [column.header for column in matrix.columns]
     assert "Pass rate (%)" in headers and "pass rate (%)" not in headers
     # The classifier's label match is its accuracy: one figure, one column, under the name the lead reads.
-    assert "Accuracy" in headers and "Label matched" not in headers
+    assert "Accuracy (%)" in headers and "Label matched" not in headers
     (measures,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures"]
     named = [row["measure"].text for row in measures.rows]
     assert "Pass rate" in named and "Label matched" not in named and named.count("Accuracy") == 1

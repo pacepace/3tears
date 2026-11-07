@@ -349,6 +349,32 @@ def _text(x: float, y: float, text: str, css: str = "tick", anchor: str = "start
     return _el("text", {"x": x, "y": y, "text-anchor": anchor, "class": css, "style": style}, _escape(text))
 
 
+def _wrapped(text: str, room: float) -> list[str]:
+    """``text`` broken at its spaces into lines each at most ``room`` px wide, as the kit's forest wraps a note; a word
+    wider than ``room`` is its own line, never cut."""
+    lines: list[str] = []
+    current = ""
+    for word in text.split(" "):
+        joined = f"{current} {word}" if current else word
+        if current and len(joined) * 6.4 > room:
+            lines.append(current)
+            current = word
+        else:
+            current = joined
+    lines.append(current)
+    if len(lines) > 2:
+        # Two lines at most, so a row's label never reaches the next row: the figure with its unit, then the words.
+        words = text.split(" ")
+        return [" ".join(words[:2]), " ".join(words[2:])]
+    return lines
+
+
+def _lines_text(x: float, y: float, lines: Sequence[str], css: str) -> str:
+    """Lines of one label, 12 px apart, the first on baseline ``y``."""
+    spans = "".join(_el("tspan", {"x": x, "dy": 12 if index else 0}, _escape(line)) for index, line in enumerate(lines))
+    return _el("text", {"x": x, "y": y, "class": css}, spans)
+
+
 def _line(x1: float, y1: float, x2: float, y2: float, css: str | None = None, style: str | None = None) -> str:
     return _el("line", {"x1": x1, "y1": y1, "x2": x2, "y2": y2, "class": css, "style": style})
 
@@ -546,6 +572,10 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     ml, mr, mb = lw, (52 if narrow else 70), 22
     mt = 20 if (line_ref is not None or d.level or origin_label) else 6
     x = _Scale(d0, d1, ml, w - mr, log=bool(d.log))
+    # What zero is on a change chart (the control), on a line of its own above every other label.
+    zero_label = d.zero_label if not no_preference and d.zero_label and d0 <= 0 <= d1 else None
+    if zero_label:
+        mt += 14
     level_room = w - _text_width(f"{d.level} intervals", 11) - 8 if d.level else w
     label = _ref_label(x(line_ref.value), line_ref.label, 0, level_room) if line_ref and line_ref.label else None
     if label is not None:
@@ -563,6 +593,8 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     out.append(_line(z, mt - 2, z, h - mb, "axis"))
     if origin_label:
         out.append(_text(z + 4, mt - 8, origin_label))
+    if zero_label:
+        out += _zero_label(z, mt - 2, zero_label, w)
     y0: float = mt + (14 if grouped else 0)
     for i, r in enumerate(rows):
         if grouped and (i == 0 or r.group != rows[i - 1].group):
@@ -691,13 +723,32 @@ def _bars(d: _BarsLike, w: float) -> _Drawn:
     return "".join(out), h
 
 
+def _zero_label(z: float, bottom: float, text: str, w: float, style: str | None = None) -> list[str]:
+    """A change chart's zero line carried up to its label's line, and the label: what zero is (the control), at the
+    top, beside the line, on the side with room."""
+    end = z > w * 0.6
+    return [
+        _line(z, 4, z, bottom, "axis", style),
+        _text(z - 4 if end else z + 4, 12, text, anchor="end" if end else "start"),
+    ]
+
+
 def _forest(d: ForestChart, w: float) -> _Drawn:
     """A forest plot (``forest``): each change against the control with its interval, and an optional margin band."""
     rows, (d0, d1), f = d.rows, d.domain, _kit_format(d.fmt)
     narrow, row_h = w < 480, d.row_height or 30
     need = max(len(r.label) for r in rows) * 6.6 + 18
     lw = (d.label_width_narrow if narrow else d.label_width) or min(need, w * 0.42 if narrow else min(230, w * 0.32))
-    ml, mr, mt, mb = lw, (60 if narrow else 96), 22.0, 24
+    zero_label = d.zero_label if d.zero_label and d0 <= 0 <= d1 else None
+    ml, mr, mt, mb = lw, float(60 if narrow else 96), 36.0 if zero_label else 22.0, 24
+    # Every row's end label is its note where every row has one (the review's P47): wrapped at its spaces, two lines at
+    # most, the margin widened to its widest line up to a third of the chart, never a coarser number than the note
+    # states (P34).
+    noted = all(r.note is not None for r in rows)
+    if noted:
+        widest = max(len(line) * 6.4 for r in rows for line in _wrapped(r.note or "", mr - 10))
+        if widest > mr - 10:
+            mr = min(w * 0.32, widest + 14)
     gaps = sum(1 for i in range(1, len(rows)) if rows[i].group != rows[i - 1].group)
     x = _Scale(d0, d1, ml, w - mr)
     ref = d.reference
@@ -732,6 +783,8 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
     out.append(_line(x(0), mt - 4, x(0), h - mb, "axis", "stroke-width:1.5"))
     if d.level:
         out.append(_text(w - mr, mt - 8, f"{d.level} intervals", anchor="end"))
+    if zero_label:
+        out += _zero_label(x(0), mt - 4, zero_label, w, "stroke-width:1.5")
     y0 = mt + (14 if grouped else 0)
     for i, r in enumerate(rows):
         if r.group and (i == 0 or r.group != rows[i - 1].group):
@@ -753,9 +806,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
             shown_label = r.short_label
         else:
             shown_label = _cut(r.label, room)
-        note = r.note if r.note is not None else f(r.value)
-        if len(note) * 6.4 > mr - 10:
-            note = f(r.value)
+        lines = _wrapped(r.note, mr - 10) if noted and r.note is not None else [f(r.value)]
         marks = [
             _text(ml - 10, cy + 4, shown_label, "lbl-strong" if strong else "lbl", "end"),
             _line(at(r.lo), cy, at(r.hi), cy, style=f"stroke:var({color});stroke-width:3;stroke-linecap:round"),
@@ -770,7 +821,7 @@ def _forest(d: ForestChart, w: float) -> _Drawn:
                     "style": f"fill:var({color});stroke:var(--surface);stroke-width:2",
                 },
             ),
-            _text(w - mr + 8, cy + 4, note, "lbl-strong" if strong else "tick"),
+            _lines_text(w - mr + 8, cy + 4 - 6 * (len(lines) - 1), lines, "lbl-strong" if strong else "tick"),
         ]
         tip = _tip_or(r.tip, r.label, f"{f(r.value)} [{f(r.lo)}, {f(r.hi)}]")
         out.append(_titled(tip, "".join(marks), (0, cy - row_h / 2, w, row_h)))
@@ -924,7 +975,7 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
     narrow = w < 560
     y_ticks = d.y_ticks or _format_ticks(y0, y1, 5, yf)
     h = d.height or round(min(380, max(300, w * 0.45)))
-    ml, mr, mt, mb = max(30, max(len(yf(v)) for v in y_ticks) * 6.6 + 16), 18, 16, 40
+    ml, mr, mt, mb = max(30, max(len(yf(v)) for v in y_ticks) * 6.6 + 16), 18, (22 if d.level else 16), 40
     x, y = _Scale(x0, x1, ml, w - mr, log=bool(d.x_log)), _Scale(y0, y1, h - mb, mt)
     obstacles: list[tuple[float, float, float, float, float]] = []
     out: list[str] = []
@@ -1037,6 +1088,23 @@ def _scatter(d: _ScatterLike, w: float, gate: bool) -> _Drawn:
             f"opacity:{1 if joined.opacity is None else joined.opacity:g}"
         )
         out.append(_el("path", {"d": f"M{path}", "style": style}))
+    # Each point's intervals, where it carries them, as thin whiskers in its colour under the marks, cut to the axes.
+    whiskered = False
+    for point in points:
+        px, py = at(point.x, point.y)
+        style = f"stroke:var({_tok(point.color, '--s1')});stroke-width:1.5;stroke-linecap:round"
+        if point.x_lo is not None and point.x_hi is not None:
+            a, b = x(_clamp(point.x_lo, x0, x1)), x(_clamp(point.x_hi, x0, x1))
+            out.append(_line(a, py, b, py, style=style))
+            obstacles.append((a, py - 2, b, py + 2, 1.0))
+            whiskered = True
+        if point.y_lo is not None and point.y_hi is not None:
+            a, b = y(_clamp(point.y_hi, y0, y1)), y(_clamp(point.y_lo, y0, y1))
+            out.append(_line(px, a, px, b, style=style))
+            obstacles.append((px - 2, a, px + 2, b, 1.0))
+            whiskered = True
+    if whiskered and d.level:
+        out.append(_text(w - mr, mt - 4, f"{d.level} intervals", anchor="end"))
     for point in points:
         px, py = at(point.x, point.y)
         r = point.size or 5.5

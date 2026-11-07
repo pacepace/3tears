@@ -29,11 +29,12 @@ Nothing here refuses: a label that does not read is a count unstated.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from threetears.evals.kernel.numbers import MoneyForm, format_number, group_thousands, money_form
+from threetears.evals.kernel.numbers import CENT, MoneyForm, format_number, group_thousands, money_form
 from threetears.evals.analysis.report_input import Measure, ReportInput
 from threetears.evals.analysis.report_margins import aspect_board
 
@@ -231,17 +232,26 @@ class MoneyRuler:
         return MoneyRuler(form=form, scale=self.scale, counted=self.counted)
 
 
-def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0) -> MoneyRuler:
+def money_ruler(
+    amounts: Iterable[float | None],
+    *,
+    per: int,
+    start: int = 0,
+    intervals: Iterable[tuple[float | None, float | None]] = (),
+) -> MoneyRuler:
     """The one owner of how a set of money amounts is stated (:class:`MoneyRuler`): every chart, table and figure key
     reads its scale, its form and its count from here, so no surface chooses its own.
 
     An amount that counts something (money per reply, per 1,000 or per 1,000,000 of what it counts) is drawn per
     ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
-    ruler moves, and the per-1,000 mark is never stacked on it. A set still under a cent per 1,000,000 moves no
-    further: it reads at that count, in dollars to the decimals its least amount needs for two significant figures
-    (``$0.0030 per 1,000,000 replies``), never with the mark beside the count. A total (``per`` 0: a run's cost, a
-    month's) counts nothing and is never scaled: a set of totals under a cent reads per 1,000 with its mark
-    (``$8.00/1000``) on every surface, a chart's ticks included (the kit's ``usdpk``), as a key and a table write it.
+    ruler moves, and the count is said in the header or the axis that carries it ("Cost per 1,000 replies"), never as a
+    mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars to
+    the decimals its least amount needs for two significant figures (``$0.0030 per 1,000,000 replies``). A total
+    (``per`` 0: a run's cost, a month's) counts nothing and is never scaled: it reads in plain dollars, to two
+    significant figures under a dollar (``$0.0041``), to cents from a dollar up and whole dollars from $10 (``$1,208``).
+    Either way an
+    interval the set prints never reads its two ends alike where its stored ends differ
+    (:func:`~threetears.evals.kernel.numbers.money_form`).
 
     :param amounts: Every amount the set holds, as stored.
     :ptype amounts: Iterable[float | None]
@@ -251,18 +261,28 @@ def money_ruler(amounts: Iterable[float | None], *, per: int, start: int = 0) ->
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
     :ptype start: int
+    :param intervals: The intervals the set prints, each ``(low, high)`` as stored; none by default.
+    :ptype intervals: Iterable[tuple[float | None, float | None]]
     :return: The ruler.
     :rtype: MoneyRuler
     """
     held = [amount for amount in amounts if amount is not None]
+    spans = list(intervals)
     if per == 0:
-        return MoneyRuler(form=money_form(held), scale=1.0, counted=0)
+        return MoneyRuler(form=money_form(held, intervals=spans), scale=1.0, counted=0)
+    stated = [abs(amount) for amount in held if math.isfinite(amount) and amount != 0]
     count = max(start, per)
-    while money_form(amount * count / per for amount in held).per_thousand and count < _MOST_COUNTED:
+    while stated and min(stated) * count / per < CENT and count < _MOST_COUNTED:
         count *= 1000
-    # A counted set states its count, so it never carries the per-1,000 mark beside it, at the cap included.
-    form = money_form((amount * count / per for amount in held), marked=False)
-    return MoneyRuler(form=form, scale=count / per, counted=count)
+    scale = count / per
+    form = money_form(
+        (amount * scale for amount in held),
+        intervals=(
+            (low * scale if low is not None else None, high * scale if high is not None else None)
+            for low, high in spans
+        ),
+    )
+    return MoneyRuler(form=form, scale=scale, counted=count)
 
 
 def per_one(noun: str) -> str:

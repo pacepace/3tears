@@ -108,10 +108,10 @@ def test_the_command_line_runs_the_file_from_another_directory_and_fills_braces_
 
     printed = capsys.readouterr().out
     # Each measure printed as the page names it: the classifier's label match as its Accuracy.
-    assert "Accuracy: mean 1 (n=9" in printed
-    assert "Urgent score: mean 1 (n=9" in printed
+    assert "Accuracy: 100%, 9 of 9 trials" in printed
+    assert "Urgent score: 100%, 9 of 9 trials" in printed
     # The recorded model never sets needs_human, so the two emails that need a person miss on it.
-    assert "Needs human score: mean 0.3333 (n=9" in printed
+    assert "Needs human score: 33.3%, 3 of 9 trials" in printed
     assert Path(".evals/reports/triage/report.html").is_file()
 
 

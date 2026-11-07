@@ -62,7 +62,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
-from threetears.evals.kernel.numbers import MoneyForm, format_number
+from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.blocks import money_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
@@ -138,7 +138,7 @@ from threetears.evals.analysis.report.verdict import (
 )
 from threetears.evals.analysis.report.words import (
     BAR_DECISION_WORDS,
-    arm_tags,
+    campaign_arm_tags,
     comparison_words,
     guardrail_words,
     input_arm_tags,
@@ -307,7 +307,9 @@ def build_code_only_report(
     :param arm_tags: The letter tag each arm carries across the campaign's page, by variant key
         (:func:`~threetears.evals.analysis.report.words.campaign_arm_tags`), so an arm this aspect shares with others
         is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
-        does a map that leaves out an arm of this page.
+        does a map that leaves out an arm of this page: in the order the aspect's variant index lists them, since an
+        aspect's bundle does not carry its campaign's declared order, so a caller showing the page beside its
+        campaign's passes the campaign's tags.
     :ptype arm_tags: Mapping[str, str] | None
     :param arm_short_names: The short names the campaign's arms declare, by variant key
         (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in
@@ -709,7 +711,7 @@ def _in_one_form(block: ReportBlock) -> ReportBlock:
     if not isinstance(block, TableBlock):
         return block
     # The code-only report's money in a table is drawn per a count its heading names, so it never carries the mark.
-    return block.model_copy(update={"rows": money_columns(block.rows, marked=False)})
+    return block.model_copy(update={"rows": money_columns(block.rows)})
 
 
 def _anchored(blocks: Sequence[ReportBlock]) -> list[ReportBlock]:
@@ -1039,7 +1041,7 @@ def _scoreboard_blocks(
     tags = (
         dict(given_tags)
         if given_tags is not None and all(key in given_tags for key in keys)
-        else arm_tags(keys, control)
+        else campaign_arm_tags([bundle], control)
     )
     earlier = bundle.design.earlier_control
     lost_any = any(board.lost for board in boards)
@@ -2555,7 +2557,7 @@ def _value_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
 
 def _figure_text(mean: float, sem: float | None, ruler: MeasureRuler) -> str:
     """A mean on its ruler with its standard error beside it, where one was estimated."""
-    spread = f" ± {number_in(sem * ruler.factor, ruler.unit)}" if sem is not None else ""
+    spread = f" ± {_spread_text(sem, ruler)}" if sem is not None else ""
     return f"{_mean_text(mean, ruler)}{spread}"
 
 
@@ -2802,7 +2804,7 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
 
     A rate is a share by its shape, so it reads as a percent (:data:`SHARE`) whatever the catalog said of its
     measure; a mean is stated with its unit on the figure, and its spread as a bare number beside it on the same
-    scale (``98.9% ± 6.5``, ``$0.0459 ± 0.007414``).
+    scale, money in the mean's one form (``98.9% ± 6.5``, ``$0.046 ± $0.007``).
     """
     n = _n_text(summary.n, summary.n_independent)
     if summary.rate is not None:
@@ -2810,10 +2812,20 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
             return f"{round(summary.rate * summary.n)} of {summary.n} {n}"
         return f"{_mean_text(summary.rate, SHARE)}{_interval(summary.ci_low, summary.ci_high, SHARE)} {n}"
     if summary.mean is not None:
-        spread = f" ± {number_in(summary.sem * ruler.factor, ruler.unit)}" if summary.sem is not None else ""
+        spread = f" ± {_spread_text(summary.sem, ruler)}" if summary.sem is not None else ""
         return f"{_mean_text(summary.mean, ruler)}{spread} {n}"
     counts = sorted(summary.categories.items(), key=lambda item: (-item[1], item[0]))
     return "; ".join(f"{category}: {count}" for category, count in counts) + f" {n}"
+
+
+def _spread_text(sem: float, ruler: MeasureRuler) -> str:
+    """A mean's standard error on its ruler: money in dollars to its own two significant figures, as every money figure
+    reads (``$0.0074`` beside ``$0.046``), never at four figures and never rounded to a zero it is not; any other unit
+    as a bare number at the unit's precision."""
+    if is_money(ruler.unit) and ruler.money is not None:
+        scaled = sem * ruler.factor
+        return money_form([scaled]).spell(scaled)
+    return number_in(sem * ruler.factor, ruler.unit)
 
 
 def _mean_text(value: float, ruler: MeasureRuler) -> str:
@@ -2841,7 +2853,7 @@ def _judged_text(reading: JudgedReading, ruler: MeasureRuler) -> str:
     """One judged dimension's mean, with its standard error and the scores it rests on, on the dimension's ruler."""
     if reading.mean is None:
         return f"no score (n={reading.n})"
-    spread = f" ± {number_in(reading.sem * ruler.factor, ruler.unit)}" if reading.sem is not None else ""
+    spread = f" ± {_spread_text(reading.sem, ruler)}" if reading.sem is not None else ""
     text = f"{_mean_text(reading.mean, ruler)}{spread} {_n_text(reading.n, reading.n_independent)}"
     if (powered := reading.prediction_powered) is not None:
         text += f"; {_prediction_powered_text(powered, ruler)}"

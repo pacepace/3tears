@@ -112,7 +112,7 @@ from typing import Literal, get_args
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.cell_mean import CellMeanInterval, NoCellMean, cell_mean_interval
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_multiple
+from threetears.evals.kernel.numbers import CENT, format_number, group_thousands, spell_multiple
 from threetears.evals.analysis.quantities import PERCENT, POINTS, number_in
 from threetears.evals.analysis.report.cost_unit import (
     REPLIES,
@@ -6711,12 +6711,24 @@ def _plus(text: str, value: float) -> str:
 _SCALE_COUNTS: dict[str, int] = {"usd": 1, "usd_per_1k": 1000, "usd_per_1m": 1_000_000}
 
 
+def _counted_under_a_cent(figure: Figure) -> bool:
+    """Whether a money figure counts something (its ``per``) and its family holds an amount under a cent: one its
+    ``usd`` spelling states per 1,000 of what it counts, with the count, rather than as a bare amount."""
+    if not figure.per:
+        return False
+    own = (
+        figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
+    )
+    stated = [abs(amount) for amount in (figure.amounts or own) if isinstance(amount, float) and amount]
+    return bool(stated) and min(stated) < CENT
+
+
 def _ruler(figure: Figure, *, per: int, start: int = 0) -> MoneyRuler:
     """How a money figure's family is stated (#993), by the one owner of money's scale
     (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`): over the family's whole set (:class:`Figure`'s
     ``amounts``), never the figure alone, its count moved per 1,000 more where the set is under a cent; a change in the
     changes' form on the amounts' ruler, capped by its interval's width. A figure made without its set is a set of
-    its own numbers. ``per`` 0 is a bare amount, which states no count and reads per 1,000 with its mark."""
+    its own numbers. ``per`` 0 is a bare amount, which states no count and reads in plain dollars."""
     own = (
         figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
     )
@@ -6773,10 +6785,15 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
     if spelling in ("usd", "usd_per_1k"):
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
-        if spelling == "usd":
+        if spelling == "usd" and not _counted_under_a_cent(figure):
             return _Spelled(_ruler(figure, per=0).spell(value, signed=signed))
-        # Per 1,000 of what the cost counts, or per 1,000,000 where the family is under a cent even so: the ruler
-        # moves (the one owner's rule), never a per-1,000 mark stacked on a per-1,000 ruler (#993).
+        if spelling == "usd":
+            # The count said once after an interval's two ends (``+$0.17 to +$0.81 per 1,000 replies``).
+            counted = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000)
+            return _Spelled(counted.spell(value, signed=signed), f" {counted.words(figure.per)}")
+        # Per 1,000 of what the cost counts (a reply's cost under a cent reads ``$0.49 per 1,000 replies``, never a
+        # bare ``$0.00049`` a reader takes for a total), or per 1,000,000 where the family is under a cent even so: the
+        # ruler moves (the one owner's rule), and the count is said with the amount (Q4).
         ruler = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000)
         return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
     if spelling == "usd_whole":
@@ -6869,6 +6886,9 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
     ends = [_spell(end, figure, spelling, absolute) for end in (low, high)]
     if ends[0] == ends[1]:
         return ends[0].number + ends[0].suffix
+    if ends[0].suffix == ends[1].suffix and ends[0].suffix.startswith(" per "):
+        # A count of what money is per is said once, after both ends.
+        return INTERVAL_TEMPLATE.format(low=ends[0].number, high=ends[1].number) + ends[0].suffix
     signed = spelling == "pts" or figure.change or low < 0 or high < 0
     if "interval" in chosen or signed or ends[0].suffix != ends[1].suffix:
         return INTERVAL_TEMPLATE.format(low=ends[0].number + ends[0].suffix, high=ends[1].number + ends[1].suffix)

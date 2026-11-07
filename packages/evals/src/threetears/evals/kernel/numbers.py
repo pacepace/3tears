@@ -151,13 +151,17 @@ def spell_dollars(amount: float) -> str:
 #: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
 UNPRICED = "unpriced"
 
-#: The least amount, in magnitude, that cents state: a non-zero member of a set under it puts the whole set per 1,000.
+#: The least amount, in magnitude, that cents state: a set of money per something whose least non-zero member is under
+#: it is drawn per a thousand times more of what it counts (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`).
 CENT = 0.01
 
-#: The least amount from which a set whose every non-zero member reaches it is written in whole dollars.
+#: The least amount from which a set whose every non-zero member reaches it is written in whole dollars: cents on
+#: amounts of tens and thousands are noise.
 WHOLE_DOLLARS_FROM = 10.0
 
-#: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008.
+#: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008. Retired
+#: (2026-11-07): no set is spelled per 1,000 with the mark any more, the count goes in the header or the axis instead
+#: ("Cost per 1,000 replies"). A cell a report stored with the mark still reads as it was stored.
 PER_THOUSAND = 1000
 PER_THOUSAND_MARK = "/1000"
 
@@ -168,18 +172,16 @@ class MoneyForm:
     (``cost_per_1k.*``). Every member of the set is written in it, so successive rows never alternate between
     ``$0.008`` and ``$0.11`` (#993). :func:`money_form` chooses it from the set, never from one value.
 
-    - ``per_thousand``: the set reads per 1,000 (``$8/1000`` for $0.008), because some member is too small for cents
-      (under :data:`CENT`); then every member does (``$110/1000`` for $0.11 beside it).
-    - ``decimals``: the decimals every member is written to, after the per-1,000 factor: none where the set's smallest
-      non-zero member is :data:`WHOLE_DOLLARS_FROM` or more (cents on amounts of tens and thousands are noise), else
-      cents at least, and as many more as give that member two significant figures, so no member reads as a zero it is
-      not.
+    - ``decimals``: the decimals every member is written to: two significant figures of the set's smallest non-zero
+      member, cents at least, and one more where two would print an interval's two ends alike (:func:`money_form`).
+    - ``per_thousand``: whether the set reads per 1,000 with the mark (``$8/1000`` for $0.008). Nothing chooses it
+      any more (the mark retired, 2026-11-07); a form a report stored with it still spells as stored.
 
     An exact zero reads ``$0`` in every form: it is no measurement of a precision. ``None`` reads :data:`UNPRICED`,
     never ``$0``. A non-finite amount reads :data:`ABSENT`. Thousands are grouped (``$1,208.00``) and a negative
     amount's sign goes before the dollar sign.
 
-    :ivar per_thousand: Whether the set reads per 1,000.
+    :ivar per_thousand: Whether the set reads per 1,000 with the mark (a stored form only).
     :ivar decimals: The decimals each member is written to.
     """
 
@@ -194,7 +196,7 @@ class MoneyForm:
         :param signed: Whether a positive amount carries its ``+`` (a change); a zero, or an amount that rounds to
             zero in the form, carries none.
         :ptype signed: bool
-        :return: ``$1.89``, ``$1.89/1000``, ``-$0.30``, ``+$0.49/1000``, ``$0``; :data:`UNPRICED` for ``None``.
+        :return: ``$1.89``, ``-$0.30``, ``+$0.49``, ``$0``; :data:`UNPRICED` for ``None``.
         :rtype: str
         """
         if amount is None:
@@ -210,9 +212,9 @@ class MoneyForm:
         return f"{sign}${group_thousands(digits)}{PER_THOUSAND_MARK if self.per_thousand else ''}"
 
     def for_changes(self, changes: Iterable[float | None], widths: Iterable[float | None] = ()) -> MoneyForm:
-        """The form changes between members of the set read in: the set's own scale (per 1,000 where the set is), so
-        a change reads in the form of the amounts it compares, to the precision of the changes themselves and of the
-        intervals they are read with, never the amounts' own.
+        """The form changes between members of the set read in: the set's own scale, so a change reads in the form of
+        the amounts it compares, to the precision of the changes themselves and of the intervals they are read with,
+        never the amounts' own.
 
         Its decimals are the fewer of two: those that give the least non-zero change two significant figures (cents
         at least, or whole dollars where every change is $10 or more), so a $0.40 change between monthly totals of
@@ -251,32 +253,42 @@ def per_thousand_digits(digits: str) -> str:
     return f"{(Decimal(digits) * PER_THOUSAND).normalize():f}"
 
 
-def money_form(amounts: Iterable[float | None], *, marked: bool = True) -> MoneyForm:
-    """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set.
+def money_form(
+    amounts: Iterable[float | None],
+    *,
+    intervals: Iterable[tuple[float | None, float | None]] = (),
+) -> MoneyForm:
+    """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set: plain dollars, to
+    two significant figures (owner default Q3, 2026-11-07).
 
-    Per 1,000 where any non-zero member is under a cent (:data:`CENT`) in magnitude; then whole dollars where the
-    smallest non-zero member, as the form writes it, is :data:`WHOLE_DOLLARS_FROM` or more, else the decimals that give
-    it two significant figures, and never fewer than cents. ``None`` and non-finite members say nothing of the form and
-    are passed over; a set with none left reads in dollars and cents. Charts, figure keys and tables all read money by
-    this one rule, so one amount reads alike on each.
+    The decimals give the smallest non-zero member two significant figures, never fewer than cents, so an amount from a
+    dollar up reads to cents; a set whose smallest non-zero member is :data:`WHOLE_DOLLARS_FROM` or more reads in whole
+    dollars. Then, where
+    an interval the set prints would read its two ends alike at those decimals though its stored ends differ
+    (``$0.045 [$0.045, $0.045]``), one decimal more, and no further: an interval whose ends one more decimal does not
+    tell apart is as narrow as the figures can say. ``None`` and non-finite members say nothing of the form and are
+    passed over; a set with none left reads in dollars and cents. Charts, figure keys and tables all read money by this
+    one rule, so one amount reads alike on each.
 
-    :param amounts: Every amount the set holds, in dollars as stored.
+    :param amounts: Every amount the set holds, in dollars as stored, the ends of its intervals included.
     :ptype amounts: Iterable[float | None]
-    :param marked: Whether the set may carry the per-1,000 mark; False for one that states the count its money is
-        drawn per (a table headed by it, a ruler at its cap), whose set under a cent reads in dollars to the decimals
-        its least amount needs instead, so no amount carries two scales.
-    :ptype marked: bool
+    :param intervals: The intervals the set prints, each ``(low, high)`` in dollars as stored; none by default.
+    :ptype intervals: Iterable[tuple[float | None, float | None]]
     :return: The set's form.
     :rtype: MoneyForm
     """
     stated = [abs(amount) for amount in amounts if amount is not None and math.isfinite(amount) and amount != 0]
     if not stated:
         return MoneyForm()
-    per_thousand = marked and min(stated) < CENT
-    return MoneyForm(
-        per_thousand=per_thousand,
-        decimals=_decimals(amount * (PER_THOUSAND if per_thousand else 1) for amount in stated),
-    )
+    decimals = _decimals(stated)
+    ends = [
+        (low, high)
+        for low, high in intervals
+        if low is not None and high is not None and math.isfinite(low) and math.isfinite(high) and low != high
+    ]
+    if any(MoneyForm(decimals=decimals).spell(low) == MoneyForm(decimals=decimals).spell(high) for low, high in ends):
+        decimals += 1
+    return MoneyForm(decimals=decimals)
 
 
 def _decimals(magnitudes: Iterable[float]) -> int:
