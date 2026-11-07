@@ -31,7 +31,8 @@ from uuid import uuid7
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.core._bridge import fire_and_forget, sync_await
-from threetears.core.backends.protocol import L3Backend
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
+from threetears.core.keyset import read_keyset_pages
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
@@ -1743,7 +1744,16 @@ class BaseCollection(ABC, Generic[EntityT]):
             return []
         marks = f"{quote_identifier(schema)}.{quote_identifier(WRITE_MARKS_TABLE)}"
         try:
-            rows = await self.l3_pool.fetch(f"SELECT id FROM {marks} WHERE table_name = $1", self.table_name)  # noqa: S608 - the registry's schema, quoted
+            # in pages of the id under the L3 rail's row cap: a busy table's marks can number more than it answers
+            rows = (
+                await read_keyset_pages(
+                    self.l3_pool,
+                    f"SELECT id FROM {marks}",
+                    ["id"],
+                    where={"table_name": self.table_name},
+                    page_size=L3_RAIL_ROW_CAP - 1,
+                )
+            ).rows
         # prawduct:allow prawduct/broad-except -- the write committed; a mark left is drained by the reconciler
         except Exception as exc:
             contain(exc, log=log, what="could not read the write marks this advance covers; the reconciler drains them")

@@ -28,7 +28,7 @@ from threetears.core.backends import arrow_reply  # noqa: E402
 from threetears.core.backends import nats_proxy as nats_proxy_module  # noqa: E402
 from threetears.core.backends.arrow_reply import ReplyNotArrowError, reply_rows  # noqa: E402
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend  # noqa: E402
-from threetears.core.backends.protocol import ArrowL3Reader  # noqa: E402
+from threetears.core.backends.protocol import ArrowL3Reader, L3AnswerCutError  # noqa: E402
 from threetears.core.collections.complete_copy import rail_arrow_types, read_l3_arrow, read_l3_rows  # noqa: E402
 from threetears.core.collections.schema_backed import (  # noqa: E402
     BIGINT_TYPE,
@@ -264,3 +264,34 @@ async def test_a_set_filter_binds_every_value_as_one_array_in_both_reads() -> No
     ((sql, params),) = by_rows.statements
     assert '"name" = $1 AND "counted" = ANY($2::bigint[]) ORDER BY "id" LIMIT 1000' in sql
     assert params == ("Travis", [1, 2, 3])
+
+
+async def test_an_answer_the_broker_cut_at_its_cap_fails_loud_never_reads_short() -> None:
+    """the broker answers at most its row cap and marks a cut answer ``truncated``. A read that is not paged under
+    the cap raises, by fetch and by fetch_arrow alike (cobalt prod 2026-11-07: a diff's count read 1,000 of 1,986
+    runs, took the rest for gone and left 27 states behind L3 for an hour); a fetchrow, which wants the first row
+    alone, still answers it."""
+    cut = _Reply(rows=_broker_rows(_ROWS), truncated=True).model_dump_json().encode()
+    proxy, _ = _proxy(cut, cut, cut)
+    with pytest.raises(L3AnswerCutError, match="cut the answer at 2 rows") as by_fetch:
+        await proxy.fetch("SELECT * FROM t")
+    assert by_fetch.value.rows == 2
+    with pytest.raises(L3AnswerCutError, match="cut the answer at 2 rows"):
+        await proxy.fetch_arrow("SELECT * FROM t", types=rail_arrow_types(_COLUMNS))
+    first = await proxy.fetchrow("SELECT * FROM t")
+    assert first is not None and first["id"] == 1
+
+
+def _broker_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``rows`` as the broker's reply carries them."""
+    return json.loads(_broker(rows))["rows"]
+
+
+async def test_a_writing_statement_the_broker_cut_answers_short_said_at_error(caplog: pytest.LogCaptureFixture) -> None:
+    """an ``UPDATE ... RETURNING`` has run by the time its answer comes back cut: raising would hide that it wrote, so
+    its rows come back short and the cut is said at ERROR, naming the statement."""
+    cut = _Reply(rows=_broker_rows(_ROWS), truncated=True).model_dump_json().encode()
+    proxy, _ = _proxy(cut)
+    rows = await proxy.fetch("UPDATE t SET name = 'x' RETURNING *")
+    assert len(rows) == 2
+    assert "cut a writing statement's answer at 2 rows" in caplog.text

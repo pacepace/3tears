@@ -59,7 +59,7 @@
 
 [[release]]
 version = "unreleased"
-since = "v0.93.1"
+since = "v0.94.0"
 summary = """
 The report kit (none of it is in a final release): a generation is written by the report
 planner, and a planned analysis's page is the page its stored plan draws. An arm and a template's strata may declare
@@ -401,6 +401,14 @@ why = """
 They named the rows of the world conformance kit's obligations table for a package test, and the kit read neither:
 it derives each dimension's checks from its declared shape (obligations). Port: call obligations, or read the
 dimension's verdicts on WorldConformanceReport.for_dimension.
+"""
+
+[[release]]
+version = "0.94.0"
+since = "v0.93.1"
+summary = """
+A scoped snapshot's diff counts every group under the L3 rail's cap and an answer the rail cut fails loud: no
+3tears-evals name has moved or been removed since 0.93.1, and no judge wording changed.
 """
 
 [[release]]

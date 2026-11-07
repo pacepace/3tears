@@ -19,6 +19,7 @@ from sqlalchemy import Column, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, DeleteCascade
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections import delete_cascade as delete_cascade_module
 from threetears.core.collections.delete_cascade import (
     CascadedRows,
     announce_delete_cascade,
@@ -200,3 +201,33 @@ async def test_nothing_is_read_for_a_collection_that_declares_nothing() -> None:
 @pytest.mark.parametrize("action", ["CASCADE", "SET NULL"])
 def test_a_cascade_names_its_action(action: str) -> None:
     assert DeleteCascade("books", "shelf_id", action).action == action  # type: ignore[arg-type]
+
+
+class _CuttingPool(_Pool):
+    """the L3 rail: a page's ``ORDER BY ... LIMIT`` and its key after the last row honoured, and every answer cut at
+    four rows without a word."""
+
+    async def fetch(self, sql: str, values: list[Any], *after: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+        rows = sorted(await super().fetch(sql, values), key=lambda r: r["id"])
+        if after:
+            rows = [r for r in rows if r["id"] > after[0]]
+        limit = re.search(r"LIMIT (\d+)", sql)
+        return (rows if limit is None else rows[: int(limit.group(1))])[:4]
+
+
+async def test_a_parent_of_more_children_than_the_rail_answers_a_statement_names_every_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """the children a cascade reaches were one statement's answer, which the L3 rail cuts at its cap: a shelf of more
+    books than that left the rest cached after the delete. Read in pages of the child's key under the cap."""
+    monkeypatch.setattr(delete_cascade_module, "L3_RAIL_ROW_CAP", 4)
+    registry, pool, _source = _library()
+    pool.tables["books"] = [{"id": f"b{i:02d}", "shelf_id": "s1", "sequel_of": None} for i in range(10)]
+    pool.__class__ = _CuttingPool
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    shelves = _Shelves(registry, config)
+    _Books(registry, config)
+
+    cascaded = await read_delete_cascade(shelves, ["s1"])
+
+    assert cascaded[0].keys == tuple(f"b{i:02d}" for i in range(10))

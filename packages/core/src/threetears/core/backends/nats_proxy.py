@@ -40,6 +40,7 @@ from threetears.core.backends.broker_generation import (
     record_reply_generations,
 )
 from threetears.core.backends.protocol import (
+    L3AnswerCutError,
     L3_RAIL_ROW_CAP,
     LOAD_FILES_MAX_WAIT_SECONDS,
     FileLoad,
@@ -496,6 +497,39 @@ def _load_result(response: Mapping[str, Any]) -> LoadResult:
     )
 
 
+def _uncut(response: Mapping[str, Any], query: str, what: str) -> None:
+    """refuse a reply the broker cut at its row cap: a read that is not paged under the cap fails loud, never short.
+
+    A statement that writes (an ``UPDATE ... RETURNING``) has written by the time its answer comes back cut: raising
+    would hide that it ran, so its answer comes back short, said at ERROR naming the statement.
+
+    :param response: the broker's reply
+    :ptype response: Mapping[str, Any]
+    :param query: the statement, its head named in the error
+    :ptype query: str
+    :param what: the call, for the error
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    :raises L3AnswerCutError: when the reply says ``truncated``
+    """
+    if response.get("truncated"):
+        rows = len(response.get("rows") or ())
+        if statement_operation(query) != "select":
+            _logger.error(
+                "%s: the L3 rail cut a writing statement's answer at %d rows; it ran, and its caller sees only those",
+                what,
+                rows,
+                extra={"extra_data": {"rows": rows, "statement": " ".join(query.split())[:200]}},
+            )
+            return
+        raise L3AnswerCutError(
+            f"{what}: the L3 rail cut the answer at {rows} rows (its cap is {L3_RAIL_ROW_CAP}); a statement that may "
+            f"match more pages under the cap: {' '.join(query.split())[:200]}",
+            rows=rows,
+        )
+
+
 class NatsProxyL3Backend:
     """L3 backend that routes queries through NATS-based broker.
 
@@ -689,6 +723,7 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if broker returns error
         """
         response = await self._send_query(query, list(params), "select", namespace, customer_scope=customer_scope)
+        _uncut(response, query, "L3 query")
         rows: list[dict[str, Any]] = response.get("rows", [])
         result = [_deserialize_row(row) for row in rows]
         return result
@@ -739,6 +774,12 @@ class NatsProxyL3Backend:
             except ValueError as exc:
                 raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
             self.raise_for_failed_reply(response, "L3 query")
+        if parsed.truncated:
+            raise L3AnswerCutError(
+                f"L3 query: the L3 rail cut the answer at {parsed.rows.num_rows} rows (its cap is {L3_RAIL_ROW_CAP}); "
+                f"a statement that may match more pages under the cap: {' '.join(query.split())[:200]}",
+                rows=parsed.rows.num_rows,
+            )
         return parsed.rows
 
     async def fetchrow(
@@ -764,8 +805,10 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any] | None
         :raises DataLayerUnavailableError: if broker returns error
         """
-        rows = await self.fetch(query, *params, namespace=namespace, customer_scope=customer_scope)
-        result: dict[str, Any] | None = rows[0] if rows else None
+        # the first row alone: a cut answer still carries it
+        response = await self._send_query(query, list(params), "select", namespace, customer_scope=customer_scope)
+        rows: list[dict[str, Any]] = response.get("rows", [])
+        result: dict[str, Any] | None = _deserialize_row(rows[0]) if rows else None
         return result
 
     async def fetchval(
@@ -1899,6 +1942,7 @@ class _ProxyConnection:
         response = await self._backend.nats_request(subject, payload, offload_encode=offload)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
+        _uncut(response, query, "tx.fetch")
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 

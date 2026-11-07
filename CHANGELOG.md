@@ -3068,6 +3068,38 @@ arm declaring none takes the computed one. `campaign_create` takes `short_name` 
 `campaign_update` takes `arm_short_names`, which stays editable once runs have joined. No identity, digest or
 fingerprint moves. See `packages/evals/MIGRATIONS.toml`.
 
+## v0.94.0 -- 2026-11-07
+
+### core: a scoped snapshot's diff counts every group, and an answer the L3 rail cut fails loud
+
+**Fixed (core):** a scoped snapshot's diff counted a scope's groups in one statement, one row a group, and the L3
+rail answers at most 1,000 rows a statement. On cobalt prod (2026-11-07) a deploy killed the writer mid-write, the
+recovery brought 27 states forward from the diff, and each state's count of a feed table's 1,986 runs came back cut
+at 1,000: the runs past the cut looked gone from L3, and the copy, which keeps only some runs (`retained`), refused
+the scope on every retry for an hour. A table that keeps every row would have dropped the groups past the cut
+instead, publishing fewer rows than L3 holds. The diff's count, the rebuild's read of a scope's partition values and
+the list of each table's scopes now read in keyset pages under the rail's cap (`rows_per_statement`).
+
+**Changed (core):** a retained table whose kept rows really did go from L3 is no longer left behind for good: the
+one table is read whole for the scope, through the L1's retention, said at WARNING, and the scope is brought forward;
+the scope's other tables stay diffed.
+
+**Fixed (core):** a scope a catch-up leaves behind L3 (its diff refused or raised, a write in progress holds it,
+another replica's claim holds it) is now named in `status().behind`, `read_with_behind()` and `read_versioned()`,
+with why, until this L1 commits it current. Before, those readers said nothing of it, and a consumer's index said
+`behind: []` while the scope served the old epoch. `ScopedSnapshot.behind` still names only the scopes whose chunks
+the L1 could not apply, which the snapshot retries itself.
+
+**Changed (core):** the broker marks an answer it cut at its row cap `truncated`. `NatsProxyL3Backend.fetch` and
+`fetch_arrow` now raise `L3AnswerCutError` (`threetears.core.backends.protocol`) on such
+an answer instead of answering it short; `fetchrow` and `fetchval` still answer its first row. The key-led read
+(`SqlL3Backend.fetch_led_by`) reads a cut answer again in halves, as it does one that reaches the cap. Every core
+statement that could match more than the cap now pages under it: a commit's moved scopes (`ScopeEpochs.commit`,
+before an `UPDATE ... RETURNING`), `repoint_user_rows`, `decay_salience` with `returning_columns`, the delete
+cascade's child rows, `SqlL3Backend.scan` of a registered table, and the write marks a collection's advance covers.
+The hub's `tx.fetch` cuts without saying so; a transaction's `fetch` raises once it does, and until then a
+transaction's statements page under the cap.
+
 ## v0.93.1 -- 2026-11-07
 
 ### core: a shared-Arrow store's status reads its tallies, never the file system
