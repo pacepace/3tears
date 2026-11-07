@@ -30,7 +30,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.errors import NotFoundError
@@ -54,8 +54,16 @@ WRITER_CASE_SUFFIX = ".json.gz"
 WriterCaseFormat = Literal["writer-case/1"]
 
 
-class ReasonedOn(EvalBaseModel):
+#: The record of a mint's withholding is a value inside a case file, never a stored document: plain models, immutable
+#: and refusing a key they do not declare, as the report input's parts are. Not ``EvalBaseModel``, whose subclasses
+#: declaring a ``doc_type`` are the stored documents, and ``ReasonedOn.doc_type`` names a host's document instead.
+_VALUE = ConfigDict(frozen=True, extra="forbid")
+
+
+class ReasonedOn(BaseModel):
     """One stored document that reasoned on a campaign, as a host's mint manifest names it."""
+
+    model_config = _VALUE
 
     doc_type: str = Field(min_length=1, description="Its document type: an analysis, a report, an insight.")
     id: str = Field(min_length=1, description="Its id in the host's store.")
@@ -66,8 +74,10 @@ class ReasonedOn(EvalBaseModel):
     )
 
 
-class WithheldNote(EvalBaseModel):
+class WithheldNote(BaseModel):
     """One note a minted case withholds, and the documents that led to it."""
+
+    model_config = _VALUE
 
     note: str = Field(min_length=1, description="The note's file name in the analyst skill.")
     reasoned_on: list[ReasonedOn] = Field(
@@ -76,8 +86,10 @@ class WithheldNote(EvalBaseModel):
     )
 
 
-class CaseMint(EvalBaseModel):
+class CaseMint(BaseModel):
     """What a mint from a host's export withheld, and what it found no note for."""
+
+    model_config = _VALUE
 
     withheld: list[WithheldNote] = Field(default_factory=list, description="Each note withheld, in withhold order.")
     unmatched: list[ReasonedOn] = Field(
