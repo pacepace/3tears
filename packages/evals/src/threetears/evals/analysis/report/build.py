@@ -2824,11 +2824,12 @@ def _summary_text(summary: MeasureSummary, ruler: MeasureRuler) -> str:
 
 def _spread_text(sem: float, ruler: MeasureRuler) -> str:
     """A mean's standard error on its ruler: money in dollars to its own two significant figures, as every money figure
-    reads (``$0.0074`` beside ``$0.046``), never at four figures and never rounded to a zero it is not; any other unit
-    as a bare number at the unit's precision."""
+    reads (``$0.0074`` beside ``$0.046``), never at four figures and never rounded to a zero it is not, and a rate's
+    spread as a rate, as its mean reads (``$55 ± $11``, never ``± $10.55``); any other unit as a bare number at the
+    unit's precision."""
     if is_money(ruler.unit) and ruler.money is not None:
         scaled = sem * ruler.factor
-        return money_form([scaled]).spell(scaled)
+        return money_form([scaled], rate=ruler.money.rate).spell(scaled)
     return number_in(sem * ruler.factor, ruler.unit)
 
 

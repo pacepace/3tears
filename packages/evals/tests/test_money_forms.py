@@ -43,6 +43,7 @@ from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, money_columns
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
@@ -124,6 +125,16 @@ def _one_form(texts: Iterable[str]) -> bool:
         and spelled <= {_CENTS, _WHOLE, _TEN_CENTS}
         and not {_WHOLE, _TEN_CENTS} <= spelled
     )
+
+
+def _written_places(found: re.Match[str]) -> int:
+    """The place of the last figure a spelled amount states, as decimals: its decimals where it writes some; else, for
+    whole dollars, minus the zeros past its first two figures (owner ruling Q3: a rate reads two significant figures at
+    every magnitude, so ``$160`` states the tens and ``$1,200`` the hundreds, ``$75`` and ``$123`` the dollars)."""
+    if found.group(3):
+        return len(found.group(3))
+    digits = found.group(2).replace(",", "")
+    return -(len(digits) - max(2, len(digits.rstrip("0"))))
 
 
 def _amount(text: str) -> float:
@@ -219,6 +230,20 @@ def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_su
         key = format_figure(figure, ("usd",))
         assert key == figure_text(figure.value * drawn.factor, drawn) == money_form(values).spell(figure.value)
         assert re.fullmatch(r"\$[\d,]+\.\d\d", key), key
+
+
+def test_a_rate_reads_two_significant_figures_at_every_magnitude_and_a_total_keeps_cents() -> None:
+    """Owner ruling Q3, two significant figures per amount: a rate from $100 up rounds into its dollars ($123 reads
+    ``$120``, $1,234 reads ``$1,200``), as one from $10 reads whole dollars; a total of the same size keeps its cents.
+    A table's column of rates reads alike, and a tight interval takes its third figure there too."""
+    rate = money_form([123.4, 1234.0, 74.89], rate=True)
+    assert [rate.spell(amount) for amount in (123.4, 1234.0, 74.89, 140.0)] == ["$120", "$1,200", "$75", "$140"]
+    assert rate.spell_ends(121.0, 124.0) == ("$121", "$124")
+    assert rate.decimals == 0, "a chart's ticks read whole dollars at the fewest"
+    total = money_form([123.4, 1234.0])
+    assert [total.spell(amount) for amount in (123.4, 1234.0)] == ["$123.40", "$1,234.00"]
+    rows = money_columns([{"cost": TableCell(value=123.4, unit=MONEY)}, {"cost": TableCell(value=7.5, unit=MONEY)}])
+    assert [row["cost"].text for row in rows] == ["$120", "$7.50"]
 
 
 def test_unknown_reads_unpriced_never_a_zero_and_is_no_member() -> None:
@@ -1283,7 +1308,7 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
                     one
                     for one in _AMOUNT.finditer(text)
                     if not _reconciles(
-                        _amount(one.group(0)), [*stored, *line], ruler.scale, places=len(one.group(3) or "")
+                        _amount(one.group(0)), [*stored, *line], ruler.scale, places=_written_places(one)
                     )
                 ]
                 assert not off, (label, text, ruler.scale)
@@ -1368,7 +1393,7 @@ def _amounts_reconcile(label: str, page: PageChart, owned: list[tuple[float, int
             value = _amount(found.group(0))
             # Never two scales on one amount: a count named over it, and the per-1,000 mark on it.
             assert not (found.group(4) and (named or default)), (label, text, "stacked")
-            places = len(found.group(3) or "") + (3 if found.group(4) else 0)
+            places = _written_places(found) + (3 if found.group(4) else 0)
             rounding = 10.0**-places / 2 + abs(value) * 1e-9
             # A figure too small to show at the decimals written is no reading of a zero: a zero reads a zero.
             near = [

@@ -103,7 +103,7 @@ from threetears.evals.analysis.report.parts.words import (
     UNCORRECTED_NOTE,
     change_words,
 )
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import MoneyForm, format_number
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.figure_keys import arm_settings, correction_words, pairing_contrast
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
@@ -406,7 +406,12 @@ def _descriptive(
 
 
 def _level_text(value: float, drawn: Quantity) -> str:
-    """A level (not a change) in the quantity's unit, unsigned: money in its ruler's form."""
+    """A level (not a change) in the quantity's unit, unsigned: money in its ruler's form, never coarser than the
+    chart's ticks, so a tip's two levels differ by its bar ($5,422 beside $6,300 for a bar of $878, never $5,400 at
+    two figures: the one more figure owner ruling Q3 grants where it is needed)."""
+    form = drawn.money
+    if drawn.unit == MONEY and form is not None and form.figures is not None and value != 0:
+        return MoneyForm(per_thousand=form.per_thousand, decimals=max(form.places(value), form.decimals)).spell(value)
     return figure_text(value, dataclasses.replace(drawn, change=False))
 
 

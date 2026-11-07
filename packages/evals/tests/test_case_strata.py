@@ -51,6 +51,7 @@ from threetears.evals.kernel import (
 from threetears.evals.schema import EvalResult, EvalTestCase, RubricScore
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.schema.models import VariationAxis
 from threetears.evals.gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
@@ -351,6 +352,34 @@ class TestTheReportCarriesStrata:
         assert recall[_column(table, "lookalike")] == "1 of 3 (n=3)"
         assert recall[_column(table, "plain")] == "100% [75.8%, 100%] (n=12)"
         assert _row(table, "sonnet", "conversation tone (judged)")[_column(table, "lookalike")] == "2 ± 0 (n=3)"
+
+    def test_a_money_measure_s_spread_reads_in_its_mean_s_form(self) -> None:
+        """A cost per turn is a rate, so its standard error reads as one beside its mean: two figures, whole dollars
+        from $10 (``$55 ± $11``), never a total's cents (``± $10.55``)."""
+        cost = MetricDescriptor(
+            name="turn_cost_usd",
+            reader_name="Turn cost",
+            data_type="numeric",
+            family="mechanical",
+            transferability_class="mechanical",
+            attribution_scope="end_to_end",
+            description="What the candidate's calls for one turn cost.",
+            higher_is_better=False,
+            unit="usd",
+            merit_axis="cost",
+        )
+        profile = HostProfile(host_id="strata", host_sweepables=SHARED_CORE, measures=MeasureRegistry([cost]))
+        arms: dict[str, list[EvalResult]] = {}
+        for model in ("sonnet", "haiku"):
+            for index, case in enumerate(_PLAIN):
+                result = _classified(f"run-{model}", model, case, "NONE", "NONE")
+                spent = 20.0 + 70.0 * (index % 2)
+                arms.setdefault(model, []).append(
+                    result.model_copy(update={"host_measures": {**result.host_measures, "turn_cost_usd": spent}})
+                )
+        storage, campaign = _store([_case(case, "plain") for case in _PLAIN], arms)
+        table = _strata_table(_code_only(assemble_context_bundle(campaign, storage=storage, profile=profile)))
+        assert _row(table, "sonnet", "Turn cost")["all"] == "$55 ± $11 (n=12)"
 
     def test_a_stratum_below_the_floor_is_disclosed_by_name_and_count(self) -> None:
         report = _code_only(_bundle(*_mixed()))

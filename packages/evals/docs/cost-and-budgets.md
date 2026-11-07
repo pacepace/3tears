@@ -408,7 +408,8 @@ it is too small for cents the whole set reads per 1,000 replies, which the headi
 `Production cost, per 1,000 replies`). The rule is one count of significant figures, not one count of decimals (owner
 ruling Q3, 2026-11-09, which replaces the 2026-10-27 reading of one decimal count per set): each amount reads to two
 significant figures, so `$0.0080` sits beside `$0.11`, never `$0.1100`. A total reads to cents from a dollar up
-(`$1,208.00`); a rate reads in whole dollars from $10 (`$75 [$73, $77]`). Only an interval whose two ends would read
+(`$1,208.00`); a rate reads to its two figures at every magnitude: whole dollars from $10 (`$75 [$73, $77]`), and
+from $100 its figures round into the dollars (`$120` for $123). Only an interval whose two ends would read
 alike takes a third figure, and a cost per 1,000 takes one where two would leave the month printed beside it more than
 half a percent off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A difference takes the form of the amounts
 it compares, to the places its interval supports.

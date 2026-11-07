@@ -443,11 +443,11 @@ class TableCell(EvalDocumentModel):
     )
     decimals: int | None = Field(
         default=None,
-        ge=0,
         exclude_if=lambda value: value is None,
         description=(
             "For a money number, the decimals its column's one form writes it to (#993), chosen from every amount the "
-            "column holds; None for none, and the number rule spells the number."
+            "column holds; a negative count rounds into the dollars (`-1` writes a rate of $123 as `$120`); None for "
+            "none, and the number rule spells the number."
         ),
     )
     per_thousand: bool = Field(
@@ -557,7 +557,6 @@ def money_columns(
     rows: Sequence[Mapping[str, TableCell]],
     *,
     by_row: Sequence[str | None] | None = None,
-    totals: Collection[str] = (),
     reconciles: Collection[str] = (),
 ) -> list[dict[str, TableCell]]:
     """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
@@ -565,8 +564,8 @@ def money_columns(
     names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
     the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
     :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
-    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, a rate in whole
-    dollars from $10 and a total to cents. Each cell writes its value and its interval's ends at one precision, the
+    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, every set a rate
+    (money per the count the table's head names), in whole dollars from $10. Each cell writes its value and its interval's ends at one precision, the
     finest of them needs, and one significant figure more where its own interval's ends would otherwise read alike
     (:meth:`~threetears.evals.kernel.numbers.MoneyForm.places_of`), so $0.008 reads ``$0.0080`` beside ``$0.11``, never
     ``$0.1100``. A table states the count its money is drawn per in its
@@ -579,10 +578,6 @@ def money_columns(
     :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set by
         its column); unset for a table whose every set is a column.
     :ptype by_row: Sequence[str | None] | None
-    :param totals: The sets (a column's key, or a row's figure type under ``by_row``) that hold totals (a run's cost, a
-        month's); every other set is money per something, a rate, as a table's money is drawn per the count its head
-        names.
-    :ptype totals: Collection[str]
     :param reconciles: The sets a total computed from each amount is printed beside (a cost per 1,000 at a declared
         monthly volume), whose amounts take a third figure where two would leave them off that total
         (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
@@ -607,10 +602,7 @@ def money_columns(
                     for number in (cell.value, cell.low, cell.high)
                     if isinstance(number, int | float) and not isinstance(number, bool)
                 )
-    forms = {
-        name: money_form(amounts, rate=name[1] not in totals, reconciles=name[1] in reconciles)
-        for name, amounts in held.items()
-    }
+    forms = {name: money_form(amounts, rate=True, reconciles=name[1] in reconciles) for name, amounts in held.items()}
     return [
         {
             key: cell.model_copy(

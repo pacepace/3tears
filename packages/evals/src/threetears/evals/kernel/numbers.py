@@ -164,7 +164,8 @@ MONEY_FIGURES = 2
 RECONCILED_WITHIN = 0.005
 
 #: The least amount a rate reads in whole dollars from: two significant figures of $75 are its dollars, and money is
-#: written in cents or whole dollars, never one decimal. A total reads to cents whatever its size (owner ruling Q3).
+#: written in cents or whole dollars, never one decimal; from $100 a rate's two figures round into the dollars ($123
+#: reads ``$120``). A total reads to cents whatever its size (owner ruling Q3).
 RATE_WHOLE_FROM = 10.0
 
 #: How many times its amount a per-1,000 spelling writes, and the mark it carries: ``$8/1000`` is $0.008. Retired
@@ -181,11 +182,13 @@ class MoneyForm:
     count of significant figures, never one count of decimals), which :func:`money_form` chooses from the set: each
     amount to two significant figures, so $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100`` (owner ruling
     Q3). A total reads to cents from a dollar up whatever its size (``$1,208.00``); a rate (money per something) reads
-    to cents from a dollar and in whole dollars from :data:`RATE_WHOLE_FROM` (``$75 [$73, $77]``), never one decimal.
+    to cents from a dollar and in whole dollars from :data:`RATE_WHOLE_FROM` (``$75 [$73, $77]``), its two figures
+    rounding into the dollars from $100 (``$120`` for $123), never one decimal.
 
     - ``figures``: the significant figures each member is written to (:data:`MONEY_FIGURES`). ``None`` for a form that
       writes every member to ``decimals`` alike: one a report stored, or a chart's ticks read back from its format.
-    - ``decimals``: every member's decimals where ``figures`` is ``None``; else the set's largest member's, which a
+    - ``decimals``: every member's decimals where ``figures`` is ``None``, a negative count rounding into the dollars
+      (``-1`` writes $123 as ``$120``); else the set's largest member's, never fewer than whole dollars, which a
       chart's ticks are written to, so no tick carries more decimals than the amounts beside it.
     - ``at_most``: the most decimals a member is written to, where its figures would ask for more: the precision the
       intervals a set of changes is read with support (:meth:`for_changes`); ``None`` for no bound.
@@ -219,7 +222,8 @@ class MoneyForm:
     def places(self, amount: float) -> int:
         """The decimals this form writes one amount to: those that give it the form's significant figures (one more
         where it reconciles and two round it too far), cents at least below :data:`RATE_WHOLE_FROM` or for a total,
-        and ``at_most`` at most; ``decimals`` itself where the form names no figures or the amount is zero.
+        and ``at_most`` at most; ``decimals`` itself where the form names no figures or the amount is zero. A rate's
+        count is negative where its figures end before the dollar (``-1`` for $123, written ``$120``).
 
         :param amount: Dollars, as stored.
         :ptype amount: float
@@ -298,7 +302,7 @@ class MoneyForm:
         if amount == 0:
             return "$0"
         scaled = abs(amount) * (PER_THOUSAND if self.per_thousand else 1)
-        digits = f"{scaled:.{places}f}"
+        digits = _money_digits(scaled, places)
         zero = float(digits) == 0
         sign = "-" if amount < 0 and not zero else "+" if signed and amount > 0 and not zero else ""
         return f"{sign}${group_thousands(digits)}{PER_THOUSAND_MARK if self.per_thousand else ''}"
@@ -342,9 +346,9 @@ class MoneyForm:
 def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconciles: bool = False) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set: plain dollars, each
     amount to two significant figures (owner ruling Q3, 2026-11-09). A total reads to cents from a dollar up whatever
-    its size; a rate reads in whole dollars from :data:`RATE_WHOLE_FROM`. An interval whose two ends would read alike
-    takes one figure more where it is spelled (:meth:`MoneyForm.spell_ends`, :meth:`MoneyForm.places_of`), never the
-    whole set. ``None`` and non-finite members say nothing of the form and are passed over. Charts, figure keys and
+    its size; a rate reads in whole dollars from :data:`RATE_WHOLE_FROM`, to its two figures ($123 reads ``$120``). An
+    interval whose two ends would read alike takes one figure more where it is spelled (:meth:`MoneyForm.spell_ends`,
+    :meth:`MoneyForm.places_of`), never the whole set. ``None`` and non-finite members say nothing of the form and are passed over. Charts, figure keys and
     tables all read money by this one rule, so one amount reads alike on each.
 
     :param amounts: Every amount the set holds, in dollars as stored, the ends of its intervals included.
@@ -367,22 +371,32 @@ def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconcile
 
 def _member_decimals(magnitude: float, figures: int, *, rate: bool) -> int:
     """The decimals that give a non-zero magnitude ``figures`` significant figures: never fewer than cents for a total
-    or a rate under :data:`RATE_WHOLE_FROM`; a rate from it up in whole dollars where its figures end at the dollar or
-    before it, else to cents, since money is never written to one decimal. Placed by the magnitude as rounded to those
-    figures, so one that rounds across a power of ten (0.0996 to 0.10) is written to the decimals of what it became."""
+    or a rate under :data:`RATE_WHOLE_FROM`; a rate from it up to its figures where they end at the dollar or before
+    it (``-1`` for $123: ``$120``, owner ruling Q3), else to cents, since money is never written to one decimal. Placed
+    by the magnitude as rounded to those figures, so one that rounds across a power of ten (0.0996 to 0.10) is written
+    to the decimals of what it became."""
     exponent = int(f"{magnitude:.{figures - 1}e}".split("e")[1])
     places = figures - 1 - exponent
     if rate and magnitude >= RATE_WHOLE_FROM:
-        return 0 if places <= 0 else 2
+        return places if places <= 0 else 2
     return max(2, places)
 
 
 def _coarsest(magnitudes: Iterable[float], figures: int, *, rate: bool) -> int:
-    """The decimals a set's largest non-zero magnitude is written to (:func:`_member_decimals`); cents for none."""
+    """The decimals a set's largest non-zero magnitude is written to (:func:`_member_decimals`), whole dollars at the
+    fewest, as a chart's ticks are written; cents for none."""
     stated = [magnitude for magnitude in magnitudes if magnitude != 0]
     if not stated:
         return 2
-    return _member_decimals(max(stated), figures, rate=rate)
+    return max(0, _member_decimals(max(stated), figures, rate=rate))
+
+
+def _money_digits(magnitude: float, places: int) -> str:
+    """A magnitude's digits at ``places`` decimals; a negative count rounds into the whole part (``120`` for 123 at
+    ``-1``)."""
+    if places >= 0:
+        return f"{magnitude:.{places}f}"
+    return f"{round(magnitude, places):.0f}"
 
 
 def _alike(ends: tuple[float | None, float | None] | None, places: int, per_thousand: bool) -> bool:
@@ -393,7 +407,9 @@ def _alike(ends: tuple[float | None, float | None] | None, places: int, per_thou
     if low is None or high is None or not (math.isfinite(low) and math.isfinite(high)) or low == high:
         return False
     factor = PER_THOUSAND if per_thousand else 1
-    return f"{abs(low) * factor:.{places}f}" == f"{abs(high) * factor:.{places}f}" and (low < 0) == (high < 0)
+    return _money_digits(abs(low) * factor, places) == _money_digits(abs(high) * factor, places) and (low < 0) == (
+        high < 0
+    )
 
 
 #: The multiple from which a multiple is written whole: ``21 times``, never ``21.05 times``.
