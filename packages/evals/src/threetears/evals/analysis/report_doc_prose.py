@@ -32,6 +32,7 @@ from threetears.evals.analysis.report.figure_keys import (
     format_figure,
     keys_in,
     literal_numbers,
+    page_arm_names,
     printed_arm_name,
     reader_names,
     resolve,
@@ -223,15 +224,16 @@ _ARM_ID_MARKS = re.compile(r"[-\d_.:/=()\[\]\"]")
 
 
 def _internal_arm_ids(report_input: ReportInput) -> dict[str, str]:
-    """Each arm's id a reader is never shown: one that differs, case-folded, from both the name the page prints for
-    its arm (:func:`~threetears.evals.analysis.report.figure_keys.printed_arm_name`) and its served model, and holds
+    """Each arm's id a reader is never shown: one that differs, case-folded, from the name the page prints for its arm
+    (:func:`~threetears.evals.analysis.report.figure_keys.page_arm_names`), its alias and its served model, and holds
     an id mark, a hyphen or a digit. A model arm, whose id is its served model's name, is the reader's word; a lever
     arm's id is not. The alias exempts nothing beyond the printed name it falls back to: an input built from a run
     sets every arm's alias to its id."""
     found: dict[str, str] = {}
+    page = page_arm_names(report_input)
     for arm in report_input.arms:
-        printed = printed_arm_name(arm)
-        names = {name.casefold() for name in (printed, arm.served_model) if name}
+        printed = page[arm.id]
+        names = {name.casefold() for name in (printed, printed_arm_name(arm), arm.served_model) if name}
         if arm.id.casefold() not in names and _ARM_ID_MARKS.search(arm.id):
             found[arm.id] = printed
     return found

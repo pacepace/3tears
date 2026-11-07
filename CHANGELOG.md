@@ -14,20 +14,22 @@ analysis and a document that no longer reads are listed by code's verdict alone.
 each floor a candidate breaks) and its line on when criteria were set leave the headline for a new list beside it,
 `CampaignLine.report.caveats`. A document whose snapshot no longer reads is listed by code's verdict and as needing
 regeneration. At render time only, every code-written surface (the campaign and aspect pages, the report document's
-page, the listing) names an arm as the campaign's page does: its label where a person gave one; a computed name
-holding a level too long to print by its lever and the arm's own letter tag on that page (`Extractor instructions B`),
-which a figure key does not tag twice; the empty level of a text lever as `no system prompt`, never `(none)` (an empty
-number lever, such as a default temperature, keeps its placeholder). An analyst's own caveat label prints its figure
-keys written out, and a strict build refuses one that does not resolve. Nothing stored changes: a bundle's frozen
-labels, its fingerprint and census order, and a report snapshot's input are as before. No golden moves. Each page's
-letter is that page's tag; the code page and the document page still tag arms in their own orders until one tag rule
-serves both.
+page, the listing) names an arm the same way: its label where a person gave one; a computed name holding a level too
+long to print by its lever alone (`Extractor instructions`); the empty level of a text lever as `no system prompt`,
+never `(none)` (an empty number lever, such as a default temperature, keeps its placeholder). Where two arms would then
+read alike, a surface adds the tag it prints the arm by (`Extractor instructions (B)`): the code page its charts' tag,
+the report document's page and the listing the document's, so one listing line never names an arm two ways, and a
+figure key never tags it twice. An analyst's own caveat label prints its figure keys written out, a strict build
+refuses one that does not resolve, and the store gate reads an arm by the name its page prints. Nothing stored
+changes: a bundle's frozen labels, its fingerprint and census order, and a report snapshot's input are as before. No
+golden moves. `threetears.evals.analysis.analysis_verdict` (provisional) is removed: `AnalysisLine.verdict` is the line
+it returned.
 
 **Hosts:** `report.headline` of a passed document is now its own headline, never prefixed by a warning. A host that
 showed `headline` must show `report.caveats` (new, additive, a list of strings, empty with none) beside it to keep
 the warnings. `AnalysisLine.verdict` keeps its shape (the caveats, then code's verdict). `AnalysisLine.verdict` and
-code's headline name a declared arm by its label, and every computed name follows the page. Recorded in
-`MIGRATIONS.toml`.
+code's headline name a declared arm by its label, and every computed name follows the page. A host calling
+`analysis_verdict` reads `AnalysisLine.verdict` instead. Recorded in `MIGRATIONS.toml`.
 
 ### evals: 26 declared names only Discodon's tests import go provisional
 

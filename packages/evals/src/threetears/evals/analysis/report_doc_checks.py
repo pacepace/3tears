@@ -66,7 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, chart_faults, complete_chart, small_multiple_faults
-from threetears.evals.analysis.report.figure_keys import keys_in, printed_arm_name, reader_names, render
+from threetears.evals.analysis.report.figure_keys import keys_in, page_arm_names, printed_arm_name, reader_names, render
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report_decision import Caveat, ImpliedCaveat, caveat_materiality, every_caveat
@@ -391,7 +391,7 @@ def _id_verdicts(
     shown |= {
         name for arm in report_input.arms for name in (arm.id, arm.name, arm.short_name, arm.served_model) if name
     }
-    shown |= {printed_arm_name(arm) for arm in report_input.arms}
+    shown |= {printed_arm_name(arm) for arm in report_input.arms} | set(page_arm_names(report_input).values())
     exact: dict[str, tuple[str, str]] = {}
     for example in report_input.examples:
         for kind, identifier in (("trial", example.trial), ("case", example.case)):

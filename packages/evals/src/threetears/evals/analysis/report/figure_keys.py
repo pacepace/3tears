@@ -124,7 +124,7 @@ from threetears.evals.analysis.report.cost_unit import (
     priced_in_part,
 )
 from threetears.evals.analysis.report.figures import PER_MILLION_REPLIES, PER_THOUSAND_LABEL, PER_THOUSAND_REPLIES
-from threetears.evals.analysis.report.words import arm_tags, reader_arm_name, text_levers
+from threetears.evals.analysis.report.words import TOLD_APART, arm_tags, reader_arm_name, text_levers, told_apart
 from threetears.evals.analysis.report_input import (
     Arm,
     Aspect,
@@ -230,8 +230,9 @@ ARM_TEMPLATE = "{name} ({tag})"
 
 
 def written_arm(name: str, tag: str) -> str:
-    """An arm as prose writes it: its name, then its letter tag (:data:`ARM_TEMPLATE`, ``v2 (A)``). A name that ends in
-    its own tag already (a cut level named by its lever and tag, ``system prompt B``) is not tagged twice.
+    """An arm as prose writes it: its name, then its letter tag (:data:`ARM_TEMPLATE`, ``v2 (A)``). A name told apart
+    by its tag already (``Extractor instructions (B)``,
+    :data:`~threetears.evals.analysis.report.words.TOLD_APART`) is not tagged twice.
 
     :param name: The arm's name on the page.
     :ptype name: str
@@ -240,7 +241,8 @@ def written_arm(name: str, tag: str) -> str:
     :return: The arm, written.
     :rtype: str
     """
-    return name if name.endswith(f" {tag}") else ARM_TEMPLATE.format(name=name, tag=tag)
+    told = TOLD_APART.format(name="", tag=tag)
+    return name if name.endswith(told) else ARM_TEMPLATE.format(name=name, tag=tag)
 
 
 #: How a count from zero to twenty reads as a word (the ``words`` filter), in order; a translation replaces them here.
@@ -3237,9 +3239,11 @@ def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
 
 def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     """The name a page prints for each arm, read at render time: its declared short name, else its alias read by
-    :func:`~threetears.evals.analysis.report.words.reader_arm_name` with its tag (a cut level by its lever and tag,
-    ``system prompt B``; an empty text level ``no system prompt``), else its id. The input itself is never renamed:
-    a snapshot's id is its content's digest.
+    :func:`~threetears.evals.analysis.report.words.reader_arm_name` (a cut level by its lever, an empty text level
+    ``no system prompt``), told apart by its tag where two arms then read alike
+    (:func:`~threetears.evals.analysis.report.words.told_apart`), else its id. The input itself is never renamed: a
+    snapshot's id is its content's digest. The page, its blocks, the analyst's cited figures and the store gate all
+    read arms by these names.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -3250,10 +3254,12 @@ def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     control = next((arm.id for arm in arms if arm.role == "control"), None)
     tags = arm_tags([arm.id for arm in arms], control)
     text = text_levers(arm.settings for arm in arms)
-    return {
-        arm.id: arm.short_name or reader_arm_name(arm.name or arm.id, arm.settings, tags[arm.id], text=text)
+    printed = {arm.id: printed_arm_name(arm) for arm in arms}
+    names = {
+        arm.id: printed[arm.id] if arm.short_name else reader_arm_name(printed[arm.id], arm.settings, text=text)
         for arm in arms
     }
+    return told_apart(names, tags, {key for key in names if names[key] != printed[key]})
 
 
 def printed_arm_name(arm: Arm) -> str:

@@ -38,7 +38,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.phase_log import charged, phase_logged
 from threetears.evals.analysis.report import ReportBasis, TrialDetail
 from threetears.evals.analysis.report.build import AnalysisLead, analysis_campaign_bundle, analysis_lead
-from threetears.evals.analysis.report.words import campaign_arm_tags, reader_arms
+from threetears.evals.analysis.report.words import input_arm_tags, reader_arms
 from threetears.evals.analysis.report_doc_store import stored_headline
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.analyst.skill import load_skill
@@ -715,9 +715,10 @@ def _frozen(analysis: EvalAnalysis) -> _Frozen:
 
 
 def _reader_arms(frozen: CampaignBundle) -> list[CampaignArm]:
-    """The frozen bundle's arms as its page names them, for print only
-    (:func:`~threetears.evals.analysis.report.words.reader_arms`, tagged as the page tags them)."""
-    return reader_arms(frozen, campaign_arm_tags(frozen.aspects, frozen.readings.control))
+    """The frozen bundle's arms as a page names them, for print only
+    (:func:`~threetears.evals.analysis.report.words.reader_arms`), two read alike told apart by the tag the campaign's
+    report document wears them by, as the line's headline and caveats name them."""
+    return reader_arms(frozen, input_arm_tags(frozen))
 
 
 def _named_arm(

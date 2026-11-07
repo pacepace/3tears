@@ -8,10 +8,11 @@ markdown and text):
   ``caveats`` beside the headline, never inside it, and ``analyses_list``'s verdict is those lines then that verdict
   (Q7). A document whose snapshot is gone, or that no longer reads, lists code's verdict and says to regenerate;
 - **no cut**: no listing line holds a cut of a prompt or of the question. At render time only, an arm whose level is
-  too long to print is named by its campaign label, else by its lever and its own letter tag on that page
-  (``Extractor instructions B``), which no figure key appends twice; the empty level of a text lever reads ``no
-  <lever>``, never ``(none)``, and an empty number lever keeps its placeholder; the question prints whole, in its own
-  field (Q10);
+  too long to print is named by its campaign label, else by its lever alone (``Extractor instructions``), one name on
+  every surface; where two arms would then read alike, each surface adds the tag it prints the arm by (``Extractor
+  instructions (B)``), the document page and the listing alike, which no figure key appends twice; the empty level of
+  a text lever reads ``no <lever>``, never ``(none)``, and an empty number lever keeps its placeholder; the question
+  prints whole, in its own field (Q10);
 - **frozen evidence never moves**: the labels a bundle freezes, and its fingerprint, are the ones the build before this
   change froze for the same campaign;
 - **no raw key**: no markdown, text or listing output of the ``toyhost_doc`` capture holds a figure key in braces, the
@@ -41,15 +42,21 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
-from threetears.evals.analysis import assemble_campaign_bundle, campaign_report, serialize_report
+from threetears.evals.analysis import assemble_campaign_bundle, campaign_report, report_markdown, serialize_report
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.arms import ELISION
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text, doc_page_text
-from threetears.evals.analysis.report.figure_keys import render
-from threetears.evals.analysis.report.words import campaign_arm_tags, reader_arm_labels, reader_arm_name
+from threetears.evals.analysis.report.figure_keys import render, written_arm
+from threetears.evals.analysis.report.words import (
+    campaign_arm_tags,
+    input_arm_tags,
+    reader_arm_labels,
+    reader_arm_name,
+    told_apart,
+)
 from threetears.evals.analysis.report_arms import fact_arms
 from threetears.evals.analysis.report_doc_store import read_report_doc
 from threetears.evals.analysis.report_input_build import report_input
@@ -195,12 +202,22 @@ def _batch(label: str, instructions: str | None) -> Any:
     return run if instructions is None else run.model_copy(update={"overlays": {"instructions": instructions}})
 
 
-def _prompt_host(question: str = "") -> tuple[EvalHost, list[Any]]:
-    """A host holding a campaign whose arms differ by their extractor instructions alone: each of :data:`_PROMPTS`,
-    and none (an empty level, which the engine displays ``(none)``)."""
+#: Each arm's batch label and extractor instructions: two long prompts and none (an empty level, which the engine
+#: displays ``(none)``).
+_THREE_ARMS: tuple[tuple[str, str | None], ...] = (("twice", _PROMPTS[0]), ("once", _PROMPTS[1]), ("plain", None))
+
+#: One long prompt and none.
+_TWO_ARMS: tuple[tuple[str, str | None], ...] = (("twice", _PROMPTS[0]), ("plain", None))
+
+
+def _prompt_host(
+    question: str = "", arms: tuple[tuple[str, str | None], ...] = _THREE_ARMS
+) -> tuple[EvalHost, list[Any]]:
+    """A host holding a campaign whose arms differ by their extractor instructions alone (:data:`_THREE_ARMS` by
+    default)."""
     profile = toyhost_profile()
     host = toyhost_host(profile=profile)
-    runs = [_batch("twice", _PROMPTS[0]), _batch("once", _PROMPTS[1]), _batch("plain", None)]
+    runs = [_batch(label, instructions) for label, instructions in arms]
     for run in runs:
         host.storage.save_eval_run(run)
         for result in toyhost_measurements(
@@ -270,40 +287,67 @@ def test_no_listing_line_holds_a_cut_of_a_prompt_or_of_the_question() -> None:
         assert "(none)" not in printed, printed
         assert not any(prompt[:20] in printed for prompt in _PROMPTS), printed
     assert line.title == (
-        "Extractor instructions C vs Extractor instructions B vs no extractor instructions · extract_invoice_fields "
-        "(instructions)"
+        "Extractor instructions (A) vs Extractor instructions (B) vs no extractor instructions · "
+        "extract_invoice_fields (instructions)"
     )
     assert line.question == question, "the question prints whole, in its own field"
 
 
-def test_a_cut_level_is_named_by_its_lever_and_the_arm_s_own_tag_on_every_code_page_and_the_listing() -> None:
-    host, _ = _prompt_host()
+def _bare(name: str) -> str:
+    """A name without the tag that tells it apart."""
+    return re.sub(r" \([A-Z]+\)$", "", name)
+
+
+@pytest.mark.parametrize("arms", [_TWO_ARMS, _THREE_ARMS], ids=["two arms", "three arms"])
+def test_an_arm_reads_one_name_on_every_page_and_one_tag_on_one_listing_line(
+    arms: tuple[tuple[str, str | None], ...],
+) -> None:
+    """One name per arm everywhere: its lever, never a cut, and ``no <lever>`` for none. Where two arms would read
+    alike, each surface tells them apart by the tag it prints the arm by: the code page and its aspect page by their
+    charts' tag, and the document page and the listing (whose headline is the document's) by the document's, so
+    one listing line, headline and caveats, never names an arm two ways."""
+    host, _ = _prompt_host(arms=arms)
     bundle = assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
-    tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
-    names = reader_arm_labels(bundle, tags)
-    page = serialize_report(campaign_report(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE), "markdown")
+    code_tags = campaign_arm_tags(bundle.aspects, bundle.readings.control)
+    code = reader_arm_labels(bundle, code_tags)
+    listed_tags = input_arm_tags(bundle)
+    listed = reader_arm_labels(bundle, listed_tags)
+    report = campaign_report(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE)
+    page, aspect = serialize_report(report, "markdown"), report_markdown(report.aspects[0].report)
+    built = report_input(bundle)
+    doc = {arm.id: arm for arm in fact_arms(built)}
     line = _analysed(host, _PROMPTS_CAMPAIGN)
     assert line.report is not None
+    caveats = " ".join(line.report.caveats)
 
-    lettered = {key: name for key, name in names.items() if name.startswith("Extractor instructions ")}
-    assert len(lettered) == 2 and all(name.endswith(f" {tags[key]}") for key, name in lettered.items())
-    assert ELISION not in page and "(none)" not in page
-    for name in [*lettered.values(), "no extractor instructions"]:
-        assert name in page and name in " ".join(line.report.caveats), name
+    keys = [entry.variant_key for entry in bundle.aspects[0].variant_index]
+    assert len(keys) == len(arms)
+    for key in keys:
+        held = doc[bundle.label_of(key)]
+        assert _bare(code[key]) == _bare(listed[key]) == _bare(held.name), "one name, its tag aside"
+        assert code[key] in page and code[key] in aspect, code[key]
+        assert (held.name, held.tag) == (listed[key], listed_tags[key]), "the listing names it as the document does"
+        assert f"Adopting {listed[key]} overrides" in caveats, (listed[key], caveats)
+        assert render(f"{{arm:{held.id}}}", built, {arm.id: arm.name for arm in doc.values()}) == written_arm(
+            held.name, held.tag
+        )
+        for name, tags in ((code[key], code_tags), (listed[key], listed_tags)):
+            assert name == _bare(name) or name.endswith(f" ({tags[key]})"), name
+    assert {_bare(name) for name in listed.values()} == {"Extractor instructions", "no extractor instructions"}
+    told = [name for name in listed.values() if name != _bare(name)]
+    assert len(told) == (0 if arms == _TWO_ARMS else 2), "only arms that would read alike carry a tag"
+    for printed in (page, aspect, caveats, line.title):
+        assert ELISION not in printed and "(none)" not in printed
 
 
-def test_a_cut_level_on_the_document_page_wears_its_tag_once() -> None:
+def test_a_name_told_apart_by_its_tag_is_written_with_its_tag_once() -> None:
     host, _ = _prompt_host()
     built = report_input(assemble_campaign_bundle(host, _PROMPTS_CAMPAIGN, TOYHOST_SCOPE))
     arms = fact_arms(built)
     written = render(" vs ".join(f"{{arm:{arm.id}}}" for arm in built.arms), built, {arm.id: arm.name for arm in arms})
 
     assert [arm.id for arm in built.arms] == _FROZEN_LABELS, "the report input keeps the frozen names"
-    lettered = [arm for arm in arms if arm.name.startswith("Extractor instructions ")]
-    assert len(lettered) == 2 and all(arm.name.endswith(f" {arm.tag}") for arm in lettered)
-    for arm in lettered:
-        assert arm.name in written and f"{arm.name} ({arm.tag})" not in written, written
-    assert ELISION not in written and "no extractor instructions (" in written
+    assert written == "Extractor instructions (A) vs Extractor instructions (B) vs no extractor instructions (C)"
 
 
 def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
@@ -331,26 +375,32 @@ def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
     for printed in _lines(line):
         assert ELISION not in printed, printed
     assert (
-        line.report.headline
-        == "Declared question: nothing separated Extractor instructions A or read twice from plain."
+        line.report.headline == "Declared question: nothing separated Extractor instructions or read twice from plain."
     )
-    assert "Adopting Extractor instructions A overrides the bar it misses on extract_invoice_fields." in (
+    assert "Adopting Extractor instructions overrides the bar it misses on extract_invoice_fields." in (
         line.report.caveats
-    ), "the arm no one labelled wears one letter in the headline and its caveats"
+    ), "the arm no one labelled reads one name in the headline and its caveats"
 
 
 def test_an_empty_text_level_reads_no_lever_and_an_empty_number_keeps_its_placeholder() -> None:
     text = frozenset({"system_prompt"})
 
-    assert reader_arm_name("(none)", {"system_prompt": "(none)"}, "A", text=text) == "no system prompt"
-    assert reader_arm_name("(none)", {"temperature": "(none)"}, "A", text=text) == "(none)"
+    assert reader_arm_name("(none)", {"system_prompt": "(none)"}, text=text) == "no system prompt"
+    assert reader_arm_name("(none)", {"temperature": "(none)"}, text=text) == "(none)"
     shown = _PROMPTS[0][:59] + ELISION  # as the engine displays a long level, which a name then cuts again
     cut = _FROZEN_LABELS[0]
-    assert reader_arm_name(cut, {"system_prompt": shown}, "B", text=text) == "System prompt B"
-    assert reader_arm_name(f"{cut} (arm 0123456789ab)", {"system_prompt": shown}, "C", text=text) == (
-        "System prompt C"
-    ), "the tag tells two cut alike apart, so the digest goes"
-    assert reader_arm_name("v2", {"system_prompt": shown}, "B", text=text) == "v2", "a given name is as given"
+    assert reader_arm_name(cut, {"system_prompt": shown}, text=text) == "System prompt"
+    assert reader_arm_name(f"{cut} (arm 0123456789ab)", {"system_prompt": shown}, text=text) == "System prompt", (
+        "a tag, never a digest, tells two cut alike apart"
+    )
+    assert reader_arm_name("v2", {"system_prompt": shown}, text=text) == "v2", "a given name is as given"
+    assert told_apart(
+        {"a": "System prompt", "b": "System prompt", "c": "v1"}, {"a": "A", "b": "B", "c": "P"}, "ab"
+    ) == {
+        "a": "System prompt (A)",
+        "b": "System prompt (B)",
+        "c": "v1",
+    }
 
 
 # --- no raw figure key ---------------------------------------------------------------------------------------------

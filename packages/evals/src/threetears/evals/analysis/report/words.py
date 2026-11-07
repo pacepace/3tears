@@ -350,8 +350,8 @@ def text_levers(levels: Iterable[Mapping[str, object]]) -> frozenset[str]:
 
 
 def _read_part(part: str, levels: Mapping[str, object], text: Collection[str]) -> tuple[str, bool] | None:
-    """One part of a computed name as a reader reads it, and whether it now needs the arm's tag: a cut level as its
-    lever alone, an empty text level as ``no <lever>``; None for a part no level of ``levels`` spells."""
+    """One part of a computed name as a reader reads it, and whether it was a cut: a cut level as its lever alone, an
+    empty text level as ``no <lever>``; None for a part no level of ``levels`` spells."""
     for axis, display in levels.items():
         if not isinstance(display, str):
             continue
@@ -367,23 +367,20 @@ def _read_part(part: str, levels: Mapping[str, object], text: Collection[str]) -
     return None
 
 
-def reader_arm_name(name: str, levels: Mapping[str, object], tag: str | None, *, text: Collection[str]) -> str:
+def reader_arm_name(name: str, levels: Mapping[str, object], *, text: Collection[str]) -> str:
     """What a page prints for an arm whose name code computed from its levels, at render time only.
 
     A level too long to print whole (past :data:`~threetears.evals.analysis.arms.LABEL_LEVEL_CHARS`, or cut by its
-    host) is printed as its lever, and the name ends in the arm's own letter tag, the one its page tags and colours it
-    by (:func:`arm_tags`): ``system prompt B``, the control ``system prompt P``. Its tag is the one thing telling it
-    from another arm cut alike, so the digest or number a frozen name carried for that goes. An empty level of a text
-    lever (:func:`text_levers`) reads ``no <lever>``: ``no system prompt``, never ``(none)``. Any other name, and a
-    name a person gave, is printed as it is.
+    host) is printed as its lever alone, ``Extractor instructions``, never as a cut of itself; the digest or number a
+    frozen name carried to tell it from another arm cut alike goes, and :func:`told_apart` tells such arms apart by
+    their tags. An empty level of a text lever (:func:`text_levers`) reads ``no <lever>``: ``no system prompt``, never
+    ``(none)``. Any other name, and a name a person gave, is printed as it is.
 
     :param name: The name as the page would print it (a frozen label through
         :func:`~threetears.evals.analysis.style.arm_display_name`).
     :ptype name: str
     :param levels: The levels the name may be spelled from, lever to display.
     :ptype levels: Mapping[str, object]
-    :param tag: The arm's letter tag on the page; None where the page tags none, which keeps a cut name as it is.
-    :ptype tag: str | None
     :param text: The campaign's text levers.
     :ptype text: Collection[str]
     :return: The name a reader is shown.
@@ -395,25 +392,53 @@ def reader_arm_name(name: str, levels: Mapping[str, object], tag: str | None, *,
     read = [_read_part(part, levels, text) for part in parts]
     if all(one is None for one in read):
         return name
-    lettered = any(one is not None and one[1] for one in read)
-    if lettered and tag is None:
-        return name
+    cut = any(one is not None and one[1] for one in read)
     words = ", ".join(one[0] if one is not None else part for part, one in zip(parts, read, strict=True))
     # A name opening on a lever's reader name opens upper case, as every computed name does (``arm_display_name``).
     if name[:1].isupper() or (read[0] is not None and read[0][1]):
         words = words[:1].upper() + words[1:]
-    return f"{words} {tag}" if lettered else words + apart
+    return words if cut else words + apart
+
+
+#: How a name several arms would print alike is told apart: by the arm's tag, as a figure key writes it.
+TOLD_APART = "{name} ({tag})"
+
+
+def told_apart(names: Mapping[str, str], tags: Mapping[str, str], read: Collection[str]) -> dict[str, str]:
+    """Names with every one of ``read`` that another arm also prints told apart by its tag (:data:`TOLD_APART`,
+    ``Extractor instructions (B)``), the tag the page prints that arm by; keys of one arm share a tag, and are one arm.
+
+    :param names: Each arm's name, by key (a variant key, or a report input's arm id).
+    :ptype names: Mapping[str, str]
+    :param tags: Each arm's tag on the page, by the same key.
+    :ptype tags: Mapping[str, str]
+    :param read: The keys whose names :func:`reader_arm_name` rewrote; only they are told apart, the rest as they are.
+    :ptype read: Collection[str]
+    :return: The names.
+    :rtype: dict[str, str]
+    """
+    worn: dict[str, set[str | None]] = {}
+    for key, name in names.items():
+        worn.setdefault(name, set()).add(tags.get(key))
+    return {
+        key: TOLD_APART.format(name=name, tag=tags[key])
+        if key in read and key in tags and len(worn[name]) > 1
+        else name
+        for key, name in names.items()
+    }
 
 
 def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[str, str]:
-    """The name every code-written surface prints for each arm of a campaign: :func:`printed_arm_labels`, each computed
-    name read by :func:`reader_arm_name` with the arm's tag among ``tags``. Render time only: the labels the bundle
-    froze, its fingerprint and the order it lays arms out in are read under the frozen spelling, and a report input's
-    arm names stay :func:`printed_arm_labels`' (a snapshot's id is its content's digest).
+    """The name a code-written surface prints for each arm of a campaign: :func:`printed_arm_labels`, each computed name
+    read by :func:`reader_arm_name`, and told apart by its tag among ``tags`` where two arms then read alike
+    (:func:`told_apart`). Render time only: the labels the bundle froze, its fingerprint and the order it lays arms out
+    in are read under the frozen spelling, and a report input's arm names stay :func:`printed_arm_labels`' (a
+    snapshot's id is its content's digest).
 
     :param bundle: The campaign's evidence.
     :ptype bundle: CampaignBundle
-    :param tags: Each arm's letter tag on the page, by variant key (:func:`campaign_arm_tags`).
+    :param tags: Each arm's tag on the surface, by variant key: the code page's (:func:`campaign_arm_tags`), or the
+        document page's (:func:`input_arm_tags`) for a surface that prints the document's words beside code's.
     :ptype tags: Mapping[str, str]
     :return: Variant key -> the name a reader is shown.
     :rtype: dict[str, str]
@@ -423,14 +448,35 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
     entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
     distinguishing = distinguishing_axes(list(entries.values()))
     text = text_levers({axis: level.display for axis, level in applicable_levers(entry)} for entry in entries.values())
-    read: dict[str, str] = {}
+    names = dict(printed)
     for key, name in printed.items():
-        if key in given or key not in entries:
-            read[key] = name
-            continue
-        levels = {level.axis_id: level.display for level in naming_levels(entries[key], distinguishing)}
-        read[key] = reader_arm_name(name, levels, tags.get(key), text=text)
-    return read
+        if key not in given and key in entries:
+            levels = {level.axis_id: level.display for level in naming_levels(entries[key], distinguishing)}
+            names[key] = reader_arm_name(name, levels, text=text)
+    return told_apart(names, tags, {key for key in names if names[key] != printed[key]})
+
+
+def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
+    """Each arm's tag as the campaign's report document page tags it, by every variant key that names it: over the
+    arms in its report input's order (the campaign's arms, then the other variants its aspects index, one per label;
+    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. Read off the bundle, so a
+    surface that prints the document's words beside code's (the campaign listing) tags an arm as the document does.
+
+    :param bundle: The campaign's evidence.
+    :ptype bundle: CampaignBundle
+    :return: Variant key -> tag.
+    :rtype: dict[str, str]
+    """
+    keys = [
+        *(arm.variant_key for arm in bundle.arms),
+        *(entry.variant_key for aspect in bundle.aspects for entry in aspect.variant_index),
+    ]
+    first: dict[str, str] = {}
+    for key in keys:
+        first.setdefault(bundle.label_of(key), key)
+    control = bundle.control()
+    labelled = arm_tags(list(first), bundle.label_of(control.variant_key) if control is not None else None)
+    return {key: labelled[bundle.label_of(key)] for key in dict.fromkeys(keys)}
 
 
 def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[CampaignArm]:
@@ -471,8 +517,11 @@ __all__ = [
     "campaign_arm_tags",
     "declared_arm_names",
     "printed_arm_labels",
+    "TOLD_APART",
+    "input_arm_tags",
     "reader_arm_labels",
     "reader_arms",
+    "told_apart",
     "reader_arm_name",
     "text_levers",
     "comparison_words",
