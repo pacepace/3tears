@@ -279,29 +279,30 @@ def _retiring(path: Path) -> Path | None:
     return gone
 
 
-def _retire(path: Path, gone: list[Path]) -> None:
-    """rename ``path`` out of its name (:func:`_retiring`) and add it to ``gone``, to be removed after the lock.
+def _retire(path: Path, gone: list[tuple[Path, Path]]) -> None:
+    """rename ``path`` out of its name (:func:`_retiring`) and add it to ``gone`` with the name it had, to be removed
+    after the lock.
 
     :param path: the directory
     :ptype path: Path
-    :param gone: what to remove
-    :ptype gone: list[Path]
+    :param gone: what to remove: (the name it had, its name now)
+    :ptype gone: list[tuple[Path, Path]]
     :return: nothing
     :rtype: None
     """
     renamed = _retiring(path)
     if renamed is not None:
-        gone.append(renamed)
+        gone.append((path, renamed))
 
 
-def _retire_unless_held(entry: Path, gone: list[Path]) -> bool:
+def _retire_unless_held(entry: Path, gone: list[tuple[Path, Path]]) -> bool:
     """retire a directory (into ``gone``) unless a reader holds its shared lock: a version a lease or a worker reads,
     a hand-off a worker maps. A directory with no lock file is no reader's and goes.
 
     :param entry: the directory
     :ptype entry: Path
-    :param gone: what to remove
-    :ptype gone: list[Path]
+    :param gone: what to remove (:func:`_retire`)
+    :ptype gone: list[tuple[Path, Path]]
     :return: whether it was retired
     :rtype: bool
     """
@@ -314,6 +315,24 @@ def _retire_unless_held(entry: Path, gone: list[Path]) -> bool:
         if descriptor is not None:
             os.close(descriptor)
     return True
+
+
+def _directory_files(path: Path) -> dict[tuple[int, int], int]:
+    """the files directly in a directory, by (device, inode), with their bytes: each file once however many names
+    it has there.
+
+    :param path: the directory
+    :ptype path: Path
+    :return: (device, inode) -> bytes; empty when it is gone
+    :rtype: dict[tuple[int, int], int]
+    """
+    files: dict[tuple[int, int], int] = {}
+    with contextlib.suppress(FileNotFoundError):  # NOSILENT: a directory removed meanwhile holds nothing
+        for entry in path.iterdir():
+            with contextlib.suppress(FileNotFoundError):  # NOSILENT: likewise a file
+                stat = entry.stat()
+                files.setdefault((stat.st_dev, stat.st_ino), stat.st_size)
+    return files
 
 
 def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> int:
@@ -331,15 +350,129 @@ def _directory_bytes(path: Path, seen: set[tuple[int, int]] | None = None) -> in
     """
     counted = set() if seen is None else seen
     total = 0
-    with contextlib.suppress(FileNotFoundError):  # NOSILENT: a directory removed meanwhile holds nothing
-        for entry in path.iterdir():
-            with contextlib.suppress(FileNotFoundError):  # NOSILENT: likewise a file
-                stat = entry.stat()
-                key = (stat.st_dev, stat.st_ino)
-                if key not in counted:
-                    counted.add(key)
-                    total += stat.st_size
+    for key, size in _directory_files(path).items():
+        if key not in counted:
+            counted.add(key)
+            total += size
     return total
+
+
+class _HeldFiles:
+    """the store's own tally of the files its directories hold, so :meth:`SharedArrowStore.status` reads numbers and
+    never the file system: each directory's files recorded as it takes its final name (a version published, a
+    hand-off written, a result claimed, a directory found at the start) and forgotten once it is removed.
+
+    Exact as :meth:`SharedArrowStore.held_bytes` counts: a file is counted once however many directories hold a link
+    to it (a version's parts linked from its base, a claimed result linked as a part), by (device, inode), and its
+    bytes go only when the last directory holding it goes. Files never change after their directory takes its name,
+    so what a directory held then is what it holds until it is removed. An inode met again at another size is a file
+    the system reused the number for (the old one removed while its directory's removal was still being recorded):
+    the newer size is the true one. Mutated under the store's ``_state``; :attr:`view` is replaced whole on each
+    change, so a reader takes it without the lock.
+
+    :ivar view: (bytes held, the versions' names, the hand-offs held), each as of the last change
+    """
+
+    def __init__(self, versions: Path, handoffs: Path) -> None:
+        self._versions = versions
+        self._handoffs = handoffs
+        #: directory -> its files, (device, inode) -> bytes
+        self._dirs: dict[Path, dict[tuple[int, int], int]] = {}
+        #: (device, inode) -> [directories holding it, its bytes]
+        self._links: dict[tuple[int, int], list[int]] = {}
+        self._bytes = 0
+        self.view: tuple[int, tuple[str, ...], int] = (0, (), 0)
+
+    def __contains__(self, path: Path) -> bool:
+        """whether a directory is recorded.
+
+        :param path: the directory
+        :ptype path: Path
+        :return: whether it is
+        :rtype: bool
+        """
+        return path in self._dirs
+
+    def add(self, path: Path, files: Mapping[tuple[int, int], int]) -> None:
+        """record a directory's files (replacing what it was recorded with).
+
+        :param path: the directory
+        :ptype path: Path
+        :param files: its files (:func:`_directory_files`)
+        :ptype files: Mapping[tuple[int, int], int]
+        :return: nothing
+        :rtype: None
+        """
+        self._forget(path)
+        self._dirs[path] = dict(files)
+        for key, size in files.items():
+            link = self._links.get(key)
+            if link is None:
+                self._links[key] = [1, size]
+                self._bytes += size
+            else:
+                link[0] += 1
+                if link[1] != size:
+                    self._bytes += size - link[1]
+                    link[1] = size
+        self._viewed()
+
+    def moved(self, old: Path, new: Path) -> None:
+        """a directory was renamed (retired out of its name): its files are recorded under its new name.
+
+        :param old: its name before
+        :ptype old: Path
+        :param new: its name now
+        :ptype new: Path
+        :return: nothing
+        :rtype: None
+        """
+        files = self._dirs.pop(old, None)
+        if files is not None:
+            self._dirs[new] = files
+            self._viewed()
+
+    def forget(self, path: Path) -> None:
+        """a directory was removed: its files go, each whose last directory it was.
+
+        :param path: the directory
+        :ptype path: Path
+        :return: nothing
+        :rtype: None
+        """
+        if self._forget(path):
+            self._viewed()
+
+    def _forget(self, path: Path) -> bool:
+        """drop a directory's record, and each file's bytes whose last directory it was; :attr:`view` unchanged.
+
+        :param path: the directory
+        :ptype path: Path
+        :return: whether it was recorded
+        :rtype: bool
+        """
+        files = self._dirs.pop(path, None)
+        if files is None:
+            return False
+        for key in files:
+            link = self._links[key]
+            link[0] -= 1
+            if link[0] == 0:
+                del self._links[key]
+                self._bytes -= link[1]
+        return True
+
+    def _viewed(self) -> None:
+        """replace :attr:`view` with what is recorded now.
+
+        :return: nothing
+        :rtype: None
+        """
+        versions = tuple(
+            sorted(path.name for path in self._dirs if path.parent == self._versions and not path.name.startswith("."))
+        )
+        handoffs = sum(1 for path in self._dirs if path.parent == self._handoffs and not path.name.startswith("."))
+        self.view = (self._bytes, versions, handoffs)
 
 
 def _table_of(file_name: str) -> str | None:
@@ -1142,9 +1275,12 @@ class SharedArrowStore:
         self._published = 0
         self._retired = 0
         self._refused = 0
+        #: what the directories' files hold, kept by every write and removal so :meth:`status` never walks them
+        self._held = _HeldFiles(self._versions, self._handoffs)
         with contextlib.suppress(FileNotFoundError):  # NOSILENT: nothing current is the start's state either way
             (self._versions / _CURRENT_FILE).unlink()
         self.sweep()
+        self._adopt()
 
     @property
     def published(self) -> int:
@@ -1245,26 +1381,31 @@ class SharedArrowStore:
         )
 
     def status(self) -> dict[str, Any]:
-        """what the store holds, as plain JSON values.
+        """what the store holds, as plain JSON values: read from the store's own tallies, never the file system and
+        never waiting on a lock, so an event loop may call it (walking the directories took a serving loop 50-56 ms a
+        call on cobalt dev, 2026-11-07, and a lock is held by sweeps and room checks that walk them).
+
+        ``versions``, ``handoffs_held`` and ``held_bytes`` are what :meth:`versions`, :meth:`handoffs` and
+        :meth:`held_bytes` would find, but for what is still being written: a version's or a hand-off's staged files
+        count once it takes its name (a hand-off being written counts in ``handoffs_open``), and a worker's result
+        once it is claimed (an open slot counts in ``slots_open``). Each value is read on its own: one taken while
+        another thread changes the store may be a step behind another.
 
         :return: the values
         :rtype: dict[str, Any]
         """
-        with self._state:
-            current = None if self._current is None else self._current.name
-            slots, claimed = len(self._slots), len(self._claimed)
-            handoffs = len(self._handing) + len(self._handed)
-        held_handoffs = len(self.handoffs())
+        current = self._current
+        held_bytes, versions, held_handoffs = self._held.view
         return {
-            "current": current,
-            "versions": list(self.versions()),
-            "slots_open": slots,
-            "segments_claimed": claimed,
-            "handoffs_open": handoffs,
-            # on disk: the open ones, and those released that a worker still maps
+            "current": None if current is None else current.name,
+            "versions": list(versions),
+            "slots_open": len(self._slots),
+            "segments_claimed": len(self._claimed),
+            "handoffs_open": len(self._handing) + len(self._handed),
+            # in the directory: the open ones, and those released that a worker still maps
             "handoffs_held": held_handoffs,
             "handoffs_made": self._handoffs_made,
-            "held_bytes": self.held_bytes(),
+            "held_bytes": held_bytes,
             "max_bytes": self._max_bytes,
             "published": self._published,
             "retired": self._retired,
@@ -1325,7 +1466,7 @@ class SharedArrowStore:
         self._tell_readers()
         log.info(
             "shared Arrow version published",
-            extra={"extra_data": {"version": name, "bytes": published.nbytes, "held_bytes": self.held_bytes()}},
+            extra={"extra_data": {"version": name, "bytes": published.nbytes, "held_bytes": self._held.view[0]}},
         )
         return published
 
@@ -1457,8 +1598,10 @@ class SharedArrowStore:
             path = self._segments / slot.slot_id
             written = path.is_dir()
             if written:
+                files = _directory_files(path)
                 self._claimed.add(slot.slot_id)
-                self._claimed_bytes[slot.slot_id] = _directory_bytes(path, set())
+                self._claimed_bytes[slot.slot_id] = sum(files.values())
+                self._held.add(path, files)
         if not written:
             self.sweep()
             return None
@@ -1526,7 +1669,11 @@ class SharedArrowStore:
             staging.mkdir()
             written = _write_tables(staging, tables, lambda: bound)
             (staging / _LOCK_FILE).touch()
-            os.rename(staging, self._handoffs / handoff_id)
+            files = _directory_files(staging)
+            with self._state:
+                # renamed and recorded in one hold, so the tally never misses a hand-off the directory holds
+                os.rename(staging, self._handoffs / handoff_id)
+                self._held.add(self._handoffs / handoff_id, files)
         except BaseException:
             remove_tree(staging, log=log, what="a failed hand-off's staging directory")
             with self._state:
@@ -1577,15 +1724,24 @@ class SharedArrowStore:
         :return: the versions retired
         :rtype: list[str]
         """
-        gone: list[Path] = []
+        gone: list[tuple[Path, Path]] = []
         with self._state:
             retired = self._sweep_versions(gone)
             self._sweep_segments(gone)
             self._sweep_handoffs(gone)
             self._retired += len(retired)
-        # renamed out of their names under the lock (nothing opens them again); their files go after it
-        for path in gone:
+            for old, new in gone:
+                self._held.moved(old, new)
+        # renamed out of their names under the lock (nothing opens them again); their files go after it, and the
+        # tally forgets them once they are gone: what a removal left (a later sweep retries it) is counted still
+        for _, path in gone:
             remove_tree(path, log=log, what="a retired shared Arrow directory (a later sweep retries it)")
+            left = _directory_files(path)
+            with self._state:
+                if left:
+                    self._held.add(path, left)
+                else:
+                    self._held.forget(path)
         with self._state:
             # a closed result's bytes count in a publish's room until its files are gone (a sweep after the last
             # table taken from it is freed, for one kept past its close)
@@ -1595,6 +1751,25 @@ class SharedArrowStore:
         if retired:
             log.info("shared Arrow versions retired", extra={"extra_data": {"versions": retired}})
         return retired
+
+    def _adopt(self) -> None:
+        """record what the directory holds at the start that no sweep could remove (a version or a hand-off a live
+        worker of an earlier process still maps), so the tally starts exact. Staging directories are left out: a
+        live writer's, from another process, counts once it takes its name, as at any time.
+
+        :return: nothing
+        :rtype: None
+        """
+        for half in (self._versions, self._segments, self._handoffs):
+            for entry in half.iterdir():
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                if half == self._versions and not (entry / _LOCK_FILE).is_file():
+                    continue
+                files = _directory_files(entry)
+                with self._state:
+                    if entry not in self._held:
+                        self._held.add(entry, files)
 
     def _released(self, slot_id: str) -> None:
         """a claimed result was closed: its files go.
@@ -1638,12 +1813,12 @@ class SharedArrowStore:
         """
         return sum(self._slots.values()) + sum(self._handing.values())
 
-    def _sweep_versions(self, gone: list[Path]) -> list[str]:
+    def _sweep_versions(self, gone: list[tuple[Path, Path]]) -> list[str]:
         """retire every version neither current nor held, and every leftover staging directory: each renamed out of
         its name into ``gone``, for the caller to remove once it lets go of ``_state``. Called under ``_state``.
 
-        :param gone: what to remove
-        :ptype gone: list[Path]
+        :param gone: what to remove (:func:`_retire`)
+        :ptype gone: list[tuple[Path, Path]]
         :return: the versions retired
         :rtype: list[str]
         """
@@ -1654,7 +1829,7 @@ class SharedArrowStore:
             if not entry.is_dir() or name in (current, self._staging, self._pending):
                 continue
             if name.startswith(_RETIRING_PREFIX):
-                gone.append(entry)
+                gone.append((entry, entry))
                 continue
             if not _retire_unless_held(entry, gone):
                 continue
@@ -1662,19 +1837,19 @@ class SharedArrowStore:
                 retired.append(name)
         return retired
 
-    def _sweep_segments(self, gone: list[Path]) -> None:
+    def _sweep_segments(self, gone: list[tuple[Path, Path]]) -> None:
         """retire every result no open slot or claim owns, and every staging directory whose writer is gone, into
         ``gone`` (as :meth:`_sweep_versions`). Called under ``_state``.
 
-        :param gone: what to remove
-        :ptype gone: list[Path]
+        :param gone: what to remove (:func:`_retire`)
+        :ptype gone: list[tuple[Path, Path]]
         :return: nothing
         :rtype: None
         """
         for entry in list(self._segments.iterdir()):
             name = entry.name
             if name.startswith(_RETIRING_PREFIX):
-                gone.append(entry)
+                gone.append((entry, entry))
             elif name.startswith(_STAGING_PREFIX):
                 if _slot_of(name) in self._slots:
                     # an open slot's: its writer makes it, then its lock file, then locks it, and a sweep between
@@ -1694,20 +1869,20 @@ class SharedArrowStore:
                 # a result closed while a table taken from it is still held keeps its shared lock (``pin``)
                 _retire_unless_held(entry, gone)
 
-    def _sweep_handoffs(self, gone: list[Path]) -> None:
+    def _sweep_handoffs(self, gone: list[tuple[Path, Path]]) -> None:
         """retire every hand-off released that no worker maps, and every staging directory no write of this process
         owns, into ``gone`` (as :meth:`_sweep_versions`); forget the bytes of each that is gone. Called under
         ``_state``.
 
-        :param gone: what to remove
-        :ptype gone: list[Path]
+        :param gone: what to remove (:func:`_retire`)
+        :ptype gone: list[tuple[Path, Path]]
         :return: nothing
         :rtype: None
         """
         for entry in list(self._handoffs.iterdir()):
             name = entry.name
             if name.startswith(_RETIRING_PREFIX):
-                gone.append(entry)
+                gone.append((entry, entry))
             elif name.startswith(_STAGING_PREFIX):
                 # written by this process on a thread, never a worker: one this process is not writing is a leftover
                 if _slot_of(name) not in self._handing:
@@ -1759,7 +1934,11 @@ class SharedArrowStore:
             staging.mkdir()
             _write_tables(staging, tables, room, base)
             (staging / _LOCK_FILE).touch()
-            os.rename(staging, self._versions / name)
+            files = _directory_files(staging)
+            with self._state:
+                # renamed and recorded in one hold, so the tally never misses a version the directory holds
+                os.rename(staging, self._versions / name)
+                self._held.add(self._versions / name, files)
         except SharedArrowFullError:
             with self._state:
                 self._refused += 1

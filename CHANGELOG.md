@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a shared-Arrow store's status reads its tallies, never the file system
+
+**Fixed (core):** `SharedArrowStore.status()` listed and stat-ed every file of every version, result and hand-off
+on the caller's thread to report `held_bytes`, `versions` and `handoffs_held`, and took the store's lock, which sweeps
+and room checks hold while they walk the same directories. A status tool on the event loop held the reports tool
+pods' loop 50-56 ms a call on cobalt dev (3tears 0.86.0 to 0.93.0). The store now keeps a tally of what its
+directories hold, recorded as each directory takes its final name (a version published, a hand-off written, a result
+claimed, a directory found at start-up) and forgotten once a sweep has removed it; a file hard-linked into several
+directories is counted once, by device and inode, exactly as `held_bytes()` counts it. `status()` reads the tally
+and the store's counters without the lock. Its numbers match a walk of the directory except for what is still being
+written: a version's or hand-off's staged files count once renamed into place, and a worker's result once claimed
+(its open slot shows in `slots_open` until then). `held_bytes()`, `versions()` and `handoffs()` still walk the
+directory when called.
+
 ## v0.93.0 -- 2026-11-07
 
 ### core: a large cached answer is decoded and kept in L1 off the event loop
