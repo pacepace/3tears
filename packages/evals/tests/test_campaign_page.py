@@ -31,7 +31,7 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
 )
 from threetears.evals.analysis.report.words import FIRST_SCREEN_BANNED
-from packages.evals.tests.page_contract_support import links, what_runs
+from packages.evals.tests.page_contract_support import links, parsed, what_runs
 from packages.evals.tests.style_support import lint_page
 
 from packages.evals.tests.campaign_support import (
@@ -131,17 +131,19 @@ async def test_a_fold_names_the_arms_as_the_campaign_s_table_does() -> None:
 
 async def test_a_fold_leaves_out_the_aspect_s_own_verdict_line() -> None:
     page = await page_of("billing", "tone")
+    html = campaign_report_html(page)
+    # What a reader reads: the page's text with its first-use glossary links read through, not its markup.
+    shown = "".join(parsed(html).text)
     for fold in page.aspects:
         verdict = next(
             block for block in fold.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
         )
         assert verdict not in fold.head
         assert verdict.text not in campaign_report_markdown(page)
-        assert verdict.text not in campaign_report_html(page)
+        assert verdict.text not in shown
     # The page's one verdict line is the campaign's own lead, under its question, in its header; no fold carries one.
     (lead,) = [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"]
-    html = campaign_report_html(page)
-    assert html.count('class="verdict"') == 1 and lead.text in html
+    assert html.count('class="verdict"') == 1 and lead.text in shown
     assert 'class="verdict"' not in html.split("</header>", 1)[1]
 
 

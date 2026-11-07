@@ -911,8 +911,9 @@ class TestTheReportStatesEachTier:
         report = build_code_only_report(_bundle(rated=CALIBRATING_RESULTS), assembled_at="2026-10-06T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
         sentences = [text for text in texts if text.startswith("Judge: ")]
+        # The dimension by its reader name, never its stored id (``extraction.layout_fidelity``).
         assert sentences == [
-            f"Judge: {TOYHOST_JUDGED_DIMENSION} (an unnamed judge, temperature not recorded, request "
+            "Judge: extraction layout fidelity (an unnamed judge, temperature not recorded, request "
             "settings unconfirmed): calibrated "
             "— agreement with people 1 "
             "(bounds 0.6904 to 1) over 20 pairs from 20 results, meets (bar 0.6 over at least 20 results); with its "

@@ -243,14 +243,15 @@ def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_the_wh
 ) -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": returns})
     page = build_campaign_report(shape.campaign, shape.readings, shape.reports)
-    assert _measure_column(page) == f"`{CHECKS[0]}`"
+    # A rate's column names its unit after the name (``(%)``), as every rate header does.
+    assert _measure_column(page) == f"`{CHECKS[0]}` (%)"
     # Each folded row still names the check as its own aspect does.
     assert _fold_names(page) == {"orders": "Total right", "returns": returns.get(CHECKS[0], f"`{CHECKS[0]}`")}
 
 
 def test_a_column_whose_aspects_name_its_check_alike_is_headed_by_the_name() -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": {CHECKS[0]: "Total right"}})
-    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports)) == ("Total right")
+    assert _measure_column(build_campaign_report(shape.campaign, shape.readings, shape.reports)) == "Total right (%)"
 
 
 def test_a_call_over_a_check_bar_no_longer_missed_names_the_check_by_its_name() -> None:
