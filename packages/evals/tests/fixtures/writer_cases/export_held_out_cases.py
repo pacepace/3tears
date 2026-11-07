@@ -103,6 +103,9 @@ DOW_RUNGS: Final = (
     DowRung("router.py", "dow-router", "dow-router"),
 )
 
+#: The cases a production host minted through the mint door. They are kept as minted, never rebuilt here.
+MINTED_CASES: Final = ("discodon-dj-character-01a1b3d4",)
+
 
 @dataclass(frozen=True)
 class Campaign:
@@ -228,6 +231,7 @@ async def export(*, dow: Path | None) -> list[tuple[Path, str]]:
     """
     reproducible = await reproducible_cases()
     expected = {held_out_path(case.name) for case in reproducible} | {held_out_path(rung.name) for rung in DOW_RUNGS}
+    expected |= {held_out_path(name) for name in MINTED_CASES}
     if stray := sorted(path.name for path in HELD_OUT_DIR.glob(f"*{WRITER_CASE_SUFFIX}") if path not in expected):
         raise ValueError(f"{HELD_OUT_DIR} holds case files this export does not write: {', '.join(stray)}")
     done = [(case.write(held_out_path(case.name)), "written") for case in reproducible]

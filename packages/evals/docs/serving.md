@@ -743,7 +743,7 @@ python -m threetears.evals.harness mint --documents documents.json --profile pro
     [--as-of INSTANT] [--scope SCOPE] [--host module:callable] [--created-by WHO] --out NAME.json.gz
 ```
 
-It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds. The
+It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds. The mint runs where the host's `built_by` module imports; if the host's package is not installed in that environment, put its source on `PYTHONPATH` for the command. The
 three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:
 a refusal of the documents, the manifest or the declaration comes first. `--scope` reads only the documents of that
 scope; omitted, the campaign is read in the scope its document carries, and an export holding it in two is refused.
