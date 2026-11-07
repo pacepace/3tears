@@ -38,6 +38,7 @@ from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX
 from threetears.evals.harness.minting import (
     MintManifest,
     ProfileFile,
+    export_checked,
     host_profile_from,
     read_documents_file,
     read_profile_file,
@@ -159,6 +160,13 @@ def _mint(argv: Sequence[str]) -> int:
                 remedy=f"name the file <case>{WRITER_CASE_SUFFIX}",
             )
         documents = read_documents_file(args.documents)
+        if args.scope is not None:  # whether the flag was given: the scope itself is only ever compared for identity
+            documents = [document for document in documents if document.get("scope_id") == args.scope]
+            if not documents:
+                raise RefusedInput(
+                    f"--scope {args.scope}: the export holds no document in it",
+                    remedy="name a scope the export's documents carry, or none",
+                )
         manifest = None if args.manifest is None else MintManifest.read(args.manifest)
         if manifest is not None and manifest.campaign_id != args.campaign:
             raise RefusedInput(
@@ -166,11 +174,13 @@ def _mint(argv: Sequence[str]) -> int:
                 remedy="name the manifest exported with the campaign: one campaign is one case",
             )
         declared: ProfileFile | None = None if args.profile is None else read_profile_file(args.profile)
+        # The export is checked whole before the factory is imported, so an export can be dry-checked anywhere.
+        asyncio.run(export_checked(documents, campaign_id=args.campaign, as_of=args.as_of))
         factory = args.host if args.host is not None else None if declared is None else declared.factory
         if factory is None:
             raise RefusedInput(
                 "no profile factory is named: the freeze calls the profile's readers, which no file carries",
-                remedy="name it with --host module:callable, or as the declaration's built_by",
+                remedy="set profile.json's 'built_by' to a module:callable importable here, or pass --host module:callable",
             )
         profile = host_profile_from(factory)
         skill = None if args.skill is None else _skill_at(args.skill)
@@ -179,7 +189,6 @@ def _mint(argv: Sequence[str]) -> int:
                 documents,
                 profile,
                 campaign_id=args.campaign,
-                scope_id=args.scope,
                 name=args.name,
                 created_by=args.created_by,
                 group=args.group,
