@@ -12,13 +12,15 @@ withhold; the no-editor arm given a revision; ``--variant`` ignored, or a varian
 asking one order; the read made without the pass; the criterion passing on
 ``undecided``, on a primary not separated, on a void primary, on bounces separated either way or on an arm stopped
 short or with a case it stored no page on; the readout's first table not counting the cases with two pages; a
-report budget under the first turn's ceiling launched, or one under two of it launched with no warning; ``--cases`` ignored; a live run over fewer than 10 held-out cases, or one refused for a key after making its
-directory; the doc's commands drifting from the script's.
+report budget under the first turn's ceiling launched, or one under two of it launched with no warning; ``--cases`` ignored; a live run over fewer than 10 held-out cases refused, or run with no line saying it is under them, or one
+refused for a key after making its directory; ``--batch-size`` ignored, or a batched run's readout not saying where it
+stopped and what the stop saved; the doc's commands drifting from the script's.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import socket
@@ -244,7 +246,11 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
     assert stopping["rule"]["stop_when"] == "never" and stopping["rule"]["max_cases"] == DEFAULT_CASES
     assert stopping["late"] is False and stopping["stopped_at"] is None
     assert len(stopping["looks"]) == DEFAULT_CASES
-    floor = "At 7 cases this run can separate only a preference of 89% or more, held on every case."
+    # Seven held-out cases are under the 10 the script asks for: the line says so, and the run went ahead.
+    floor = (
+        "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
+        "every case."
+    )
     assert summary["resolution"] == floor
     assert floor in found.result.disclosures
     assert stopping["line"] in summary["readout"] and floor in summary["readout"]
@@ -280,7 +286,10 @@ def test_a_prior_run_on_the_same_cases_carries_its_projection_into_the_floors_li
     _offline(monkeypatch)
     prior = writer_acceptance.read_prior(record)
     found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, prior=prior))
-    floor = "At 7 cases this run can separate only a preference of 89% or more, held on every case"
+    floor = (
+        "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
+        "every case"
+    )
     resolution = found.summary()["resolution"]
     if same:
         assert resolution == f"{floor}; the last run on these cases projected 43 to settle."
@@ -499,24 +508,70 @@ def test_a_live_run_names_its_cap_and_its_directory() -> None:
         writer_acceptance.main(["--cap-usd", "10"])
 
 
-def test_a_live_run_is_refused_before_its_directory_is_made_on_too_few_cases_or_a_missing_key(
+def test_a_live_run_under_ten_cases_is_not_refused_for_them_and_a_missing_key_is_refused_before_its_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Fewer than 10 held-out cases is a disclosure, never a refusal: a live run over the default seven, or over a
+    directory of seven, goes on to its key check, and a missing key is refused before the output directory is made, so
+    the retry is not blocked."""
     for name in KEYS:
         monkeypatch.delenv(name, raising=False)
     out = tmp_path / "out"
-    with pytest.raises(SystemExit, match="a live run names --cases"):
-        writer_acceptance.main(["--cap-usd", "12", "--out", str(out)])
     cases = writer_acceptance.default_cases(tmp_path / "cases")
-    with pytest.raises(
-        SystemExit, match=r"puts 7 case\(s\) on the held-out side at 0.99, and a live run reads at least 10"
-    ):
-        writer_acceptance.main(["--cap-usd", "12", "--out", str(out), "--cases", str(cases)])
-    # With enough cases, a missing key is refused before the output directory is made, so the retry is not blocked.
-    monkeypatch.setattr(writer_acceptance, "MIN_LIVE_CASES", 7)
-    with pytest.raises(SystemExit, match="a live run needs ANTHROPIC_API_KEY, OPENROUTER_API_KEY"):
-        writer_acceptance.main(["--cap-usd", "12", "--out", str(out), "--cases", str(cases)])
-    assert not out.exists()
+    assert writer_acceptance.held_out_cases(cases, 0.99) == writer_acceptance.held_out_cases(None, 0.99) == 7
+    for named in ([], ["--cases", str(cases)]):
+        with pytest.raises(SystemExit, match="a live run needs ANTHROPIC_API_KEY, OPENROUTER_API_KEY"):
+            writer_acceptance.main(["--cap-usd", "12", "--out", str(out), *named])
+        assert not out.exists()
+
+
+def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_stopped_and_what_that_saved(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--batch-size`` reaches the eval: the rule records it, the arms launch the seven cases three at a time, and
+    the readout says, in a sentence of figures, where the run stopped and what the stop saved against all seven."""
+    attempts = _offline(monkeypatch)
+    assert writer_acceptance.main(["--dry", "--stop-when", "separated", "--batch-size", "3"]) == 0
+    printed = capsys.readouterr().out
+    assert attempts == []
+    # The dry judge's preference never separates, so the arms ran every case, and the readout says the stop saved nothing.
+    assert (
+        "The arms ran all 7 held-out cases, 3 at a time in the bet's order, so the gated readings and guardrails were "
+        "read once, on every case." in printed
+    )
+    assert re.search(
+        r"^The run read all 7 cases, launched 3 at a time, and spent \$[0-9.]+; the stop saved nothing\.$",
+        printed,
+        re.M,
+    )
+    found = asyncio.run(
+        acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, stop_when="separated", batch_size=3)
+    )
+    stopping = found.report.stopping
+    assert stopping is not None and stopping.rule is not None and stopping.rule.batch_size == 3
+    said = found.saved()
+    assert said is not None and said in found.summary()["readout"]
+    # The same sentence for a run that stopped at case 6 of 7 after launching its first two batches: the saving is
+    # this run's own spend per case, times the case it did not reach.
+    stopped = stopping.model_copy(update={"stopped_at": 6, "cases_found": 6})
+    reached = {look.case_id for look in stopping.looks[:6]}
+    report = found.report.model_copy(
+        update={
+            "stopping": stopped,
+            "pairs": [pair.model_copy(update={"reached": pair.case_id in reached}) for pair in found.report.pairs],
+        }
+    )
+    writing = sum(summary.total_cost_usd or 0.0 for summary in found.result.arms.values())
+    judged = report.cost_usd
+    assert judged is not None
+    saved = writing / 6 + judged / 6
+    assert dataclasses.replace(found, report=report).saved() == (
+        f"The run stopped at case 6 of 7, after launching 6, 3 at a time, and spent ${writing + judged:.2f}; at its own "
+        f"spend per case, all 7 would have cost about ${writing + judged + saved:.2f}, so the stop saved about "
+        f"${saved:.2f}."
+    )
+    # A run that launched every case at once states no batch and no saving.
+    assert asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None)).saved() is None
 
 
 def test_the_docs_commands_are_the_scripts_own() -> None:

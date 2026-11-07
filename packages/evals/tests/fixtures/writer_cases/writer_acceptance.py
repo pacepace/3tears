@@ -43,18 +43,21 @@ Commands::
 
 **The stopping rule.** ``--stop-when separated`` declares, before any arm launches, that the pairwise judge stops at
 the first case after which its preference separates, either way, over a bet fixed for the held-out cases as declared.
-Every arm still runs every case first, so the gated readings and guardrails are read once, on every case, and the stop
-saves judge calls only. ``never``, the default, reads every case, as before. The rule is in the pass's record and
-``acceptance.json``, the readout says what happened in one sentence, and before a live launch the script prints the
-resolution floor: the smallest preference, held on every case, the held-out cases can separate. ``--prior`` names an
-earlier run's ``acceptance.json``; when it ran the same case files, the line adds what it projected would settle.
+The arms launch ``--batch-size`` cases at a time (4 unless told), in the bet's order, and stop launching once the
+preference separates, so the gated readings and guardrails are read once, on the cases launched; an improved stop
+whose guardrails are not shown held goes on to every case and says so. ``never``, the default, launches and reads
+every case, as before. The rule is in the pass's record and ``acceptance.json``; the readout says what happened in
+one sentence, and where the run stopped and what the stop saved against running every case in another. Before a live
+launch the script prints the resolution floor: the smallest preference, held on every case, the held-out cases can
+separate. ``--prior`` names an earlier run's ``acceptance.json``; when it ran the same case files, the line adds what
+it projected would settle.
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
 of its prompt. Nothing is sent and the verdict carries no signal. The live run is the owner's to approve. It reads
 ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (a ``vendor/model`` judge) from the environment, and
-records every writer turn and judge call under ``--out``. It refuses, before anything is sent, a case directory with
-fewer than 10 cases on the held-out side (design §4), so the default seven run dry only.
+records every writer turn and judge call under ``--out``. A run over fewer than 10 held-out cases (design §4), the
+default seven included, runs, and its floor line says it is under them: a floor is a disclosure, never a refusal.
 
 **The cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest equally,
 each arm's part holding its reports and their absolute judging. At ``--cap-usd 12`` over eleven cases the pass gets
@@ -95,6 +98,7 @@ from threetears.evals.analysis import EvalSummary, RunMeasureSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.harness.writer_eval import BATCH_SIZE
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.ops import OpsHost, job_poll
@@ -142,7 +146,7 @@ REQUEST_S: Final = 90.0
 #: The share of groups placed on the held-out side: every group of the default cases.
 HELD_OUT_FRACTION: Final = 0.99
 
-#: The fewest held-out cases a live run reads (reset P2 §4).
+#: The fewest held-out cases a run is asked to read (reset P2 §4): fewer is said in the floor's line, never refused.
 MIN_LIVE_CASES: Final = 10
 
 #: The arms, control first.
@@ -801,6 +805,9 @@ class Acceptance:
         if self.read.stopping_line is not None:
             yield ""
             yield self.read.stopping_line
+        if (saved := self.saved()) is not None:
+            yield ""
+            yield saved
         yield ""
         yield self.read.why
         yield ""
@@ -814,6 +821,35 @@ class Acceptance:
         if self.candidate.editor().digest != self.shipped.editor().digest:
             yield from self._two_editors()
         yield from result.disclosures
+
+    def saved(self) -> str | None:
+        """Where a run launched in batches stopped, and what the stop saved against running every planned case, in one
+        sentence; ``None`` for a run that launched every case at once. The saving is this run's own spend per case
+        launched (the arms') and per case judged (the pass's), times the cases it did not reach."""
+        stopping = self.report.stopping
+        if stopping is None or stopping.rule is None or stopping.rule.batch_size is None:
+            return None
+        planned, batch, launched = stopping.rule.max_cases, stopping.rule.batch_size, stopping.cases_found
+        reached = len({pair.case_id for pair in self.report.pairs if pair.reached})
+        where = (
+            f"The run stopped at case {stopping.stopped_at} of {planned}, after launching {launched}, {batch} at a time"
+            if stopping.stopped_at is not None
+            else f"The run read all {planned} cases, launched {batch} at a time"
+        )
+        arms = [summary.total_cost_usd for summary in self.result.arms.values()]
+        judged = self.report.cost_usd
+        if judged is None or any(cost is None for cost in arms):
+            return f"{where}; its spend is not all priced, so what the stop saved is not stated."
+        writing = math.fsum(cost for cost in arms if cost is not None)
+        spent = writing + judged
+        saved = writing / launched * (planned - launched) if launched else 0.0
+        saved += judged / reached * (planned - reached) if reached else 0.0
+        if launched >= planned and reached >= planned:
+            return f"{where}, and spent ${spent:.2f}; the stop saved nothing."
+        return (
+            f"{where}, and spent ${spent:.2f}; at its own spend per case, all {planned} would have cost about "
+            f"${spent + saved:.2f}, so the stop saved about ${saved:.2f}."
+        )
 
     def _two_editors(self) -> Iterator[str]:
         """Beside the verdict, with two editors: what a PASS means, how many pairs were both finished, and each arm's
@@ -910,27 +946,17 @@ def refuse_missing_keys(judge: str) -> None:
         raise SystemExit(f"writer_acceptance.py: a live run needs {', '.join(missing)}; --dry needs none")
 
 
-def held_out_cases(cases_dir: Path, held_out_fraction: float) -> int:
-    """How many of a directory's cases a fresh store puts on the held-out side, each by its split group's point."""
+def held_out_cases(cases_dir: Path | None, held_out_fraction: float) -> int:
+    """How many of a directory's cases (the default cases for ``None``) a fresh store puts on the held-out side, each
+    by its split group's point."""
+    if cases_dir is None:
+        with tempfile.TemporaryDirectory(prefix="writer-acceptance-cases-") as scratch:
+            return held_out_cases(default_cases(Path(scratch)), held_out_fraction)
     return sum(
         1
         for case in read_writer_cases(cases_dir)
         if writer_group_side(case.group or case.name, held_out_fraction) == "held_out"
     )
-
-
-def refuse_too_few_cases(cases_dir: Path | None, held_out_fraction: float) -> None:
-    """Refuse a live run over fewer than :data:`MIN_LIVE_CASES` held-out cases, before anything is sent."""
-    if cases_dir is None:
-        raise SystemExit(
-            f"writer_acceptance.py: a live run names --cases, at least {MIN_LIVE_CASES} held-out cases; "
-            "the default seven run dry only"
-        )
-    if (held := held_out_cases(cases_dir, held_out_fraction)) < MIN_LIVE_CASES:
-        raise SystemExit(
-            f"writer_acceptance.py: {cases_dir} puts {held} case(s) on the held-out side at {held_out_fraction}, "
-            f"and a live run reads at least {MIN_LIVE_CASES}"
-        )
 
 
 #: The live judge's output cap, the one rung 5 records with.
@@ -969,6 +995,7 @@ async def _measured(
     variant: Variant,
     stop_when: StopWhen = "never",
     prior: WriterPrior | None = None,
+    batch_size: int = BATCH_SIZE,
 ) -> tuple[WriterResult, WriterPairwiseReport, WriterPromotion]:
     """Run the writer eval, which runs the arms, the pairwise pass and the read; the result, the pass and the read."""
     assert budget.usd is not None and budget.turns is not None
@@ -988,6 +1015,8 @@ async def _measured(
         store=":memory:" if store_at is None else store_at,
         stop_when=stop_when,
         prior=prior,
+        batch_size=batch_size,
+        fewest_cases=MIN_LIVE_CASES,
     ).run()
     if variant.name in result.pairwise_unread:
         raise SystemExit(f"writer_acceptance.py: the pairwise pass {result.pairwise_unread[variant.name]}")
@@ -1023,6 +1052,7 @@ async def acceptance(
     candidate_skill: Path | None = None,
     stop_when: StopWhen = "never",
     prior: WriterPrior | None = None,
+    batch_size: int = BATCH_SIZE,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -1035,6 +1065,7 @@ async def acceptance(
     :param candidate_skill: The candidate, a skill directory (:func:`candidate_variant`); never with ``variant``.
     :param stop_when: The pairwise pass's stopping rule, declared before any arm launches (the module docstring).
     :param prior: An earlier run on these cases (:func:`read_prior`), whose projection the resolution line carries.
+    :param batch_size: Under ``separated``, the cases the arms launch at a time (the module docstring).
     :return: What it found.
     """
     if variant is not None and candidate_skill is not None:
@@ -1075,6 +1106,7 @@ async def acceptance(
                 variant=chosen,
                 stop_when=stop_when,
                 prior=prior,
+                batch_size=batch_size,
             )
         finally:
             await scoring.aclose()
@@ -1107,6 +1139,13 @@ def read_prior(path: Path) -> WriterPrior:
     summary = json.loads(path.read_text(encoding="utf-8"))
     settle = summary.get("promotion", {}).get("cases_to_settle")
     return WriterPrior(case_names=frozenset(summary.get("cases", [])), cases_to_settle=settle)
+
+
+def _cases_at_a_time(text: str) -> int:
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"a batch of at least 1 case, not {text!r}")
+    return value
 
 
 def _amount(text: str) -> float:
@@ -1146,16 +1185,23 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument(
         "--prior", type=Path, help="an earlier run's acceptance.json, whose projection the floor carries"
     )
+    parser.add_argument(
+        "--batch-size",
+        type=_cases_at_a_time,
+        default=BATCH_SIZE,
+        help=f"under --stop-when separated, the cases the arms launch at a time; default: {BATCH_SIZE}",
+    )
     options = parser.parse_args(list(argv))
     if options.candidate_skill is not None:
         candidate_variant(options.candidate_skill)  # refused by name before anything is made or sent
     if not options.dry:
         if options.out is None or options.cap_usd is None:
             parser.error("a live run names --cap-usd and --out")
-        refuse_too_few_cases(options.cases, options.held_out_fraction)
         refuse_missing_keys(options.judge)
-        # Said before anything is bought: what this many held-out cases can show, never a refusal.
-        print(resolution_line(held_out_cases(options.cases, options.held_out_fraction)), file=sys.stderr)
+        # Said before anything is bought: what this many held-out cases can show, under the floor or not, never a
+        # refusal.
+        held = held_out_cases(options.cases, options.held_out_fraction)
+        print(resolution_line(held, fewest=MIN_LIVE_CASES), file=sys.stderr)
         # Made before anything is sent, so a directory already there refuses the run rather than its result.
         options.out.mkdir(parents=True, exist_ok=False)
     prior = None if options.prior is None else read_prior(options.prior)
@@ -1177,6 +1223,7 @@ def main(argv: Sequence[str]) -> int:
             candidate_skill=options.candidate_skill,
             stop_when="separated" if options.stop_when == "separated" else "never",
             prior=prior,
+            batch_size=options.batch_size,
         )
     )
     summary = found.summary()

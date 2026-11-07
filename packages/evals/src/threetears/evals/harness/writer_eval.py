@@ -13,7 +13,7 @@ editor's own model. ``await WriterEval(...).run()``:
    into it with its stratum, each landing on its split group's side at ``held_out_fraction``, its withheld notes
    checked against the control arm's skill;
 4. **launches every arm on one side's cases** (``side``, the held-out side by default), each naming its part of
-   ``max_cost_usd`` (below). A replayed writer prices nothing, and the engine admits an unpriced arm only because its
+   ``max_cost_usd`` (below); under a rule to stop, ``batch_size`` cases at a time (step 6). A replayed writer prices nothing, and the engine admits an unpriced arm only because its
    launch names that part, so the part is the ceiling every arm runs under;
 5. **files the campaign**: the control is the first arm, one design axis per lever the arms differ on (the skill, the
    effort, the revisions, the editor's model, the model), the eval's ``question`` and its ``margin``, if it declares one,
@@ -24,17 +24,25 @@ editor's own model. ``await WriterEval(...).run()``:
    pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
    The pass judges under the eval's stopping rule (``stop_when``), declared as the eval runs, before any arm
    launches, over the side's cases (its ``max_cases``): ``separated`` stops the judge at the first case after which
-   the preference separates, either way; ``never``, the default, reads every case.
+   the preference separates, either way; ``never``, the default, launches and reads every case at once.
+   Under ``separated`` the arms launch ``batch_size`` cases at a time, in the bet's order, each batch a run of every
+   arm filed into the one campaign; after each batch the pass judges only the new pairs, carrying the answers it has,
+   and the arms stop launching once every candidate's preference has separated, or at the last case. The gated
+   readings and guardrails are fixed-n tests, read once, at the stop, on the cases launched, and the result and the
+   page say how many; a candidate whose preference separated improved while a guardrail is not shown held on them
+   goes on to the last case, and its pass says those readings had a second look. At the last case the reading is the
+   one a single batch of every case reads, number for number.
    Either way each look is recorded, the result says what happened in one sentence, and the launch's disclosures say
    the resolution floor: the smallest preference, held on every case, the side's cases can separate
-   (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal, with the
-   projection a :class:`~threetears.evals.ops.report_writer.writer_pairwise.WriterPrior` run on the same cases made. Every arm runs every case before the pass, so the
-   stop saves judge calls and defines the verdict's standing; the money waits on launching cases in batches;
+   (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal, under the
+   ``fewest_cases`` the author asks for or not, with the projection a
+   :class:`~threetears.evals.ops.report_writer.writer_pairwise.WriterPrior` run on the same cases made;
 7. **reads the promotion** of each candidate against the control
    (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), its pass's completed job as the
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
    design, and a dev run says so instead of reading it (its pass is still run and printed);
-8. returns a :class:`WriterResult`, which prints the campaign's readings and each pass's as tables and writes the
+8. returns a :class:`WriterResult`, each arm's summary read over its batches' runs as one
+   (:func:`~threetears.evals.analysis.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
    campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
    with the side-by-side tables at the head of its Scorecard.
 
@@ -925,7 +933,14 @@ class WriterEval:
             part = share
             if batch is not None and len(batches) > 1:
                 ref = await run_blocking(
-                    eval_host.blocking_executor, self._batch_set, host, template_id, case_set, batch, index, len(batches)
+                    eval_host.blocking_executor,
+                    self._batch_set,
+                    host,
+                    template_id,
+                    case_set,
+                    batch,
+                    index,
+                    len(batches),
                 )
                 # Each batch's runs are held to its cases' part of the arm's ceiling, so the batches together never
                 # pass it.
@@ -1030,7 +1045,11 @@ class WriterEval:
             if stopping is None or stopping.stopped_at is None:
                 more = True
                 continue
-            if self.side == "held_out" and arm not in going_on and await self._guardrails_unheld(host, campaign_id, arm, ran):
+            if (
+                self.side == "held_out"
+                and arm not in going_on
+                and await self._guardrails_unheld(host, campaign_id, arm, ran)
+            ):
                 going_on.add(arm)
                 more = True
         return more
@@ -1353,9 +1372,7 @@ class WriterEval:
                 arm: writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
                 for arm, ran in passes.items()
             }
-        arms = {
-            arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()
-        }
+        arms = {arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()}
         pairwise = {
             arm: _read_pass(ran.status, promotions.get(arm)) for arm, ran in passes.items() if ran.status is not None
         }

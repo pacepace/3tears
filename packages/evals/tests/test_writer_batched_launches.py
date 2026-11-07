@@ -165,7 +165,9 @@ def _guarded(store: Path) -> None:
     template = storage.load_template_by_name("report writer", SCOPE)
     assert template is not None
     first, *rest = template.rubric
-    storage.save_template(template.model_copy(update={"rubric": [first.model_copy(update={"axis": "boundary"}), *rest]}))
+    storage.save_template(
+        template.model_copy(update={"rubric": [first.model_copy(update={"axis": "boundary"}), *rest]})
+    )
 
 
 async def _report(result: WriterResult) -> WriterPairwiseReport:

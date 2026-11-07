@@ -6581,6 +6581,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.summarize_runs": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.TableBlock": {
       "kind": "model",
       "signature": "",
@@ -7198,7 +7203,7 @@
     },
     "threetears.evals.harness.WriterEval": {
       "kind": "class",
-      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', question: str | None = None, k: int = 1, pairwise_share: float = 0.2, turns: int = 40, request_s: float = 120.0, margin: float | None = None, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None, stop_when: StopWhen = 'never', prior: WriterPrior | None = None) -> None",
+      "signature": "WriterEval(cases_dir: str | os.PathLike[str], *, arms: Mapping[str, Writer], judge: WriterJudge, recordings: str | os.PathLike[str], budget_usd: float, max_cost_usd: float, held_out_fraction: float = 0.35, side: WriterSide = 'held_out', name: str = 'writer', question: str | None = None, k: int = 1, pairwise_share: float = 0.2, turns: int = 40, request_s: float = 120.0, margin: float | None = None, writer_provider: str = 'anthropic', store: DocumentStore | str | os.PathLike[str] | None = None, scope: str | None = None, stop_when: StopWhen = 'never', prior: WriterPrior | None = None, batch_size: int = 4, fewest_cases: int | None = None) -> None",
       "tier": "host-contract"
     },
     "threetears.evals.harness.WriterJudge": {

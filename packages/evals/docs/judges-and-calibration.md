@@ -864,11 +864,11 @@ early sends fewer calls than it admitted.
 ### The stopping rule
 
 A writer eval may give its pass a rule, declared as the eval starts, before any arm launches, over the side's cases
-(`WriterEval(stop_when=...)`; the acceptance script's `--stop-when`):
+(`WriterEval(stop_when=..., batch_size=...)`; the acceptance script's `--stop-when` and `--batch-size`):
 
 | `stop_when` | What the pass does |
 |---|---|
-| `separated` | Judges the planned cases one at a time and stops at the first after which the preference separates, either way, on the 5 cases a rate needs. |
+| `separated` | Launches the planned cases in batches, in the bet's order, judges each batch's new pairs, and stops at the first case after which the preference separates, either way, on the 5 cases a rate needs. |
 | `never` | Judges every case, the fixed-n reading exactly as with no rule. The default. |
 
 The rule records the planned case ids, the held-out set as declared, and N, their count. A set that grows later
@@ -882,11 +882,19 @@ k = N, with every planned case read, the reading is the fixed-n one, number for 
 k and one at k + 1 were two bets, and stopping at the first that separated was optional stopping. Cases are judged in
 the bet's order, whatever order or batch they ran in. A landslide over 25 cases first separates at case 7.
 
-**What the stop does today.** Every arm still runs every case before the pass starts, so the gated readings and
-guardrails are read as always, once, on every case run: one fixed-n read at a pre-set N, the same one the campaign's
-page reads. The stop reads the primary alone. It saves judge calls (about $0.40 a run) and defines the verdict's
-standing; the money is in launching cases in batches, which is not built yet. Once it is, the fixed-n readings will be
-read once at the stop, on the cases launched.
+**Batches.** Under `separated` every arm launches `batch_size` cases at a time (4 unless told), in the bet's order,
+each batch a run of every arm in one campaign. After each batch the pass judges only the new pairs, carrying the
+answers it already has, and reads the bet's prefix. The arms stop launching once every candidate's preference has
+separated, or at N. A host picks the batch from its concurrent-cell count and its admitted-runs limit: a batch of the
+cells a run holds in flight is one full wave. At k = N the reading is the one-batch reading, number for number.
+
+| At the stop | What the run does |
+|---|---|
+| Separated, either way | Stops launching. The gated readings and guardrails are fixed-n tests, read once, on the cases launched; the page says how many. |
+| Separated improved, a guardrail not shown held | Goes on to N, and says the gated readings and guardrails had a second look. |
+| Not separated | Launches the next batch, or ends at N. |
+
+The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and saves the rest of the writing.
 
 **A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
 verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.
@@ -973,7 +981,8 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --
 ```
 
 `--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run needs an
-owner's approval, and refuses a case directory with fewer than 10 held-out cases. Its pass criterion is code's: both
+owner's approval. A case directory with fewer than 10 held-out cases runs, and its floor line says it is under them.
+Its pass criterion is code's: both
 arms ran every case, the read answers `keep`, the primary reads `regressed`, separated, its interval below 0, the order
 check stands, and bounces do not separate (a variant that moves bounces broke the format, so the run is void).
 Anything else fails, and nobody re-rolls.
