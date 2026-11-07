@@ -390,6 +390,21 @@ class _L1Fence:
         """
         return not ticket.contended and ticket.activity.changes == ticket.seen
 
+    @staticmethod
+    def unchanged_since(ticket: _KeyTicket) -> bool:
+        """whether no write of ``ticket``'s key began, and no eviction of it landed, since it was taken.
+
+        :meth:`still_newest` without its check that no write was in flight when the ticket was
+        taken: what a copy written after its check (:meth:`BaseCollection._cache_read_in_l1`) asks
+        once the write has landed.
+
+        :param ticket: the holder's ticket
+        :ptype ticket: _KeyTicket
+        :return: ``True`` when the key's record has not moved since the ticket was taken
+        :rtype: bool
+        """
+        return ticket.activity.changes == ticket.seen
+
     def end(self, ticket: _KeyTicket) -> None:
         """release ``ticket``, dropping the key's record once nothing holds it.
 
@@ -2311,6 +2326,9 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
 
+        A large row kept off the loop (:meth:`_keeps_off_loop`) is the same write,
+        :meth:`_l1_store_row` on a worker thread, and the same listeners after it.
+
         A row whose ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold, is
         served from L3 alone: no L1 copy is kept, and one held under its key is dropped, so L1 never
         answers a value L3 replaced. The first such row is logged.
@@ -2325,6 +2343,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self._l1_holding_table()
         if l1 is None:
             return
+        self._l1_changed(self._l1_store_row(l1, row, primary_key))
+
+    def _l1_store_row(self, l1: Any, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> Any:
+        """the backend write of :meth:`_l1_upsert`, without telling the change listeners; blocking, any thread.
+
+        :param l1: this collection's L1, holding its table
+        :ptype l1: Any
+        :param row: the row
+        :ptype row: dict[str, Any]
+        :param primary_key: its key's column name, or names in declared order
+        :ptype primary_key: str | tuple[str, ...]
+        :return: the row's key (pk value, or tuple of pk values), for the listeners
+        :rtype: Any
+        """
         columns = (primary_key,) if isinstance(primary_key, str) else tuple(primary_key)
         key = tuple(row.get(column) for column in columns)
         entity_id = key if len(key) > 1 else key[0]
@@ -2338,6 +2370,90 @@ class BaseCollection(ABC, Generic[EntityT]):
                     "a row holds a NUMERIC value an exact L1 cannot hold; it is served from L3 without an L1 copy",
                     extra={"extra_data": {"table": self.table_name, "key": f"{entity_id}", "error": f"{exc}"}},
                 )
+        return entity_id
+
+    def _keeps_off_loop(self, row: dict[str, Any]) -> bool:
+        """whether a read writes ``row`` into L1 on a worker thread rather than on the event loop.
+
+        Asked where a read keeps a row (:meth:`_cache_read_in_l1`) and where a won
+        compare-and-swap keeps the row it wrote (:meth:`l2_cas_mutate`). ``False`` for every row by
+        default, and then the fence check and the write run on the loop with no await between them. A collection whose rows can be
+        megabytes answers ``True`` for a large one, and only a collection whose row is a pure
+        function of its key may: the row lands in L1 after the fence was checked, so a copy that an
+        eviction or a write of the key overtook while it was written is dropped again, and for such
+        a row a copy that stood for that moment was never a wrong answer.
+
+        :param row: the row a read is about to keep
+        :ptype row: dict[str, Any]
+        :return: whether it is written on a worker thread
+        :rtype: bool
+        """
+        del row
+        return False
+
+    async def _cache_read_in_l1(self, row: dict[str, Any], ticket: _KeyTicket) -> None:
+        """keep a row a read returned in L1 while it is still the newest this process knows (:class:`_L1Fence`).
+
+        On the event loop, the check and the write with no await between, unless
+        :meth:`_keeps_off_loop` says the row is written on a worker thread: then it is written
+        there, and when the key was evicted or written while it was (the fence moved past the
+        read's ticket), its copy is deleted again, also on a thread, so an eviction that landed
+        mid-write -- a retirement's broadcast -- never leaves the row it evicted in L1. A cancel
+        waits for the write and any delete to finish, and is raised after.
+
+        :param row: the row the read returned
+        :ptype row: dict[str, Any]
+        :param ticket: the read's ticket on the key, taken before its first await
+        :ptype ticket: _KeyTicket
+        :return: nothing
+        :rtype: None
+        """
+        if not self._l1_fence.still_newest(ticket):
+            return
+        if not self._keeps_off_loop(row):
+            self._l1_upsert(row, self.primary_key_columns)
+            return
+        await _to_completion(self._l1_keep_on_threads(row, ticket))
+
+    async def _keep_swap_off_loop(self, entity_id: Any, row: dict[str, Any]) -> None:
+        """keep the row a won compare-and-swap wrote in L1 on a worker thread (:meth:`_keeps_off_loop`).
+
+        The swap was recorded on the fence just before; a ticket taken here, with no await
+        between, sees every eviction or write of the key from then on, so a copy one of them
+        overtook while it was written is deleted again, as a read's is (:meth:`_cache_read_in_l1`).
+        A cancel waits for the write and any delete to finish, and is raised after.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param row: the row the swap wrote
+        :ptype row: dict[str, Any]
+        :return: nothing
+        :rtype: None
+        """
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=False) as ticket:
+            await _to_completion(self._l1_keep_on_threads(row, ticket))
+
+    async def _l1_keep_on_threads(self, row: dict[str, Any], ticket: _KeyTicket) -> None:
+        """write ``row`` into L1 on a worker thread, then delete it again, on one, if the key moved on meanwhile.
+
+        Only for a row :meth:`_keeps_off_loop` answers ``True`` for. The eviction or write that
+        moved the fence may have deleted before this write landed, so the copy is deleted after it;
+        the change listeners hear the key on the loop once both are done.
+
+        :param row: the row
+        :ptype row: dict[str, Any]
+        :param ticket: a ticket on the key, taken when the copy was still the newest
+        :ptype ticket: _KeyTicket
+        :return: nothing
+        :rtype: None
+        """
+        l1 = self._l1_holding_table()
+        if l1 is None:
+            return
+        entity_id = await asyncio.to_thread(self._l1_store_row, l1, row, self.primary_key_columns)
+        if not self._l1_fence.unchanged_since(ticket):
+            # overtaken while it was written: the eviction may have deleted before the write landed
+            await asyncio.to_thread(self._delete_l1_rows, l1, [entity_id])
         self._l1_changed(entity_id)
 
     def _l1_changed(self, entity_id: Any) -> None:
@@ -2360,7 +2476,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         (a write through, a pull-through, a new entity) goes through :meth:`_l1_upsert`, and every
         eviction (a write this process settled, a peer's invalidation broadcast) through
         :meth:`_evict_l1_many`, so a listener here hears each change. It runs synchronously inside the
-        change and must not raise.
+        change, on the event loop, and must not raise. A row a collection keeps off the loop
+        (:meth:`_keeps_off_loop`, a large answer) is written on a worker thread; its listeners run on
+        the loop once that write, and any delete of a copy an eviction overtook, has finished.
 
         :param listener: called with the row's key (pk value, or tuple of pk values)
         :ptype listener: Callable[[Any], None]
@@ -2583,7 +2701,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if raw is None:
             return _L2Lookup(row=None, marker=None, revision=revision)
         try:
-            decoded = self._decode_l2_value(raw)
+            decoded = await self._decoded_l2_value(raw)
         except CorruptCacheEntry as exc:
             # A cache miss, not a failure. Returning None sends the caller to L3, which is
             # authoritative -- the same path a cold key takes. Failing the read instead would
@@ -2628,6 +2746,33 @@ class BaseCollection(ABC, Generic[EntityT]):
             except UnicodeDecodeError as exc:
                 raise CorruptCacheEntry(self.table_name, "absent-marker generation", raw) from exc
         return self.decode_row(raw)
+
+    def _decodes_off_loop(self, raw: bytes) -> bool:
+        """whether a read decodes the L2 value ``raw`` on a worker thread rather than on the event loop.
+
+        ``False`` for every value by default. A collection whose rows can be megabytes answers
+        ``True`` for a large one: decoding is pure, so where it runs changes only which thread waits.
+
+        :param raw: the stored bytes
+        :ptype raw: bytes
+        :return: whether it is decoded on a worker thread
+        :rtype: bool
+        """
+        del raw
+        return False
+
+    async def _decoded_l2_value(self, raw: bytes) -> dict[str, Any] | _AbsentMarker:
+        """:meth:`_decode_l2_value`, on a worker thread where :meth:`_decodes_off_loop` says so, else here.
+
+        :param raw: the stored bytes
+        :ptype raw: bytes
+        :return: the rehydrated row, or the marker
+        :rtype: dict[str, Any] | _AbsentMarker
+        :raises CorruptCacheEntry: when a row, or a marker's generation, cannot be decoded
+        """
+        if self._decodes_off_loop(raw):
+            return await asyncio.to_thread(self._decode_l2_value, raw)
+        return self._decode_l2_value(raw)
 
     #: whether L2 is the only store this collection's rows have, rather than a cache of one.
     #:
@@ -2885,8 +3030,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
         if lookup.row is not None:
             record_tier_read(self.table_name, ReadTier.L2)
-            if self._l1 is not None and self._l1_fence.still_newest(ticket):
-                self._l1_upsert(lookup.row, self.primary_key_columns)
+            if self._l1 is not None:
+                await self._cache_read_in_l1(lookup.row, ticket)
             return lookup.row
         pg_data, tier = await self.fetch_from_store_with_tier(entity_id)
         record_tier_read(self.table_name, tier)
@@ -3142,8 +3287,8 @@ class BaseCollection(ABC, Generic[EntityT]):
                 answer = current.row
             else:
                 cacheable = False
-        if cacheable and self._l1 is not None and self._l1_fence.still_newest(ticket):
-            self._l1_upsert(answer, self.primary_key_columns)
+        if cacheable and self._l1 is not None:
+            await self._cache_read_in_l1(answer, ticket)
         return answer
 
     def _resolve_row(self, entity_id: Any) -> dict[str, Any]:
@@ -4404,7 +4549,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             else:
                 raw_bytes, revision = entry
                 try:
-                    decoded = self._decode_l2_value(raw_bytes)
+                    decoded = await self._decoded_l2_value(raw_bytes)
                     # an absent-marker is no prior row; its revision is kept so the write below
                     # compare-and-swaps the marker away rather than creating over it.
                     row = None if isinstance(decoded, _AbsentMarker) else decoded
@@ -4530,7 +4675,12 @@ class BaseCollection(ABC, Generic[EntityT]):
                     awaited_since_won = ordered or self.keeps_write_generation_in_l2
                     if not awaited_since_won or await self._swap_still_current(entity_id, key, won_revision, payload):
                         self._l1_fence.changed(self._fence_key(entity_id))
-                        self._l1_upsert(new_row, self.primary_key_columns)
+                        if self._keeps_off_loop(new_row):
+                            # a large row of a key-pure collection: kept on a thread, and deleted
+                            # again if an eviction or write of the key lands while it is written
+                            await self._keep_swap_off_loop(entity_id, new_row)
+                        else:
+                            self._l1_upsert(new_row, self.primary_key_columns)
                     else:
                         self._evict_l1(entity_id)
                 self._clear_l1_marker(entity_id)
