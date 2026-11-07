@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.93.1 -- 2026-11-07
+
 ### core: a shared-Arrow store's status reads its tallies, never the file system
 
 **Fixed (core):** `SharedArrowStore.status()` listed and stat-ed every file of every version, result and hand-off
