@@ -577,11 +577,14 @@ class ScopeEpochs:
                 *((moved[-1],) if moved else ()),
             )
             moved += [str(row["scope"]) for row in page]
+        # only the scopes read: whatever else is pending by the UPDATE stays pending for the next commit, never moved
+        # unenrolled (the fence keeps a touch out until this transaction ends; this holds the commit to what it read)
         await conn.execute(
             f"UPDATE {self._table} SET previous_epoch = NULLIF(epoch, 0), epoch = $1, pending = NULL, "  # noqa: S608 - the owner's table name
-            "date_updated = now() WHERE pending IS NOT NULL AND scope <> $2",
+            "date_updated = now() WHERE pending IS NOT NULL AND scope <> $2 AND scope = ANY($3::text[])",
             version,
             WHOLE,
+            moved,
         )
         for scope in moved:
             transaction.enroll(self._collection, scope)

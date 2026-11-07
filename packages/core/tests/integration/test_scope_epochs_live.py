@@ -660,3 +660,41 @@ async def test_a_commit_of_more_scopes_than_the_rail_answers_a_statement_settles
 
     assert scopes <= enrolled, f"scopes the commit moved were never settled: {sorted(scopes - enrolled)}"
     assert dict((await held.epochs.snapshot()).epochs) == dict.fromkeys(scopes, version)
+
+
+class _LateConn(_CuttingConn):
+    """a connection on which a scope turns pending right after the commit has read the scopes it moves."""
+
+    def __init__(self, conn: Any, late: str) -> None:
+        super().__init__(conn)
+        self._late = late
+
+    async def fetch(self, sql: str, *params: Any) -> list[Any]:
+        rows = await super().fetch(sql, *params)
+        moved_page = sql.startswith("SELECT scope FROM") and sql.endswith("ORDER BY scope LIMIT 3")
+        if moved_page and len(rows) < 3:
+            # the last page read: a scope pending only now, as though marked between the read and the UPDATE
+            await self._conn.execute(
+                f"INSERT INTO {_TABLE} (scope, epoch, pending, date_created) VALUES ($1, 0, 1, now())", self._late
+            )
+        return rows
+
+
+async def test_a_commit_moves_only_the_scopes_it_read_and_enrolled(
+    held: _Held, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """the commit reads the scopes it moves, then moves them: a scope pending only after the read is left pending for
+    the next commit, never moved without being enrolled."""
+    monkeypatch.setattr(scope_epochs_module, "DEFAULT_PAGE_SIZE", 3)
+    scopes = {f"state:S{i:02d}" for i in range(4)}
+    version: int = await _in_transaction(held.pool, lambda conn: held.epochs.begin(conn=conn))
+    await _in_transaction(held.pool, lambda conn: held.epochs.touch(version, scopes, conn=conn))
+
+    async with held.pool.acquire() as raw:
+        conn = _LateConn(raw, "state:LATE")
+        async with CallerTransaction(conn):
+            await held.epochs.commit(version, set(), conn=conn)
+
+    row = await held.pool.fetchrow(f"SELECT epoch, pending FROM {_TABLE} WHERE scope = 'state:LATE'")
+    assert row is not None and row["epoch"] == 0 and row["pending"] == 1, dict(row or {})
+    assert dict((await held.epochs.snapshot()).epochs).items() >= dict.fromkeys(scopes, version).items()
