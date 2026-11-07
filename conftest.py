@@ -53,8 +53,10 @@ warnings.filterwarnings(
 )
 
 # ``tests.contain_tripwire`` fails a test whose code under test contained a programming error
-# (see its docstring); ``pytester`` lets its own test run a session with it installed.
-pytest_plugins = ["threetears.core.testing.fixtures", "tests.contain_tripwire", "pytester"]
+# (see its docstring); ``tests.clock_isolation`` keeps a freeze from importing under the fake
+# clock and fails a test that leaves the clock frozen; ``pytester`` lets their own tests run a
+# session with them installed.
+pytest_plugins = ["threetears.core.testing.fixtures", "tests.contain_tripwire", "tests.clock_isolation", "pytester"]
 
 
 @pytest.fixture(autouse=True)
