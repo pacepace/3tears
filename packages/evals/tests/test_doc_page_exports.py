@@ -1,7 +1,7 @@
 """The claims renderer's entry points are exported once production code calls them, and not before.
 
 ``analysis/report/doc_page``'s builder, its three writers and the page text are this build's report-document page.
-The builder and the page text are exported (:data:`_CALLED`): the store gate, the one checker, builds a draft's page
+The builder, its one-field prose reader and the page text are exported (:data:`_CALLED`): the store gate, the one checker, builds a draft's page
 strict and checks its text above the appendix, the analyst's ``report_check`` (``ops/analyst.py``) returns that page's
 text, the writing loop's editor reads it and the report writer builds the page it stores. The HTML and Markdown writers
 are the report read's (``report_read``, through the campaign page's serializers). ``CLAUDE.md`` holds that no public API exists only
@@ -23,7 +23,7 @@ _AWAITING_A_CALLER: dict[str, frozenset[str]] = {}
 
 #: Each entry point exported with its production caller, by the module that defines it.
 _CALLED: dict[str, frozenset[str]] = {
-    "threetears.evals.analysis.report.doc_page.build": frozenset({"build"}),
+    "threetears.evals.analysis.report.doc_page.build": frozenset({"build", "written_prose"}),
     "threetears.evals.analysis.report.doc_page.html": frozenset({"doc_page_html"}),
     "threetears.evals.analysis.report.doc_page.markdown": frozenset({"doc_page_markdown"}),
     "threetears.evals.analysis.report.doc_page.text": frozenset({"above_appendix_text", "doc_page_text"}),

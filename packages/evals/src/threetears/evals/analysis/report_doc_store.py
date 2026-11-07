@@ -29,7 +29,8 @@ prints its values or its caption, and the page carries the one note to regenerat
 editor's findings it was stored with. A document this version no longer reads at all is refused by what does not read:
 its record (its version, or a ``report-doc/1`` shape the model no longer accepts), its snapshot (gone, or no longer
 reading as this version's report input), or its generation record; the report read prints the one regenerate line in
-its place (``campaign_report``).
+its place (``campaign_report``). :func:`stored_headline` reads only its headline, by the same rule, for a surface that
+lists the document without drawing its page (the campaign listing).
 
 **The store gate writes the sessions, then the document** (``EvalStorage.save_report_doc``): a stored document never
 names a session that was not written. A write that fails part way leaves the sessions written before it, which no
@@ -45,7 +46,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.doc_page.build import build
+from threetears.evals.analysis.report.doc_page.build import build, written_prose
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import above_appendix_text
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS
@@ -71,6 +72,7 @@ __all__ = [
     "made_line",
     "read_report_doc",
     "store_report_doc",
+    "stored_headline",
 ]
 
 #: The format of the generation record :func:`generation_record` writes and :func:`made_line` reads.
@@ -445,3 +447,37 @@ def read_report_doc(
         draft=record.draft,
     )
     return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)
+
+
+def stored_headline(storage: EvalStorage, record: EvalReportDoc) -> str:
+    """A stored document's headline as its page prints it, without building the page. Blocking.
+
+    Its figure keys are written out on the document's own snapshot by the page's reading rule
+    (:func:`~threetears.evals.analysis.report.doc_page.build.written_prose`: a key that no longer resolves prints
+    ``—``), so no surface prints the braces. A headline holding no key is the document's as written, and its snapshot
+    is not read.
+
+    :param storage: Where the document's snapshot is stored.
+    :ptype storage: EvalStorage
+    :param record: The stored document, as :meth:`~threetears.evals.kernel.storage.EvalStorage.load_report_doc` read
+        it.
+    :ptype record: EvalReportDoc
+    :return: The headline, every key written out.
+    :rtype: str
+    :raises RefusedInput: The headline holds a key and its snapshot is gone or no longer reads as this version's
+        report input; its remedy is the one regenerate line, as :func:`read_report_doc`'s is.
+    """
+    headline = ReportDoc.model_validate(record.doc).headline
+    if "{" not in headline:
+        return headline
+    try:
+        snapshot = storage.load_report_snapshot(record.snapshot_id, record.scope_id)
+    except ValidationError as unread:
+        raise _unread(record.id, f"was written from snapshot {record.snapshot_id}, which does not read") from unread
+    if snapshot is None:
+        raise _unread(record.id, f"was written from snapshot {record.snapshot_id}, which is gone")
+    try:
+        report_input = frozen_input(snapshot)
+    except RefusedInput as refused:
+        raise _unread(record.id, f"was written from a snapshot that no longer reads: {refused.fault}") from refused
+    return written_prose(headline, report_input)

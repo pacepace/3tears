@@ -81,7 +81,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import ARM_TEMPLATE, Figure, NamedKind, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, render, resolve, written_arm
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
@@ -109,10 +109,12 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
 
-#: The entry point, with its callers: the writing loop's editor (the page text); the store gate
+#: The entry points, with their callers: :func:`build`, for the writing loop's editor (the page text); the store gate
 #: (``analysis/report_doc_store.py``), the one checker, which builds a draft's page strict for the analyst's
 #: ``report_check`` and the loop alike; and the report writer (``actions/report_writing.py``, the page it stores).
-__all__ = ["build"]
+#: :func:`written_prose`, for a surface that prints one piece of a stored document's prose without its page: the
+#: campaign listing's headline (``analysis/report_doc_store.py``'s :func:`stored_headline`).
+__all__ = ["build", "written_prose"]
 
 #: A figure key in the document's prose, as the figure keys' grammar spells one: ``{path|filter}``.
 _KEY = re.compile(r"\{[^{}]*\}")
@@ -165,6 +167,24 @@ class _Reader:
             # NOSILENT: reading a stored document only (strict refused above); the page prints the key as
             # unresolved and carries the one note to regenerate, which `written` recorded for this field.
             return UNRESOLVED
+
+
+def written_prose(text: str, report_input: ReportInput) -> str:
+    """One piece of a stored document's prose as its page prints it: every figure key written out, each arm by its
+    name and tag (:func:`~threetears.evals.analysis.report.figure_keys.render`), by the page's own reading rule, so a
+    key that no longer resolves prints ``—``, never its braces.
+
+    :param text: The prose, as the document holds it (its keys unresolved).
+    :ptype text: str
+    :param report_input: The report input of the snapshot the document was written from.
+    :ptype report_input: ReportInput
+    :return: The prose with every key written out.
+    :rtype: str
+    """
+    reader = _Reader(
+        report_input=report_input, arm_names={arm.id: arm.name for arm in fact_arms(report_input)}, strict=False
+    )
+    return reader.written(text, "prose")
 
 
 #: The masthead's kind, by what the campaign is (GENERATOR §2.1).
@@ -283,9 +303,10 @@ class _Labels:
             return _code_label(assigned, self.look, self.reader.report_input)
         own = self.declared.get(caveat_id)
         if is_analyst_caveat(caveat_id) and own is not None:
-            return own
+            # The analyst's label is the document's prose, so its figure keys are written out as every other field's.
+            return self.reader.written(own, path)
         self.reader.refuse(path, f"names caveat {caveat_id!r}, which code does not assign on this input")
-        return own or UNRESOLVED
+        return self.reader.written(own, path) if own is not None else UNRESOLVED
 
     def landed(self, caveat_ids: Sequence[str], path: str) -> list[str]:
         """The labels of the caveats a claim or a Method item names, in its order, each distinct label once.
@@ -308,7 +329,7 @@ class _Labels:
         )
         if not arms:
             return CAVEAT_REPEATED.format(label=label, count=count)
-        written = ", ".join(ARM_TEMPLATE.format(name=arm.name, tag=arm.tag) for arm in arms)
+        written = ", ".join(written_arm(arm.name, arm.tag) for arm in arms)
         return CAVEAT_REPEATED_ON.format(label=label, count=count, arms=written)
 
     def _arms_named(self, caveat_id: str) -> list[str]:

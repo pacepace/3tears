@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from itertools import chain
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.agreement import tier_sentence
 from threetears.evals.analysis.arms import (
@@ -140,6 +140,8 @@ from threetears.evals.analysis.report.words import (
     arm_tags,
     comparison_words,
     guardrail_words,
+    input_arm_tags,
+    reader_arm_labels,
     reading_heading,
     reading_name,
 )
@@ -356,40 +358,66 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     return CampaignBundle.from_frame(analysis.campaign_bundle, bundles, what=what)
 
 
-def analysis_verdict(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> str:
-    """The verdict line a stored analysis is listed by, written by code over what was frozen with it — never a
-    writer's words.
+class AnalysisLead(NamedTuple):
+    """What a stored analysis is listed by, written by code over what was frozen with it (:func:`analysis_lead`).
 
-    It opens with what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in the
-    page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
+    :ivar caveats: What warns on the analysis's page, then its one caveat line on when its criteria were set, in the
+        page's own words; empty with neither.
+    :ivar verdict: The verdict alone.
+    """
+
+    caveats: list[str]
+    verdict: str
+
+    def line(self) -> str:
+        """The caveats, then the verdict, as one line: what an analysis is listed by (``AnalysisLine.verdict``).
+
+        :return: The line.
+        :rtype: str
+        """
+        return " ".join([*self.caveats, self.verdict])
+
+
+def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = None) -> AnalysisLead:
+    """The verdict a stored analysis is listed by, and its caveats beside it, both written by code over what was frozen
+    with it — never a writer's words.
+
+    The caveats are what warns on the analysis's page: each arm missing a bar, then each candidate breaking a floor, in
+    the page's own words (:func:`~threetears.evals.analysis.report.campaign_page.campaign_warnings`) over the readings
     frozen with it, without the writer's why beside them; then the page's one caveat line on when its criteria were
     set, where one holds (:func:`~threetears.evals.analysis.report.campaign_page.timing_caveats`), never a line per
-    criterion. Then the verdict. An analysis
-    of one aspect is listed by the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed
-    by its campaign's verdict, as the campaign's page reads it: what code read on each aspect, in the campaign's order
-    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`). With no bar missed and no floor
-    broken and no criterion set after its readings, the line is the verdict alone.
+    criterion. Every arm is named as a page names it
+    (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`): its label, else its computed name, a level too
+    long to print by its lever (told apart by the tag the report document gives it, where two arms read alike), an
+    empty text level as ``no <lever>``. The verdict of an analysis of
+    one aspect is the verdict line that aspect's page opens with, over its frozen bundle. An analysis of several aspects is listed by its campaign's verdict, as the campaign's page
+    reads it: what code read on each aspect, in the campaign's order
+    (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
 
     :param analysis: The analysis.
     :ptype analysis: EvalAnalysis
     :param bundle: The campaign bundle frozen with it (:func:`analysis_campaign_bundle`), where the caller has put it
         back together already; None puts it back together here.
     :ptype bundle: CampaignBundle | None
-    :return: The verdict line.
-    :rtype: str
+    :return: The caveats and the verdict.
+    :rtype: AnalysisLead
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)
-    readings = campaign.readings
+    # Every arm by the name a page prints it by, read at render time (its label, else its computed name, a cut level by
+    # its lever), told apart by the tag the campaign's report document wears it by, since a listing prints that
+    # document's headline beside these lines: the frozen readings are relabelled for print only.
+    labels = reader_arm_labels(campaign, input_arm_tags(campaign))
+    readings = campaign.readings.relabelled(labels)
     names = AspectNames.of(campaign.aspects)
-    warnings = campaign_warnings(readings, names)
-    warnings += timing_caveats(campaign.aspects)
+    caveats = [*campaign_warnings(readings, names), *timing_caveats(campaign.aspects)]
     if len(analysis.aspects) > 1:
         verdict = campaign_verdict(readings, [aspect.label for aspect in analysis.aspects], names)
     else:
         aspect = campaign.aspects[0]
-        verdict = verdict_line(aspect, _namer(_arm_names(aspect)), case_name=_case_namer(aspect)).text
-    return " ".join([*warnings, verdict])
+        named = _namer(_arm_names(aspect, labels=readings.arm_labels()))
+        verdict = verdict_line(aspect, named, case_name=_case_namer(aspect)).text
+    return AnalysisLead(caveats=caveats, verdict=verdict)
 
 
 def _page(
@@ -3491,11 +3519,12 @@ def _listed(ids: Sequence[str]) -> str:
 
 
 __all__ = [
+    "AnalysisLead",
     "NO_ANALYSIS",
     "contrast_rows",
     "report_cell_labels",
     "analysis_campaign_bundle",
-    "analysis_verdict",
+    "analysis_lead",
     "NO_STRATUM",
     "TOO_FEW_CASES",
     "bar_verdicts",
