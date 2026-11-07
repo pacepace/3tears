@@ -279,7 +279,7 @@ if TYPE_CHECKING:
 
     from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
-    from threetears.media.contracts import ObjectStore
+    from threetears.interfaces.media import ObjectStore
 
     from threetears.agent.tools.context import ToolContextManager
 

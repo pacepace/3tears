@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from threetears.agent.tools.builtin.image_generation import create_image_generation_tool
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     GENERATION_IGNORED,
     GENERATION_SEED,
     GENERATION_SIZE,

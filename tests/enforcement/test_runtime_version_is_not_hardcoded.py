@@ -16,7 +16,8 @@ and the comment above that block in a dozen packages says exactly why: "a
 future release that bumps pyproject without updating ``__init__.py`` can't
 drift the runtime ``__version__``."
 
-``3tears-media-contracts`` was the one that had it written out as a literal.
+``3tears-media-contracts`` (since folded into ``3tears-interfaces``) was the one that had it
+written out as a literal.
 It read ``__version__ = "0.10.6"`` while the package shipped at 0.24.0 --
 fourteen minor releases of drift, published to PyPI every time, reporting a
 version the package had not been since well before the family convergence

@@ -7,7 +7,7 @@ import math
 
 import httpx
 
-from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
+from threetears.interfaces.media import GeneratedImage, ImageGenerationBackend
 from threetears.models.providers.image.options import dimensions_for, parse_size, result_metadata
 
 __all__ = [

@@ -50,7 +50,7 @@ from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.observe import get_logger
 
 __all__ = [

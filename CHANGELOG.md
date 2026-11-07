@@ -6,7 +6,88 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.92.0 -- 2026-11-06
+## v0.93.0 -- 2026-11-07
+
+### core: a large cached answer is decoded and kept in L1 off the event loop
+
+**Fixed (core):** a replica with an L1 decoded a large answer's row and wrote it into the SQLite L1 on the event
+loop, both when it read the answer from L2 and when it computed and stored it: 1.2 ms to decode and 2.7 ms to write
+a 12.5 MB answer on a laptop, and four to five times that on a CI runner, where the loop ran 23 ms late on the read.
+`VersionedAnswers` now decodes a row longer than 1 MB on a worker thread, and writes it into L1 on one, after a read
+and after its own compare-and-swap stored it. An answer is a pure function of its key, so a copy that lands a moment
+after the fence check is never wrong; a retirement or a peer's eviction of the key that lands while the copy is
+being written is caught by a second fence check after the write, which deletes the copy again (also on a thread).
+On a laptop the loop now runs 0.9-1.6 ms late reading that answer from L2, against 2.7-3.4 ms before, and 1.1-2.7 ms
+late storing it into a replica with an L1, against 1.3-2.1 ms (within the noise there; the write itself is off the
+loop). Smaller answers, and every other collection, are decoded and kept on the loop exactly as before; answers,
+their bytes in L1 and L2, and every API are unchanged.
+
+### interfaces: one dependency-free package for the family's shared Protocols and vocabulary
+
+**Release step:** `3tears-interfaces` is a new PyPI project, so it needs a pending trusted publisher on PyPI
+before the release that carries it (docs/releasing.md). Nine family packages hard-depend on it, so without it
+they are uninstallable at the new version.
+
+**Added:** `3tears-interfaces` (`threetears.interfaces`), one module per domain:
+
+- `threetears.interfaces.access`: `ImpersonationCategory`, the six sensitive-action categories agent-acl's
+  impersonation deny-list and iam's step-up check both enforce.
+- `threetears.interfaces.media`: the media capability Protocols (`VisionProvider`, `ReferenceVisionProvider`,
+  `TextProvider`, `TranscriptionProvider`, `ImageGenerationBackend`, `MediaStorage`, `ObjectStore`), the value
+  types that cross them (`MediaInfo`, `GeneratedImage`, `ObjectHandle`, `ObjectListing`, `MediaSizeLimitExceeded`,
+  `MediaFacets`), the `EXTRACTION_STATUS_*`, `GENERATION_*`, `LOCATOR_KIND_*` and `OBJECT_HANDLE_METADATA_KEY`
+  constants, and the object-key builder `build_object_key`. Its `protocols`, `facets` and `keys` submodules
+  keep their names.
+
+The rule, stated in the package docstring and README: Protocols, the value types and enums that cross them, and
+pure helpers over those types; no implementations, no third-party imports, no dependencies. The dependency-free
+checks in `tests/enforcement/` (`test_the_interfaces_package_stays_dependency_free`, and the declared-imports
+gate's exclusion) now police `packages/interfaces` (and `packages/tool-schema`, which keeps the same rule).
+
+**Removed / Breaking:** `3tears-media-contracts` and `3tears-access-contracts` are gone from the family, with no
+shim. `3tears-access-contracts` never reached PyPI. Replace the distribution `3tears-media-contracts` or
+`3tears-access-contracts` with `3tears-interfaces`, then rewrite imports. The rows run longest prefix first, so
+a find/replace applied top to bottom is safe:
+
+| Old import path | New import path |
+|---|---|
+| `threetears.access.contracts.categories.ImpersonationCategory` | `threetears.interfaces.access.ImpersonationCategory` |
+| `threetears.access.contracts.categories` | `threetears.interfaces.access` |
+| `threetears.access.contracts.ImpersonationCategory` | `threetears.interfaces.access.ImpersonationCategory` |
+| `threetears.access.contracts.__version__` | `threetears.interfaces.__version__` |
+| `threetears.access.contracts` | `threetears.interfaces.access` |
+| `threetears.media.contracts.protocols` (all its names below) | `threetears.interfaces.media.protocols` |
+| `threetears.media.contracts.facets` (`LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`, `MediaFacets`) | `threetears.interfaces.media.facets` |
+| `threetears.media.contracts.keys.SHARED_PREFIX`, `threetears.media.contracts.SHARED_PREFIX` | no replacement; use `build_object_key` |
+| `threetears.media.contracts.keys.sanitize_segment`, `threetears.media.contracts.sanitize_segment` | no replacement; use `build_object_key` |
+| `threetears.object_store.sanitize_segment` | no replacement; use `build_object_key` |
+| `threetears.media.contracts.keys` (`build_object_key`) | `threetears.interfaces.media.keys` |
+| `threetears.media.contracts.__version__` | `threetears.interfaces.__version__` |
+| `threetears.media.contracts` | `threetears.interfaces.media` |
+
+Every name `threetears.media.contracts` exported keeps its name under `threetears.interfaces.media`:
+`EXTRACTION_STATUS_COMPLETE`, `EXTRACTION_STATUS_FAILED`, `EXTRACTION_STATUS_NONE`, `EXTRACTION_STATUS_PENDING`,
+`EXTRACTION_STATUS_REFUSED`, `EXTRACTION_STATUS_UNCHANGED`, `GENERATION_IGNORED`, `GENERATION_SEED`,
+`GENERATION_SIZE`, `GENERATION_SOURCE_USED`, `LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`,
+`OBJECT_HANDLE_METADATA_KEY`, `GeneratedImage`, `ImageGenerationBackend`, `MediaFacets`, `MediaInfo`,
+`MediaSizeLimitExceeded`, `MediaStorage`, `ObjectHandle`, `ObjectListing`, `ObjectStore`, `TextProvider`,
+`TranscriptionProvider`, `ReferenceVisionProvider`, `VisionProvider`, `build_object_key`. The exceptions are
+`sanitize_segment` and `SHARED_PREFIX`, now private internals of `build_object_key` (the media `sanitize_segment`
+also shared a name with `threetears.core.namespaces.sanitize_segment`, which has different rules); nothing outside
+3tears called either, and `build_object_key` is the way to get their behaviour.
+For a sed: `s/threetears\.access\.contracts\.categories/threetears.interfaces.access/g`, then
+`s/threetears\.access\.contracts/threetears.interfaces.access/g`, then
+`s/threetears\.media\.contracts/threetears.interfaces.media/g` (the `__version__` rows are the only ones the
+sed gets wrong, besides the two removed names above).
+
+Unchanged: `threetears.agent.acl.ImpersonationCategory` and `threetears.agent.tools.protocols` still re-export
+the same classes, now from `threetears.interfaces`.
+
+**Changed:** `3tears-agent-acl`, `3tears-agent-tools`, `3tears-backup`, `3tears-geo`, `3tears-iam`,
+`3tears-langgraph`, `3tears-models`, `3tears-object-store` and `3tears-search` now depend on `3tears-interfaces`
+in place of the package they took before. search's and iam's dependency floors name it in the same place.
+search's SearXNG and Tavily adapters write locator kinds with `LOCATOR_KIND_DIRECT_FILE` and
+`LOCATOR_KIND_CONTAINING_PAGE` instead of hand-typed strings; the values are unchanged.
 
 ### core, agent-tools, registry: the tool-call wire protocol lives in core, and registry no longer depends on agent-tools
 
@@ -277,17 +358,6 @@ dropping one only when it is read, so abandoned sign-in state no longer accumula
 past it raises `MemoryStoreFullError`. `MemoryAttemptLimiter` sweeps lapsed windows the same way.
 Redemption and the injectable clock are unchanged. The stores are now supported for a single-process
 service with one event loop. State is lost on restart, and the stores are not thread-safe.
-
-### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
-
-**Release step:** `3tears-access-contracts` is a new PyPI project, so it needs a pending trusted
-publisher on PyPI before the release that carries it (docs/releasing.md). iam and agent-acl
-hard-depend on it, so without it they are uninstallable at the new version.
-
-**Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds
-`ImpersonationCategory`, the six sensitive-action categories that agent-acl's impersonation deny-list
-and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
-so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
 
 ## v0.91.4 -- 2026-11-06
 

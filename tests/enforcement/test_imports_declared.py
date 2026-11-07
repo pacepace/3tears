@@ -24,9 +24,10 @@ from threetears.enforcement.imports_declared import ImportsDeclaredConfig, run_i
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: contracts packages import no third-party module at all; ``test_dependency_alignment.py`` holds
-#: them to that, and this gate's non-vacuity guard would refuse them for having nothing to check.
-_CONTRACT_PACKAGES = frozenset({"packages/access-contracts", "packages/media-contracts", "packages/tool-schema"})
+#: the interfaces package (and tool-schema, under the same rule) imports no third-party module at all;
+#: ``test_dependency_alignment.py`` holds them to that, and this gate's non-vacuity guard would refuse
+#: them for having nothing to check.
+_DEPENDENCY_FREE_PACKAGES = frozenset({"packages/interfaces", "packages/tool-schema"})
 
 _PACKAGES = sorted(
     pyproject.parent.relative_to(_REPO_ROOT).as_posix()
@@ -38,10 +39,10 @@ _PACKAGES = sorted(
 def test_the_packages_were_found() -> None:
     """a glob that stopped matching would pass every package by checking none."""
     assert len(_PACKAGES) > 20, _PACKAGES
-    assert _CONTRACT_PACKAGES <= set(_PACKAGES), sorted(_CONTRACT_PACKAGES - set(_PACKAGES))
+    assert _DEPENDENCY_FREE_PACKAGES <= set(_PACKAGES), sorted(_DEPENDENCY_FREE_PACKAGES - set(_PACKAGES))
 
 
-@pytest.mark.parametrize("package", [package for package in _PACKAGES if package not in _CONTRACT_PACKAGES])
+@pytest.mark.parametrize("package", [package for package in _PACKAGES if package not in _DEPENDENCY_FREE_PACKAGES])
 def test_every_import_comes_from_a_declared_distribution(package: str) -> None:
     run_imports_declared_enforcement(
         ImportsDeclaredConfig(repo_root=_REPO_ROOT / package, first_party=frozenset({"threetears"}))

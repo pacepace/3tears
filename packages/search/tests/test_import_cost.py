@@ -3,7 +3,7 @@
 ``test_package_boundaries`` and ``test_contract_discipline`` already name modules the
 leaf must never reach for. This test asks the harder question in the other direction:
 not "did it avoid the things we thought of" but **"is everything it loaded on the
-permitted list"** -- stdlib, pydantic, and ``3tears-media-contracts``, and nothing
+permitted list"** -- stdlib, pydantic, and ``3tears-interfaces``, and nothing
 else. A denylist only ever catches the weight somebody predicted; the next dependency
 to arrive here will be one nobody wrote down.
 
@@ -48,12 +48,13 @@ _PERMITTED_THIRD_PARTY_ROOTS = frozenset(
 )
 
 #: Family modules the contracts may load: the namespace packages on the way down,
-#: this package's own ``__init__`` (which imports nothing on purpose), and the two
-#: contracts trees. Exact names and prefixes are kept apart deliberately --
-#: ``threetears.search`` is permitted while ``threetears.search.call`` is not, so a
-#: lazy top-level surface that quietly turned eager fails here.
-_PERMITTED_FAMILY_MODULES = frozenset({"threetears", "threetears.media", "threetears.search"})
-_PERMITTED_FAMILY_PREFIXES = ("threetears.media.contracts", "threetears.search.contracts")
+#: this package's own ``__init__`` (which imports nothing on purpose), the interfaces
+#: package's ``__init__`` (stdlib only), and the two contracts trees. Exact names and
+#: prefixes are kept apart deliberately -- ``threetears.search`` is permitted while
+#: ``threetears.search.call`` is not, so a lazy top-level surface that quietly turned
+#: eager fails here.
+_PERMITTED_FAMILY_MODULES = frozenset({"threetears", "threetears.interfaces", "threetears.search"})
+_PERMITTED_FAMILY_PREFIXES = ("threetears.interfaces.media", "threetears.search.contracts")
 
 #: The stage modules of ``docs/search-task-02-aggregate-and-select.md`` §5. Listed by
 #: name rather than discovered by walking the package, so that a *new* stage module is
@@ -137,13 +138,13 @@ class TestContractsImportCost:
         loaded = _modules_loaded_by_importing_the_contracts()
 
         assert "threetears.search.contracts" in loaded
-        assert "threetears.media.contracts" in loaded, (
+        assert "threetears.interfaces.media" in loaded, (
             "the facets vocabulary is a module-top import; if it stopped loading, this test's "
             "permitted-family half is no longer being exercised"
         )
 
     def test_nothing_outside_the_permitted_floor_is_loaded(self) -> None:
-        """§2: stdlib, pydantic, and media-contracts types -- an allowlist, not a denylist."""
+        """§2: stdlib, pydantic, and threetears.interfaces.media types -- an allowlist, not a denylist."""
         offenders = sorted(m for m in _modules_loaded_by_importing_the_contracts() if not _is_permitted(m))
 
         assert offenders == [], (

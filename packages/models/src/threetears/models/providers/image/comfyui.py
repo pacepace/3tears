@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
+from threetears.interfaces.media import GeneratedImage, ImageGenerationBackend
 from threetears.models.providers.image.options import dimensions_for, result_metadata
 from threetears.models.providers.image.transport import DEFAULT_MAX_RESPONSE_BYTES, ImageServerTransport, RetryPolicy
 

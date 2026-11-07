@@ -29,7 +29,7 @@ from threetears.observe import get_logger
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
 
 if TYPE_CHECKING:
-    from threetears.media.contracts import ObjectHandle, ObjectStore
+    from threetears.interfaces.media import ObjectHandle, ObjectStore
 
 __all__ = [
     "ConsumeObjectError",

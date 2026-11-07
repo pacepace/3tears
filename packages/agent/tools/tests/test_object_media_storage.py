@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
-from threetears.media.contracts import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
+from threetears.interfaces.media import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
 
 from threetears.agent.tools import object_media_storage as oms
 from threetears.agent.tools.consume import ConsumeObjectError

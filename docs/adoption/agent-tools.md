@@ -43,7 +43,7 @@ hardcoded per caller.
   agents.
 - [`conversations`](conversations.md) -- tool context items key off
   `conversation_id`.
-- [`media-contracts`](media-contracts.md) -- tools that accept or produce
+- [`interfaces`](interfaces.md) -- tools that accept or produce
   media use this contract rather than a provider-specific type.
 
 Authorization is deliberately kept out of this package's dependency graph:

@@ -13,7 +13,7 @@ scale for multi-GB files.
 ## What it does
 
 - Implements the dependency-free `ObjectStore` protocol from
-  `3tears-media-contracts` over any S3-compatible backend (MinIO in dev, S3
+  `3tears-interfaces` over any S3-compatible backend (MinIO in dev, S3
   in prod).
 - Streaming by contract: uploads move through one part-size buffer at a
   time via S3 multipart; downloads yield the response body in chunks.
@@ -38,7 +38,7 @@ reports, media) in a way that scales past what fits comfortably in memory.
 ## Composes with
 
 - [`core`](core.md) -- pulled in for its secret-reference resolver.
-- [`media-contracts`](media-contracts.md) -- the `ObjectStore` protocol it
+- [`interfaces`](interfaces.md) -- the `ObjectStore` protocol it
   implements.
 - [`backup`](backup.md) -- a typical consumer.
 

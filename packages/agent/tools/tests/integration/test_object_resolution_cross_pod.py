@@ -35,7 +35,7 @@ from sqlalchemy import MetaData
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.nats import NatsClient, set_default_namespace
 
 from threetears.agent.tools.bootstrap import build_tool_pod_collection_stack

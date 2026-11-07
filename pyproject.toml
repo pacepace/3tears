@@ -174,7 +174,6 @@ dev-dependencies = [
 # today, so adding a 3tears dependency later cannot reintroduce the failure.
 [tool.uv.exclude-newer-package]
 "3tears" = "PT0S"
-"3tears-access-contracts" = "PT0S"
 "3tears-agent-acl" = "PT0S"
 "3tears-agent-audit" = "PT0S"
 "3tears-agent-identity" = "PT0S"
@@ -194,9 +193,9 @@ dev-dependencies = [
 "3tears-evals" = "PT0S"
 "3tears-geo" = "PT0S"
 "3tears-iam" = "PT0S"
+"3tears-interfaces" = "PT0S"
 "3tears-langgraph" = "PT0S"
 "3tears-mcp" = "PT0S"
-"3tears-media-contracts" = "PT0S"
 "3tears-models" = "PT0S"
 "3tears-nats" = "PT0S"
 "3tears-object-store" = "PT0S"
@@ -449,7 +448,6 @@ python_version = "3.14"
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
-    "packages/access-contracts/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
     "packages/agent/identity/src",
@@ -470,7 +468,7 @@ mypy_path = [
     "packages/evals/src",
     "packages/langgraph/src",
     "packages/mcp/src",
-    "packages/media-contracts/src",
+    "packages/interfaces/src",
     "packages/models/src",
     "packages/nats/src",
     "packages/object-store/src",
@@ -486,7 +484,6 @@ mypy_path = [
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
 files = [
-    "packages/access-contracts/src",
     "packages/agent/acl/src",
     "packages/agent/audit/src",
     "packages/agent/identity/src",
@@ -509,7 +506,7 @@ files = [
     "packages/iam/src",
     "packages/langgraph/src",
     "packages/mcp/src",
-    "packages/media-contracts/src",
+    "packages/interfaces/src",
     "packages/models/src",
     "packages/nats/src",
     "packages/object-store/src",

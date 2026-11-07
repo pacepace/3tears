@@ -1,7 +1,7 @@
 """The search lingua franca -- types, protocols, errors, keys (search-spec.md §3.1).
 
 The leaf within the leaf. Importing this package pulls nothing beyond
-stdlib, pydantic, and ``3tears-media-contracts`` (its one family
+stdlib, pydantic, and ``3tears-interfaces`` (its one family
 dependency by vocabulary, not by import: facets and carrier names key on
 its published taxonomy). Nothing here imports ``threetears.core``,
 ``threetears.agent.*``, langchain, or NATS; nothing reads environment

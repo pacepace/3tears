@@ -39,7 +39,7 @@ from threetears.geo.geometry import decode_geometry, point_geometry
 from threetears.geo.mvt import encode_tile
 from threetears.geo.scope import check_cache_scope
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
-from threetears.media.contracts.keys import build_object_key
+from threetears.interfaces.media.keys import build_object_key
 from threetears.observe import counter, get_logger, traced
 from shapely.geometry.base import BaseGeometry
 

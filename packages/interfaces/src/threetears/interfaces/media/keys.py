@@ -13,7 +13,7 @@ co-locate; ``filename`` keeps the original name + extension for human
 readability and correct download naming.
 
 This builder lives in the dependency-free contract (beside
-:class:`~threetears.media.contracts.protocols.ObjectHandle`) rather than the
+:class:`~threetears.interfaces.media.protocols.ObjectHandle`) rather than the
 S3 impl package: the layout is a *contract* every producer encodes, and a
 producing tool must be able to build a key without inheriting the aioboto3
 client tree. The impl package re-exports it for back-compat.
@@ -25,7 +25,7 @@ import re
 from datetime import datetime
 from uuid import UUID
 
-__all__ = ["SHARED_PREFIX", "build_object_key", "sanitize_segment"]
+__all__ = ["build_object_key"]
 
 #: anything outside the safe key-segment alphabet collapses to a hyphen.
 _UNSAFE = re.compile(r"[^a-z0-9-]+")
@@ -38,10 +38,10 @@ _DEFAULT_FILENAME = "object"
 #: isolation boundary bucket policy grants on, so a platform-shared object
 #: still needs *a* leading segment to grant against -- it just cannot be a
 #: customer. see :func:`build_object_key`.
-SHARED_PREFIX = "shared"
+_SHARED_PREFIX = "shared"
 
 
-def sanitize_segment(value: str) -> str:
+def _sanitize_segment(value: str) -> str:
     """Lower-case and collapse ``value`` to the ``[a-z0-9-]`` key alphabet.
 
     :param value: raw segment (scope label, category, filename stem)
@@ -65,9 +65,9 @@ def _sanitize_filename(filename: str | None) -> str:
     """
     stem, dot, ext = (filename or "").rpartition(".")
     if not dot:
-        result = sanitize_segment(filename or "")
+        result = _sanitize_segment(filename or "")
     else:
-        safe_stem = sanitize_segment(stem)
+        safe_stem = _sanitize_segment(stem)
         safe_ext = _UNSAFE.sub("", ext.lower())
         result = f"{safe_stem}.{safe_ext}" if safe_ext else safe_stem
     return result
@@ -98,7 +98,7 @@ def build_object_key(
       ``z/x/y`` into a UUID.
 
     ``customer_id=None`` addresses a platform-shared object under
-    :data:`SHARED_PREFIX` instead of a tenant. That is not a loophole in the
+    the ``shared`` prefix instead of a tenant. That is not a loophole in the
     tenant isolation: ``datasources.customer_id`` is itself nullable
     with NULL meaning platform-shared, so objects derived from such a row
     have no tenant to be scoped to, and forcing one would fork a single
@@ -129,8 +129,8 @@ def build_object_key(
     :raises ValueError: when neither ``path`` nor both of
         ``object_id``/``created`` are supplied
     """
-    owner = str(customer_id) if customer_id is not None else SHARED_PREFIX
-    head = f"{owner}/{sanitize_segment(scope)}/{sanitize_segment(category)}"
+    owner = str(customer_id) if customer_id is not None else _SHARED_PREFIX
+    head = f"{owner}/{_sanitize_segment(scope)}/{_sanitize_segment(category)}"
     if path is not None:
         parts = [part for part in path.split("/") if part]
         if not parts:
@@ -138,7 +138,7 @@ def build_object_key(
         # the last component is a filename: sanitized as a stem plus extension
         # so ``98.mvt`` does not collapse to ``98-mvt`` and lose the type a
         # reader (and a CDN's content negotiation) depends on.
-        tail = "/".join([*(sanitize_segment(part) for part in parts[:-1]), _sanitize_filename(parts[-1])])
+        tail = "/".join([*(_sanitize_segment(part) for part in parts[:-1]), _sanitize_filename(parts[-1])])
         return f"{head}/{tail}"
     if object_id is None or created is None:
         raise ValueError("build_object_key requires either path=, or both object_id= and created=")

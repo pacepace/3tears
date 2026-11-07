@@ -1,7 +1,7 @@
 """Seam for cataloging a produced object into the agent's object catalog.
 
 When a producing tool streams a large artifact out-of-band (Path-2) and returns
-an :class:`~threetears.media.contracts.ObjectHandle` in its result metadata, the
+an :class:`~threetears.interfaces.media.ObjectHandle` in its result metadata, the
 agent must persist a catalog record so the object is discoverable and is not an
 orphan. This module defines the :class:`ObjectCataloger` Protocol the graph's
 ``tool_node`` calls; the host app (the SDK) supplies the concrete writer (which
@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 
 __all__ = ["ObjectCataloger"]
 

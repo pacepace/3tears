@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import fitz  # PyMuPDF
 import pytest
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 
 from threetears.agent.tools import object_media_storage as oms
 from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool, AnalyzerConfig

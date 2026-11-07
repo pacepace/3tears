@@ -7,7 +7,7 @@ import json
 
 import httpx
 
-from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
+from threetears.interfaces.media import GeneratedImage, ImageGenerationBackend
 from threetears.models.providers.image.options import dimensions_for, result_metadata
 
 __all__ = [
