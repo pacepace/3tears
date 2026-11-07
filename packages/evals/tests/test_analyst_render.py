@@ -659,11 +659,13 @@ def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
 
 def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
     rows = [["A", "94% · $1 per 1,000 calls", "-7.6 to +1.1"], ["B", "96.4% · $1.655 per 1,000 calls", "-3 to +0.25"]]
-    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-09).
+    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-07). A
+    # column's percentages read whole where whole percents keep them apart (coordinator ruling, C-15).
     assert even_precision(rows) == [
-        ["A", "94.0% · $1 per 1,000 calls", "-7.6 to +1.10"],
-        ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
+        ["A", "94% · $1 per 1,000 calls", "-7.6 to +1.10"],
+        ["B", "96% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
     ]
+    assert even_precision([["62.9%"], ["63.2%"], ["60%"]]) == [["62.9%"], ["63.2%"], ["60.0%"]], "63 twice: one decimal"
     assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
     # A column holding an amount under a cent keeps its dollars, every digit kept: the per-1,000 mark is retired (Q4).
     assert even_precision([["$0.000616"], ["$1"]]) == [["$0.000616"], ["$1"]]
@@ -714,7 +716,7 @@ def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to
 
 def test_a_tables_paired_figures_read_at_one_precision() -> None:
     """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure.
-    Money reads by one rule of figures instead (owner ruling Q3, 2026-11-09): each amount under a dollar to two
+    Money reads by one rule of figures instead (owner ruling Q3, 2026-11-07): each amount under a dollar to two
     significant figures, or three where it reconciles with its month, and every amount from a dollar up to cents."""
     name, held, keys = next(
         (name, held, keys)

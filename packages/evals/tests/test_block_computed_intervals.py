@@ -204,8 +204,12 @@ def test_a_block_of_rates_stating_no_interval_draws_the_one_each_count_gives_at_
         for cell, figure in zip(printed, expected, strict=True):
             assert isinstance(figure.value, tuple)
             factor = 100.0 if figure.scale == "share" else 1.0
-            ends = [float(end.rstrip("%").replace(",", "")) for end in cell.split(" to ")]
-            assert ends == pytest.approx([end * factor for end in figure.value], abs=0.051), (cell, figure.value)
+            texts = [end.rstrip("%").replace(",", "") for end in cell.split(" to ")]
+            ends = [float(end) for end in texts]
+            # Each end to the precision its column prints at: a percentage whole, or to one decimal where whole
+            # percents would print two alike (coordinator ruling, C-15).
+            half = max(10.0 ** -len(end.partition(".")[2]) / 2 for end in texts) + 0.001
+            assert ends == pytest.approx([end * factor for end in figure.value], abs=half), (cell, figure.value)
 
 
 def test_a_block_of_figures_stating_their_own_interval_draws_theirs_and_no_computed_one() -> None:

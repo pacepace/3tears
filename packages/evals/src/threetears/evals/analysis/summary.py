@@ -122,14 +122,16 @@ from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
 
 def dollars_text(amount: float | None) -> str:
-    """Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
+    """Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
 
     A cheap model's call costs a few hundred-thousandths of a dollar, so a fixed number of decimals either
     shows it as $0.000000 or pads every larger amount with noise, and a general format shows it in
     exponent notation ($3e-05), which no one reads as money; the stored value is never rounded. From ten
     cents up, two decimals already carry two significant figures or more, and a third digit ($0.500) reads as
-    noise; below, rounding to the cent would erase the difference between two cheap runs ($0.0123 and
-    $0.0149 are not both $0.01). Public because two surfaces print spend — a run's summary and the
+    noise; below, rounding to the cent would erase the difference between two cheap runs ($0.012 and
+    $0.015 are not both $0.01). It is the money form's spelling of a total
+    (:func:`~threetears.evals.kernel.numbers.spell_dollars`), so a sentence and the table beside it read one amount
+    alike. Public because two surfaces print spend — a run's summary and the
     agent-facing rendering of its results — and one rule for both is what keeps one amount from reading two
     ways.
 
@@ -144,7 +146,7 @@ def dollars_text(amount: float | None) -> str:
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
     :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
-        ``$1.20``), three significant figures below (``$0.0123``, ``$0.000160``); :data:`UNPRICED` for ``None``.
+        ``$1.20``), two significant figures below (``$0.012``, ``$0.00016``); :data:`UNPRICED` for ``None``.
     :rtype: str
     """
     if amount is None:

@@ -21,9 +21,10 @@ and what HTML keeps beside the chart for a screen reader and a page whose script
 
 from __future__ import annotations
 
+import decimal
 import math
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
@@ -325,11 +326,81 @@ _SIGNIFICANT = len(str(int(WHOLE_FROM)))
 _CELL_MONEY = re.compile(r"(?<![<>] )(?<![<>\w.,+\-−])([+\-−]?)\$(\d[\d,]*(?:\.\d+)?)(/1000)?(?![\d])")
 
 
-def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
+#: A percentage a cell states: its sign, its number and the percent sign; never inside a word or a longer number.
+_CELL_PERCENT = re.compile(r"(?<![\w.])([+\-−]?)(\d+(?:\.\d+)?)%")
+
+
+def percent_places(texts: Iterable[str]) -> int | None:
+    """The decimals one column's percentages read at: none, so whole percents (``60%``); one where whole percents
+    would print two of its values alike, an interval's two ends among them (``62.9%`` beside ``63.2%``), or where a
+    value printed at a half (``90.5%``) cannot decide its whole percent. None for a
+    column that states no percentage, or one written to two decimals or more (a confidence level, ``99.69%``), which
+    keeps its digits (coordinator ruling under the owner's "do what makes sense for usability", 2026-11-07).
+
+    :param texts: The column's cells, as they print.
+    :ptype texts: Iterable[str]
+    :return: 0 or 1; None for a column to leave as it is.
+    :rtype: int | None
+    """
+    found = [match for text in texts for match in _CELL_PERCENT.finditer(text)]
+    if not found or any(len(match[2].partition(".")[2]) > 1 for match in found):
+        return None
+    if any(match[2].endswith(".5") for match in found):
+        # A percentage printed to one decimal at a half (90.5%) cannot say which whole percent it rounds to (its value
+        # may be 90.48%), so the column keeps its decimal rather than print a rounding the digits cannot decide.
+        return 1
+    stated = {float(match[2]) for match in found}
+    return 0 if len({percent_at(value, 0) for value in stated}) == len(stated) else 1
+
+
+def percent_at(value: float, places: int) -> str:
+    """A percentage at ``places`` decimals, half away from zero, its sign kept; an exact zero reads ``0%``, which
+    states no precision.
+
+    :param value: The percentage, in percent.
+    :ptype value: float
+    :param places: The decimals.
+    :ptype places: int
+    :return: ``63%``, ``62.9%``, ``0%``.
+    :rtype: str
+    """
+    if value == 0:
+        return "0%"
+    step = decimal.Decimal(1).scaleb(-places)
+    return f"{decimal.Decimal(repr(value)).quantize(step, rounding=decimal.ROUND_HALF_UP)}%"
+
+
+def respell_percents(text: str, places: int) -> str:
+    """Every percentage a cell's text states at ``places`` decimals (:func:`percent_at`); its other words as written.
+
+    :param text: The cell's text.
+    :ptype text: str
+    :param places: The column's decimals (:func:`percent_places`).
+    :ptype places: int
+    :return: The text.
+    :rtype: str
+    """
+    return _CELL_PERCENT.sub(lambda match: match[1] + percent_at(float(match[2]), places), text)
+
+
+def _percents_by_column(table: list[list[str]]) -> list[list[str]]:
+    """A table's text with each column's percentages at its one precision (:func:`percent_places`); changed in place."""
+    for column in range(max((len(row) for row in table), default=0)):
+        places = percent_places(row[column] for row in table if column < len(row))
+        if places is None:
+            continue
+        for row in table:
+            if column < len(row):
+                row[column] = respell_percents(row[column], places)
+    return table
+
+
+def even_precision(rows: Sequence[Sequence[str]], *, percents: bool = True) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. Money is never padded, since each amount reads to its own two significant figures
+    three. A percentage reads at its column's one precision (:func:`percent_places`: whole, or one decimal where whole
+    percents would print two values alike), never padded past it. Money is never padded, since each amount reads to its own two significant figures
     (:func:`~threetears.evals.kernel.numbers.money_form`): its whole dollars are only grouped by thousands (``$1,239``,
     :func:`_money_by_column`), as the figure keys write money.
 
@@ -343,10 +414,14 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
 
     :param rows: The table's rows of cells.
     :ptype rows: Sequence[Sequence[str]]
+    :param percents: Whether each column's percentages are set to its one precision first; a table of what an
+        analysis computes prints each as its key reads it, and keeps them.
+    :ptype percents: bool
     :return: The rows, each number padded among the cells that read like its own.
     :rtype: list[list[str]]
     """
     table = _money_by_column([list(row) for row in rows])
+    table = _percents_by_column(table) if percents else table
     shaped: dict[str, list[tuple[int, int]]] = {}
     for at, row in enumerate(table):
         for column, cell in enumerate(row):
@@ -399,9 +474,13 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
     def pad(found: re.Match[str]) -> str:
         wanted = most[next(place)]
         decimals = found.group(3) or ""
-        if found.string[found.start(2) - 1 : found.start(2)] == "$":
+        if (
+            found.string[found.start(2) - 1 : found.start(2)] == "$"
+            or found.string[found.end() : found.end() + 1] == "%"
+        ):
             # Money is never padded: each amount reads to its own two significant figures (money_form, owner ruling
-            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110.
+            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110. A percentage reads at its column's one precision
+            # (percent_places), set before padding.
             return found.group(0)
         if wanted > _MOST_PADDED:
             return found.group(0)

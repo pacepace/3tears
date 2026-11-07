@@ -12,6 +12,7 @@ from collections import Counter
 from collections.abc import Mapping
 from typing import Any
 
+from threetears.evals.analysis.report.charts import percent_places, respell_percents
 from threetears.evals.analysis import (
     MIN_CASES,
     ChartBlock,
@@ -89,14 +90,22 @@ class TestPerLabelStatisticsAreOneTable:
         # What the bundle holds, per label: one (precision, recall, F1) triple per arm.
         bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
         held: dict[str, Counter[tuple[str | None, ...]]] = {}
+        triples: list[tuple[str, tuple[str | None, ...]]] = []
         for cell in bundle.cell_measures:
             by_label: dict[str, dict[str, str]] = {}
             for summary in cell.measures.measures:
                 if (classifier := classifier_label_of(summary.name)) is not None:
                     by_label.setdefault(classifier[1], {})[classifier[0]] = _figure(summary)
             for label, figures in by_label.items():
-                triple = tuple(figures.get(statistic) for statistic in ("precision", "recall", "f1"))
-                held.setdefault(label, Counter())[triple] += 1
+                triples.append((label, tuple(figures.get(statistic) for statistic in ("precision", "recall", "f1"))))
+        # Each statistic's column reads its percentages at one precision (coordinator ruling, C-15).
+        places = [percent_places(triple[at] or "" for _, triple in triples) for at in range(3)]
+        for label, triple in triples:
+            spelled = tuple(
+                text if text is None or place is None else respell_percents(text, place)
+                for text, place in zip(triple, places, strict=True)
+            )
+            held.setdefault(label, Counter())[spelled] += 1
         assert set(held) == {"animal", "plant"}
 
         shown: dict[str, Counter[tuple[str | None, ...]]] = {}

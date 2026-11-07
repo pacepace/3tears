@@ -190,7 +190,7 @@ class TestTheBundleFoldsEachCheckAcrossItsRuns:
         assert all(reading.proof == "unproven" for reading in bundle.goal_check_proofs)
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         texts = [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
-        # Each disclosure opens on the check's name (what it tests, by the owner's ruling of 2026-11-09).
+        # Each disclosure opens on the check's name (what it tests, by the owner's ruling of 2026-11-07).
         names = bundle.named_checks()
         disclosed = [text for text in texts if any(text.startswith(f"{names[check]} is ") for check in checks)]
         assert len(disclosed) == len(checks)

@@ -62,7 +62,7 @@ from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
 from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
 from threetears.evals.analysis.references import resolve_reading
-from threetears.evals.analysis.report.blocks import money_columns
+from threetears.evals.analysis.report.blocks import money_columns, percent_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.figures import (
     NO_SUCCESSFUL_RESULTS,
@@ -722,7 +722,7 @@ def _in_one_form(block: ReportBlock) -> ReportBlock:
     if not isinstance(block, TableBlock):
         return block
     # The code-only report's money in a table is drawn per a count its heading names, so it never carries the mark.
-    return block.model_copy(update={"rows": money_columns(block.rows)})
+    return block.model_copy(update={"rows": percent_columns(money_columns(block.rows))})
 
 
 def _anchored(blocks: Sequence[ReportBlock]) -> list[ReportBlock]:

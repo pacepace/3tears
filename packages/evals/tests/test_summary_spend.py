@@ -77,12 +77,12 @@ def test_every_role_that_spent_is_stated_with_a_total_equal_to_the_results() -> 
     ]
     assert summary.total_cost_usd == pytest.approx(math.fsum([0.00348, 0.0166, 0.0137]))
     text = summary.render()
-    assert "inner_agent spend: $0.0166 over 5 call(s)" in text
+    assert "inner_agent spend: $0.017 over 5 call(s)" in text
     assert (
         "external spend: 6 credits (tavily), unpriced over 3 call(s): the run declared no external rate, so its total "
         "sums no external dollars"
     ) in text
-    assert "total spend: $0.0338, the results' cost" in text
+    assert "total spend: $0.034, the results' cost" in text
 
 
 def test_a_judge_campaigns_spend_is_stated_though_it_scored_no_rubric() -> None:
@@ -90,7 +90,7 @@ def test_a_judge_campaigns_spend_is_stated_though_it_scored_no_rubric() -> None:
     summary = _summary([_result(usage, case=f"tc-{i}", rubric=False) for i in range(3)])
     assert [spend.role for spend in summary.spend] == ["judge"]
     text = summary.render()
-    assert "judge spend: $0.00600 over 3 call(s)" in text
+    assert "judge spend: $0.0060 over 3 call(s)" in text
     assert "the candidate reported none" not in text
 
 
@@ -103,7 +103,7 @@ def test_an_unpriced_role_makes_the_total_unknown_and_states_what_was_priced() -
     assert summary.total_cost_usd is None
     text = summary.render()
     assert "judge spend: unpriced over 1 call(s): its client reported no price for them" in text
-    assert "total spend: unknown in full: $0.00100 over the priced calls, plus 1 call(s) unpriced" in text
+    assert "total spend: unknown in full: $0.0010 over the priced calls, plus 1 call(s) unpriced" in text
 
 
 def test_a_row_that_reported_no_call_count_is_never_read_as_zero_calls() -> None:
@@ -112,7 +112,7 @@ def test_a_row_that_reported_no_call_count_is_never_read_as_zero_calls() -> None
     (candidate,) = [spend for spend in summary.spend if spend.role == "candidate"]
     assert (candidate.calls, candidate.uncounted_rows) == (0, 3)
     text = summary.render()
-    assert "candidate spend: $0.00600 over 3 usage row(s) that reported no call count" in text
+    assert "candidate spend: $0.0060 over 3 usage row(s) that reported no call count" in text
     assert "over 0 call(s)" not in text
 
 
@@ -120,7 +120,7 @@ def test_counted_and_uncounted_rows_are_stated_side_by_side() -> None:
     counted = [RoleUsage(role="candidate", model="m-cand", cost_usd=0.002, call_count=2, price_source="provider")]
     uncounted = [RoleUsage(role="candidate", model="m-cand", cost_usd=0.002, price_source="provider")]
     summary = _summary([_result(counted, case="tc-0"), _result(uncounted, case="tc-1")])
-    assert "candidate spend: $0.00400 over 2 call(s) and 1 usage row(s) that reported no call count" in (
+    assert "candidate spend: $0.0040 over 2 call(s) and 1 usage row(s) that reported no call count" in (
         summary.render()
     )
 
@@ -143,8 +143,8 @@ def test_a_partly_priced_role_states_its_priced_dollars_and_its_unpriced_calls()
     judge = summary.role_spend("judge")
     assert judge is not None and (judge.cost_usd, judge.unpriced_calls) == (pytest.approx(0.002), 1)
     text = summary.render()
-    assert "judge spend: $0.00200 over 2 call(s), 1 of them unpriced: its client reported no price for them" in text
-    assert "total spend: unknown in full: $0.00400 over the priced calls, plus 1 call(s) unpriced" in text
+    assert "judge spend: $0.0020 over 2 call(s), 1 of them unpriced: its client reported no price for them" in text
+    assert "total spend: unknown in full: $0.0040 over the priced calls, plus 1 call(s) unpriced" in text
     assert _counted_dollars(summary) == pytest.approx(0.004)
 
 
@@ -168,10 +168,10 @@ def test_the_role_lines_add_up_to_the_total_where_external_calls_are_partly_pric
     assert summary.total_cost_usd == pytest.approx(0.051) == _counted_dollars(summary)
     text = summary.render()
     assert (
-        "external spend: 3 quota_units (maps), 4 credits (search), $0.0500 over 5 call(s), 3 of them unpriced: neither "
+        "external spend: 3 quota_units (maps), 4 credits (search), $0.050 over 5 call(s), 3 of them unpriced: neither "
         "a charge their provider reported nor a rate the run declared priced them"
     ) in text
-    assert "total spend: $0.0510, the results' cost" in text
+    assert "total spend: $0.051, the results' cost" in text
 
 
 def test_a_role_outside_the_total_says_so() -> None:
@@ -184,7 +184,7 @@ def test_a_role_outside_the_total_says_so() -> None:
     ]
     summary = _summary([_result(usage)])
     assert summary.total_cost_usd == pytest.approx(0.001) == _counted_dollars(summary)
-    assert "external spend: 4 credits (search), $0.0500 over 2 call(s); not in the total" in summary.render()
+    assert "external spend: 4 credits (search), $0.050 over 2 call(s); not in the total" in summary.render()
 
 
 def test_a_run_that_reported_no_spend_states_none() -> None:

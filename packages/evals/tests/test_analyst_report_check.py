@@ -460,7 +460,7 @@ _EVALS_BYTES = "b014d6e25c053873f4d67c2beb06fc0b1edefc456290ba651bf2fef6fe60160f
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
 #: The editor's and the analyst's moved again when money came to read to two significant figures per amount, cents at
-#: least whatever its size (owner ruling Q3, 2026-11-09): the `usd` filter's line says so, and the grammar's
+#: least whatever its size (owner ruling Q3, 2026-11-07): the `usd` filter's line says so, and the grammar's
 #: `cost_per_month` example reads "$1,892.00".
 _EDITOR_BYTES = "cf93329095e3a8138150332f22d45ced7b45b60ba5bd97e5d222c832ab5fc122"
 

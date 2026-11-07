@@ -3,7 +3,7 @@
 An aspect declares a ``short_name`` (``Aspect.short_name``), so may an arm (``CampaignArm.short_name``), and a
 template a display name per goal check (``EvalTemplate.goal_check_names``). A page prints the declared name. Where
 none is declared it prints an aspect's full label, unchanged and never shortened, a check by what it tests
-(``Shop cart check``), its expression the glossary's definition of that name (the owner's ruling of 2026-11-09), and computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
+(``Shop cart check``), its expression the glossary's definition of that name (the owner's ruling of 2026-11-07), and computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
 or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect, an
 arm or a check changes no reading and stales nothing.
 
@@ -685,7 +685,7 @@ class TestAnUndeclaredNameFallsBackWhole:
     def test_a_check_with_no_display_name_is_named_by_what_it_tests(self) -> None:
         unnamed = _fixture(named=False)["bundles"][LABELS[0]]
         named = _fixture(named=True)["bundles"][LABELS[0]]
-        # The owner ruled it (2026-11-09): never the expression, which the glossary defines the name by.
+        # The owner ruled it (2026-11-07): never the expression, which the glossary defines the name by.
         assert measure_name_of(unnamed, goal_check_measure(CHECKS[0])) == "Shop cart check"
         assert measure_name_of(unnamed, goal_check_measure(CHECKS[1])) == "Chat messages check"
         assert measure_name_of(named, goal_check_measure(CHECKS[0])) == CHECK_NAMES[CHECKS[0]]

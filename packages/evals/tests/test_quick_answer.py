@@ -58,7 +58,7 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     assert summary.role_spend("candidate").calls == 3
     assert summary.role_spend("candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
     # $0.00016, shown to three significant figures rather than rounded away.
-    assert "candidate spend: $0.000160 over 3 call(s)" in summary.render()
+    assert "candidate spend: $0.00016 over 3 call(s)" in summary.render()
     for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
         (row,) = result.usage
         assert (row.role, row.model, row.call_count) == ("candidate", "m-1", 1)

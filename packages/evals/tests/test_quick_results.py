@@ -456,7 +456,7 @@ async def test_an_unpriced_role_leaves_the_total_unsplit_and_never_sums_it_as_ze
         store=":memory:", scope=SCOPE
     )
     (line,) = [line.strip() for line in result.render().splitlines() if "total spend" in line]
-    assert line == "total spend: unknown in full: $0.00300 over the priced calls, plus 6 call(s) unpriced"
+    assert line == "total spend: unknown in full: $0.0030 over the priced calls, plus 6 call(s) unpriced"
 
 
 #: Enough cases for a contrast to be tested, each priced by its length so the spend varies case to case.

@@ -72,6 +72,7 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.analysis.report.blocks import TableBlock, percent_columns
 from threetears.evals.analysis.report.build import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
 from threetears.evals.analysis.style import CANNOT_TELL_APART
@@ -192,6 +193,11 @@ def build_campaign_report(
     ]
     if readings.readings or readings.pairs:
         blocks.append(DisclosureBlock(section="methods", source="comparisons", text=PAIRING_METHOD))
+    # Each table's percentages at one precision per column (percent_columns), as the aspects' pages read theirs.
+    blocks = [
+        block.model_copy(update={"rows": percent_columns(block.rows)}) if isinstance(block, TableBlock) else block
+        for block in blocks
+    ]
     return CampaignReport(
         basis="code_only",
         title=_title(campaign),

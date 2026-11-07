@@ -559,7 +559,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table', lead: Sequence[ReportBlock] | None = None) -> CampaignReport`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
-- **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
+- **`dollars_text`** · function · Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
   <br>`dollars_text(amount: float | None) -> str`
 - **`format_number`** · *host contract* · function · Spell a number for a reader, the same way on every analysis surface.
   <br>`format_number(value: float | None, *, prefix: str = '') -> str`

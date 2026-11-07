@@ -472,8 +472,12 @@ def values_table(block: ChartBlock | TableBlock) -> tuple[list[str], list[list[s
         [cell.text if cell.tag is None else f"{cell.tag} · {cell.text}" for cell in (row[c.key] for c in block.columns)]
         for row in block.rows
     ]
-    across = even_precision(rows)
-    by_column = [even_precision([[cell] for cell in column]) for column in zip(*rows, strict=True)]
+    # A table of what an analysis computes (compare, settle, levers) prints each figure as its key reads it.
+    as_keyed = block.name in ("compare", "settle", "levers")
+    across = even_precision(rows, percents=not as_keyed)
+    by_column = [
+        even_precision([[cell] for cell in column], percents=not as_keyed) for column in zip(*rows, strict=True)
+    ]
     return columns, [
         [by_column[at][row][0] if _BARE_NUMBER.fullmatch(cell) else across[row][at] for at, cell in enumerate(cells)]
         for row, cells in enumerate(rows)

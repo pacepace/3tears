@@ -84,7 +84,7 @@ failed. A report document's own tables, and the evidence record laid out after t
 (`written_check_names`, `input_check_name`, both new, provisional), the record through `input_check_name` on the
 report input the bundle gives, so both name over one set of checks; the report writer's recorded judge was recorded
 again over the named pages. This reverses the earlier rule that an
-undeclared check is printed by its whole expression (owner ruling, 2026-11-09).
+undeclared check is printed by its whole expression (owner ruling, 2026-11-07).
 
 **Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
 a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
@@ -152,9 +152,24 @@ a host's world state: it is `TrialBlock.world`, its parts' names `world_parts` (
 listing title, the late line's words, a judge's methods line, the Methods `Bundle` row, a fold's heading or a
 rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
 
+### evals: a column's percentages read whole, one amount reads one way on a page, and undecided arms share one clause
+
+**Changed:** a table's column of percentages reads in whole percents (`60%`, `63%`), one decimal for the whole column
+only where whole percents would print two of its values or an interval's ends alike, or a value at a half cannot
+decide its whole percent (`87.5%`); an exact zero reads `0%`, so `0.0%` and `0%` never stand on one page; a confidence
+level keeps its digits (`99.69%`), and a table an analysis computes (compare, settle, levers) prints each figure as its
+key reads it. `spell_dollars` and `dollars_text` spell an amount alone in the money form, two significant figures and
+cents from ten cents up (`$0.020`, which read `$0.0200`), so a written page's byline reads as its table does. An
+aspect's line names its undecided arms in one clause (`the evidence cannot tell v2, v3 or v4 apart from production`),
+then its decided ones. Money from $1 to under $10 reads in cents, total or rate (`$1.90`, never `$1.9`).
+
+**Hosts:** a host calling `dollars_text` reads amounts under ten cents to two significant figures (`$0.012`, which
+read `$0.0123`). A percent `TableCell` may now carry `decimals` (0 or 1), its column's precision; `even_precision`
+gains `percents=`; `percent_columns`, `percent_places`, `percent_at` and `respell_percents` are new.
+
 ### evals: money reads two significant figures per amount, and an undecided reading says "cannot tell apart" everywhere
 
-**Changed:** owner rulings Q2 and Q3 (2026-11-09). A chart's note, a Change table, the corrected-comparisons verdict,
+**Changed:** owner rulings Q2 and Q3 (2026-11-07). A chart's note, a Change table, the corrected-comparisons verdict,
 the writer eval's side-by-side table, the promotion readout and its sentence say the glossary's `cannot tell apart`
 (a sentence: `the evidence cannot tell lead-first and shipped apart`), never `not separated`; a stored reason keeps its
 stored words and a page rewords it. Money reads by one count of significant figures per set, not one count of decimals

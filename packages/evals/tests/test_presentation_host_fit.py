@@ -467,7 +467,7 @@ def _probe() -> TableBlock:
 
 def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
     """Kairo's contrasts pin each reading by its name: its goal check reads ``Send message or queue voice check`` (the owner's
-    ruling of 2026-11-09, two subjects joined by its ``or``; its expression is the glossary's), which wraps at its spaces as ``outcome (judged)`` does, so neither is
+    ruling of 2026-11-07, two subjects joined by its ``or``; its expression is the glossary's), which wraps at its spaces as ``outcome (judged)`` does, so neither is
     classed. An id-like run longer than the column's cap holds on one line (:data:`_LONG_RUN`) is classed
     ``unbroken``, which the pinned column breaks anywhere, and nothing inside the cell (its code, an expression's fold,
     its summary) holds it whole, so it never runs over the column beside it."""
@@ -860,7 +860,7 @@ def test_a_pinned_column_holds_its_floor_and_wraps_only_at_its_words_on_kairo_s_
     688, while the table measured as fitting its frame. Drawn here at both frames: every pinned cell is at least its
     floor wide, and no word in one breaks across lines unless the cell is id-like."""
     _browser()
-    # Kairo's readings are pinned by name (the owner's ruling of 2026-11-09), so no expression is: the probe table,
+    # Kairo's readings are pinned by name (the owner's ruling of 2026-11-07), so no expression is: the probe table,
     # laid out in the same page, pins one, the id-like cell the stylesheet lets a pinned column break anywhere.
     aspect = _kairo_page().replace("</article>", table_html(_probe()) + "</article>", 1)
     pages = {

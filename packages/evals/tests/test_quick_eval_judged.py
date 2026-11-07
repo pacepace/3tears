@@ -159,7 +159,7 @@ async def test_each_dimension_is_scored_by_the_engines_judge_and_summarised_besi
     rendered = summary.render()
     assert "  answer helpful (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
     assert "  answer honest (judged), scored 1-5: mean 3.5 (n=2, min 2, max 5)" in rendered
-    assert "  judge spend: $0.00120 over 4 call(s)" in rendered  # 4 x $0.0003
+    assert "  judge spend: $0.0012 over 4 call(s)" in rendered  # 4 x $0.0003
 
     (run,) = off_loop(list_runs, host, SCOPE)
     assert run.judge_model == JUDGE_MODEL

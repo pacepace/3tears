@@ -1,7 +1,7 @@
 """Money reads one form per set (#993): a key family, a table's column and a chart each spell every amount alike.
 
 Owner ruling of 2026-10-27: within a figure type every value is spelled in one form, so successive rows never alternate
-between ``$0.008`` and ``$0.11``. Owner defaults of 2026-11-07 (Q3, Q4), ruled 2026-11-09: two significant figures, one
+between ``$0.008`` and ``$0.11``. Owner defaults of 2026-11-07 (Q3, Q4), ruled 2026-11-07: two significant figures, one
 more only where two would print an interval's ends alike, totals at or over $1 to cents whatever their size; the
 per-1,000 mark (``$8/1000``) is retired, the count goes in the header or the axis instead. The form is one rule for the
 set, never padding: ``$0.008`` and ``$0.11`` read ``$0.0080`` and ``$0.11``, never ``$0.1100``. Contracts held here:
@@ -17,8 +17,9 @@ set, never padding: ``$0.008`` and ``$0.11`` read ``$0.0080`` and ``$0.11``, nev
 - the options table states each arm's cost per run (or per 1,000) beside its pass rate, with its price source, the
   provider that served it and its priced share; a partly priced arm says ``n of m calls priced`` in place of a
   smaller total, an arm none of whose calls were priced says ``unpriced``, never ``$0``, and the unanswered mark stays;
-- the single-value helpers (``format_number``, ``spell_dollars``, ``dollars_text``) are byte-identical: the number
-  format cases, and Discodon's two call shapes (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
+- the single-value helpers: ``spell_dollars`` and ``dollars_text`` spell a total in the money form, and
+  ``format_number`` keeps the number rule: the number format cases, and Discodon's two call shapes
+  (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
 - every chart and table kind that draws a money set under a cent moves its ruler and states it, never stacks its own
   unit's count beside the moved one, and reads its ticks and notes in one form; a total is never scaled, and a chart of
   totals under a cent reads plain dollars on its ticks (the kit's ``usd``), its notes and its values table alike, as a
@@ -86,7 +87,7 @@ def _places(texts: Iterable[str]) -> set[tuple[bool, int]]:
 
 
 #: What an amount from a dollar up says of its set's form: to cents (``$3.48``, ``$1,208.00``), or, a rate's from $10,
-#: in whole dollars (``$75``); never one decimal (owner ruling Q3, 2026-11-09).
+#: in whole dollars (``$75``); never one decimal (owner ruling Q3, 2026-11-07).
 _CENTS, _WHOLE, _TEN_CENTS = "cents", "whole", "cents from $10"
 
 
@@ -163,7 +164,7 @@ def _arms(held: ReportInput, family: str) -> dict[str, Figure]:
 
 def test_a_set_with_a_member_under_a_cent_reads_in_plain_dollars_each_member_to_its_own_two_figures() -> None:
     """Q3 and Q4: the per-1,000 mark is retired; a set under a cent reads in plain dollars, every member to its own two
-    significant figures, never padded to its least member's decimals (owner ruling 2026-11-09: no ``$0.1100``)."""
+    significant figures, never padded to its least member's decimals (owner ruling 2026-11-07: no ``$0.1100``)."""
     form = money_form([0.008, 0.11])
     assert [form.spell(amount) for amount in (0.008, 0.11)] == ["$0.0080", "$0.11"]
 
@@ -207,11 +208,15 @@ def test_a_rate_beside_its_month_takes_a_third_figure_only_where_two_would_leave
 
 def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_surface() -> None:
     """r4's monthly costs read alike on a chart, in a key and in a table: one rule, money_form's, and a total of ten
-    dollars or more reads to cents (owner ruling Q3, 2026-11-09), never whole dollars."""
+    dollars or more reads to cents (owner ruling Q3, 2026-11-07), never whole dollars."""
     form = money_form([14.5, 120.0])
     assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
     assert [form.spell(amount) for amount in (14.5, 120.0, 1208.0)] == ["$14.50", "$120.00", "$1,208.00"]
     assert money_form([9.5, 120.0]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    # From $1 to under $10 a rate reads in cents, as a total does: dollars and cents is how a reader expects money of
+    # that size, never "$1.9" (coordinator ruling on Discodon's host pass, 2026-11-07).
+    one_to_ten = money_form([1.9, 5.12, 0.02], rate=True)
+    assert [one_to_ten.spell(amount) for amount in (1.9, 5.12, 0.02, -1.43)] == ["$1.90", "$5.12", "$0.020", "-$1.43"]
     # A rate of $10 or more reads in whole dollars at two figures (Q3): "$75 [$73, $77]", never "$74.89".
     rate = money_form([74.89, 6.014], rate=True)
     assert [rate.spell(amount) for amount in (74.89, 73.13, 76.65, 6.014, 140.0)] == [
@@ -337,7 +342,7 @@ def test_a_values_tables_column_reads_in_one_form_and_keeps_every_digit() -> Non
     amount's digits kept and its thousands grouped; a bound is left as it is."""
     rows = [["A", "$0.008", "+$0.616"], ["B", "$0.11", "+$0.4924"], ["C", "$1239", "< $0.000001"]]
     spelled = even_precision(rows)
-    # Money is never padded: each amount keeps its own figures (owner ruling 2026-11-09), never $0.110 beside $0.008.
+    # Money is never padded: each amount keeps its own figures (owner ruling 2026-11-07), never $0.110 beside $0.008.
     assert [row[1] for row in spelled] == ["$0.008", "$0.11", "$1,239"]
     assert [row[2] for row in spelled] == ["+$0.616", "+$0.4924", "< $0.000001"]
     for row in spelled:
@@ -346,7 +351,7 @@ def test_a_values_tables_column_reads_in_one_form_and_keeps_every_digit() -> Non
 
 def test_a_tables_money_column_reads_one_form_chosen_from_its_values() -> None:
     """A column holding $0.008 and $0.11 reads both to two significant figures, in plain dollars: never $0.008 beside
-    $0.11, nor $0.1100 beside $0.0080 (owner ruling 2026-11-09); each cell is its own value at its own figures, so it
+    $0.11, nor $0.1100 beside $0.0080 (owner ruling 2026-11-07); each cell is its own value at its own figures, so it
     states no digit the value does not hold."""
     rows = money_columns(
         [
@@ -432,7 +437,7 @@ def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: s
 
 def test_r1s_tasks_table_reads_each_tasks_cost_across_the_arms_in_one_form() -> None:
     """One task's cost across the arms is one figure type with every other task's, a rate: each to two significant
-    figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-09), so $58 | $24 | $4.60 | $8.90."""
+    figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-07), so $58 | $24 | $4.60 | $8.90."""
     held = INPUTS["r1"]
     (tasks,) = [table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "tasks"]
     rows = [[cell.text for cell in row.values()] for row in tasks.rows]
@@ -686,8 +691,8 @@ def test_format_number_reads_every_number_format_case_as_it_did() -> None:
 #: Discodon's two money call shapes and what each read before #993, which they read still.
 _DISCODON_SHAPES = (
     (0.0, "$0", "$0"),
-    (0.000160, "$0.000160", "$0.00016"),
-    (0.0123, "$0.0123", "$0.0123"),
+    (0.000160, "$0.00016", "$0.00016"),
+    (0.0123, "$0.012", "$0.0123"),
     (0.302, "$0.30", "$0.302"),
     (0.5, "$0.50", "$0.5"),
     (1.6, "$1.60", "$1.6"),
@@ -697,7 +702,11 @@ _DISCODON_SHAPES = (
 
 
 @pytest.mark.parametrize(("amount", "dollars", "prefixed"), _DISCODON_SHAPES)
-def test_discodons_two_call_shapes_read_as_they_did(amount: float, dollars: str, prefixed: str) -> None:
+def test_discodons_two_call_shapes_read_as_the_money_form_spells_one_amount(
+    amount: float, dollars: str, prefixed: str
+) -> None:
+    """Discodon's ``dollars_text(cost)`` reads as the money form spells a total alone (owner ruling Q3, finding C-5):
+    one amount, one spelling on a page; ``format_number(cost, prefix="$")`` keeps the number rule."""
     assert dollars_text(amount) == dollars == spell_dollars(amount)
     assert format_number(amount, prefix="$") == prefixed
     assert dollars_text(None) == UNPRICED

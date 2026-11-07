@@ -1,7 +1,7 @@
 """A goal check is named by what it tests in every header and every lead, and its expression is the glossary's
 definition of that name, once.
 
-The owner's ruling of 2026-11-09 (Q11): a check's expression is code, and a long one (a production campaign's
+The owner's ruling of 2026-11-07 (Q11): a check's expression is code, and a long one (a production campaign's
 ``call_count(...) >= 1 or ...``, laid out over four lines) made a paragraph of a table header and a lead. So a check is
 named by the display name its template declares, else by what it tests, read off its expression alone
 (``Refund amount check``, ``Send message or reply check``, :func:`~threetears.evals.analysis.style.check_names`;
@@ -369,7 +369,7 @@ def test_a_written_page_and_its_record_name_a_check_in_one_form() -> None:
     # record laid out after them names it so too, through the one call over the one set of checks.
     read = subject("toyhost_doc")
     body = report_read(read.host, read.campaign_id, read.scope_id, format="markdown", static=False, trials="all").body
-    assert "| Field accuracy check | 0% | 44.4% |" in body, "the document's table names the check by what it tests"
+    assert "| Field accuracy check | 0% | 44% |" in body, "the document's table names the check by what it tests"
     assert "| failed | Field accuracy check |" in body, "the record's trials name it so too"
     assert "- `Field accuracy check`: `field_accuracy >= 0.92`" in body, "a trial's record prints its expression"
     assert "| `field_accuracy >= 0.92` |" not in body, "no table names it by its expression"

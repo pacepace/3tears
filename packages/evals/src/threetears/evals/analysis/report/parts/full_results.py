@@ -58,7 +58,7 @@ from dataclasses import replace
 
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.quantities import MONEY
-from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns
+from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn, money_columns, percent_columns
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.cost_unit import money_ruler, priced_in_part
 from threetears.evals.analysis.report.figure_keys import (
@@ -140,7 +140,7 @@ def _table(
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=money_columns(rows, by_row=by_row, reconciles=reconciles),
+        rows=percent_columns(money_columns(rows, by_row=by_row, reconciles=reconciles)),
         order=order,
         total_rows=len(rows),
     )

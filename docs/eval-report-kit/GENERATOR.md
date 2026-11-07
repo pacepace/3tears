@@ -111,10 +111,10 @@ check(arm, stratum, criteria) -> {status, fails[], borders[]}
 - **Non-inferiority reading** (shape D). For a candidate with change Δ and interval [lo, hi] against margin M:
   - `hi < 0`: **worse**. Lead with the size ("worse by 3.4 to 10.8 points"), then say whether it is within the margin.
   - `lo > 0`: **better**.
-  - otherwise: **not separated**.
+  - otherwise: **cannot tell apart** (a sentence: "the evidence cannot tell v2 and v1 apart"; never "not separated", which a reader takes for "the same").
   - Within the margin when `-lo < M`. The margin at which the reading flips is `-lo`. Show it in the explore part.
   - A margin that no plausible result could fail (larger than twice the worst observed drop) gets flagged as uninformative.
-- **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); not separated is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
+- **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); cannot tell apart is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
 - **Gate the asked aspect on its readings** (`aspects[].readings`). If a floor `speaks_for` a different measure than its reading (a judged dimension instead of the pass rate), show that floor separately and name the mismatch in Method. Never merge the two.
 - **"Pass" is whatever the bundle defines.** If the input doesn't say which checks and judged dimensions make a trial pass, Method says so plainly ("a trial passes when its checks and judged dimensions pass; the bundle doesn't list which") instead of guessing.
 - **Routing.** For each routable task, the cheapest passing candidate (among those that also pass every cross-cutting aspect). Blended cost uses declared traffic shares only.
@@ -148,7 +148,7 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 | One rate per candidate against a floor | Dot + interval strips, floor dashed (r1 `dims`) | Bars from zero hiding a 3-point gap |
 | Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures, `placeLabels()` | A dual-axis chart |
 | Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget | Pass rates on a truncated axis: chart failure rate from zero instead |
-| Deltas per stratum or lever | `barsH()` diverging about zero; muted when not separated | A before-and-after table |
+| Deltas per stratum or lever | `barsH()` diverging about zero; muted where the evidence cannot tell it from zero | A before-and-after table |
 | Ordered x (turn depth, version, date, input length) | `lineChart()`, bands on at most two series, end labels | Lines over unordered categories |
 | Latency distributions | p50–p95 range bars with the budget line | Mean only |
 | Two crossed factors | Lattice of tiles with metric, cost, latency, pill | Grouped bars hiding the interaction |
@@ -234,7 +234,7 @@ Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{
 
 A reference page in `references/` is hand-built with the kit: every prose number in its page script is computed from the data beside it (`rN-*.json`), the same data the keys name. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
 
-**Money reads one way per set.** A column, a chart axis or a family of keys (every arm's cost per call, say) spells all its amounts by one rule, chosen for the set, never per value: one count of significant figures, not one count of decimals (owner ruling, 2026-11-09). Each amount reads to two significant figures (`$0.0080` beside `$0.11`, never `$0.1100`); a total to cents from a dollar up, a rate to its two figures at every magnitude (whole dollars from $10, `$120` for $123); a third figure only where an interval's two ends would read alike, or where a rate sits beside a total computed from it and two figures would leave that total more than half a percent off. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
+**Money reads one way per set.** A column, a chart axis or a family of keys (every arm's cost per call, say) spells all its amounts by one rule, chosen for the set, never per value: one count of significant figures, not one count of decimals (owner ruling, 2026-11-07). Below $1 an amount prints to two significant figures (`$0.0080` beside `$0.11`, never `$0.1100`), from $1 to under $10 in cents whether total or rate (`$1.90`, never `$1.9`), and from $10 up a total in cents (`$1,208.00`) and a rate to two significant figures (`$75`, `$120` for $123); a third figure only where an interval's two ends would read alike, or where a rate sits beside a total computed from it and two figures would leave that total more than half a percent off. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
 
 ### 6.3 Style
 

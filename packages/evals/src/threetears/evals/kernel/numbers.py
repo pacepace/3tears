@@ -126,25 +126,20 @@ def group_thousands(text: str) -> str:
 
 
 def spell_dollars(amount: float) -> str:
-    """An amount of money as the package spells it: ``$0`` for zero, dollars and cents from ten cents up, three
-    significant figures below, the whole dollars grouped by thousands, a negative amount's sign before the dollar sign.
+    """An amount of money as the package spells it, alone: a total in the money form (:func:`money_form`), so one
+    amount reads alike in a sentence, a byline and the table beside it: ``$0`` for zero, two significant figures
+    and cents at least (owner ruling Q3), the whole dollars grouped by thousands, a negative amount's sign before the
+    dollar sign.
 
     The one money rule a run's summary (:func:`~threetears.evals.analysis.summary.dollars_text`, which adds the word
     for an amount no client priced) and a chart's notes read; why each spelling is chosen is said there.
 
     :param amount: Dollars, as stored.
     :ptype amount: float
-    :return: ``$0``, ``$0.50``, ``$1,234.50``, ``$0.0123``, ``-$1.20``.
+    :return: ``$0``, ``$0.50``, ``$1,234.50``, ``$0.012``, ``-$1.20``.
     :rtype: str
     """
-    if amount == 0:
-        return "$0"
-    sign = "-" if amount < 0 else ""
-    amount = abs(amount)
-    if amount >= 0.1:
-        return f"{sign}${group_thousands(f'{amount:.2f}')}"
-    decimals = 2 - math.floor(math.log10(amount))
-    return f"{sign}${amount:.{decimals}f}"
+    return money_form([amount]).spell(amount)
 
 
 #: What an amount no client could price reads as. Never ``$0``: an unpriced call may have been billed.
@@ -178,7 +173,7 @@ PER_THOUSAND_MARK = "/1000"
 @dataclass(frozen=True)
 class MoneyForm:
     """One spelling of money for a whole set of amounts: a column, a chart's axis, a figure-key family
-    (``cost_per_1k.*``). Every member of the set is written by one rule (#993, as the 2026-11-09 ruling reads it: one
+    (``cost_per_1k.*``). Every member of the set is written by one rule (#993, as the 2026-11-07 ruling reads it: one
     count of significant figures, never one count of decimals), which :func:`money_form` chooses from the set: each
     amount to two significant figures, so $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100`` (owner ruling
     Q3). A total reads to cents from a dollar up whatever its size (``$1,208.00``); a rate (money per something) reads
@@ -345,7 +340,7 @@ class MoneyForm:
 
 def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconciles: bool = False) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set: plain dollars, each
-    amount to two significant figures (owner ruling Q3, 2026-11-09). A total reads to cents from a dollar up whatever
+    amount to two significant figures (owner ruling Q3, 2026-11-07). A total reads to cents from a dollar up whatever
     its size; a rate reads in whole dollars from :data:`RATE_WHOLE_FROM`, to its two figures ($123 reads ``$120``). An
     interval whose two ends would read alike takes one figure more where it is spelled (:meth:`MoneyForm.spell_ends`,
     :meth:`MoneyForm.places_of`), never the whole set. ``None`` and non-finite members say nothing of the form and are passed over. Charts, figure keys and

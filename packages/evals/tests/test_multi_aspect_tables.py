@@ -153,7 +153,10 @@ def test_every_arm_by_measure_is_a_row_per_aspect_and_arm_with_each_aspects_own_
     for aspect in held.aspects:
         for index, arm in enumerate(arms):
             passed, usable = (_key_count(held, aspect.id, arm, field) for field in ("passed", "usable"))
-            assert by_place[aspect.name, index]["pass_rate"].value == _pass_rate_text(passed, usable)
+            # The figure as the key reads it, at its column's one precision (whole, or one decimal for the column
+            # where whole percents would print two alike: coordinator ruling, C-15).
+            shown = str(by_place[aspect.name, index]["pass_rate"].value)
+            assert float(shown.rstrip("%")) == float(_pass_rate_text(passed, usable).rstrip("%")), shown
     # A measure read on one aspect only is that aspect's, a dash on the others.
     column = f"measure:{_ARRIVAL_ONLY}"
     assert column in keys
