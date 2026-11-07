@@ -452,7 +452,10 @@ def _served(tool: MountedTool) -> list[str]:
 #: the report writer's model, not the analysis generator's.
 #: The evals tool moved again when campaign_create's and campaign_update's aspects description stopped saying a question
 #: of a control needs a margin (owner, 2026-11-06): the margin is optional, a question without one a superiority one.
-_EVALS_BYTES = "fd3b0df0bd4232c240453350f096d10c298b4ba01bee7fbc261cdc603bd543f1"
+#: The evals tool moved again when writer_promotion's result gained stopping_line (the declared stopping rule's line),
+#: and when scope_export's help and export_run_ids' description came to say named runs past the ceiling page as the
+#: scope does, where two or more were refused.
+_EVALS_BYTES = "b014d6e25c053873f4d67c2beb06fc0b1edefc456290ba651bf2fef6fe60160f"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``).
 _EDITOR_BYTES = "8dc3cc28964f8dfcd53cfec1b13e6e800ed4404d67dad20d89a2fae0b4efaadf"
