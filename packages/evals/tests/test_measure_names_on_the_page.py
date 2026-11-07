@@ -365,11 +365,13 @@ def test_a_declared_name_that_is_a_term_s_words_takes_an_id_of_its_own() -> None
 
 
 def test_a_written_page_and_its_record_name_a_check_in_one_form() -> None:
-    # Until the report writer's judge is recorded again, a report document's tables print an undeclared check's
-    # expression, and the evidence record laid out after them prints it so too.
+    # A report document's tables name an undeclared check by what it tests, as the code page does, and the evidence
+    # record laid out after them names it so too, through the one call over the one set of checks.
     read = subject("toyhost_doc")
     body = report_read(read.host, read.campaign_id, read.scope_id, format="markdown", static=False, trials="all").body
-    assert "| `field_accuracy >= 0.92` |" in body, "the document's table heads the check by its expression"
-    assert "check: `field_accuracy >= 0.92`" in body, "the record's trials name it so too"
-    assert "Field accuracy check" not in body, "no part of the page names it otherwise"
-    assert "The goal check `field_accuracy >= 0.92`" not in body, "a check printed as itself has no glossary entry"
+    assert "| Field accuracy check | 0% | 44.4% |" in body, "the document's table names the check by what it tests"
+    assert "| failed | Field accuracy check |" in body, "the record's trials name it so too"
+    assert "- `Field accuracy check`: `field_accuracy >= 0.92`" in body, "a trial's record prints its expression"
+    assert "| `field_accuracy >= 0.92` |" not in body, "no table names it by its expression"
+    assert "check: `field_accuracy >= 0.92`" not in body, "no trial names it by its expression"
+    assert "The goal check `field_accuracy >= 0.92`" in body, "the glossary defines the name by its expression"

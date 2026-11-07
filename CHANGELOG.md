@@ -27,9 +27,10 @@ glossary sets an expression in a span no backtick inside it can close. The Desig
 replaces is gone. A column whose aspects name one check apart is headed by each name (`Total right / Sum right
 (%)`); two columns whose checks share a name each name their aspects. A trial's failed-check cell, an unproven check's
 line and a floor's sentence name the check the same way; a trial's record prints the name beside the expression it
-failed. A report document's own tables, and the evidence record laid out after them, still print an undeclared
-check's expression (`written_check_names`, `input_check_name`, both new, provisional), until the report writer's
-recorded judge is recorded again, since its recorded replies read that text. This reverses the earlier rule that an
+failed. A report document's own tables, and the evidence record laid out after them, name a check the same way
+(`written_check_names`, `input_check_name`, both new, provisional), the record through `input_check_name` on the
+report input the bundle gives, so both name over one set of checks; the report writer's recorded judge was recorded
+again over the named pages. This reverses the earlier rule that an
 undeclared check is printed by its whole expression (owner ruling, 2026-11-09).
 
 **Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or

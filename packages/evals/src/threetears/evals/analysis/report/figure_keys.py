@@ -3189,8 +3189,9 @@ NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion
 def input_check_name(key: str, report_input: ReportInput) -> str | None:
     """What a report document's page calls the goal check ``key`` reads on a report input, through the one rule its
     tables and its evidence record both name a check by (:func:`~threetears.evals.analysis.style.written_check_names`):
-    the name the input's label declares, else, until the report writer's recorded judge is recorded again, its
-    expression, as code. The input's label for an undeclared check is its expression, which the writer reads.
+    the name the input's label declares, else what it tests (``Field accuracy check``), as the code page names it,
+    over every check the input reads. The input's label for an undeclared check is its expression, which the writer
+    reads.
 
     :param key: Any measure key.
     :ptype key: str

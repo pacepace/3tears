@@ -162,8 +162,8 @@ def _check_entries(
 ) -> list[tuple[str, list[tuple[str, str | None]]]]:
     """The glossary's entry for each goal check's name the page prints: the name, then the expression it stands for,
     the one place a page prints a check's expression beside its name, since every header and lead names the check
-    (``AnalysisContextBundle.named_checks``). A check a page names by its expression itself (a report document's page,
-    :func:`~threetears.evals.analysis.style.written_check_names`) has nothing to define, and no entry.
+    (``AnalysisContextBundle.named_checks``). A check a page names by its expression itself has nothing to define,
+    and no entry.
 
     A name standing for one expression on every aspect that names that expression so is defined by it alone; one
     standing for several, or for an expression another aspect names otherwise, says the aspect each holds on.

@@ -330,11 +330,10 @@ def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str,
 
 
 def written_check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
-    """What a report document's page calls each goal check, by expression: the display name ``declared`` gives it,
-    else its expression, as code. The one rule the document's own tables and the evidence record laid out after it
-    name a check by, so one page never carries a check under two forms. It names a check by its expression until the
-    report writer's recorded judge is recorded again, since the judge's recorded replies read the document's text and
-    a name there refuses them; it then returns :func:`check_names` over the same ``checks``.
+    """What a report document's page calls each goal check, by expression: :func:`check_names` over ``checks``, the
+    display name ``declared`` gives it, else what it tests, as the code page names it. The one rule the document's own
+    tables and the evidence record laid out after it name a check by, so one page never carries a check under two
+    forms.
 
     :param checks: The checks the page names, by expression.
     :ptype checks: Iterable[str]
@@ -343,7 +342,7 @@ def written_check_names(checks: Iterable[str], declared: Mapping[str, str]) -> d
     :return: Each check's name, by expression, in sorted order.
     :rtype: dict[str, str]
     """
-    return {check: declared.get(check) or code(check) for check in sorted({*checks, *declared})}
+    return check_names(checks, declared)
 
 
 #: The hover a link to a check's name carries: never the check's expression or its name, which are a host's text and

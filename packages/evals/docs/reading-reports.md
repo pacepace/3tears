@@ -297,8 +297,7 @@ over three calls). A name is built from the expression's identifiers, never its 
 name on every aspect and run unless a check named beside it would share that name: then both are numbered, so a
 sibling check added in a later run can renumber it. The Glossary defines each name by its expression, whole,
 once, and names the aspect where one name stands for different expressions. A report document's own tables, and the
-evidence record laid out after it, print an undeclared check's expression for now: the report writer's recorded judge
-reads that text, and it is recorded again before they change.
+evidence record laid out after it, name a check the same way, through one call over one set of checks.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
