@@ -60,13 +60,15 @@ candidate, with the stopping rule on, under the monthly envelope recorded in ``P
 records every writer turn and judge call under ``--out``. A run over fewer than 10 held-out cases (design §4), the
 default seven included, runs, and its floor line says it is under them: a floor is a disclosure, never a refusal.
 
-**The cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest equally,
-each arm's part holding its reports and their absolute judging. The cap is a budget the run runs under: each batch
-launches only when its worst case (its reports at their budget, their judging and its pairs at the judge's floor) fits
-what the batches before it left, and the run stops at the cap, reading what it has, when the next would not; only a
-cap that cannot admit the first batch is refused, naming the smallest that would. At ``--cap-usd 45`` each arm's part
-is $18, so with the default batch of 4 it admits 12 cases per arm at the $1.50 budget before judging; a landslide
-stops on its preference near case 7 or 8 and spends about $6.
+**The spend cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest
+equally, each arm's part holding its reports and their absolute judging. It is a budget the run runs under: each
+batch launches only when its worst case (its reports at their budget, their judging and its pairs at the judge's
+floor) fits what each part's recorded spend so far leaves, and the run stops at the spend cap, reading what it has,
+when the next would not; only a spend cap that cannot admit the first batch is refused, naming the smallest that
+would. At ``--cap-usd 45`` each arm's part is $18 and a batch of 4 reserves $6.57 with the rung-5 judge's floor ($6 for
+a judge that prices nothing): two batches on reservations alone, every batch of 25 at the recorded runs' spend. A
+landslide that launches 8 cases costs about 8 × $0.66 for both arms + 7 pairs × $0.016 = $5.43, from the recorded
+no-editor run (the docs' stopping-rule section shows the derivation).
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
 seven fixture snapshots prototype 5 wrote over (Kairo round 2 and six misfits, in four split groups), written as
@@ -831,7 +833,8 @@ class Acceptance:
 
     def saved(self) -> str | None:
         """Where a run launched in batches stopped, and what the stop saved against running every planned case, in one
-        sentence; ``None`` for a run that launched every case at once. The saving is this run's own spend per case
+        sentence; ``None`` for a run that launched every case at once, and for one the spend cap stopped, whose stop
+        line already says where and what it had spent. The saving is this run's own spend per case
         launched (the arms') and per case judged (the pass's), times the cases it did not reach."""
         stopping = self.report.stopping
         if stopping is None or stopping.rule is None or stopping.rule.batch_size is None:
@@ -852,10 +855,7 @@ class Acceptance:
         saved = writing / launched * (planned - launched) if launched else 0.0
         saved += judged / reached * (planned - reached) if reached else 0.0
         if stopping.stopped_on == "spend_cap":
-            return (
-                f"The run stopped at the cap after {launched} of {planned} cases, launched {batch} at a time, and spent "
-                f"${spent:.2f}."
-            )
+            return None  # the stop line states where the spend cap stopped the run, and what it had spent
         if launched >= planned and reached >= planned:
             return f"{where}, and spent ${spent:.2f}; the stop saved nothing."
         return (

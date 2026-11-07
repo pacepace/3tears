@@ -38,7 +38,7 @@ arm's page of the same case, it shows. This pass asks that question
   it the last pass's report (``judged``): a pair it already answered, the same two results, keeps its answers and is
   not asked again, so each pass asks only the new pairs and is admitted under what the last ones left of the cap. Its
   looks are recomputed from every answer, the same prefix of the same bet. ``past_the_stop`` reads every planned case
-  past the first separation, for a run that went on to the cap to read its guardrails again.
+  past the first separation, for a run that went on to its last planned case to read its guardrails again.
 - **How far the judge can be trusted on it.** Order consistency (the two orders pick the same side), the lean to the
   first slot, and the can't-tell count, over the pages it was actually asked about. A case scored in one order only
   is counted apart and left out of the consistency rate, since one order cannot agree or disagree with itself.
@@ -53,7 +53,7 @@ import math
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -98,6 +98,7 @@ from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     EvalResult,
+    EvalRun,
     EvalTemplate,
     EvalTestCase,
     JudgedArtifact,
@@ -237,7 +238,7 @@ class PairwiseStopping(EvalBaseModel):
         "bet holds no place for them and they are not read."
     )
     stopped_at: int | None = Field(
-        description="The cases judged when the rule stopped the pass; None when it read to the cap."
+        description="The cases judged when the rule stopped the pass; None when it read on to its last case."
     )
     first_separated_at: int | None = Field(
         description="The cases read at the first look that separated; None when none did."
@@ -245,12 +246,12 @@ class PairwiseStopping(EvalBaseModel):
     looks: list[PairwiseLook] = Field(description="The preference after each case, in the order the bet read them.")
     stopped_on: Literal["separated", "all_cases", "spend_cap"] | None = Field(
         default=None,
-        description="Why the pass read no further: separated, all_cases (the cap of N) or spend_cap (the run's next "
+        description="Why the pass read no further: separated, all_cases (every planned case read) or spend_cap (the run's next "
         "batch could pass what the spend cap had left); None for a pass with no rule or one read short otherwise.",
     )
     past_the_stop: bool = Field(
         default=False,
-        description="Whether the pass read on past its first separation to the cap, because the readings read there "
+        description="Whether the pass read on past its first separation to the last planned case, because the readings read there "
         "did not decide: a second look at the gated readings and guardrails.",
     )
     line: str = Field(description="What happened, in one sentence, as the page says it.")
@@ -452,6 +453,21 @@ def _by_case_and_repeat(results: Sequence[EvalResult], arm: CampaignArm) -> dict
     return indexed
 
 
+def _rig_of(host: EvalHost, runs: Sequence[EvalRun], results: Sequence[EvalResult]) -> dict[str, Any]:
+    """Each run's rig, by run id: its provenance and its value on every dimension of the rig the host declares, read as
+    the campaign's apparatus classes read them, so two runs compare equal exactly when they share a rig."""
+    sweepables = host.profile.sweepables
+    names = [declared.name for declared in sweepables.rig_dimensions]
+    by_run: dict[str, list[EvalResult]] = {}
+    for result in results:
+        by_run.setdefault(result.eval_run_id, []).append(result)
+    rigs: dict[str, Any] = {}
+    for run in runs:
+        values = sweepables.read_all(run, by_run.get(run.id, []))
+        rigs[run.id] = (run.apparatus_provenance, [values.get(name) for name in names])
+    return rigs
+
+
 def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) -> _Collected:
     """Read the campaign, its arms, its results paired by case and repeat, and their pages: blocking, so off the loop.
 
@@ -511,14 +527,11 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
     theirs = _by_case_and_repeat([result for result in results if result.variant_key in control_keys], control)
     shared = sorted(mine.keys() & theirs.keys())
     if len(rigs[arm.label]) > 1:
-        # A launch made in batches is several runs of each arm, and a batch whose every page went unjudged records
-        # no judge, so it reads as a rig of its own. Its pairs are still two pages written under one rig when both
-        # came from the one batch: runs launched together, over one case set.
-        sets = {run.id: run.case_set for run in runs}
-        if any(
-            sets[mine[key].eval_run_id] is None or sets[mine[key].eval_run_id] != sets[theirs[key].eval_run_id]
-            for key in shared
-        ):
+        # A launch made in batches is several runs of each arm, and a batch whose every page went unjudged records no
+        # judge, so it reads as a rig of its own. Its pairs are still two pages written under one rig when each pair's
+        # two runs read the same rig, as the two arms' runs of one batch do.
+        rig = _rig_of(host, runs, results)
+        if any(rig.get(mine[key].eval_run_id) != rig.get(theirs[key].eval_run_id) for key in shared):
             raise unlike
     if not shared:
         raise ValidationFailedError(
@@ -1166,7 +1179,7 @@ def _line(
     if past_the_stop:
         return (
             f"Read {of} cases under {timed}: the preference first separated at case {first.cases}, and the run went "
-            "on to the cap because its guardrails were not shown held there, so its gated readings and guardrails had "
+            "on to the last case because its guardrails were not shown held there, so its gated readings and guardrails had "
             "a second look."
         )
     return f"Read {of} cases under {timed}: the preference first separated at case {first.cases}."
@@ -1371,7 +1384,7 @@ async def writer_pairwise(
     :param judged: The last pass's report over this campaign's earlier batches, whose answers on the same two results
         stand and whose spend comes off the cap; ``None`` asks every pair.
     :ptype judged: WriterPairwiseReport | None
-    :param past_the_stop: Read every planned case past the first separation, for a run gone on to the cap.
+    :param past_the_stop: Read every planned case past the first separation, for a run gone on to its last case.
     :ptype past_the_stop: bool
     :param launched: The cases launched so far, for a run launched in batches; ``None`` when every case launched at
         once.

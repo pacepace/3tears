@@ -15,6 +15,7 @@ stop left off the record; a side under the eval's floor refused, or run without 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import re
@@ -25,22 +26,27 @@ from typing import Any, Final
 
 import pytest
 
+from packages.evals.tests.analyst_support import fixture_snapshots
 from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     accepted_documents,
     default_cases,
     dry_sessions,
 )
+from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import JUDGE, FakeScoringJudge, ScoredReply, lay_recording
-from threetears.evals.analysis import summarize_run, summarize_runs
+from threetears.evals.analysis import EvalSummary, summarize_run, summarize_runs
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.stats import bet_order
-from threetears.evals.harness import Writer, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
-from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
+from threetears.evals.ops.report_writer.writer_contract import writer_scoring_rubric
+from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
+from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
 from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.schema.models import CaseSetRef
@@ -467,47 +473,167 @@ async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refuse
     assert offline == []
 
 
-async def test_a_cap_that_admits_two_batches_stops_the_run_at_the_cap_and_says_so(
+# parity-with: threetears.evals.harness.writer_host.WriterJudge
+class FakeCostlyJudge(FakeSplitJudge):
+    """The split judge, billing every call ``cost`` and pricing a call that carries a page at that, while it prices a
+    call with no page in it, the floor a launch reserves judging at, at ``floor``: a call priced above its floor, as
+    every real call with a page is."""
+
+    def __init__(self, *, cost: float, floor: float) -> None:
+        super().__init__(JUDGE)
+        self.cost = cost
+        self.floor = floor
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        """The floor for a call with nothing in it; ``cost`` for any other."""
+        return self.floor if not system and not user else self.cost
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> ScoredReply:
+        said = await super().generate(system=system, user=user, response_format=response_format)
+        return dataclasses.replace(said, cost_usd=self.cost)
+
+
+async def _spent_by_arm(result: WriterResult) -> dict[str, list[EvalSummary]]:
+    """Each arm's runs' summaries, by the arm's skill digest, in launch order."""
+    by_arm: dict[str, list[EvalSummary]] = {}
+    for run_id in await _runs(result):
+        run = await asyncio.to_thread(result.host.storage.load_eval_run, run_id, SCOPE)
+        assert run is not None
+        summary = await asyncio.to_thread(summarize_run, result.host, run_id, SCOPE)
+        by_arm.setdefault(run.overlays["skill"], []).append(summary)
+    return by_arm
+
+
+async def test_a_spend_cap_that_admits_two_batches_stops_the_run_there_and_says_so_once(
     tmp_path: Path, offline: list[object]
 ) -> None:
-    """A batch of two cases costs an arm $1.50 at worst, and a $10 cap gives each arm $4: two batches fit and a third
-    would not, so a preference that never separates stops at the cap after four of the seven cases, reads what it
-    has, and its record and line say so."""
+    """Every judge call costs $0.05, its floor too. A batch of two reserves $2.90 of an arm's part (two reports at $0.75
+    and 14 judge calls each), and spends about $0.70; a $10 spend cap gives each arm $4, so the second batch fits what
+    the first left and a third does not. A preference that never separates stops at the spend cap after four of the
+    seven cases, and its line says so once, with what was spent and what the next batch would reserve."""
     arms = _arms()
     cases = _lay(tmp_path, arms)
+    judge = FakeCostlyJudge(cost=0.05, floor=0.05)
 
-    result = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=2, max_cost_usd=10.0).run()
+    result = await _eval(tmp_path, cases, arms, judge=judge, batch_size=2, max_cost_usd=10.0).run()
 
     report = await _report(result)
     stopping = report.stopping
-    assert stopping is not None
-    said = "Stopped at the cap after 4 of 7 cases: the next batch, 2 cases from case 5, could pass the $10.00 cap."
-    assert stopping.stopped_on == "spend_cap" and stopping.line.endswith(said)
+    assert stopping is not None and stopping.stopped_on == "spend_cap"
     assert stopping.cases_found == 4 and stopping.stopped_at is None
+    stop = re.search(
+        r"Stopped at the spend cap after 4 of 7 cases, \$([0-9.]+) spent: the next batch of 2 would reserve \$2\.90 "
+        r"against the \$([0-9.]+) left of (shipped|variant)'s part\.$",
+        stopping.line,
+    )
+    assert stop is not None, stopping.line
+    by_arm = await _spent_by_arm(result)
+    arms_spent = sum(summary.total_cost_usd or 0.0 for summaries in by_arm.values() for summary in summaries)
+    assert float(stop[1]) == pytest.approx(arms_spent + (report.cost_usd or 0.0), abs=0.005)
+    assert float(stop[2]) < 2.90
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 4, CANDIDATE: 4}
-    assert (
-        "Read on 4 cases: the arms ran 4 of the 7 held-out cases, 2 at a time in the bet's order, and stopped once its "
-        "next batch could pass what the cap had left, so the gated readings and guardrails were read once, on those 4."
-    ) in result.disclosures
+    # The other lines refer to the stop, never state it again.
+    launch = [line for line in result.disclosures if line.startswith("Read on 4 cases")]
+    assert launch == [
+        "Read on 4 cases: the arms ran 4 of the 7 held-out cases, 2 at a time in the bet's order, until the spend cap "
+        "stopped it (the pass's line says where), so the gated readings and guardrails were read once, on those 4."
+    ]
     assert result.pairwise_unread == {}
     assert offline == []
 
 
-async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_would(
+async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_only_what_was_not_spent(
     tmp_path: Path, offline: list[object]
 ) -> None:
-    """The one cap refused: a $3 cap gives each arm $1.20, under the first batch's two reports at $0.75. The refusal
-    names the smallest cap that admits it, two arms' $1.50 over the four fifths the arms share: $3.75."""
+    """The judge reserves $0.01 a call before any page is read and bills $0.50 for a call with a page, so each batch
+    spends past its reservation. Each batch's runs run under the batch's own reservation, never the whole part, and
+    the engine stops each run at it (between cells: a cell running when it is crossed finishes). The next batch
+    launches only when what the recorded spend leaves of the arm's $12 part holds its reservation, so the third,
+    which it does not, is never launched, and the run stops at the spend cap after six cases."""
     arms = _arms()
     cases = _lay(tmp_path, arms)
+    judge = FakeCostlyJudge(cost=0.50, floor=0.01)
 
-    with pytest.raises(ValueError) as refused:
-        await _eval(tmp_path, cases, arms, batch_size=2, max_cost_usd=3.0).run()
+    result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=30.0).run()
 
-    assert str(refused.value) == (
-        "the first batch's 2 report(s) at $0.75 each could pass an arm's $1.20 part of max_cost_usd $3.00, after the "
-        "pairwise pass's $0.60 (pairwise_share 0.2); a max_cost_usd of $3.75 or more admits it, or lower budget_usd"
-    )
-    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
-    assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
+    part = 30.0 * 0.8 / len(arms)
+    per_case = 0.75 + len(writer_scoring_rubric()) * JUDGE_CALL_ATTEMPTS * 0.01
+    by_arm = await _spent_by_arm(result)
+    assert len(by_arm) == len(arms)
+    for summaries in by_arm.values():
+        assert [summary.n_cases for summary in summaries] == [BATCH, BATCH]
+        before = 0.0
+        for summary in summaries:
+            # Held to its batch's reservation, never the whole part, and launched only into what was left.
+            assert summary.max_cost_usd == pytest.approx(BATCH * per_case)
+            assert before + BATCH * per_case <= part + 1e-9
+            assert summary.status == "budget_stopped"
+            before += summary.total_cost_usd or 0.0
+        # What the two batches spent leaves less than the last batch's reservation, so it was not launched.
+        assert part - before < 1 * per_case
+    report = await _report(result)
+    assert report.stopping is not None and report.stopping.stopped_on == "spend_cap"
+    # Six launched; the cells each run's cap left unstarted wrote no pair, and the line says so beside the stop.
+    assert "Stopped at the spend cap after 6 of 7 cases" in report.stopping.line
+    assert "the rule planned were not found" in report.stopping.line
+    assert offline == []
+
+
+#: Seeded fixtures prototype 5 wrote no page over: each arm writes nothing on them, so nothing of theirs is judged.
+UNJUDGED: Final = ("r1", "r2", "r3", "r4")
+
+
+def _lay_unjudged(tmp_path: Path, cases: Path, arms: dict[str, Writer]) -> None:
+    """Add :data:`UNJUDGED` as case files, and each arm's recording of each: no page."""
+    snapshots = fixture_snapshots("frozen-elsewhere")
+    for name in UNJUDGED:
+        group, withhold = SEED[name]
+        WriterCaseFile(name=name, group=group, withhold=list(withhold), snapshot=snapshots[name]).write(
+            cases / f"{name}.json.gz"
+        )
+    named = {snapshots[name].id: name for name in UNJUDGED}
+    for arm, writer in arms.items():
+        routed = writer_turns(tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases=named)
+        for snapshot in named:
+            lay_recording(routed.path(WRITER, None, snapshot), dry_sessions(None, model=WRITER))
+
+
+def _witnessed(storage: EvalStorage, run_id: str) -> None:
+    """Record one run as witnessed rather than commissioned: another rig. Blocking."""
+    run = storage.load_eval_run(run_id, SCOPE)
+    assert run is not None
+    storage.save_eval_run(run.model_copy(update={"apparatus_provenance": "witnessed"}))
+
+
+async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_shares_its_own(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """One case a batch, four of them unjudged: a batch whose pages went unjudged records no judge, so each arm sits
+    under two rigs, and every pair's two runs share one, so the pass reads them. Moved crosswise, each arm still
+    under the same rigs but a pair's two runs under two, the pass refuses, as it refuses two rigs in one run."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    _lay_unjudged(tmp_path, cases, arms)
+
+    result = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=1, max_cost_usd=60.0).run()
+
+    assert result.pairwise_unread == {}
+    bundle = await asyncio.to_thread(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE)
+    rigs: dict[str, set[str]] = {}
+    for aspect in bundle.aspects:
+        for cell in aspect.cells:
+            rigs.setdefault(cell.variant_key, set()).add(cell.apparatus_class_id)
+    assert [len(each) for each in rigs.values()] == [2, 2] and len(set(map(frozenset, rigs.values()))) == 1
+    # Crosswise: the control's first judged run and the candidate's second, each witnessed.
+    report = await _report(result)
+    judged = [pair for pair in report.pairs if pair.missing is None][:2]
+    storage = result.host.storage
+    first = await asyncio.to_thread(storage.load_eval_result, judged[0].control_result_id, SCOPE)
+    second = await asyncio.to_thread(storage.load_eval_result, judged[1].candidate_result_id, SCOPE)
+    assert first is not None and second is not None
+    for run_id in (first.eval_run_id, second.eval_run_id):
+        await asyncio.to_thread(_witnessed, storage, run_id)
+
+    with pytest.raises(ValidationFailedError, match="a pair compares two pages written under one rig"):
+        await writer_pairwise(OpsHost.reading(result.host), result.campaign_id, SCOPE, candidate=CANDIDATE)
     assert offline == []
