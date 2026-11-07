@@ -496,21 +496,21 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Writer turns | 12.57 | 12.29 |
 ...
 | report_writer.first_screen (judged) | 5.00 | 5.00 |
-| report_writer.coherent_story (judged) | 5.00 | 5.00 |
+| report_writer.coherent_story (judged) | 4.71 | 5.00 |
 | report_writer.honest_emphasis (judged) | 5.00 | 5.00 |
-| report_writer.sound_elision (judged) | 5.00 | 4.86 |
+| report_writer.sound_elision (judged) | 5.00 | 5.00 |
 | report_writer.confounds_handled (judged) | 5.00 | 5.00 |
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
-| report_writer.evidence_fits_claims (judged) | 4.71 | 4.71 |
+| report_writer.evidence_fits_claims (judged) | 4.57 | 5.00 |
 ...
 | Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval, 95% (pts) |
 |---|---|---|---|---|---|
-| lead-first | every pair | cannot tell apart | 70 | 39 | -28 to 100 |
+| lead-first | every pair | cannot tell apart | 52 | 4 | -67 to 70 |
 | lead-first | both pages finished | untested | — | — | — |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 100% (7 of 7) | 2 | 0 | 44 | $0.14 of $1.95 |
+| lead-first | 71% (5 of 7) | 16 | 0 | 2969 | $0.14 of $1.95 |
 ...
 promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped apart, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -522,13 +522,13 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 70% of its preference over shipped (50% is even), too few cases to tell from an even split; about 44 cases would settle it.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over shipped (50% is even), too few cases to tell from an even split; about 2969 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:
 
 ```text
-| Report finished | 14.3% [2.6%, 51.3%] | 42.9% [15.8%, 75%] | 28.6 pts | [-74.6, 100] pts | cannot tell apart | 7 paired |
+| Report finished | 14% [3%, 51%] | 43% [16%, 75%] | 28.6 pts | [-74.6, 100] pts | cannot tell apart | 7 paired |
 | Must-fix findings open | 0.4286 [0, 0.9229] | 0.2857 [0, 0.9848] | -0.1429 | [-1.313, 1.027] | cannot tell apart | 7 paired |
 ```
 
@@ -537,7 +537,7 @@ Further down it reads the two code measures that moved most:
 | Reports | 14: 2 arms x 7 held-out cases, once each |
 | Writer turns | about 12.4 a report |
 | Writer | $6.90, about $0.49 a report |
-| Judge | $0.66, 112 calls: 98 scores and the pass's 14 |
+| Judge | $0.65, 112 calls: 98 scores and the pass's 14 |
 | Total | $7.56, under the $39 `max_cost_usd` |
 
 [`recordings/README.md`](../examples/5-writer/recordings/README.md) holds the one command that records it again, what
@@ -546,12 +546,12 @@ it may spend, and what to do when a recording run is cut short.
 **The lesson: a judge that scores one page at a time sits at the ceiling here, so the reading that decides is the
 judge's preference between two pages.** Every judged item reads 5 or near it for both arms: the writer revises each page
 until the editor passes it on the same rubric, so the scores bunch at the top and cannot tell the arms apart. Read side
-by side, the same judge gave lead-first 70% of its preference (50% is even), and its two orders agreed on all 7
+by side, the same judge gave lead-first 52% of its preference (50% is even), and its two orders agreed on 5 of 7
 cases. Two code measures moved the same way: 3 of 7 lead-first reports finished against 1 of 7, with fewer must-fix
 findings left open (0.29 a report against 0.43). The evidence cannot tell the arms apart on any of it. That preference is the promotion read's primary
 reading, fixed before the run: it reads `promote` only when the preference favours the candidate on enough held-out
 cases, no gated reading regressed and every guardrail held. 7 held-out cases, each written once (k=1), separate only a
-large effect, and the pass gives the size that would settle this one: 44 held-out cases. So the read is `Undecided`,
+large effect, and the pass gives the size that would settle this one: 2,969 held-out cases. So the read is `Undecided`,
 which never promotes, and recording the call stays a person's act. That is the answer at this size, stated rather than
 tuned around: what would answer it is more cases or more repeats of each, and each costs a recorded report. [Pairwise
 preference](judges-and-calibration.md#pairwise-preference-for-the-report-writer) covers the share and the promotion

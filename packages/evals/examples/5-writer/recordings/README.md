@@ -4,10 +4,10 @@
 
 | What | Recorded |
 |---|---|
-| On | 2026-11-03, at head `28efc1fd1`; the judge's calls again on 2026-11-07, at head `a6eea952f` |
+| On | 2026-11-03, at head `28efc1fd1`; the judge's calls again on 2026-11-07, at head `c588012f3` |
 | Reports | 14: 2 arms x 7 held-out cases, once each, about 12.4 writer turns a report |
 | Writer | `claude-sonnet-5-5` at effort `medium`, analyst and editor: $6.90 |
-| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.66 |
+| Judge | `google/gemini-3.8-flash`: 112 calls, the pairwise pass's 14 among them, $0.65 |
 | Total | $7.56 |
 
 The judge reads each report's page as the package lays it out, so a change to what that page prints (its words, its
