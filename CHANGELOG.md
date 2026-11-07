@@ -9,8 +9,12 @@ packages (bumped in lock-step).
 ### evals: the report page fits the host that frames it
 
 **Changed:** every table scrolls inside its own frame with a shadow at an edge while more lies past it and its first
-column sticky, wrapping within a third of the frame, its headers wrapping, so it reads in a 688 px host frame (the
-static page too: the stylesheet draws the shadow); a chart's values table wraps its cells of words. The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
+column sticky, wrapping within a third of the frame (an unbroken expression or model id breaks anywhere rather than run
+over the next column), its headers wrapping, so it reads in a 688 px host frame (the static page too: the stylesheet
+draws the shadow); a chart's values table wraps its cells of words. A table whose row is told apart by two columns
+keeps both in view, the first held at its cap and the second pinned where it ends: By stratum (`Stratum` and `Reading`,
+or `Arm` and `Reading`) and the contrasts over two or more candidates (`Reading` and `Arm`). It declares so on
+`TableBlock.key_columns` (new, `1` or `2`, default `1`), which HTML frames `tbl keys-2`. The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
 the aspect, what settling shows and `Why unclear`, which wraps. By stratum states a cell of one case run once as its
 count (`1 case`) and never `1 trials`, and past six strata lays a stratum per row with the arms as columns; where every stratum holds under the cases a stratum needs, one line says so
 (`Every stratum holds 1 to 2 cases; a stratum is read alone from 10 cases.`) and no cell repeats `too few cases to read
@@ -107,9 +111,9 @@ by. A bundle of any other earlier shape is refused as before.
 **Added:** the page says what it is in one line, first under its masthead (`DocPage.stored_shape`, provisional, left
 out of the document when empty) and first on the code-only page of the analysis by its id: "This report was written
 on an earlier build. Its rate contrasts were read on the t interval; the current build draws them on a bounded
-interval, so a separation shown here may read as not separated today. Regenerating would redraw them." `analyses_list`
-lists such an analysis as written, the same line after its verdict, and `needs_regeneration` is None; the JSON form
-names the shape in `aspects[].bundle_schema_version`.
+interval, so a separation shown here may read today as one the evidence cannot tell apart. Regenerating would redraw
+them." `analyses_list` lists such an analysis as written, the same line after its verdict, and `needs_regeneration` is
+None; the JSON form names the shape in `aspects[].bundle_schema_version`.
 
 **Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
 its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written` (the line

@@ -2245,7 +2245,7 @@ ASPECT_BUNDLE_SHAPE = 59
 _READ_AS_STORED: Final[Mapping[int, str]] = {
     64: (
         "Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a "
-        "separation shown here may read as not separated today."
+        "separation shown here may read today as one the evidence cannot tell apart."
     )
 }
 

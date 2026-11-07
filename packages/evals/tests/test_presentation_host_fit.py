@@ -372,7 +372,7 @@ def test_a_pinned_first_column_wraps_within_a_third_of_the_frame() -> None:
     rules = _rules(_style(_served()["campaign"]))
     (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
     pinned = first.declarations()
-    assert pinned["white-space"] == "normal" and pinned["overflow-wrap"] == "break-word"
+    assert pinned["white-space"] == "normal" and pinned["overflow-wrap"] == "anywhere"
     # No wrapping cell's own floor (``td.wrap``'s min-width) holds it wider than its cap.
     assert pinned["min-width"] == "0"
     # An arm's chip in it wraps too, rather than run over the column beside it.
@@ -380,6 +380,45 @@ def test_a_pinned_first_column_wraps_within_a_third_of_the_frame() -> None:
     assert chip.declarations()["white-space"] == "normal"
     cap = re.fullmatch(r"min\((\d+)rem,(\d+)vw\)", pinned["max-width"].replace(" ", ""))
     assert cap is not None and int(cap.group(1)) * 16 <= 0.4 * FRAME_PX and int(cap.group(2)) <= 40, pinned
+
+
+@cache
+def _kairo_page() -> str:
+    """Kairo's code page as served: three arms, so its contrasts hold a row per reading on each arm."""
+    return report_html(build_code_only_report(kairo_bundle().aspects[0], assembled_at="2026-11-08T00:00:00+00:00"))
+
+
+def _framed(page: str, name: str) -> tuple[str, str]:
+    """Table ``name``'s frame's classes on ``page`` and the table's markup."""
+    held = page.split(f'data-table="{name}"', 1)[1]
+    frame = re.search(r'<div class="(tbl(?: [\w-]+)*)"><table', held)
+    assert frame is not None, f"{name} sits in no frame"
+    return frame.group(1), held[frame.end() :].split("</table>", 1)[0]
+
+
+def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
+    """Kairo's contrasts pin a reading named by its expression (``call_count("discord.send_message") >= 1 or …``),
+    a run longer than the column's cap holds on one line. The pinned cell breaks it anywhere, and nothing inside the
+    cell (its code, the expression's fold, its summary) holds it whole, so it never runs over the column beside it."""
+    page = _kairo_page()
+    _frame, table = _framed(page, "comparisons")
+    firsts = [
+        html.unescape(re.sub(r"<[^>]+>", "", cell)) for cell in re.findall(r"<tr[^>]*><td[^>]*>(.*?)</td>", table)
+    ]
+    unbroken = max((run for text in firsts for run in text.split()), key=len)
+    assert 'call_count("discord.send_message")' in unbroken, "the control: the pinned column holds the expression"
+    rules = _rules(_style(page))
+    (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
+    pinned = first.declarations()
+    cap = re.fullmatch(r"min\((\d+)rem,\d+vw\)", pinned["max-width"])
+    assert cap is not None and _cell_px(unbroken, header=False) > int(cap.group(1)) * 16, "it is wider than the cap"
+    assert pinned["overflow-wrap"] == "anywhere", "break-word leaves the run's min-content whole"
+    inside = [rule for rule in rules if re.search(r"\b(code|summary|expr)\b", rule.selector)]
+    assert inside, "the control: the page styles code and the expression's fold"
+    for rule in inside:
+        declared = rule.declarations()
+        assert declared.get("overflow-wrap", "anywhere") == "anywhere", rule
+        assert declared.get("white-space", "normal") not in ("nowrap", "pre"), rule
 
 
 @pytest.mark.parametrize("name", ["doc", "doc static"])
@@ -595,6 +634,34 @@ def test_strata_past_the_column_budget_are_rows_and_the_arms_columns_on_the_kair
     assert any(column.header.startswith("▸ ") for column in arms), "the control's column is marked"
     markdown = report_markdown(report).split("By stratum", 1)[1]
     assert "| Stratum | Reading |" in markdown
+
+
+def test_a_table_told_apart_by_two_columns_keeps_both_in_view_on_the_kairo_capture() -> None:
+    """Kairo's By stratum (a stratum per row, each reading under it) and its contrasts (a reading's row on each arm)
+    tell a row apart by two columns, so both stay in view as the table scrolls: the first held at exactly its cap, the
+    second pinned where the first ends. A table told apart by one keeps one: two arms' contrasts, the statistics."""
+    page = _kairo_page()
+    for name, keys in (("strata", ["Stratum", "Reading"]), ("comparisons", ["Reading", "Arm"])):
+        frame, table = _framed(page, name)
+        assert frame == "tbl keys-2", (name, frame)
+        assert re.findall(r"<th[^>]*>(?:<a[^>]*>)?([^<]+)", table)[:2] == keys, name
+    assert _framed(page, "comparison_statistics")[0] == "tbl"
+    two_arms, table = _framed(_served()["aspect"], "comparisons")
+    assert re.findall(r"<th[^>]*>(?:<a[^>]*>)?([^<]+)", table)[1] != "Arm", "the control: two arms, no Arm column"
+    assert two_arms == "tbl", "two arms' contrasts are told apart by the reading alone"
+    rules = _rules(_style(page))
+    (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
+    cap = first.declarations()["max-width"]
+    (held,) = [rule for rule in rules if rule.selector == ".tbl.keys-2 :is(th,td):first-child"]
+    assert held.declarations()["width"] == held.declarations()["min-width"] == cap, "the first column is its cap"
+    (second,) = [rule for rule in rules if rule.selector == ".tbl.keys-2 :is(th,td):nth-child(2)"]
+    pinned = second.declarations()
+    assert (pinned["position"], pinned["left"]) == ("sticky", cap)
+    assert pinned["background"].startswith("var("), "a pinned column is opaque, or the scrolled cells show through"
+    assert pinned["overflow-wrap"] == "anywhere" and pinned["min-width"] == "0"
+    # Both pinned columns together leave most of a 688 px frame to the columns that scroll.
+    widths = [re.fullmatch(r"min\((\d+)rem,\d+vw\)", value) for value in (cap, pinned["max-width"])]
+    assert all(widths) and sum(int(match.group(1)) * 16 for match in widths if match) <= 0.6 * FRAME_PX
 
 
 # =============================================================================

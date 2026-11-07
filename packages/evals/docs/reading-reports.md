@@ -732,8 +732,8 @@ resolves prints "—", a block that no longer draws prints its values, and the p
 report whose evidence was assembled at an earlier shape this version reads as stored renders whole, its figures as they
 were written, and its first line says what that means for its figures: "This report was written on an earlier
 build. Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a
-separation shown here may read as not separated today. Regenerating would redraw them." The analysis listing's verdict
-carries the same line, and the report is not listed as needing regeneration. An earlier
+separation shown here may read today as one the evidence cannot tell apart. Regenerating would redraw them." The
+analysis listing's verdict carries the same line, and the report is not listed as needing regeneration. An earlier
 shape joins only when every field added since is optional and no stored figure changes meaning; nothing is migrated.
 A report written in any other shape this version no longer reads gets the code-only page and one line: written in a
 shape this version no longer reads; regenerate with `analysis_generate`.

@@ -137,8 +137,8 @@ STORED_SHAPE = 64
 #: The line a page read from shape-64 evidence says, as shipped.
 STORED_LINE = (
     "This report was written on an earlier build. Its rate contrasts were read on the t interval; the current build "
-    "draws them on a bounded interval, so a separation shown here may read as not separated today. Regenerating "
-    "would redraw them."
+    "draws them on a bounded interval, so a separation shown here may read today as one the evidence cannot tell "
+    "apart. Regenerating would redraw them."
 )
 
 

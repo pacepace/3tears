@@ -643,6 +643,13 @@ class TableBlock(_Block):
             "are; otherwise each column has its own."
         ),
     )
+    key_columns: Literal[1, 2] = Field(
+        default=1,
+        description=(
+            "How many leading columns a row is told apart by (2 where one column alone repeats, as a reading's row "
+            "on each arm): HTML keeps that many in view while the table scrolls sideways."
+        ),
+    )
 
     @model_validator(mode="after")
     def _rows_fit_the_table(self) -> Self:

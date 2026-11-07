@@ -2043,6 +2043,7 @@ def _comparison_blocks(
                 order="by declared question, then as the bundle tested them"
                 + ("" if two_arms else "; one row per reading on each arm, the control's figure repeated"),
                 total_rows=len(shown),
+                key_columns=1 if two_arms else 2,
             ),
             TableBlock(
                 section="contrasts",
@@ -2632,6 +2633,7 @@ def _strata_blocks(
         order=order,
         total_rows=len(rows),
         details=True,
+        key_columns=2,
     )
     blocks: list[ReportBlock] = [_by_stratum_row(table) if len(names) > _STRATA_COLUMNS else table]
     if all_thin:

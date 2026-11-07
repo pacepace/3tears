@@ -1674,7 +1674,8 @@ can load it, which a sandbox usually cannot, so end every font value in a generi
 IBM Plex is used where the reader has it installed, else the system's faces.
 
 **Width.** Every table fits a 688 px frame or scrolls inside its own frame. A shadow at an edge shows there is more,
-and the first column stays in view while you scroll.
+and the first column stays in view while you scroll. A table whose rows are told apart by two columns (By stratum,
+and the contrasts over two or more candidates) keeps both in view.
 
 ## The engine's prompts: shipped defaults, optional overrides
 

@@ -233,7 +233,8 @@ def _cell_code(text: str) -> str:
 def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     """A table of served cells' text, scrolling inside its own ``.tbl`` frame rather than widening the page: a table
     block's rows alone, which :func:`table_html` heads with the block's title and a page that names the table itself
-    (the planned page's options table) lays out as it is.
+    (the planned page's options table) lays out as it is. Its first column stays in view as it scrolls, and a table a
+    row is told apart in by two columns (``TableBlock.key_columns``) is framed ``tbl keys-2``, which keeps both.
 
     A column of numbers is classed ``num`` on every cell, header included, so the stylesheet right-aligns it; a cell
     of prose is classed ``wrap`` (the kit's) so it wraps at a measure instead of widening its column. A column whose cells carry
@@ -301,7 +302,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
         if position in highlighted:
             anchor += ' class="hl"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
-    grid = f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    frame = "tbl keys-2" if block.key_columns == 2 else "tbl"
+    grid = f'<div class="{frame}"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
     return grid + _scale_line(block, scales)
 
 

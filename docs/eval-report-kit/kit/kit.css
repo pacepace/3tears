@@ -136,11 +136,19 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
     radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
     var(--surface)}
-/* the pinned column wraps within a third of the frame, so a long label never hides the columns past it */
+/* the pinned column wraps within a third of the frame, so a long label never hides the columns past it; an unbroken
+   one (an expression, a model id) breaks anywhere rather than run over the column beside it */
 .tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--line);
-  white-space:normal;overflow-wrap:break-word;min-width:0;max-width:min(14rem,35vw)}
+  white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:min(14rem,35vw)}
 .tbl :is(th,td):first-child .armchip{white-space:normal}
 .tbl th:first-child{z-index:2;background:var(--sunk)}
+/* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its cap, so the second pins
+   where the first ends */
+.tbl.keys-2 :is(th,td):first-child{width:min(14rem,35vw);min-width:min(14rem,35vw)}
+.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(14rem,35vw);z-index:1;background:var(--surface);
+  box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:min(9rem,22vw)}
+.tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
+.tbl.keys-2 th:nth-child(2){z-index:2;background:var(--sunk)}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0;white-space:normal;min-width:4.5rem}
