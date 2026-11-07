@@ -390,6 +390,21 @@ class _L1Fence:
         """
         return not ticket.contended and ticket.activity.changes == ticket.seen
 
+    @staticmethod
+    def unchanged_since(ticket: _KeyTicket) -> bool:
+        """whether no write of ``ticket``'s key began, and no eviction of it landed, since it was taken.
+
+        :meth:`still_newest` without its check that no write was in flight when the ticket was
+        taken: what a copy written after its check (:meth:`BaseCollection._cache_read_in_l1`) asks
+        once the write has landed.
+
+        :param ticket: the holder's ticket
+        :ptype ticket: _KeyTicket
+        :return: ``True`` when the key's record has not moved since the ticket was taken
+        :rtype: bool
+        """
+        return ticket.activity.changes == ticket.seen
+
     def end(self, ticket: _KeyTicket) -> None:
         """release ``ticket``, dropping the key's record once nothing holds it.
 
@@ -2311,7 +2326,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _l1_upsert(self, row: dict[str, Any], primary_key: str | tuple[str, ...]) -> None:
         """write one of this table's rows into L1; the one way a row of it enters or changes there.
 
-        A large row a read keeps off the loop (:meth:`_cache_read_in_l1`) is the same write,
+        A large row kept off the loop (:meth:`_keeps_off_loop`) is the same write,
         :meth:`_l1_store_row` on a worker thread, and the same listeners after it.
 
         A row whose ``NUMERIC`` value is ``NaN`` or infinite, which an exact L1 cannot hold, is
@@ -2360,8 +2375,9 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _keeps_off_loop(self, row: dict[str, Any]) -> bool:
         """whether a read writes ``row`` into L1 on a worker thread rather than on the event loop.
 
-        ``False`` for every row by default, and then the fence check and the write run on the loop
-        with no await between them (:meth:`_cache_read_in_l1`). A collection whose rows can be
+        Asked where a read keeps a row (:meth:`_cache_read_in_l1`) and where a won
+        compare-and-swap keeps the row it wrote (:meth:`l2_cas_mutate`). ``False`` for every row by
+        default, and then the fence check and the write run on the loop with no await between them. A collection whose rows can be
         megabytes answers ``True`` for a large one, and only a collection whose row is a pure
         function of its key may: the row lands in L1 after the fence was checked, so a copy that an
         eviction or a write of the key overtook while it was written is dropped again, and for such
@@ -2397,14 +2413,36 @@ class BaseCollection(ABC, Generic[EntityT]):
         if not self._keeps_off_loop(row):
             self._l1_upsert(row, self.primary_key_columns)
             return
-        await _to_completion(self._cache_read_on_threads(row, ticket))
+        await _to_completion(self._l1_keep_on_threads(row, ticket))
 
-    async def _cache_read_on_threads(self, row: dict[str, Any], ticket: _KeyTicket) -> None:
-        """the work of :meth:`_cache_read_in_l1` for a row kept off the loop: write, re-check, delete if overtaken.
+    async def _keep_swap_off_loop(self, entity_id: Any, row: dict[str, Any]) -> None:
+        """keep the row a won compare-and-swap wrote in L1 on a worker thread (:meth:`_keeps_off_loop`).
 
-        :param row: the row the read returned
+        The swap was recorded on the fence just before; a ticket taken here, with no await
+        between, sees every eviction or write of the key from then on, so a copy one of them
+        overtook while it was written is deleted again, as a read's is (:meth:`_cache_read_in_l1`).
+        A cancel waits for the write and any delete to finish, and is raised after.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param row: the row the swap wrote
         :ptype row: dict[str, Any]
-        :param ticket: the read's ticket on the key
+        :return: nothing
+        :rtype: None
+        """
+        with self._l1_fence.watching(self._fence_key(entity_id), writing=False) as ticket:
+            await _to_completion(self._l1_keep_on_threads(row, ticket))
+
+    async def _l1_keep_on_threads(self, row: dict[str, Any], ticket: _KeyTicket) -> None:
+        """write ``row`` into L1 on a worker thread, then delete it again, on one, if the key moved on meanwhile.
+
+        Only for a row :meth:`_keeps_off_loop` answers ``True`` for. The eviction or write that
+        moved the fence may have deleted before this write landed, so the copy is deleted after it;
+        the change listeners hear the key on the loop once both are done.
+
+        :param row: the row
+        :ptype row: dict[str, Any]
+        :param ticket: a ticket on the key, taken when the copy was still the newest
         :ptype ticket: _KeyTicket
         :return: nothing
         :rtype: None
@@ -2413,7 +2451,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if l1 is None:
             return
         entity_id = await asyncio.to_thread(self._l1_store_row, l1, row, self.primary_key_columns)
-        if not self._l1_fence.still_newest(ticket):
+        if not self._l1_fence.unchanged_since(ticket):
             # overtaken while it was written: the eviction may have deleted before the write landed
             await asyncio.to_thread(self._delete_l1_rows, l1, [entity_id])
         self._l1_changed(entity_id)
@@ -2438,7 +2476,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         (a write through, a pull-through, a new entity) goes through :meth:`_l1_upsert`, and every
         eviction (a write this process settled, a peer's invalidation broadcast) through
         :meth:`_evict_l1_many`, so a listener here hears each change. It runs synchronously inside the
-        change and must not raise.
+        change, on the event loop, and must not raise. A row a collection keeps off the loop
+        (:meth:`_keeps_off_loop`, a large answer) is written on a worker thread; its listeners run on
+        the loop once that write, and any delete of a copy an eviction overtook, has finished.
 
         :param listener: called with the row's key (pk value, or tuple of pk values)
         :ptype listener: Callable[[Any], None]
@@ -4635,7 +4675,12 @@ class BaseCollection(ABC, Generic[EntityT]):
                     awaited_since_won = ordered or self.keeps_write_generation_in_l2
                     if not awaited_since_won or await self._swap_still_current(entity_id, key, won_revision, payload):
                         self._l1_fence.changed(self._fence_key(entity_id))
-                        self._l1_upsert(new_row, self.primary_key_columns)
+                        if self._keeps_off_loop(new_row):
+                            # a large row of a key-pure collection: kept on a thread, and deleted
+                            # again if an eviction or write of the key lands while it is written
+                            await self._keep_swap_off_loop(entity_id, new_row)
+                        else:
+                            self._l1_upsert(new_row, self.primary_key_columns)
                     else:
                         self._evict_l1(entity_id)
                 self._clear_l1_marker(entity_id)

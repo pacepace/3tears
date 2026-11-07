@@ -485,7 +485,8 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
         async def compute() -> str:
             return text
 
-        writer, reader = replica(), replica(l1=True)
+        # both keep an L1, as a serving pod does: the writer keeps the answer it stored
+        writer, reader = replica(l1=True), replica(l1=True)
         expected = text.encode("utf-8")
         for name, answers, outcome in (
             ("stored", writer, AnswerOutcome.COMPUTED),
@@ -660,3 +661,79 @@ class TestAnEvictionDuringTheOffLoopWriteLeavesNoCopy:
         given = await reading
         assert given.outcome is AnswerOutcome.READ and gzip.decompress(given.body) == text.encode("utf-8")
         assert reader.get_row_sync(key) is None, f"L1 still holds the answer {eviction} while it was written"
+
+
+class TestALargeAnswerStoredIsKeptOffTheLoop:
+    """a replica that computes a large answer writes the row its compare-and-swap stored into its own L1 on a
+    worker thread, and an eviction that lands while it does leaves no copy; a small answer is kept on the loop."""
+
+    @pytest.fixture
+    def kept(self, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+        """the thread each answer row was written into L1 on."""
+        threads: list[int] = []
+        upsert = SQLiteBackend.upsert
+
+        def keeping(self: SQLiteBackend, table: str, data: dict[str, Any], primary_key: Any = "id") -> None:
+            if "body" in data:
+                threads.append(threading.get_ident())
+            upsert(self, table, data, primary_key)
+
+        monkeypatch.setattr(SQLiteBackend, "upsert", keeping)
+        return threads
+
+    async def test_a_large_answer_stored_is_kept_on_a_worker_thread(self, kept: list[int]) -> None:
+        text = _large_answer_text()
+
+        async def compute() -> str:
+            return text
+
+        answers = _l1_replica(FakeNatsClient())
+        given = await answers.answer_with_outcome("v1", "q", compute, order=1)
+        assert given.outcome is AnswerOutcome.COMPUTED and gzip.decompress(given.body) == text.encode("utf-8")
+        assert kept, "the stored answer was not kept in L1"
+        assert threading.get_ident() not in kept, "the stored answer was written into L1 on the event loop"
+        assert answers.get_row_sync(answers.key_of("v1", "q")) is not None
+
+    async def test_a_small_answer_stored_is_kept_on_the_loop(self, kept: list[int]) -> None:
+        async def compute() -> str:
+            return json.dumps({"small": 1})
+
+        answers = _l1_replica(FakeNatsClient())
+        assert (await answers.answer_with_outcome("v1", "q", compute, order=1)).outcome is AnswerOutcome.COMPUTED
+        assert kept and set(kept) == {threading.get_ident()}
+
+    @pytest.mark.parametrize("eviction", ["retired here", "evicted by a peer's broadcast"])
+    async def test_an_eviction_during_the_write_leaves_no_copy(
+        self, eviction: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        text = _large_answer_text()
+
+        async def compute() -> str:
+            return text
+
+        answers = _l1_replica(FakeNatsClient())
+        writing, evicted = threading.Event(), threading.Event()
+        upsert = SQLiteBackend.upsert
+        loop = threading.get_ident()
+
+        def held(self: SQLiteBackend, table: str, data: dict[str, Any], primary_key: Any = "id") -> None:
+            if "body" in data and threading.get_ident() != loop:
+                # the eviction lands, and deletes, before this write does
+                writing.set()
+                assert evicted.wait(10), "the eviction never landed"
+            upsert(self, table, data, primary_key)
+
+        monkeypatch.setattr(SQLiteBackend, "upsert", held)
+        storing = asyncio.create_task(answers.answer_with_outcome("v1", "q", compute, order=1))
+        while not writing.is_set() and not storing.done():
+            await asyncio.sleep(0.001)
+        assert writing.is_set(), "the stored answer was not written into L1 off the event loop"
+        key = answers.key_of("v1", "q")
+        if eviction == "retired here":
+            assert await answers.retire_older_than(2) == 1
+        else:
+            assert answers.evict_from_cache_sync(key)
+        evicted.set()
+        given = await storing
+        assert gzip.decompress(given.body) == text.encode("utf-8")
+        assert answers.get_row_sync(key) is None, f"L1 still holds the answer {eviction} while it was written"

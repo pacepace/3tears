@@ -1859,11 +1859,11 @@ class VersionedAnswers(DerivedCollection[VersionedAnswer]):
         return len(raw) > _LARGE_ROW
 
     def _keeps_off_loop(self, row: dict[str, Any]) -> bool:
-        """whether a read writes this row into L1 on a worker thread: a large answer's is.
+        """whether this row is written into L1 on a worker thread, read or stored: a large answer's is.
 
         An answer is a pure function of its key, so a copy written a moment after the fence was
         checked is never a wrong answer, and one a retirement's eviction overtook while it was
-        written is deleted again (``BaseCollection``'s ``_cache_read_in_l1``).
+        written is deleted again (``BaseCollection``'s ``_cache_read_in_l1`` and ``l2_cas_mutate``).
 
         :param row: the row
         :ptype row: dict[str, Any]
