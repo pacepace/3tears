@@ -26,6 +26,7 @@ from typing import Any, Final, Literal, NamedTuple, Protocol, cast
 from pydantic import Field, ValidationError
 
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
+from threetears.evals.analysis.bundle.schema import stored_shape_line
 from threetears.evals.analysis.bar_proposals import propose_bars
 from threetears.evals.analysis.campaigns import (
     add_runs_to_campaign,
@@ -495,7 +496,9 @@ class AnalysisLine(EvalBaseModel):
         description=(
             "The report's verdict line over the evidence the analysis was written from, as code writes it — never a "
             "headline a writer wrote. It leads, as the report does, with every bar an arm misses and then every floor "
-            "a candidate breaks, each in the report's own words; with neither, it is the verdict alone."
+            "a candidate breaks, each in the report's own words; with neither, it is the verdict alone. Over evidence "
+            "of an earlier shape this build reads as stored, the one line saying so follows it (the line the report's "
+            "page opens with), and needs_regeneration stays None."
         )
     )
     findings: int = Field(
@@ -1317,6 +1320,11 @@ def _analysis_reading(
     elif unread is not None:
         why = "; ".join(reason for reason in (unread, needs_regeneration) if reason is not None)
         needs_regeneration = f"{NO_LONGER_READS} ({why})"
+    if needs_regeneration is None and read.bundle is not None:
+        # Evidence of an earlier shape this build reads as stored: the report reads whole, and the verdict says so.
+        # Only once nothing needs regenerating, so a line never carries both.
+        if stored := stored_shape_line(aspect.schema_version for aspect in read.bundle.aspects):
+            verdict = f"{verdict} {stored}"
     line = AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,

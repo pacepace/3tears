@@ -35,7 +35,7 @@ from threetears.evals.analysis.campaign_bundle import (
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generation_tally import GenerationTally
-from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
+from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection, stored_shape_line
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
@@ -1362,9 +1362,11 @@ def _doc_page(
     """A stored report document's page, its readings and folds off its snapshot's bundle laid out over the campaign as
     that bundle declared it (what the document was written against, which its analysis's ``design_snapshot`` copies);
     the code-only page of ``campaign`` with the one regenerate line where the snapshot holds no bundle or its bundle
-    no longer lays out. With ``trials="all"`` the folds follow the document, each failed or lost trial's record in
-    them, as the code-only page draws them. A caller's ``lead`` shows only on the code-only page standing in: the
-    document's page holds no blocks of its own."""
+    no longer lays out. A bundle of an earlier shape this build reads as stored lays out whole, and the page's first
+    line under its masthead says so (:func:`~threetears.evals.analysis.bundle.schema.stored_shape_line`). With
+    ``trials="all"`` the folds follow the document, each failed or lost trial's record in them, as the code-only page
+    draws them. A caller's ``lead`` shows only on the code-only page standing in: the document's page holds no blocks
+    of its own."""
     snapshot = read.snapshot
     try:
         if snapshot.bundle is None or snapshot.bundle_assembled_at is None:
@@ -1383,13 +1385,15 @@ def _doc_page(
                 host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id, lead=lead
             )
         return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=analysis_id, lead=lead)
+    # Evidence of an earlier shape this build reads as stored renders whole, the page's first line saying so.
+    stored = stored_shape_line(aspect.schema_version for aspect in bundle.aspects)
     return CampaignReport.model_validate(
         {
             **dict(page),
             "basis": "analysis",
             "analysis_id": analysis_id,
             "blocks": [],
-            "doc_page": read.page,
+            "doc_page": read.page if stored is None else read.page.model_copy(update={"stored_shape": stored}),
             "report_doc": read.summary(),
             "doc_trials": trials == "all",
         }

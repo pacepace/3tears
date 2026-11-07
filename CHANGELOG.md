@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an export of named runs past one page's ceiling is paged, not refused
+
+**Changed:** `scope_export` with `export_run_ids` whose runs hold more than `EXPORT_PAGE_RESULTS` (1,000) results
+pages them as it pages the scope, where two or more named runs past it were refused (owner ruling: run reads are
+incremental, with no per-run ceiling). The pages hold the named runs alone, archived ones included: whole runs oldest
+first, and a named run past the ceiling by its cases, as one named run alone already was. `export_after_run_id` is
+taken with `export_run_ids` whenever it is one of the named runs; one naming a run outside them is refused, naming it
+and the runs named. The ceiling itself is unchanged: it bounds one response, not what an export reads.
+
+**Hosts:** a host exporting two or more named runs reads them page by page instead of catching the refusal: each
+page's `page.named_run_ids` (an existing field, now set on every page of a named export) lists the named runs, and the
+page text names the call that reads the next (`export_after_run_id`, `export_run_ids` again, and
+`export_after_case_id` inside a run). A named export within the ceiling is whole and unpaged, as before. The help for
+`export_run_ids`, the `scope_export` action and `ops.scope_export` says named runs page as the scope does.
+
+### evals: a stored report renders across a shape bump that added only optional fields
+
+**Changed:** a report whose evidence was assembled at aspect bundle shape 64 renders whole on this build (shape 65)
+where it was hidden behind the code-only page and the line to regenerate. The earlier shapes a build reads as stored
+are declared in one set (`READ_AS_STORED` in `threetears.evals.analysis.bundle.schema`, `{64}`): a shape joins when
+every field the bumps since added is optional and no stored figure changes meaning, and its figures render as they
+were written, never recomputed or migrated. 64 qualifies: 65 added `FamilyComparison.interval_basis` and
+`LateCriterion.aspect` and `.reading`, each optional, and a shape-64 contrast names the test its interval was drawn
+by. A bundle of any other earlier shape is refused as before.
+
+**Added:** the page says what it is in one line, first under its masthead (`DocPage.stored_shape`, provisional, left
+out of the document when empty) and first on the code-only page of the analysis by its id: "This report was written
+on an earlier build. Its rate contrasts were read on the t interval; the current build draws them on a bounded
+interval, so a separation shown here may read as not separated today. Regenerating would redraw them." `analyses_list`
+lists such an analysis as written, the same line after its verdict, and `needs_regeneration` is None; the JSON form
+names the shape in `aspects[].bundle_schema_version`.
+
+**Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
+its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written`, and its
+findings count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
+stored-shape line instead; regenerating stays a deliberate act.
+
 ### evals: a campaign's listing leads with its report's own headline, and no arm is named by a cut prompt
 
 **Changed:** `campaigns_list` lists a report document its editor passed by that document's own headline
@@ -605,8 +642,8 @@ them change.
 rate, a check's or a goal check's pass rate, accuracy, or a judged dimension scored pass or fail. It reads improved or regressed only where that interval excludes zero. Its p values are still the t
 test's, so no adjusted p moves and the family's error rate holds. A campaign's reading of the pass rate uses the same
 method, so its 95% interval now sits inside its contrast's. A rate the t test separated may now read not separated.
-Other measures keep the t interval. The aspect bundle shape moves from 64 to 65, so every stored analysis at 64 reads
-as needing regeneration, and `report_read` serves the code-only page until it is generated again.
+Other measures keep the t interval. The aspect bundle shape moves from 64 to 65. A stored analysis at 64 is read as
+stored: its report renders whole, its rate contrasts on the t interval they were drawn on, and its first line says so.
 
 **Added:** each corrected comparison names how its interval was drawn (`FamilyComparison.interval_basis`, `bounded` or
 `t`). A comparison whose adjusted p is under alpha while its interval reaches zero says why it is not separated

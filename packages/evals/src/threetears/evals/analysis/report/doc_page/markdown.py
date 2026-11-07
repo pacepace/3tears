@@ -1,7 +1,8 @@
 """A report document's page as Markdown: the HTML page's parts in its order, every block printed as its values table.
 
 Line for line what :func:`~threetears.evals.analysis.report.doc_page.html.doc_page_html` lays out, so a reader of
-Markdown checks every number the page draws: the masthead line, a draft's line (code's, saying its editor's review
+Markdown checks every number the page draws: the masthead line, code's line where the page is read from evidence
+of an earlier shape this build reads as stored, a draft's line (code's, saying its editor's review
 left findings open) or a finished page's line counting the findings left open, code's note where part of a stored
 document no longer reads, the headline as the page's heading, the lede, the flag, the confidence (each caveat's
 label, then its clause or code's checked line), the decision's entries, the options table, each claim (its text as a
@@ -87,6 +88,8 @@ def _claim(claim: DocClaim) -> list[str]:
 def _lines(page: DocPage) -> Iterator[list[str]]:
     """Each part's lines, in the page's order; a blank line goes between parts."""
     yield [_masthead(page.masthead)]
+    if page.stored_shape:
+        yield [inert(f"_{page.stored_shape}_")]
     if page.draft:
         yield [inert(f"**{draft_line(page)}**")]
     if opened := open_findings_line(page):

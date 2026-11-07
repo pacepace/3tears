@@ -304,8 +304,8 @@ def scope_export(
     :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
     :ptype status: str | None
-    :param run_ids: Only these runs — archived ones included, since they were named. Two or more whose results
-        would pass the ceiling are refused; one past it is paged by its cases.
+    :param run_ids: Only these runs — archived ones included, since they were named. Runs whose results would pass
+        the ceiling are paged as the scope is, the pages holding them alone; one past it is paged by its cases.
     :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
     :ptype after_run_id: str | None
@@ -314,9 +314,9 @@ def scope_export(
     :ptype after_case_id: str | None
     :return: The export.
     :rtype: ScoreExport
-    :raises ValidationFailedError: The format is not one there is, the status is no run's, the named runs would pass
-        the ceiling, ``after_run_id`` is no run in the scope or is given with ``run_ids`` other than inside the one
-        run they name, or ``after_case_id`` is given alone or is no case of that run.
+    :raises ValidationFailedError: The format is not one there is, the status is no run's, ``after_run_id`` is no run
+        in the scope or is given with ``run_ids`` that do not name it, or ``after_case_id`` is given alone or is no
+        case of that run.
     """
     return export_results(
         host.storage,

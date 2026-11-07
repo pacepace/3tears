@@ -325,8 +325,9 @@ ExportRunIds = Annotated[
     list[str] | None,
     Field(
         description="Export only these runs, archived ones included since they are named; omitted exports all. "
-        "One named run past one page's ceiling is paged by its cases (follow page.next_after_run_id and "
-        "page.next_after_case_id, naming the run again); two or more named runs past it are refused."
+        "Named runs past one page's ceiling are paged as the scope is, the pages holding the named runs alone: "
+        "follow page.next_after_run_id (and page.next_after_case_id inside a run past the ceiling, so one named run "
+        "past it is paged by its cases), naming the runs again (page.named_run_ids)."
     ),
 ]
 ExportAfterRunId = Annotated[
@@ -2991,8 +2992,9 @@ def engine_actions() -> tuple[Action, ...]:
                 "so the result says beside it how many observations were left out and why; JSON carries both. "
                 f"A scope whose runs hold more than {EXPORT_PAGE_RESULTS} results is exported in pages of whole runs, "
                 "oldest first, and a run past it in pages of its cases: page names what a page holds, and its text "
-                "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). One named "
-                "run past the ceiling is paged by its cases; two or more named runs past it are refused."
+                "the call that reads the next (export_after_run_id, and export_after_case_id inside a run). Named runs "
+                "past the ceiling page as the scope does, the pages holding the named runs alone and the next call "
+                "naming them again; one named run past the ceiling is paged by its cases."
             ),
         ),
         Action(

@@ -38,6 +38,7 @@ from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
     call_blocks,
     report_doc_blocks,
+    stored_shape_blocks,
     unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
@@ -146,8 +147,10 @@ def build_campaign_report(
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
     # The first screen is the decision: the question, the lead, then where the campaign's report is where it has one,
-    # then what warns, one line per arm, and each report-wide caveat once.
+    # then what warns, one line per arm, and each report-wide caveat once. Evidence of an earlier shape this build
+    # reads as stored says so before all of it.
     blocks: list[ReportBlock] = [
+        *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign, compares=kind != "measurement"),
         *(_lead_blocks(campaign, readings, reports, names=names) if lead is None else lead),
         *report_doc_blocks(report_doc_id),

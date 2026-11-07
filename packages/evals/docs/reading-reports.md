@@ -722,8 +722,14 @@ campaign declares a volume.
 **A stored report reads as written.** A report is never edited: regenerating writes a new one, and the page shows the
 newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
 resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. A
-report written in a shape this version no longer reads gets the code-only page and one line: written in a shape this
-version no longer reads; regenerate with `analysis_generate`.
+report whose evidence was assembled at an earlier shape this version reads as stored renders whole, its figures as they
+were written, and its first line says what that means for its figures: "This report was written on an earlier
+build. Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a
+separation shown here may read as not separated today. Regenerating would redraw them." The analysis listing's verdict
+carries the same line, and the report is not listed as needing regeneration. An earlier
+shape joins only when every field added since is optional and no stored figure changes meaning; nothing is migrated.
+A report written in any other shape this version no longer reads gets the code-only page and one line: written in a
+shape this version no longer reads; regenerate with `analysis_generate`.
 
 **The transcripts are kept.** Each session, the analyst's and each editor round's, is stored whole beside the report,
 so `report_read` with a report's id and `include_sessions` returns what the analyst read and did, for an audit.
