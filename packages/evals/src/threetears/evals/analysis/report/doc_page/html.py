@@ -38,6 +38,7 @@ from collections.abc import Sequence
 
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.report.doc_page.model import (
+    DocCheck,
     DocClaim,
     DocConfidence,
     DocEvidence,
@@ -53,6 +54,7 @@ from threetears.evals.analysis.report.doc_page.model import (
 )
 from threetears.evals.analysis.report.doc_page.words import (
     APPENDIX_TITLE,
+    CHECKS_TITLE,
     EVIDENCE_TITLE,
     FINDINGS_TITLE,
     METHOD_TITLE,
@@ -62,6 +64,8 @@ from threetears.evals.analysis.report.doc_page.words import (
 from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
     chart_html,
+    check_anchor,
+    check_header_links,
     escape,
     grid_html,
     inline_html,
@@ -70,6 +74,7 @@ from threetears.evals.analysis.report.html_parts import (
     table_html,
 )
 from threetears.evals.analysis.report.parts.full_results import laid_out
+from threetears.evals.analysis.style import check_definition
 from threetears.evals.analysis.report.parts.model import PageArmsKey, PageMasthead, PageSlot
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL
 
@@ -194,6 +199,17 @@ def _method(method: Sequence[DocTerm]) -> str:
     return f'<section data-part="method"><h3>{escape(METHOD_TITLE)}</h3><dl class="method">{terms}</dl></section>'
 
 
+def _checks(checks: Sequence[DocCheck]) -> str:
+    """The appendix's Checks list: each goal check's name, then the expression it stands for, escaped and set as code,
+    whole, under the check's own id, which its headers link to."""
+    terms = "".join(
+        f'<dt id="{check_anchor(check.name)}">{escape(check.name)}</dt>'
+        f"<dd>{check_definition([(check.expression, None)], span=lambda said: f'<code>{escape(said)}</code>')}</dd>"
+        for check in checks
+    )
+    return f'<section data-part="checks"><h3>{escape(CHECKS_TITLE)}</h3><dl class="method">{terms}</dl></section>'
+
+
 def _finding(finding: DocFinding) -> str:
     about = escape(finding.about)
     if finding.claim_place is not None:
@@ -213,6 +229,7 @@ def _appendix(page: DocPage) -> list[str]:
         "<section>" + "".join(table_html(laid_out(table)) for table in page.full_results) + "</section>",
         *([_omitted(page.omitted)] if page.omitted else []),
         _method(page.method),
+        *([_checks(page.checks)] if page.checks else []),
         *([_findings(page.findings)] if page.findings else []),
         *([f'<p class="cap" data-part="made">{escape(page.made)}</p>'] if page.made else []),
     ]
@@ -288,4 +305,5 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         "</body>",
         "</html>",
     ]
-    return "\n".join(part for part in parts if part) + "\n"
+    # A header naming a goal check links its row in the appendix's Checks list, as a code page's links its glossary.
+    return check_header_links("\n".join(part for part in parts if part) + "\n", [check.name for check in page.checks])

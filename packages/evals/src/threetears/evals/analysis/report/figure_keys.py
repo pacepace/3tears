@@ -178,7 +178,7 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import humanize, measure_name, written_check_names
+from threetears.evals.analysis.style import check_names, humanize, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -3188,7 +3188,7 @@ NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion
 
 def input_check_name(key: str, report_input: ReportInput) -> str | None:
     """What a report document's page calls the goal check ``key`` reads on a report input, through the one rule its
-    tables and its evidence record both name a check by (:func:`~threetears.evals.analysis.style.written_check_names`):
+    tables and its evidence record both name a check by (:func:`~threetears.evals.analysis.style.check_names`):
     the name the input's label declares, else what it tests (``Field accuracy check``), as the code page names it,
     over every check the input reads. The input's label for an undeclared check is its expression, which the writer
     reads.
@@ -3209,7 +3209,7 @@ def input_check_name(key: str, report_input: ReportInput) -> str | None:
         if (expression := goal_check_of(name)) is not None
     }
     declared = {expression: label for expression, label in read.items() if label and label != expression}
-    return written_check_names([*read, check], declared)[check]
+    return check_names([*read, check], declared)[check]
 
 
 def _measure_reader_name(key: str, report_input: ReportInput) -> str:

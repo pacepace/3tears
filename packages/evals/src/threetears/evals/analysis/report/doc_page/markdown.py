@@ -35,14 +35,23 @@ from threetears.evals.analysis.report.doc_page.words import (
     CHECKED_MARK,
     EVIDENCE_TITLE,
     FINDINGS_TITLE,
+    CHECKS_TITLE,
     METHOD_TITLE,
     NEXT_TITLE,
     OMITTED_TITLE,
 )
-from threetears.evals.analysis.report.md_parts import inert, markdown_table, one_line, paragraphs, table_lines
+from threetears.evals.analysis.report.md_parts import (
+    code_span,
+    inert,
+    markdown_table,
+    one_line,
+    paragraphs,
+    table_lines,
+)
 from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report.parts.model import PageMasthead
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL
+from threetears.evals.analysis.style import check_definition
 
 #: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
 #: read).
@@ -134,6 +143,15 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
             for item in page.method
         ),
     ]
+    if page.checks:
+        yield [
+            f"### {CHECKS_TITLE}",
+            "",
+            *(
+                f"- **{one_line(check.name)}**: {check_definition([(check.expression, None)], span=code_span)}"
+                for check in page.checks
+            ),
+        ]
     if page.findings:
         yield [
             f"### {FINDINGS_TITLE}",

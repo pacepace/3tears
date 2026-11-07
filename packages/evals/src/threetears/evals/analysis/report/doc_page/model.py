@@ -34,6 +34,7 @@ from threetears.evals.schema.prose import ModelProse
 
 __all__ = [
     "DocCaveatLine",
+    "DocCheck",
     "DocClaim",
     "DocConfidence",
     "DocEvidence",
@@ -47,6 +48,13 @@ __all__ = [
     "masthead_parts",
     "open_findings_line",
 ]
+
+
+class DocCheck(EvalDocumentModel):
+    """One goal check the page names: the name its tables use, and the expression that name stands for."""
+
+    name: str = Field(min_length=1, description="The check's name, as the page's tables and its record print it.")
+    expression: str = Field(min_length=1, description="The check, verbatim, which the name stands for.")
 
 
 class DocCaveatLine(EvalDocumentModel):
@@ -186,6 +194,14 @@ class DocPage(EvalDocumentModel):
     full_results: list[TableBlock] = Field(description="Every table the input holds a row of.")
     omitted: list[DocOmitted] = Field(description="What was left out of the body, and why.")
     method: list[DocTerm] = Field(description="The method's terms, each with the caveats landed on it.")
+    checks: list[DocCheck] = Field(
+        default_factory=list,
+        description=(
+            "Each goal check a table names, by the name its tables use, with the expression it stands for, in the "
+            "checks' sorted order: what the appendix's Checks list defines. Not in the text the editor and the judge "
+            "read (`doc_page_text`), which names a check as the tables do."
+        ),
+    )
     findings: list[DocFinding] = Field(description="The editor's findings left unresolved.")
     made: str = Field(default="", description="How the page was made, in one line; empty for none.")
 

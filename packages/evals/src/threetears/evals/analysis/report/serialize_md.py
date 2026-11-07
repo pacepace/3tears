@@ -22,7 +22,7 @@ results.
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.report.blocks import (
@@ -90,7 +90,9 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     :rtype: str
     """
     if report.doc_page is not None:
-        record = [*_fold_lines(report), *_glossary_lines(report)] if report.doc_trials else []
+        # The document's own Checks list defines each check it names: the record's glossary defines only the others.
+        defined = [check.name for check in report.doc_page.checks]
+        record = [*_fold_lines(report), *_glossary_lines(report, defined=defined)] if report.doc_trials else []
         return doc_page_markdown(report.doc_page, record=record)
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
     lines = [f"# {one_line(report.title)}"]
@@ -150,12 +152,14 @@ def _section_lines(
     return lines
 
 
-def _glossary_lines(report: Report | CampaignReport) -> list[str]:
+def _glossary_lines(report: Report | CampaignReport, *, defined: Collection[str] = ()) -> list[str]:
     """The page's glossary: each term it links, then each goal check's name, its expression set as a span no backtick
-    inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; nothing when the page
-    defines none."""
+    inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; none of the checks
+    ``defined`` names, which a report document's own Checks list defines; nothing when the page defines none."""
     entries = [(term, GLOSSARY[term]) for term in report.terms]
-    entries += [(name, check_definition(said, span=code_span)) for name, said in report.check_glossary]
+    entries += [
+        (name, check_definition(said, span=code_span)) for name, said in report.check_glossary if name not in defined
+    ]
     if not entries:
         return []
     return [

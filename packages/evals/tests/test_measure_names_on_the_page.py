@@ -24,6 +24,7 @@ import pytest
 
 from threetears.evals.analysis import (
     build_code_only_report,
+    campaign_report,
     build_campaign_report,
     campaign_report_html,
     campaign_report_markdown,
@@ -32,10 +33,12 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.md_parts import code_span
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.ops.analysis import report_read
+from threetears.evals.schema.goal_grammar import ACTION_BUILTINS, FIRE_PREDICATES, REFUSAL_BUILTINS
 
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, Shape, shape_of
@@ -225,6 +228,9 @@ def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:
         ("passed()", "Deliberate pass"),
         ("1 == 1", None),
         ("answer ==", None),
+        # A case parameter is the expectation the end state is held to, never what the check tests.
+        ("variation.expected == state.answer", "Answer"),
+        ("state.answer == variation.expected", "Answer"),
     ],
 )
 def test_a_check_s_subject_is_read_off_its_expression_alone(expression: str, subject: str | None) -> None:
@@ -375,3 +381,49 @@ def test_a_written_page_and_its_record_name_a_check_in_one_form() -> None:
     assert "| `field_accuracy >= 0.92` |" not in body, "no table names it by its expression"
     assert "check: `field_accuracy >= 0.92`" not in body, "no trial names it by its expression"
     assert "The goal check `field_accuracy >= 0.92`" in body, "the glossary defines the name by its expression"
+
+
+@pytest.mark.parametrize("builtin", sorted(ACTION_BUILTINS | FIRE_PREDICATES))
+def test_every_call_predicate_the_grammar_knows_names_its_action(builtin: str) -> None:
+    # The namer reads the grammar's own sets: a builtin the grammar gains is named as its set's are.
+    word = "refusals" if builtin in REFUSAL_BUILTINS else "firing" if builtin in FIRE_PREDICATES else "calls"
+    expression = f'{builtin}("support.send_message")'
+    assert check_names([expression], {}) == {expression: f"Send message {word} check"}
+
+
+def _written(form: str) -> tuple[str, CampaignReport]:
+    """toyhost_doc's report document page as a report read serves it by default, and the page it renders."""
+    read = subject("toyhost_doc")
+    served = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=False, trials="table")
+    page = campaign_report(read.host, read.campaign_id, read.scope_id, trials="table")
+    return served.body, page
+
+
+@pytest.mark.parametrize("form", ["markdown", "html"])
+def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form: str) -> None:
+    body, page = _written(form)
+    assert page.doc_page is not None and page.doc_page.checks, "the document names a goal check"
+    for check in page.doc_page.checks:
+        assert check.name in body
+        expression = check.expression if form == "markdown" else escape(check.expression)
+        assert body.count(expression) == 1, f"{check.name} is defined by its expression once"
+    if form == "markdown":
+        assert "### Checks" in body
+        assert (
+            "- **Field accuracy check**: The goal check `field_accuracy >= 0.92`, which code runs on every trial."
+            in body
+        )
+    else:
+        assert '<dt id="g-check-field-accuracy-check">Field accuracy check</dt>' in body
+        # The header naming the check links its row.
+        assert re.search(
+            r'<th[^>]*><a href="#g-check-field-accuracy-check" title="[^"]*">Field accuracy check</a></th>', body
+        )
+
+
+def test_the_text_the_judge_reads_carries_no_checks_list() -> None:
+    # The report writer's recorded judge reads doc_page_text: the Checks list is the reader's page alone.
+    _, page = _written("markdown")
+    assert page.doc_page is not None
+    said = doc_page_text(page.doc_page)
+    assert "Checks" not in said and "field_accuracy >= 0.92" not in said
