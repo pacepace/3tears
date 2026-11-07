@@ -9,18 +9,19 @@ frozen for every later test in the process, and an import of that model in any o
 only one process holding a freeze and a lazy package nobody had read yet, which a runner interleaving packages
 (the testament pool) gives and a per-package shard does not.
 
-So before each test every lazy ``threetears`` name already loaded is resolved, on the real clock, and after it the
-clock must be the real one again. A test that leaves it frozen fails at teardown; every test after it in the process
-fails at setup, naming the test that leaked it, so a leak blames only the test that made it.
+So before each test's fixtures are set up, every lazy ``threetears`` name already loaded is resolved on the real
+clock, and after the test the freezes running must be the ones that ran before it. A test that leaves a freeze
+running fails at teardown; every test after it that would run on that freeze fails at setup, naming the test that
+leaked it, so a leak blames only the test that made it. A freeze enclosing a group of tests on purpose (a class
+decorator, a class- or module-scoped fixture) is not a leak: each test in it starts and ends inside it.
 """
 
 from __future__ import annotations
 
-import datetime
 import sys
-import time
 from collections.abc import Iterator
 
+import freezegun.api
 import pytest
 
 
@@ -45,42 +46,55 @@ def resolve_lazy_names() -> None:
                         continue
 
 
-def frozen_names() -> list[str]:
-    """The clock names freezegun has swapped for its fakes, empty when the clock is the real one.
+#: Each freeze a test left running, by the test that left it, so a later test's setup can name it while it runs.
+_LEAKS: list[tuple[str, object]] = []
 
-    Read off each object's module, not compared with a saved real object: a freeze repoints every module attribute
-    bound to the real clock, a saved copy here among them.
+
+def _running() -> list[object]:
+    """The freezes running now, outermost first: freezegun's stack of clock factories, one per started freeze."""
+    return list(freezegun.api.freeze_factories)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Resolve the lazy names before any of the test's fixtures is set up, a class- or module-scoped freeze included.
+
+    Under a running freeze the names would be read on its fakes, the hazard itself; a freeze nested inside it walks no
+    module, so nothing is read then either.
+
+    :param item: The test about to be set up.
+    :ptype item: pytest.Item
+    :return: Nothing.
+    :rtype: None
     """
-    clock = {
-        "datetime.datetime": datetime.datetime,
-        "datetime.date": datetime.date,
-        "time.time": time.time,
-        "time.monotonic": time.monotonic,
-    }
-    return [name for name, value in clock.items() if value.__module__ not in ("datetime", "time")]
-
-
-#: Each test after whose teardown the clock was found frozen, so a later test's setup can name the last of them.
-_LEAKED_BY: list[str] = []
+    if not _running():
+        resolve_lazy_names()
 
 
 @pytest.fixture(autouse=True)
 def _clock_isolation(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Refuse to start on a frozen clock; resolve the lazy names; fail the test if it leaves the clock frozen."""
-    if frozen := frozen_names():
-        leaker = _LEAKED_BY[-1] if _LEAKED_BY else "a freeze outside any test (at import or collection)"
+    """Fail a test that leaves a freeze it started running, and each test after it that would run on that freeze.
+
+    A freeze running at setup is not by itself a leak: a class decorator or a class- or module-scoped fixture freezes
+    for a group of tests on purpose, and each of them starts and ends inside it. A test leaked a freeze when one is
+    running at its teardown that was not at its setup. A test that starts on a freeze an earlier test leaked fails
+    at setup, naming that test, rather than being blamed at teardown for a freeze it did not start.
+    """
+    before = _running()
+    live = [test for test, leaked in _LEAKS if any(running is leaked for running in before)]
+    if live:
         pytest.fail(
-            f"the clock was frozen before this test began ({', '.join(frozen)} are freezegun's): an earlier test in "
-            f"this process leaked it, not this one. Leaked by: {leaker}.",
+            f"the clock was frozen before this test began, by a freeze an earlier test in this process leaked, not "
+            f"this one. Leaked by: {live[-1]}.",
             pytrace=False,
         )
-    resolve_lazy_names()
     yield
-    if frozen := frozen_names():
-        _LEAKED_BY.append(request.node.nodeid)
+    started = [running for running in _running() if not any(running is held for held in before)]
+    if started:
+        _LEAKS.extend((request.node.nodeid, leaked) for leaked in started)
         pytest.fail(
-            f"the clock is still frozen after this test ({', '.join(frozen)} are freezegun's): a freeze it started "
-            "was never stopped, or its start() raised, and every later test in the process reads a frozen clock. "
-            "Freeze in a `with` block or a decorator, and look for the error its start() raised.",
+            f"the clock is still frozen after this test, by {len(started)} freeze(s) it started: one was never "
+            "stopped, or its start() raised, and every later test in the process reads a frozen clock. Freeze in a "
+            "`with` block or a decorator, and look for the error its start() raised.",
             pytrace=False,
         )
