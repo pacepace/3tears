@@ -565,6 +565,8 @@ class _Prepared:
     judged: WriterPairwiseReport | None
     #: Whether to read every planned case past the first separation.
     past_the_stop: bool
+    #: The cases launched so far, for a run launched in batches; None when every case launched at once.
+    launched: frozenset[str] | None
 
 
 def _orders(collected: _Collected, pair: _Pair) -> tuple[JudgeContext, JudgeContext] | None:
@@ -596,6 +598,7 @@ async def _prepare(
     rule: StoppingRule | None,
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
+    launched: Collection[str] | None = None,
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call
     no earlier pass (``judged``) answered.
@@ -660,6 +663,7 @@ async def _prepare(
         carried=carried,
         judged=judged,
         past_the_stop=past_the_stop,
+        launched=None if launched is None else frozenset(launched),
     )
 
 
@@ -968,6 +972,7 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         reached=len(reached),
         stop_at=stop_at,
         past_the_stop=prepared.past_the_stop,
+        launched=prepared.launched,
     )
     spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs: list[float | None] = [spend.cost_usd for spend in spends]
@@ -1046,13 +1051,15 @@ def _stopping(
     reached: int,
     stop_at: int | None,
     past_the_stop: bool = False,
+    launched: frozenset[str] | None = None,
 ) -> PairwiseStopping:
     """The record of how the pass ran against its rule, with the sentence the page prints."""
     late = _late(rule, collected.first_result_at)
     first = next((look.cases for look in looks if look.separated), None)
     line = _line(collected, rule, looks, late=late, reached=reached, stop_at=stop_at, past_the_stop=past_the_stop)
-    # Launched in batches, the planned cases past the last batch were never launched: the launch says how many ran.
-    absent = [] if rule is not None and rule.batch_size is not None else plan.absent
+    # Launched in batches, the planned cases past the last batch were never launched, and the launch says how many
+    # ran; a launched case the pass did not find is said, as any planned case not found is.
+    absent = plan.absent if launched is None else [case_id for case_id in plan.absent if case_id in launched]
     if absent or plan.unplanned:
         line += f" {_differs(plan, absent=absent, read=rule is not None and rule.stop_when == 'never')}"
     return PairwiseStopping(
@@ -1213,6 +1220,7 @@ async def _writer_pairwise_work(
     stopping_rule: StoppingRule | None = None,
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
+    launched: Collection[str] | None = None,
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -1241,6 +1249,9 @@ async def _writer_pairwise_work(
     :ptype judged: WriterPairwiseReport | None
     :param past_the_stop: Read every planned case past the first separation (the module docstring).
     :ptype past_the_stop: bool
+    :param launched: The cases launched so far, for a run launched in batches: a planned case not launched yet is not
+        said as not found, and a launched one is; ``None`` when every case launched at once.
+    :ptype launched: Collection[str] | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -1265,6 +1276,7 @@ async def _writer_pairwise_work(
         rule=stopping_rule,
         judged=judged,
         past_the_stop=past_the_stop,
+        launched=launched,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -1300,6 +1312,7 @@ async def writer_pairwise(
     stopping_rule: StoppingRule | None = None,
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
+    launched: Collection[str] | None = None,
 ) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
@@ -1324,6 +1337,9 @@ async def writer_pairwise(
     :ptype judged: WriterPairwiseReport | None
     :param past_the_stop: Read every planned case past the first separation, for a run gone on to the cap.
     :ptype past_the_stop: bool
+    :param launched: The cases launched so far, for a run launched in batches; ``None`` when every case launched at
+        once.
+    :ptype launched: Collection[str] | None
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -1344,6 +1360,7 @@ async def writer_pairwise(
         stopping_rule=stopping_rule,
         judged=judged,
         past_the_stop=past_the_stop,
+        launched=launched,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)

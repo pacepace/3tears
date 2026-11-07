@@ -40,7 +40,8 @@ model, an effort or a host's own lever is decided as a skill text is.
 **What it refuses.** A campaign whose arms were not scored by one judge on one rubric
 (:func:`~threetears.evals.ops.report_writer.writer_contract.refuse_unfixed_scoring_judge`), and one that ran over
 anything but held-out writer cases: each run must name its case set, and each case it ran must be a writer case its
-mint put on the held-out side of its split, in the set the run names or in a batch of it, a set made for one launch. The dev side is where a change is tuned, so a
+mint put on the held-out side of its split, in the set the run names or in a batch of it: a set made for one launch,
+named for the held-out set version it is cut from (:func:`held_out_batch_name`), which lists every case of it. The dev side is where a change is tuned, so a
 decision read there would be read on the cases it was fitted to. And a pairwise job that is not a completed pass, or
 whose report names another campaign, candidate, control, judge or preference criterion than the read's.
 
@@ -51,8 +52,9 @@ naming the candidate) and commit the change with its entry in the skill ledger
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, ValidationError
 
@@ -164,16 +166,7 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
     """The held-out sets the runs named and how many cases they ran, refusing a run or case off the held-out side."""
     faults = [f"run {run.id} named no case set" for run in runs if run.case_set is None]
     named = {run.case_set.name for run in runs if run.case_set is not None}
-    # A batch of a launch made in batches names a set made for that one launch; each of its cases is still held to
-    # the held-out side of its split, case by case, below.
-    batched = {
-        case_id
-        for run in runs
-        if run.case_set is not None
-        and (listed := host.storage.load_case_set(run.case_set.name, run.case_set.version, scope_id)) is not None
-        and not listed.tracked
-        for case_id in run.test_case_ids
-    }
+    batched = _batched(host, runs, scope_id)
     ids = sorted({case_id for run in runs for case_id in run.test_case_ids})
     stored = host.storage.load_test_cases_by_ids(ids, scope_id)
     bank = writer_case_bank(stored)
@@ -189,7 +182,7 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
             faults.append(f"case {case_id} was put in no split")
         elif origin.side != "held_out":
             faults.append(f"case {case_id} is on the {origin.side} side of its split")
-        elif origin.case_set not in named and case_id not in batched:
+        elif origin.case_set not in named and origin.case_set not in batched.get(case_id, ()):
             faults.append(f"case {case_id} was minted into {origin.case_set!r}, which no run names")
     if faults:
         raise ValidationFailedError(
@@ -198,6 +191,51 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
         )
     refs = sorted({run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version))
     return refs, len(ids)
+
+
+#: A batch's set name: the held-out set's label it is a batch of, then its place among the batches.
+_BATCH_NAME: Final = re.compile(r"^(?P<name>.+) v(?P<version>[1-9][0-9]*) batch [1-9][0-9]* of [1-9][0-9]*$")
+
+
+def held_out_batch_name(held_out: CaseSetRef, index: int, batches: int) -> str:
+    """The name of the set one batch of a launch made in batches runs: the held-out set's label it is a batch of, and
+    its place (``writer-held-out v7 batch 2 of 3``). The promotion read accepts a case run from such a set, made for
+    one launch, only as a case of the held-out set version it names, and only when that version lists every case of it.
+
+    :param held_out: The held-out set version the batches are cut from.
+    :ptype held_out: CaseSetRef
+    :param index: The batch, from 0.
+    :ptype index: int
+    :param batches: How many batches the launch is cut into.
+    :ptype batches: int
+    :return: The name.
+    :rtype: str
+    """
+    return f"{held_out.label} batch {index + 1} of {batches}"
+
+
+def _batched(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -> dict[str, set[str]]:
+    """Each case a run ran from a batch of a held-out set, with the held-out sets those batches belong to: a set made
+    for one launch, named as a batch of a held-out set version (:func:`held_out_batch_name`) that lists every one of its
+    cases. Any other set made for one launch belongs to no held-out set, so its cases are refused as before."""
+    batched: dict[str, set[str]] = {}
+    for run in runs:
+        ref = run.case_set
+        named = None if ref is None else _BATCH_NAME.match(ref.name)
+        if ref is None or named is None:
+            continue
+        listed = host.storage.load_case_set(ref.name, ref.version, scope_id)
+        parent = host.storage.load_case_set(named["name"], int(named["version"]), scope_id)
+        if (
+            listed is None
+            or listed.tracked
+            or parent is None
+            or not set(listed.test_case_ids) <= set(parent.test_case_ids)
+        ):
+            continue
+        for case_id in run.test_case_ids:
+            batched.setdefault(case_id, set()).add(parent.name)
+    return batched
 
 
 def _pass_report(

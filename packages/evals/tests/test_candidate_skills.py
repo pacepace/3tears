@@ -26,6 +26,7 @@ import pytest
 
 from packages.evals.tests.fixtures.writer_cases import writer_acceptance
 from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
+    DRY_CAP_USD,
     NOT_COMPARED,
     SHIPPED,
     VARIANTS,
@@ -98,7 +99,10 @@ def like_against_like(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tupl
     (copy / "README.md").write_text("The shipped skill, run as its own candidate.\n", encoding="utf-8")
     with pytest.MonkeyPatch.context() as monkeypatch:
         attempts = _offline(monkeypatch)
-        yield asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, candidate_skill=copy)), attempts
+        yield (
+            asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, candidate_skill=copy)),
+            attempts,
+        )
 
 
 def _readme_section(heading: str) -> str:
@@ -171,7 +175,7 @@ def test_the_door_refuses_the_shipped_skill_itself_a_control_name_and_two_candid
         writer_acceptance.main(["--dry", "--variant", "hollow", "--candidate-skill", str(HEADLINE_ANSWERS)])
     with pytest.raises(SystemExit, match="not both"):
         asyncio.run(
-            acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, variant="hollow", candidate_skill=named)
+            acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, variant="hollow", candidate_skill=named)
         )
 
 

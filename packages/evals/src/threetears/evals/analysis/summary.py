@@ -1343,11 +1343,21 @@ def summarize_runs(
 ) -> EvalSummary:
     """Summarise one arm's runs as one: a launch made in batches of its cases, each batch a run of one design.
 
-    The runs' results are folded into one summary, as :func:`summarize_run` folds one run's: its cases are every
-    run's, in the order the runs were given; its errors, stops and spend are theirs together; and its header (the
-    run id, model, template, schedule and pins) is the first run's, since the batches were launched alike. Its status
-    is ``completed`` only when every run's is, else the first other status met, and its spend ceiling the runs'
-    ceilings summed (``None`` when any run had none). One run reads exactly as :func:`summarize_run` reads it.
+    The runs' results are folded into one summary, as :func:`summarize_run` folds one run's:
+
+    ==============================  =====================================================================
+    field                           read as
+    ==============================  =====================================================================
+    cases, results, spend, errors   every run's together, cases in the order the runs were given
+    status                          ``completed`` when every run's is, else the first other status met
+    spend ceiling                   the runs' ceilings summed; ``None`` when any run had none
+    stop reasons                    the first run's that has one; budget stops, every run's
+    run id, schedule, settings      the first run's
+    template, model, repeats,       must agree: batches of one arm are launched alike, so runs that differ
+    judge, overlays                 in any of them are refused rather than read as one arm
+    ==============================  =====================================================================
+
+    One run reads exactly as :func:`summarize_run` reads it.
 
     :param host: The host whose store holds the runs, and whose measures are summarised.
     :ptype host: EvalHost
@@ -1360,7 +1370,7 @@ def summarize_runs(
     :return: The summary.
     :rtype: EvalSummary
     :raises NotFoundError: No run with one of those ids in the scope.
-    :raises ValueError: No run is named.
+    :raises ValueError: No run is named, or the runs differ in their template, model, repeats, judge or overlays.
     """
     if not run_ids:
         raise ValueError("summarize_runs reads at least one run")
@@ -1373,6 +1383,12 @@ def summarize_runs(
     first = runs[0]
     if len(runs) == 1:
         return _summary(host, first, runs, scope_id, case_names or {})
+    shared = ("template_id", "candidate_model", "k_runs", "judge_model", "overlays")
+    if differ := [name for name in shared if any(getattr(run, name) != getattr(first, name) for run in runs[1:])]:
+        raise ValueError(
+            f"runs {', '.join(run.id for run in runs)} differ in {', '.join(differ)}, so they are not batches of one "
+            "arm; summarise each with summarize_run"
+        )
     caps = [run.max_cost_usd for run in runs]
     stops = [stop for run in runs for stop in run.budget_stops or ()]
     merged = first.model_copy(

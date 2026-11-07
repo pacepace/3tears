@@ -192,7 +192,11 @@ from threetears.evals.ops.report_writer.writer_pairwise import (
     resolution_line,
     writer_pairwise,
 )
-from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
+from threetears.evals.ops.report_writer.writer_promotion import (
+    WriterPromotion,
+    held_out_batch_name,
+    writer_promotion,
+)
 from threetears.evals.quick.contract import open_store
 from threetears.evals.schema import DocumentStore
 from threetears.evals.quick.result import CREATED_BY
@@ -389,6 +393,28 @@ class _Pass:
     why_not: str | None
 
 
+@dataclass(frozen=True)
+class _Held:
+    """A candidate settled at its own stop: the promotion read made there (``None`` on the dev side), and the cases
+    launched by then."""
+
+    read: WriterPromotion | None
+    launched: int
+
+
+def _guardrails_unheld(read: WriterPromotion) -> bool:
+    """Whether a promotion read finds the primary improved and the guardrails not shown held: the one stop that does
+    not decide, so the run goes on to the cap."""
+    primary = read.primary
+    improved = (
+        primary is not None
+        and primary.outcome == "improved"
+        and primary.reason != "too_few_cases"
+        and read.void is None
+    )
+    return improved and read.decision == "undecided"
+
+
 def _report_of(ran: _Pass | None) -> WriterPairwiseReport | None:
     """A pass's report, when it completed and stopped short of nothing: what the next batch's pass carries."""
     if ran is None or ran.status is None or ran.why_not is not None:
@@ -396,25 +422,33 @@ def _report_of(ran: _Pass | None) -> WriterPairwiseReport | None:
     return WriterPairwiseReport.model_validate(ran.status.result)
 
 
-def _launched_line(launched: int, planned: int, batch: int, side: str, passes: Mapping[str, _Pass]) -> str:
+def _launched_line(
+    launched: int, planned: int, batch: int, side: str, passes: Mapping[str, _Pass], read_on: Mapping[str, int]
+) -> str:
     """Where a batched run stopped launching, in one sentence: the cases the gated readings and guardrails are read on,
-    and how often."""
+    and how often. ``read_on`` is the cases each candidate's were read on, at its own stop or the last batch."""
     reports = [report for ran in passes.values() if (report := _report_of(ran)) is not None]
     again = any(report.stopping is not None and report.stopping.past_the_stop for report in reports)
+    ran = (
+        f"The arms ran all {planned} {side} cases"
+        if launched >= planned
+        else f"Read on {launched} cases: the arms ran {launched} of the {planned} {side} cases"
+    )
+    ran += f", {batch} at a time in the bet's order"
+    if len(set(read_on.values())) > 1:
+        each = ", ".join(f"{count} for {arm}" for arm, count in read_on.items())
+        return (
+            f"{ran}, and each candidate stopped launching at its own stop, so its gated readings and guardrails were "
+            f"read {'' if again else 'once, '}on the cases launched by then: {each}."
+        )
     if launched >= planned:
         read = "read on every case" if again else "read once, on every case"
-        return (
-            f"The arms ran all {planned} {side} cases, {batch} at a time in the bet's order, so the gated readings and "
-            f"guardrails were {read}."
-        )
+        return f"{ran}, so the gated readings and guardrails were {read}."
     separated = len(reports) == len(passes) and all(
         report.stopping is not None and report.stopping.stopped_at is not None for report in reports
     )
     why = "every candidate's preference had separated" if separated else "no candidate's pass could read further"
-    return (
-        f"Read on {launched} cases: the arms ran {launched} of the {planned} {side} cases, {batch} at a time in the "
-        f"bet's order, and stopped once {why}, so the gated readings and guardrails were read once, on those {launched}."
-    )
+    return f"{ran}, and stopped once {why}, so the gated readings and guardrails were read once, on those {launched}."
 
 
 @dataclass(frozen=True)
@@ -927,7 +961,10 @@ class WriterEval:
         campaign_id: str | None = None
         passes: dict[str, _Pass] = {}
         going_on: set[str] = set()
-        launched = 0
+        # A candidate settled at its own stop: its pass and its promotion read, held as they were read there, and the
+        # cases launched by then. It launches no further batch, and nothing of it is read again.
+        held: dict[str, _Held] = {}
+        launched: list[str] = []
         for index, batch in enumerate(batches):
             ref = case_set
             part = share
@@ -945,8 +982,9 @@ class WriterEval:
                 # Each batch's runs are held to its cases' part of the arm's ceiling, so the batches together never
                 # pass it.
                 part = share * len(batch) / len(planned)
-            launched += len(planned) if batch is None else len(batch)
-            ran = await self._launch_batch(host, template_id, ref, part)
+            launched += planned if batch is None else batch
+            arms = [arm for arm in self.arms if arm not in held]
+            ran = await self._launch_batch(host, template_id, ref, part, arms)
             for arm, run_id in ran.items():
                 run_ids[arm].append(run_id)
             if campaign_id is None:
@@ -962,13 +1000,20 @@ class WriterEval:
                     self.scope_id,
                     list(ran.values()),
                 )
-            passes = {
-                arm: await self._pairwise(
-                    host, campaign_id, arm, rule, judged=_report_of(passes.get(arm)), past_the_stop=arm in going_on
+            for arm in arms[1:]:
+                passes[arm] = await self._pairwise(
+                    host,
+                    campaign_id,
+                    arm,
+                    rule,
+                    judged=_report_of(passes.get(arm)),
+                    past_the_stop=arm in going_on,
+                    launched=launched if batched else None,
                 )
-                for arm in list(self.arms)[1:]
-            }
-            if index == len(batches) - 1 or not await self._needs_more(host, campaign_id, passes, going_on):
+            if index == len(batches) - 1:
+                break
+            await self._settle(host, campaign_id, passes, going_on, held, launched=len(launched))
+            if len(held) == len(self.arms) - 1:
                 break
         assert campaign_id is not None  # one batch at least always launches
         for arm, routed in turns.items():
@@ -984,7 +1029,10 @@ class WriterEval:
         )
         launch_line = None
         if batched:
-            launch_line = _launched_line(launched, len(planned), self.batch_size, _SIDE_WORDS[self.side], passes)
+            read_on = {arm: held[arm].launched if arm in held else len(launched) for arm in passes}
+            launch_line = _launched_line(
+                len(launched), len(planned), self.batch_size, _SIDE_WORDS[self.side], passes, read_on
+            )
             disclosures.append(launch_line)
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
         filed = campaign_id
@@ -1002,13 +1050,16 @@ class WriterEval:
                 cases=tuple(sorted(names)),
                 resolution=resolution,
                 launch_line=launch_line,
+                held={arm: kept.read for arm, kept in held.items() if kept.read is not None},
             ),
         )
 
-    async def _launch_batch(self, host: OpsHost, template_id: str, case_set: CaseSetRef, part: float) -> dict[str, str]:
-        """Launch every arm over ``case_set``, each under ``part`` of the ceiling, quoting and refusing every arm before
-        any starts, and await them; each arm's run, by arm."""
-        launches = {arm: self._launch(template_id, case_set, writer, part) for arm, writer in self.arms.items()}
+    async def _launch_batch(
+        self, host: OpsHost, template_id: str, case_set: CaseSetRef, part: float, arms: Sequence[str]
+    ) -> dict[str, str]:
+        """Launch each of ``arms`` over ``case_set``, each under ``part`` of the ceiling, quoting and refusing every arm
+        before any starts, and await them; each arm's run, by arm."""
+        launches = {arm: self._launch(template_id, case_set, self.arms[arm], part) for arm in arms}
         for arguments in launches.values():  # every arm is quoted, and refused, before any is started
             await quote_launch(host.launch, **arguments)
         runs = {arm: (await start_run(host.launch, **arguments))[0] for arm, arguments in launches.items()}
@@ -1018,59 +1069,61 @@ class WriterEval:
     def _batch_set(
         self, host: OpsHost, template_id: str, whole: CaseSetRef, batch: Sequence[str], index: int, batches: int
     ) -> CaseSetRef:
-        """The set one batch launches: its cases, minted as a set made for one launch, named for the side's set it is a
-        batch of. Blocking."""
+        """The set one batch launches: its cases, as a set made for one launch named for the side's set version it is
+        cut from (:func:`~threetears.evals.ops.report_writer.writer_promotion.held_out_batch_name`). The version there
+        is reused when it already lists exactly these cases, as a later run on the same set's batches finds it.
+        Blocking."""
+        storage = host.eval_host.storage
+        name = held_out_batch_name(whole, index, batches)
+        versions = storage.query_case_sets(self.scope_id, name=name)
+        if versions and list(versions[0].test_case_ids) == list(batch):
+            return versions[0].ref
         listed = mint_case_set(
-            host.eval_host.storage,
+            storage,
             scope_id=self.scope_id,
-            name=f"{whole.label} batch {index + 1} of {batches}",
+            name=name,
             template_id=template_id,
             test_case_ids=list(batch),
             tracked=False,
         )
         return listed.ref
 
-    async def _needs_more(
-        self, host: OpsHost, campaign_id: str, passes: Mapping[str, _Pass], going_on: set[str]
-    ) -> bool:
-        """Whether any candidate's pass reads on into the next batch: one whose preference has not separated, or one
-        gone on to the cap. A candidate whose preference separated improved while its guardrails are not shown held on
-        the cases run so far goes on to the cap (``going_on``), and its readings have a second look there; a pass that
-        did not complete reads no further."""
-        more = False
+    async def _settle(
+        self,
+        host: OpsHost,
+        campaign_id: str,
+        passes: Mapping[str, _Pass],
+        going_on: set[str],
+        held: dict[str, _Held],
+        *,
+        launched: int,
+    ) -> None:
+        """Hold each candidate that reads no further, as it stands at its own stop: a pass that did not complete, or one
+        whose preference separated. Its promotion is read there, once (on the held-out side). A candidate whose
+        preference separated improved while its guardrails are not shown held on the cases run by then is not held:
+        it goes on to the cap (``going_on``), and its readings have a second look there. The writer template declares
+        no guardrail, so that branch is reached only when the scope's template declares one, as a host's may."""
         for arm, ran in passes.items():
-            if ran.status is None or ran.why_not is not None:
+            if arm in held or arm in going_on:
                 continue
-            stopping = WriterPairwiseReport.model_validate(ran.status.result).stopping
-            if stopping is None or stopping.stopped_at is None:
-                more = True
+            stopping = None if ran.status is None else WriterPairwiseReport.model_validate(ran.status.result).stopping
+            complete = ran.status is not None and ran.why_not is None
+            if complete and (stopping is None or stopping.stopped_at is None):
                 continue
-            if (
-                self.side == "held_out"
-                and arm not in going_on
-                and await self._guardrails_unheld(host, campaign_id, arm, ran)
-            ):
+            read = None if self.side != "held_out" else await self._read_at_stop(host, campaign_id, arm, ran)
+            if complete and read is not None and _guardrails_unheld(read):
                 going_on.add(arm)
-                more = True
-        return more
+                continue
+            held[arm] = _Held(read=read, launched=launched)
 
-    async def _guardrails_unheld(self, host: OpsHost, campaign_id: str, candidate: str, ran: _Pass) -> bool:
-        """Whether the promotion read at the stop finds the primary improved and the guardrails not shown held: the
-        one stop that does not decide, so the run goes on to the cap."""
-        read = await run_blocking(
+    async def _read_at_stop(self, host: OpsHost, campaign_id: str, candidate: str, ran: _Pass) -> WriterPromotion:
+        """The promotion read on a candidate's pass at its stop."""
+        return await run_blocking(
             host.eval_host.blocking_executor,
             lambda: writer_promotion(
                 host.eval_host, campaign_id, self.scope_id, candidate=candidate, pairwise_job=ran.status
             ),
         )
-        primary = read.primary
-        improved = (
-            primary is not None
-            and primary.outcome == "improved"
-            and primary.reason != "too_few_cases"
-            and read.void is None
-        )
-        return improved and read.decision == "undecided"
 
     def _resolution(self, cases: int, names: frozenset[str]) -> str:
         """The resolution floor's line at ``cases``, with the prior run's projection when it ran these same case files,
@@ -1200,6 +1253,7 @@ class WriterEval:
         *,
         judged: WriterPairwiseReport | None = None,
         past_the_stop: bool = False,
+        launched: Sequence[str] | None = None,
     ) -> _Pass:
         """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
         complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
@@ -1215,6 +1269,7 @@ class WriterEval:
                 stopping_rule=rule,
                 judged=judged,
                 past_the_stop=past_the_stop,
+                launched=launched,
             )
         except (ValidationFailedError, NotFoundError) as refused:
             return _Pass(status=None, why_not=f"refused before any call: {refused}")
@@ -1363,13 +1418,18 @@ class WriterEval:
         cases: tuple[str, ...],
         resolution: str,
         launch_line: str | None = None,
+        held: Mapping[str, WriterPromotion] | None = None,
     ) -> WriterResult:
         """Read each candidate's promotion on its pass, and summarise each arm over its batches' runs. Blocking."""
         control = next(iter(self.arms))
         promotions: dict[str, WriterPromotion] = {}
         if self.side == "held_out":
+            # A candidate held at its own stop keeps the read made there; the rest are read now, once.
+            kept = held or {}
             promotions = {
-                arm: writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
+                arm: kept[arm]
+                if arm in kept
+                else writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
                 for arm, ran in passes.items()
             }
         arms = {arm: summarize_runs(host, ids, self.scope_id, case_names=case_names) for arm, ids in run_ids.items()}

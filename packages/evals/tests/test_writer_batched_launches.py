@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import socket
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Final
 
@@ -30,14 +31,19 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
     dry_sessions,
 )
 from packages.evals.tests.writer_eval_support import JUDGE, FakeScoringJudge, ScoredReply, lay_recording
+from threetears.evals.analysis import summarize_run, summarize_runs
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.stats import bet_order
 from threetears.evals.harness import Writer, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport
+from threetears.evals.ops.report_writer.writer_promotion import writer_promotion
+from threetears.evals.run.case_sets import mint_case_set
+from threetears.evals.schema.models import CaseSetRef
 from threetears.evals.storage import SqliteDocumentStore
 
 #: The writer every arm names.
@@ -73,10 +79,10 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     return attempts
 
 
-def _variant() -> AnalystSkill:
-    """The shipped skill with one blank line added to ``SKILL.md``: another digest, the same instructions."""
+def _variant(lines: int = 1) -> AnalystSkill:
+    """The shipped skill with ``lines`` blank lines added to ``SKILL.md``: another digest, the same instructions."""
     files = dict(load_skill().files)
-    files["SKILL.md"] = f"{files['SKILL.md']}\n"
+    files["SKILL.md"] = f"{files['SKILL.md']}{chr(10) * lines}"
     return AnalystSkill(files=files)
 
 
@@ -88,9 +94,9 @@ def _arms() -> dict[str, Writer]:
 MARK: Final = "The candidate signed this page."
 
 
-def _lay(tmp_path: Path, arms: dict[str, Writer]) -> Path:
-    """Prototype 5's seven cases as case files, and each arm's recording of each: the accepted page, the candidate's
-    last method item carrying :data:`MARK`. The cases' directory."""
+def _lay(tmp_path: Path, arms: dict[str, Writer], *, marked: Collection[str] = (CANDIDATE,)) -> Path:
+    """Prototype 5's seven cases as case files, and each arm's recording of each: the accepted page, the last method
+    item of each arm in ``marked`` carrying :data:`MARK`. The cases' directory."""
     cases = default_cases(tmp_path / "cases")
     named = {case.snapshot.id: case.name for case in read_writer_cases(cases)}
     documents = accepted_documents()
@@ -98,7 +104,7 @@ def _lay(tmp_path: Path, arms: dict[str, Writer]) -> Path:
         routed = writer_turns(tmp_path / "turns", arm=arm, skill=writer.analyst_skill, cases=named)
         for snapshot in named:
             page = documents[snapshot]
-            if arm == CANDIDATE:
+            if arm in marked:
                 *kept, last = page["method"]
                 page = {**page, "method": [*kept, {**last, "text": f"{last['text']} {MARK}"}]}
             lay_recording(routed.path(WRITER, None, snapshot), dry_sessions(page, model=WRITER))
@@ -170,8 +176,8 @@ def _guarded(store: Path) -> None:
     )
 
 
-async def _report(result: WriterResult) -> WriterPairwiseReport:
-    status = await job_poll(OpsHost.reading(result.host), result.pairwise[CANDIDATE].job_id, result.scope_id)
+async def _report(result: WriterResult, candidate: str = CANDIDATE) -> WriterPairwiseReport:
+    status = await job_poll(OpsHost.reading(result.host), result.pairwise[candidate].job_id, result.scope_id)
     return WriterPairwiseReport.model_validate(status.result)
 
 
@@ -203,7 +209,7 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
     # Fewer launches than N: two batches of three, each arm a run per batch, all in the one campaign.
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 6, CANDIDATE: 6}
     assert len(await _runs(result)) == 2 * len(arms)
-    # The cases launched are the bet's first eight, in its order.
+    # The cases launched are the bet's first six, in its order.
     planned = stopping.rule.case_ids
     bet = [planned[index] for index in bet_order(CASES)]
     assert [look.case_id for look in stopping.looks] == bet[:LANDSLIDE_AT]
@@ -269,7 +275,11 @@ async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_t
 ) -> None:
     """The judge prefers the candidate's page on every case, so the preference separates improved at case 6; on the six
     cases run by then its guardrail, a judged dimension the scope's template reads as one, is not shown held, so the
-    run launches the last case and reads the gated readings and guardrails a second time, and says so."""
+    run launches the last case and reads the gated readings and guardrails a second time, and says so.
+
+    The writer template declares no guardrail ("None is a guardrail", writer_contract), so no run on today's template
+    takes this path: the test gives the scope's template one, as a host's own template may declare.
+    """
     arms = _arms()
     cases = _lay(tmp_path, arms)
     # The scope's template, made by a first run, then given a guardrail as a host may: its first judged dimension
@@ -312,4 +322,144 @@ async def test_a_side_under_the_eval_s_floor_runs_and_its_resolution_line_says_s
     assert result.resolution == line and line in result.disclosures
     assert all(summary.status == "completed" for summary in result.arms.values())
     assert result.pairwise_unread == {}
+    assert offline == []
+
+
+async def test_a_second_batched_run_in_the_scope_reuses_its_batch_sets(tmp_path: Path, offline: list[object]) -> None:
+    """The held-out set and the bet are the same on a second run, so its batches list the same cases: each batch's set
+    is the one the first run minted, not refused as unchanged and not minted again."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+
+    first = await _eval(tmp_path, cases, arms, judge=FakeMarkedJudge(marked=False)).run()
+    second = await _eval(tmp_path, cases, arms, judge=FakeMarkedJudge(marked=False)).run()
+
+    assert first.decisions == second.decisions == {CANDIDATE: "keep"}
+    storage = second.host.storage
+    sets = await asyncio.to_thread(storage.query_case_sets, SCOPE)
+    batches = sorted((listed.name, listed.version) for listed in sets if not listed.tracked)
+    assert [name.rsplit(" batch ", 1)[1] for name, _ in batches] == ["1 of 3", "2 of 3"]
+    assert all(version == 1 for _, version in batches)
+    assert len(await _runs(second)) == 2 * len(arms)
+    assert offline == []
+
+
+def _rename_batch(storage: EvalStorage, runs: Collection[str], batch: str, ref: CaseSetRef) -> None:
+    """Point every run of ``runs`` that ran batch ``batch`` (``1 of 3``) at ``ref`` instead. Blocking."""
+    for run_id in runs:
+        run = storage.load_eval_run(run_id, SCOPE)
+        assert run is not None and run.case_set is not None
+        if run.case_set.name.endswith(f" batch {batch}"):
+            storage.save_eval_run(run.model_copy(update={"case_set": ref}))
+
+
+@pytest.mark.parametrize("claimed", ["hand-picked", "other split"])
+async def test_a_one_launch_set_that_is_no_batch_of_the_held_out_set_is_still_refused(
+    tmp_path: Path, offline: list[object], claimed: str
+) -> None:
+    """The promotion read accepts a case run from a set made for one launch only as a batch of the held-out set version
+    the set's name gives, which lists it. A hand-picked one-launch subset of the held-out cases, or a set named a batch
+    of another split's held-out set, is refused as a set no run names, as before batches."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    result = await _eval(tmp_path, cases, arms, judge=FakeMarkedJudge(marked=False)).run()
+    storage = result.host.storage
+    runs = await _runs(result)
+    first = await asyncio.to_thread(storage.load_eval_run, runs[0], SCOPE)
+    assert first is not None and first.case_set is not None and first.template_id is not None
+    ids = list(first.test_case_ids)
+    if claimed == "hand-picked":
+        name = "hand-picked held-out cases"
+    else:
+        other = await asyncio.to_thread(
+            mint_case_set,
+            storage,
+            scope_id=SCOPE,
+            name="other-held-out",
+            template_id=first.template_id,
+            test_case_ids=ids,
+        )
+        name = f"{other.ref.label} batch 1 of 3"
+    foreign = await asyncio.to_thread(
+        mint_case_set,
+        storage,
+        scope_id=SCOPE,
+        name=name,
+        template_id=first.template_id,
+        test_case_ids=ids,
+        tracked=False,
+    )
+    await asyncio.to_thread(_rename_batch, storage, runs, "1 of 3", foreign.ref)
+    status = await job_poll(OpsHost.reading(result.host), result.pairwise[CANDIDATE].job_id, SCOPE)
+
+    with pytest.raises(ValidationFailedError, match="which no run names"):
+        await asyncio.to_thread(
+            writer_promotion, result.host, result.campaign_id, SCOPE, candidate=CANDIDATE, pairwise_job=status
+        )
+    assert offline == []
+
+
+async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_are_read_there_once(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """One candidate's page loses on every case and separates at case 6; the other's matches the control's, so its
+    preference never separates. The first stops launching after the second batch, its pass and its promotion read
+    held as they were read there; the control and the second go on to the last case, and the run says each
+    candidate's readings were read on the cases launched by its own stop."""
+    arms = {**_arms(), "twin": Writer(WRITER, skill=_variant(2))}
+    cases = _lay(tmp_path, arms)
+    judge = FakeMarkedJudge(marked=False)
+
+    result = await _eval(tmp_path, cases, arms, judge=judge, max_cost_usd=45.0).run()
+
+    loser, twin = await _report(result), await _report(result, "twin")
+    assert loser.stopping is not None and twin.stopping is not None
+    assert (loser.stopping.stopped_at, loser.stopping.cases_found) == (LANDSLIDE_AT, 2 * BATCH)
+    assert (twin.stopping.stopped_at, twin.stopping.cases_found) == (None, CASES)
+    assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 7, CANDIDATE: 6, "twin": 7}
+    # The stopped candidate's read is the one made at its stop, on its own pass there, and was not made again.
+    assert result.pairwise[CANDIDATE].read_on == result.pairwise[CANDIDATE].job_id
+    assert result.decisions[CANDIDATE] == "keep"
+    said = (
+        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, and each candidate stopped "
+        f"launching at its own stop, so its gated readings and guardrails were read once, on the cases launched by "
+        f"then: 6 for {CANDIDATE}, 7 for twin."
+    )
+    assert said in result.disclosures
+    # Every pair was asked once: six of the stopped candidate's, seven of the twin's, each in both orders.
+    assert judge.calls.count(preference_rubric().name) == 2 * (LANDSLIDE_AT + CASES)
+    assert offline == []
+
+
+async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refused(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """``summarize_runs`` over one arm's batches: its cases, results and spend are the batches' together, its ceiling
+    their ceilings summed, its status completed only when each is; one run reads as ``summarize_run`` reads it; and
+    two arms' runs, which differ in their overlays, are refused rather than read as one."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    result = await _eval(tmp_path, cases, arms, judge=FakeMarkedJudge(marked=False)).run()
+    host = result.host
+    runs = await _runs(result)
+    by_arm: dict[str, list[str]] = {}
+    for run_id in runs:
+        run = await asyncio.to_thread(host.storage.load_eval_run, run_id, SCOPE)
+        assert run is not None
+        by_arm.setdefault(run.overlays["skill"], []).append(run_id)
+    control = next(ids for ids in by_arm.values() if len(ids) == 2)
+    each = [await asyncio.to_thread(summarize_run, host, run_id, SCOPE) for run_id in control]
+    merged = await asyncio.to_thread(summarize_runs, host, control, SCOPE)
+
+    assert merged.n_cases == sum(summary.n_cases for summary in each) == 2 * BATCH
+    assert merged.n_results == sum(summary.n_results for summary in each)
+    assert merged.total_cost_usd == pytest.approx(sum(summary.total_cost_usd or 0.0 for summary in each))
+    assert merged.max_cost_usd == pytest.approx(sum(summary.max_cost_usd or 0.0 for summary in each))
+    assert merged.status == "completed" and merged.run_id == control[0]
+    alone = await asyncio.to_thread(summarize_runs, host, control[:1], SCOPE)
+    assert alone == each[0]
+    with pytest.raises(ValueError, match="differ in overlays"):
+        await asyncio.to_thread(summarize_runs, host, runs, SCOPE)
+    with pytest.raises(ValueError, match="at least one run"):
+        await asyncio.to_thread(summarize_runs, host, [], SCOPE)
     assert offline == []

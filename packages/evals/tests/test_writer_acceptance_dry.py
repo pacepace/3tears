@@ -33,6 +33,7 @@ import pytest
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.writer_cases import writer_acceptance
 from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
+    DRY_CAP_USD,
     HOLLOW,
     HOLLOWED,
     INDEX,
@@ -89,7 +90,7 @@ def dry() -> Iterator[tuple[Acceptance, list[object]]]:
     """One dry run over the default cases, offline; what it found and every connect it tried."""
     with pytest.MonkeyPatch.context() as monkeypatch:
         attempts = _offline(monkeypatch)
-        found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None))
+        found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None))
         yield found, attempts
 
 
@@ -159,7 +160,7 @@ def test_each_variant_runs_dry_offline_and_its_readout_names_it(variant: str) ->
     chosen = VARIANTS[variant]
     with pytest.MonkeyPatch.context() as monkeypatch:
         attempts = _offline(monkeypatch)
-        found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, variant=variant))
+        found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, variant=variant))
     assert attempts == []
     assert list(found.result.arms) == [SHIPPED, variant]
     assert all(summary.status == "completed" for summary in found.result.arms.values())
@@ -231,7 +232,7 @@ def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[obj
     read = found.result.pairwise[HOLLOW]
     assert found.result.pairwise_unread == {} and read.primary == report.whole.verdict
     assert read.read_on == read.job_id == found.read.pairwise_job
-    assert report.cap_usd == pytest.approx(10.0 * 0.2)
+    assert report.cap_usd == pytest.approx(DRY_CAP_USD * 0.2)
 
 
 def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_readout_says_the_floor(
@@ -258,7 +259,7 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
 
 def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
     _offline(monkeypatch)
-    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, stop_when="separated"))
+    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, stop_when="separated"))
     stopping = found.summary()["stopping"]
     assert stopping["rule"]["stop_when"] == "separated" and stopping["rule"]["max_cases"] == DEFAULT_CASES
     # The planned cases are the held-out set as declared, every one the arms ran.
@@ -285,7 +286,7 @@ def test_a_prior_run_on_the_same_cases_carries_its_projection_into_the_floors_li
     )
     _offline(monkeypatch)
     prior = writer_acceptance.read_prior(record)
-    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, prior=prior))
+    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, prior=prior))
     floor = (
         "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
         "every case"
@@ -525,6 +526,27 @@ def test_a_live_run_under_ten_cases_is_not_refused_for_them_and_a_missing_key_is
         assert not out.exists()
 
 
+def test_a_live_run_under_ten_cases_prints_its_floor_line_before_anything_is_bought(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With its keys set, a live run over seven held-out cases prints the floor's line, saying it is under the 10,
+    before it launches anything; here the launch itself is stopped where it would begin."""
+    for name in KEYS:
+        monkeypatch.setenv(name, "unused")
+
+    async def launched(**_: object) -> Acceptance:
+        raise RuntimeError("the launch would begin here")
+
+    monkeypatch.setattr(writer_acceptance, "acceptance", launched)
+    cases = writer_acceptance.default_cases(tmp_path / "cases")
+    with pytest.raises(RuntimeError, match="the launch would begin here"):
+        writer_acceptance.main(["--cap-usd", "45", "--out", str(tmp_path / "out"), "--cases", str(cases)])
+    assert capsys.readouterr().err.splitlines() == [
+        "At 7 cases, under the 10 this eval asks for, this run can separate only a preference of 89% or more, held on "
+        "every case."
+    ]
+
+
 def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_stopped_and_what_that_saved(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -545,7 +567,7 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
         re.M,
     )
     found = asyncio.run(
-        acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, stop_when="separated", batch_size=3)
+        acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None, stop_when="separated", batch_size=3)
     )
     stopping = found.report.stopping
     assert stopping is not None and stopping.rule is not None and stopping.rule.batch_size == 3
@@ -571,7 +593,7 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
         f"${saved:.2f}."
     )
     # A run that launched every case at once states no batch and no saving.
-    assert asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None)).saved() is None
+    assert asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=DRY_CAP_USD, out=None)).saved() is None
 
 
 def test_the_docs_commands_are_the_scripts_own() -> None:

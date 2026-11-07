@@ -37,7 +37,7 @@ Then:
 Commands::
 
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
-    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
+    uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 45 --out <dir> --cases <dir>
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --variant minimal
     uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry --candidate-skill <dir>
 
@@ -54,15 +54,16 @@ it projected would settle.
 
 ``--dry`` runs the whole path on scripted models: each case's analyst submits the accepted prototype 5 document for
 its snapshot (or nothing, for a snapshot that has none) and the editor clears it; the scoring judge scores a digest
-of its prompt. Nothing is sent and the verdict carries no signal. The live run is the owner's to approve. It reads
+of its prompt. Nothing is sent and the verdict carries no signal. A live run is the one pre-registered live run per
+candidate, with the stopping rule on, under the monthly envelope recorded in ``PROMOTIONS.toml``. It reads
 ``ANTHROPIC_API_KEY`` (the writer) and ``OPENROUTER_API_KEY`` (a ``vendor/model`` judge) from the environment, and
 records every writer turn and judge call under ``--out``. A run over fewer than 10 held-out cases (design §4), the
 default seven included, runs, and its floor line says it is under them: a floor is a disclosure, never a refusal.
 
 **The cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest equally,
-each arm's part holding its reports and their absolute judging. At ``--cap-usd 12`` over eleven cases the pass gets
-$2.40 and each arm $4.80: its reports' budgets come to 11 × $0.35 = $3.85, leaving $0.95 for 77 absolute judge calls
-(about $0.77 on flash). The expected spend is about $6 in all; the cap bounds the worst case.
+each arm's part holding its reports and their absolute judging. At ``--cap-usd 45`` over eleven cases the pass gets
+$9 and each arm $18: its reports' budgets come to 11 × $1.50 = $16.50, leaving $1.50 for 77 absolute judge calls
+(about $0.77 on flash). The cap bounds the worst case, never the expected spend.
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
 seven fixture snapshots prototype 5 wrote over (Kairo round 2 and six misfits, in four split groups), written as
@@ -90,7 +91,6 @@ from typing import Any, Final, Literal, get_args
 
 from packages.evals.tests.analyst_support import KAIRO, fixture_snapshots
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
-from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
 from packages.evals.tests.report_writer_support import reply, review, submitted
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import lay_recording
@@ -121,8 +121,9 @@ from threetears.evals.ops.report_writer.writer_pairwise import (
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.schema.turns import TurnReply, TurnText
 
-#: The writer both arms run on: the smoke's, the owner-ruled build-and-test ceiling, on Anthropic's own API.
-WRITER: Final = SMOKE_WRITER
+#: The writer both arms run on, on Anthropic's own API: Sonnet 5.5, since the owner's spend rule runs candidate trials
+#: on Sonnet and keeps Opus for production reports.
+WRITER: Final = "claude-sonnet-5-5"
 
 #: The provider the writer is built on.
 WRITER_PROVIDER: Final = "anthropic"
@@ -133,8 +134,12 @@ JUDGE: Final = SMOKE_JUDGE
 #: The writer's thinking effort, the same for both arms.
 EFFORT: Final = "low"
 
-#: Each report's dollar cap. Haiku reports cost about $0.22 in the smoke; this leaves room for extra rounds.
-BUDGET_USD: Final = 0.35
+#: Each report's dollar cap: the budget at which the recorded Sonnet 5.5 acceptance runs stored 99 of 100 pages, above
+#: two of a first turn's ceiling, so the launch warns of nothing.
+BUDGET_USD: Final = 1.50
+
+#: The cap a dry run is held to when it names none: seven reports at the budget fit an arm's part of it.
+DRY_CAP_USD: Final = 30.0
 
 #: Each report's turn cap, which bounds a cell's wall clock and so how many cases an arm's job admits.
 TURNS: Final = 30
@@ -1208,7 +1213,7 @@ def main(argv: Sequence[str]) -> int:
         acceptance(
             dry=options.dry,
             cases_dir=options.cases,
-            cap_usd=options.cap_usd or 10.0,
+            cap_usd=options.cap_usd or DRY_CAP_USD,
             out=options.out,
             writer=options.writer,
             editor_model=options.editor_model,

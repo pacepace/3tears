@@ -891,7 +891,7 @@ cells a run holds in flight is one full wave. At k = N the reading is the one-ba
 | At the stop | What the run does |
 |---|---|
 | Separated, either way | Stops launching. The gated readings and guardrails are fixed-n tests, read once, on the cases launched; the page says how many. |
-| Separated improved, a guardrail not shown held | Goes on to N, and says the gated readings and guardrails had a second look. |
+| Separated improved, a guardrail not shown held | Goes on to N, and says the gated readings and guardrails had a second look. The writer template declares no guardrail, so only a scope whose template a host gave one reaches this row. |
 | Not separated | Launches the next batch, or ends at N. |
 
 The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and saves the rest of the writing.
@@ -977,7 +977,7 @@ editor is one instrument for both arms. Both arms run one writer over the held-o
 
 ```bash
 uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --dry
-uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
+uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 45 --out <dir> --cases <dir>
 ```
 
 `--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run needs an
