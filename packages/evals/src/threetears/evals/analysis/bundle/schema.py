@@ -2242,7 +2242,7 @@ ASPECT_BUNDLE_SHAPE = 59
 #: recomputed (``tests/fixtures/report_inputs/migrate_bundle_shape_65.py`` stays a fixture tool).
 #: 64: the bump to 65 drew a new rate contrast on its bounded interval and added ``FamilyComparison.interval_basis``
 #: and ``LateCriterion.aspect`` and ``.reading``, each optional; a shape-64 contrast's interval is its own test's.
-READ_AS_STORED: Final[Mapping[int, str]] = {
+_READ_AS_STORED: Final[Mapping[int, str]] = {
     64: (
         "Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a "
         "separation shown here may read as not separated today."
@@ -2258,7 +2258,7 @@ _STORED_SHAPE_LINE = "This report was written on an earlier build. {effects} Reg
 
 def stored_shape_line(shapes: Iterable[int]) -> str | None:
     """The one line saying a page is read from evidence of an earlier shape this build reads as stored
-    (:data:`READ_AS_STORED`); None when every bundle is this build's shape.
+    (:data:`_READ_AS_STORED`); None when every bundle is this build's shape.
 
     :param shapes: Each aspect bundle's ``schema_version``, as read.
     :ptype shapes: Iterable[int]
@@ -2269,7 +2269,7 @@ def stored_shape_line(shapes: Iterable[int]) -> str | None:
     earlier = sorted({shape for shape in shapes if shape != current})
     if not earlier:
         return None
-    effects = " ".join(READ_AS_STORED[shape] for shape in sorted(READ_AS_STORED) if shape >= earlier[0])
+    effects = " ".join(_READ_AS_STORED[shape] for shape in sorted(_READ_AS_STORED) if shape >= earlier[0])
     return _STORED_SHAPE_LINE.format(effects=effects)
 
 
@@ -2281,7 +2281,7 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     first it carries that this shape dropped, in pydantic's words, and fail every read that holds it — a listing of
     analyses among them. It is refused here, before it is read, in the reader's words, so a caller can refuse the one
     document that holds it and read the rest. A bundle is never migrated across a shape change: one of a shape in
-    :data:`READ_AS_STORED` is read as it was stored, its figures as they were written, any other is refused until what
+    :data:`_READ_AS_STORED` is read as it was stored, its figures as they were written, any other is refused until what
     holds it is regenerated, and the page read from a stored one says so first (:func:`stored_shape_line`).
 
     :param data: The stored bundle, as a mapping.
@@ -2291,7 +2291,7 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
     :raises RefusedInput: The bundle's ``schema_version`` is missing, or is neither this build's
-        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`READ_AS_STORED`.
+        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`_READ_AS_STORED`.
     """
     shape = data.get("schema_version")
     current = AnalysisContextBundle.model_fields["schema_version"].default
@@ -2301,8 +2301,8 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
             f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
             remedy=remedy,
         )
-    if shape != current and shape not in READ_AS_STORED:
-        stored = ", ".join(map(str, sorted(READ_AS_STORED)))
+    if shape != current and shape not in _READ_AS_STORED:
+        stored = ", ".join(map(str, sorted(_READ_AS_STORED)))
         raise RefusedInput(
             f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} and, as stored, "
             f"{stored} only, so it cannot read it: a bundle is regenerated across a shape change, never migrated",
@@ -4105,7 +4105,6 @@ __all__ = [
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
     "refuse_a_bundle_of_another_shape",
-    "READ_AS_STORED",
     "stored_shape_line",
     "asks_a_question",
     "CriterionKind",

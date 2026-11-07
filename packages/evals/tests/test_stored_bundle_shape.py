@@ -6,7 +6,7 @@ regeneration rather than refusing the listing of every other analysis, its line 
 writer's line (every analysis frozen then is a memo), and the campaign's report reads code-only, led by the retired
 writer's line (it was refused before; it is a fallback now, as a report plan's is).
 
-An earlier shape this build reads as stored (``READ_AS_STORED``, 64 today: the bump to 65 added only optional fields,
+An earlier shape this build reads as stored (64 today: the bump to 65 added only optional fields,
 and a shape-64 contrast's interval names its own test) is not regenerated. A report written over it renders whole on
 ``report_read``, the one line saying it is rendered from evidence of that shape first under the masthead and nowhere
 else; ``analyses_list`` lists it as written, the line after its verdict, never as needing regeneration; and the
@@ -26,7 +26,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis.bundle.schema import (
-    READ_AS_STORED,
     AnalysisContextBundle,
     evidence_digest,
     refuse_a_bundle_of_another_shape,
@@ -199,7 +198,7 @@ async def _written(store: InMemoryDocumentStore) -> tuple[OpsFixture, EvalAnalys
 
 
 def test_64_is_read_as_stored_and_the_line_names_the_shape_and_what_moved():
-    assert CURRENT_SHAPE == 65 and STORED_SHAPE in READ_AS_STORED
+    assert CURRENT_SHAPE == 65
     assert stored_shape_line([CURRENT_SHAPE]) is None
     assert stored_shape_line([CURRENT_SHAPE, STORED_SHAPE]) == STORED_LINE
     refuse_a_bundle_of_another_shape({"schema_version": STORED_SHAPE}, what="this analysis", remedy="regenerate")

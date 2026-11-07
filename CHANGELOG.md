@@ -25,7 +25,7 @@ page text names the call that reads the next (`export_after_run_id`, `export_run
 
 **Changed:** a report whose evidence was assembled at aspect bundle shape 64 renders whole on this build (shape 65)
 where it was hidden behind the code-only page and the line to regenerate. The earlier shapes a build reads as stored
-are declared in one set (`READ_AS_STORED` in `threetears.evals.analysis.bundle.schema`, `{64}`): a shape joins when
+are declared in one set in `threetears.evals.analysis.bundle.schema` (`{64}`), private to it: a shape joins when
 every field the bumps since added is optional and no stored figure changes meaning, and its figures render as they
 were written, never recomputed or migrated. 64 qualifies: 65 added `FamilyComparison.interval_basis` and
 `LateCriterion.aspect` and `.reading`, each optional, and a shape-64 contrast names the test its interval was drawn
