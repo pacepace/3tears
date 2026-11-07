@@ -30,10 +30,12 @@ on; they do not re-implement the lookup or the evaluator call.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+# the sensitive-action taxonomy lives in the dependency-free contracts leaf, which iam's
+# step-up check reads too; re-exported here, so this module's name is that same class.
+from threetears.access.contracts import ImpersonationCategory
 from threetears.agent.acl.cache import AclCache
 from threetears.agent.acl.evaluator import evaluate_with_trail
 from threetears.agent.acl.types import (
@@ -167,39 +169,6 @@ class ExternalAudienceNotSupported(AccessDenied):
     easier to diagnose at integration time than a decision that always
     happens to come back "denied" for the wrong reason.
     """
-
-
-class ImpersonationCategory(StrEnum):
-    """The fixed, non-tenant-configurable deny-list category set --
-    security-model.md's Impersonation paragraph names these six categories
-    verbatim: "credential, passkey, and MFA management; account deletion;
-    API-key mint/rotate for the target; email change; RBAC grant changes;
-    audit editing."
-
-    Every member is unconditionally deny-listed under impersonation --
-    :func:`authorize_from_claims` denies whenever ``act_reason ==
-    "impersonation"`` and the caller names ANY category (there is no
-    partial/tenant-configurable subset, per security-model.md: "a fixed,
-    non-tenant-configurable category set").
-
-    The identity-core repo defines the SAME six string values independently
-    in its own `identity_core/auth/step_up.py` (shared taxonomy: "Same fixed
-    taxonomy as the impersonation deny-list, enforced by freshness instead
-    of subtraction" -- docs/design.md's Step-Up Re-Authentication section) --
-    identity-core's own self-service endpoints never call this cross-repo
-    function directly (they check `act_reason` locally, per security-model.md's
-    "second, independent enforcement point"), so there is no import
-    dependency to share the enum through; the string values are the actual
-    shared contract, mirroring the existing `IdentitySubjects`/Hub-subject
-    duplication precedent (`identity_core/rbac_rpc.py`'s module docstring).
-    """
-
-    CREDENTIAL_PASSKEY_MFA_MANAGEMENT = "credential_passkey_mfa_management"
-    ACCOUNT_DELETION = "account_deletion"
-    APIKEY_MINT_ROTATE_FOR_TARGET = "apikey_mint_rotate_for_target"
-    EMAIL_CHANGE = "email_change"
-    RBAC_GRANT_CHANGE = "rbac_grant_change"
-    AUDIT_EDITING = "audit_editing"
 
 
 @dataclass(frozen=True, slots=True)

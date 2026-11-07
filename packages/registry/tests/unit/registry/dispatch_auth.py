@@ -21,7 +21,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 
 from threetears.core.security import canonical_call_hash
 from threetears.core.security.identity_token import (

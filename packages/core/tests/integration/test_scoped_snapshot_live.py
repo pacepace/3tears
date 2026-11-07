@@ -877,9 +877,12 @@ async def test_a_replica_that_waited_on_a_rebuild_is_ready_again(platform: _Plat
     whole = await pointers.get_entry(key="enr.index")
     assert whole is not None
     # another replica holds the rebuild claim, and the index says it names only scopes published
-    # since NATS lost the snapshot: the ready replica must wait on that rebuild
-    claim = await pointers.create(key="enr.rebuild", value=b"another-replica")
-    assert claim is not None
+    # since NATS lost the snapshot: the ready replica must wait on that rebuild. A replica becomes ready
+    # before its own run lets the claim go, so the claim is taken once that release has landed
+    deadline = asyncio.get_running_loop().time() + _WAIT
+    while (claim := await pointers.create(key="enr.rebuild", value=b"another-replica")) is None:
+        assert asyncio.get_running_loop().time() < deadline, "the replica never released its own rebuild claim"
+        await asyncio.sleep(0.05)
     partial = json.dumps(json.loads(whole[0]) | {"partial": True}).encode("utf-8")
     revision = await pointers.update(key="enr.index", value=partial, revision=whole[1])
     assert revision is not None

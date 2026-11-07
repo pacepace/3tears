@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 import pytest
+from prometheus_client import generate_latest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
@@ -196,3 +197,19 @@ async def test_a_call_refused_before_any_tool_is_named_is_counted_under_no_tool(
     server = _serving(lambda: None)
     await _call(server, data=b"not json")
     assert _sample(server, "threetears_tools_calls_total", tool="", outcome="failure") == 1.0
+
+
+@pytest.mark.asyncio
+async def test_the_metrics_registry_is_the_one_metrics_renders() -> None:
+    """Flips if ``metrics_registry`` stops being the registry behind ``render_metrics``: the bootstrap serves a
+    pod's own registries beside this one, so a different registry would drop the call counts from /metrics."""
+
+    async def ok() -> ToolResult:
+        return ToolResult(success=True, content="ok")
+
+    server = _serving(ok)
+    await _call(server)
+    registry = server.metrics_registry
+    assert registry is not None
+    assert generate_latest(registry) == server.render_metrics()[1]
+    assert b'threetears_tools_calls_total{outcome="success",tool="test.fake"} 1.0' in generate_latest(registry)

@@ -23,7 +23,7 @@ from uuid import UUID, uuid7
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from threetears.agent.tools.context_envelope import CallContext
+from threetears.core.tool_wire import CallContext
 from threetears.nats import IncomingMessage, Subjects, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse

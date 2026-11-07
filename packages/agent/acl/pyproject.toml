@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-acl"
-version = "0.91.4"
+version = "0.92.0"
 description = "shared rbac evaluator + cache for the 3tears platform: groups, roles, role assignments, evaluation trails"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,8 +22,11 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears>=0.91.0,<0.92.0",
-    "3tears-observe>=0.91.0,<0.92.0",
+    "3tears>=0.92.0,<0.93.0",
+    # ImpersonationCategory, re-exported from threetears.agent.acl: the sensitive-action
+    # vocabulary iam's step-up check names too, in a leaf that depends on nothing.
+    "3tears-access-contracts>=0.92.0,<0.93.0",
+    "3tears-observe>=0.92.0,<0.93.0",
     "pydantic>=2.0",
     "sqlalchemy",
 ]
@@ -31,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 # Following the access tables' write generations (threetears.agent.acl.generation_follow), over
 # 3tears-epoch's table follower and the NATS client it watches through.
-follow = ["3tears-nats[client]>=0.91.0,<0.92.0", "3tears-epoch>=0.91.0,<0.92.0"]
+follow = ["3tears-nats[client]>=0.92.0,<0.93.0", "3tears-epoch>=0.92.0,<0.93.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -40,6 +43,7 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
+3tears-access-contracts = { workspace = true }
 3tears-nats = { workspace = true }
 3tears-epoch = { workspace = true }
 3tears = { workspace = true }

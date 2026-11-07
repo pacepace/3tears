@@ -97,12 +97,14 @@ class ExtractionGate(StrEnum):
         concurrent turn claimed it first
     :cvar WORTHINESS: the worthiness model judged the turn not worth remembering
     :cvar NOTHING_FOUND: the extraction model found nothing to remember
+    :cvar DISABLED: ``MemoryConfig.extraction_enabled`` is off, so no stage ran
     """
 
     HEURISTIC = "heuristic"
     RATE_LIMIT = "rate_limit"
     WORTHINESS = "worthiness"
     NOTHING_FOUND = "nothing_found"
+    DISABLED = "disabled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +416,17 @@ class MemoryExtractor:
         :rtype: ExtractionResult
         :raises asyncio.CancelledError: when the task running it is cancelled
         """
+        if not self._config.extraction_enabled:
+            # convert at border: log extra_data fields
+            log.debug(
+                "memory extraction skipped: MemoryConfig.extraction_enabled is off",
+                extra={"extra_data": {"conversation_id": str(conversation_id), "agent_id": str(agent_id)}},
+            )
+            return ExtractionResult(
+                outcome=ExtractionOutcome.SKIPPED,
+                gate=ExtractionGate.DISABLED,
+                reason="MemoryConfig.extraction_enabled is off",
+            )
         claim = _Claim()
         try:
             result = await self._run_extraction(

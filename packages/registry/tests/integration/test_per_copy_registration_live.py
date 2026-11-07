@@ -34,13 +34,8 @@ import pytest
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.server import (
-    RegistrationManifest,
-    RegistrationResponse,
-    ToolManifestEntry,
-    ToolRegistrationRefused,
-    ToolServer,
-)
+from threetears.core.tool_wire import RegistrationManifest, RegistrationResponse, ToolManifestEntry
+from threetears.agent.tools.server import ToolRegistrationRefused, ToolServer
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 from threetears.registry.auth import ToolPodAuth
 from threetears.registry.catalog import CopyStatus, ToolCatalog

@@ -41,11 +41,11 @@ __all__ = [
 
 log = get_logger(__name__)
 
-# context_types that have a ``(conversation_id, key)`` partial unique
-# index and may therefore be upserted on key. ``variable`` ships from
-# v003; ``tool_result`` from v004. Membership is checked before the
-# value reaches the literal-only ON CONFLICT predicate in
-# :meth:`ContextItemCollection._upsert_keyed`.
+# context_types that have a ``(conversation_id, agent_id, key)`` partial
+# unique index and may therefore be upserted on key. ``variable`` ships
+# from v003; ``tool_result`` from v004; both took ``agent_id`` in v005.
+# Membership is checked before the value reaches the literal-only ON
+# CONFLICT predicate in :meth:`ContextItemCollection._upsert_keyed`.
 _UPSERTABLE_CONTEXT_TYPES: frozenset[str] = frozenset({"variable", "tool_result"})
 
 
@@ -72,7 +72,11 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
     """three-tier collection for conversation context items.
 
     stores variables, tool results, and media slots in a single
-    ``context_items`` table. CRUD comes from
+    ``context_items`` table. A row may name the agent whose turn wrote it
+    (``agent_id``, v005): in a conversation several agents share, each
+    reads only its own rows. A row with no agent was written by a caller
+    that names none, and a reader that names none reads every row.
+    CRUD comes from
     :class:`SchemaBackedCollection`; domain methods
     (``find_by_conversation``, ``upsert_variable``, ``touch``,
     ``count_results``, ``evict_lru``) stay here because their query
@@ -109,6 +113,8 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             Column("date_accessed", DATETIMETZ_TYPE),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
+            # the agent whose turn wrote the row (v005); NULL for a caller that names none
+            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
         ],
         cas_column="date_updated",
         foreign_keys=(
@@ -131,22 +137,26 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
                 "conversation_id",
                 "date_accessed",
             ),
+            # A variable's name and a tool result's dedup key are each one row per
+            # agent (v005): two agents in one conversation keep two. NULLS NOT
+            # DISTINCT keeps one row per key for a caller that names no agent.
             SchemaIndex(
-                "ix_context_items_var_key",
+                "ix_context_items_agent_var_key",
                 "conversation_id",
+                "agent_id",
                 "key",
                 unique=True,
                 where="context_type = 'variable'",
+                nulls_not_distinct=True,
             ),
-            # Dedup index for tool_results (v004 migration). Mirrors the
-            # variable key index so upsert_tool_result's ON CONFLICT has a
-            # matching partial-unique index.
             SchemaIndex(
-                "ix_context_items_tool_result_key",
+                "ix_context_items_agent_tool_result_key",
                 "conversation_id",
+                "agent_id",
                 "key",
                 unique=True,
                 where="context_type = 'tool_result'",
+                nulls_not_distinct=True,
             ),
         ),
     )
@@ -171,11 +181,15 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
 
     # -- Conversation-scoped queries --
 
-    async def find_by_conversation(self, conversation_id: str | UUID) -> list[ContextItemEntity]:
-        """load all context items for a conversation from L3, populate L1.
+    async def find_by_conversation(
+        self, conversation_id: str | UUID, agent_id: UUID | None = None
+    ) -> list[ContextItemEntity]:
+        """load a conversation's context items from L3, populate L1.
 
         :param conversation_id: conversation UUID (accepts string or UUID)
         :ptype conversation_id: str | UUID
+        :param agent_id: only the rows this agent's turns wrote; ``None`` reads every row
+        :ptype agent_id: UUID | None
         :return: list of entities in chronological order
         :rtype: list[ContextItemEntity]
         """
@@ -185,10 +199,11 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         rows = await self.l3_pool.fetch(
             """
             SELECT * FROM context_items
-            WHERE conversation_id = $1
+            WHERE conversation_id = $1 AND ($2::uuid IS NULL OR agent_id = $2)
             ORDER BY date_created ASC
             """,
             cid,
+            agent_id,
         )
         entities: list[ContextItemEntity] = []
         for row in rows:
@@ -209,8 +224,8 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
 
         Shared codepath for :meth:`upsert_variable` and
         :meth:`upsert_tool_result`. ``context_type`` selects the matching
-        ``(conversation_id, key) WHERE context_type = '<type>'`` partial
-        unique index, so a key collision refreshes the existing row's
+        ``(conversation_id, agent_id, key) WHERE context_type = '<type>'``
+        partial unique index (``agent_id`` from ``data``, NULL when absent), so a key collision refreshes the existing row's
         content / metadata / ``date_accessed`` instead of inserting a
         duplicate, and returns that row's id. ``context_type`` is checked
         against a fixed allow-list before it reaches the (literal-only)
@@ -240,6 +255,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         metadata_val = data.get("metadata")
         if isinstance(metadata_val, dict):
             metadata_val = json.dumps(metadata_val)
+        agent_id = data.get("agent_id")
 
         assert self.l3_pool is not None
         row = await self.l3_pool.fetchrow(
@@ -247,9 +263,9 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             INSERT INTO context_items (
                 context_id, conversation_id, context_type, key,
                 short_desc, long_desc, content, metadata,
-                date_accessed, date_created, date_updated
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-            ON CONFLICT (conversation_id, key) WHERE context_type = '{context_type}'
+                date_accessed, date_created, date_updated, agent_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+            ON CONFLICT (conversation_id, agent_id, key) WHERE context_type = '{context_type}'
             DO UPDATE SET
                 short_desc = EXCLUDED.short_desc,
                 long_desc = EXCLUDED.long_desc,
@@ -270,6 +286,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             data["date_accessed"],
             data["date_created"],
             data["date_updated"],
+            agent_id,
         )
         assert row is not None  # INSERT ... RETURNING / ON CONFLICT ... RETURNING always yields a row
         returned_id: UUID = row["context_id"]
@@ -279,6 +296,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         cache_data = dict(data)
         cache_data["context_id"] = returned_id
         cache_data["conversation_id"] = conversation_id
+        cache_data["agent_id"] = agent_id
         pk = (conversation_id, returned_id)
         self.write_to_cache_sync(cache_data)
         await self._save_to_l2(pk, cache_data)
@@ -385,11 +403,13 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
                 },
             )
 
-    async def count_results(self, conversation_id: str | UUID) -> int:
+    async def count_results(self, conversation_id: str | UUID, agent_id: UUID | None = None) -> int:
         """count tool_result items for a conversation.
 
         :param conversation_id: conversation UUID (accepts string or UUID)
         :ptype conversation_id: str | UUID
+        :param agent_id: only this agent's rows; ``None`` counts every row
+        :ptype agent_id: UUID | None
         :return: count of ``context_type = 'tool_result'`` rows
         :rtype: int
         """
@@ -399,27 +419,32 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             """
             SELECT COUNT(*) AS cnt FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
+              AND ($2::uuid IS NULL OR agent_id = $2)
             """,
             cid,
+            agent_id,
         )
         return int(row["cnt"]) if row else 0
 
-    async def evict_lru(self, conversation_id: str | UUID, result_limit: int) -> int:
+    async def evict_lru(self, conversation_id: str | UUID, result_limit: int, agent_id: UUID | None = None) -> int:
         """evict oldest tool_result items exceeding the limit.
 
         only evicts ``context_type = 'tool_result'``. variables and
-        media slots are never evicted.
+        media slots are never evicted. With ``agent_id`` the limit is that
+        agent's: its rows are counted and evicted, never another agent's.
 
         :param conversation_id: conversation UUID (accepts string or UUID)
         :ptype conversation_id: str | UUID
         :param result_limit: maximum tool_result rows to retain
         :ptype result_limit: int
+        :param agent_id: only this agent's rows; ``None`` counts and evicts every row
+        :ptype agent_id: UUID | None
         :return: number of items evicted
         :rtype: int
         """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
 
-        count = await self.count_results(cid)
+        count = await self.count_results(cid, agent_id)
         if count <= result_limit:
             return 0
 
@@ -429,11 +454,13 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             """
             SELECT context_id FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
+              AND ($3::uuid IS NULL OR agent_id = $3)
             ORDER BY date_accessed ASC
             LIMIT $2
             """,
             cid,
             to_evict,
+            agent_id,
         )
 
         evicted = 0

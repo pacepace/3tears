@@ -149,7 +149,7 @@ at commit time.
 | Family | Packages | Role |
 |---|---|---|
 | **Core data** | `core`, `conversations`, `datasources` | The three-tier entity/collection/caching layer and the data model every other family builds on |
-| **Infrastructure** | `nats`, `observe`, `epoch`, `iam`, `mcp`, `registry`, `scheduled-jobs`, `media-contracts`, `enforcement`, `backup`, `object-store` | Cross-cutting platform services: transport, telemetry, coherence, tool routing, scheduling, storage, and static verification |
+| **Infrastructure** | `nats`, `observe`, `epoch`, `iam`, `access-contracts`, `mcp`, `registry`, `scheduled-jobs`, `media-contracts`, `enforcement`, `backup`, `object-store` | Cross-cutting platform services: transport, telemetry, coherence, tool routing, scheduling, storage, and static verification |
 | **Agent framework** | `agent-tools`, `agent-memory`, `agent-skills`, `agent-workspace`, `agent-acl`, `agent-audit`, `agent-wake`, `agent-identity`, `agent-intention`, `agent-knowledge` | Everything an LLM agent needs to act, remember, and evolve safely at scale |
 | **Models, channels, LangGraph** | `models`, `channels`, `langgraph` | The surface that connects an agent to LLM providers, chat channels, and LangGraph orchestration |
 | **Evaluation** | `evals` | Finding out whether a change to an LLM-backed feature made it better |
@@ -173,6 +173,7 @@ at commit time.
 | [`observe`](observe.md) | Structured logging, tracing, and correlation context, silent until the host opts in. |
 | [`epoch`](epoch.md) | Cross-pod cache coherence for in-memory config, combining push and pull. |
 | [`iam`](iam.md) | One correct implementation of the login protocols, so nobody writes OAuth twice. |
+| [`access-contracts`](access-contracts.md) | The identity and authorization vocabulary `iam` and `agent-acl` share, in a package that depends on nothing. |
 | [`mcp`](mcp.md) | A shared Model Context Protocol server framework with per-tool RBAC baked in. |
 | [`registry`](registry.md) | Multi-pod tool discovery and load-balanced call routing over NATS. |
 | [`scheduled-jobs`](scheduled-jobs.md) | A generic, multi-pod-safe scheduling core with zero domain concepts baked in. |
