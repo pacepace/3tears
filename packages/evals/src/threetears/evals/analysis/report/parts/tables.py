@@ -239,7 +239,9 @@ def _costs(
                 costs[aspect, arm] = row.reply_cost_usd * per
     # The one owner of money's scale states the column: per ``per``, or per 1,000 (1,000,000) times as many where a
     # cost is under a cent there.
-    ruler = money_ruler(costs.values(), per=per, start=per)
+    ruler = money_ruler(
+        costs.values(), per=per, start=per, reconciles=report_input.meta.volume_per_month is not None
+    )
     return COST_HEADER.format(per=per_one(noun) if ruler.counted == 1 else ruler.words(noun)), costs, ruler
 
 

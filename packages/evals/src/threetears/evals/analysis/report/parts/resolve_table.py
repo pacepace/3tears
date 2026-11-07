@@ -544,7 +544,7 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
 
     for step, interval in steps:
         ends = (dollars(interval[0]), dollars(interval[1])) if interval is not None else None
-        places = form.places_of([dollars(step.value), *(ends or ())])
+        places = form.places_of([dollars(step.value), *(ends or ())], ends=ends)
         row = {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
             "per_point": _number(dollars(step.value), drawn.unit, ends).model_copy(
@@ -644,7 +644,11 @@ def _table(context: ChartContext) -> Drawn:
                 header = _prices_drawn(context).label(header, cost_basis(context.report_input).noun)
             columns.append(TableColumn(key=key, header=header))
     # Each money column's head names the count it is drawn per, so no amount carries the mark beside it.
-    columns, rows = _with_intervals(columns, money_columns(rows), context.spec.level)
+    report_input = context.report_input
+    # The page's cost per 1,000, where a monthly volume is declared, reads as the month printed from it does.
+    source = cost_basis(report_input).source
+    beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
+    columns, rows = _with_intervals(columns, money_columns(rows, reconciles=beside), context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

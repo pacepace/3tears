@@ -119,6 +119,10 @@ golden holds.
 3. State the reason in the commit and in the chunk report.
 4. Never regenerate to make a red go away. A red means a change moved what a host reads.
 
+A campaign with a platform override (its pool slots and the dev container's differ) has its pool slots
+written from the pool run's own red: copy each slot's `OBSERVED` record into the golden, and only when
+its byte count matches the local regeneration of the same entry.
+
 A release bump moves no golden. The version of 3tears-evals that read a page is the build, not
 the page's content. The oracle puts one fixed version in its place, in the bundle's
 `package_version` and in the code-only page's methods table, before it compares.

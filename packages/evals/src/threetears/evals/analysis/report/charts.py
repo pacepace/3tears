@@ -104,12 +104,13 @@ _PER_THOUSAND_FORMAT = "usdpk"
 _FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::(\d))?$")
 
 
-def _formatted(spec: str, value: float, read_at: str = "", *, fixed: bool = False) -> str:
+def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = False) -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
     never rounds away what the value holds, but money: a money format with digits (``usd:2``) is the chart's one money
     form, chosen from every amount it draws, and its table writes each amount in it, as its notes do: to its own two
-    significant figures, cents at least (its ticks to the finest amount's decimals).
+    significant figures (its ticks to the largest amount's decimals). A format of no decimals (``usd:0``) is a rate's
+    from $10 up, which reads in whole dollars; any other reads to cents at least.
 
     Where the format names no unit (``num``) and its block says the unit its values are read at (``read_at``, a
     chart of what an analysis computes: two arms' difference, a lever's effect, in points), the value is spelled at
@@ -123,9 +124,9 @@ def _formatted(spec: str, value: float, read_at: str = "", *, fixed: bool = Fals
     :ptype value: float
     :param read_at: The unit the block's values are read at, where its format names none; empty for the format's.
     :ptype read_at: str
-    :param fixed: Whether money with digits is written to those digits exactly, as the chart's ticks are, rather than
-        to its own significant figures: an interval whose two ends would otherwise read alike.
-    :ptype fixed: bool
+    :param finer: Whether money is written to one significant figure more: an interval whose two ends would otherwise
+        read alike.
+    :ptype finer: bool
     :return: The value as text.
     :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
@@ -140,8 +141,9 @@ def _formatted(spec: str, value: float, read_at: str = "", *, fixed: bool = Fals
         return form.spell(value, signed=bool(match[1]))
     if unit == MONEY and match[3] is not None:
         # The chart's money form (money_form): each amount to its own two significant figures, cents at least.
-        figures = None if fixed else MONEY_FIGURES
-        return MoneyForm(decimals=int(match[3]), figures=figures).spell(value, signed=bool(match[1]))
+        decimals = int(match[3])
+        form = MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)
+        return form.spell(value, signed=bool(match[1]))
     if not unit and read_at:
         text = number_in(value, read_at)
         # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
@@ -418,8 +420,8 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
         return ""
     said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
     if said[0] == said[1] and low != high:
-        # Two ends that read alike at their own figures read at the chart's finest, as its money form says an interval.
-        said = (_formatted(spec, low, read_at, fixed=True), _formatted(spec, high, read_at, fixed=True))
+        # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
+        said = (_formatted(spec, low, read_at, finer=True), _formatted(spec, high, read_at, finer=True))
     return f"{said[0]} to {said[1]}"
 
 

@@ -1545,19 +1545,13 @@ def _money_rulers(readings: CampaignReadings, reports: Mapping[str, Report]) -> 
     (per 1,000,000 where a figure is under a cent there), the count in the header (:func:`_money_label`), never a mark
     on the figure, as the measure's figures read on every row."""
     held: dict[str, list[float]] = {}
-    spans: dict[str, list[tuple[float | None, float | None]]] = {}
     for reading in readings.measures:
         described = _described(reading, reports)
         if reading.passed is not None or described is None or not is_money(described.unit or ""):
             continue
         figures = held.setdefault(reading.measure, [])
         figures += [figure for figure in (reading.value, *(reading.interval or ())) if figure is not None]
-        if reading.interval is not None:
-            spans.setdefault(reading.measure, []).append(reading.interval)
-    return {
-        key: money_ruler(figures, per=1, start=_PER_THOUSAND_REPLIES, intervals=spans.get(key, ()))
-        for key, figures in held.items()
-    }
+    return {key: money_ruler(figures, per=1, start=_PER_THOUSAND_REPLIES) for key, figures in held.items()}
 
 
 #: How many replies a money measure's figures are drawn per, at the least.
@@ -1578,14 +1572,16 @@ def _money_cell(value: float | None, interval: tuple[float, float] | None, ruler
     if interval is None:
         return TableCell(value=drawn, unit=MONEY, decimals=ruler.form.places_of([drawn]))
     low, high = ruler.drawn(interval[0]), ruler.drawn(interval[1])
-    return TableCell(value=drawn, unit=MONEY, decimals=ruler.form.places_of([drawn, low, high]), low=low, high=high)
+    places = ruler.form.places_of([drawn, low, high], ends=(low, high))
+    return TableCell(value=drawn, unit=MONEY, decimals=places, low=low, high=high)
 
 
 def _money_interval(interval: tuple[float, float] | None, ruler: MoneyRuler) -> str | None:
     """A money figure's interval as the fold's table states it, its ends in the figure's one form on its ruler."""
     if interval is None:
         return None
-    return f"[{ruler.spell(interval[0])}, {ruler.spell(interval[1])}]"
+    low, high = ruler.spell_ends(*interval)
+    return f"[{low}, {high}]"
 
 
 def _measured(value: float | None, passed: int | None, trials: int | None, cases: int, *, rate: bool) -> CellValue:

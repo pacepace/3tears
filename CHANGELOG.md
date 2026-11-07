@@ -63,6 +63,28 @@ a host's world state: it is `TrialBlock.world`, its parts' names `world_parts` (
 listing title, the late line's words, a judge's methods line, the Methods `Bundle` row, a fold's heading or a
 rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
 
+### evals: money reads two significant figures per amount, and an undecided reading says "cannot tell apart" everywhere
+
+**Changed:** owner rulings Q2 and Q3 (2026-11-09). A chart's note, a Change table, the corrected-comparisons verdict,
+the writer eval's side-by-side table, the promotion readout and its sentence say the glossary's `cannot tell apart`
+(a sentence: `the evidence cannot tell lead-first and shipped apart`), never `not separated`; a stored reason keeps its
+stored words and a page rewords it. Money reads by one count of significant figures per set, not one count of decimals
+(this replaces the 2026-10-27 reading of #993): each amount to two (`$0.0080` beside `$0.11`, never `$0.1100`; `$3.48`,
+never `$3.477`); a total to cents whatever its size (`$1,208.00`, which read `$1,208`); a rate in whole dollars from
+$10 (`$75 [$73, $77]`, never `$74.89`); a third figure only for an interval whose two ends would read alike, for that
+interval alone, and for a cost per 1,000 where two would leave the month printed beside it more than half a percent
+off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A values table never pads money. A forest's values table
+reads each figure at its unit's precision (`-3.0 | -5.8 to +1.1`, which read `-3.010 | -5.815 to +1.136`). A bars
+table's money interval reads in the bar's form (`$0.020 | [$0.019, $0.021]`, which read `[$0.01858, $0.02142]`).
+Rung 5's judge was recorded again over the pages as they now print.
+
+**Hosts:** a page's money and its undecided reading read as above; a host matching `not separated`, `Not separated`
+or a padded amount updates its match. `money_form` lost `intervals=` and gained `rate=` and `reconciles=`;
+`money_ruler` lost `intervals=` and gained `rate=` and `reconciles=`; `MoneyForm` gained `figures`, `at_most`, `rate`,
+`reconciles`, `places`, `places_of` and `spell_ends`, and its `decimals` is now the set's largest amount's (what a chart's
+ticks are written to); `money_columns` gained `totals=` and `reconciles=`. A report JSON's money cell carries the
+`decimals` its own figures need. Nothing stored changes shape.
+
 ### evals: figures read in one money form at one precision, and charts read cold
 
 **Changed:** money reads one form per figure type at two significant figures (`money_form`, `money_ruler`; owner

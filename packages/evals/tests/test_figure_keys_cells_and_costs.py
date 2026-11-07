@@ -156,24 +156,33 @@ VOLUMED = [name for name in sorted(INPUTS) if INPUTS[name].meta.volume_per_month
 @pytest.mark.parametrize("name", VOLUMED)
 def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(name: str) -> None:
     """r2's page printed "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls: $0.30 x 4,000 is
-    $1,200. A price reads to two significant figures (owner ruling Q3, 2026-11-09), so the product reaches the month
-    within the price's own rounding times the volume, never further: the price is its key's value, rounded once."""
+    $1,200. A price reads to two significant figures, and to a third where two would leave the product more than half a
+    percent off the month printed beside it (owner ruling Q3: one more figure only where needed), so the product is
+    within half a percent of the month."""
     held = INPUTS[name]
     volume = held.meta.volume_per_month
     assert volume is not None
     costs = _costs(held)
     checked = 0
     for arm in costs:
-        text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
-        price = _price(text)
+        price = _price(render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}))
         month = resolve(f"cost_per_month.{arm}", held).value
         assert isinstance(month, float)
-        places = len(text.split(" ", 1)[0].partition(".")[2])
-        per = 1000 * (1000 if " per 1,000,000 " in f"{text} " else 1)
-        rounding = 10.0**-places / 2 / (per / 1000) * float(volume) / 1000
-        assert abs(price * float(volume) / 1000 - month) <= rounding + 1e-9, (arm, text, month)
+        assert price * float(volume) / 1000 == pytest.approx(month, rel=0.005), arm
         checked += 1
     assert checked, "the control: a declared volume and a cost"
+
+
+def test_the_third_figure_is_the_price_s_own_and_only_where_a_month_is_printed_beside_it() -> None:
+    """The input that trips the rule: r2's brisk-s.low.r1 costs $0.302 per 1,000 calls; two figures ($0.30) would
+    leave its month 0.7% off, so it reads "$0.302", while brisk-s.high.r1's $0.633 (0.5% off at $0.63) keeps two. With
+    no monthly volume declared, no month is printed beside it, and it reads two figures."""
+    held = INPUTS["r2"]
+    assert render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", held, {}) == "$0.302 per 1,000 calls"
+    assert render("{cost_per_1k.brisk-s.high.r1|usd_per_1k}", held, {}) == "$0.63 per 1,000 calls"
+    assert render("{cost_per_month.brisk-s.low.r1}", held, {}) == "$1,208.00"
+    unvolumed = held.model_copy(update={"meta": held.meta.model_copy(update={"volume_per_month": None})})
+    assert render("{cost_per_1k.brisk-s.low.r1|usd_per_1k}", unvolumed, {}) == "$0.30 per 1,000 calls"
 
 
 #: Every input a cost some trials did not report is read on: the fixtures and Kairo round 2, whose arms each leave

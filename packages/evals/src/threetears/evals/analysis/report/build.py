@@ -1645,7 +1645,7 @@ def _change(
         )
     if form is None:
         return cell
-    places = form.places_of([float(delta * ruler.factor), cell.low, cell.high])
+    places = form.places_of([float(delta * ruler.factor), cell.low, cell.high], ends=(cell.low, cell.high))
     return cell.model_copy(update={"decimals": places, "per_thousand": form.per_thousand})
 
 
@@ -1718,6 +1718,16 @@ def _side_text(
     return _mean_text(side.mean, ruler), side.mean
 
 
+def _bar_interval(interval: tuple[float, float], ruler: MeasureRuler) -> str:
+    """A bar's interval on its ruler: money in the measure's one form, as the bar's value reads
+    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`), so ``$0.020 [$0.019, $0.021]``, never
+    ``[$0.01858, $0.02142]``; any other unit as :func:`_interval_cell` spells it."""
+    low, high = interval[0] * ruler.factor, interval[1] * ruler.factor
+    if is_money(ruler.unit) and ruler.money is not None:
+        return "[{}, {}]".format(*ruler.money.spell_ends(low, high))
+    return _interval_cell(low, high, ruler.unit)
+
+
 def _interval_cell(low: float, high: float, unit: str) -> str:
     """An interval as ``[low, high]`` with its unit: on each end where the unit sits on the number (``[88.1%,
     100%]``, ``[-$0.01, $0.06]``), once after the bracket otherwise (``[0.45, 0.55] s``)."""
@@ -1743,7 +1753,7 @@ def _interval_on_delta(
         return None
     low, high = (bound * ruler.factor for bound in interval)
     if form is not None and is_money(ruler.unit):
-        text = f"[{form.spell(low)}, {form.spell(high)}]"
+        text = "[{}, {}]".format(*form.spell_ends(low, high))
     else:
         text = _interval_cell(low, high, delta_unit(ruler.unit))
     return text if level is None else f"{text} at {_level_text(level)}"
@@ -2403,11 +2413,7 @@ def _bar_blocks(surface: DecisionSurface, verdicts: Sequence[Verdict], rulers: R
                         _figure(verdict.value, ruler), surface, verdict, verdict.name, verdict.reading, verdict.value
                     ),
                     "interval": TableCell(
-                        value=None
-                        if verdict.interval is None
-                        else _interval_cell(
-                            verdict.interval[0] * ruler.factor, verdict.interval[1] * ruler.factor, ruler.unit
-                        )
+                        value=None if verdict.interval is None else _bar_interval(verdict.interval, ruler)
                     ),
                     "threshold": _figure(verdict.threshold, ruler),
                     "decision": TableCell(value=verdict.words),
@@ -2842,7 +2848,7 @@ def _interval(low: float | None, high: float | None, ruler: MeasureRuler) -> str
     if low is None or high is None:
         return ""
     if is_money(ruler.unit) and ruler.money is not None:
-        return f" [{ruler.money.spell(low * ruler.factor)}, {ruler.money.spell(high * ruler.factor)}]"
+        return " [{}, {}]".format(*ruler.money.spell_ends(low * ruler.factor, high * ruler.factor))
     return f" {_interval_cell(low * ruler.factor, high * ruler.factor, ruler.unit)}"
 
 

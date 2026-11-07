@@ -243,17 +243,19 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
         assert len(significant.replace(",", "")) <= 2 or (whole != "0" and len(cents) == 2), test_cost
 
 
-def test_a_set_of_money_takes_one_decimal_more_only_where_two_figures_would_print_an_interval_s_ends_alike() -> None:
-    """P19: ``$0.045 [$0.045, $0.045]`` hid the interval; one decimal more tells its ends apart, and no more."""
-    plain = money_form([0.0451, 0.0448, 0.0453])
+def test_an_interval_takes_one_figure_more_only_where_two_would_print_its_ends_alike() -> None:
+    """P19: ``$0.045 [$0.045, $0.045]`` hid the interval; one figure more tells its ends apart, and no more, for that
+    interval alone (owner ruling Q3: "one more only where"): the set's other amounts keep two figures."""
+    plain = money_form([0.0451, 0.0448, 0.0453, 0.11])
     assert plain.spell(0.0448) == plain.spell(0.0453) == "$0.045"
-    told = money_form([0.0451, 0.0448, 0.0453], intervals=[(0.0448, 0.0453)])
-    assert (told.spell(0.0448), told.spell(0.0451), told.spell(0.0453)) == ("$0.0448", "$0.0451", "$0.0453")
-    # An interval one more decimal does not tell apart is as narrow as the figures can say: no further.
-    tight = money_form([0.04512, 0.04513], intervals=[(0.04512, 0.04513)])
-    assert tight.decimals == told.decimals
+    assert plain.spell_ends(0.0448, 0.0453) == ("$0.0448", "$0.0453")
+    assert plain.places_of([0.0451, 0.0448, 0.0453], ends=(0.0448, 0.0453)) == 4
+    assert plain.spell(0.11) == "$0.11", "the set's other amounts keep two figures"
+    # An interval one more figure does not tell apart is as narrow as the figures can say: no further.
+    assert plain.spell_ends(0.04512, 0.04513) == ("$0.0451", "$0.0451")
     # An interval whose stored ends are equal is printed alike, as stored.
-    assert money_form([0.045], intervals=[(0.045, 0.045)]).decimals == plain.decimals
+    assert plain.spell_ends(0.045, 0.045) == ("$0.045", "$0.045")
+    assert plain.places_of([0.045], ends=(0.045, 0.045)) == 3
 
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))

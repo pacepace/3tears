@@ -324,8 +324,12 @@ class Figure:
     family, on its scale, or, for a change, the amounts it compares, from which
     :func:`~threetears.evals.kernel.numbers.money_form` chooses one form for the whole family, so ``cost_per_1k.*`` never
     reads ``$0.008`` beside ``$0.11``; and ``spread``, the width of the interval a change is read with, which caps its
-    decimals. :func:`resolve` fills both; a figure made without them is spelled as a set of its own value. Neither takes
-    part in a figure's equality: they say how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
+    decimals. :func:`resolve` fills both; a figure made without them is spelled as a set of its own value. ``total``
+    marks money that counts nothing (a month's cost, a run's), which reads to cents whatever its size, where money per
+    something reads in whole dollars from $10; ``reconciles`` marks the page's cost per 1,000 where a monthly volume is
+    declared, so its figures take a third where two would leave it off the month printed beside it
+    (:class:`~threetears.evals.kernel.numbers.MoneyForm`). None of these takes part in a figure's equality: they say
+    how it reads, not what it is. Nor does ``priced_in_part``: beside a cost of an
     arm whose cost counts only part of its calls, the words its pricing gives (``850 of 897 calls priced``), which
     :func:`format_figure` prints after the amount, so no key states a smaller total bare.
     """
@@ -343,6 +347,8 @@ class Figure:
     amounts: tuple[float, ...] = field(default=(), compare=False, repr=False)
     spread: float | None = field(default=None, compare=False, repr=False)
     priced_in_part: str = field(default="", compare=False, repr=False)
+    total: bool = field(default=False, compare=False, repr=False)
+    reconciles: bool = field(default=False, compare=False, repr=False)
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -997,7 +1003,12 @@ def cost_ruler(report_input: ReportInput) -> MoneyRuler:
     :return: The ruler.
     :rtype: MoneyRuler
     """
-    return money_ruler(_costs_per_thousand(report_input).values(), per=1000, start=1000)
+    return money_ruler(
+        _costs_per_thousand(report_input).values(),
+        per=1000,
+        start=1000,
+        reconciles=report_input.meta.volume_per_month is not None,
+    )
 
 
 def aspect_costs_per_thousand(report_input: ReportInput, aspect_id: str | None) -> dict[str, float]:
@@ -1167,7 +1178,9 @@ def _board_figure(row: ScoreboardRow, statistic: str, path: str) -> Figure:
     if statistic in ("lost", "failed"):
         return _number(path, sum(getattr(row, statistic).values()), f"trials {statistic}", "count")
     if statistic.endswith("_usd"):
-        return replace(_number(path, getattr(row, statistic), f"the {statistic}", "usd"), per=REPLIES)
+        read = replace(_number(path, getattr(row, statistic), f"the {statistic}", "usd"), per=REPLIES)
+        # A run's test cost counts nothing: a total, read to cents whatever its size.
+        return replace(read, total=True) if statistic == "test_cost_usd" else read
     return _number(path, getattr(row, statistic), f"trials {statistic}", "count")
 
 
@@ -2256,7 +2269,7 @@ def _priced(basis: _PriceBasis, report_input: ReportInput, first: str, second: s
     per = per_noun(report_input.measures[basis.cost_key]) if basis.cost_key and not monthly else ""
     field = field.removeprefix(_MONTHLY_PREFIX)
     if field == "cost_gap":
-        return Figure(path=path, kind="number", value=gap * factor, scale=money, change=True, per=per)
+        return Figure(path=path, kind="number", value=gap * factor, scale=money, change=True, per=per, total=monthly)
     points = 100.0 if scale == "share" else 1.0
     if gain == 0 or gap * gain <= 0:
         raise _refuse(
@@ -2265,11 +2278,13 @@ def _priced(basis: _PriceBasis, report_input: ReportInput, first: str, second: s
             "more, so one is at least as good on both and the move has no price per point",
         )
     if field == "per_point":
-        return Figure(path=path, kind="number", value=gap / (gain * points) * factor, scale=money, per=per)
+        return Figure(
+            path=path, kind="number", value=gap / (gain * points) * factor, scale=money, per=per, total=monthly
+        )
     if interval is None:
         raise _unstated(path, f"names an end of the price's interval, which the input does not state: {unstated}")
     bound = _price_bounds(path, gap, gain * points, (interval[0] * points, interval[1] * points), field)
-    return Figure(path=path, kind="number", value=bound * factor, scale=money, per=per)
+    return Figure(path=path, kind="number", value=bound * factor, scale=money, per=per, total=monthly)
 
 
 def _price(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
@@ -2384,7 +2399,8 @@ def _slice_compares(kind: SliceKind) -> Callable[[ReportInput, tuple[str, ...]],
 
 def _cost_per_month(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     factor = _monthly_factor(report_input, path)
-    return Figure(path=path, kind="number", value=_costs_per_thousand(report_input)[values[0]] * factor, scale="usd")
+    costs = _costs_per_thousand(report_input)
+    return Figure(path=path, kind="number", value=costs[values[0]] * factor, scale="usd", total=True)
 
 
 # --- the price frontier: the options best at some price per point --------------------------------------------------
@@ -2943,7 +2959,12 @@ def _cost_gap(report_input: ReportInput, values: tuple[str, ...], path: str) -> 
         return Figure(path=path, kind="number", value=gap, scale="usd_per_1k", change=True)
     if field == "monthly":
         return Figure(
-            path=path, kind="number", value=gap * _monthly_factor(report_input, path), scale="usd", change=True
+            path=path,
+            kind="number",
+            value=gap * _monthly_factor(report_input, path),
+            scale="usd",
+            change=True,
+            total=True,
         )
     if not costs[second]:
         raise _unstated(path, f"names {first}'s cost as a multiple of {second}'s, and {second} costs nothing")
@@ -6353,12 +6374,21 @@ def _resolved(key: str, report_input: ReportInput) -> Figure:
             figure,
             amounts=_money_amounts(reading, figure, report_input),
             spread=_change_spread(reading, figure, report_input),
+            reconciles=_beside_its_month(reading, figure, report_input),
         )
     if figure.kind in ("number", "interval") and (
         figure.scale in _PER_THOUSAND_FACTORS or _family_word(reading) in _COST_RATIOS
     ):
         figure = replace(figure, priced_in_part=_priced_in_part(reading, report_input))
     return replace(figure, derived=figure.derived or _is_derived(reading))
+
+
+def _beside_its_month(reading: _Reading, figure: Figure, report_input: ReportInput) -> bool:
+    """Whether a money figure is the page's cost per 1,000 (``cost_per_1k.<arm>``, or the cost basis measure it is read
+    from) where a monthly volume is declared, so its month (``cost_per_month.<arm>``) is printed from it."""
+    if report_input.meta.volume_per_month is None or figure.change or figure.total:
+        return False
+    return _family_word(reading) == "cost_per_1k" or cost_basis(report_input).source in reading.values
 
 
 #: The families whose figure is a ratio of two arms' costs, not money, which a partly priced cost leaves a ratio to a
@@ -6723,7 +6753,7 @@ def _counted_under_a_cent(figure: Figure) -> bool:
     return bool(stated) and min(stated) < CENT
 
 
-def _ruler(figure: Figure, *, per: int, start: int = 0) -> MoneyRuler:
+def _ruler(figure: Figure, *, per: int, start: int = 0, finer: bool = False) -> MoneyRuler:
     """How a money figure's family is stated (#993), by the one owner of money's scale
     (:func:`~threetears.evals.analysis.report.cost_unit.money_ruler`): over the family's whole set (:class:`Figure`'s
     ``amounts``), never the figure alone, its count moved per 1,000 more where the set is under a cent; a change in the
@@ -6732,7 +6762,12 @@ def _ruler(figure: Figure, *, per: int, start: int = 0) -> MoneyRuler:
     own = (
         figure.value if isinstance(figure.value, tuple) else (figure.value,) if isinstance(figure.value, float) else ()
     )
-    ruler = money_ruler(figure.amounts or own, per=per, start=start)
+    ruler = money_ruler(
+        figure.amounts or own, per=per, start=start, rate=not figure.total, reconciles=figure.reconciles
+    )
+    if finer and ruler.form.figures is not None:
+        # An interval whose two ends would read alike: one significant figure more, for it alone.
+        ruler = replace(ruler, form=replace(ruler.form, figures=ruler.form.figures + 1))
     if not figure.change:
         return ruler
     changes = (
@@ -6761,7 +6796,7 @@ def _spelling_for(figure: Figure, filters: tuple[str, ...]) -> str:
     return defaults.get(figure.scale, "plain")
 
 
-def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spelled:
+def _spell(value: float, figure: Figure, spelling: str, absolute: bool, *, finer: bool = False) -> _Spelled:
     if absolute:
         value = abs(value)
     signed = figure.change and not absolute
@@ -6786,15 +6821,15 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if figure.scale not in _PER_THOUSAND_FACTORS:
             raise _refuse(figure.path, f"cannot read as dollars: it is on the {figure.scale} scale")
         if spelling == "usd" and not _counted_under_a_cent(figure):
-            return _Spelled(_ruler(figure, per=0).spell(value, signed=signed))
+            return _Spelled(_ruler(figure, per=0, finer=finer).spell(value, signed=signed))
         if spelling == "usd":
             # The count said once after an interval's two ends (``+$0.17 to +$0.81 per 1,000 replies``).
-            counted = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000)
+            counted = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000, finer=finer)
             return _Spelled(counted.spell(value, signed=signed), f" {counted.words(figure.per)}")
         # Per 1,000 of what the cost counts (a reply's cost under a cent reads ``$0.49 per 1,000 replies``, never a
         # bare ``$0.00049`` a reader takes for a total), or per 1,000,000 where the family is under a cent even so: the
         # ruler moves (the one owner's rule), and the count is said with the amount (Q4).
-        ruler = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000)
+        ruler = _ruler(figure, per=_SCALE_COUNTS[figure.scale], start=1_000, finer=finer)
         return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
     if spelling == "usd_whole":
         if figure.scale not in _PER_THOUSAND_FACTORS:
@@ -6802,7 +6837,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
         if abs(value) < _WHOLE_DOLLARS_FROM:
             raise _refuse(
                 figure.path,
-                f"is {_ruler(figure, per=0).spell(value, signed=signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
+                f"is {_ruler(figure, per=0, finer=finer).spell(value, signed=signed)}, under ${format_number(_WHOLE_DOLLARS_FROM)}, "
                 "which whole dollars would "
                 "round away: write it with `usd`",
             )
@@ -6811,7 +6846,7 @@ def _spell(value: float, figure: Figure, spelling: str, absolute: bool) -> _Spel
     if spelling == _PER_MILLION:
         # In its family's one form, as every other money key: a price per million of anything is whole dollars or near
         # it, so the form's cents are its precision.
-        ruler = _ruler(figure, per=1_000_000)
+        ruler = _ruler(figure, per=1_000_000, finer=finer)
         return _Spelled(f"{ruler.spell(value, signed=signed)} {ruler.words(figure.per)}")
     if spelling == "words":
         whole = round(value)
@@ -6884,6 +6919,9 @@ def _formatted_figure(figure: Figure, filters: tuple[str, ...]) -> str:
     if absolute:
         low, high = sorted((abs(low), abs(high)))
     ends = [_spell(end, figure, spelling, absolute) for end in (low, high)]
+    if ends[0] == ends[1] and low != high:
+        # Two ends that differ never read alike: one significant figure more, for this interval alone (owner ruling Q3).
+        ends = [_spell(end, figure, spelling, absolute, finer=True) for end in (low, high)]
     if ends[0] == ends[1]:
         return ends[0].number + ends[0].suffix
     if ends[0].suffix == ends[1].suffix and ends[0].suffix.startswith(" per "):

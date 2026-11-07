@@ -47,7 +47,7 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, Tabl
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.charts import even_precision
-from threetears.evals.analysis.report.figure_keys import Figure, format_figure, render, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, cost_basis, format_figure, render, resolve
 from threetears.evals.analysis.report_rows import PriceStep, query_rows
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text, quantity
@@ -84,15 +84,15 @@ def _places(texts: Iterable[str]) -> set[tuple[bool, int]]:
     }
 
 
-#: What an amount from a dollar up written to cents says of its set's figures: nothing, since cents set its decimals
-#: whatever the figures (owner ruling Q3, 2026-11-09).
-_CENTS = "cents"
+#: What an amount from a dollar up says of its set's form: to cents (``$3.48``, ``$1,208.00``), or, a rate's from $10,
+#: in whole dollars (``$75``); never one decimal (owner ruling Q3, 2026-11-09).
+_CENTS, _WHOLE, _TEN_CENTS = "cents", "whole", "cents from $10"
 
 
 def _forms(texts: Iterable[str]) -> set[tuple[bool, int | str]]:
     """The forms the amounts in some texts are written in: per 1,000 or not, and the significant figures an amount
-    under a dollar states (``$0.0080`` and ``$0.11`` both two); an amount from a dollar up reads :data:`_CENTS` when it
-    is written to cents, and its decimals otherwise, a form of its own."""
+    under a dollar states (``$0.0080`` and ``$0.11`` both two); an amount from a dollar up reads :data:`_CENTS`, or
+    :data:`_WHOLE` or :data:`_TEN_CENTS` from $10, and any other decimals as a form of its own."""
     forms: set[tuple[bool, int | str]] = set()
     for text in texts:
         for found in _AMOUNT.finditer(text):
@@ -100,19 +100,30 @@ def _forms(texts: Iterable[str]) -> set[tuple[bool, int | str]]:
             if whole == "0" and not fraction.strip("0"):
                 continue
             per = bool(found.group(4))
-            if int(whole) >= 1:
-                forms.add((per, _CENTS if len(fraction) == 2 else f"{len(fraction)} decimals"))
+            if int(whole) >= 10 and not fraction:
+                forms.add((per, _WHOLE))
+            elif int(whole) >= 1:
+                ten = _TEN_CENTS if int(whole) >= 10 else _CENTS
+                forms.add((per, ten if len(fraction) == 2 else f"{len(fraction)} decimals"))
             else:
                 forms.add((per, len(fraction) - (len(fraction) - len(fraction.lstrip("0")))))
     return forms
 
 
 def _one_form(texts: Iterable[str]) -> bool:
-    """Whether the amounts in some texts read in one form: one scale, and one count of significant figures among the
-    amounts under a dollar, every amount from a dollar up written to cents."""
+    """Whether the amounts in some texts read by one rule: one scale; every amount under a dollar to two significant
+    figures, or three where it reconciles with a month beside it; every amount from a dollar to cents, and from $10
+    either all in whole dollars (a rate) or all to cents (a total)."""
     forms = _forms(texts)
-    figures = {figure for _, figure in forms if figure != _CENTS}
-    return len({per for per, _ in forms}) <= 1 and len(figures) <= 1 and all(isinstance(f, int) for f in figures)
+    marks = {mark for _, mark in forms}
+    figures = {mark for mark in marks if isinstance(mark, int)}
+    spelled = {mark for mark in marks if isinstance(mark, str)}
+    return (
+        len({per for per, _ in forms}) <= 1
+        and figures <= {2, 3}
+        and spelled <= {_CENTS, _WHOLE, _TEN_CENTS}
+        and not {_WHOLE, _TEN_CENTS} <= spelled
+    )
 
 
 def _amount(text: str) -> float:
@@ -146,29 +157,41 @@ def test_a_set_with_a_member_under_a_cent_reads_in_plain_dollars_each_member_to_
     assert [form.spell(amount) for amount in (0.008, 0.11)] == ["$0.0080", "$0.11"]
 
 
-def test_the_form_is_the_sets_and_one_tight_interval_gives_every_member_a_figure_more() -> None:
-    """The set chooses its form: each member reads to two significant figures; where two would print one of its
-    intervals' ends alike, every member reads to three, so the set keeps one form. The mutation this guards against:
-    a form chosen per value, which gives the tight interval its third figure and leaves its neighbours at two."""
+def test_each_member_reads_two_figures_and_only_a_tight_interval_takes_a_third() -> None:
+    """The set chooses its form: each member reads to two significant figures; only an interval whose two ends would
+    read alike at two takes a third, for itself (a cell's value and ends together), never the whole set: ``$0.11``
+    beside it never reads ``$0.110``."""
     planted = [0.008, 0.11]
     together = [money_form(planted).spell(amount) for amount in planted]
     assert together == ["$0.0080", "$0.11"] and _forms(together) == {(False, 2)}
-    tight = money_form([*planted, 0.0451, 0.0454], intervals=[(0.0451, 0.0454)])
-    spelled = [tight.spell(amount) for amount in (*planted, 0.0451, 0.0454)]
-    assert spelled == ["$0.00800", "$0.110", "$0.0451", "$0.0454"] and _forms(spelled) == {(False, 3)}
-    alone = [money_form([amount]).spell(amount) for amount in planted]
-    assert _forms([*alone, tight.spell(0.0451)]) == {(False, 2), (False, 3)}
+    form = money_form([*planted, 0.0451, 0.0454])
+    # The tight interval alone takes its third figure (owner ruling Q3: "one more only where"), its neighbours keep two.
+    assert form.spell_ends(0.0451, 0.0454) == ("$0.0451", "$0.0454")
+    assert [form.spell(amount) for amount in planted] == ["$0.0080", "$0.11"]
+    assert form.places_of([0.0452, 0.0451, 0.0454], ends=(0.0451, 0.0454)) == 4
+    assert form.places_of([0.12, 0.10, 0.14], ends=(0.10, 0.14)) == 2
 
 
 def test_each_member_reads_to_two_figures_and_never_fewer_than_cents() -> None:
     form = money_form([0.03, 3.477])
-    assert form == MoneyForm(per_thousand=False, decimals=3, figures=2)
+    assert form == MoneyForm(per_thousand=False, decimals=2, figures=2), "the largest member's decimals: the ticks'"
     assert [form.spell(amount) for amount in (0.03, 3.477)] == ["$0.030", "$3.48"]
     assert money_form([1.892, 2.427]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
     assert money_form([75.05, 6.014]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
     form = money_form([0.0013, 0.61])
-    assert form == MoneyForm(per_thousand=False, decimals=4, figures=2)
+    assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
     assert [form.spell(amount) for amount in (0.0013, 0.61)] == ["$0.0013", "$0.61"]
+
+
+def test_a_rate_beside_its_month_takes_a_third_figure_only_where_two_would_leave_the_month_off() -> None:
+    """Owner ruling Q3, "one more figure only where needed": a cost per 1,000 printed beside the month computed from it
+    reads a third figure where two would round it by more than half a percent ($0.302 to $0.30 is 0.7%), and two where
+    they do not ($0.633 to $0.63 is 0.5%); with no month beside it, two."""
+    beside = money_form([0.302, 0.633, 0.048], rate=True, reconciles=True)
+    assert [beside.spell(amount) for amount in (0.302, 0.633, 0.048)] == ["$0.302", "$0.63", "$0.048"]
+    alone = money_form([0.302, 0.633, 0.048], rate=True)
+    assert [alone.spell(amount) for amount in (0.302, 0.633, 0.048)] == ["$0.30", "$0.63", "$0.048"]
+    assert not money_form([0.302], reconciles=True).reconciles, "a total is the month itself, never reconciled"
 
 
 def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_surface() -> None:
@@ -178,6 +201,15 @@ def test_a_set_whose_least_amount_is_ten_dollars_or_more_reads_cents_on_every_su
     assert form == MoneyForm(per_thousand=False, decimals=2, figures=2)
     assert [form.spell(amount) for amount in (14.5, 120.0, 1208.0)] == ["$14.50", "$120.00", "$1,208.00"]
     assert money_form([9.5, 120.0]) == MoneyForm(per_thousand=False, decimals=2, figures=2)
+    # A rate of $10 or more reads in whole dollars at two figures (Q3): "$75 [$73, $77]", never "$74.89".
+    rate = money_form([74.89, 6.014], rate=True)
+    assert [rate.spell(amount) for amount in (74.89, 73.13, 76.65, 6.014, 140.0)] == [
+        "$75",
+        "$73",
+        "$77",
+        "$6.01",
+        "$140",
+    ]
     held = INPUTS["r4"]
     months = _arms(held, "cost_per_month.{arm}")
     values = [float(figure.value) for figure in months.values() if isinstance(figure.value, float)]
@@ -210,7 +242,8 @@ def test_a_planted_family_under_a_cent_reads_in_one_plain_form_in_every_key() ->
     )
     texts = [format_figure(resolve(f"cost_per_1k.{arm}", moved), ("usd",)) for arm in arms]
     assert not any(text.endswith("/1000") for text in texts), texts
-    assert _forms(texts) == {(False, _CENTS)}, texts
+    # A rate: $8.00 to cents, $110 in whole dollars from $10 (Q3).
+    assert _one_form(texts) and {text.split(" ")[0] for text in texts} == {"$8.00", "$110"}, texts
 
 
 # --- one form per key family, column and chart, on every fixture ----------------------------------------------------
@@ -240,11 +273,15 @@ def test_every_key_of_a_money_family_reads_in_its_sets_one_form(
     counted = filters == ("usd_per_1k",) or (bool(first.per) and under < CENT and filters in ((), ("usd",)))
     factor = 1000.0 if counted and first.scale == "usd" else 1.0
     values = {arm: float(figure.value) * factor for arm, figure in figures.items() if isinstance(figure.value, float)}
-    form = money_form(values.values())
+    # A month's cost is a total, to cents; every other family is money per something, whole dollars from $10; the
+    # page's cost per 1,000 reconciles with the month printed beside it where a volume is declared (Q3).
+    rate = not family.startswith("cost_per_month")
+    reconciles = rate and family.startswith("cost_per_1k") and held.meta.volume_per_month is not None
+    form = money_form(values.values(), rate=rate, reconciles=reconciles)
     if counted and min((abs(value) for value in values.values() if value), default=1) < CENT:
         # Per 1,000 a family under a cent moves its ruler to per 1,000,000, the mark never stacked on it.
         values = {arm: value * 1000 for arm, value in values.items()}
-        form = money_form(values.values())
+        form = money_form(values.values(), rate=rate, reconciles=reconciles)
     texts = {arm: format_figure(figure, filters) for arm, figure in figures.items()}
     for arm, text in texts.items():
         assert text.startswith(form.spell(values[arm])), (arm, text)
@@ -263,7 +300,7 @@ def test_the_options_table_cost_column_reads_in_one_form(name: str) -> None:
     count = 1
     while min((cost * count for cost in per_run if cost), default=1) < CENT and count < 1_000_000:
         count *= 1000
-    form = money_form(cost * count for cost in per_run)
+    form = money_form((cost * count for cost in per_run), rate=True, reconciles=held.meta.volume_per_month is not None)
     cells = [str(row["cost_per_1k"].value) for row in table.rows if row["cost_per_1k"].value is not None]
     assert cells == [form.spell(cost * count) for cost in per_run]
     assert ("per 1,000" in column.header) == (count > 1)
@@ -346,30 +383,35 @@ def _engine_tables(held: ReportInput) -> list[TableBlock]:
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_every_engine_tables_money_column_reads_one_form_from_its_values(name: str) -> None:
     held = INPUTS[name]
+    source = cost_basis(held).source
+    beside = {"cost_per_1k", f"measure:{source}", source} if held.meta.volume_per_month is not None else set()
     checked = 0
     for table in _engine_tables(held):
         for key, cells in _money_cells(table).items():
             values = [float(cell.value) for cell, _ in cells if isinstance(cell.value, int | float)]
             ends = [float(end) for cell, _ in cells for end in (cell.low, cell.high) if end is not None]
-            # A table names the count its money is drawn per; its decimals tell every interval's ends apart (P19).
-            spans = [(cell.low, cell.high) for cell, _ in cells if cell.low is not None and cell.high is not None]
-            form = money_form([*values, *ends], intervals=spans)
+            # A table's money is drawn per the count its head names: a rate; the page's cost per 1,000 reconciles
+            # with its month where a volume is declared.
+            form = money_form([*values, *ends], rate=True, reconciles=key in beside)
             assert _one_form(text for _, text in cells), (table.name, key)
             for cell, text in cells:
                 assert isinstance(cell.value, int | float)
-                assert text.split(" (")[0] == form.spell(float(cell.value)), (table.name, key, text)
+                # A cell reads its value and its ends at one precision, a figure finer only where its own interval's
+                # ends would read alike (P19).
+                places = form.places_of([float(cell.value), cell.low, cell.high], ends=(cell.low, cell.high))
+                assert text.split(" (")[0] == MoneyForm(decimals=places).spell(float(cell.value)), (table.name, key)
             checked += 1
     if not checked:
         pytest.skip(f"{name}'s tables state no money")
 
 
 def test_r1s_tasks_table_reads_each_tasks_cost_across_the_arms_in_one_form() -> None:
-    """One task's cost across the arms is one figure type with every other task's: the least, $3.30, needs cents, so
-    whole dollars beside it never read; never $58 | $24 | $4.60 | $8.90 in one row."""
+    """One task's cost across the arms is one figure type with every other task's, a rate: each to two significant
+    figures, whole dollars from $10 and cents under it (owner ruling Q3, 2026-11-09), so $58 | $24 | $4.60 | $8.90."""
     held = INPUTS["r1"]
     (tasks,) = [table for table in every_table(held, block_look(held, fact_arms(held))) if table.name == "tasks"]
     rows = [[cell.text for cell in row.values()] for row in tasks.rows]
-    assert ["Billing & account Q&A", "400", "Cost per 1k conversations", "$58.00", "$24.00", "$4.60", "$8.90"] in rows
+    assert ["Billing & account Q&A", "400", "Cost per 1k conversations", "$58", "$24", "$4.60", "$8.90"] in rows
 
 
 def test_a_cost_still_under_a_cent_at_the_rulers_cap_reads_there_with_no_mark() -> None:
@@ -385,12 +427,12 @@ def test_a_cost_still_under_a_cent_at_the_rulers_cap_reads_there_with_no_mark() 
 
 
 def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
-    """r2's brisk-s.low.r1 costs $0.302 per 1,000 calls, which reads $0.30 at two significant figures in its key and in
-    every table alike (owner ruling 2026-11-09); its monthly $1,208.00 reconciles within that rounding
-    (test_a_cost_per_1000_times_the_volume_reaches_the_monthly_figure_within_the_forms_rounding)."""
+    """r2's brisk-s.low.r1 costs $0.302 per 1,000 calls; at 4,000,000 calls a month $0.30 would give $1,200 beside a
+    monthly $1,208, so its key and every table keep the third figure its month needs (owner ruling Q3: one more figure
+    only where needed)."""
     held = INPUTS["r2"]
     said = format_figure(resolve("cost_per_1k.brisk-s.low.r1", held), ("usd",))
-    assert said == "$0.30"
+    assert said == "$0.302"
     found = [
         text
         for table in _engine_tables(held)
@@ -412,17 +454,22 @@ def test_a_charts_notes_and_ticks_read_in_one_form(name: str) -> None:
     assert _one_form(notes), notes
     assert drawn.money is not None and not drawn.money.per_thousand
     assert drawn.fmt == f"usd:{drawn.money.decimals}"
-    assert max(decimals for _, decimals in _places(notes)) == drawn.money.decimals, "the ticks' are the finest note's"
+    # The ticks are written as the notes beside them are: to the largest note's decimals ("$1.00", never "$1.000"),
+    # and no note carries fewer decimals than the ticks.
+    largest = notes[max(range(len(costs)), key=lambda at: abs(costs[at]))]
+    assert _places([largest]) == {(False, drawn.money.decimals)}, (largest, drawn.fmt)
+    assert all(decimals >= drawn.money.decimals for _, decimals in _places(notes)), (notes, drawn.fmt)
 
 
 def test_a_planted_chart_under_a_cent_draws_a_thousand_times_over_its_ticks_and_notes_alike() -> None:
-    """A chart of $0.008 and $0.11 per 1,000 draws them per 1,000,000, as $8.00 and $110.00: its ticks (the kit's
-    usd:2) and its notes in one form, and no per-1,000 mark the ticks could not draw."""
+    """A chart of $0.008 and $0.11 per 1,000 draws them per 1,000,000, as $8.00 and $110, a rate in whole dollars from
+    $10 (Q3): its ticks (the kit's usd:0, the largest note's) and its notes in one form, and no per-1,000 mark the
+    ticks could not draw."""
     drawn = quantity("usd_per_1k", [0.008, 0.11])
-    assert (drawn.factor, drawn.counted, drawn.fmt) == (1000.0, 1_000_000, "usd:2")
+    assert (drawn.factor, drawn.counted, drawn.fmt) == (1000.0, 1_000_000, "usd:0")
     notes = [figure_text(value * drawn.factor, drawn) for value in (0.008, 0.11)]
-    assert notes == ["$8.00", "$110.00"]
-    assert _places(notes) == {(False, 2)}
+    assert notes == ["$8.00", "$110"]
+    assert _one_form(notes)
 
 
 def test_a_cost_scatter_labels_its_money_in_its_axis_form() -> None:
@@ -495,7 +542,7 @@ def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> Non
     costs = {arm: float(figure.value) for arm, figure in _arms(held, "cost_per_1k.{arm}").items()}
     if len(costs) < 2:
         pytest.skip(f"{name} states fewer than two costs")
-    form = money_form(costs.values())
+    form = money_form(costs.values(), rate=True)
     first, second = list(costs)[:2]
     text = format_figure(resolve(f"cost.gap.{first}.{second}.per_1k", held), ("usd",))
     # A gap takes its precision from its own size, in the form (the scale) of the costs it compares (#993).
@@ -663,10 +710,10 @@ def test_an_options_table_under_a_cent_per_1000_runs_reads_per_1000000() -> None
 
 def test_r3s_price_per_1000_moves_its_ruler_and_stacks_no_mark() -> None:
     """r3's least cost is $0.0013 per 1,000 turns: its usd_per_1k keys read per 1,000,000 turns, never
-    $180.00/1000 per 1,000."""
+    $180.00/1000 per 1,000; a rate of $10 or more reads in whole dollars (Q3)."""
     held = INPUTS["r3"]
     text = format_figure(resolve("measure.cost_per_1m.atlas-m.zero.mean", held), ("usd_per_1k",))
-    assert text.startswith("$180.00 per 1,000,000 "), text
+    assert text.startswith("$180 per 1,000,000 "), text
     assert "/1000" not in text
 
 
@@ -1220,7 +1267,9 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             (most,) = digits
             amounts = [text for text in _texts(dump) if "$" in text and text not in reasons]
             assert _one_form(amounts), (label, amounts[:6])
-            assert all(decimals <= most for _, decimals in _places(amounts)), (label, most, amounts[:6])
+            # Every amount to its own figures, the ticks to the largest's decimals: no tick carries more decimals than
+            # an amount beside it.
+            assert all(decimals >= most for _, decimals in _places(amounts)), (label, most, amounts[:6])
             for text in (text for text in _texts(dump) if text in reasons):
                 # A gate's reason, which a tip quotes, on its criterion's own ruler: its form's decimals, and each
                 # amount the criterion's ruler times a figure stored or its line.
