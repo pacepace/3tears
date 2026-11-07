@@ -41,8 +41,8 @@ their rule to the writer's page; the code pages need their own package change. C
 
 | Skill | Skill digest | Analyst text digest | Editor text digest |
 |---|---|---|---|
-| shipped | `4e14e276b568647e68450b3b025204213d2bddcc3a2ff6b838550224149788b8` | `063768a69822c5655b17d434470f3a655506810d0cc5334d6f4c3216c3ba368b` | `07e15b95eed5b308c0986f019b0f88fb56bce14d18f99f0fa84b77cb295d5611` |
-| headline-answers | printed by the run | `f6c737d08ce6327796d4e45137b2223ffcde186effb12fa95dee63110a049ef9` | `d383f0b1dd018afeb59c7c8042f80047ff0da7d09addf5d9ea4644d535eaac30` |
+| shipped | `fd74326c6f2e0fb5cd417f5ac7a1cff1855f4c8641d29dd622473ee87fc45662` | `acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db` | `5d29d6f5471dfc846167512fb11fb216601ed5b35362013dad0bea2926f2cc92` |
+| headline-answers | printed by the run | `0dd4aaf5eb73987d953962d7a09e0ff3ce86e88e959c656b95154378e375c312` | `9a6450d0dd2e95ac008caec7d60891a4a483263ee88f2ff518243ccbd83a9530` |
 
 The candidate's skill digest covers this file, so this file cannot hold it: the acceptance readout prints it, and
 `acceptance.json` records it under `candidate_skill`. The analyst's text is read with no note withheld.
@@ -258,8 +258,8 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  
  - **One survivor dominates:** a decision. The story says why it wins and what it gives up.
  - **Several survive and none dominates:** if the campaign declared a rule that ranks the axes, the rule decides. If not, the honest report is a tradeoff. Price it and let the owner choose. You may state a lean, labelled as yours.
--- **Nothing survives, one arm was measured, or nothing separates the options:** the report says what is missing and what would settle it.
-+- **Nothing survives, one arm was measured, or nothing separates the options:** the report states what was measured and what would settle the call.
+-- **Nothing survives, one arm was measured, or the evidence cannot tell the options apart:** the report says what is missing and what would settle it.
++- **Nothing survives, one arm was measured, or the evidence cannot tell the options apart:** the report states what was measured and what would settle the call.
  
  If your call disagrees with `options_dominance`, the editor will see that. Disagree only for a reason the page states, such as an axis the computation can't weigh.
  
@@ -370,8 +370,8 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance \
  - **No meta-commentary about the document.** Not "this report shows", not "the following section", not "it is worth noting". Say the thing.
  - **No `key=value` labels in human text.** Ids and field names are for machines. Write "cost per 1,000 requests", never `cost_per_1k=0.42`.
  - **Arms by their names, with the control marked.** Use the short names the tools return, the same name everywhere, and mark which arm is the control. A reader should never have to decode a configuration string.
--- **Define each term of art once, or replace it.** If a reader needs "non-inferiority" to follow the page, define it in Method once. Better, say "may be up to 15 points worse".
-+- **Define each term of art in plain words at its first use, or replace it.** If a reader needs "non-inferiority" to follow the page, define it where it first appears, which is often the first screen. Better, say "may be up to 15 points worse".
+-- **Define each term of art once, or replace it.** If a reader needs "non-inferiority" to follow the page, define it in Method once. Better, say "may be up to 15 points worse". One term is retired: a difference the interval leaves undecided is one "the evidence cannot tell apart" (`statistics.md`), never "not separated", "nothing separated" or "separated from zero".
++- **Define each term of art in plain words at its first use, or replace it.** If a reader needs "non-inferiority" to follow the page, define it where it first appears, which is often the first screen. Better, say "may be up to 15 points worse". One term is retired: a difference the interval leaves undecided is one "the evidence cannot tell apart" (`statistics.md`), never "not separated", "nothing separated" or "separated from zero".
  - **Statistics as one clause.** "Clearly worse (the interval excludes zero)", not a paragraph about coverage. Interval method and correction go in Method.
  - **Measured facts are stated flatly.** Uncertainty belongs to the interval, stated once. "Costs 28% more" is a measurement; don't soften it. Don't hedge a measured fact with "seems" or "appears".
  - **Every number comes through a figure key, never typed.** The renderer formats it from the data, so the prose can't drift from the tables and a rerun updates it. A figure no tool returns isn't written; record the gap. **A count is a number even when written as a word**: "three of the runs", "eight of the ten cells" each come from a key, spelled through the `words` filter (`{count.…|words}`).

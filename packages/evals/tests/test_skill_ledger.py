@@ -45,9 +45,10 @@ def test_an_edited_skill_has_no_entry_and_the_refusal_names_its_digests() -> Non
 
 
 def test_the_baseline_entry_is_unmeasured_and_says_why() -> None:
-    entry = skill_record(load_skill())
-    assert entry.basis == "unmeasured"
-    assert entry.reason == "baseline: shipped before the gate existed"
+    """The ledger's first entry is the baseline, whatever skill ships since: later entries append below it."""
+    (baseline, *_later) = tomllib.loads(LEDGER.read_text(encoding="utf-8"))["shipped"]
+    assert baseline["basis"] == "unmeasured"
+    assert baseline["reason"] == "baseline: shipped before the gate existed"
 
 
 def test_every_verdict_carries_the_standing_monthly_envelope() -> None:

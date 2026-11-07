@@ -35,3 +35,12 @@ date = 2026-10-31
 basis = "unmeasured"
 monthly_envelope_usd = 50
 reason = "baseline: shipped before the gate existed"
+
+[[shipped]]
+skill = "fd74326c6f2e0fb5cd417f5ac7a1cff1855f4c8641d29dd622473ee87fc45662"
+analyst = "acc32bcf6bbd14aa1c4b9ec18239d8bc6e39011711b0ae4ac8c95e42bb4e21db"
+editor = "5d29d6f5471dfc846167512fb11fb216601ed5b35362013dad0bea2926f2cc92"
+date = 2026-11-07
+basis = "unmeasured"
+monthly_envelope_usd = 50
+reason = "the owner's wording ruling: an undecided difference is one the evidence cannot tell apart, never 'not separated'; a wording change the code already prints, not measured"
