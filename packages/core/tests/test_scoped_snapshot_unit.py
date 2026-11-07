@@ -1884,7 +1884,7 @@ async def test_a_recheck_during_a_publish_of_a_new_scope_does_not_drop_it() -> N
 
 
 # the state readers on any thread take, which the event loop alone writes, by rebinding
-_SHARED = frozenset({"_applied", "_behind", "_rows", "_progress"})
+_SHARED = frozenset({"_applied", "_behind", "_lag", "_rows", "_progress"})
 # set once at construction, and safe to use from any thread
 _SET_AT_START = frozenset({"_backend", "_ready", "_name", "_tables", "_append", "_schema", "_versioned"})
 # public, synchronous, and called on the event loop only, said so in its docstring
@@ -5954,30 +5954,31 @@ async def test_a_snapshot_that_recovers_from_the_diff_reads_a_scope_whole_only_w
     await replica.stop()
 
 
-async def test_a_scope_the_diff_cannot_prove_stays_behind_said_at_error_and_is_never_read_whole(
+async def test_a_retained_table_whose_kept_rows_went_from_l3_is_read_whole_alone_and_the_scope_never_stays_behind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """a copy that keeps only some of a table's rows, whose kept rows L3 dropped: rows it let go might count again,
-    which the diff cannot tell. The scope is not guessed at and not read whole; it stays behind, and the catch-up
-    says why."""
+    which the diff cannot tell. The scope is not guessed at and never left behind (a scope stuck behind L3 serves
+    stale numbers forever, cobalt prod 2026-11-07): that one table is read whole from L3, as a cold rebuild reads it,
+    said at WARNING, and the scope is brought forward."""
     tables = (replace(_DIFFED[0], retained=True), _DIFFED[1])
     writer, replica, pointers, _, l3 = await _diffed_pair(tables=tables)
     l3.write(2, "results", None, drop="c3")
     l3.epochs["TX"] = 2
-    caplog.set_level(logging.ERROR)
+    caplog.set_level(logging.WARNING)
 
     outcome = await replica.catch_up()
 
-    assert outcome.caught == ()
-    assert "TX" in outcome.left and "rows it let go may count again" in outcome.left["TX"], outcome
-    assert "cannot be brought forward from the diff" in caplog.text
-    assert l3.whole_reads == 0
-    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 1
-    # the retry a minute's wait does not reach asks L3 nothing more and says it once
-    caplog.clear()
-    again = await replica.catch_up()
-    assert again.left == outcome.left
+    assert outcome.caught == ("TX",), outcome
+    assert not outcome.left, outcome
+    assert "results of scope 'TX' is read whole from L3, the one table" in caplog.text
+    assert "rows it let go may count again" in caplog.text
     assert "cannot be brought forward from the diff" not in caplog.text
+    assert l3.whole_reads == 1, "only the retained table was read whole"
+    assert json.loads(pointers.entries["enr.s.TX"][0])["epoch"] == 2
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
+    assert _l3_holds(replica, l3)
+    assert "TX" not in replica.status().behind
     await writer.stop()
     await replica.stop()
 
@@ -7482,7 +7483,8 @@ async def test_a_read_from_l3_that_runs_minutes_says_once_a_minute_how_far_it_is
     snapshot_ref: list[ScopedSnapshot] = []
 
     def page_takes(sql: str, args: tuple[Any, ...]) -> float:
-        if "ORDER BY" in sql and args[:1] == ("TX",):
+        # a page of rows: the diff's count of the groups, ordered to page under the rail's cap, is no page of rows
+        if "ORDER BY" in sql and args[:1] == ("TX",) and "AS total" not in sql:
             pages["n"] += 1
             if pages["n"] == 8 and snapshot_ref:
                 taken.append(snapshot_ref[0].status())
@@ -7875,3 +7877,97 @@ async def test_a_write_beginning_during_a_read_with_no_column_to_page_by_stops_i
     await snapshot.wait_ready(timeout=10)
     assert _held(snapshot, "WY") == l3.rows("WY")
     await snapshot.stop()
+
+
+class _CuttingSqlL3(_SqlL3):
+    """L3 behind a rail that answers at most ``rows_per_statement`` rows a statement and drops the rest, as the
+    scoped snapshot met the rail's cut before it paged (cobalt prod 2026-11-07: a diff's count of a state's 1,986
+    runs of a feed answered 1,000)."""
+
+    def __init__(self, table: str, columns: list[str], rows: list[dict[str, Any]], cap: int) -> None:
+        super().__init__(table, columns, rows)
+        self.rows_per_statement = cap
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        return (await super().fetch(sql, *args))[: self.rows_per_statement]
+
+
+async def _many_groups_behind_an_unfinished_write(
+    monkeypatch: pytest.MonkeyPatch, *, retained: bool
+) -> tuple[ScopedSnapshot, _CuttingSqlL3]:
+    """TX's geos in ten groups (``geo``), more than the rail answers a statement (four): the copy holds them all at
+    epoch 1. Then a write at epoch 2 commits a row of one group to L3 and dies before it publishes (the deploy that
+    killed cobalt prod's writer mid-write at 18:03Z), so the copy is behind L3 and only the diff brings it forward."""
+    # the rebuild's pages fit under the rail's cap, as they do on the rail (999 under 1,000)
+    monkeypatch.setattr(scoped_snapshot_module, "DEFAULT_PAGE_SIZE", 3)
+    l3 = _CuttingSqlL3(
+        "geos",
+        ["state", "geo", "item", "votes", "source_version"],
+        [_geo("TX", f"g{i:02d}", f"t{i:02d}", 1) for i in range(10)],
+        cap=4,
+    )
+    table = SnapshotTable(
+        name="geos", scope_column="state", key=("geo", "item"), version_column="source_version", retained=retained
+    )
+    snapshot, pointers, _, _ = _snapshot(l3=l3, tables=(table,), backend=_geos_backend())
+    l3.epochs = {"TX": 1}
+    await _started(snapshot, pointers)
+    assert _held(snapshot, "TX") == l3.rows("TX")
+    l3.add([_geo("TX", "g05", "u05", 2)])
+    l3.epochs["TX"] = 2
+    return snapshot, l3
+
+
+@pytest.mark.parametrize("retained", [True, False], ids=["retained", "whole"])
+async def test_a_diff_over_more_groups_than_the_rail_answers_a_statement_brings_the_scope_forward_from_the_diff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, retained: bool
+) -> None:
+    """cobalt prod 2026-11-07: a write killed before it published left 27 states behind L3; the diff's count of each
+    state's runs of a feed came back cut at the rail's cap, the runs past the cut looked gone from L3, and a copy
+    keeping some of them (retained) refused every retry for an hour. Counted in pages under the cap, every group is
+    seen: the scope comes forward from the diff alone, reading only the group the write stamped, its rows L3's."""
+    snapshot, l3 = await _many_groups_behind_an_unfinished_write(monkeypatch, retained=retained)
+    caplog.set_level(logging.WARNING)
+    l3.statements.clear()
+
+    outcome = await snapshot.catch_up()
+
+    assert outcome.caught == ("TX",), outcome
+    assert not outcome.left, outcome
+    assert "went from L3" not in caplog.text, "groups past the rail's cut were taken for gone"
+    assert "read whole from L3" not in caplog.text
+    await _until(lambda: snapshot.applied_epoch("TX") == 2, what="TX applied at epoch 2")
+    assert _held(snapshot, "TX") == l3.rows("TX"), "the copy does not hold what L3 holds"
+    reads = [sql for sql, _ in l3.statements if "AS total" not in sql and '"geo" = ' in sql]
+    assert len(reads) == 1, f"the diff read more than the one stamped group: {reads}"
+    assert not snapshot.status().behind
+    await snapshot.stop()
+
+
+async def test_a_scope_a_catch_up_leaves_behind_l3_is_named_behind_to_every_reader_until_it_commits_current() -> None:
+    """cobalt prod 2026-11-07: 27 states sat behind L3 for an hour while the reports' index said ``behind: []`` and
+    its pages said nothing of it. A scope the catch-up leaves behind (here a write in progress holds it) is named in
+    every read's ``behind`` and the status, with why, and leaves once this L1 commits it current."""
+    writer, replica, pointers, _, l3 = await _diffed_pair()
+    l3.write(2, "results", {"county": "c1", "state": "TX", "votes": 5})
+    l3.epochs["TX"] = 2
+    l3.writing, l3.pending = True, {"TX"}
+
+    outcome = await replica.catch_up()
+
+    assert "TX" in outcome.left, outcome
+    assert "TX" in replica.status().behind, replica.status().behind
+    with replica.read_with_behind() as (_, behind):
+        assert "TX" in behind
+    versioned = await asyncio.to_thread(_read_versioned_epochs_and_behind, replica)
+    assert "TX" in versioned[1]
+    assert "TX" not in replica.behind, "a scope the catch-up left is not one whose apply the snapshot retries"
+
+    l3.writing, l3.pending = False, None
+    assert (await replica.catch_up()).caught == ("TX",)
+    await _until(lambda: replica.applied_epoch("TX") == 2, what="the replica applied epoch 2")
+    assert "TX" not in replica.status().behind
+    with replica.read_with_behind() as (_, behind):
+        assert "TX" not in behind
+    await writer.stop()
+    await replica.stop()
