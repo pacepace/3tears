@@ -680,9 +680,10 @@ def test_a_batched_dry_run_launches_its_batches_and_its_readout_says_where_it_st
     assert judged is not None
     saved = writing / 6 + judged / 6
     stopped_run = dataclasses.replace(found, report=report)
-    # A stop that saved something says where it stopped launching in its own sentence, so the launch line is left out.
+    # A stop that saved something says so in its own sentence, and the launch line still says what the readings were
+    # read on: each once.
     readout = list(stopped_run.readout())
-    assert stopped_run.result.launch_line not in readout and stopped_run.saved() in readout
+    assert readout.count(stopped_run.result.launch_line) == 1 and readout.count(stopped_run.saved()) == 1
     assert stopped_run.saved() == (
         f"The run stopped at case 6 of 7, after launching 6, 3 at a time, and spent ${writing + judged:.2f}; at its own "
         f"spend per case, all 7 would have cost about ${writing + judged + saved:.2f}, so the stop saved about "

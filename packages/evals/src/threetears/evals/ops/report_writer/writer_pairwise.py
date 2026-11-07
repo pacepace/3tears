@@ -1030,6 +1030,13 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
     pairs = _pairs(collected, answers, reached)
     whole, cases = _reading(pairs, collected=collected, stopped=stopped, bet=plan.bet, planned_n=plan.planned_n)
     finished_only, _ = _reading([pair for pair in pairs if pair.both_finished], collected=collected, stopped=stopped)
+    if stopped is None and not finished_only.pairs:
+        # Untested because nothing was there to test: the reading says so, in its one sentence.
+        read = sum(1 for pair in pairs if pair.reached)
+        detail = f"no pair had both pages finished, 0 of {read}"
+        finished_only = finished_only.model_copy(
+            update={"verdict": finished_only.verdict.model_copy(update={"reason_detail": detail})}
+        )
     looks = _looks(cases, plan)
     stopping = _stopping(
         collected,

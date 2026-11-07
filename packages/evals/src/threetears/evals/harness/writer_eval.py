@@ -496,17 +496,13 @@ def _launched_line(
             f"read {'' if again else 'once, '}on the cases launched by then: {each}."
         )
     if launched >= planned:
-        every = "every case" if not left_out else f"every case but the {left_out} in a batch run that stored no page"
+        every = "every case" if not left_out else "every case whose batch run stored a page"
         read = f"read on {every}" if again else f"read once, on {every}"
         return f"{ran}, so the gated readings and guardrails were {read}."
     separated = len(reports) == len(passes) and all(
         report.stopping is not None and report.stopping.stopped_at is not None for report in reports
     )
-    those = (
-        f"those {launched}"
-        if not left_out
-        else f"those {launched} but the {left_out} in a batch run that stored no page"
-    )
+    those = f"those {launched}" if not left_out else f"those of the {launched} whose batch run stored a page"
     if capped is not None:
         return (
             f"{ran}, until the spend cap stopped it (the pass's line says where), so the gated readings and guardrails "
@@ -1001,10 +997,12 @@ class WriterEval:
         )
         names = frozenset(case.name for case, _ in on_side)
         resolution = self._resolution(len(on_side), names)
+        # What each arm's recordings hold before anything launches; what it recorded is said once the run is over,
+        # counted over the cases it ran.
+        before = self._recorded_before(turns, named)
         disclosures = [
             *warned,
             resolution,
-            *self._recording_disclosures(turns, named),
             *held_elsewhere,
         ]
         share = self._arm_part
@@ -1033,6 +1031,7 @@ class WriterEval:
         # The runs of the batches that stored no page on either arm, and their cases: read by the pass, outside the
         # campaign's readings.
         aside: list[str] = []
+        ran_cases: dict[str, list[str]] = {arm: [] for arm in self.arms}
         run_ids: dict[str, list[str]] = {arm: [] for arm in self.arms}
         campaign_id: str | None = None
         passes: dict[str, _Pass] = {}
@@ -1067,6 +1066,8 @@ class WriterEval:
                     len(batches),
                 )
             launched += planned if batch is None else batch
+            for arm in [arm for arm in self.arms if arm not in held]:
+                ran_cases[arm] += planned if batch is None else batch
             # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
             # for; one batch of every case runs under the whole part, as it always has. The engine checks a run's cap
             # between cells, so cells running at the crossing finish past it, and the last batch can take an arm past
@@ -1152,6 +1153,10 @@ class WriterEval:
                     out_of_budget=cap_stop,
                     outside=aside,
                 )
+        snapshot_of = {receipt.test_case_id: receipt.snapshot_id for _, receipt in on_side}
+        wrote = {arm: {snapshot_of[case_id] for case_id in ids} for arm, ids in ran_cases.items()}
+        at = len(warned) + 1
+        disclosures[at:at] = self._recording_disclosures(turns, before, wrote)
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
         disclosures += await run_blocking(
@@ -1169,11 +1174,15 @@ class WriterEval:
                 eval_host.blocking_executor, _pageless_cases, eval_host, run_ids, aside, self.scope_id
             )
             pageless = len(outside_cases)
+            each = await run_blocking(
+                eval_host.blocking_executor, _aside_by_arm, eval_host, run_ids, aside, self.scope_id
+            )
+            who = " and ".join(f"{count} of {arm}'s" for arm, count in each.items())
             disclosures.append(
-                f"{total} case{'' if total == 1 else 's'} stored no page on at least one arm; the "
-                f"{pageless} in a batch run that stored none {'is' if pageless == 1 else 'are'} left out of the gated "
-                "readings, which no judge was asked of there, and the side-by-side reads every pair, a missing page "
-                "losing it, or tying it when both are."
+                f"{total} case{'' if total == 1 else 's'} stored no page on at least one arm. A batch run that stored "
+                f"none, {who}, is left out of the gated readings, Report finished among them, since no judge was asked "
+                "of it and it would read as a second setup; its unwritten reports count against its arm only side by "
+                "side, where a missing page loses its pair, or ties it when both are."
             )
         launch_line = None
         if batched:
@@ -1497,27 +1506,40 @@ class WriterEval:
             )
         return latest.ref
 
-    def _recording_disclosures(self, turns: Mapping[str, WriterTurns], named: Mapping[str, str]) -> list[str]:
-        """Where each arm's writer comes from: replayed, or recorded now; refused when a file is missing and no key is."""
-        said: list[str] = []
+    def _recorded_before(self, turns: Mapping[str, WriterTurns], named: Mapping[str, str]) -> dict[str, set[str]]:
+        """Each arm's cases whose turn recordings are there before anything launches, by snapshot; the run is refused
+        when a case's file is missing and no key is set to record it."""
+        before: dict[str, set[str]] = {}
         for arm, routed in turns.items():
             writer = self.arms[arm]
-            recording = bool(os.environ.get(routed.key_variable))
             by_case = {snapshot: routed.paths(writer.model_id, _effort(writer), snapshot) for snapshot in named}
             missing = [snapshot for snapshot, paths in by_case.items() if not all(path.is_file() for path in paths)]
-            if missing and not recording:
+            if missing and not os.environ.get(routed.key_variable):
                 first = next(path for path in by_case[missing[0]] if not path.is_file())
                 raise ValueError(
                     f"arm {arm!r} has no turn recording for {len(missing)} of {len(by_case)} case(s) ({first} first), "
                     f"and {routed.key_variable} is not set to record them; restore the files, or set it to record "
                     "them once"
                 )
+            before[arm] = set(by_case) - set(missing)
+        return before
+
+    def _recording_disclosures(
+        self, turns: Mapping[str, WriterTurns], before: Mapping[str, set[str]], ran: Mapping[str, set[str]]
+    ) -> list[str]:
+        """Where each arm's writer came from, counted over the cases it ran: replayed from a recording there before
+        the run, or recorded by it."""
+        said: list[str] = []
+        for arm, routed in turns.items():
+            writer = self.arms[arm]
             folder = routed.directory(writer.model_id, _effort(writer))
-            done = len(by_case) - len(missing)
+            cases = ran.get(arm, set())
+            recorded = cases - before.get(arm, set())
+            replayed = len(cases) - len(recorded)
             said.append(
                 f"{arm}: writer turns replayed from {folder}"
-                if not missing
-                else f"{arm}: writer turns of {len(missing)} case(s) recorded to {folder}, {done} replayed"
+                if not recorded
+                else f"{arm}: writer turns of {len(recorded)} case(s) recorded to {folder}, {replayed} replayed"
             )
         return said
 
@@ -1674,7 +1696,10 @@ def _pairwise_reads(verdict: Verdict) -> str:
     """What a pairwise verdict reads, as its cell prints it: its outcome, too few cases beside it when it was read on
     fewer cases than a rate needs; the undecided outcome in the glossary's words, ``cannot tell apart``."""
     outcome = CANNOT_TELL_APART if verdict.outcome == "not_separated" else verdict.outcome.replace("_", " ")
-    return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
+    if verdict.reason == "too_few_cases":
+        return f"{outcome} (too few cases)"
+    # An untested reading names why, in the one sentence its row has.
+    return f"{outcome}: {verdict.reason_detail}" if verdict.outcome == "untested" and verdict.reason_detail else outcome
 
 
 def _places(values: Sequence[float]) -> int:
@@ -2043,6 +2068,24 @@ def _pageless_cases(
         if MUST_FIX_OPEN_MEASURE not in result.host_measures
     }
     return left, len(none)
+
+
+def _aside_by_arm(
+    host: EvalHost, run_ids: Mapping[str, Sequence[str]], aside: Sequence[str], scope_id: str
+) -> dict[str, int]:
+    """How many cases each arm ran in a batch run set aside, by arm, in the arms' order. Blocking."""
+    left = set(aside)
+    counts: dict[str, int] = {}
+    for arm, ids in run_ids.items():
+        cases = {
+            result.test_case_id
+            for run_id in ids
+            if run_id in left
+            for result in host.storage.query_eval_results_by_run(run_id, scope_id)
+        }
+        if cases:
+            counts[arm] = len(cases)
+    return counts
 
 
 def _stored_no_page(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> bool:

@@ -840,10 +840,8 @@ class Acceptance:
         yield self.criterion.verdict()
         if self.candidate.editor().digest != self.shipped.editor().digest:
             yield from self._two_editors()
-        # The floor's line is printed once, before anything is bought (main), so the readout leaves it to that print; a
-        # stop that saved something says where it stopped launching in its own sentence, so the launch line is left.
-        said = {result.resolution, *([result.launch_line] if saved is not None else [])}
-        yield from (line for line in result.disclosures if line not in said)
+        # The floor's line is printed once, before anything is bought (main), so the readout leaves it to that print.
+        yield from (line for line in result.disclosures if line != result.resolution)
 
     @property
     def spent_usd(self) -> tuple[float, bool]:

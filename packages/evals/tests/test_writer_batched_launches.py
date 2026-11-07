@@ -664,14 +664,15 @@ async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_g
     assert len(report.outside_run_ids) == len(UNJUDGED) * len(arms)
     assert set(report.outside_run_ids).isdisjoint(await _runs(result))
     said = (
-        "4 cases stored no page on at least one arm; the 4 in a batch run that stored none are left out of the gated "
-        "readings, which no judge was asked of there, and the side-by-side reads every pair, a missing page losing it, "
-        "or tying it when both are."
+        "4 cases stored no page on at least one arm. A batch run that stored none, 4 of shipped's and 4 of variant's, "
+        "is left out of the gated readings, Report finished among them, since no judge was asked of it and it would "
+        "read as a second setup; its unwritten reports count against its arm only side by side, where a missing page "
+        "loses its pair, or ties it when both are."
     )
     assert result.disclosures.count(said) == 1
     assert (
         "The arms ran every held-out case, 1 at a time in the bet's order, so the gated readings and guardrails were "
-        "read once, on every case but the 4 in a batch run that stored no page."
+        "read once, on every case whose batch run stored a page."
     ) in result.disclosures
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 11, CANDIDATE: 11}
     with_them, without = await _verdicts(result), await _verdicts(alone)
@@ -746,10 +747,13 @@ async def test_a_batch_run_that_stored_no_page_on_one_arm_alone_adds_no_second_s
     (lost,) = [pair for pair in report.pairs if pair.missing is not None]
     assert lost.missing == "candidate"
     assert len(report.outside_run_ids) == 1 and report.outside_run_ids[0] not in await _runs(result)
+    # The arm that lost is named, and so is what leaving its run out costs: its unwritten report is no failure in the
+    # gated readings, Report finished among them, and counts against it only side by side.
     said = (
-        "1 case stored no page on at least one arm; the 1 in a batch run that stored none is left out of the gated "
-        "readings, which no judge was asked of there, and the side-by-side reads every pair, a missing page losing it, "
-        "or tying it when both are."
+        "1 case stored no page on at least one arm. A batch run that stored none, 1 of variant's, is left out of the "
+        "gated readings, Report finished among them, since no judge was asked of it and it would read as a second "
+        "setup; its unwritten reports count against its arm only side by side, where a missing page loses its pair, or "
+        "ties it when both are."
     )
     assert result.disclosures.count(said) == 1
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}

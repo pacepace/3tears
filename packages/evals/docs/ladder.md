@@ -506,7 +506,7 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval, 95% (pts) |
 |---|---|---|---|---|---|
 | lead-first | every pair | cannot tell apart | 52 | 4 | -67 to 70 |
-| lead-first | both pages finished | untested | — | — | — |
+| lead-first | both pages finished | untested: no pair had both pages finished, 0 of 7 | — | — | — |
 
 | Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
