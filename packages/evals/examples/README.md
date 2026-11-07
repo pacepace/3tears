@@ -144,7 +144,7 @@ v1 vs v2
 ...
 | Aspect | Cases | ▸ v1 (%) | v2 (pts) |
 |---|---|---|---|
-| invoices | 30 | 81.1 (73 of 90 trials, 30 cases) | 16.7 (cannot tell apart) |
+| invoices | 30 | 81 (73 of 90 trials, 30 cases) | 17 (cannot tell apart) |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: v2

@@ -125,7 +125,9 @@ def test_each_aspects_pass_rate_trials_and_cost_are_what_its_keys_resolve_to() -
         for arm in (arm.id for arm in held.arms):
             row = _row(table, held, arm)
             passed, usable, ran = (_key_count(held, aspect, arm, field) for field in ("passed", "usable", "ran"))
-            assert row[f"pass_rate@{aspect}"].value == _pass_rate_text(passed, usable)
+            # The key's figure at its column's one precision (C-15, N-4): whole, or one decimal for the column.
+            shown, keyed = str(row[f"pass_rate@{aspect}"].value), _pass_rate_text(passed, usable)
+            assert abs(float(shown.rstrip("%")) - float(keyed.rstrip("%"))) <= 0.5, (shown, keyed)
             assert row[f"pass_rate@{aspect}"].flag == f"{passed} of {usable}"
             assert row[f"usable@{aspect}"].value == f"{usable} of {ran}"
             said = row[f"cost_per_1k@{aspect}"].value

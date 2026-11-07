@@ -126,15 +126,16 @@ def test_the_equal_weight_row_prints_each_arm_s_figure_as_the_matrix_prints_its_
     assert across["aspect"].text == EQUAL_WEIGHT_ROW
     by_arm = {arm.label: across[f"arm:{arm.variant_key}"] for arm in shape.arms}
     assert {label: cell.text for label, cell in by_arm.items()} == {
-        "production": "46.7",
-        "v2": "1.7",
-        "v3": "-1.7",
-        "v4": "1.7",
+        # Each unit's columns at one precision: whole where whole figures keep them apart (C-15, N-4).
+        "production": "47",
+        "v2": "2",
+        "v3": "-2",
+        "v4": "2",
     }
     # Each figure's interval is drawn beside it; a change's against zero.
     assert all(cell.low is not None and cell.high is not None for cell in by_arm.values())
     assert by_arm["v2"].zero_line and not by_arm["production"].zero_line
-    assert f"| {EQUAL_WEIGHT_ROW} | — | 46.7 | 1.7 | -1.7 | 1.7 |" in campaign_report_markdown(page)
+    assert f"| {EQUAL_WEIGHT_ROW} | — | 47 | 2 | -2 | 2 |" in campaign_report_markdown(page)
     # The weighting is said once, in the methods.
     said = [
         block.section for block in page.blocks if isinstance(block, DisclosureBlock) and block.text == WEIGHTING_LINE
@@ -240,7 +241,7 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     # The table reads cost per 1,000 replies, as the chart's axis and the scoreboard do: $0.004 a reply is $4.00, in
     # the one form beta's $0.80 needs (#993), as the scoreboard reads it.
     assert "| Arm | Cost per 1,000 replies | Interval | Pass rate (%) | Interval (%) |" in markdown
-    assert "| alpha | $4.00 | [$4.00, $4.00] | 88.3 |" in markdown
+    assert "| alpha | $4.00 | [$4.00, $4.00] | 88 | [74, 100] |" in markdown  # (%) columns at one precision (N-4)
 
 
 def test_s1_draws_every_arm_across_its_aspects() -> None:

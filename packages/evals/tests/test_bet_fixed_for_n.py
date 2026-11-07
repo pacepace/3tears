@@ -149,7 +149,7 @@ def test_the_line_carries_the_last_runs_projection_when_it_is_given() -> None:
         "these cases projected 43 to settle."
     )
     assert resolution_line(25, projected=10_001).endswith(
-        "; the last run on these cases projected more than 10000 to settle."
+        "; the last run on these cases projected more than 10,000 to settle."  # spell_count (N-6)
     )
 
 
