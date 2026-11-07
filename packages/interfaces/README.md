@@ -15,7 +15,7 @@ One module per domain:
 | Module | What it holds |
 |---|---|
 | `threetears.interfaces.access` | The identity and authorization vocabulary `3tears-iam` and `3tears-agent-acl` both name |
-| `threetears.interfaces.media` | Media capability Protocols, the value types that cross them, and the object-key helpers |
+| `threetears.interfaces.media` | Media capability Protocols, the value types that cross them, and the object-key builder |
 
 ## access
 
@@ -42,8 +42,7 @@ implement and media consumers (`3tears-agent-tools`) accept: `VisionProvider`,
 `ImageGenerationBackend`, `MediaStorage` and `ObjectStore`. The value types
 that cross them: `MediaInfo`, `GeneratedImage`, `ObjectHandle`,
 `ObjectListing` and `MediaSizeLimitExceeded`. Plus the extraction-status and
-generation-metadata constants, and the object-key helpers `build_object_key`
-and `sanitize_segment`.
+generation-metadata constants, and the object-key builder `build_object_key`.
 
 `MediaFacets` carries the additive carrier facets: rights status, pixel
 dimensions, and whether a locator points at the file itself or at the page

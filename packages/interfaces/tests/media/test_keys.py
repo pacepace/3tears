@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.interfaces.media.keys import SHARED_PREFIX, build_object_key, sanitize_segment
+from threetears.interfaces.media.keys import build_object_key
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
@@ -69,10 +69,17 @@ def test_missing_filename_falls_back_to_object() -> None:
     assert key.endswith(f"/{_OBJECT}/object")
 
 
-def test_sanitize_segment_collapses_unsafe_chars() -> None:
-    """Segments lower-case and collapse to the ``[a-z0-9-]`` alphabet."""
-    assert sanitize_segment("Engagement #42: ACME!") == "engagement-42-acme"
-    assert sanitize_segment("///") == "object"
+def test_segments_collapse_unsafe_chars() -> None:
+    """Scope and category segments lower-case and collapse to the ``[a-z0-9-]`` alphabet."""
+    key = build_object_key(
+        customer_id=_CUSTOMER,
+        scope="Engagement #42: ACME!",
+        category="///",
+        object_id=_OBJECT,
+        created=_CREATED,
+        filename="a.png",
+    )
+    assert key.split("/")[1:3] == ["engagement-42-acme", "object"]
 
 
 @pytest.mark.parametrize(
@@ -135,18 +142,18 @@ class TestSharedAndDeterministicKeys:
     def test_shared_objects_get_the_shared_prefix_not_a_none_segment(self) -> None:
         # "None/..." would be a key that looks tenant-scoped and is not.
         key = build_object_key(customer_id=None, scope="tiles", category="ds", path="layer/v1/8/40/98.mvt")
-        assert key.startswith(f"{SHARED_PREFIX}/")
+        assert key.startswith("shared/")
         assert "None" not in key
 
     def test_shared_prefix_is_still_a_grantable_boundary(self) -> None:
         # the leading segment IS what bucket policy grants on, so a shared
         # object still needs exactly one, just not a customer's.
         key = build_object_key(customer_id=None, scope="tiles", category="ds", path="a/b.mvt")
-        assert key.split("/")[0] == SHARED_PREFIX
+        assert key.split("/")[0] == "shared"
 
     def test_deterministic_path_is_derivable_from_a_request(self) -> None:
         key = build_object_key(customer_id=None, scope="tiles", category="ds", path="census_tracts/v3/8/40/98.mvt")
-        assert key == f"{SHARED_PREFIX}/tiles/ds/census-tracts/v3/8/40/98.mvt"
+        assert key == "shared/tiles/ds/census-tracts/v3/8/40/98.mvt"
 
     def test_deterministic_path_keeps_the_final_extension(self) -> None:
         # ``98.mvt`` collapsing to ``98-mvt`` would lose the type a reader
@@ -156,12 +163,12 @@ class TestSharedAndDeterministicKeys:
 
     def test_deterministic_path_still_sanitizes_each_component(self) -> None:
         key = build_object_key(customer_id=None, scope="tiles", category="ds", path="Census Tracts/V3/8.mvt")
-        assert key == f"{SHARED_PREFIX}/tiles/ds/census-tracts/v3/8.mvt"
+        assert key == "shared/tiles/ds/census-tracts/v3/8.mvt"
 
     def test_deterministic_path_cannot_traverse_out_of_its_prefix(self) -> None:
         key = build_object_key(customer_id=None, scope="tiles", category="ds", path="../../etc/passwd")
         assert ".." not in key
-        assert key.startswith(f"{SHARED_PREFIX}/tiles/ds/")
+        assert key.startswith("shared/tiles/ds/")
 
     def test_a_tenant_may_also_use_a_deterministic_path(self) -> None:
         key = build_object_key(customer_id=_CUSTOMER, scope="tiles", category="ds", path="layer/v1/0/0/0.mvt")

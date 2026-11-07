@@ -11,7 +11,7 @@ from threetears.interfaces.media.facets import (
     LOCATOR_KIND_DIRECT_FILE,
     MediaFacets,
 )
-from threetears.interfaces.media.keys import build_object_key, sanitize_segment
+from threetears.interfaces.media.keys import build_object_key
 from threetears.interfaces.media.protocols import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_FAILED,
@@ -66,5 +66,4 @@ __all__ = [
     "ReferenceVisionProvider",
     "VisionProvider",
     "build_object_key",
-    "sanitize_segment",
 ]

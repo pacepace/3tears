@@ -22,8 +22,8 @@ they are uninstallable at the new version.
   `TextProvider`, `TranscriptionProvider`, `ImageGenerationBackend`, `MediaStorage`, `ObjectStore`), the value
   types that cross them (`MediaInfo`, `GeneratedImage`, `ObjectHandle`, `ObjectListing`, `MediaSizeLimitExceeded`,
   `MediaFacets`), the `EXTRACTION_STATUS_*`, `GENERATION_*`, `LOCATOR_KIND_*` and `OBJECT_HANDLE_METADATA_KEY`
-  constants, and the object-key helpers `build_object_key`, `sanitize_segment` and `SHARED_PREFIX`. Its
-  `protocols`, `facets` and `keys` submodules keep their names.
+  constants, and the object-key builder `build_object_key`. Its `protocols`, `facets` and `keys` submodules
+  keep their names.
 
 The rule, stated in the package docstring and README: Protocols, the value types and enums that cross them, and
 pure helpers over those types; no implementations, no third-party imports, no dependencies. The dependency-free
@@ -44,7 +44,10 @@ a find/replace applied top to bottom is safe:
 | `threetears.access.contracts` | `threetears.interfaces.access` |
 | `threetears.media.contracts.protocols` (all its names below) | `threetears.interfaces.media.protocols` |
 | `threetears.media.contracts.facets` (`LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`, `MediaFacets`) | `threetears.interfaces.media.facets` |
-| `threetears.media.contracts.keys` (`SHARED_PREFIX`, `build_object_key`, `sanitize_segment`) | `threetears.interfaces.media.keys` |
+| `threetears.media.contracts.keys.SHARED_PREFIX`, `threetears.media.contracts.SHARED_PREFIX` | no replacement; use `build_object_key` |
+| `threetears.media.contracts.keys.sanitize_segment`, `threetears.media.contracts.sanitize_segment` | no replacement; use `build_object_key` |
+| `threetears.object_store.sanitize_segment` | no replacement; use `build_object_key` |
+| `threetears.media.contracts.keys` (`build_object_key`) | `threetears.interfaces.media.keys` |
 | `threetears.media.contracts.__version__` | `threetears.interfaces.__version__` |
 | `threetears.media.contracts` | `threetears.interfaces.media` |
 
@@ -54,11 +57,14 @@ Every name `threetears.media.contracts` exported keeps its name under `threetear
 `GENERATION_SIZE`, `GENERATION_SOURCE_USED`, `LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`,
 `OBJECT_HANDLE_METADATA_KEY`, `GeneratedImage`, `ImageGenerationBackend`, `MediaFacets`, `MediaInfo`,
 `MediaSizeLimitExceeded`, `MediaStorage`, `ObjectHandle`, `ObjectListing`, `ObjectStore`, `TextProvider`,
-`TranscriptionProvider`, `ReferenceVisionProvider`, `VisionProvider`, `build_object_key`, `sanitize_segment`.
+`TranscriptionProvider`, `ReferenceVisionProvider`, `VisionProvider`, `build_object_key`. The exceptions are
+`sanitize_segment` and `SHARED_PREFIX`, now private internals of `build_object_key` (the media `sanitize_segment`
+also shared a name with `threetears.core.namespaces.sanitize_segment`, which has different rules); nothing outside
+3tears called either, and `build_object_key` is the way to get their behaviour.
 For a sed: `s/threetears\.access\.contracts\.categories/threetears.interfaces.access/g`, then
 `s/threetears\.access\.contracts/threetears.interfaces.access/g`, then
 `s/threetears\.media\.contracts/threetears.interfaces.media/g` (the `__version__` rows are the only ones the
-sed gets wrong).
+sed gets wrong, besides the two removed names above).
 
 Unchanged: `threetears.agent.acl.ImpersonationCategory` and `threetears.agent.tools.protocols` still re-export
 the same classes, now from `threetears.interfaces`.
@@ -66,6 +72,8 @@ the same classes, now from `threetears.interfaces`.
 **Changed:** `3tears-agent-acl`, `3tears-agent-tools`, `3tears-backup`, `3tears-geo`, `3tears-iam`,
 `3tears-langgraph`, `3tears-models`, `3tears-object-store` and `3tears-search` now depend on `3tears-interfaces`
 in place of the package they took before. search's and iam's dependency floors name it in the same place.
+search's SearXNG and Tavily adapters write locator kinds with `LOCATOR_KIND_DIRECT_FILE` and
+`LOCATOR_KIND_CONTAINING_PAGE` instead of hand-typed strings; the values are unchanged.
 
 ## v0.92.0 -- 2026-11-06
 

@@ -76,6 +76,7 @@ from urllib.parse import urlparse
 
 from pydantic import JsonValue
 
+from threetears.interfaces.media import LOCATOR_KIND_CONTAINING_PAGE, LOCATOR_KIND_DIRECT_FILE
 from threetears.observe import get_logger
 from threetears.search.adapters._common import (
     _as_float,
@@ -1263,10 +1264,10 @@ class SearxngAdapter:
         thumbnail = raw.get("thumbnail_src") or raw.get("thumbnail")
         locators = [Locator(url=url, rel="canonical")]
         if isinstance(image_source, str) and image_source:
-            locators.append(Locator(url=image_source, rel="direct-file"))
+            locators.append(Locator(url=image_source, rel=LOCATOR_KIND_DIRECT_FILE))
         if isinstance(thumbnail, str) and thumbnail:
             locators.append(Locator(url=thumbnail, rel="thumbnail"))
-        has_bytes = any(locator.rel == "direct-file" for locator in locators)
+        has_bytes = any(locator.rel == LOCATOR_KIND_DIRECT_FILE for locator in locators)
         return Candidate(
             identity=url,
             locators=tuple(locators),
@@ -1423,7 +1424,7 @@ class SearxngAdapter:
         category = raw.get("category")
         if isinstance(category, str) and category in _CATEGORY_CARRIERS:
             facets[FACET_MEDIA_CATEGORY] = _CATEGORY_CARRIERS[category]
-        facets[FACET_LOCATOR_KIND] = "direct-file" if has_bytes else "containing-page"
+        facets[FACET_LOCATOR_KIND] = LOCATOR_KIND_DIRECT_FILE if has_bytes else LOCATOR_KIND_CONTAINING_PAGE
         resolution = raw.get("resolution")
         if isinstance(resolution, str) and "x" in resolution:
             width, _, height = resolution.partition("x")

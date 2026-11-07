@@ -4,7 +4,7 @@
 # the dependency-free interfaces package -- a producing tool can build a key
 # without inheriting this package's aioboto3 client tree. re-exported here for
 # back-compat with callers importing it off the impl package.
-from threetears.interfaces.media.keys import build_object_key, sanitize_segment
+from threetears.interfaces.media.keys import build_object_key
 from threetears.object_store.encrypted import EncryptedObjectStore
 from threetears.object_store.filesystem import FilesystemObjectStore
 from threetears.object_store.s3 import S3ObjectStore
@@ -16,5 +16,4 @@ __all__ = [
     "S3ObjectStore",
     "build_object_key",
     "build_s3_object_store",
-    "sanitize_segment",
 ]

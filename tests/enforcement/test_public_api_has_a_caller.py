@@ -66,9 +66,12 @@ _SOURCE_ROOTS = tuple(
 )
 
 #: modules this release moved, as (module path at the baseline tag, module path now). The 3tears-interfaces
-#: consolidation folded 3tears-media-contracts and 3tears-access-contracts into one package under new import
-#: paths, renaming no name. A name public at the baseline under the mapped old module, with the same name, was
-#: released before and is not new; every other name in the new modules answers to the gate as usual.
+#: consolidation folded 3tears-media-contracts into threetears.interfaces.media, renaming no name. A name public
+#: at the baseline under the mapped old module, with the same name, was released before and is not new; every
+#: other name in the new modules answers to the gate as usual. Only the modules holding a moved name that stays
+#: public with no caller in this repo are listed: EXTRACTION_STATUS_NONE, the default of the closed six-value
+#: extraction-status vocabulary (tests/enforcement/test_extraction_status_vocabulary.py holds the set), and its
+#: re-export. Every other moved name has a caller, so it needs no entry.
 _MOVED_MODULES: tuple[tuple[str, str], ...] = (
     (
         "packages/media-contracts/src/threetears/media/contracts/__init__.py",
@@ -77,22 +80,6 @@ _MOVED_MODULES: tuple[tuple[str, str], ...] = (
     (
         "packages/media-contracts/src/threetears/media/contracts/protocols.py",
         "packages/interfaces/src/threetears/interfaces/media/protocols.py",
-    ),
-    (
-        "packages/media-contracts/src/threetears/media/contracts/facets.py",
-        "packages/interfaces/src/threetears/interfaces/media/facets.py",
-    ),
-    (
-        "packages/media-contracts/src/threetears/media/contracts/keys.py",
-        "packages/interfaces/src/threetears/interfaces/media/keys.py",
-    ),
-    (
-        "packages/access-contracts/src/threetears/access/contracts/__init__.py",
-        "packages/interfaces/src/threetears/interfaces/access.py",
-    ),
-    (
-        "packages/access-contracts/src/threetears/access/contracts/categories.py",
-        "packages/interfaces/src/threetears/interfaces/access.py",
     ),
 )
 

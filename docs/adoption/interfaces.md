@@ -22,7 +22,7 @@ One module per domain:
 | Module | Holds |
 |---|---|
 | `threetears.interfaces.access` | `ImpersonationCategory`, the fixed set of six sensitive actions agent-acl deny-lists under impersonation and iam's `stepup` requires a recent sign-in for |
-| `threetears.interfaces.media` | The media capability Protocols (`VisionProvider`, `ReferenceVisionProvider`, `TextProvider`, `TranscriptionProvider`, `ImageGenerationBackend`, `MediaStorage`, `ObjectStore`), the value types that cross them (`MediaInfo`, `GeneratedImage`, `ObjectHandle`, `ObjectListing`, `MediaSizeLimitExceeded`, `MediaFacets`), the extraction-status and generation-metadata constants, and the object-key helpers `build_object_key` and `sanitize_segment` |
+| `threetears.interfaces.media` | The media capability Protocols (`VisionProvider`, `ReferenceVisionProvider`, `TextProvider`, `TranscriptionProvider`, `ImageGenerationBackend`, `MediaStorage`, `ObjectStore`), the value types that cross them (`MediaInfo`, `GeneratedImage`, `ObjectHandle`, `ObjectListing`, `MediaSizeLimitExceeded`, `MediaFacets`), the extraction-status and generation-metadata constants, and the object-key builder `build_object_key` |
 
 ```python
 from threetears.interfaces.access import ImpersonationCategory
