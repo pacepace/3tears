@@ -739,11 +739,12 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
     rules = re.sub(r":root[^{]*\{[^}]*\}", "", style)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", rules), "a hard-coded colour outside :root"
     light, dark_by_preference, dark_by_attribute = roots
-    # The kit's faces, type steps and measures are tokens too, set once for both schemes; the colours are the rest.
+    # The kit's faces, type steps and measures are tokens too, set once for both schemes, and a table frame sets its
+    # pinned columns' widths on itself (--key, --id1, --id2); the colours are the rest.
     used = {
         variable
         for variable in re.findall(r"var\((--[\w-]+)", rules)
-        if not re.match(r"--(f|t)-|--(col|wide|r)$", variable)
+        if not re.match(r"--(f|t)-|--(col|wide|r|key|id1|id2)$", variable)
     }
     # A colour the light block sets as another token (``--a: var(--b)``) follows that token, which each dark block sets
     # in its place.

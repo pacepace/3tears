@@ -264,7 +264,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
     pinned = {column.key for column in block.columns[: 2 if block.key_columns == 2 else 1]}
     head = "".join(
         f'<th scope="col"{_pinned_class(classes[column.key], column.header, column.key in pinned)}>'
-        f"{_header(column.header, column.term)}</th>"
+        f"{_pinned_text(_header(column.header, column.term), column.key in pinned)}</th>"
         for column in block.columns
     )
     body = []
@@ -296,7 +296,8 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             else:
                 css = classes[column.key] or (' class="wrap"' if len(cell.text) >= _PROSE_CELL else "")
             anchor = f' id="{cell.anchor}"' if cell.anchor is not None else ""
-            cells.append(f"<td{anchor}{_pinned_class(css, cell.text, column.key in pinned)}>{text}</td>")
+            pin = column.key in pinned
+            cells.append(f"<td{anchor}{_pinned_class(css, cell.text, pin)}>{_pinned_text(text, pin)}</td>")
         anchor = ""
         if block.name == "cases" and "case" in row:
             # prose-canary: allow — the cases table's "case N" cell, which code numbered, not anything a model wrote
@@ -310,7 +311,7 @@ def grid_html(block: TableBlock, *, highlighted: Collection[int] = ()) -> str:
             anchor += ' class="hl"'
         body.append(f"<tr{anchor}>" + "".join(cells) + "</tr>")
     frame = "tbl keys-2" if block.key_columns == 2 else "tbl"
-    grid = f'<div class="{frame}"><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+    grid = f'<div class="{frame}"{_frame_widths(block)}><table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
     return grid + _scale_line(block, scales)
 
 
@@ -505,6 +506,133 @@ def _unbroken(text: str) -> bool:
     return any(len(run) > _UNBROKEN_CHARS for run in _WRAP_AT.split(text))
 
 
+#: The longest hyphenated word (a model id, a case id) a pinned cell keeps on one line: the pinned column's cap holds
+#: it whole. A longer one wraps after its hyphens, since no column has room for it.
+_ONE_WORD_CHARS = 28
+
+#: The longest one the pinned column's floor holds whole, about, so holding it whole never widens a table. A longer one
+#: is classed ``long``: held whole where the table scrolls anyway, free to wrap after its hyphens where breaking it is
+#: what lets the table fit, or where a phone's cap is too narrow for it.
+_FLOOR_WORD_CHARS = 14
+
+#: A word of a cell's text (a run between spaces) with a hyphen inside it, and a tag of the cell's markup.
+_HYPHENATED = re.compile(r"[^\s<>]*\w-\w[^\s<>]*")
+_TAG = re.compile(r"(<[^>]*>)")
+
+
+def _pinned_text(markup: str, pinned: bool) -> str:
+    """A cell's markup as its column lays it out: a pinned cell's hyphenated words held whole (:func:`_one_word`)."""
+    return _one_word(markup) if pinned else markup
+
+
+def _one_word(markup: str) -> str:
+    """A pinned cell's markup, each hyphenated word of its text set ``<span class="id">``, which the stylesheet
+    keeps on one line: ``deepseek-v4.1-flash`` is one word, never broken after a hyphen while its column can grow.
+
+    Only text is read: a tag (a link's ``href`` holds a case id too) and a code span (an expression, which breaks
+    anywhere instead) are left as they are. A word longer than :data:`_ONE_WORD_CHARS` is left free to wrap after its
+    hyphens, and one longer than :data:`_FLOOR_WORD_CHARS` is classed ``long``, which the stylesheet holds whole only
+    in a frame that scrolls anyway.
+
+    :param markup: The cell's markup, as built.
+    :ptype markup: str
+    :return: The same markup with its hyphenated words held whole.
+    :rtype: str
+    """
+    out, code = [], 0
+    for part in _TAG.split(markup):
+        if part.startswith("<"):
+            code += part.startswith("<code") - part.startswith("</code")
+            out.append(part)
+        else:
+            out.append(part if code else _HYPHENATED.sub(_id_span, part))
+    return "".join(out)
+
+
+def _id_span(match: re.Match[str]) -> str:
+    """One hyphenated word, held on one line where the cap can hold it."""
+    word = match.group(0)
+    chars = len(html.unescape(word))
+    if chars > _ONE_WORD_CHARS:
+        return word
+    return f'<span class="id{" long" if chars > _FLOOR_WORD_CHARS else ""}">{word}</span>'
+
+
+#: The widths a pinned column is laid out at, estimated from its text, in rem: its floor and its cap; the width a
+#: character of a cell takes at the table's size (an upper estimate, wide enough for a wide fallback face, so a word
+#: never outgrows it); the width one of a header takes (smaller, upper case and spaced); a cell's side padding; and an
+#: arm chip's tag beside its name.
+_KEY_REM = (8.0, 14.0)
+_CELL_REM_PER_CHAR = 0.68 * 0.8125
+_HEAD_REM_PER_CHAR = 0.75 * 0.75
+_CELL_PAD_REM = 1.4
+_CHIP_REM = 1.5
+
+
+def _frame_widths(block: TableBlock) -> str:
+    """The frame's style attribute: the widths its pinned columns are laid out at, or none.
+
+    ``--key`` is a two-key table's first column, held at exactly that width (:func:`_key_rem`). ``--id1`` (a one-key
+    table's pinned column) and ``--id2`` (a two-key table's second) are the width that holds the column's longest
+    ``long`` hyphenated word whole (:func:`_id_rem`): a column with a width is given it before the columns past it
+    grow, so the word breaks after a hyphen only where those columns at their narrowest leave no room for it.
+    """
+    widths = [f"--key:{_key_rem(block)}rem"] if block.key_columns == 2 else []
+    # A two-key table's first column is held at --key, which already holds its words.
+    for at, column in enumerate(block.columns[: block.key_columns], start=1):
+        if at == 1 and block.key_columns == 2:
+            continue
+        rem = _id_rem(block, column.key)
+        if rem is not None:
+            widths.append(f"--id{at}:{rem}rem")
+    return f' style="{";".join(widths)}"' if widths else ""
+
+
+def _id_rem(block: TableBlock, key: str) -> float | None:
+    """The width, in rem, that holds a pinned column's longest ``long`` hyphenated word on one line, its arm chip's tag
+    beside it, between the floor and the cap; ``None`` for a column with no such word.
+
+    :param block: The table.
+    :ptype block: TableBlock
+    :param key: The pinned column's key.
+    :ptype key: str
+    :return: The width, to two places, or ``None``.
+    :rtype: float | None
+    """
+    widths = [
+        len(word) * _CELL_REM_PER_CHAR + (_CHIP_REM if row[key].tag is not None else 0.0)
+        for row in block.rows
+        # prose-canary: allow — sizes a column to the words a cell sets; layout, never a judgement of what it says
+        for word in _HYPHENATED.findall(row[key].text)
+        if _FLOOR_WORD_CHARS < len(word) <= _ONE_WORD_CHARS
+    ]
+    if not widths:
+        return None
+    low, high = _KEY_REM
+    return round(min(max(max(widths) + _CELL_PAD_REM, low), high), 2)
+
+
+def _key_rem(block: TableBlock) -> float:
+    """The width, in rem, of a two-key table's first column: its longest text, a cell's or the header's, as wide as it
+    sets on one line, between the floor and the cap. The column is held at exactly this width so the second pins
+    where the first ends; sized to its text, a short key ("All cases") leaves the frame to the columns past it instead
+    of holding the cap.
+
+    :param block: The table, keyed by two columns.
+    :ptype block: TableBlock
+    :return: The first column's width, in rem, to two places.
+    :rtype: float
+    """
+    first = block.columns[0]
+    cells = [
+        len(row[first.key].text) * _CELL_REM_PER_CHAR + (_CHIP_REM if row[first.key].tag is not None else 0.0)
+        for row in block.rows
+    ]
+    widest = max([len(first.header) * _HEAD_REM_PER_CHAR, *cells]) + _CELL_PAD_REM
+    low, high = _KEY_REM
+    return round(min(max(widest, low), high), 2)
+
+
 def _pinned_class(css: str, text: str, pinned: bool) -> str:
     """A cell's class attribute (``css``, as built), with ``unbroken`` added where the cell is in a pinned column and
     id-like (:func:`_unbroken`): the one cell the stylesheet lets a pinned column break anywhere."""
@@ -556,7 +684,7 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     (a section's headline); its table keeps the title as its caption, for a screen reader."""
     headers, rows = block.values_table()
     head = "".join(
-        f'<th scope="col"{_pinned_class("", header, at == 0)}>{escape(header)}</th>'
+        f'<th scope="col"{_pinned_class("", header, at == 0)}>{_pinned_text(escape(header), at == 0)}</th>'
         for at, header in enumerate(headers)
     )
     # A cell of words wraps at a measure, as a table block's does (:data:`_PROSE_CELL`), so a long label or reason never
@@ -565,7 +693,7 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
         "<tr>"
         + "".join(
             f"<td{_pinned_class(' class="wrap"' if len(cell) >= _PROSE_CELL else '', cell, at == 0)}>"
-            f"{escape(cell)}</td>"
+            f"{_pinned_text(escape(cell), at == 0)}</td>"
             for at, cell in enumerate(row)
         )
         + "</tr>"

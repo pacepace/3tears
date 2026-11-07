@@ -134,29 +134,43 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 /* tables */
 /* A table wider than its frame scrolls inside it: a shadow shows at an edge only while more lies past it (the covers
    scroll with the content, the shadows stay with the frame), and the first column stays in view. */
-.tbl{overflow-x:auto;isolation:isolate;border:1px solid var(--line);border-radius:var(--r);
+.tbl{overflow-x:auto;isolation:isolate;container-type:scroll-state;border:1px solid var(--line);border-radius:var(--r);
   background:linear-gradient(to right,var(--surface) 40%,transparent) left/2.5rem 100% no-repeat local,
     linear-gradient(to left,var(--surface) 40%,transparent) right/2.5rem 100% no-repeat local,
     radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
     var(--surface)}
 /* the pinned column is at least a floor and at most about a third of the frame wide, so a long label never hides
-   the columns past it and the columns past it never crush it: it wraps at its spaces (and after a hyphen), never inside
+   the columns past it and the columns past it never crush it: it wraps at its spaces (after a hyphen only in a word too long for its cap), never inside
    a word; only an id-like cell (an expression, a digest, a token longer than the floor holds: classed unbroken)
    breaks anywhere. The frame isolates its cells' stacking, so the page's sticky nav paints over a pinned cell. */
 .tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--line);
-  white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw)}
+  white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw);
+  width:min(var(--id1),35vw)}
 .tbl :is(th,td):first-child .armchip{white-space:normal}
 .tbl th:first-child{z-index:2;background:var(--sunk)}
-/* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its cap, so the second pins
-   where the first ends; the second has a floor of its own */
-.tbl.keys-2 :is(th,td):first-child{width:min(14rem,35vw);min-width:min(14rem,35vw)}
-.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(14rem,35vw);z-index:1;background:var(--surface);
+/* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its width, its text's between
+   the floor and the cap (the frame's --key; the cap without one), so the second pins where the first ends; the second
+   has a floor of its own */
+.tbl.keys-2 :is(th,td):first-child{width:min(var(--key,14rem),35vw);min-width:min(var(--key,14rem),35vw);
+  max-width:min(var(--key,14rem),35vw)}
+.tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(var(--key,14rem),35vw);z-index:1;background:var(--surface);
   box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;
-  min-width:min(8rem,22vw);max-width:min(9rem,22vw)}
+  min-width:min(8rem,22vw);max-width:min(9rem,22vw);width:min(var(--id2),9rem,22vw)}
 .tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
 .tbl.keys-2 th:nth-child(2){z-index:2;background:var(--sunk)}
 .tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken{overflow-wrap:anywhere}
+/* a hyphenated word (a model id, a case id) in a pinned cell is one word. One the floor holds is never broken after a
+   hyphen. A longer one (long) sets its column's width (--id1, --id2), which the table gives that column before the
+   others grow, and is set as one box, so a line moves it whole to the next rather than split it; it is held whole in
+   a frame that scrolls anyway, where every column is at its narrowest, and breaks after a hyphen only where the other
+   columns at their narrowest leave no room, or a phone's cap is too narrow. */
+.tbl .id{white-space:nowrap}
+.tbl .id.long{white-space:normal;display:inline-block}
+/* a column's width is not its minimum once the table overflows, so only this query holds a long id whole there; a
+   browser without scroll-state queries breaks it after a hyphen at the floor, as before, and keeps the rest */
+@container scroll-state(scrollable:x){.tbl .id.long{white-space:nowrap}}
+@media (max-width:639px){.tbl .id.long{white-space:normal}}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0;white-space:normal;min-width:4.5rem}

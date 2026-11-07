@@ -24,6 +24,11 @@ and, where headless Chromium launches (the ``integration`` marker), on the page 
 - **A pinned column is never crushed.** It holds a floor as well as its cap, and wraps at its words; only an id-like
   cell (an expression, a digest: classed ``unbroken``) breaks anywhere. Drawn, no pinned cell is under its floor and
   no word in one breaks across lines but an id-like cell's, and ``scripts/check.py`` fails a page where one is.
+- **A key column is as wide as its text, and an id is one word.** A two-key table's first column is its text's
+  width between the floor and the cap, so a short key ("All cases") leaves the frame to the columns past it. A
+  hyphenated id in a pinned cell (``deepseek-v4.1-flash``, a case id) never breaks after its hyphen while another column
+  has room: where the table scrolls anyway, or where the columns past it can give way; one too long for the cap, or
+  for a phone's, still wraps after its hyphens, inside the frame.
 - **The nav paints over the tables.** Each table frame isolates its cells' stacking, so the sticky nav covers a pinned
   cell scrolled beneath it.
 - **Headings fit the host's narrow frame.** Under 700 px they are a step smaller and tighter: a headline holds three
@@ -56,6 +61,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.settle import settle_cases
+from threetears.evals.analysis.report.blocks import TableCell, TableColumn
 from threetears.evals.analysis.report.build import TOO_FEW_CASES
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
@@ -80,7 +86,7 @@ from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.page_contract_support import links, parsed
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
-from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked, rendered
+from packages.evals.tests.report_kit_support import chromium_unavailable, render_checked, rendered, report_page
 
 #: The narrowest frame the host gives the page, and the page's side gutters and its table frame's border.
 FRAME_PX = 688
@@ -357,7 +363,7 @@ def test_every_table_scrolls_in_its_own_frame(name: str) -> None:
     page = _served()[name]
     tables = page.count("<table")
     assert tables, "the control: the page holds tables"
-    framed = len(re.findall(r'<div class="tbl(?: [\w-]+)*"><table', page))
+    framed = len(re.findall(_FRAME, page))
     assert framed == tables, "a table outside a scrolling frame widens the page"
 
 
@@ -376,6 +382,9 @@ def test_a_scrolling_frame_shows_its_overflow_and_keeps_its_first_column_in_view
     (header,) = [rule for rule in rules if rule.selector == "th" and not rule.at and "white-space" in rule.body]
     assert header.declarations()["white-space"] == "normal", "a header wraps rather than widen its column"
 
+
+#: A table's scrolling frame: its classes, and the widths its pinned columns are laid out at, when it sets any.
+_FRAME = re.compile(r'<div class="(tbl(?: [\w-]+)*)"(?: style="([^"]*)")?><table')
 
 #: A pinned column's floor and cap, as the stylesheet writes them: ``min(<rem>rem,<vw>vw)``.
 _SPAN = re.compile(r"min\((\d+)rem,(\d+)vw\)")
@@ -422,9 +431,17 @@ def _kairo_page() -> str:
 def _framed(page: str, name: str) -> tuple[str, str]:
     """Table ``name``'s frame's classes on ``page`` and the table's markup."""
     held = page.split(f'data-table="{name}"', 1)[1]
-    frame = re.search(r'<div class="(tbl(?: [\w-]+)*)"><table', held)
+    frame = re.search(_FRAME, held)
     assert frame is not None, f"{name} sits in no frame"
     return frame.group(1), held[frame.end() :].split("</table>", 1)[0]
+
+
+def _frame_style(page: str, name: str) -> dict[str, str]:
+    """The widths table ``name``'s frame lays its pinned columns out at (its ``style``): each custom property's value."""
+    held = page.split(f'data-table="{name}"', 1)[1]
+    frame = re.search(_FRAME, held)
+    assert frame is not None, f"{name} sits in no frame"
+    return dict(part.split(":", 1) for part in (frame.group(2) or "").split(";") if part)
 
 
 def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
@@ -675,8 +692,9 @@ def test_strata_past_the_column_budget_are_rows_and_the_arms_columns_on_the_kair
 
 def test_a_table_told_apart_by_two_columns_keeps_both_in_view_on_the_kairo_capture() -> None:
     """Kairo's By stratum (a stratum per row, each reading under it) and its contrasts (a reading's row on each arm)
-    tell a row apart by two columns, so both stay in view as the table scrolls: the first held at exactly its cap, the
-    second pinned where the first ends. A table told apart by one keeps one: two arms' contrasts, the statistics."""
+    tell a row apart by two columns, so both stay in view as the table scrolls: the first held at exactly its width,
+    its text's between the floor and the cap (``--key`` on the frame), the second pinned where the first ends. A table
+    told apart by one keeps one: two arms' contrasts, the statistics."""
     page = _kairo_page()
     for name, keys in (("strata", ["Stratum", "Reading"]), ("comparisons", ["Reading", "Arm"])):
         frame, table = _framed(page, name)
@@ -689,12 +707,21 @@ def test_a_table_told_apart_by_two_columns_keeps_both_in_view_on_the_kairo_captu
     rules = _rules(_style(page))
     (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
     cap = first.declarations()["max-width"]
+    span = _SPAN.fullmatch(cap.replace(" ", ""))
+    assert span is not None
     (held,) = [rule for rule in rules if rule.selector == ".tbl.keys-2 :is(th,td):first-child"]
-    assert held.declarations()["width"] == held.declarations()["min-width"] == cap, "the first column is its cap"
+    # The frame's width, the cap without one, and never past the cap's share of the frame.
+    exact = f"min(var(--key,{span.group(1)}rem),{span.group(2)}vw)"
+    declared = held.declarations()
+    assert declared["width"] == declared["min-width"] == declared["max-width"] == exact, "held at exactly one width"
     (second,) = [rule for rule in rules if rule.selector == ".tbl.keys-2 :is(th,td):nth-child(2)"]
     pinned = second.declarations()
     # The second pins where the first ends: the first's width, its floor and its cap are one value.
-    assert (pinned["position"], pinned["left"]) == ("sticky", cap)
+    assert (pinned["position"], pinned["left"]) == ("sticky", exact)
+    # Each frame's width is its own text's, between the floor (8rem) and the cap: Kairo's strata names are short, so
+    # its By stratum holds far less than the cap; its contrasts pin a reading's expression, which reaches the cap.
+    widths = {name: float(_frame_style(page, name)["--key"].removesuffix("rem")) for name in ("strata", "comparisons")}
+    assert 8 <= widths["strata"] < int(span.group(1)) == widths["comparisons"], widths
     assert pinned["background"].startswith("var("), "a pinned column is opaque, or the scrolled cells show through"
     # It wraps at its words between a floor and its cap, as the first column does.
     assert (pinned["overflow-wrap"], pinned["word-break"], pinned["hyphens"]) == ("normal", "normal", "manual")
@@ -739,7 +766,7 @@ def test_a_written_report_s_evidence_record_lays_its_tables_out_as_the_campaign_
     page = _served()["doc with its record"]
     record = page.split('data-part="evidence"', 1)[1] if 'data-part="evidence"' in page else page
     assert "<table" in record, "the control: the record holds the campaign's tables"
-    assert record.count("<table") == len(re.findall(r'<div class="tbl(?: [\w-]+)*"><table', record))
+    assert record.count("<table") == len(re.findall(_FRAME, record))
     # The aspects' contrasts are in it, framed as on the campaign page: the reading first, which stays in view.
     assert 'data-table="comparisons"' in record
     contrasts = record.split('data-table="comparisons"', 1)[1].split("</tr>", 1)[0]
@@ -913,3 +940,203 @@ def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp
     )
     checked, runs = render_checked(crushed, tmp_path / "shots")
     assert checked.returncode == 1 and "crushed:" in checked.stdout, checked.stdout
+
+
+# =============================================================================
+# A key column as wide as its text, and an id as one word
+# =============================================================================
+
+#: Ids as a pinned column holds them: one the floor holds whole, one that needs more (``long``), and one past any cap.
+SHORT_ID, LONG_ID, TOO_LONG_ID = "qwen3.8-flash", "deepseek-v4.1-flash", "abt-a-case-id-longer-than-any-cap-holds"
+
+
+def _keyed_table(keys: list[str], *, key_columns: int = 1, figures: int = 6, name: str = "probe") -> TableBlock:
+    """A table pinning ``keys`` (a second key column too, for two keys), then ``figures`` columns of numbers."""
+    columns = [TableColumn(key="key", header="Stratum")]
+    if key_columns == 2:
+        columns.append(TableColumn(key="reading", header="Reading"))
+    columns += [TableColumn(key=f"f{at}", header=f"Arm {at}") for at in range(figures)]
+    rows = [
+        {
+            "key": TableCell(value=key),
+            **({"reading": TableCell(value="pass rate")} if key_columns == 2 else {}),
+            **{f"f{at}": TableCell(value=12.5 + at) for at in range(figures)},
+        }
+        for key in keys
+    ]
+    return TableBlock(
+        section="contrasts",
+        name=name,
+        title="Probe",
+        columns=columns,
+        rows=rows,
+        order="as built",
+        total_rows=len(rows),
+        key_columns=2 if key_columns == 2 else 1,
+    )
+
+
+def test_a_hyphenated_id_in_a_pinned_cell_is_one_word_and_only_its_text_is_read() -> None:
+    """A pinned cell sets each hyphenated word of its text as one word (``span.id``), ``long`` past what the floor
+    holds; one past any cap, a link's ``href`` and a code span are left as they are, and so is every column but the
+    pinned one. The frame gives a column holding a long id the width that holds it whole (``--id1``)."""
+    table = _keyed_table([SHORT_ID, f"\u25b8 {LONG_ID}", TOO_LONG_ID, "`a-b-c`", "All cases"]).model_copy(
+        update={
+            "columns": [*_keyed_table([]).columns[:1], TableColumn(key="arm", header="Arm")],
+            "rows": [
+                {
+                    "key": TableCell(value=key),
+                    # each links to the first, which carries the id
+                    "arm": TableCell(
+                        value="deepseek-v4.1-flash",
+                        ref="case-deepseek-v4-1-flash",
+                        anchor="case-deepseek-v4-1-flash" if at == 0 else None,
+                    ),
+                }
+                for at, key in enumerate((SHORT_ID, f"\u25b8 {LONG_ID}", TOO_LONG_ID, "`a-b-c`", "All cases"))
+            ],
+        }
+    )
+    page = report_page([table])
+    _frame, markup = _framed(page, "probe")
+    firsts = re.findall(r"<tr[^>]*><td[^>]*>(.*?)</td>", markup)
+    assert firsts[:2] == [f'<span class="id">{SHORT_ID}</span>', f'\u25b8 <span class="id long">{LONG_ID}</span>']
+    assert firsts[2] == TOO_LONG_ID, "past any cap, an id wraps after its hyphens"
+    assert firsts[3] == "<code>a-b-c</code>" and firsts[4] == "All cases"
+    # The column past the pinned one is left as built: its link and its text.
+    assert markup.count('<a href="#case-deepseek-v4-1-flash">deepseek-v4.1-flash</a>') == 5
+    widths = _frame_style(page, "probe")
+    assert set(widths) == {"--id1"}, widths
+    assert 8 <= float(widths["--id1"].removesuffix("rem")) < 14
+    # A pinned column of short ids alone needs no width: the floor holds them.
+    assert _frame_style(report_page([_keyed_table([SHORT_ID, "All cases"])]), "probe") == {}
+
+
+def test_a_two_key_table_s_first_column_is_its_text_s_width_between_the_floor_and_the_cap() -> None:
+    """Production, 0.93.1: By stratum's first column sat at its 224 px cap for "All cases", which alone made the table
+    scroll at 688 px. Its width is its text's: the floor for a short key, the cap for a long one, between for the rest.
+    """
+
+    def key(keys: list[str]) -> float:
+        page = report_page([_keyed_table(keys, key_columns=2)])
+        return float(_frame_style(page, "probe")["--key"].removesuffix("rem"))
+
+    assert key(["All cases"]) == 8.0
+    assert key(["All cases", "a stratum named at length, past any cap a key column holds"]) == 14.0
+    assert 8.0 < key(["All cases", "the long-tail requests"]) < 14.0
+    assert "--key" not in _frame_style(report_page([_keyed_table(["All cases"])]), "probe"), "one key: auto layout"
+
+
+def test_an_id_is_one_word_where_the_cap_holds_it_and_wraps_where_no_column_has_room() -> None:
+    """Read as rules, for the pool: a short id never breaks; a long one is one box (a line moves it whole), held whole
+    in a frame that scrolls anyway, and free to wrap after its hyphens where it does not, or on a phone; each pinned
+    column is laid out at the frame's width for its ids, which the table gives it before the columns past it grow."""
+    rules = _rules(_style(_served()["campaign"]))
+    by = {(rule.at, rule.selector): rule.declarations() for rule in rules}
+    assert by[("", ".tbl .id")] == {"white-space": "nowrap"}
+    assert by[("", ".tbl .id.long")] == {"white-space": "normal", "display": "inline-block"}
+    assert by[("@container scroll-state(scrollable:x)", ".tbl .id.long")] == {"white-space": "nowrap"}
+    assert by[("@media (max-width:639px)", ".tbl .id.long")] == {"white-space": "normal"}
+    order = [(rule.at, rule.selector) for rule in rules if rule.selector == ".tbl .id.long"]
+    assert order[-1][0] == "@media (max-width:639px)", "a phone's rule comes last, so it wins in a scrolling frame"
+    (frame,) = [rule for rule in rules if rule.selector == ".tbl" and not rule.at]
+    assert frame.declarations()["container-type"] == "scroll-state"
+    assert by[("", ".tbl :is(th,td):first-child")]["width"] == "min(var(--id1),35vw)"
+    # The second key's width never passes its own cap.
+    second = by[("", ".tbl.keys-2 :is(th,td):nth-child(2)")]
+    assert second["width"] == f"min(var(--id2),{second['max-width'].removeprefix('min(')}", second
+
+
+#: Every visible table frame: whether it scrolls, its pinned columns' widths and where the second is pinned, and each
+#: hyphenated word in a pinned cell that the browser drew across more than one line.
+_ID_PROBE = """async () => {
+  for (const d of document.querySelectorAll('details')) d.open = true;
+  // a frame's scroll state is read once the opened folds are laid out
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))));
+  const frames = [];
+  for (const frame of document.querySelectorAll('.tbl')) {
+    if (frame.clientWidth <= 1) continue;
+    const keys = frame.classList.contains('keys-2') ? 2 : 1, broken = [];
+    const head = frame.querySelector('tr');
+    for (const row of frame.querySelectorAll('tr')) for (const cell of [...row.children].slice(0, keys)) {
+      const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+      for (let node = walk.nextNode(); node; node = walk.nextNode())
+        for (const word of node.data.matchAll(/\S*\w-\w\S*/g)) {
+          const range = document.createRange();
+          range.setStart(node, word.index); range.setEnd(node, word.index + word[0].length);
+          const tops = new Set([...range.getClientRects()].filter(r => r.width).map(r => Math.round(r.top)));
+          if (tops.size > 1) broken.push(word[0]);
+        }
+    }
+    const block = frame.closest('[data-table]');
+    frames.push({table: block ? block.dataset.table : null, scrolls: frame.scrollWidth > frame.clientWidth + 1,
+                 scrollWidth: frame.scrollWidth, clientWidth: frame.clientWidth, broken,
+                 keys: head ? [...head.children].slice(0, keys).map(c => c.getBoundingClientRect().width) : [],
+                 left: head && keys == 2 ? parseFloat(getComputedStyle(head.children[1]).left) : null});
+  }
+  return {page: document.documentElement.scrollWidth, frames};
+}"""
+
+
+def _drawn_ids(page: str, width: int, tmp_path: Path, name: str) -> dict[str, Any]:
+    path = tmp_path / f"{name}-{width}.html"
+    path.write_text(page, encoding="utf-8")
+    drawn, errors = rendered(path, _ID_PROBE, width=width)
+    assert not errors, errors
+    return drawn
+
+
+@pytest.mark.integration
+def test_by_stratum_with_a_short_key_fits_a_688_px_frame_its_second_key_pinned_where_the_first_ends(
+    tmp_path: Path,
+) -> None:
+    """Production, 0.93.1: By stratum, keyed by "All cases" and its reading, was 687 px in a 636 px frame, its first
+    column held at the 224 px cap. Sized to its text it is the 128 px floor and the table fits, the second key pinned
+    where the first ends. The control: the same table held at the cap scrolls."""
+    _browser()
+    page = report_page([_keyed_table(["All cases"], key_columns=2, figures=4, name="strata")])
+    drawn = _drawn_ids(page, FRAME_PX, tmp_path, "sized")
+    (frame,) = [frame for frame in drawn["frames"] if frame["table"] == "strata"]
+    assert frame["scrollWidth"] == frame["clientWidth"] and not frame["scrolls"], frame
+    first, _second = frame["keys"]
+    assert 127.5 <= first <= 128.5 and frame["left"] == pytest.approx(first, abs=0.5), frame
+    sized = re.search(r'<div class="tbl keys-2" style="[^"]*">', page)
+    assert sized is not None, "the control: the frame sets its key's width"
+    capped = _drawn_ids(page.replace(sized.group(0), '<div class="tbl keys-2">'), FRAME_PX, tmp_path, "capped")
+    (control,) = [frame for frame in capped["frames"] if frame["table"] == "strata"]
+    assert control["keys"][0] == pytest.approx(224, abs=0.5) and control["scrolls"], control
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("width", FRAMES)
+def test_no_pinned_id_breaks_after_its_hyphen_in_a_host_s_frame_and_one_too_long_still_wraps_inside_it(
+    width: int, tmp_path: Path
+) -> None:
+    """Production, 0.93.1: model and case ids in pinned cells broke after a hyphen at the 128 px floor while the
+    table scrolled anyway (44 on the written page at 688 px). Drawn here at both of a host's frames, on Kairo's code
+    page (its cases table pins ids up to 24 characters) and a written report with its evidence record: no pinned id
+    breaks. At a phone's 390 px a long id wraps after its hyphens, and an id past any cap wraps at every width; the
+    page never scrolls sideways."""
+    _browser()
+    pages = {"aspect": _kairo_page(), "doc with its record": _served()["doc with its record"]}
+    for name, page in pages.items():
+        drawn = _drawn_ids(page, width, tmp_path, name.replace(" ", "-"))
+        assert drawn["page"] == width, (name, drawn["page"])
+        ids = {frame["table"]: frame for frame in drawn["frames"]}
+        assert name != "aspect" or (ids["cases"]["scrolls"] and "abt-genre-you-cant-stand" in page), "the control"
+        held = [(frame["table"], word) for frame in drawn["frames"] for word in frame["broken"] if len(word) <= 28]
+        assert held == [], name
+        assert '<span class="id' in page, f"the control: {name} pins a hyphenated id"
+        # The first key is held at its estimated width, so a cell wider than the estimate would run under the second:
+        # in every two-key frame the second starts where the first ends.
+        two_keys = [frame for frame in drawn["frames"] if frame["left"] is not None]
+        assert name != "aspect" or len(two_keys) >= 2, "the control: Kairo's contrasts and strata keep two keys"
+        for frame in two_keys:
+            assert frame["left"] == pytest.approx(frame["keys"][0], abs=0.5), (name, width, frame)
+    probe = report_page([_keyed_table([LONG_ID, TOO_LONG_ID], figures=16)])
+    for at, broken in ((width, {TOO_LONG_ID}), (390, {LONG_ID, TOO_LONG_ID})):
+        drawn = _drawn_ids(probe, at, tmp_path, f"probe-{at}")
+        (frame,) = [frame for frame in drawn["frames"] if frame["table"] == "probe"]
+        assert frame["scrolls"] and drawn["page"] == at, (at, frame)
+        assert set(frame["broken"]) == broken, (at, frame)
+        assert frame["keys"][0] <= 224.5, (at, frame)

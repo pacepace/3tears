@@ -10,7 +10,9 @@ An entry is keyed by the skill's digest (:attr:`AnalystSkill.digest
 digests beside it, so a stored report's recorded digests trace back to the entry they shipped under. Its basis is
 ``measured``, when a campaign's promotion read decided it (the campaign, the arm promoted, the writer model and the
 held-out case set), or ``unmeasured``, with the reason it shipped without one. An unmeasured entry is an honest
-record, not a fault: with few writer cases, most edits cannot yet be measured.
+record, not a fault: with few writer cases, most edits cannot yet be measured. Beside each verdict sits the standing
+monthly envelope candidate trials run under (``monthly_envelope_usd``), which the acceptance readout states a run's
+spend against.
 
 :func:`skill_record` is the one reader. It refuses a skill with no entry, naming its digests and the entry to add.
 """
@@ -45,6 +47,13 @@ class _Shipped(BaseModel):
     analyst: str = Field(pattern=_DIGEST, description="The analyst's system text's digest, with no note withheld.")
     editor: str = Field(pattern=_DIGEST, description="The editor's system text's digest.")
     date: datetime.date = Field(description="The day the entry was recorded.")
+    monthly_envelope_usd: float = Field(
+        gt=0,
+        description=(
+            "The standing monthly spend, in US dollars, that candidate trials run under in place of per-run approval; "
+            "disclosed against a run's spend, never enforced."
+        ),
+    )
 
 
 class MeasuredSkill(_Shipped):
@@ -117,7 +126,7 @@ def skill_record(skill: AnalystSkill) -> ShippedSkill:
             "shipped on",
             remedy=(
                 f"append an entry to skill/{_LEDGER}: [[shipped]] with skill = {skill.digest!r}, analyst = "
-                f"{analyst!r}, editor = {editor!r}, date = the day, and basis = 'measured' with the promotion read's "
+                f"{analyst!r}, editor = {editor!r}, date = the day, monthly_envelope_usd = the standing envelope, and basis = 'measured' with the promotion read's "
                 "campaign, scope, candidate, decision, writer_model and case_set, or basis = 'unmeasured' with the "
                 "reason it ships without a measurement"
             ),

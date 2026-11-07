@@ -937,6 +937,16 @@ held-out cases like these that would settle it: a size for the next campaign, ne
 The read refuses a pass over another campaign, candidate, control, judge or criterion, or over results the campaign no
 longer holds.
 
+### The spend rule
+
+The owner's rule: "Candidate trials run on Sonnet; Opus is for production reports only. One live run per
+candidate, pre-registered, with the stopping rule on. A standing monthly envelope is recorded beside each verdict in
+PROMOTIONS.toml instead of per-run approval. Everything else is replayed offline." The envelope is set to stop
+spending so much while the writer is iterated on, and may rise once the system is in production.
+
+It is each entry's `monthly_envelope_usd` in the skill ledger (`analysis/analyst/skill/PROMOTIONS.toml`).
+The acceptance readout states a run's spend against the shipped skill's envelope in one line, never as a refusal.
+
 ### The calibration set, and its honesty rule
 
 `tests/fixtures/writer_cases/writer_calibration.py` turns the Opus editor's recorded reviews into judge-kind cases.
@@ -974,11 +984,11 @@ uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --
 uv run python -m packages.evals.tests.fixtures.writer_cases.writer_acceptance --cap-usd 12 --out <dir> --cases <dir>
 ```
 
-`--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run needs an
-owner's approval, and refuses a case directory with fewer than 10 held-out cases. Its pass criterion is code's: both
-arms ran every case, the read answers `keep`, the primary reads `regressed`, separated, its interval below 0, the order
-check stands, and bounces do not separate (a variant that moves bounces broke the format, so the run is void).
-Anything else fails, and nobody re-rolls.
+`--dry` runs the whole path on scripted models and sends nothing; its verdict carries no signal. The live run spends
+under [the spend rule](#the-spend-rule), and refuses a case directory with fewer than 10 held-out cases. Its pass
+criterion is code's: both arms ran every case, the read answers `keep`, the primary reads `regressed`, separated, its
+interval below 0, the order check stands, and bounces do not separate (a variant that moves bounces broke the format,
+so the run is void). Anything else fails, and nobody re-rolls.
 
 ## What to read next
 
