@@ -416,7 +416,17 @@ def chart_html(block: ChartBlock, chart_id: str, *, static: bool, figcaption: bo
     (a section's headline); its table keeps the title as its caption, for a screen reader."""
     headers, rows = block.values_table()
     head = "".join(f'<th scope="col">{escape(header)}</th>' for header in headers)
-    body = "".join("<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>" for row in rows)
+    # A cell of words wraps at a measure, as a table block's does (:data:`_PROSE_CELL`), so a long label or reason never
+    # widens the table past what its frame can scroll to.
+    body = "".join(
+        "<tr>"
+        + "".join(
+            f'<td class="wrap">{escape(cell)}</td>' if len(cell) >= _PROSE_CELL else f"<td>{escape(cell)}</td>"
+            for cell in row
+        )
+        + "</tr>"
+        for row in rows
+    )
     drawn = None if static else block.kit_chart()
     chart = ""
     if static:

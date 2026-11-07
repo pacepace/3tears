@@ -24,8 +24,9 @@ table                 rows and cells
 grouped by aspect in the input's order, the aspect named in its own column and every figure that aspect's own (a
 measure's ``per_arm`` on the lead aspect, its ``by_aspect`` entry on another; a dash where the aspect did not read it).
 
-**A page lays every arm by measure out a figure per row** (:func:`laid_out`): an arm per column, headed by its tag and
-name, as every stratum is, so a frame as narrow as a host's (688 px) holds a two-arm campaign's fifteen figures. The
+**A page lays every arm by measure out the narrower way** (:func:`laid_out`): where the arms are fewer than the figures,
+a figure per row and an arm per column, headed by its tag and name, as every stratum is, so a frame as narrow as a
+host's (688 px) holds a two-arm campaign's fifteen figures; an arm per row where the arms are as many or more. The
 table's rows stay an arm each: the page's text form, which the editor and a writer eval's judge read, lays it out as
 it is.
 
@@ -595,8 +596,13 @@ def every_table(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
 
 
 def laid_out(table: TableBlock) -> TableBlock:
-    """A Full results table as a page lays it out: every arm by measure turned a figure per row and an arm per column
-    (its aspect first where it names one), each cell as it was, its money's form included; any other table as it is.
+    """A Full results table as a page lays it out: every arm by measure the way that gives it fewer columns, each cell as
+    it was, its money's form included; any other table as it is.
+
+    Built, the table is an arm per row and a figure per column. Where the arms are fewer than the figures (two or three
+    arms read on fifteen figures), it is turned a figure per row and an arm per column, its aspect first where it names
+    one; where the arms are as many as the figures or more (an eighteen-arm sweep read on six), it stays as built. The
+    HTML page and the Markdown both lay it out here, so the two read alike.
 
     :param table: A table :func:`every_table` returned.
     :ptype table: TableBlock
@@ -610,11 +616,13 @@ def laid_out(table: TableBlock) -> TableBlock:
     for row in table.rows:
         places.setdefault(row["aspect"].text if grouped else "", []).append(row)
     arms = next(iter(places.values()))
+    figures = [column for column in table.columns if column.key not in ("arm", "aspect")]
+    if len(arms) >= len(figures):
+        return table
     heads = [
         TableColumn(key=f"arm:{at}", header=f"{chip.tag} · {chip.text}" if chip.tag else chip.text)
         for at, chip in enumerate(row["arm"] for row in arms)
     ]
-    figures = [column for column in table.columns if column.key not in ("arm", "aspect")]
     rows: list[dict[str, TableCell]] = []
     for aspect, held in places.items():
         for column in figures:

@@ -9,13 +9,13 @@ packages (bumped in lock-step).
 ### evals: the report page fits the host that frames it
 
 **Changed:** every table scrolls inside its own frame with a shadow at an edge while more lies past it and its first
-column sticky, its headers wrapping, so it reads in a 688 px host frame (the static page too: the stylesheet draws the
-shadow). The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
+column sticky, wrapping within a third of the frame, its headers wrapping, so it reads in a 688 px host frame (the
+static page too: the stylesheet draws the shadow); a chart's values table wraps its cells of words. The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
 the aspect, what settling shows and `Why unclear`, which wraps. By stratum states a cell of one case run once as its
-count (`1 case`) and never `1 trials`; where every stratum holds under the cases a stratum needs, one line says so
+count (`1 case`) and never `1 trials`, and past six strata lays a stratum per row with the arms as columns; where every stratum holds under the cases a stratum needs, one line says so
 (`Every stratum holds 1 to 2 cases; a stratum is read alone from 10 cases.`) and no cell repeats `too few cases to read
-alone`. A written report's page (HTML and Markdown) lays Every arm by measure out a figure per row and an arm per column, as
-Every stratum is (`parts.full_results.laid_out`; the page's text, which the editor and a writer eval's judge read,
+alone`. A written report's page (HTML and Markdown) lays Every arm by measure out the way with fewer columns: a figure per row
+and an arm per column where the arms are fewer than the figures, as Every stratum is (`parts.full_results.laid_out`; the page's text, which the editor and a writer eval's judge read,
 keeps an arm per row, so rung 5's recorded judge replays as recorded); its
 rerun-size (settle) table holds four columns (`Arm`, `Against`, `Settles it 4 runs in 5`, `The same, one-sided`, each
 size with what it counts) and no longer prints the half-the-time sizes, the trial and repeat columns, how often a run

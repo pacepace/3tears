@@ -1,4 +1,4 @@
-"""A report page fits the host that frames it (presentation build, chunk 7, from the production host's iframe passes).
+"""A report page fits the host that frames it.
 
 The host shows the page verbatim in a sandboxed ``srcdoc`` frame, 1104 px wide at a 1440 window and 688 px at 1024.
 Held here, on the page as served (no browser runs on the pool, so the page's structure and its stylesheet are read):
@@ -25,6 +25,7 @@ Held here, on the page as served (no browser runs on the pool, so the page's str
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.analyst_support import fixture_inputs
 from packages.evals.tests.campaign_page_support import page_of
 from packages.evals.tests.clock_support import frozen_clock
+from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.page_contract_support import links, parsed
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
@@ -86,7 +88,7 @@ HOST_TOKENS = frozenset(
     }
 )
 
-#: Each page colour a host token sets, the token, and the page's own value in light and in dark (plan §7 (b)).
+#: Each page colour a host token sets, the token, and the page's own value in light and in dark.
 HOST_COLOURS: dict[str, tuple[str, str, str]] = {
     "--ink": ("--host-color-text", "#11151b", "#eef1f5"),
     "--muted": ("--host-color-muted", "#7f8896", "#828b99"),
@@ -364,6 +366,33 @@ def test_a_scrolling_frame_shows_its_overflow_and_keeps_its_first_column_in_view
     assert header.declarations()["white-space"] == "normal", "a header wraps rather than widen its column"
 
 
+def test_a_pinned_first_column_wraps_within_a_third_of_the_frame() -> None:
+    """A long label in the first column (an example's ``T44 · case · stratum · arm · judged · repeat 1``) wraps within
+    its cap instead of filling the frame, so the columns past it can be scrolled to at 390 and 688 px."""
+    rules = _rules(_style(_served()["campaign"]))
+    (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
+    pinned = first.declarations()
+    assert pinned["white-space"] == "normal" and pinned["overflow-wrap"] == "break-word"
+    # No wrapping cell's own floor (``td.wrap``'s min-width) holds it wider than its cap.
+    assert pinned["min-width"] == "0"
+    # An arm's chip in it wraps too, rather than run over the column beside it.
+    (chip,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child .armchip"]
+    assert chip.declarations()["white-space"] == "normal"
+    cap = re.fullmatch(r"min\((\d+)rem,(\d+)vw\)", pinned["max-width"].replace(" ", ""))
+    assert cap is not None and int(cap.group(1)) * 16 <= 0.4 * FRAME_PX and int(cap.group(2)) <= 40, pinned
+
+
+@pytest.mark.parametrize("name", ["doc", "doc static"])
+def test_a_chart_s_values_table_wraps_its_cells_of_words(name: str) -> None:
+    page = _served()[name]
+    tables = re.findall(r'<div class="tbl chart-values">(.*?)</div>', page, flags=re.S)
+    assert tables, "the control: the page's charts carry their values tables"
+    cells = [match for table in tables for match in re.findall(r"<td( class=\"wrap\")?>([^<]*)</td>", table)]
+    long = [(css, text) for css, text in cells if len(html.unescape(text)) >= 40]
+    assert long, "the control: some value cell is a long label"
+    assert all(css for css, _text in long), [text for css, text in long if not css][:3]
+
+
 def _cell_px(text: str, *, header: bool) -> float:
     """A generous width for a cell holding ``text`` on one line: the kit's table text (13 px, headers 12 px) at about
     0.6 em a character, and its padding either side."""
@@ -388,29 +417,50 @@ def test_to_settle_leads_with_the_arm_and_both_counts_which_show_unscrolled_at_6
 
 
 @pytest.mark.parametrize("name", DOCS)
-def test_every_arm_by_measure_is_laid_out_a_figure_per_row_and_an_arm_per_column(name: str) -> None:
-    """On the page (HTML and Markdown) a figure per row and an arm per column, every figure the table holds in its
-    row as it was in its column; the text the editor and a writer eval's judge read keeps the table as built, an arm
-    per row, so a recorded judge's replay reads what it was recorded on."""
+def test_every_arm_by_measure_is_laid_out_the_way_that_gives_it_fewer_columns(name: str) -> None:
+    """On the page (HTML and Markdown) a figure per row and an arm per column where the arms are fewer than the
+    figures, else an arm per row as built; every figure the table holds is in the layout as it was. The text the
+    editor and a writer eval's judge read keeps the table as built, so a recorded judge's replay reads what it was
+    recorded on."""
     page = _doc_page(name)
     (table,) = [one for one in page.full_results if one.name == "arms_by_measure"]
-    arms = _input(name).arms
+    grouped = any(column.key == "aspect" for column in table.columns)
+    arms = len({row["arm"].text for row in table.rows})
+    figures = len([column for column in table.columns if column.key not in ("arm", "aspect")])
     shown = laid_out(table)
-    keys = [column.key for column in shown.columns]
-    assert keys == [*(["aspect"] if keys[0] == "aspect" else []), "measure", *(f"arm:{at}" for at in range(len(arms)))]
-    assert len(keys) <= len(arms) + 2
-    figures = {column.header for column in table.columns if column.key not in ("arm", "aspect")}
-    assert {str(row["measure"].value) for row in shown.rows} == figures
-    for row in table.rows:
-        for column in table.columns:
-            if column.key in ("arm", "aspect") or row[column.key].value is None:
-                continue
-            assert any(row[column.key] in printed.values() for printed in shown.rows), (column.header, row["arm"].text)
+    assert len(shown.columns) == min(arms, figures) + 1 + grouped, (name, arms, figures)
+    if arms >= figures:
+        assert shown == table, "as many arms as figures or more: an arm per row, as built"
+        header = "Arm"
+    else:
+        keys = [column.key for column in shown.columns]
+        assert keys == [*(["aspect"] if grouped else []), "measure", *(f"arm:{at}" for at in range(arms))]
+        assert {str(row["measure"].value) for row in shown.rows} == {
+            column.header for column in table.columns if column.key not in ("arm", "aspect")
+        }
+        for row in table.rows:
+            for column in table.columns:
+                if column.key not in ("arm", "aspect") and row[column.key].value is not None:
+                    assert any(row[column.key] in printed.values() for printed in shown.rows), column.header
+        header = "Measure"
     written = doc_page_html(page).split('data-table="arms_by_measure"', 1)[1].split("</tr>", 1)[0]
-    assert re.findall(r"<th[^>]*>([^<]+)", written)[: 1 + (keys[0] == "aspect")][-1] == "Measure"
-    assert "| Measure |" in doc_page_markdown(page).split("Every arm by measure", 1)[1].split("\n\n", 2)[1]
+    assert re.findall(r"<th[^>]*>([^<]+)", written)[int(grouped and header == "Measure")] == header
+    markdown = doc_page_markdown(page).split("Every arm by measure", 1)[1].split("\n\n", 2)[1]
+    assert f"| {header} |" in markdown, "the Markdown lays it out as the HTML does"
     text = doc_page_text(page).split("## Every arm by measure", 1)[1]
     assert text.split("\n")[1].startswith("| Arm |"), "the editor's and judge's text keeps the table as built"
+
+
+def test_both_layouts_occur_a_few_arms_turned_and_a_sweep_as_built() -> None:
+    """Kairo (three arms, many figures) is turned; r2's eighteen-arm sweep stays an arm per row."""
+
+    def shown(name: str) -> TableBlock:
+        (table,) = [one for one in _doc_page(name).full_results if one.name == "arms_by_measure"]
+        return laid_out(table)
+
+    assert shown("prototype3/kairo").columns[0].key == "measure"
+    sweep = shown("prototype3/r2")
+    assert sweep.columns[0].key == "arm" and len(sweep.rows) == 18
 
 
 #: A chart query's every field at its plain value.
@@ -455,7 +505,7 @@ def test_a_rerun_table_holds_four_columns_and_warns_off_none_of_them() -> None:
 _SCOPE = "fit-1"
 _PROFILE = HostProfile(host_id="fit", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
 
-#: Eight strata of one or two cases each, as the production campaign held them: none readable alone.
+#: Strata of one or two cases each, as the production campaign held them: none readable alone.
 _STRATA = {"about": 1, "machinery": 2, "off_lane": 2, "pushback": 1, "small_talk": 1, "emotional": 1}
 
 
@@ -529,6 +579,22 @@ def test_strata_all_too_small_to_read_alone_say_so_in_one_line_and_no_cell_repea
     (line,) = [block for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "strata"]
     assert line.text == f"Every stratum holds 1 to 2 cases; a stratum is read alone from {STRATUM_MIN_CASES} cases."
     assert report.blocks.index(line) < report.blocks.index(table), "the line comes before the table it reads"
+
+
+def test_strata_past_the_column_budget_are_rows_and_the_arms_columns_on_the_kairo_capture() -> None:
+    """Kairo's code page reads 24 strata: a stratum per row, every arm a column, so the table is as wide as its arms,
+    not its strata, on every surface that prints the block."""
+    bundle = kairo_bundle()
+    report = build_code_only_report(bundle.aspects[0], assembled_at="2026-11-08T00:00:00+00:00")
+    table = _strata_table(report)
+    arms = [column for column in table.columns if column.key.startswith("arm_")]
+    assert [column.key for column in table.columns[:2]] == ["stratum", "reading"]
+    assert len(table.columns) == len(arms) + 2 and 2 <= len(arms) <= 4
+    strata = list(dict.fromkeys(row["stratum"].text for row in table.rows))
+    assert strata[0] == "All cases" and len(strata) > 7, strata[:5]
+    assert any(column.header.startswith("▸ ") for column in arms), "the control's column is marked"
+    markdown = report_markdown(report).split("By stratum", 1)[1]
+    assert "| Stratum | Reading |" in markdown
 
 
 # =============================================================================
