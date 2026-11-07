@@ -6,6 +6,10 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: MIGRATIONS.toml ships in the wheel
+
+**Hosts:** MIGRATIONS.toml ships in the wheel at threetears/evals/MIGRATIONS.toml
+
 ### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
 
 **Added:** a dollar budget under a report's first-turn ceiling cannot admit even one turn of the two a report takes
