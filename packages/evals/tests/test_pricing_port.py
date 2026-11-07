@@ -558,8 +558,8 @@ async def test_a_bound_on_rates_the_host_does_not_guarantee_admits_the_turn_and_
     total = tally.to_json()["total"]
     assert total["admitted_on_estimate"] == 1
     line = made_line(record(generation(tally)))
-    # 1,200 fresh x $2 + 5,000 five-minute writes x $2.50 + 300 output x $10, a million tokens: $0.0179.
-    assert "for $0.0179 (its budget checked against estimated rates on 1 of 1 turns)" in line, line
+    # 1,200 fresh x $2 + 5,000 five-minute writes x $2.50 + 300 output x $10, a million tokens: $0.0179, which reads $0.018 at two significant figures.
+    assert "for $0.018 (its budget checked against estimated rates on 1 of 1 turns)" in line, line
 
 
 def test_a_guaranteed_bound_and_a_token_budget_are_never_disclosed_as_estimates() -> None:

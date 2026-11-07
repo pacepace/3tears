@@ -222,11 +222,11 @@ class TestTheRunSummaryServesItsLines:
         ]
         summary = _summary(judged=judged, spend=spend)
         assert summary.spend_lines == [
-            "candidate spend: $0.0123 over 3 call(s)",
+            "candidate spend: $0.012 over 3 call(s)",
             "judge spend: unpriced over 2 call(s): its client reported no price for them",
         ]
         assert summary.total_spend_text == (
-            "total spend: unknown in full: $0.0123 over the priced calls, plus 2 call(s) unpriced"
+            "total spend: unknown in full: $0.012 over the priced calls, plus 2 call(s) unpriced"
         )
         assert summary.dimension_lines == ["helpful (judged), scored 1-5: mean 4 (n=2, min 3, max 5)"]
         assert _summary().spend_lines == [] and _summary().total_spend_text is None

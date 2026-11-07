@@ -254,7 +254,7 @@ _KIT_FORMAT = (
 #: a moved line keeps its exemption and a rewritten expression loses it. Each reason says why the
 #: fixed spelling is the right one there; an entry no site matches any more fails the suite.
 _FIXED_SPELLINGS: dict[tuple[str, str, str], str] = {
-    # Money's spelling (cents from ten cents up, three significant figures below) is numbers.spell_dollars, in the
+    # Money's spelling (two significant figures, cents from ten cents up) is numbers.spell_dollars, in the
     # rule's own module.
     # A static page's chart is the kit's drawing made on the server: its ticks and notes are the kit's named formats
     # (kit.js K_FMTS), restated so the static page reads the number the default page's script draws, and pinned to the

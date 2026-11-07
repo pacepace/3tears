@@ -98,7 +98,7 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
 
     # The run summary: three calls, summed without loss.
     assert summary.role_spend("candidate").cost_usd == THREE
-    assert "candidate spend: $0.0000370 over 3 call(s)" in summary.render()  # shown, not rounded to $0
+    assert "candidate spend: $0.000037 over 3 call(s)" in summary.render()  # shown, not rounded to $0
 
     # The bundle: the run's total, the cell's mean, and both after a JSON round trip.
     bundle = off_loop(inspect_campaign_bundle, comparison.host, comparison.campaign_id, SCOPE).bundle
@@ -126,22 +126,22 @@ async def test_cheap_spend_survives_the_result_the_run_summary_and_the_bundle() 
         (1.2, "$1.20"),
         (0.5, "$0.50"),
         (0.1, "$0.10"),
-        (0.0999, "$0.0999"),
-        (0.0123, "$0.0123"),
-        (0.06, "$0.0600"),
-        (0.00016, "$0.000160"),
-        (1.2345678e-05, "$0.0000123"),
+        (0.0999, "$0.10"),
+        (0.0123, "$0.012"),
+        (0.06, "$0.060"),
+        (0.00016, "$0.00016"),
+        (1.2345678e-05, "$0.000012"),
         (999.99, "$999.99"),
         (1000, "$1,000.00"),
         (7560.0, "$7,560.00"),
         (1234567.89, "$1,234,567.89"),
         (-1234.5, "-$1,234.50"),
-        (-0.0123, "-$0.0123"),
-        (1e-9, "$0.00000000100"),
+        (-0.0123, "-$0.012"),
+        (1e-9, "$0.0000000010"),
         (None, "unpriced"),
     ],
 )
-def test_spend_reads_as_dollars_and_cents_from_ten_cents_up_and_three_significant_figures_below(
+def test_spend_reads_in_the_money_form_two_significant_figures_and_cents_from_ten_cents_up(
     amount: float, shown: str
 ) -> None:
     assert dollars_text(amount) == shown

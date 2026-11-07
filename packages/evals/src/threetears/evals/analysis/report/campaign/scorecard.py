@@ -986,10 +986,28 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     rows = readings.on_aspect(aspect)
     if not rows:
         return "not compared"
-    return ", ".join(
-        row_sentence(row, readings.control_label, against=False) + ("" if row.confirmatory else ", a lead")
+    return _rows_sentence(rows, readings.control_label)
+
+
+def _rows_sentence(rows: Sequence[AspectReading], control: str) -> str:
+    """An aspect's rows as one sentence says them: the arms the evidence leaves undecided in one clause
+    (``the evidence cannot tell v2, v3 or v4 apart from v1``, :func:`~threetears.evals.analysis.style.cannot_tell_apart`),
+    a lead's apart from an asked reading's; then each decided row (``v5 shown better``), the clauses apart by
+    semicolons, never one undecided clause repeated per arm."""
+    clauses: list[str] = []
+    for confirmatory in (True, False):
+        undecided = [row.arm_label for row in rows if _undecided(row) and row.confirmatory is confirmatory]
+        if undecided:
+            lead = "" if confirmatory else ", a lead" if len(undecided) == 1 else ", each a lead"
+            clauses.append(cannot_tell_apart(undecided, control) + lead)
+    decided = [
+        row_sentence(row, control, against=False) + ("" if row.confirmatory else ", a lead")
         for row in rows
-    )
+        if not _undecided(row)
+    ]
+    if decided:
+        clauses.append(", ".join(decided))
+    return "; ".join(clauses)
 
 
 def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: AspectNames) -> str:

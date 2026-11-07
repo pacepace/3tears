@@ -17,8 +17,9 @@ set, never padding: ``$0.008`` and ``$0.11`` read ``$0.0080`` and ``$0.11``, nev
 - the options table states each arm's cost per run (or per 1,000) beside its pass rate, with its price source, the
   provider that served it and its priced share; a partly priced arm says ``n of m calls priced`` in place of a
   smaller total, an arm none of whose calls were priced says ``unpriced``, never ``$0``, and the unanswered mark stays;
-- the single-value helpers (``format_number``, ``spell_dollars``, ``dollars_text``) are byte-identical: the number
-  format cases, and Discodon's two call shapes (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
+- the single-value helpers: ``spell_dollars`` and ``dollars_text`` spell a total in the money form, and
+  ``format_number`` keeps the number rule: the number format cases, and Discodon's two call shapes
+  (``dollars_text(cost)``, ``format_number(cost, prefix="$")``);
 - every chart and table kind that draws a money set under a cent moves its ruler and states it, never stacks its own
   unit's count beside the moved one, and reads its ticks and notes in one form; a total is never scaled, and a chart of
   totals under a cent reads plain dollars on its ticks (the kit's ``usd``), its notes and its values table alike, as a
@@ -686,8 +687,8 @@ def test_format_number_reads_every_number_format_case_as_it_did() -> None:
 #: Discodon's two money call shapes and what each read before #993, which they read still.
 _DISCODON_SHAPES = (
     (0.0, "$0", "$0"),
-    (0.000160, "$0.000160", "$0.00016"),
-    (0.0123, "$0.0123", "$0.0123"),
+    (0.000160, "$0.00016", "$0.00016"),
+    (0.0123, "$0.012", "$0.0123"),
     (0.302, "$0.30", "$0.302"),
     (0.5, "$0.50", "$0.5"),
     (1.6, "$1.60", "$1.6"),
@@ -697,7 +698,11 @@ _DISCODON_SHAPES = (
 
 
 @pytest.mark.parametrize(("amount", "dollars", "prefixed"), _DISCODON_SHAPES)
-def test_discodons_two_call_shapes_read_as_they_did(amount: float, dollars: str, prefixed: str) -> None:
+def test_discodons_two_call_shapes_read_as_the_money_form_spells_one_amount(
+    amount: float, dollars: str, prefixed: str
+) -> None:
+    """Discodon's ``dollars_text(cost)`` reads as the money form spells a total alone (owner ruling Q3, finding C-5):
+    one amount, one spelling on a page; ``format_number(cost, prefix="$")`` keeps the number rule."""
     assert dollars_text(amount) == dollars == spell_dollars(amount)
     assert format_number(amount, prefix="$") == prefixed
     assert dollars_text(None) == UNPRICED

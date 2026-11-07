@@ -618,6 +618,20 @@ async def test_an_asked_aspect_with_no_margin_reads_its_drop_against_zero_and_ne
         assert aspect_shows(page.readings.model_copy(update={"readings": rows}), "billing") == "v2 unclear"
 
 
+async def test_several_undecided_arms_read_as_one_clause_and_a_decided_arm_after_it() -> None:
+    """Finding C-6: three candidates the evidence cannot tell from the control read as one clause, never one clause per
+    arm joined by commas; a decided arm's clause follows it, after a semicolon."""
+    page = await page_of("billing", "tone", margins={"billing": None})
+    (billing,) = page.readings.on_aspect("billing")
+    unclear = billing.model_copy(update={"reading": "unclear"})
+    arms = [unclear.model_copy(update={"arm_label": label}) for label in ("v2", "v3", "v4")]
+    better = billing.model_copy(update={"reading": "better", "arm_label": "v5"})
+    rows = [*arms, better, *(other for other in page.readings.readings if other.aspect != "billing")]
+    said = aspect_shows(page.readings.model_copy(update={"readings": rows}), "billing")
+    assert said == "the evidence cannot tell v2, v3 or v4 apart from production; v5 shown better"
+    assert said.count("the evidence cannot tell") == 1
+
+
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:
     """A17: v3 ran tone twice per case, so its passes are of 40 trials over the row's 20 cases; every other arm ran
     once, and its count reads as before. A choice's pairs say it the same way."""
