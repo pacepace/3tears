@@ -1335,16 +1335,93 @@ def summarize_run(
     run = host.storage.load_eval_run(run_id, scope_id)
     if run is None:
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    tally = _RunTally(host, run, case_names or {})
-    for result in iter_run_results(host.storage, run, page_results=RUN_RESULTS_PAGE):
-        tally.add(result)
+    return _summary(host, run, [run], scope_id, case_names or {})
+
+
+def summarize_runs(
+    host: EvalHost, run_ids: Sequence[str], scope_id: str, *, case_names: Mapping[str, str] | None = None
+) -> EvalSummary:
+    """Summarise one arm's runs as one: a launch made in batches of its cases, each batch a run of one design.
+
+    The runs' results are folded into one summary, as :func:`summarize_run` folds one run's:
+
+    ==============================  =====================================================================
+    field                           read as
+    ==============================  =====================================================================
+    cases, results, spend, errors   every run's together, cases in the order the runs were given
+    status                          ``completed`` when every run's is, else the first other status met
+    spend ceiling                   the runs' ceilings summed; ``None`` when any run had none
+    stop reasons                    the first run's that has one; budget stops, every run's
+    run id, schedule, settings      the first run's
+    template, model, repeats,       must agree: batches of one arm are launched alike, so runs that differ
+    judge, overlays                 in any of them are refused rather than read as one arm
+    ==============================  =====================================================================
+
+    One run reads exactly as :func:`summarize_run` reads it.
+
+    :param host: The host whose store holds the runs, and whose measures are summarised.
+    :ptype host: EvalHost
+    :param run_ids: The runs, at least one, in the order they were launched.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :param case_names: What each case is called in the summary's errors, by stored test case id.
+    :ptype case_names: Mapping[str, str] | None
+    :return: The summary.
+    :rtype: EvalSummary
+    :raises NotFoundError: No run with one of those ids in the scope.
+    :raises ValueError: No run is named, or the runs differ in their template, model, repeats, judge or overlays.
+    """
+    if not run_ids:
+        raise ValueError("summarize_runs reads at least one run")
+    runs: list[EvalRun] = []
+    for run_id in run_ids:
+        run = host.storage.load_eval_run(run_id, scope_id)
+        if run is None:
+            raise NotFoundError("run", run_id, remedy=FIND_RUN)
+        runs.append(run)
+    first = runs[0]
+    if len(runs) == 1:
+        return _summary(host, first, runs, scope_id, case_names or {})
+    shared = ("template_id", "candidate_model", "k_runs", "judge_model", "overlays")
+    if differ := [name for name in shared if any(getattr(run, name) != getattr(first, name) for run in runs[1:])]:
+        raise ValueError(
+            f"runs {', '.join(run.id for run in runs)} differ in {', '.join(differ)}, so they are not batches of one "
+            "arm; summarise each with summarize_run"
+        )
+    caps = [run.max_cost_usd for run in runs]
+    stops = [stop for run in runs for stop in run.budget_stops or ()]
+    merged = first.model_copy(
+        update={
+            "test_case_ids": [case_id for run in runs for case_id in run.test_case_ids],
+            "status": next((run.status for run in runs if run.status != "completed"), "completed"),
+            "error_details": [detail for run in runs for detail in run.error_details],
+            "cancellation_reason": next((run.cancellation_reason for run in runs if run.cancellation_reason), None),
+            "budget_stop_reason": next((run.budget_stop_reason for run in runs if run.budget_stop_reason), None),
+            "budget_stops": stops or None,
+            "max_cost_usd": None if None in caps else math.fsum(cap for cap in caps if cap is not None),
+        }
+    )
+    return _summary(host, merged, runs, scope_id, case_names or {})
+
+
+def _summary(
+    host: EvalHost, run: EvalRun, runs: Sequence[EvalRun], scope_id: str, case_names: Mapping[str, str]
+) -> EvalSummary:
+    """The summary of ``runs``' results, its header read off ``run``: the one run, or the runs merged."""
+    tally = _RunTally(host, run, case_names)
+    for each in runs:
+        for result in iter_run_results(host.storage, each, page_results=RUN_RESULTS_PAGE):
+            tally.add(result)
     errors = [*tally.errors, *run.error_details]
     template = None
     if run.judge_model is not None and run.template_id is not None:
         template = host.storage.load_template(run.template_id, scope_id)
     # A second judge's spend is the out-of-run ledger's, stamped with the run — never a result's usage row.
     second_rows = [
-        row for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge") if row.run_id == run.id
+        row
+        for row in host.storage.query_out_of_run_spend(scope_id, purpose="second_judge")
+        if row.run_id in {each.id for each in runs}
     ]
     second_costs = [row.cost_usd for row in second_rows]
     outcomes = tally.outcomes
@@ -1761,4 +1838,5 @@ __all__ = [
     "dollars_text",
     "self_judging_text",
     "summarize_run",
+    "summarize_runs",
 ]

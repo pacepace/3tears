@@ -57,6 +57,7 @@ packages/evals/tests/fixtures/writer_cases/writer_smoke.py::#1009 chunk 06 live 
 packages/evals/src/threetears/evals/providers/wire.py::per-model facts table for Claude ids that refuse a temperature, a thinking budget or disabled thinking; matches caller-supplied ids, picks no default model
 packages/evals/src/threetears/evals/providers/pricing.py::the default pricer's table of Anthropic's published per-token rates, keyed by the Claude ids it prices; prices caller-supplied ids, picks no default model
 packages/evals/src/threetears/evals/harness/writer_eval.py::names the model the recorded writer acceptance runs wrote on, so their figures are cited only for it; picks no default model
+packages/evals/tests/fixtures/writer_cases/writer_acceptance.py::the acceptance trial's writer, Sonnet 5.5, which the owner's spend rule runs candidate trials on and the recorded acceptance runs and their budgets were made on; a trial pin, not a framework default
 # provider-shape tests: each id is the input whose request shape, routing or dated-suffix handling is under test.
 packages/evals/tests/test_providers_model.py::provider-shape tests naming real and malformed claude ids as the subject under test; not a default
 packages/evals/tests/test_providers_turns.py::tool-turn wire tests naming the Claude id whose request body and catalogue price are the subject under test; the client is handed the id, and picks no default

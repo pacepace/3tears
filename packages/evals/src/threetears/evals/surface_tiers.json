@@ -1318,6 +1318,7 @@
 "threetears.evals.analysis.SubjectFrontier": "provisional",
 "threetears.evals.analysis.SubjectKeyInstability": "provisional",
 "threetears.evals.analysis.summarize_run": "provisional",
+"threetears.evals.analysis.summarize_runs": "provisional",
 "threetears.evals.analysis.TableBlock": "provisional",
 "threetears.evals.analysis.TableCell": "provisional",
 "threetears.evals.analysis.TableColumn": "provisional",
