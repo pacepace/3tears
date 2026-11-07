@@ -25,6 +25,10 @@ header.
 **The curve is pinned to P-256.** PyJWK will happily parse a P-384, P-521, or
 secp256k1 key from the header, and accepting one would mean the proof chose its
 own security level. It does not get to.
+
+**Requires the ``core`` extra** (``3tears-iam[core]``): the thumbprint and freshness rules are
+core's, shared with :mod:`threetears.core.security.pop`. Without it, importing this module
+raises an :class:`ImportError` naming the extra.
 """
 
 from __future__ import annotations
@@ -32,18 +36,26 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePublicKey
 
-from threetears.core.coordination import ReplayGuard
-from threetears.core.security.freshness import (
-    CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
-    DEFAULT_PROOF_MAX_AGE,
-    issue_time_is_fresh,
-)
-from threetears.core.security.identity_token import jwk_thumbprint
+from threetears.iam._core_extra import core_extra_missing
+
+try:
+    from threetears.core.security.freshness import (
+        CLIENT_ISSUE_TIME_FUTURE_TOLERANCE,
+        DEFAULT_PROOF_MAX_AGE,
+        issue_time_is_fresh,
+    )
+    from threetears.core.security.identity_token import jwk_thumbprint
+except ModuleNotFoundError as _exc:
+    raise core_extra_missing(_exc, needed_by="threetears.iam.dpop") from _exc
+
+if TYPE_CHECKING:
+    # the caller builds and binds the guard, so this module only names its type
+    from threetears.core.coordination import ReplayGuard
 
 __all__ = ["DpopError", "DpopProof", "validate_dpop_proof"]
 
