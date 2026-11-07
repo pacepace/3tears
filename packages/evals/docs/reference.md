@@ -79,10 +79,6 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`current_cell_identity() -> CellIdentity | None`
 - **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
   <br>`field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapping[str, Any]) -> dict[str, list[Any]]`
-- **`is_builtin_judge_config_id`** · *host contract* · function · Whether a recorded judge config id names a built-in prompt rather than a versioned `JudgeConfig`.
-  <br>`is_builtin_judge_config_id(config_id: str | None) -> bool`
-- **`judge_config_of`** · *host contract* · function · The `JudgeConfig` a recorded judge config id names, or `None` when it names none.
-  <br>`judge_config_of(recorded: str | None) -> str | None`
 - **`label_key_of`** · function · The label key of one judgement: `evidence` read on `dim`.
   <br>`label_key_of(evidence: JudgeEvidence, dim: RubricDim | str) -> LabelKey`
 - **`nested_schemas`** · *host contract* · function · Every schema written directly inside `schema`, in declaration order.
@@ -567,8 +563,6 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]`
 - **`gate_verdicts`** · function · Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
   <br>`gate_verdicts(verdicts: Sequence[Verdict], *, fail_on: Iterable[str] = ('regressed', 'breached', 'undecided-guardrail'), readings: Iterable[str] | None = None) -> GateResult`
-- **`host_declarations_digest`** · *host contract* · function · sha256 of the host declarations that partition observations — derived, so no host has a counter to forget.
-  <br>`host_declarations_digest(profile: HostProfile) -> str`
 - **`humanize`** · *host contract* · function · An identifier as a reader is shown it after its first mention.
   <br>`humanize(kind: HumanizeKind, identifier: str) -> str`
 - **`inspect_campaign_bundle`** · *host contract* · function · Assemble one aspect's context bundle of a campaign and return it, without generating.
