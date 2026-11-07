@@ -21,7 +21,6 @@ import pytest
 
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.analysis import NO_ANALYSIS, AnalysisContextBundle
-from threetears.evals.analysis.report.campaign_page import NO_RECOMMENDATION
 from threetears.evals.kernel import CandidateOutput
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.schema import EvalRun, EvalTestCase, JudgedArtifact
@@ -120,7 +119,7 @@ def test_bundle_prints_the_campaigns_bundle_as_json(capsys: pytest.CaptureFixtur
 
 def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: pytest.CaptureFixture[str]) -> None:
     """No analysis, no keyless analyst: the report is the campaign's page over the evidence as code computed it, saying
-    that no recommendation was written, with the aspect's page in its fold."""
+    what it is and leading on code's reading, with the aspect's page in its fold."""
     host = courier_host()
     campaign = asyncio.run(run_courier_campaign(host))
     assert run_cli(["report", campaign.id, "--scope", COURIER_SCOPE], host_factory=lambda: host) == 0
@@ -128,7 +127,7 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     title = out.splitlines()[0]
     # The page is headed by the campaign's title, its name the qualifier in parentheses.
     assert title.startswith("# ") and title.endswith(f"({campaign.name})")
-    assert NO_RECOMMENDATION in out
+    assert out.splitlines()[1:4] == ["Exploratory comparison.", "", "**planner-lite and planner-pro not separated.**"]
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
     assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
 

@@ -21,6 +21,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.bundle.schema import CellCoordinate, CriterionKind, LateCriterion
 from threetears.evals.analysis.style import lint_prose
+from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis.report.model import (
     CAMPAIGN_JSON_SHAPE,
     DisclosureBlock,
@@ -306,7 +307,9 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     caveats = [
         block.text
         for block in page.blocks
-        if isinstance(block, DisclosureBlock) and block.section == "warnings" and block.source == "measurement"
+        if isinstance(block, DisclosureBlock)
+        and block.section == "warnings"
+        and block.anchor in ("caveat-latency", "caveat-settings")
     ]
     assert caveats == [
         "Latency read while other runs executed beside it is left out of every comparison on every aspect; launching "
@@ -320,10 +323,14 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     first = shape.readings.arm_labels()[next(iter(shape.bundles.values())).scoreboard[0].variant_key]
     several = len(shape.arms) > 1
     latency = _SOME_CONTENDED + (f" Read under concurrency: {first}." if several else "")
-    assert [(row["setup"].text, row["detail"].text, row["aspects"].text) for row in setup.rows] == [
+    rows = [(row["setup"].text, row["detail"].text, row["aspects"].text) for row in setup.rows]
+    assert rows[:2] == [
         ("latency read under concurrency", latency, "every aspect"),
         ("request settings not confirmed", _SETTINGS, "every aspect"),
     ]
+    # After them, the report-wide disclosures this change does not touch: s3's unlabelled judge, and the cost's
+    # routing, a row here and never a first-screen line (presentation build, chunk 1).
+    assert [row[0] for row in rows[2:]] == [*(["judge scores directional"] if name == "s3" else []), "cost as routed"]
     for rendered in (campaign_report_markdown(page), campaign_report_html(page)):
         # Each stated once, in Design & provenance; no fold says them again.
         assert rendered.count("20 of 40 results in 1 of 2 cells") == 1
@@ -339,12 +346,19 @@ def test_latency_and_settings_are_one_caveat_line_each_their_detail_exact_once_a
     said = [block for block in own.blocks if isinstance(block, DisclosureBlock)]
     lines = [b for b in said if b.text.startswith(("Latency read while", "Request settings on"))]
     assert [(b.section, b.anchor) for b in lines] == [("header", "caveat-latency"), ("header", "caveat-settings")]
-    assert [b.text for b in said if b.section == "methods" and b.anchor is not None] == [_SETTINGS, latency]
+    # The cost's routing is one more methods line, never a first-screen one (presentation build, chunk 1).
+    assert [b.text for b in said if b.section == "methods" and b.anchor is not None] == [
+        _SETTINGS,
+        COST_ROUTING_CAVEAT,
+        latency,
+    ]
     markdown = report_markdown(own)
     assert markdown.count("20 of 40 results in 1 of 2 cells") == 1 and markdown.count(_SETTINGS) == 1
 
 
-def test_a_page_with_nothing_report_wide_has_no_caveat_and_no_design_and_provenance() -> None:
+def test_a_page_with_nothing_report_wide_has_no_caveat_and_only_its_cost_s_routing_in_design_and_provenance() -> None:
     page = SHAPES["s4"]().page()
-    assert _timing(page) == [] and not [block for block in page.blocks if block.section == "provenance"]
-    assert "## Design & provenance" not in campaign_report_markdown(page)
+    assert _timing(page) == [] and not [block for block in page.blocks if block.section == "warnings"]
+    # Its arms are priced, so Design & provenance holds the one row saying each cost is its routing's, and no other.
+    (setup,) = [block for block in page.blocks if block.section == "provenance"]
+    assert isinstance(setup, TableBlock) and [row["setup"].text for row in setup.rows] == ["cost as routed"]

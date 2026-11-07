@@ -563,8 +563,8 @@ async def test_a_declared_question_reaches_the_result_and_the_page_and_its_campa
     assert asked.question == question and unasked.question is None
     asked_page = campaign_report_markdown(asked.page).splitlines()
     assert asked_page[1] == f'"{question}"'
-    assert "No question was declared, so every reading is a lead." not in asked_page
-    assert "No question was declared, so every reading is a lead." in campaign_report_markdown(unasked.page)
+    assert "Exploratory comparison." not in asked_page
+    assert "Exploratory comparison." in campaign_report_markdown(unasked.page).splitlines()
     (bundle,) = [fold.report.bundle for fold in asked.page.aspects]
     assert bundle.question_declared and bundle.reading_scope.disclosure is None
     (row,) = asked.page.readings.readings
@@ -597,7 +597,7 @@ async def test_a_question_declared_over_finished_runs_reads_as_asked_with_the_la
     first = campaign_report_markdown(sharpened.page).split("\n## ", 1)[0]
     assert first.splitlines()[1] == f'"{question}"' and sharpened.question == question
     assert first.count(_SET_LATE) == 1
-    assert "a lead" not in first and "No question was declared" not in first
+    assert "a lead" not in first and "Exploratory comparison." not in first
     (bundle,) = [fold.report.bundle for fold in sharpened.page.aspects]
     assert bundle.question_declared
     assert "aspect" in [late.criterion for late in bundle.reading_scope.late_criteria]

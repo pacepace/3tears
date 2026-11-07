@@ -68,6 +68,9 @@ TITLE = "v4.1-flash vs v4-flash · classify (Kairo queue discipline)"
 ARMS = "v4.1-flash (control) vs v4-flash · 14 Oct 2026 · 4 cases × 3 repeats"
 SCOREBOARD_HEADER = "| Arm | Ran | Lost | Usable | Passed | Failed by check | Failed by judge | Cost per reply |"
 
+#: The first screen's report-wide caveat on an unlabelled judge: what it makes the scores, and what changes it.
+JUDGE_CAVEAT = "Judged scores on classify are directional until people's labels calibrate the judge."
+
 
 def test_html_opens_on_the_question_then_the_arms(g2: Report) -> None:
     lines = _header_lines(report_html(g2))
@@ -78,8 +81,10 @@ def test_html_opens_on_the_question_then_the_arms(g2: Report) -> None:
 def test_markdown_opens_on_the_question_then_the_arms_then_the_verdict(g2: Report) -> None:
     lines = report_markdown(g2).splitlines()
     assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**No verdict: ")
-    # The page prints a cost, so the report-wide line on provider routing follows the verdict (owner, 2026-10-25).
-    assert lines[5:10] == [COST_ROUTING_CAVEAT, "", "**Scoreboard**", "", SCOREBOARD_HEADER]
+    # Its judge has no human labels, so the report-wide caveat on judged scores follows the verdict, in normal weight
+    # (P2); the cost's provider routing is said in the methods, never on the first screen (owner reading, 2026-11-06).
+    assert lines[5:10] == [JUDGE_CAVEAT, "", "**Scoreboard**", "", SCOREBOARD_HEADER]
+    assert COST_ROUTING_CAVEAT not in _first_screen_md(report_markdown(g2))
 
 
 @pytest.mark.parametrize("door", ["html", "markdown"])

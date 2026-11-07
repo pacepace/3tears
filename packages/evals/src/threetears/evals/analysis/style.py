@@ -12,6 +12,8 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 - :func:`arm_display_name` is the one rule a name code computed from an arm's levers is printed by, on every page:
   ``Fanout 2``, never ``fanout 2`` beside a ``Fanout 2`` elsewhere.
 - :data:`GLOSSARY` defines every term of art a page uses, once, in one plain sentence.
+- :func:`absence_violations` holds a page's first screen to saying what the page is, never what it is not: no line
+  there outside what warns and the report-wide caveats opens or turns on an absence.
 - :func:`lint_prose` holds a sentence to the rules. The package's own tests apply them to the text code writes (the
   page, whole); a host may apply them to its own. Nothing here reads, rewrites or drops what a model wrote; the
   writer's skill states the same rules, and a host's report_writer eval can measure whether a report keeps them, on
@@ -23,7 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from threetears.evals.kernel.metrics import goal_check_of
 
@@ -267,7 +269,7 @@ GLOSSARY: dict[str, str] = {
     "margin": "The smallest change worth acting on, declared before the run.",
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
-    "exploratory": "No question was declared, so the page offers leads, not decisions.",
+    "exploratory": "Run before any question was declared: each reading is a lead for a later run to test.",
     "floor status": (
         "Broken where an interval shows the arm past the floor, or it costs no less; held where one shows it "
         "within, from 5 cases per arm."
@@ -331,7 +333,9 @@ _CASE_NUMBER = re.compile(r"\bcase \d+\b")
 class StyleViolation:
     """One rule a piece of text breaks."""
 
-    rule: Literal["banned", "long_sentence", "numerals", "question", "header", "dash_chain", "key_value", "facts"]
+    rule: Literal[
+        "banned", "long_sentence", "numerals", "question", "header", "dash_chain", "key_value", "facts", "absence"
+    ]
     text: str
     detail: str
 
@@ -382,6 +386,54 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     return found
 
 
+#: The words a line states an absence by: what a page does not hold, rather than what it does.
+_ABSENCE = re.compile(r"\b(?:No|Nothing|nothing|not|never|none)\b(?:\s+[\w-]+)?")
+
+#: The first-screen sections and sources a line may state an absence in: what warns (a campaign's ``warnings``; an
+#: aspect page's broken floor, missed bar and guardrail lines and its case-floor caveat), where an absence is the
+#: warning, and the question, which is the author's words, quoted.
+_ABSENCE_SECTIONS = frozenset({"warnings"})
+_ABSENCE_SOURCES = frozenset({"floor", "bar", "guardrails", "caveat", "basis"})
+
+#: The id prefix of a report-wide caveat line, which states an absence where that absence changes the reading.
+_CAVEAT_ID = "caveat-"
+
+
+class FirstScreenLine(Protocol):
+    """What :func:`absence_violations` reads of a block: where it sits, what it speaks for, its id, and its words
+    (a table or a chart has none)."""
+
+    @property
+    def section(self) -> str: ...
+
+
+def absence_violations(blocks: Iterable[FirstScreenLine]) -> list[StyleViolation]:
+    """Every line of a page's first screen that opens or turns on an absence (``No``, ``Nothing``, ``not``,
+    ``never``, ``none``): the page says what it is, never what it is not. What warns and the report-wide caveats are
+    exempt, since there the absence is the warning or changes the reading, and so is the question quoted; a block
+    with no words (a table, a chart) holds none.
+
+    :param blocks: The page's first screen, in order (its blocks in the first-screen sections).
+    :ptype blocks: Iterable[FirstScreenLine]
+    :return: One violation per absence found, its detail the absence's words (``not separated``); empty when the
+        first screen says only what the page is.
+    :rtype: list[StyleViolation]
+    """
+    found: list[StyleViolation] = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if not isinstance(text, str) or block.section in _ABSENCE_SECTIONS:
+            continue
+        if getattr(block, "source", None) in _ABSENCE_SOURCES:
+            continue
+        if str(getattr(block, "anchor", None) or "").startswith(_CAVEAT_ID):
+            continue
+        found += [
+            StyleViolation("absence", text, match.group(0)) for match in _ABSENCE.finditer(_CODE_SPAN.sub("", text))
+        ]
+    return found
+
+
 __all__ = [
     "BANNED_PHRASES",
     "CASE_LABEL_CHARS",
@@ -392,7 +444,9 @@ __all__ = [
     "MAX_WORDS",
     "ArmName",
     "HumanizeKind",
+    "FirstScreenLine",
     "StyleViolation",
+    "absence_violations",
     "arm_display_name",
     "arm_name",
     "code",

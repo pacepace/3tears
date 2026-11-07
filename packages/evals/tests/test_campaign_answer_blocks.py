@@ -1,5 +1,5 @@
-"""What a campaign's page says of its report and the person's call: no recommendation written, no writer's words, no
-findings, and the call, who made it and what it overrides."""
+"""What a campaign's page says of its report and the person's call: with no report, its lead and no line on what it
+lacks, no writer's words, no findings; and the call, once recorded, who made it and what it overrides."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import DisclosureBlock
 from threetears.evals.kernel.declaration import CampaignCall, OverriddenBar
 
@@ -37,10 +35,13 @@ from packages.evals.tests.campaign_page_support import (
 )
 
 
-async def test_with_no_report_the_page_says_no_recommendation_was_written_and_holds_no_writer_s_words() -> None:
+async def test_with_no_report_the_page_leads_on_code_s_reading_and_holds_no_writer_s_words() -> None:
     page = await page_of("billing", "tone")
     assert page.basis == "code_only"
-    assert NO_RECOMMENDATION in first_screen_markdown(page)
+    # The page is code's: it says what code read, and nothing of a report it does not hold (H5).
+    first = first_screen_markdown(page)
+    assert "**Accuracy on billing: v2 worse than production. Accuracy on tone: v2 better than production.**" in first
+    assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "memo"]
     with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
         CampaignReport.model_validate(
             {
@@ -76,7 +77,6 @@ async def test_a_recorded_call_says_who_decided_and_the_broken_floor_it_override
     assert "Called: adopt v2, by brooks on 18 Oct 2026." in first
     assert 'Reason: "Tone matters more this quarter."' in first
     assert "The call overrides a broken floor: no pass rate drops by more than 10 points on billing." in first
-    assert NO_CALL not in first
 
 
 async def test_a_call_that_keeps_the_control_overrides_nothing() -> None:
@@ -90,17 +90,18 @@ async def test_a_call_that_keeps_the_control_overrides_nothing() -> None:
     assert "Called: keep production" in first_screen_markdown(page) and not any("overrides" in line for line in called)
 
 
-async def test_a_choice_with_no_report_says_no_recommendation_was_written_then_the_cost_caveat_then_the_pairs() -> None:
+async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_out() -> None:
     page = await kind_page_of("billing", "refunds")
     assert page.readings.kind == "choice" and "recommendation" not in page.json_document()
-    # The arms are priced, so the report-wide cost caveat follows, once.
-    assert opening(page) == [("memo", NO_RECOMMENDATION), ("cost", COST_ROUTING_CAVEAT)]
+    # The lead is each aspect's pairs; the cost's routing is a Design & provenance row, not a first-screen line.
+    lead = "On billing, alpha and beta not separated. On refunds, alpha and beta not separated."
+    assert opening(page) == [("verdict", lead)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)
-    assert markdown.index(NO_RECOMMENDATION) < markdown.index("By aspect, pair by pair")
+    assert markdown.index(lead) < markdown.index("By aspect, pair by pair")
     header = header_html(page)
-    assert header.index("<h1>") < header.index(NO_RECOMMENDATION.split(":")[0])
-    assert html.index(NO_RECOMMENDATION.split(":")[0]) < html.index('data-table="pairs"')
+    assert header.index("<h1>") < header.index(lead)
+    assert html.index(lead) < html.index('data-table="pairs"')
 
 
 async def test_a_recorded_call_names_each_missed_bar_it_overrides_and_each_it_does_not() -> None:

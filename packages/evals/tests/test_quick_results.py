@@ -598,9 +598,10 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     page = campaign_report_markdown(result.page)
     bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
     asked = question is not None
-    assert bold[0] == f"**{verdict.heading}: {verdict.words}{'' if asked else ', a lead'}.**"
+    # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
+    assert bold[0] == f"**{verdict.heading}: {verdict.words}.**"
     assert bold[1].startswith("**cheap is not yet shown safe on the no leak guardrail")
-    assert ("No question was declared, so every reading is a lead." in page) is not asked
+    assert ("Exploratory comparison." in page.splitlines()) is not asked
     assert result.question == question
 
 

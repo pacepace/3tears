@@ -55,7 +55,6 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     TrialRow,
     UnexercisedFactor,
-    asks_a_question,
     refuse_a_bundle_of_another_shape,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
@@ -114,6 +113,7 @@ from threetears.evals.analysis.campaign_title import named_title
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals.analysis.report.campaign.provenance import (
     aspect_provenance_blocks,
+    calibration_blocks,
     caveat_blocks,
     setup_disclosure,
 )
@@ -175,7 +175,6 @@ from threetears.evals.kernel.declaration import (
     CostLower,
     RateDrop,
 )
-from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.kernel.metrics import (
     METRIC_DESCRIPTORS,
     goal_check_of,
@@ -998,8 +997,8 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     reading it is not about. A broken floor is also a line under the verdict (:func:`_floor_warning_blocks`); here it
     reads as plainly as a held one.
 
-    A campaign that asks a question and declares no floor says so in one line; an exploratory one, which asks nothing
-    and so cannot declare a floor, has no floor block at all. Where a floor is unclear, a ``To show the floors hold``
+    An aspect with no floor declared has no floor block at all: the page says what it holds, never what it lacks.
+    Where a floor is unclear, a ``To show the floors hold``
     table follows: for each unclear floor, what showing it holds needs if the arms do not differ and if they differ as
     observed, each count with its cost
     (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
@@ -1016,9 +1015,7 @@ def _decision_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -
     if control is None or not _candidates(bundle):
         return []
     if not read:
-        if not asks_a_question(bundle.declared):
-            return []
-        return [DisclosureBlock(section="decision", source="floor", text=f"No floor was declared on {bundle.aspect}.")]
+        return []
     cost = _cost_ruler(bundle)
     others = list(read)
     rows: list[dict[str, CellValue]] = []
@@ -1241,14 +1238,7 @@ def _question_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:
         *(f"{name} (judged)" for name in scope.exploratory_dimensions),
     ]
     if exploratory and scope.questions_declared:
-        blocks += [
-            DisclosureBlock(
-                section="not_tested",
-                source="scope",
-                text="No declared question asks about these readings, so read them as leads.",
-            ),
-            _readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]),
-        ]
+        blocks.append(_readings_table("unasked", "Unasked readings", [{"reading": name} for name in exploratory]))
     return blocks
 
 
@@ -3036,10 +3026,7 @@ def _not_tested_blocks(
             said.append(_unproven_check_sentence(proof, bundle.goal_check_names.get(proof.check)))
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
     blocks += _no_margin_blocks(bundle)
-    blocks += [
-        DisclosureBlock(section="not_tested", source="calibration", text=text, term="calibrated")
-        for text in _calibration_sentences(bundle.judge_evidence_tiers)
-    ]
+    blocks += calibration_blocks(bundle)
     blocks += also
     quoted = [bundle.held_fixed_reading.disclosure] if bundle.held_fixed_reading.disclosure else []
     if bundle.cost_unmeasured:
@@ -3072,36 +3059,6 @@ def _unexercised_sentence(factor: UnexercisedFactor, bundle: AnalysisContextBund
     if arms <= 1:
         return f"{name}: one {call} was made in all its trials, too few to read a level from."
     return f"{name}: one {call} was made, on {arm(factor.arms[0])}, and none on {others}, so it is not a level."
-
-
-def _calibration_sentences(tiers: Sequence[JudgeEvidenceTier]) -> list[str]:
-    """Each judge not yet calibrated against people, as a state and its next step — never as a failure.
-
-    A new judge has no labels, so on a first campaign this is said on every report: where the judge stands and what
-    to do next, one line per judge and state, every dimension it holds for named once.
-    """
-    by_judge: dict[tuple[str, bool, int], list[str]] = {}
-    for tier in tiers:
-        criterion = tier.calibration
-        if tier.tier == "calibrated" or criterion.state in ("met", "not_met"):
-            continue
-        key = (
-            tier.judge_model or "an unnamed judge",
-            criterion.n == 0,
-            criterion.results_needed or criterion.min_results,
-        )
-        dims = by_judge.setdefault(key, [])
-        if (dim := humanize("dimension", tier.rubric_dim)) not in dims:
-            dims.append(dim)
-    said = []
-    for (judge, none_yet, more), dims in by_judge.items():
-        state = "is uncalibrated" if none_yet else "is not yet calibrated"
-        why = "no human labels yet" if none_yet else "too few human labels so far"
-        said.append(
-            f"Judge {judge} {state} on {_listed(dims)}: {why}, so its scores are directional. "
-            f"Rate about {more} of its outputs to calibrate it."
-        )
-    return said
 
 
 def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None) -> str:
@@ -3217,6 +3174,8 @@ def _method_blocks(
             )
     say("measurement", bundle.launch_disclosure)
     say("cost", _unpriced_cost_line(bundle, arm))
+    if (routed := setup_disclosure("cost", bundle, arm)) is not None:
+        blocks.append(routed)
     if (latency := setup_disclosure("latency", bundle, arm)) is not None:
         blocks.append(latency)
     for _, sentence in sorted(bundle.short_runs.items()):

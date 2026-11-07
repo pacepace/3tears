@@ -257,7 +257,7 @@ async def test_the_code_only_report_says_so_once_on_its_first_screen(evals: Moun
     # out the aspect page's own exploratory verdict line, which the campaign's first screen carries once.
     title = next(index for index, line in enumerate(page.splitlines()) if line.startswith("# "))
     first_screen = page.split("\n## ", 1)[0]
-    lead = "No question was declared, so every reading is a lead."
+    lead = "Exploratory comparison."
     assert page.count(lead) == 1 and first_screen.index(lead) > first_screen.index(page.splitlines()[title])
     assert _EXPLORATORY_BASIS not in page
 

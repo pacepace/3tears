@@ -5,13 +5,17 @@ The matrix's form follows the campaign's kind (:func:`~threetears.evals.analysis
 - **A change**: one row per aspect, one column per candidate. Each cell is the candidate's change against the control
   in points, its interval drawn against the aspect's margin, and what it shows (shown better, shown worse, no worse
   than the margin, or unclear), with a floor's status beside it where the floor reads otherwise. The control's column
-  holds its pass rate, marked where it cannot move (a rate at or below the margin cannot show a drop; one at 100%
+  holds its pass rate with the count it is computed over, marked where it cannot move (a rate at or below the margin cannot show a drop; one at 100%
   cannot show a gain). Under it, folded, the same readings one row per aspect × candidate with their counts; then the
   lines that change how a cell reads; then one table of what would settle each unclear reading, on the pass rate and
   on every rate a floor reads.
-- **A choice**: one row per aspect, one column per arm, each cell the arm's pass rate and the arms it is shown ahead
-  of; folded under it, every pair; then the frontier's reading of which arm clears a bar cheapest.
-- **A measurement**: one row per aspect, one column per measure for its one arm; folded under it, every measure.
+- **A choice**: one row per aspect, one column per arm, each cell the arm's pass rate with its count and the arms it
+  is shown ahead of; folded under it, every pair; then the frontier's reading of which arm clears a bar cheapest.
+- **A measurement**: one row per aspect, one column per measure for its one arm, a pass rate with its count; folded
+  under it, every measure.
+
+A rate in a matrix carries the count it is computed over, beside it (``100 (40 of 40 trials, 20 cases)``): a rate
+the first screen shows is never a bare percent. How the intervals were read is the page's methods, not its scorecard.
 
 A change's or a choice's matrix carries one more row where
 :func:`~threetears.evals.analysis.report.campaign.aggregate.equal_weight_cells` gives it each arm's figure across every
@@ -77,7 +81,9 @@ __all__ = [
     "campaign_verdict",
     "frontier_blocks",
     "measure_blocks",
+    "measured_figure",
     "pair_blocks",
+    "pairs_words",
     "settle_blocks",
     "table_blocks",
 ]
@@ -166,6 +172,17 @@ def _counted(passed: int, trials: int, cases: int) -> str:
     """An arm's passes as a table states them: of its trials, which are named as trials where they are not its cases,
     so a count over repeats never reads as one over cases."""
     return f"{passed} of {trials}" if trials == cases else f"{passed} of {trials} trials"
+
+
+def _rate_count(passed: int, trials: int, cases: int) -> str:
+    """The count a matrix's rate is computed over, beside it: ``40 of 40 trials, 20 cases``, or ``20 of 20 cases``
+    where each case ran once."""
+    return f"{passed} of {trials} cases" if trials == cases else f"{passed} of {trials} trials, {cases} cases"
+
+
+def _marks(*marks: str | None) -> str | None:
+    """A cell's marks, joined, or None for none."""
+    return "; ".join(mark for mark in marks if mark) or None
 
 
 def _cases(counts: Sequence[int]) -> CellValue:
@@ -263,7 +280,7 @@ def table_blocks(
             DisclosureBlock(
                 section="scorecard",
                 source="comparisons",
-                text="No control was named, so no aspect is compared against one.",
+                text="Each arm is read on its own figures: a change is read against a named control.",
             )
         ]
     blocks: list[ReportBlock] = []
@@ -276,10 +293,12 @@ def table_blocks(
         for row in readings.readings
         if row.reading != "within_margin" and (level := _shown_interval(row)[1]) is not None
     ]
-    # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse.
+    # How the intervals were read is one paragraph, a sentence each: the level, the error rate, the rows no worse. It is
+    # a method, so it is the page's methods, not its scorecard.
     read = [*(_level_lines(levels, readings) if readings.readings else []), *_within_lines(readings, names)]
-    notes = [" ".join(read)] if read else []
-    notes += [
+    if read:
+        blocks.append(DisclosureBlock(section="methods", source="comparisons", text=" ".join(read)))
+    notes = [
         _rig_line(names(row.aspect), f"{row.arm_label}'s change against {readings.control_label}", row.rig)
         for row in readings.readings
         if row.rig is not None
@@ -352,7 +371,8 @@ def _control_cell(rows: Sequence[AspectReading], bundle: AnalysisContextBundle, 
         trials=row.control_trials,
     )
     marks = [f"cannot show a {bound}" for bound in bounds]
-    return TableCell(value=round(rate, 1), flag="; ".join(marks) or None)
+    count = _rate_count(row.control_passed, row.control_trials, row.control_cases)
+    return TableCell(value=round(rate, 1), flag=_marks(count, *marks))
 
 
 def _change_cell(row: AspectReading, campaign: EvalCampaign, readings: CampaignReadings) -> TableCell:
@@ -610,16 +630,19 @@ def _reconciled(
 
 
 def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
-    """An aspect no arm was compared on, and an aspect with no margin asked no question, which is never shown worse
-    (asked one, its drop is read against zero)."""
+    """An aspect where only one side ran, read arm by arm; and an aspect with no margin asked no question, where a drop
+    reads as not separated (asked one, its drop is read against zero): the one line where what the aspect lacks
+    changes how its row reads."""
     lines: list[str] = []
     for aspect in campaign.aspects:
         rows = readings.on_aspect(aspect.label)
         if not rows:
-            named = names(aspect.label)
-            lines.append(f"No arm was compared on {named}: the control or every other arm did not run there.")
+            lines.append(f"{names(aspect.label)} holds the runs of one side only, so its figures are read arm by arm.")
         elif aspect.margin is None and not any(row.confirmatory for row in rows):
-            lines.append(f"No margin was declared on {names(aspect.label)}, so no arm is ever shown worse there.")
+            lines.append(
+                f"On {names(aspect.label)}, a drop reads as not separated however large: a drop is read against a "
+                "margin, and the aspect declares none."
+            )
     return lines
 
 
@@ -848,10 +871,7 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     :rtype: str
     """
     if readings.kind == "choice":
-        pairs = [pair for pair in readings.pairs if pair.aspect == aspect]
-        if not pairs:
-            return "not compared"
-        return ", ".join(_pair_words(pair) for pair in pairs)
+        return pairs_words(readings, aspect) or "not compared"
     if readings.kind == "measurement":
         missed = [status.arm_label for status in readings.missed_bars() if status.aspect == aspect]
         return f"{', '.join(dict.fromkeys(missed))} misses a bar" if missed else "measured"
@@ -878,7 +898,25 @@ def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: 
     return "; ".join(f"{names(aspect)}: {aspect_shows(readings, aspect)}" for aspect in aspects)
 
 
-def _pair_words(pair: PairReading) -> str:
+def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True) -> str | None:
+    """Every pair read on one aspect, as a fold's heading and the page's lead say them: ``alpha ahead of beta, beta
+    and gamma not separated``, a pair the question does not ask marked a lead unless ``marked`` is False (a page
+    whose campaign asks nothing, which says so once); None where no pair was read there.
+
+    :param readings: What code read off the campaign.
+    :ptype readings: CampaignReadings
+    :param aspect: The aspect's label.
+    :ptype aspect: str
+    :param marked: Whether a pair the question does not ask is marked a lead.
+    :ptype marked: bool
+    :return: The words, or None.
+    :rtype: str | None
+    """
+    pairs = [pair for pair in readings.pairs if pair.aspect == aspect]
+    return ", ".join(_pair_words(pair, marked=marked) for pair in pairs) or None
+
+
+def _pair_words(pair: PairReading, *, marked: bool = True) -> str:
     """A pair as a fold's heading says it: ``alpha ahead of beta``, ``alpha and beta not separated``."""
     if pair.ahead is None:
         said = f"{pair.first_label} and {pair.second_label} not separated"
@@ -887,7 +925,7 @@ def _pair_words(pair: PairReading) -> str:
             (pair.first_label, pair.second_label) if pair.ahead == pair.first else (pair.second_label, pair.first_label)
         )
         said = f"{ahead} ahead of {behind}"
-    return said if pair.confirmatory else f"{said}, a lead"
+    return said if pair.confirmatory or not marked else f"{said}, a lead"
 
 
 # =============================================================================
@@ -1014,8 +1052,13 @@ def _choice_matrix(
         }
         for arm in arms:
             board = boards.get(arm)
-            rate = None if board is None or not board.usable else round(100 * board.passed / board.usable, 1)
-            cells[_arm_column(arm)] = TableCell(value=rate, flag=_ahead_marks(arm, pairs))
+            if board is None or not board.usable:
+                cells[_arm_column(arm)] = TableCell(value=None, flag=_ahead_marks(arm, pairs))
+                continue
+            count = _rate_count(board.passed, board.usable, board.usable_cases)
+            cells[_arm_column(arm)] = TableCell(
+                value=round(100 * board.passed / board.usable, 1), flag=_marks(count, _ahead_marks(arm, pairs))
+            )
         rows.append(cells)
     rows += _with_equal_weight_row(
         campaign, readings, reports, columns, {arm: (_arm_column(arm), PERCENT) for arm in arms}
@@ -1174,11 +1217,6 @@ def measure_blocks(
             total_rows=len(rows),
             details=True,
         ),
-        DisclosureBlock(
-            section="scorecard",
-            source="comparisons",
-            text="One arm is measured, so nothing is compared and no arm is recommended; its bars are its standard.",
-        ),
     ]
     notes = _unread_without_control_lines(campaign, reports)
     notes += _unread_until_candidate_lines(campaign, names)
@@ -1268,9 +1306,32 @@ def _measure_cell(found: Sequence[MeasureReading], form: MoneyForm | None = None
     if reading.value is None:
         return TableCell(value=None)
     value = round(scale * reading.value, places)
+    count = (
+        _rate_count(reading.passed, reading.trials, reading.cases)
+        if reading.passed is not None and reading.trials is not None
+        else None
+    )
     if reading.interval is None:
-        return TableCell(value=value)
-    return TableCell(value=value, low=scale * reading.interval[0], high=scale * reading.interval[1])
+        return TableCell(value=value, flag=count)
+    return TableCell(value=value, low=scale * reading.interval[0], high=scale * reading.interval[1], flag=count)
+
+
+def measured_figure(reading: MeasureReading) -> str | None:
+    """One arm's pass rate as a sentence states it: the count it is computed over, ``reply passed 40 of 40 trials on
+    20 cases``, or ``reply passed 18 of 20 cases`` where each case ran once; None for a reading that is no pass rate,
+    or not read. The percent and its interval are the scorecard's, beside the same count, one step down: a sentence
+    carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
+
+    :param reading: The arm's reading.
+    :ptype reading: MeasureReading
+    :return: The figure, as a clause with no closing stop, or None.
+    :rtype: str | None
+    """
+    if reading.value is None or reading.passed is None or reading.trials is None:
+        return None
+    if reading.trials == reading.cases:
+        return f"{reading.arm_label} passed {reading.passed} of {reading.cases} cases"
+    return f"{reading.arm_label} passed {reading.passed} of {reading.trials} trials on {reading.cases} cases"
 
 
 def _money_forms(readings: CampaignReadings, reports: Mapping[str, Report]) -> dict[str, MoneyForm]:

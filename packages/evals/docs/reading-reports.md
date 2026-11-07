@@ -41,25 +41,28 @@ wants its own pictures reads the bundles. `report_read(format="json")` and the c
 ### The campaign's first screen
 
 What a campaign can decide depends on its arms ([the three kinds](concepts.md#campaign-kind)), and so does its
-first screen, which is the decision. Top to bottom, nothing above the title:
+first screen, which is the decision. It says what the page is, never what it lacks. Top to bottom, nothing above the
+title:
 
 | | A change (control and candidates) | A choice (arms, no control) | A measurement (one arm) |
 |---|---|---|---|
 | 1 | title and question | title and question | title and question |
-| 1a | the lead, where a guardrail warns: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | none | none: one arm compares with nothing |
-| 2 | where the report is | where the report is | where the report is |
+| 1a | the lead: one sentence per candidate on the first grader's measure (the question's measure, where one is declared), naming both arms | the lead: each pair's pass-rate reading | the lead: the arm's pass rate as its count |
+| 2 | where the report is, where it has one | where the report is, where it has one | where the report is, where it has one |
 | 3 | what warns: each arm missing a bar, each candidate breaking a floor, each arm a guardrail leaves unsafe | each arm missing a bar or left unsafe by a guardrail | the arm missing a bar |
 | 4 | each report-wide caveat, once | each report-wide caveat, once | each report-wide caveat, once |
-| 5 | the call | the call | the call, once one is recorded |
+| 5 | the call, once one is recorded | the call, once one is recorded | the call, once one is recorded |
 
 Then, each under its heading: code's readings, under **Scorecard** ([below](#the-campaigns-scorecard));
 **Design & provenance**; then one fold per aspect.
 
-A campaign that asks no question says so in the question's place, once: `No question was declared, so every reading
-is a lead.` An eval that declares its question (`Eval(question=...)`) has it quoted there instead, and its readings
-read as answers, without ", a lead". Where the report is takes one line: the report document it is stored as, an analysis this version no
-longer reads or a retired writer wrote, or `No recommendation was written: no analysis has been generated over this
-campaign.`
+A comparison that asks no question says what it is in the question's place, once: `Exploratory comparison.`, the
+word linked to the glossary; its lead then reads without ", a lead". A measurement that asks none goes straight to
+its lead, its pass rate as a count: `reply passed 40 of 40 trials on 20 cases.` An eval that declares its question
+(`Eval(question=...)`) has it quoted there instead, and its readings read as answers; a reading it does not ask
+about is marked ", a lead". Where the report is takes one line, where the campaign has one: the report document it
+is stored as, or an analysis this version no longer reads or a retired writer wrote. A rate on the first screen
+carries the count it is computed over, here and in the scorecard's matrix (`100 (40 of 40 trials, 20 cases)`).
 
 What warns is one bold line per arm and kind, under the answer and never above the title (in HTML each a
 `<p class="flag warning">`, never announced with `role="alert"`), saying what it means for the arm (`Adopting v2
@@ -68,21 +71,23 @@ interval: the tables print those. A warning only warns: nothing on the page pick
 floors decide nothing.
 
 A disclosure that holds across the report (criteria set after their readings were visible, results with no ordered
-time, latency read under concurrency, request settings not confirmed) is one plain line after the warnings, naming
-where it holds, and its detail is a row of **Design & provenance**, stated there once: which criterion was set and
-when, and each aspect's own sentence for the test setup, verbatim. No aspect's fold repeats it, and it never lowers a
-reading or a recommendation. An aspect's own page says the same line under its verdict, its detail in its methods.
+time, latency read under concurrency, request settings not confirmed, a judge not yet calibrated against people's
+labels) is one plain line after the warnings, naming where it holds (`Judged scores on score are directional until
+people's labels calibrate the judge.`), and its detail is a row of **Design & provenance**, stated there once: which
+criterion was set and when, each aspect's own sentence for the test setup, verbatim, and which judge to calibrate
+and how many of its outputs to rate. No aspect's fold repeats it, and it never lowers a reading or a recommendation.
+An aspect's own page says the same line under its verdict, its detail in its methods (a judge's under Not tested).
 
-Where a page prints any cost figure, a campaign's or an aspect's own, one more line follows them: `Each cost figure reflects the provider
-routing of the runs it was measured on, not the model alone.` Quality is fixed for a model, its version and its
-quantization; cost is not, since one model routed across providers can cost several times more. No cost figure, chart
-or fold says it again.
+Where a page prints any cost figure, **Design & provenance** holds one more row, `cost as routed`: `Each cost figure
+reflects the provider routing of the runs it was measured on, not the model alone.` (an aspect's own page, in its
+methods). Quality is fixed for a model, its version and its quantization; cost is not, since one model routed across
+providers can cost several times more. The first screen does not say it: there, the cost is what it costs.
 
-**The call** closes the first screen: who decided, which arm, when and why (where runs joined after it, the line
-counts them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it overrides, and each it
-leaves unnamed. An override the readings no longer support is kept and marked `(no longer broken)`. In a choice,
-each pair where another arm is shown ahead of the decided one is a warning beside the call, never a refusal. With no
-call: `No call is recorded yet: a person decides, over code's readings.`
+**The call** closes the first screen, once a person has made one: who decided, which arm, when and why (where runs
+joined after it, the line counts them: `…, over 4 runs; 2 added since.`), then each broken floor and missed bar it
+overrides, and each it leaves unnamed. An override the readings no longer support is kept and marked `(no longer
+broken)`. In a choice, each pair where another arm is shown ahead of the decided one is a warning beside the call,
+never a refusal. Until a call is recorded the page has no call line
 ([recording one](adopting-a-host.md#recording-the-call)).
 
 `analyses_list` lists each stored analysis by the same warnings, word for word, then
@@ -96,11 +101,9 @@ A change of two aspects, one regressing past its floor and one improving, with n
 # support queue
 "Does the candidate pass more support requests than production, without losing any aspect?"
 
-No recommendation was written: no analysis has been generated over this campaign.
+**Pass rate on billing: v2 against production shown worse. Pass rate on tone: v2 against production shown better.**
 
 **Adopting v2 overrides the 10-point floor it breaks on billing.**
-
-No call is recorded yet: a person decides, over code's readings.
 ```
 
 ### The campaign's scorecard
@@ -121,9 +124,9 @@ of three candidates on three aspects, one aspect where the control passes nothin
 
 | Aspect | Cases | ▸ production (%) | v2 (pts) | v3 (pts) | v4 (pts) |
 |---|---|---|---|---|---|
-| billing | 20 | 90 | -60 (shown worse) | -5 (unclear) | 5 (unclear) |
-| tone | 20 | 50 | 40 (shown better; floor unclear) | 0 (unclear) | -10 (unclear; floor broken) |
-| refunds | 20 | 0 (cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
+| billing | 20 | 90 (18 of 20 cases) | -60 (shown worse) | -5 (unclear) | 5 (unclear) |
+| tone | 20 | 50 (10 of 20 cases) | 40 (shown better; floor unclear) | 0 (unclear) | -10 (unclear; floor broken) |
+| refunds | 20 | 0 (0 of 20 cases; cannot show a drop) | 25 (no worse than the margin) | 0 (unclear) | 10 (unclear) |
 ```
 
 The **Depth** tables say how much each reading stands on, before the bars read it. **Depth** gives each arm's usable

@@ -1,5 +1,5 @@
-"""A campaign's first screen, in order: the title, the question, where its report is, what warns, then the person's
-call; code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
+"""A campaign's first screen, in order: the title, the question, the lead, where its report is (where it has one),
+what warns, then the person's call (once one is recorded); code's readings follow it, under the Scorecard. Nothing stands above the title, and nothing on
 it is announced over it.
 
 **Who changes what here.** Chunk 03 of the senior-report plan owns this module and the order. Each part's marker
@@ -20,8 +20,6 @@ from threetears.evals.analysis import (
     campaign_report_html,
     campaign_report_markdown,
 )
-from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis.report.campaign_page import NO_CALL, NO_RECOMMENDATION
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     DisclosureBlock,
@@ -54,12 +52,16 @@ _TITLE = "production vs v2 · billing, tone (support queue)"
 #: The line a change's first screen warns of billing's broken floor in.
 _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing."
 
-#: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out.
+#: The lead a change over billing and tone opens on, on every page: each aspect's reading on its first measure.
+_CHANGE_LEAD = "Accuracy on billing: v2 worse than production. Accuracy on tone: v2 better than production."
+
+#: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call
+#: recorded the warning closes it (presentation build, chunk 1: the page says what it is, never what it lacks).
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
     ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),
+    ("p1", f"**{_CHANGE_LEAD}**"),
     ("03", f"**{_FLOOR_WARNING}**"),
-    ("03", NO_CALL),
 ]
 
 #: The same first screen in HTML, in order.
@@ -94,8 +96,8 @@ async def test_both_aspects_readings_are_in_the_scorecard_after_the_broken_floor
 
 
 @pytest.mark.parametrize(("screen", "markers"), [("markdown", _CHANGE_MARKDOWN), ("html", _CHANGE_HTML)])
-async def test_the_first_screen_runs_title_question_warning_call(screen: str, markers: list[tuple[str, str]]) -> None:
-    """A change reads its question, then what warns, then the call; code's table after what warns, wherever the
+async def test_the_first_screen_runs_title_question_lead_warning(screen: str, markers: list[tuple[str, str]]) -> None:
+    """A change reads its question, then its lead, then what warns; code's table after what warns, wherever the
     scorecard lays it out."""
     page = await page_of("billing", "tone")
     said = first_screen_markdown(page) if screen == "markdown" else header_html(page)
@@ -107,28 +109,28 @@ async def test_the_first_screen_runs_title_question_warning_call(screen: str, ma
         whole, warning, table = campaign_report_html(page), '<p class="flag warning">', _SCORECARD["change"][2]
     assert whole.index(warning) < whole.index(table)
     assert page.basis == "code_only"
-    # The arms are priced, so the report-wide cost caveat closes what warns, once.
-    assert opening(page) == [("memo", NO_RECOMMENDATION), ("cost", COST_ROUTING_CAVEAT)]
+    # The lead is all the page says besides its question and its warning: no line on a report it lacks, no call line
+    # before a call, and the cost's routing is a Design & provenance row, not a first-screen line.
+    assert opening(page) == [("verdict", _CHANGE_LEAD)]
 
 
-async def test_a_code_only_page_has_no_summary_and_says_no_recommendation_was_written_before_the_table() -> None:
+async def test_a_code_only_page_has_no_summary_and_leads_before_the_table() -> None:
     page = await page_of("billing", "tone")
     first = first_screen_markdown(page)
-    assert first.index(f'"{QUESTION}"') < first.index(NO_RECOMMENDATION)
+    assert first.index(f'"{QUESTION}"') < first.index(_CHANGE_LEAD)
     # Code's table is the Scorecard's, after the first screen.
     assert _SCORECARD["change"][1] not in first
     markdown = campaign_report_markdown(page)
-    assert (
-        markdown.index(NO_RECOMMENDATION) < markdown.index("\n## Scorecard\n") < markdown.index(_SCORECARD["change"][1])
-    )
-    assert opening(page)[0] == ("memo", NO_RECOMMENDATION)
+    assert markdown.index(_CHANGE_LEAD) < markdown.index("\n## Scorecard\n") < markdown.index(_SCORECARD["change"][1])
+    assert opening(page)[0] == ("verdict", _CHANGE_LEAD)
 
 
-async def test_a_measurement_opens_on_its_warning_then_its_measures() -> None:
+async def test_a_measurement_opens_on_its_lead_and_warning_then_its_measures() -> None:
     page = await kind_page_of("solo")
     _, caption, mark = _SCORECARD["measurement"]
     assert page.readings.kind == "measurement"
-    assert opening(page) == [("cost", COST_ROUTING_CAVEAT)]
+    # One arm measured leads on its pass rate with the count it is computed over.
+    assert opening(page) == [("verdict", "alpha passed 45 of 60 trials on 20 cases.")]
     first = first_screen_markdown(page)
     assert first.startswith("# ")
     assert "**alpha falls short of the bar on solo.**" in first
@@ -169,10 +171,10 @@ def test_each_warning_is_one_plain_line_per_arm_with_no_expression_or_figure_of_
     assert len(said) == len(set(said)), "one line per arm per kind"
 
 
-def test_a_page_with_nothing_that_warns_holds_only_its_report_caveat_where_warnings_go() -> None:
+def test_a_page_with_nothing_that_warns_holds_nothing_where_warnings_go() -> None:
     page = s4_change().page()
-    # Its one report-wide caveat, that its costs are as routed, is all the section holds: nothing warns.
-    assert [block.anchor for block in page.blocks if block.section == "warnings"] == ["caveat-cost"]
+    # Its costs are as routed, which Design & provenance states, so the section holds nothing: nothing warns.
+    assert [block.anchor for block in page.blocks if block.section == "warnings"] == []
     assert '<p class="flag warning">' not in campaign_report_html(page)
 
 

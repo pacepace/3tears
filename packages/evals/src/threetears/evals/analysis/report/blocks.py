@@ -163,15 +163,14 @@ FIRST_SCREEN: frozenset[str] = frozenset({"header", "answer", "warnings", "score
 #: screen, a broken floor's warning, the page's first line; in the Decision section, the lines under the floors table
 #: saying a floor warns and never decides, and how the cases that would settle one were counted. ``verdict``: the
 #: verdict line. ``design``, ``charts`` and ``cost``: how the run was laid out, what was not charted and where a cost
-#: is a floor, in the methods; ``cost`` is also the first-screen line saying each cost figure is its runs' provider
-#: routing's. ``memo``: who wrote the report, or that no one did. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
+#: is a floor, in the methods; ``cost`` is also the detail saying each cost figure is its runs' provider routing's. ``memo``: where the campaign's report is, where it has one. ``runs``: member runs left out, unfinished or short. ``measurement``: how and when the runs
 #: were launched and measured. ``apparatus``: the test setup — controls, confounds, cells that did not pool, a judge
 #: grading its own model's answers. ``comparisons``: how the contrasts against the control were tested and
 #: corrected. ``strata``: a stratum too small to read alone. ``guardrails``: how guardrails were decided.
 #: ``scope``: which readings no declared question asked about. ``not_tested``: something the campaign could not
 #: speak to. ``calibration``: a judge not yet calibrated against people's labels — a state with its next step, never a
-#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, or that
-#: none is recorded yet, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
+#: failure. ``generation``: how the report itself was made. ``call``: on a campaign's page, the person's call, once
+#: one is recorded, and every broken floor it overrides. ``bar``: on a campaign's page, a bar an arm misses, a
 #: line as loud as a broken floor's and as early.
 DisclosureSource = Literal[
     "arms",
