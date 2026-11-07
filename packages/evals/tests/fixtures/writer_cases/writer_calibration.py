@@ -758,7 +758,7 @@ def cost_note(stored: dict[str, Any], *, judge: str, k: int) -> str:
     return f"{sends}, about ${calls * per_call:.2f} at the ${per_call:.4f} a call the stored record spent."
 
 
-def _weighted_kappa(rows: Sequence[dict[str, Any]], judges: Iterable[str]) -> float | None:
+def _weighted_kappa(rows: Sequence[dict[str, Any]], judges: Iterable[str | None]) -> float | None:
     names = set(judges)
     for row in rows:
         if row["criterion"] == preference_rubric().name and row["judge"] in names:
@@ -779,7 +779,7 @@ def _of(counted: tuple[int, int] | None) -> str | None:
 
 
 def _signed(before: float | None, now: float | None) -> str | None:
-    return None if before is None or now is None else f"{now - before:+.2f}"
+    return None if before is None or now is None else f"{now - before:+.3f}"
 
 
 #: The three measures, in the order the reread prints them.
@@ -836,53 +836,58 @@ class Reread:
         }
 
     def lines(self) -> Iterator[str]:
-        """The printed reread: the three measures in a table, then a sentence each on the shift, its likely cause and
-        the agreement with the Opus editor."""
+        """The printed reread: the three measures in a table, what "held" means, then a sentence each on the shift, its
+        likely cause and the agreement with the Opus editor. A first anchor prints this read's measures alone."""
         before, now, changed, held = self.before, self.now, self.changed(), self.held()
-        yield (
-            f"A reread asks {self.judge} the anchor cases again and compares it with its own stored read: it detects a "
-            "judge or version shift, never whether the judge is right."
-        )
+        purpose = "never whether the judge is right"
+        if before is None:
+            yield (
+                f"A reread asks {self.judge} the anchor cases again to detect a judge or version shift, {purpose}; the "
+                f"stored record holds no per-case verdicts from {self.judge}, so this read is its first anchor."
+            )
+        else:
+            yield (
+                f"A reread asks {self.judge} the anchor cases again and compares it with its own stored read: it "
+                f"detects a judge or version shift, {purpose}."
+            )
         yield ""
-        yield "| Measure | Stored read | This read | Change | Held |"
-        yield "|---|---|---|---|---|"
+        reads = (now,) if before is None else (before, now)
         later = [
             None if r is None else (sum(side == 1 for side in r.preferred().values()), len(r.preferred()))
-            for r in (before, now)
+            for r in reads
         ]
-        agree = [None if r is None or not r.consistent()[1] else r.consistent() for r in (before, now)]
+        agree = [None if r is None or not r.consistent()[1] else r.consistent() for r in reads]
         consistency = [None if a is None else a[0] / a[1] for a in agree]
-        leans = [None if r is None else r.lean() for r in (before, now)]
-        ok = {name: None if value is None else ("yes" if value else "no") for name, value in held.items()}
-        table = (
-            (
-                "Pairs of rounds preferring the later round",
-                _of(later[0]),
-                _of(later[1]),
-                None if changed is None else f"{changed[0]} changed side",
-                ok["preference"],
-            ),
-            (
-                "Pairs whose two orders pick the same round",
-                _of(agree[0]),
-                _of(agree[1]),
-                _signed(*consistency),
-                ok["order consistency"],
-            ),
-            (
-                "First-slot lean, 0 none and 0.5 always the page read first",
-                leans[0],
-                leans[1],
-                _signed(*leans),
-                ok["first-slot lean"],
-            ),
+        leans = [None if r is None else r.lean() for r in reads]
+        names = (
+            "Pairs of rounds preferring the later round",
+            "Pairs whose two orders pick the same round",
+            "First-slot lean: 0 none, up to 0.5 for Report A at the scale's end every time, down to -0.5 for Report B",
         )
-        for row in table:
-            yield "| " + " | ".join(_cell(value) for value in row) + " |"
-        yield ""
         if before is None:
-            yield f"The stored record holds no per-case verdicts from {self.judge}, so this read is its first anchor."
+            yield "| Measure | First read |"
+            yield "|---|---|"
+            for name, value in zip(names, (_of(later[0]), _of(agree[0]), leans[0]), strict=True):
+                yield f"| {name} | {_cell(value)} |"
         else:
+            ok = {name: None if value is None else ("yes" if value else "no") for name, value in held.items()}
+            flipped = (
+                None if changed is None else f"{changed[0]} of {changed[1]} changed side, {changed[0] / changed[1]:.3f}"
+            )
+            table = (
+                (names[0], _of(later[0]), _of(later[1]), flipped, ok["preference"]),
+                (names[1], _of(agree[0]), _of(agree[1]), _signed(*consistency), ok["order consistency"]),
+                (names[2], leans[0], leans[1], _signed(*leans), ok["first-slot lean"]),
+            )
+            yield "| Measure | Stored read | This read | Change | Held |"
+            yield "|---|---|---|---|---|"
+            for row in table:
+                yield "| " + " | ".join(_cell(value) for value in row) + " |"
+            yield ""
+            yield (
+                f"Held means a measure changed by {HELD_WITHIN:.2f} or less, a set tolerance rather than a measured "
+                "one; for preference the change is the share of the pairs both reads scored that changed side."
+            )
             moved = [name for name, value in held.items() if value is False]
             yield "The judge held on all three measures." if not moved else f"The judge moved on {_listed(moved)}."
             served = (before.served, frozenset() if now is None else now.served)
@@ -894,12 +899,14 @@ class Reread:
             else:
                 why = ", so no model change explains the shift" if moved else ": no model change"
                 yield f"Its served model is {_models(served[1])} in both reads{why}."
+        yield ""
         kappa = (
             _weighted_kappa(
                 self.stored.get("agreement_with_the_opus_editor", []),
                 {self.judge, *(before.served if before else ())},
             ),
-            _weighted_kappa(agreement_rows(self.readings), now.served if now else ()),
+            # This read is one arm, so a reading that names no served model is still this judge's.
+            _weighted_kappa(agreement_rows(self.readings), {self.judge, None, *(now.served if now else ())}),
         )
         yield (
             "Agreement with the Opus editor's rubric totals, an agent's labels, as weighted κ on the anchor cases: "
