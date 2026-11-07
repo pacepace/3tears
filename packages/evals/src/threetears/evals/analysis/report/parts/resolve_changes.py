@@ -948,7 +948,9 @@ def _forest(context: ChartContext) -> Drawn:
         zero_label=_zero_label(context),
         emphasis=context.emphasis,
     )
-    return money_drawn(context, data, notes, money=_drawn_money(context, drawn))
+    # Its values table reads each value and interval end at the unit's precision (a point to one decimal), as its
+    # end labels and the keys citing the rows read them: one precision, never the float's four figures.
+    return money_drawn(context, data, notes, money=_drawn_money(context, drawn), read_at=drawn.unit)
 
 
 def _bar_row(change: _Change, level: str) -> BarRow:

@@ -94,6 +94,7 @@ from packages.evals.tests.writer_eval_support import lay_recording
 from threetears.evals.analysis import EvalSummary, RunMeasureSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
+from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
@@ -574,10 +575,15 @@ def _interval(verdict: Verdict | None) -> str:
     return f"{low:.3f} to {high:.3f} at {verdict.interval_level}"
 
 
+def _outcome_words(outcome: str) -> str:
+    """A verdict's outcome as the readout prints it: the undecided one in the glossary's words."""
+    return CANNOT_TELL_APART if outcome == "not_separated" else outcome.replace("_", " ")
+
+
 #: A verdict's reason, as the criterion's table reads it.
 _REASON_WORDS: Final = {
     "separated": "separated",
-    "no_margin": "not separated",
+    "no_margin": CANNOT_TELL_APART,
     "too_few_cases": "too few cases",
     "untestable": "untestable",
 }
@@ -653,7 +659,7 @@ def pass_criterion(
         ),
         Requirement(
             f"the primary reading reads {outcome}",
-            "not read" if primary is None else primary.outcome.replace("_", " "),
+            "not read" if primary is None else _outcome_words(primary.outcome),
             primary is not None and primary.outcome == outcome,
         ),
         Requirement(
@@ -673,7 +679,7 @@ def pass_criterion(
         ),
         Requirement(
             "bounces do not separate",
-            "not read" if bounces is None else bounces.outcome.replace("_", " "),
+            "not read" if bounces is None else _outcome_words(bounces.outcome),
             bounces is None or bounces.outcome not in ("improved", "regressed"),
         ),
         *(() if one_editor else _editor_rows(read)),
@@ -711,7 +717,7 @@ def _two_editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
             "the preference over pairs both finished points the same way",
             "not read"
             if finished is None or finished.delta is None
-            else f"{finished.outcome.replace('_', ' ')}, difference {finished.delta:+.3f}",
+            else f"{_outcome_words(finished.outcome)}, difference {finished.delta:+.3f}",
             finished is not None and finished.delta is not None and finished.delta > 0,
         ),
     )
@@ -720,7 +726,7 @@ def _two_editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
 def _editor_rows(read: WriterPromotion) -> tuple[Requirement, ...]:
     """Each reading an arm's own editor decides, reported and not compared."""
     return tuple(
-        Requirement(verdict.heading, verdict.outcome.replace("_", " "), None)
+        Requirement(verdict.heading, _outcome_words(verdict.outcome), None)
         for name in EDITOR_READINGS
         for verdict in read.verdicts
         if verdict.name == name
@@ -834,8 +840,8 @@ class Acceptance:
             yield f"| {arm} | {_total(measures.get(BOUNCES_MEASURE))} | {_total(measures.get(ANALYST_ROUNDS_MEASURE))} | {summary.n_results} |"
         yield ""
         yield (
-            f"Bounces read {'not read' if bounces is None else bounces.outcome.replace('_', ' ')} for "
-            f"{self.variant.name}, beside each arm's analyst rounds, since more rounds give more submissions to bounce."
+            f"Bounces for {self.variant.name}: {'not read' if bounces is None else _outcome_words(bounces.outcome)}, "
+            "read beside each arm's analyst rounds, since more rounds give more submissions to bounce."
         )
 
     def pages(self) -> Iterator[str]:

@@ -260,9 +260,8 @@ CONTRAST_VERDICT_WORDS: dict[str, str] = {
     "improved": "Improved",
     "regressed": "Regressed",
     "equivalent": "Equivalent",
-    # Frozen: a written page's text (``doc_page_text``) prints this table, and rung 5's recorded judge replays against
-    # that text, so the glossary's words wait on a new recording (owner spend).
-    "not_separated": "Not separated",
+    # The undecided reading in the glossary's words, as a cell says it (owner ruling Q2): never "not separated".
+    "not_separated": CANNOT_TELL_APART.capitalize(),
     "untested": "Untested",
 }
 
@@ -438,14 +437,14 @@ HUMAN_PREF_NOTE = "The share of {n} blind ratings preferring {control} over {arm
 #: A chart whose figures have no mean, drawn at a percentile instead.
 STATISTIC_NOTE = "Each bar is the arm's {statistic}."
 
-#: GENERATOR §3: which way a change reads, by the direction of the change, never by the margin. Frozen in the old words
-#: for an interval across zero: a written page's text (``doc_page_text``) prints a chart's notes, and rung 5's recorded
-#: judge replays against that text, so the glossary's words wait on a new recording (owner spend).
-_CHANGE_WORDS: dict[str, str] = {"worse": "worse", "better": "better", "": "not separated"}
+#: GENERATOR §3: which way a change reads, by the direction of the change, never by the margin. An interval across
+#: zero is the undecided reading in the glossary's words, as a cell says it
+#: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`, owner ruling Q2), never "not separated".
+_CHANGE_WORDS: dict[str, str] = {"worse": "worse", "better": "better", "": CANNOT_TELL_APART}
 
 
 def change_words(direction: str) -> str:
-    """A change's direction as a chart note says it (GENERATOR §3): ``worse``, ``better``, or ``not separated``.
+    """A change's direction as a chart note says it (GENERATOR §3): ``worse``, ``better``, or ``cannot tell apart``.
 
     :param direction: ``worse``, ``better``, or empty where the interval crosses zero.
     :ptype direction: str

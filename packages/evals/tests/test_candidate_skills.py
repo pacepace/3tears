@@ -8,7 +8,7 @@ README's diff or digests drifting from the files; a candidate's arm not named fo
 naming it by its skill digest; the criterion asking a candidate skill to read worse; with two editors, bounces left
 uncompared, an editor's own reading (must-fix findings open, report finished) deciding, the read's keep standing in for
 the readings it folds in, or the finished pairs not asked to point the primary's way; a live run's refusal coming after
-its directory is made; the shipped skill as its own candidate reading anything but not separated.
+its directory is made; the shipped skill as its own candidate reading anything but cannot tell apart.
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ def test_the_shipped_skill_as_its_own_candidate_reads_not_separated(
     assert "Does the gate read the shipped-again skill as writing better reports than the shipped skill?" in text
     assert "| the read answers promote | " in text
     # One editor, so bounces are compared, and no sentence says the editors differ.
-    assert "| bounces do not separate | not separated | yes |" in text
+    assert "| bounces do not separate | cannot tell apart | yes |" in text
     assert "editor.md differs" not in text
     assert "PASS means the fixed judge prefers" not in text and "| Analyst rounds |" not in text
 
@@ -219,9 +219,9 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     )
     # Two editors: bounces, counted before any editor sees a page, are compared; each editor's own readings are not,
     # and the read's decision, which folds them in, gives way to the readings it would otherwise decide on.
-    assert "| bounces do not separate | not separated | yes |" in printed
-    assert f"| Must-fix findings open | not separated | {NOT_COMPARED} |" in printed
-    assert f"| Report finished | not separated | {NOT_COMPARED} |" in printed
+    assert "| bounces do not separate | cannot tell apart | yes |" in printed
+    assert f"| Must-fix findings open | cannot tell apart | {NOT_COMPARED} |" in printed
+    assert f"| Report finished | cannot tell apart | {NOT_COMPARED} |" in printed
     assert "| the read answers promote |" not in printed
     assert "| no other gated reading regressed, and every guardrail held | none regressed | yes |" in printed
     assert "| the preference over pairs both finished points the same way | " in printed
@@ -235,7 +235,7 @@ def test_headline_answers_runs_dry_and_the_record_names_it_by_its_digest(
     assert "7 of 7 pairs had both pages stored finished." in after
     assert "| Arm | Bounces | Analyst rounds | Reports |" in after
     assert f"| {SHIPPED} | 0 | 7 | 7 |" in after and "| headline-answers | 0 | 7 | 7 |" in after
-    assert "Bounces read not separated for headline-answers, beside each arm's analyst rounds" in after
+    assert "Bounces for headline-answers: cannot tell apart, read beside each arm's analyst rounds" in after
     # Each arm's recordings are keyed by its own skill digest.
     assert f"recordings/headline-answers-{digest[:12]}-" in printed
     assert f"recordings/{SHIPPED}-{load_skill().digest[:12]}-" in printed

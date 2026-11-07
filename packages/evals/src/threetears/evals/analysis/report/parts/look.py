@@ -26,9 +26,8 @@ score           a judged score                                               ``n
 ==============  ===========================================================  ==================
 
 **Money has one form within a chart, chosen from every amount it draws** (#993): its notes and its ticks alike, thousands
-grouped, in the set's :func:`~threetears.evals.kernel.numbers.money_form` (whole dollars where every amount is $10 or
-more, else cents, with more decimals where its least amount needs them), the kit drawing its ticks to the same decimals
-(``usd:<decimals>``). Where some amount is under a cent, the chart draws every amount a thousand times over, per 1,000
+grouped, in the set's :func:`~threetears.evals.kernel.numbers.money_form` (each amount to two significant figures,
+cents at least), the kit drawing its ticks to the decimals of the set's finest amount (``usd:<decimals>``). Where some amount is under a cent, the chart draws every amount a thousand times over, per 1,000
 more of what it counts (``counted``), as money per reply is drawn per 1,000 replies, so its ticks and notes read in
 dollars alike. A quantity made without its drawn values (a change read alone) spells each amount as the package
 spells money (:func:`~threetears.evals.kernel.numbers.spell_dollars`), by the kit's ``usd``.

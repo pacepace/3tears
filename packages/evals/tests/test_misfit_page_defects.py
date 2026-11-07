@@ -84,7 +84,7 @@ def test_a_note_restating_its_rows_value_is_not_printed_beside_it_and_one_that_s
     saying_more = ForestChart(
         rows=[
             ForestRow(label="A", value=-7.581, lo=-10.79, hi=-3.381, note="worse"),
-            ForestRow(label="B", value=-3.010, lo=-5.815, hi=1.136, note="not separated"),
+            ForestRow(label="B", value=-3.010, lo=-5.815, hi=1.136, note="cannot tell apart"),
         ],
         domain=(-15, 5),
         fmt="+num",
@@ -92,7 +92,7 @@ def test_a_note_restating_its_rows_value_is_not_printed_beside_it_and_one_that_s
     )
     headers, rows = saying_more.table([])
     assert headers[-1] == "Note"
-    assert [row[-1] for row in rows] == ["worse", "not separated"]
+    assert [row[-1] for row in rows] == ["worse", "cannot tell apart"]
 
 
 def test_a_money_note_restating_its_amount_is_not_printed_beside_it() -> None:

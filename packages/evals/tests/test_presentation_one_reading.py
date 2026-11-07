@@ -489,8 +489,8 @@ def test_the_code_page_and_the_document_page_tag_every_arm_alike(capture: str) -
 
 def test_a_status_pill_says_an_undecided_reading_in_the_glossary_s_phrase() -> None:
     """A gate matrix's or options table's pill for a reading whose interval crosses zero: the glossary's phrase,
-    never "Not separated". (A chart's note and the corrected-comparisons verdict on a written page keep the retired
-    words until rung 5's judge is recorded again: the text it replays against prints both.)"""
+    never "Not separated", as a written page's chart notes and corrected-comparisons verdict say it too
+    (test_presentation_figure_forms)."""
     assert reading_words("", None) == CANNOT_TELL_APART.capitalize()
     assert reading_words("", True) == f"{CANNOT_TELL_APART.capitalize()}, within margin"
     assert not _RETIRED.search(reading_words("", False))

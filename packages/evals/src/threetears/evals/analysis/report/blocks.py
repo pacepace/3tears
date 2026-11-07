@@ -561,11 +561,13 @@ def money_columns(
     names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
     the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
     :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
-    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, one more where an
-    interval's two ends would otherwise read alike. A table states the count its money is drawn per in its head or its
-    row, never as a mark on the amount. The values are as stored, so the shared decimals state no digit a value does
-    not hold; a cell of words, of another unit, or already carrying a form its builder chose from a wider set, is left
-    as it is.
+    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, cents at least,
+    one more where an interval's two ends would otherwise read alike. Each cell writes its value and its interval's
+    ends at one precision, the finest of them needs (:meth:`~threetears.evals.kernel.numbers.MoneyForm.places_of`), so
+    $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100``. A table states the count its money is drawn per in its
+    head or its row, never as a mark on the amount. The values are as stored, so the decimals state no digit a value
+    does not hold; a cell of words, of another unit, or already carrying a form its builder chose from a wider set, is
+    left as it is.
 
     :param rows: The table's rows, by column key.
     :ptype rows: Sequence[Mapping[str, TableCell]]
@@ -597,11 +599,22 @@ def money_columns(
     forms = {name: money_form(amounts, intervals=spans.get(name, ())) for name, amounts in held.items()}
     return [
         {
-            key: cell.model_copy(update={"decimals": forms[set_of(at, key)].decimals}) if chosen(cell) else cell
+            key: cell.model_copy(
+                update={"decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell))}
+            )
+            if chosen(cell)
+            else cell
             for key, cell in row.items()
         }
         for at, row in enumerate(rows)
     ]
+
+
+def _cell_amounts(cell: TableCell) -> list[float | None]:
+    """A money cell's amounts: its value and its interval's ends."""
+    value = cell.value
+    point = float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+    return [point, cell.low, cell.high]
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:

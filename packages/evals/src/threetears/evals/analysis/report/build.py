@@ -1574,8 +1574,9 @@ def _figure(value: float | None, ruler: MeasureRuler) -> TableCell:
         return TableCell(value=None)
     if ruler.money is not None and is_money(ruler.unit):
         form = ruler.money
+        drawn = value * ruler.factor
         return TableCell(
-            value=value * ruler.factor, unit=ruler.unit, decimals=form.decimals, per_thousand=form.per_thousand
+            value=drawn, unit=ruler.unit, decimals=form.places_of([drawn]), per_thousand=form.per_thousand
         )
     return TableCell(value=value * ruler.factor, unit=ruler.unit)
 
@@ -1646,7 +1647,8 @@ def _change(
         )
     if form is None:
         return cell
-    return cell.model_copy(update={"decimals": form.decimals, "per_thousand": form.per_thousand})
+    places = form.places_of([float(delta * ruler.factor), cell.low, cell.high])
+    return cell.model_copy(update={"decimals": places, "per_thousand": form.per_thousand})
 
 
 def _change_forms(

@@ -245,11 +245,10 @@ def money_ruler(
     An amount that counts something (money per reply, per 1,000 or per 1,000,000 of what it counts) is drawn per
     ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
     ruler moves, and the count is said in the header or the axis that carries it ("Cost per 1,000 replies"), never as a
-    mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars to
-    the decimals its least amount needs for two significant figures (``$0.0030 per 1,000,000 replies``). A total
-    (``per`` 0: a run's cost, a month's) counts nothing and is never scaled: it reads in plain dollars, to two
-    significant figures under a dollar (``$0.0041``), to cents from a dollar up and whole dollars from $10 (``$1,208``).
-    Either way an
+    mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars, each
+    amount to two significant figures (``$0.0030 per 1,000,000 replies``). A total (``per`` 0: a run's cost, a month's)
+    counts nothing and is never scaled: it reads in plain dollars, to two significant figures under a dollar
+    (``$0.0041``) and to cents from a dollar up, whatever its size (``$1,208.00``, owner ruling Q3). Either way an
     interval the set prints never reads its two ends alike where its stored ends differ
     (:func:`~threetears.evals.kernel.numbers.money_form`).
 
