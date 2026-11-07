@@ -1670,9 +1670,9 @@ class SharedArrowStore:
             written = _write_tables(staging, tables, lambda: bound)
             (staging / _LOCK_FILE).touch()
             files = _directory_files(staging)
+            os.rename(staging, self._handoffs / handoff_id)
             with self._state:
-                # renamed and recorded in one hold, so the tally never misses a hand-off the directory holds
-                os.rename(staging, self._handoffs / handoff_id)
+                # in _handing until here, so no sweep retires it before it is recorded
                 self._held.add(self._handoffs / handoff_id, files)
         except BaseException:
             remove_tree(staging, log=log, what="a failed hand-off's staging directory")
@@ -1935,9 +1935,9 @@ class SharedArrowStore:
             _write_tables(staging, tables, room, base)
             (staging / _LOCK_FILE).touch()
             staged = _directory_files(staging)
+            os.rename(staging, self._versions / name)
             with self._state:
-                # renamed and recorded in one hold, so the tally never misses a version the directory holds
-                os.rename(staging, self._versions / name)
+                # the publish's _pending until it is current, so no sweep retires it before it is recorded
                 self._held.add(self._versions / name, staged)
         except SharedArrowFullError:
             with self._state:
