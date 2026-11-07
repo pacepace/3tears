@@ -120,7 +120,7 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
     # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
-    assert "2026-11-07, at head `a6eea952f`" in readme
+    assert "2026-11-07, at head `c588012f3`" in readme
     assert "Not recorded" not in readme
 
 
