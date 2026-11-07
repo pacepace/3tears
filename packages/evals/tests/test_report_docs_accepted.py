@@ -176,7 +176,8 @@ def test_each_stored_document_passes_every_invariant_and_renders_strict(name: st
 @pytest.mark.integration
 @pytest.mark.parametrize("name", _NAMES)
 def test_each_stored_document_s_page_passes_the_render_checks(name: str, tmp_path: Path) -> None:
-    """``scripts/check.py`` at 1200 and 390 px, light and dark, on each stored record's page as the store built it."""
+    """``scripts/check.py`` at 1200, 688 and 390 px, light and dark, on each stored record's page as the store built
+    it."""
     reason = chromium_unavailable()
     if reason is not None:
         pytest.skip(f"headless Chromium cannot launch: {reason}")
@@ -185,4 +186,7 @@ def test_each_stored_document_s_page_passes_the_render_checks(name: str, tmp_pat
     checked, runs = render_checked(page, tmp_path / "screenshots")
 
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert len(runs) == 4 and all(line.startswith("ok") for line in runs), checked.stdout
+    assert len(runs) == 6 and all(line.startswith("ok") for line in runs), checked.stdout
+    # every render at its own width, the host frame (688 px) among them, overflowing none, light and dark
+    widths = (1200, 1200, 688, 688, 390, 390)
+    assert all(f" {w}px " in run and f"scrollWidth={w} " in run for w, run in zip(widths, runs, strict=True))
