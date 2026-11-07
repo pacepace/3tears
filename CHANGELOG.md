@@ -94,7 +94,8 @@ separated`; carry an earlier run's projection with `WriterEval(prior=WriterPrior
 or `--prior <acceptance.json>`. `WriterResult` gains `cases` and `resolution`, `WriterPromotion` gains
 `stopping_line`, and the pass's job result gains `stopping` and each pair `reached`, all defaulted, so a stored report
 still reads; no schema'd document changes, so no schema minor moves. The `writer_pairwise` engine action takes no rule
-and reads every case, as `never` does. `threetears.evals.harness` exports `StopWhen` and `WriterPrior`, provisional.
+and reads every case, as `never` does. `threetears.evals.harness` exports `StopWhen` and `WriterPrior`, and the
+types `WriterPairwise.stopping` reaches (`PairwiseStopping`, `StoppingRule`, `PairwiseLook`), provisional.
 
 ### evals: a campaign's first screen says what the page is: a lead on every page, its rates with their counts
 

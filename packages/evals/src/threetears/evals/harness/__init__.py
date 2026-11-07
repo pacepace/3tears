@@ -15,7 +15,9 @@ analyst and its editor that write a campaign's page. An eval file imports its na
   :class:`ReasonedOn` documents lead to and recording why in the case's :class:`CaseMint` (one :class:`WithheldNote`
   per note).
 - :data:`StopWhen` is the pairwise pass's stopping rule a writer eval declares (``stop_when``), and a
-  :class:`WriterPrior` an earlier run on the same cases, whose projection its resolution line carries.
+  :class:`WriterPrior` an earlier run on the same cases, whose projection its resolution line carries. A pass reports
+  how it ran against its rule as :class:`PairwiseStopping` (``WriterPairwise.stopping``): the :class:`StoppingRule` as
+  declared, and the :class:`PairwiseLook` read after each case.
 
 Six modules build it, each for one part of a writer eval:
 
@@ -59,15 +61,24 @@ from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterPairw
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
-from threetears.evals.ops.report_writer.writer_pairwise import StopWhen, WriterPrior
+from threetears.evals.ops.report_writer.writer_pairwise import (
+    PairwiseLook,
+    PairwiseStopping,
+    StoppingRule,
+    StopWhen,
+    WriterPrior,
+)
 
 __all__ = [
     "AnalystSkill",
     "CaseMint",
     "MintedWriterCase",
+    "PairwiseLook",
+    "PairwiseStopping",
     "ReasonedOn",
     "SkillText",
     "StopWhen",
+    "StoppingRule",
     "WithheldNote",
     "Writer",
     "WriterCaseFile",

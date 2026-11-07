@@ -7136,6 +7136,16 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.harness.PairwiseLook": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.PairwiseStopping": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.harness.read_writer_cases": {
       "kind": "function",
       "signature": "",
@@ -7148,6 +7158,11 @@
     },
     "threetears.evals.harness.SkillText": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.StoppingRule": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
