@@ -858,7 +858,60 @@ The last row is there because a draft's page carries its open editor findings, a
 without them. A verdict the finished-only reading does not repeat may be that.
 
 **Spend.** Every call, parse retries included, is priced and admitted against the host's out-of-run cap before the
-first is sent, under purpose `judge`. A pass the cap cannot cover is refused with nothing spent.
+first is sent, under purpose `judge`. A pass the cap cannot cover is refused with nothing spent. A pass that stops
+early sends fewer calls than it admitted.
+
+### The stopping rule
+
+A pass may be given a rule before its first look (`writer_pairwise(..., stopping_rule=StoppingRule(...))`, or
+`WriterEval(stop_when=...)`, which declares it as the eval starts, over the side's cases):
+
+| `stop_when` | What the pass does |
+|---|---|
+| `separated` | Judges the cases one at a time and stops at the first after which the preference separates, either way, on the 5 cases a rate needs. |
+| `never` | Judges every case. The default. |
+
+`max_cases` is N, the held-out set's size when the rule is declared. A set that grows later leaves that run's N as it
+was; the next run declares its own.
+
+**Why a stop keeps its level.** N fixes the bet before the first case: the order the cases are read in
+(`bet_order(N)` over the sorted case ids) and every stake (tuned to N). Each look over the first k cases is then a
+prefix of one bet, and Ville's inequality bounds the chance it ever crosses, so a stop at any k, on any rule, holds
+α. At k = N the reading is the fixed-n one, number for number, so the cap costs no width. Without a fixed N, a look
+at k and one at k + 1 were two bets, and stopping at the first that separated was optional stopping. Cases are
+judged in the bet's order whatever order they ran in. A landslide over 25 cases first separates at case 7.
+
+**What is read at the stop.** The gated readings and guardrails are fixed-n tests, so they are read once, at the stop,
+on the cases judged, as if the arms had run only those. The pass stops only if the decision read there stands: promote
+for a candidate preferred, keep for one shown worse. If it does not stand (a guardrail not yet shown held, say), the
+pass reads on to the cap, and the record and the page say the gated readings and guardrails were looked at twice.
+
+**A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
+verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.
+
+**What is recorded.** The pass's report carries the rule, the cases it stopped at, the first case that separated,
+any second look, and the preference after each case (its p and interval), for a running chart. The page says what
+happened in one sentence:
+
+> Stopped at 7 of 25 cases under the rule declared before the first result: the judge preferred lead-first on 7 of 7,
+> separated.
+
+A run that reads every case says where it first separated, or that no look up to N excluded no preference.
+
+### The resolution floor
+
+Before a writer eval launches, and on its page, it states the smallest preference its held-out cases can separate:
+the share, held on every case, at which the pass's own test separates at N cases. It is the bounded test inverted,
+not a normal approximation, and it is a floor: a preference that varies across cases needs more.
+
+| Cases | Smallest separable share |
+|---|---|
+| 7 | 0.89 |
+| 11 | 0.72 |
+| 25 | 0.59 |
+
+The line rounds up, so it never claims a share the test would not separate: "At 11 cases this run can separate only a
+preference of 73% or more, held on every case." It is a disclosure and never a refusal.
 
 ### The promotion rule
 
@@ -872,6 +925,7 @@ only, since a family that wide cannot separate on a small held-out set.
 | keep | The primary reads regressed, a gated reading reads regressed (on too few cases too), or a guardrail is breached. |
 | undecided | Anything else: the primary not separated, improved on too few cases, untested, void or not read; or a guardrail not shown held. |
 
+A pass its rule stopped is read on the cases it judged: the gated readings and guardrails too.
 Undecided never promotes, and a read with no pass named never promotes. A primary that does not separate states the
 held-out cases like these that would settle it: a size for the next campaign, never a reason to read this one again.
 The read refuses a pass over another campaign, candidate, control, judge or criterion, or over results the campaign no

@@ -27,6 +27,14 @@ arm's page of the same case, it shows. This pass asks that question
   :func:`~threetears.evals.analysis.stats.bounded_difference_interval`). Its family is this one reading, so its
   adjusted p is its p. The same reading over the pairs whose two pages were both stored finished is reported beside
   it, since a draft's page carries its open editor findings and a judge may simply prefer the page without them.
+- **A stopping rule, declared before the first look** (:class:`StoppingRule`): ``stop_when="separated"`` judges the
+  cases in the bet's fixed order (:func:`~threetears.evals.analysis.stats.bet_order` of the rule's ``max_cases``, over
+  the sorted case ids), reads the preference after each case as a prefix of that one bet, and stops when it
+  separates, either way: valid at any stop (Ville's inequality). The gated readings and guardrails are fixed-n tests,
+  read once at the stop on the cases judged; where the decision read there does not stand, the pass reads on to the
+  cap and says the second look. A rule declared after the arms' first result keeps its verdict and says so. With no
+  rule, every case is read and the verdict is the fixed-n one over them. Each look is recorded
+  (:class:`PairwiseStopping`).
 - **How far the judge can be trusted on it.** Order consistency (the two orders pick the same side), the lean to the
   first slot, and the can't-tell count, over the pages it was actually asked about. A case scored in one order only
   is counted apart and left out of the consistency rate, since one order cannot agree or disagree with itself.
@@ -38,25 +46,28 @@ It runs as a job (:func:`writer_pairwise`): every refusal and every admission is
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING, Final, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from threetears.evals.analysis.report.blocks import ContrastOutcome, Verdict, VerdictReason
 from threetears.evals.analysis.report.verdict import MIN_CASES
 from threetears.evals.analysis.report.words import comparison_words
-from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_verdicts
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
+    bet_order,
     bounded_difference_interval,
     bounded_separation_p,
+    smallest_separable_move,
 )
 from threetears.evals.kernel.capped_completion import refresh_prices
-from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
+from threetears.evals.kernel.declaration import CampaignArm, aware_instant, resolve_control_arm
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
@@ -72,6 +83,7 @@ from threetears.evals.ops.report_writer.preference import (
     preference_rubric,
 )
 from threetears.evals.ops.report_writer.writer_contract import FINISHED_MEASURE, refuse_unfixed_scoring_judge
+from threetears.evals.ops.report_writer.writer_decision import decided, void_reason
 from threetears.evals.ops.report_writer.writer_launch import ModelFamily, judge_family_check
 from threetears.evals.run.job_work import EvalActionJob, JobWork, action_job_work
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
@@ -135,6 +147,82 @@ _MISSING: Final[dict[tuple[bool, bool], MissingPage]] = {
 }
 
 
+#: What a stopping rule stops on: ``separated``, the first look at which the preference separates, either way; or
+#: ``never``, every case read.
+StopWhen = Literal["separated", "never"]
+
+
+class StoppingRule(EvalBaseModel):
+    """When the pass stops judging, declared before its first look: what it stops on, and the cases the bet is fixed
+    for.
+
+    ``max_cases`` is the held-out set's size as declared, and fixes the bet: its order
+    (:func:`~threetears.evals.analysis.stats.bet_order` of it, over the pass's sorted case ids) and its stakes, so each
+    look is a prefix of one bet. A set that grows later leaves this rule's N as declared; the next run declares anew.
+    """
+
+    stop_when: StopWhen = Field(
+        description="separated: stop at the first look the preference separates, either way; never: read every case."
+    )
+    max_cases: int = Field(ge=1, description="The cases the bet is fixed for: the held-out set's size as declared.")
+    declared_at: str | None = Field(
+        default=None,
+        description="When the rule was declared, ISO-8601 with an offset; None for no time, which reads as late.",
+    )
+
+    @field_validator("declared_at")
+    @classmethod
+    def _orderable(cls, value: str | None) -> str | None:
+        if value is not None:
+            aware_instant(value, "a stopping rule's declaration")
+        return value
+
+
+class PairwiseLook(EvalBaseModel):
+    """The preference read after one more case, as a prefix of the one bet: what a running chart draws."""
+
+    cases: int = Field(description="The cases with a share read so far, this one included.")
+    case_id: str = Field(description="The case this look added.")
+    share: float = Field(description="Its candidate share, 0 to 1.")
+    p: float | None = Field(description="The bounded test's two-sided p over the cases so far; None under two.")
+    interval: tuple[float, float] | None = Field(
+        description="The interval on the candidate's share less the control's, at the pass's level; None under two."
+    )
+    separated: bool = Field(description="Whether the reading separated here, on the cases a rate needs.")
+
+
+class PairwiseStopping(EvalBaseModel):
+    """How the pass ran against its stopping rule: the rule, when it stopped, each look, and what it must disclose."""
+
+    rule: StoppingRule | None = Field(
+        description="The rule as declared; None when none was, and every case was read as a fixed-n reading."
+    )
+    first_result_at: str | None = Field(
+        description="The earliest stored result of either arm: what a rule declared after it is timed against."
+    )
+    late: bool = Field(
+        description="Whether the rule was declared after the first result, or with no time: disclosed, the verdict "
+        "standing as read."
+    )
+    cases_found: int = Field(description="The cases both arms ran, which the pass could judge.")
+    beyond_cap: list[str] = Field(
+        description="Cases past the rule's max_cases in sorted order, which its bet holds no place for and the pass "
+        "did not read."
+    )
+    stopped_at: int | None = Field(
+        description="The cases judged when the rule stopped the pass; None when it read to the cap."
+    )
+    first_separated_at: int | None = Field(
+        description="The cases read at the first look that separated; None when none did."
+    )
+    second_look: str | None = Field(
+        description="Why the decision read at the first separation did not stand, so the pass read on to the cap and "
+        "the gated readings and guardrails are read again there; None when there was no second look."
+    )
+    looks: list[PairwiseLook] = Field(description="The preference after each case, in the order the bet read them.")
+    line: str = Field(description="What happened, in one sentence, as the page says it.")
+
+
 class PairAnswer(EvalBaseModel):
     """The judge's answer on one order of one pair."""
 
@@ -155,6 +243,11 @@ class PairwisePair(EvalBaseModel):
     )
     both_finished: bool = Field(description="Whether both pages were stored finished, so in the finished-only reading.")
     answers: list[PairAnswer] = Field(description="The judge's answers, control first as Report A; none when missing.")
+    reached: bool = Field(
+        default=True,
+        description="Whether the pass reached the pair's case; False past a stop, where nothing was asked and a "
+        "missing page decides nothing.",
+    )
 
 
 class PairwiseCase(EvalBaseModel):
@@ -221,6 +314,11 @@ class WriterPairwiseReport(EvalBaseModel):
     stopped: str | None = Field(
         description="Why the pass stopped before its last pair, when it did; its verdicts are then untested."
     )
+    stopping: PairwiseStopping | None = Field(
+        default=None,
+        description="The stopping rule and how the pass ran against it, with each look; None in a report stored "
+        "before rules were recorded.",
+    )
     calls_made: int = Field(description="Judge calls made, each ledgered under purpose judge.")
     cost_usd: float | None = Field(description="What they cost together; None when any call went unpriced.")
     cap_usd: float | None = Field(description="The out-of-run cap the calls were admitted under; None when none.")
@@ -271,6 +369,21 @@ class _Collected:
     writer_models: list[str]
     pairs: list[_Pair]
     unpaired: list[str]
+    #: The earliest orderable ``scored_at`` among the paired results; None with none.
+    first_result_at: str | None
+
+
+def _first_result_at(results: Sequence[EvalResult]) -> str | None:
+    """The earliest of the results' ``scored_at`` that can be ordered, as stored; None with none: a stamp with no
+    offset says nothing of when the others became visible."""
+    ordered = []
+    for result in results:
+        try:
+            ordered.append((aware_instant(result.scored_at, "a result"), result.scored_at))
+        except ValueError:
+            # NOSILENT: an unorderable stamp times nothing; the earliest orderable one is what a rule is timed against
+            continue
+    return min(ordered)[1] if ordered else None
 
 
 def _arm(arms: Sequence[CampaignArm], named: str, campaign_id: str) -> CampaignArm:
@@ -399,6 +512,7 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         writer_models=sorted({result.model for result in paired}),
         pairs=pairs,
         unpaired=unpaired,
+        first_result_at=_first_result_at(paired),
     )
 
 
@@ -415,6 +529,11 @@ class _Prepared:
     service: JudgeService
     #: Per pair, its two orders' contexts (control as A, then candidate as A); None for a pair with a page missing.
     contexts: list[tuple[JudgeContext, JudgeContext] | None]
+    #: The host and scope, which a stop reads the campaign's gated readings and guardrails through.
+    host: EvalHost
+    scope_id: str
+    #: The rule declared before the first look; None when none was.
+    rule: StoppingRule | None
 
 
 def _orders(collected: _Collected, pair: _Pair) -> tuple[JudgeContext, JudgeContext] | None:
@@ -443,6 +562,7 @@ async def _prepare(
     candidate: str,
     model_family: ModelFamily,
     out_of_run_cap_usd: float | None,
+    rule: StoppingRule | None,
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call.
 
@@ -493,7 +613,16 @@ async def _prepare(
     except BaseException:
         await service.aclose()
         raise
-    return _Prepared(collected=collected, judge_family=judge_family, budget=budget, service=service, contexts=contexts)
+    return _Prepared(
+        collected=collected,
+        judge_family=judge_family,
+        budget=budget,
+        service=service,
+        contexts=contexts,
+        host=host,
+        scope_id=scope_id,
+        rule=rule,
+    )
 
 
 # --- the reading ---------------------------------------------------------------------------------------------------
@@ -519,18 +648,36 @@ def _judgments(pair: PairwisePair) -> list[PairJudgment]:
     ]
 
 
-def _verdict(shares: Sequence[float], *, collected: _Collected, stopped: str | None) -> tuple[Verdict, float | None]:
+def _separation(shares: Sequence[float], planned_n: int | None) -> tuple[float | None, tuple[float, float] | None]:
+    """The bounded test's p and interval on the candidate's shares against the control's, one minus each: over the
+    shares in case order with no ``planned_n``, and as a prefix of the bet fixed for ``planned_n`` cases, in the order
+    bet, with one."""
+    control = [1.0 - share for share in shares]
+    p = bounded_separation_p(control, shares, paired=True, value_range=_SHARE_RANGE, planned_n=planned_n)
+    interval = bounded_difference_interval(
+        control, shares, paired=True, value_range=_SHARE_RANGE, confidence=INTERVAL_LEVEL, planned_n=planned_n
+    )
+    return p, interval
+
+
+def _separated(p: float | None, interval: tuple[float, float] | None, cases: int) -> bool:
+    """Whether a reading separated: its p under α, its interval clear of zero, on the cases a rate needs."""
+    return (
+        p is not None
+        and interval is not None
+        and p < SIGNIFICANCE_ALPHA
+        and (interval[0] > 0 or interval[1] < 0)
+        and cases >= MIN_CASES
+    )
+
+
+def _verdict(
+    shares: Sequence[float], *, collected: _Collected, stopped: str | None, planned_n: int | None = None
+) -> tuple[Verdict, float | None]:
     """The candidate's per-case shares against the control's, as the contrast verdict on the preference, and its p."""
     control = [1.0 - share for share in shares]
     # A pass stopped part-way read some pairs and not others, so no test is run on what it read.
-    p = None if stopped is not None else bounded_separation_p(control, shares, paired=True, value_range=_SHARE_RANGE)
-    interval = (
-        None
-        if stopped is not None
-        else bounded_difference_interval(
-            control, shares, paired=True, value_range=_SHARE_RANGE, confidence=INTERVAL_LEVEL
-        )
-    )
+    p, interval = (None, None) if stopped is not None else _separation(shares, planned_n)
     delta = (math.fsum(shares) - math.fsum(control)) / len(shares) if shares else None
     arm, against = collected.candidate.label, collected.control.label
     outcome: ContrastOutcome
@@ -573,12 +720,20 @@ def _verdict(shares: Sequence[float], *, collected: _Collected, stopped: str | N
 
 
 def _reading(
-    pairs: Sequence[PairwisePair], *, collected: _Collected, stopped: str | None
+    pairs: Sequence[PairwisePair],
+    *,
+    collected: _Collected,
+    stopped: str | None,
+    bet: Sequence[str] | None = None,
+    planned_n: int | None = None,
 ) -> tuple[PairwiseReading, list[PairwiseCase]]:
-    """The verdict over ``pairs``, and each case's preference, a missing page counted as the side it leaves."""
+    """The verdict over ``pairs`` the pass reached, and each case's preference, a missing page counted as the side it
+    leaves: over the shares in case order, or with a rule, in the order the bet read its cases (``bet``) as a prefix
+    of the bet fixed for ``planned_n``."""
     by_case: dict[str, list[PairwisePair]] = {}
     for pair in pairs:
-        by_case.setdefault(pair.case_id, []).append(pair)
+        if pair.reached:
+            by_case.setdefault(pair.case_id, []).append(pair)
     cases: list[PairwiseCase] = []
     for case_id, its in sorted(by_case.items()):
         every = [judgment for pair in its for judgment in _judgments(pair)]
@@ -600,7 +755,10 @@ def _reading(
             )
         )
     shares = [case.share for case in cases if case.share is not None]
-    verdict, p = _verdict(shares, collected=collected, stopped=stopped)
+    if bet is not None:
+        held = {case.case_id: case.share for case in cases if case.share is not None}
+        shares = [held[case_id] for case_id in bet if case_id in held]
+    verdict, p = _verdict(shares, collected=collected, stopped=stopped, planned_n=planned_n)
     reading = PairwiseReading(
         pairs=len(pairs),
         cases=len(shares),
@@ -628,37 +786,147 @@ def _reliability(cases: Sequence[PairwiseCase], pairs: Sequence[PairwisePair]) -
     )
 
 
-async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> WriterPairwiseReport:
-    """Ask every admitted pair in both orders, then read the shares; the report."""
+@dataclass(frozen=True)
+class _Plan:
+    """The order the pass judges its cases in, and the bet its preference is read as."""
+
+    #: The cases in the order judged.
+    judged: list[str]
+    #: The cases in the order bet on, with a rule; None without one, when the fixed-n reading over the cases found
+    #: bets in their own order.
+    bet: list[str] | None
+    #: The cases the bet is fixed for; None without a rule.
+    planned_n: int | None
+    #: Cases past the rule's ``max_cases``, never read.
+    beyond: list[str]
+
+
+def _plan(rule: StoppingRule | None, case_ids: Sequence[str]) -> _Plan:
+    """The judging order: with a rule, the bet's (:func:`~threetears.evals.analysis.stats.bet_order` of its
+    ``max_cases``, over the sorted case ids), so each look is a prefix of one bet whatever order the cases ran in; with
+    none, the sorted case ids, every one read and no look acted on."""
+    ordered = sorted(case_ids)
+    if rule is None:
+        return _Plan(judged=ordered, bet=None, planned_n=None, beyond=[])
+    bet = [ordered[index] for index in bet_order(rule.max_cases) if index < len(ordered)]
+    return _Plan(judged=bet, bet=bet, planned_n=rule.max_cases, beyond=ordered[rule.max_cases :])
+
+
+def _looks(cases: Sequence[PairwiseCase], plan: _Plan) -> list[PairwiseLook]:
+    """The preference after each case with a share, in the order the bet reads them: a rule's bet, or, with none, the
+    bet the fixed-n reading over the shares makes."""
+    held = {case.case_id: case.share for case in cases if case.share is not None}
+    if plan.bet is not None:
+        sequence = [(case_id, held[case_id]) for case_id in plan.bet if case_id in held]
+        planned_n = plan.planned_n
+    else:
+        found = sorted(held.items())
+        sequence = [found[index] for index in bet_order(len(found))]
+        planned_n = len(found)
+    looks: list[PairwiseLook] = []
+    for k in range(1, len(sequence) + 1):
+        shares = [share for _, share in sequence[:k]]
+        p, interval = _separation(shares, planned_n) if k >= 2 else (None, None)
+        looks.append(
+            PairwiseLook(
+                cases=k,
+                case_id=sequence[k - 1][0],
+                share=sequence[k - 1][1],
+                p=p,
+                interval=interval,
+                separated=_separated(p, interval, k),
+            )
+        )
+    return looks
+
+
+async def _stands(
+    prepared: _Prepared, pairs: Sequence[PairwisePair], reached: Collection[str], plan: _Plan
+) -> str | None:
+    """Whether the decision read at a stop stands: the gated readings and guardrails read once on the cases judged
+    (fixed-n tests), beside the preference and its order checks there; None when it does, else its sentence."""
     collected = prepared.collected
+    whole, cases = _reading(pairs, collected=collected, stopped=None, bet=plan.bet, planned_n=plan.planned_n)
+    reliability = _reliability(cases, [pair for pair in pairs if pair.reached])
+    keys = _keys(collected.candidate)
+    verdicts = await run_blocking(
+        prepared.host.blocking_executor,
+        campaign_verdicts,
+        prepared.host,
+        collected.campaign_id,
+        prepared.scope_id,
+        cases=reached,
+    )
+    void = void_reason(
+        reliability.order_consistency, consistent=reliability.order_consistent, both_orders=reliability.both_orders
+    )
+    decision, why = decided(
+        whole.verdict,
+        void,
+        [verdict for verdict in verdicts if verdict.variant_key in keys],
+        candidate=collected.candidate.label,
+        control=collected.control.label,
+    )
+    wanted = "promote" if whole.verdict.outcome == "improved" else "keep"
+    return None if decision == wanted else why
+
+
+async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> WriterPairwiseReport:
+    """Ask the admitted pairs in both orders, case by case in the plan's order and up to the rule's stop, then read
+    the shares; the report."""
+    collected = prepared.collected
+    rule = prepared.rule
     dim = preference_rubric()
-    pairs: list[PairwisePair] = []
+    by_case: dict[str, list[int]] = {}
+    for index, pair in enumerate(collected.pairs):
+        by_case.setdefault(pair.case.id, []).append(index)
+    plan = _plan(rule, list(by_case))
+    answers: dict[int, list[PairAnswer]] = {}
+    reached: list[str] = []
     stopped: str | None = None
-    for pair, orders in zip(collected.pairs, prepared.contexts, strict=True):
-        answers: list[PairAnswer] = []
-        if orders is not None and stopped is None:
+    stop_at: int | None = None
+    second_look: str | None = None
+    for case_id in plan.judged:
+        if stopped is not None or stop_at is not None:
+            break
+        reached.append(case_id)
+        for index in by_case[case_id]:
+            pair, orders = collected.pairs[index], prepared.contexts[index]
+            asked = answers.setdefault(index, [])
+            if orders is None or stopped is not None:
+                continue
             for candidate, context in zip(_SLOTS, orders, strict=True):
                 outcome = await prepared.service.score_dimension(dim, context)
-                answers.append(_answer(candidate, outcome))
+                asked.append(_answer(candidate, outcome))
                 if outcome.owner == "account":
                     stopped = (
                         f"the account behind the judge refused a call on case {pair.case.id} repeat {pair.repeat}, "
                         "so every later call would be refused too"
                     )
                     break
-        pairs.append(
-            PairwisePair(
-                case_id=pair.case.id,
-                repeat=pair.repeat,
-                candidate_result_id=pair.candidate.result.id,
-                control_result_id=pair.control.result.id,
-                missing=pair.missing,
-                both_finished=pair.candidate.finished and pair.control.finished,
-                answers=answers,
-            )
-        )
-    whole, cases = _reading(pairs, collected=collected, stopped=stopped)
+        if rule is None or rule.stop_when == "never" or stopped is not None or second_look is not None:
+            continue
+        so_far = _pairs(collected, answers, reached)
+        _, cases = _reading(so_far, collected=collected, stopped=None, bet=plan.bet, planned_n=plan.planned_n)
+        looks = _looks(cases, plan)
+        if looks and looks[-1].separated:
+            second_look = await _stands(prepared, so_far, reached, plan)
+            if second_look is None:
+                stop_at = len(reached)
+    pairs = _pairs(collected, answers, reached)
+    whole, cases = _reading(pairs, collected=collected, stopped=stopped, bet=plan.bet, planned_n=plan.planned_n)
     finished_only, _ = _reading([pair for pair in pairs if pair.both_finished], collected=collected, stopped=stopped)
+    looks = _looks(cases, plan)
+    stopping = _stopping(
+        collected,
+        rule,
+        plan,
+        looks,
+        cases_found=len(by_case),
+        reached=len(reached),
+        stop_at=stop_at,
+        second_look=second_look,
+    )
     spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs = [spend.cost_usd for spend in spends]
     report = WriterPairwiseReport(
@@ -675,14 +943,15 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         cases=cases,
         whole=whole,
         finished_only=finished_only,
-        reliability=_reliability(cases, pairs),
+        reliability=_reliability(cases, [pair for pair in pairs if pair.reached]),
         stopped=stopped,
+        stopping=stopping,
         calls_made=len(spends),
         cost_usd=None if None in costs else math.fsum(cost for cost in costs if cost is not None),
         cap_usd=out_of_run_cap_usd,
     )
     log.info(
-        "eval.writer_pairwise campaign=%s candidate=%s pairs=%d cases=%d outcome=%s calls=%d stopped=%s",
+        "eval.writer_pairwise campaign=%s candidate=%s pairs=%d cases=%d outcome=%s calls=%d stopped=%s stop_at=%s",
         report.campaign_id,
         report.candidate,
         len(report.pairs),
@@ -690,8 +959,139 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         report.whole.verdict.outcome,
         report.calls_made,
         report.stopped is not None,
+        stop_at,
     )
     return report
+
+
+def _pairs(collected: _Collected, answers: dict[int, list[PairAnswer]], reached: Collection[str]) -> list[PairwisePair]:
+    """Every pair, by case then repeat, with what the judge answered of it and whether the pass reached its case."""
+    return [
+        PairwisePair(
+            case_id=pair.case.id,
+            repeat=pair.repeat,
+            candidate_result_id=pair.candidate.result.id,
+            control_result_id=pair.control.result.id,
+            missing=pair.missing,
+            both_finished=pair.candidate.finished and pair.control.finished,
+            answers=answers.get(index, []),
+            reached=pair.case.id in reached,
+        )
+        for index, pair in enumerate(collected.pairs)
+    ]
+
+
+def _late(rule: StoppingRule | None, first_result_at: str | None) -> bool:
+    """Whether a declared rule came after the arms' first result, or carries no time: disclosed, never a demotion."""
+    if rule is None or first_result_at is None:
+        return False
+    if rule.declared_at is None:
+        return True
+    return aware_instant(rule.declared_at, "a stopping rule's declaration") > aware_instant(first_result_at, "a result")
+
+
+def _stopping(
+    collected: _Collected,
+    rule: StoppingRule | None,
+    plan: _Plan,
+    looks: Sequence[PairwiseLook],
+    *,
+    cases_found: int,
+    reached: int,
+    stop_at: int | None,
+    second_look: str | None,
+) -> PairwiseStopping:
+    """The record of how the pass ran against its rule, with the sentence the page prints."""
+    late = _late(rule, collected.first_result_at)
+    first = next((look.cases for look in looks if look.separated), None)
+    return PairwiseStopping(
+        rule=rule,
+        first_result_at=collected.first_result_at,
+        late=late,
+        cases_found=cases_found,
+        beyond_cap=plan.beyond,
+        stopped_at=stop_at,
+        first_separated_at=first,
+        second_look=second_look,
+        looks=list(looks),
+        line=_line(collected, rule, looks, late=late, reached=reached, stop_at=stop_at, second_look=second_look),
+    )
+
+
+def _line(
+    collected: _Collected,
+    rule: StoppingRule | None,
+    looks: Sequence[PairwiseLook],
+    *,
+    late: bool,
+    reached: int,
+    stop_at: int | None,
+    second_look: str | None,
+) -> str:
+    """What happened against the rule, in one plain sentence."""
+    first = next((look for look in looks if look.separated), None)
+    if rule is None:
+        where = "no look separated" if first is None else f"the preference first separated at case {first.cases}"
+        return f"Read all {reached} cases with no stopping rule declared: {where}."
+    timed = (
+        "the rule declared before the first result"
+        if not late
+        else "a rule declared after the first result, its verdict standing as read"
+        if rule.declared_at is not None
+        else "a rule declared with no time, its verdict standing as read"
+    )
+    of = f"{reached} of {rule.max_cases}"
+    if stop_at is not None and first is not None:
+        candidate = first.interval is not None and first.interval[0] > 0
+        side = collected.candidate.label if candidate else collected.control.label
+        won = sum(1 for look in looks[: first.cases] if (look.share > 0.5 if candidate else look.share < 0.5))
+        return f"Stopped at {of} cases under {timed}: the judge preferred {side} on {won} of {first.cases}, separated."
+    if second_look is not None and first is not None:
+        return (
+            f"Read {of} cases under {timed}: the preference separated at case {first.cases}, but the decision there "
+            f"did not stand ({second_look.rstrip('.')}), so the pass read on to the cap and its gated readings and "
+            f"guardrails were looked at a second time, on every case."
+        )
+    if first is None:
+        return f"Read {of} cases under {timed}: no look up to {len(looks)} excluded no preference."
+    return f"Read {of} cases under {timed}: the preference first separated at case {first.cases}."
+
+
+def resolution_floor(cases: int) -> float | None:
+    """The smallest candidate share, held on every case, that the pass's own test separates at ``cases`` cases: its
+    resolution, said before a launch and on the page so a gate asked a question its cases cannot answer says so.
+
+    The gate's bounded test inverted (:func:`~threetears.evals.analysis.stats.smallest_separable_move`), not a normal
+    approximation: about 0.72 at 11 cases and 0.59 at 25. A preference with any spread across cases needs more.
+
+    :param cases: The held-out cases the pass will read.
+    :ptype cases: int
+    :return: The share, above 0.5 and at most 1; None when even a candidate preferred outright on every case would
+        not separate at this count.
+    :rtype: float | None
+    """
+    move = smallest_separable_move(cases, value_range=_SHARE_RANGE)
+    # The test reads the candidate's share less the control's, one minus it: a share s moves it by 2s - 1.
+    return None if move is None else (1.0 + move) / 2.0
+
+
+def resolution_line(cases: int) -> str:
+    """The resolution floor (:func:`resolution_floor`) as one line, a disclosure and never a refusal.
+
+    :param cases: The held-out cases the pass will read.
+    :ptype cases: int
+    :return: ``At 11 cases this run can separate only a preference of 72% or more, held on every case.``
+    :rtype: str
+    """
+    floor = resolution_floor(cases)
+    if floor is None:
+        return (
+            f"At {cases} case{'' if cases == 1 else 's'} this run cannot separate any preference, even one held on "
+            "every case."
+        )
+    # Rounded up, so the line never claims a share the test would not separate.
+    percent = math.ceil(floor * 100 - 1e-9)
+    return f"At {cases} cases this run can separate only a preference of {format_number(percent)}% or more, held on every case."
 
 
 # --- the work, and its start ---------------------------------------------------------------------------------------
@@ -705,6 +1105,7 @@ async def _writer_pairwise_work(
     candidate: str,
     model_family: ModelFamily,
     out_of_run_cap_usd: float | None,
+    stopping_rule: StoppingRule | None = None,
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -725,6 +1126,9 @@ async def _writer_pairwise_work(
     :param out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces no
         out-of-run cap.
     :ptype out_of_run_cap_usd: float | None
+    :param stopping_rule: The rule declared before the first look (:class:`StoppingRule`); ``None`` reads every case,
+        the fixed-n reading over them.
+    :ptype stopping_rule: StoppingRule | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -742,6 +1146,7 @@ async def _writer_pairwise_work(
         candidate=candidate,
         model_family=model_family,
         out_of_run_cap_usd=out_of_run_cap_usd,
+        rule=stopping_rule,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -768,12 +1173,15 @@ def _places_none(_model: str) -> str | None:
     return None
 
 
-async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, candidate: str) -> JobsStarted:
+async def writer_pairwise(
+    host: OpsHost, campaign_id: str, scope_id: str, *, candidate: str, stopping_rule: StoppingRule | None = None
+) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
     Every refusal is made and every call admitted here, with nothing spent; the job makes the calls. The judge's family is
     the host's to tell (:attr:`~threetears.evals.ops.OpsHost.model_family`); a host that tells none has each check
-    recorded as not made, as a launch records it.
+    recorded as not made, as a launch records it. Every call is admitted whatever the rule, since where a pass stops
+    is not known until it does.
 
     :param host: The host: its store, its judge clients, its out-of-run cap and its reading of a model's family.
     :ptype host: OpsHost
@@ -783,6 +1191,9 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
     :ptype scope_id: str
     :param candidate: The candidate arm, by its label or its variant key.
     :ptype candidate: str
+    :param stopping_rule: The rule declared before the first look, which the report records; ``None`` reads every
+        case. A rule declared after the arms' first result is read as it stands and disclosed, never refused.
+    :ptype stopping_rule: StoppingRule | None
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -800,6 +1211,7 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
         candidate=candidate,
         model_family=family,
         out_of_run_cap_usd=host.out_of_run_cap(),
+        stopping_rule=stopping_rule,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)
@@ -808,4 +1220,11 @@ async def writer_pairwise(host: OpsHost, campaign_id: str, scope_id: str, *, can
 
 #: The engine's ``writer_pairwise`` action starts the pass for a host, and the promotion read
 #: (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`) reads its report back off the job.
-__all__ = ["WriterPairwiseReport", "writer_pairwise"]
+__all__ = [
+    "PairwiseStopping",
+    "StopWhen",
+    "StoppingRule",
+    "WriterPairwiseReport",
+    "resolution_line",
+    "writer_pairwise",
+]

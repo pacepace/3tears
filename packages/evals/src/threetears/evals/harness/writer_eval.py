@@ -20,6 +20,12 @@ editor's own model. ``await WriterEval(...).run()``:
 6. **runs the pairwise pass** (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`) for each
    candidate against the control, on the eval's own host over the same store: the eval's judge reads each case's two
    pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
+   The pass judges under the eval's stopping rule (``stop_when``), declared as the eval runs, before any arm
+   launches, over the side's cases (its ``max_cases``): ``separated`` stops the judge at the first case after which
+   the preference separates, either way, and the decision read there stands; ``never``, the default, reads every case.
+   Either way each look is recorded, the result says what happened in one sentence, and the launch's disclosures say
+   the resolution floor: the smallest preference, held on every case, the side's cases can separate
+   (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal;
 7. **reads the promotion** of each candidate against the control
    (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), its pass's completed job as the
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
@@ -152,7 +158,14 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterModels,
 )
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, WriterLimits
-from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
+from threetears.evals.ops.report_writer.writer_pairwise import (
+    PairwiseStopping,
+    StoppingRule,
+    StopWhen,
+    WriterPairwiseReport,
+    resolution_line,
+    writer_pairwise,
+)
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
 from threetears.evals.schema import DocumentStore
@@ -163,7 +176,7 @@ from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
-from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult, utc_now_iso
 from threetears.evals.schema.turns import TurnCeiling
 
 #: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
@@ -205,9 +218,13 @@ _TEMPLATE_NAME = "report writer"
 #: The part of ``max_cost_usd`` a writer eval reserves for its pairwise passes unless told (the module docstring).
 PAIRWISE_SHARE: Final = 0.2
 
+#: The stopping rules a writer eval may declare.
+_STOP_WHEN: frozenset[str] = frozenset(get_args(StopWhen))
+
 #: The pairwise table's rows, in order; the interval's carries its level when a pass read one.
 _PAIRWISE_ROWS: Final = (
     "reads",
+    "cases read",
     "share",
     "difference",
     "interval",
@@ -253,6 +270,8 @@ class WriterPairwise:
     :ivar cases_to_settle: The held-out cases like these at which a primary that did not separate would, as the
         promotion read projects it; ``None`` when it separated, is untested or void, or no read was made.
     :ivar stopped: Why the pass stopped before its last pair, when it did; its verdicts are then untested.
+    :ivar stopping: Its stopping rule and how it ran against it: where it stopped, each look, and its one sentence;
+        ``None`` for a report that records none.
     :ivar calls_made: The judge calls it made.
     :ivar cost_usd: What they cost; ``None`` when any went unpriced.
     :ivar cap_usd: The part of ``max_cost_usd`` its calls were admitted under; ``None`` when none was enforced.
@@ -272,6 +291,7 @@ class WriterPairwise:
     void: str | None
     cases_to_settle: int | None
     stopped: str | None
+    stopping: PairwiseStopping | None
     calls_made: int
     cost_usd: float | None
     cap_usd: float | None
@@ -296,6 +316,7 @@ def _read_pass(status: JobStatus, read: WriterPromotion | None) -> WriterPairwis
         void=None if read is None else read.void,
         cases_to_settle=None if read is None else read.cases_to_settle,
         stopped=report.stopped,
+        stopping=report.stopping,
         calls_made=report.calls_made,
         cost_usd=report.cost_usd,
         cap_usd=report.cap_usd,
@@ -433,6 +454,7 @@ class WriterResult:
             lines.append(f"{label}: {summary.results_text}")
             lines += [f"  {one_line(text)}" for text in (summary.stopped_text, summary.total_spend_text) if text]
             lines += [f"  error: {one_line(error)}" for error in summary.errors]
+        lines += self._stopping_lines()
         if self.decisions:
             lines += [f"promotion of {arm}: {self.promotion_why[arm]}" for arm in self.decisions]
         else:
@@ -478,8 +500,22 @@ class WriterResult:
         """
         written = self.page.write(out_dir)
         pairwise = Path(out_dir) / "pairwise.md"
-        pairwise.write_text(f"# Side by side\n\n{self.pairwise_text()}\n", encoding="utf-8")
+        said = "".join(f"\n{line}\n" for line in self._stopping_lines())
+        pairwise.write_text(f"# Side by side\n\n{self.pairwise_text()}\n{said}", encoding="utf-8")
         return {**written, "pairwise": pairwise}
+
+    def _stopping_lines(self) -> list[str]:
+        """What each candidate's pass did against its stopping rule, one sentence each."""
+        return [
+            f"pairwise pass of {arm}: {read.stopping.line}"
+            + (
+                ""
+                if read.stopping.stopped_at is None
+                else f" The gated readings and guardrails were read once, on those {read.stopping.stopped_at} cases."
+            )
+            for arm, read in self.pairwise.items()
+            if read.stopping is not None
+        ]
 
     def pairwise_text(self) -> str:
         """Each candidate's pairwise pass as one table, a column per candidate, under the one sentence defining its
@@ -530,6 +566,7 @@ class WriterResult:
         spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
         return [
             reads,
+            _cases_read(read.stopping),
             _number(read.share),
             _number(read.primary.delta),
             "-" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
@@ -594,6 +631,7 @@ class WriterEval:
         writer_provider: str = "anthropic",
         store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
+        stop_when: StopWhen = "never",
     ) -> None:
         """Declare the eval; nothing is read or run until :meth:`run`.
 
@@ -643,8 +681,13 @@ class WriterEval:
         :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
         :ptype scope: str | None
+        :param stop_when: The pairwise pass's stopping rule, declared as :meth:`run` starts, before any arm launches,
+            over the side's cases: ``separated`` stops the judge at the first case after which the preference
+            separates, either way, where the decision read there stands; ``never`` reads every case.
+        :ptype stop_when: StopWhen
         :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, a
-            blank question, a ``k`` other than 1, or a share, budget, turn cap or ceiling out of its range.
+            blank question, a ``k`` other than 1, a stopping rule that is neither, or a share, budget, turn cap or
+            ceiling out of its range.
         """
         if len(arms) < 2:
             raise ValueError("a writer eval compares arms: name a control and at least one candidate")
@@ -671,6 +714,8 @@ class WriterEval:
             )
         if not 0 < pairwise_share < 1:
             raise ValueError(f"pairwise_share is a share strictly between 0 and 1, not {pairwise_share}")
+        if stop_when not in _STOP_WHEN:
+            raise ValueError(f"stop_when is 'separated' or 'never', not {stop_when!r}")
         for what, value in (
             ("budget_usd", budget_usd),
             ("max_cost_usd", max_cost_usd),
@@ -696,6 +741,7 @@ class WriterEval:
         self.writer_provider = writer_provider
         self.store = store
         self.scope_id = name if scope is None else scope
+        self.stop_when: StopWhen = stop_when
 
     async def run(self) -> WriterResult:
         """Mint the cases, launch every arm on one side's cases, file the campaign and read the promotion.
@@ -709,6 +755,8 @@ class WriterEval:
         :raises ValidationFailedError: The launch refused an arm (a judge of the writer's family, an arm whose cells
             could outlast its job), or the campaign's declaration.
         """
+        # The stopping rule is declared now, before any arm launches, so before any result it could be read against.
+        declared_at = utc_now_iso()
         cases = read_writer_cases(self.cases_dir)
         _refuse_unheld_notes(cases, self.arms)
         floors, warned = self._launch_budget(cases)
@@ -727,7 +775,7 @@ class WriterEval:
             out_of_run_cost_usd=self._pass_part,
         )
         try:
-            return await self._run(host, cases, turns, where, floors=floors, warned=warned)
+            return await self._run(host, cases, turns, where, floors=floors, warned=warned, declared_at=declared_at)
         finally:
             for routed in turns.values():
                 await routed.aclose()
@@ -742,6 +790,7 @@ class WriterEval:
         *,
         floors: Mapping[str, float],
         warned: Sequence[str],
+        declared_at: str,
     ) -> WriterResult:
         eval_host = host.eval_host
         template_id = await run_blocking(eval_host.blocking_executor, self._template, host)
@@ -772,7 +821,13 @@ class WriterEval:
         held_elsewhere = await run_blocking(
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
         )
-        disclosures = [*warned, *self._recording_disclosures(turns, named), *held_elsewhere]
+        rule = StoppingRule(stop_when=self.stop_when, max_cases=len(on_side), declared_at=declared_at)
+        disclosures = [
+            *warned,
+            resolution_line(len(on_side)),
+            *self._recording_disclosures(turns, named),
+            *held_elsewhere,
+        ]
         share = self._arm_part
         if self.budget.usd is not None and len(on_side) * self.k * self.budget.usd > share:
             raise ValueError(
@@ -802,7 +857,7 @@ class WriterEval:
         campaign_id = await run_blocking(
             eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id
         )
-        passes = {arm: await self._pairwise(host, campaign_id, arm) for arm in list(self.arms)[1:]}
+        passes = {arm: await self._pairwise(host, campaign_id, arm, rule) for arm in list(self.arms)[1:]}
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
         return await run_blocking(
             eval_host.blocking_executor,
@@ -924,13 +979,13 @@ class WriterEval:
                 f"${self.max_cost_usd:.2f}; raise max_cost_usd, or lower budget_usd or the judge's max_tokens"
             )
 
-    async def _pairwise(self, host: OpsHost, campaign_id: str, candidate: str) -> _Pass:
+    async def _pairwise(self, host: OpsHost, campaign_id: str, candidate: str, rule: StoppingRule) -> _Pass:
         """Run one candidate's pairwise pass against the control as a job, and await it; its status, and why it did not
         complete when it did not: a refusal the pass makes before any call (its calls priced over its part, a judge of
         a writer's family, no case both arms ran), a job that ended other than completed, or a pass stopped before its
         last pair (an account refusal), whose report is still read."""
         try:
-            started = await writer_pairwise(host, campaign_id, self.scope_id, candidate=candidate)
+            started = await writer_pairwise(host, campaign_id, self.scope_id, candidate=candidate, stopping_rule=rule)
         except (ValidationFailedError, NotFoundError) as refused:
             return _Pass(status=None, why_not=f"refused before any call: {refused}")
         (status,) = await await_job(host, started, self.scope_id)
@@ -1109,6 +1164,14 @@ def _pairwise_reads(verdict: Verdict) -> str:
     fewer cases than a rate needs."""
     outcome = verdict.outcome.replace("_", " ")
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
+
+
+def _cases_read(stopping: PairwiseStopping | None) -> str:
+    """How many cases a pass judged against its rule's cap, as its cell prints it; ``stopped`` beside a stop."""
+    if stopping is None or stopping.rule is None:
+        return "-" if stopping is None else str(len(stopping.looks))
+    reached = len(stopping.looks) if stopping.stopped_at is None else stopping.stopped_at
+    return f"{reached} of {stopping.rule.max_cases}{', stopped' if stopping.stopped_at is not None else ''}"
 
 
 def _number(value: float | None) -> str:

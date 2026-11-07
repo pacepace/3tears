@@ -11,6 +11,7 @@ analyst and its editor that write a campaign's page. An eval file imports its na
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
   :class:`MintedWriterCase`, on a :data:`WriterSide`.
+- :data:`StopWhen` is the pairwise pass's stopping rule a writer eval declares (``stop_when``).
 
 Five modules build it, each for one part of a writer eval:
 
@@ -44,11 +45,13 @@ from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterPairw
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
+from threetears.evals.ops.report_writer.writer_pairwise import StopWhen
 
 __all__ = [
     "AnalystSkill",
     "MintedWriterCase",
     "SkillText",
+    "StopWhen",
     "Writer",
     "WriterCaseFile",
     "WriterCaseFormat",

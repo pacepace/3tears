@@ -1430,6 +1430,7 @@
 "threetears.evals.harness.MintedWriterCase": "provisional",
 "threetears.evals.harness.read_writer_cases": "provisional",
 "threetears.evals.harness.SkillText": "provisional",
+"threetears.evals.harness.StopWhen": "provisional",
 "threetears.evals.harness.Writer": "host-contract",
 "threetears.evals.harness.WriterCaseFile": "provisional",
 "threetears.evals.harness.WriterCaseFormat": "provisional",

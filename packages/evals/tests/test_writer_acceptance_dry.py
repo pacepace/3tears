@@ -231,6 +231,35 @@ def test_the_pass_asks_every_pair_in_both_orders(dry: tuple[Acceptance, list[obj
     assert report.cap_usd == pytest.approx(10.0 * 0.2)
 
 
+def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_readout_says_the_floor(
+    dry: tuple[Acceptance, list[object]],
+) -> None:
+    """The default rule reads every case, declared as the eval starts, so before its first result; the record and
+    acceptance.json carry it, and the readout says what it did and the floor its seven cases set."""
+    found, _ = dry
+    summary = found.summary()
+    stopping = summary["stopping"]
+    assert stopping == summary["pairwise"]["stopping"]
+    assert stopping["rule"]["stop_when"] == "never" and stopping["rule"]["max_cases"] == DEFAULT_CASES
+    assert stopping["late"] is False and stopping["stopped_at"] is None
+    assert len(stopping["looks"]) == DEFAULT_CASES
+    floor = "At 7 cases this run can separate only a preference of 89% or more, held on every case."
+    assert summary["resolution"] == floor
+    assert floor in found.result.disclosures
+    assert stopping["line"] in summary["readout"] and floor in summary["readout"]
+
+
+def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
+    _offline(monkeypatch)
+    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, stop_when="separated"))
+    stopping = found.summary()["stopping"]
+    assert stopping["rule"]["stop_when"] == "separated" and stopping["rule"]["max_cases"] == DEFAULT_CASES
+    assert stopping["late"] is False
+    reached = sum(1 for pair in found.report.pairs if pair.reached)
+    assert found.report.calls_made == 2 * reached
+    assert (stopping["stopped_at"] is None) == (reached == DEFAULT_CASES)
+
+
 def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_it(
     dry: tuple[Acceptance, list[object]],
 ) -> None:

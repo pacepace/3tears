@@ -27,6 +27,14 @@ A primary that does not separate states how many held-out cases like these would
 own projection (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`, which the campaign report's ``To show
 the floors hold`` reads): a size to plan the next campaign at, never a reason to read this one again.
 
+**A pass that stopped early.** A pass judging under a declared stopping rule
+(:class:`~threetears.evals.ops.report_writer.writer_pairwise.StoppingRule`) may stop once its preference separates;
+each look is a prefix of one bet fixed for the rule's cases, so the primary holds its level at the stop. The gated
+readings and guardrails are fixed-n tests, so they are read once, on the cases the pass judged, as if the arms had run
+only those; the pass read the decision there and stopped only because it stood. A pass that read on to its cap after
+a decision that did not stand reads them on every case, and its record and this readout say it was a second look. A
+rule declared after the arms' first result is read as it stands, and said.
+
 **Generic over levers.** The candidate is an arm, and what it changed is read off the arms' recorded lever maps, so a
 model, an effort or a host's own lever is decided as a skill text is.
 
@@ -45,7 +53,6 @@ naming the candidate) and commit the change with its entry in the skill ledger
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
 
 from pydantic import Field, ValidationError
 
@@ -64,6 +71,13 @@ from threetears.evals.ops.jobs import JobStatus
 from threetears.evals.ops.report_writer.preference import preference_rubric
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import refuse_unfixed_scoring_judge
+from threetears.evals.ops.report_writer.writer_decision import (
+    ORDER_CONSISTENCY_FLOOR,
+    VOID,
+    PromotionDecision,
+    decided,
+    void_reason,
+)
 from threetears.evals.ops.report_writer.writer_pairwise import (
     PREFERRED_HEADING,
     PairwiseReliability,
@@ -71,15 +85,6 @@ from threetears.evals.ops.report_writer.writer_pairwise import (
 )
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.models import CaseSetRef, EvalRun, fingerprint_criterion
-
-#: What a promotion read answers.
-PromotionDecision = Literal["promote", "keep", "undecided"]
-
-#: The order consistency under which the primary reading is void (the reset design's instrument check).
-_ORDER_CONSISTENCY_FLOOR = 0.7
-
-#: What a void primary's reason says, the same in the decision's sentence and in the readout.
-_VOID = f"order consistency below {_ORDER_CONSISTENCY_FLOOR}"
 
 #: The row the finished-only reading is read by.
 _FINISHED_ONLY = f"{PREFERRED_HEADING}, both pages finished"
@@ -127,6 +132,16 @@ class WriterPromotion(EvalBaseModel):
         description="The candidate's corrected verdicts, each reading's, in page order: gated on regression only."
     )
     cases: int = Field(description="The held-out cases the campaign's runs ran.")
+    gated_on: int | None = Field(
+        default=None,
+        description="The held-out cases the gated readings and guardrails were read on, when the pass stopped before "
+        "its cap: the cases it judged; None when they were read on every case.",
+    )
+    stopping_line: str | None = Field(
+        default=None,
+        description="What the pass did against its stopping rule, in one sentence, with the cases the gated readings "
+        "and guardrails were read on when it stopped; None when no pass was read or its report records none.",
+    )
     case_sets: list[CaseSetRef] = Field(description="The held-out case sets the runs named.")
     cost_usd: float | None = Field(description="What the candidate's trials cost; None when none was priced.")
     control_cost_usd: float | None = Field(description="What the control's trials cost; None when none was priced.")
@@ -232,12 +247,8 @@ def _pass_report(
 
 def _void(reliability: PairwiseReliability) -> str | None:
     """Why the pass's primary reading is void, when its order consistency is under the floor; else None."""
-    rate = reliability.order_consistency
-    if rate is None or rate >= _ORDER_CONSISTENCY_FLOOR:
-        return None
-    return (
-        f"{_VOID} ({reliability.order_consistent} of {reliability.both_orders} cases scored in both orders picked the "
-        "same side)"
+    return void_reason(
+        reliability.order_consistency, consistent=reliability.order_consistent, both_orders=reliability.both_orders
     )
 
 
@@ -273,55 +284,6 @@ def _reads(verdict: Verdict) -> str:
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
 
 
-def _decided(
-    primary: Verdict | None, void: str | None, verdicts: Sequence[Verdict], *, candidate: str, control: str
-) -> tuple[PromotionDecision, str]:
-    """The decision rule (the module docstring), and its sentence."""
-    standing = None if void is not None else primary
-    regressed = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.outcome == "regressed"]
-    guardrails = [verdict for verdict in verdicts if verdict.kind == "guardrail"]
-    worse = [
-        *(
-            [_named("the primary reading", standing)]
-            if standing is not None and standing.outcome == "regressed"
-            else []
-        ),
-        *(_named(verdict.heading, verdict) for verdict in regressed),
-        *(f"guardrail {verdict.heading} (breached)" for verdict in guardrails if verdict.outcome == "breached"),
-    ]
-    if worse:
-        return "keep", f"Keep the control: {candidate} is shown worse than {control} on {', '.join(worse)}."
-    unheld = sum(verdict.outcome != "held" for verdict in guardrails)
-    improved = standing is not None and standing.outcome == "improved" and standing.reason != "too_few_cases"
-    if improved and not unheld:
-        return "promote", (
-            f"Promote {candidate}: the judge prefers its pages to {control}'s on the primary reading, no gated "
-            "reading is shown worse and every guardrail is held."
-        )
-    if improved:
-        return "undecided", (
-            f"Undecided: the judge prefers {candidate}'s pages on the primary reading, but {unheld} of "
-            f"{len(guardrails)} guardrails are not shown held."
-        )
-    detail = "" if primary is None or primary.reason_detail is None else f" ({primary.reason_detail})"
-    if primary is None:
-        because = "no pairwise pass was read, so the primary reading is absent"
-    elif void is not None:
-        because = f"{void}, so the primary reading is void"
-    elif primary.reason == "too_few_cases":
-        because = f"the primary reading has too few cases to decide{detail}"
-    elif primary.outcome == "not_separated":
-        because = f"the primary reading does not separate {candidate} from {control}"
-    else:
-        because = f"the primary reading is {primary.outcome.replace('_', ' ')}{detail}"
-    return "undecided", f"Undecided: {because}, and only an improved primary reading promotes."
-
-
-def _named(label: str, verdict: Verdict) -> str:
-    """A reading the decision names, with too few cases beside it when it was read on fewer than a rate needs."""
-    return f"{label} (on too few cases)" if verdict.reason == "too_few_cases" else label
-
-
 def _readout(
     report: WriterPairwiseReport | None, void: str | None, settle: int | None, verdicts: Sequence[Verdict]
 ) -> str:
@@ -333,7 +295,7 @@ def _readout(
     else:
         primary = _row(report.whole.verdict, "primary")
         if void is not None:
-            primary[2] = f"{primary[2]} (void, {_VOID})"
+            primary[2] = f"{primary[2]} (void, {VOID})"
         head = [primary, [_FINISHED_ONLY, *_row(report.finished_only.verdict, "reported")[1:]]]
     rows = [*head, *(_row(verdict, role[verdict.kind]) for verdict in verdicts)]
     lines = ["| Reading | Role | Reads | Difference | Interval | Level |", "|---|---|---|---|---|---|"]
@@ -346,7 +308,7 @@ def _readout(
         ["Cases scored in both orders", str(reliability.both_orders)],
         ["Of those, both orders picked the same side", str(reliability.order_consistent)],
         [
-            f"Order consistency, the primary void below {_ORDER_CONSISTENCY_FLOOR}",
+            f"Order consistency, the primary void below {ORDER_CONSISTENCY_FLOOR}",
             "not measured" if rate is None else format_number(rate),
         ],
         ["Cases scored in one order only, counted apart", str(reliability.one_order)],
@@ -365,6 +327,13 @@ def _readout(
     ]
     table = ["| Order check | Figure |", "|---|---|", *("| " + " | ".join(row) + " |" for row in checks)]
     return readings + "\n\n" + "\n".join(table)
+
+
+def _stopping_line(line: str, judged: Sequence[str] | None) -> str:
+    """The pass's sentence on its rule, and, where it stopped, the cases its fixed-n readings were read on."""
+    if judged is None:
+        return line
+    return f"{line} The gated readings and guardrails were read once, on the {len(judged)} cases judged."
 
 
 def _row(verdict: Verdict, role: str) -> list[str]:
@@ -459,11 +428,22 @@ def writer_promotion(
             judge_model=judge_model,
             results=results,
         )
-    verdicts = [verdict for verdict in campaign_verdicts(host, campaign_id, scope_id) if verdict.variant_key in keys]
+    stopping = None if report is None else report.stopping
+    # A pass its rule stopped read the gated readings and guardrails once, on the cases it judged; so does the read.
+    judged = (
+        None
+        if report is None or stopping is None or stopping.stopped_at is None
+        else sorted({pair.case_id for pair in report.pairs if pair.reached})
+    )
+    verdicts = [
+        verdict
+        for verdict in campaign_verdicts(host, campaign_id, scope_id, cases=judged)
+        if verdict.variant_key in keys
+    ]
     primary = None if report is None else report.whole.verdict
     void = None if report is None else _void(report.reliability)
     settle = None if report is None or void is not None else _cases_to_settle(report)
-    decision, why = _decided(primary, void, verdicts, candidate=arm.label, control=control.label)
+    decision, why = decided(primary, void, verdicts, candidate=arm.label, control=control.label)
     boards = [board for aspect in bundle.aspects for board in aspect.scoreboard]
     costs = {
         side: [
@@ -495,6 +475,8 @@ def writer_promotion(
         cases_to_settle=settle,
         verdicts=verdicts,
         cases=cases,
+        gated_on=None if judged is None else len(judged),
+        stopping_line=None if stopping is None else _stopping_line(stopping.line, judged),
         case_sets=case_sets,
         cost_usd=sum(costs["candidate"]) if costs["candidate"] else None,
         control_cost_usd=sum(costs["control"]) if costs["control"] else None,
@@ -505,5 +487,5 @@ def writer_promotion(
 
 
 #: The engine's ``writer_promotion`` action reads a decision for a host when a person asks whether to promote; the
-#: decision's literal waits for a caller (``tests/test_report_writer_exports.py``).
+#: decision's literal is the rule's (:mod:`~threetears.evals.ops.report_writer.writer_decision`).
 __all__ = ["WriterPromotion", "writer_promotion"]
