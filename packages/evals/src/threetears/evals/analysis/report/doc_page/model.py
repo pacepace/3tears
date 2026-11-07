@@ -139,6 +139,16 @@ class DocPage(EvalDocumentModel):
         description="What the campaign compares and on what, with its name as a qualifier: the page's title."
     )
     masthead: PageMasthead
+    # Left out of the document when empty, so a page of this build's shape serializes as it did before the field.
+    stored_shape: str = Field(
+        default="",
+        exclude_if=lambda value: value == "",
+        description=(
+            "Code's one line, first under the masthead, where the page is read from evidence assembled at an earlier "
+            "shape this build reads as stored (stored_shape_line): what shape, what moved since, and how to read it "
+            "at this one; empty where the evidence is this build's shape."
+        ),
+    )
     draft: bool = Field(
         default=False,
         description="Whether the page is a draft: its editor's review did not clear it, so its first line under the "

@@ -39,6 +39,7 @@ from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_RECOMMENDATION,
     call_blocks,
     report_doc_blocks,
+    stored_shape_blocks,
     unread_analysis_blocks,
 )
 from threetears.evals.analysis.report.campaign.names import AspectNames, check_legend_blocks
@@ -129,9 +130,11 @@ def build_campaign_report(
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
     # The first screen is the decision: the question, the lead where a guardrail warns, then where the campaign's report
-    # is, then what warns, one line per arm, and each report-wide caveat once.
+    # is, then what warns, one line per arm, and each report-wide caveat once. Evidence of an earlier shape this build
+    # reads as stored says so before all of it.
     guardrails = guardrail_warnings(campaign, readings, reports, names=names)
     blocks: list[ReportBlock] = [
+        *stored_shape_blocks(bundle.schema_version for bundle in bundles),
         *question_blocks(campaign),
         *(_lead_blocks(campaign, readings, reports, names=names) if guardrails else []),
         *report_doc_blocks(report_doc_id),

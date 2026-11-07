@@ -5,8 +5,10 @@ values).
 The page is the kit's, as the retired planned page laid it out,
 with no class, style or script of its own:
 
-- ``.page`` > ``.mast``; on a draft, code's one line saying its editor's review left findings open, as a
-  ``.callout.warn`` (``data-part="draft"``), first after the masthead; on a finished page with findings open, code's
+- ``.page`` > ``.mast``; on a page read from evidence of an earlier shape this build reads as stored, code's one line
+  saying so, as a ``.callout`` (``data-part="stored-shape"``), first after the masthead; on a draft, code's one line
+  saying its editor's review left findings open, as a ``.callout.warn`` (``data-part="draft"``); on a finished page
+  with findings open, code's
   one line counting them, as a ``.callout`` (``data-part="open"``) linked to where they are listed; where part of a
   stored document no longer reads, code's note as a ``.callout.warn`` (``data-part="degraded"``);
 - ``.bluf``: the ``h1`` headline, the ``.lede``, the amber ``.flag`` where the document has one, the confidence
@@ -258,6 +260,11 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
         '<div class="page">',
         '<article data-page="doc">',
         _masthead(page.masthead),
+        *(
+            [f'<p class="callout" data-part="stored-shape">{escape(page.stored_shape)}</p>']
+            if page.stored_shape
+            else []
+        ),
         *([f'<p class="callout warn" data-part="draft">{escape(draft_line(page))}</p>'] if page.draft else []),
         *(
             [f'<p class="callout" data-part="open"><a href="#findings">{escape(opened)}</a></p>']

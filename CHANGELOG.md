@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a stored report renders across a shape bump that added only optional fields
+
+**Changed:** a report whose evidence was assembled at aspect bundle shape 64 renders whole on this build (shape 65)
+where it was hidden behind the code-only page and the line to regenerate. The earlier shapes a build reads as stored
+are declared in one set (`READ_AS_STORED` in `threetears.evals.analysis.bundle.schema`, `{64}`): a shape joins when
+every field the bumps since added is optional and no stored figure changes meaning, and its figures render as they
+were written, never recomputed or migrated. 64 qualifies: 65 added `FamilyComparison.interval_basis` and
+`LateCriterion.aspect` and `.reading`, each optional, and a shape-64 contrast names the test its interval was drawn
+by. A bundle of any other earlier shape is refused as before.
+
+**Added:** the page says what it is in one line, first under its masthead (`DocPage.stored_shape`, provisional, left
+out of the document when empty) and first on the code-only page of the analysis by its id: "Rendered from evidence
+assembled at shape 64; this build assembles shape 65 (a rate's contrast is now drawn on its bounded interval).
+Regenerate with analysis_generate to read it at 65." `analyses_list` lists such an analysis as written, the same line
+after its verdict, and `needs_regeneration` is None; the JSON form names the shape in `aspects[].bundle_schema_version`.
+
+**Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
+its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written`, and its
+findings count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
+stored-shape line instead; regenerating stays a deliberate act.
+
 ### evals: MIGRATIONS.toml ships in the wheel
 
 **Hosts:** MIGRATIONS.toml ships in the wheel at threetears/evals/MIGRATIONS.toml

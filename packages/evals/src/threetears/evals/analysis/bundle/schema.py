@@ -10,7 +10,7 @@ imports none of them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -2233,13 +2233,53 @@ NO_AXIS_EXPLORATORY = (
 ASPECT_BUNDLE_SHAPE = 59
 
 
+#: The earlier bundle shapes this build reads as stored, each with what the shape after it changed, as the one line a
+#: page read from it says it (:func:`stored_shape_line`). A shape joins when every field the bumps since it added is
+#: optional and this build reads each figure it stored with the meaning it was stored with: a stored contrast names
+#: the interval it was drawn on (``FamilyComparison.basis``), so a page names it as it was drawn. A bump that changes
+#: what a stored figure means, or adds a field this build cannot do without, does not join, and a bundle of an earlier
+#: shape outside the set is refused. Reading as stored is no migration: every figure renders as it was written, never
+#: recomputed (``tests/fixtures/report_inputs/migrate_bundle_shape_65.py`` stays a fixture tool).
+#: 64: the bump to 65 drew a new rate contrast on its bounded interval and added ``FamilyComparison.interval_basis``
+#: and ``LateCriterion.aspect`` and ``.reading``, each optional; a shape-64 contrast's interval is its own test's.
+READ_AS_STORED: Final[Mapping[int, str]] = {64: "a rate's contrast is now drawn on its bounded interval"}
+
+#: The one line a page read from evidence of an earlier shape this build reads as stored says first, and the analysis
+#: listing's verdict says after the verdict: what the page is, what moved since, and how to read it at this shape.
+_STORED_SHAPE_LINE = (
+    "Rendered from evidence assembled at shape {stored}; this build assembles shape {current} ({moved}). Regenerate "
+    "with analysis_generate to read it at {current}."
+)
+
+
+def stored_shape_line(shapes: Iterable[int]) -> str | None:
+    """The one line saying a page is read from evidence of an earlier shape this build reads as stored
+    (:data:`READ_AS_STORED`); None when every bundle is this build's shape.
+
+    :param shapes: Each aspect bundle's ``schema_version``, as read.
+    :ptype shapes: Iterable[int]
+    :return: The line, naming the earliest shape and what moved since it; None for none earlier.
+    :rtype: str | None
+    """
+    current = AnalysisContextBundle.model_fields["schema_version"].default
+    earlier = sorted({shape for shape in shapes if shape != current})
+    if not earlier:
+        return None
+    stored = earlier[0]
+    moved = "; ".join(READ_AS_STORED[shape] for shape in sorted(READ_AS_STORED) if shape >= stored)
+    return _STORED_SHAPE_LINE.format(stored=stored, current=current, moved=moved)
+
+
 def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, remedy: str) -> None:
-    """Refuse a stored bundle of any shape but this build's, naming what holds it and the remedy.
+    """Refuse a stored bundle of any shape but this build's and the earlier ones it reads as stored, naming what holds
+    it and the remedy.
 
     A stored read is strict, so a bundle of another shape would otherwise fail on the first field it lacks or the
     first it carries that this shape dropped, in pydantic's words, and fail every read that holds it — a listing of
     analyses among them. It is refused here, before it is read, in the reader's words, so a caller can refuse the one
-    document that holds it and read the rest. A bundle is regenerated across a shape change, never migrated.
+    document that holds it and read the rest. A bundle is regenerated across a shape change, never migrated: one of a
+    shape in :data:`READ_AS_STORED` is read as it was stored, its figures as they were written, and the page read from
+    it says so first (:func:`stored_shape_line`).
 
     :param data: The stored bundle, as a mapping.
     :ptype data: Mapping[str, Any]
@@ -2247,8 +2287,8 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
     :ptype what: str
     :param remedy: What to do instead: regenerate what holds it, or freeze it again.
     :ptype remedy: str
-    :raises RefusedInput: The bundle's ``schema_version`` is missing or is not this build's
-        (``AnalysisContextBundle.schema_version``'s default).
+    :raises RefusedInput: The bundle's ``schema_version`` is missing, or is neither this build's
+        (``AnalysisContextBundle.schema_version``'s default) nor one in :data:`READ_AS_STORED`.
     """
     shape = data.get("schema_version")
     current = AnalysisContextBundle.model_fields["schema_version"].default
@@ -2258,10 +2298,11 @@ def refuse_a_bundle_of_another_shape(data: Mapping[str, Any], *, what: str, reme
             f"(shape {ASPECT_BUNDLE_SHAPE}), so this build cannot read it",
             remedy=remedy,
         )
-    if shape != current:
+    if shape != current and shape not in READ_AS_STORED:
+        stored = ", ".join(map(str, sorted(READ_AS_STORED)))
         raise RefusedInput(
-            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} only, so it "
-            "cannot read it: a bundle is regenerated across a shape change, never migrated",
+            f"{what} holds an evidence bundle of shape {shape}, and this build reads shape {current} and, as stored, "
+            f"{stored} only, so it cannot read it: a bundle is regenerated across a shape change, never migrated",
             remedy=remedy,
         )
 
@@ -4061,6 +4102,8 @@ __all__ = [
     "exploratory_disclosure",
     "ASPECT_BUNDLE_SHAPE",
     "refuse_a_bundle_of_another_shape",
+    "READ_AS_STORED",
+    "stored_shape_line",
     "asks_a_question",
     "CriterionKind",
     "late_criteria",
