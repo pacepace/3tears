@@ -169,7 +169,10 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 @media (max-width:639px){.tbl .id.long{white-space:normal}}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0;white-space:normal;min-width:4.5rem}
+/* a header row scrolls away with a tall table: its frame scrolls sideways, so it is the header's scroll container and
+   a sticky header would stick to the frame, never the page; a header that stays visible inside a tall table needs the
+   frame capped at the viewport's height with its own vertical scroll, a design choice to take with the host later */
+th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);white-space:normal;min-width:4.5rem}
 td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:0}
 tr.hl td{background:var(--accent-wash)}
