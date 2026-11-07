@@ -57,7 +57,7 @@ def test_the_first_screen_says_the_judge_was_truncated_and_at_which_cap(g2: Repo
     first = "\n".join(_header_lines(report_html(g2))) if door == "html" else _first_screen_md(report_markdown(g2))
     assert "truncated" in first
     assert "10240 tokens" in first and "max_tokens=" not in first
-    assert "No verdict: the test setup failed, not the models." in first
+    assert "The test setup failed: it measured the setup instead of the models." in first
     assert "v4-flash lost 10 of 12 trials, most because the judge's reply was truncated" in first
 
 
@@ -75,12 +75,12 @@ JUDGE_CAVEAT = "Judged scores on classify are directional until people's labels 
 def test_html_opens_on_the_question_then_the_arms(g2: Report) -> None:
     lines = _header_lines(report_html(g2))
     assert lines[:2] == [TITLE, ARMS]
-    assert lines[2].startswith("No verdict: the test setup failed")
+    assert lines[2].startswith("The test setup failed: it measured the setup instead of the models.")
 
 
 def test_markdown_opens_on_the_question_then_the_arms_then_the_verdict(g2: Report) -> None:
     lines = report_markdown(g2).splitlines()
-    assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**No verdict: ")
+    assert lines[:4] == [f"# {TITLE}", ARMS, "", lines[3]] and lines[3].startswith("**The test setup failed: ")
     # Its judge has no human labels, so the report-wide caveat on judged scores follows the verdict, in normal weight
     # (P2); the cost's provider routing is said in the methods, never on the first screen (owner reading, 2026-11-06).
     assert lines[5:10] == [JUDGE_CAVEAT, "", "**Scoreboard**", "", SCOREBOARD_HEADER]

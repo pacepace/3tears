@@ -41,7 +41,7 @@ from threetears.evals.quick.files import load_evals
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_shapes_support import s4_change
-from packages.evals.tests.style_support import absence_violations
+from packages.evals.tests.style_support import absence_violations, reading_names
 
 
 @dataclass(frozen=True)
@@ -132,38 +132,31 @@ async def test_both_g2_fixtures_have_an_answer_block() -> None:
 # --- no first-screen line states an absence ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["rung0", "rung1", "rung2", "rung4"])
+@pytest.mark.parametrize("name", sorted(_RUNGS))
 def test_no_first_screen_line_of_a_rung_states_an_absence(rungs: dict[str, _Rung], name: str) -> None:
-    assert absence_violations(_first_screen(rungs[name].page.blocks)) == []
+    # Rung 3's undecided reading says what it means ("the evidence cannot tell v2 and v1 apart"), never "not separated".
+    page = rungs[name].page
+    names = reading_names(fold.report.bundle for fold in page.aspects)
+    assert absence_violations(_first_screen(page.blocks), names=names) == []
 
 
 def test_no_first_screen_line_of_the_writer_eval_s_page_states_an_absence(writer_page: CampaignReport) -> None:
-    assert absence_violations(_first_screen(writer_page.blocks)) == []
+    names = reading_names(fold.report.bundle for fold in writer_page.aspects)
+    assert absence_violations(_first_screen(writer_page.blocks), names=names) == []
 
 
-def test_rung_3_s_one_absence_is_the_undecided_reading_s_own_phrase(rungs: dict[str, _Rung]) -> None:
-    # "Not separated" is the reading's name, which chunk 2 replaces with what it means (Q2); nothing else on the first
-    # screen says what the page lacks. When chunk 2 lands, this list is empty.
-    found = absence_violations(_first_screen(rungs["rung3"].page.blocks))
-    assert [violation.detail for violation in found] == ["not separated"]
-    assert all(violation.text == "Accuracy: v2 and v1 not separated." for violation in found)
+@pytest.mark.parametrize("name", sorted(_RUNGS))
+def test_no_first_screen_line_of_a_rung_s_aspect_page_states_an_absence(rungs: dict[str, _Rung], name: str) -> None:
+    # The aspect page's verdict line is the campaign's lead sentence, and its guardrail what it means for the decision.
+    report = rungs[name].report
+    assert absence_violations(_first_screen(report.blocks), names=reading_names([report.bundle])) == []
 
 
-def test_rung_3_s_aspect_page_s_one_absence_is_its_verdict_line_s_own_words(rungs: dict[str, _Rung]) -> None:
-    # The aspect page's verdict line and G2's "No verdict" are verdict.py's words, which chunk 2 rewrites into what
-    # they mean; nothing else on those first screens says what the page lacks. When chunk 2 lands, each list is empty.
-    aspect = absence_violations(_first_screen(rungs["rung3"].report.blocks))
-    verdict = "Declared question: nothing separated v2 from v1. Not yet shown safe: v2 on no invented total."
-    assert [(found.detail, found.text) for found in aspect] == [("nothing separated", verdict)]
-
-
-async def test_g2_s_absences_are_its_verdict_line_s_own_words() -> None:
-    found = absence_violations(_first_screen((await g2_report()).blocks))
-    assert [violation.detail for violation in found] == ["No verdict", "not the"]
-    assert {violation.text.split(".")[0] for violation in found} == {
-        "No verdict: the test setup failed, not the models"
-    }
-    assert absence_violations(_first_screen((await g2_ruled_report())[1].blocks)) == []
+async def test_no_first_screen_line_of_either_g2_fixture_states_an_absence() -> None:
+    # The setup gate says what the run measured ("The test setup failed: it measured the setup instead of the
+    # models."), never "No verdict".
+    for report in (await g2_report(), (await g2_ruled_report())[1]):
+        assert absence_violations(_first_screen(report.blocks), names=reading_names([report.bundle])) == []
 
 
 # --- a first-screen rate carries its count ----------------------------------------------------------------------------
@@ -245,8 +238,9 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
     assert (
         supplied.blocks[:index] + supplied.blocks[index + 1 :] == computed.blocks[:index] + computed.blocks[index + 1 :]
     )
-    # Rendered in code's tone, the page differs only by the lead's words: every other byte is the same.
-    alike = given.model_copy(update={"tone": code_lead.tone})
+    # Rendered in code's tone, linking code's term, the page differs only by the lead's words: every other byte is the
+    # same.
+    alike = given.model_copy(update={"tone": code_lead.tone, "term": code_lead.term})
     same_tone = build_campaign_report(shape.campaign, shape.readings, shape.reports, lead=[alike])
     for render in (campaign_report_markdown, campaign_report_html):
         before = render(computed)
@@ -295,6 +289,17 @@ def test_a_line_saying_what_the_page_is_passes() -> None:
         _line("Notes on the arm are in its fold; another arm cannot be compared.", source="verdict"),
     ]
     assert absence_violations(lines) == []
+
+
+def test_a_page_s_own_reading_name_states_no_absence_and_a_stray_no_still_does() -> None:
+    # A guardrail named "No invented total score" is a name the page prints, masked as code is; a "No" anywhere else
+    # in the line still opens an absence.
+    named = _line("v2 may do worse than v1 on the No invented total score guardrail.", source="verdict")
+    assert absence_violations([named], names=["No invented total score"]) == []
+    (found,) = absence_violations([named])
+    assert found.detail == "No invented"
+    (stray,) = absence_violations([_line("v2 made No call.", source="verdict")], names=["No invented total score"])
+    assert stray.detail == "No call"
 
 
 def test_what_warns_the_caveats_and_the_quoted_question_may_state_an_absence() -> None:

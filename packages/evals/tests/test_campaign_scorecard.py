@@ -26,7 +26,7 @@ from threetears.evals import Answer, Eval
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign_page import CHOICE_NOTE, AspectNames, campaign_verdict
-from threetears.evals.analysis.report.campaign.scorecard import row_words
+from threetears.evals.analysis.report.campaign.scorecard import aspect_shows
 from threetears.evals.analysis.report.model import (
     CampaignReport,
     ChartBlock,
@@ -96,13 +96,13 @@ def _unasked(label: str) -> Callable[[AnalysisContextBundle], AnalysisContextBun
     return change
 
 
-async def test_an_aspect_with_no_margin_is_said_to_read_a_drop_as_not_separated_and_has_no_row_to_settle() -> None:
+async def test_an_aspect_with_no_margin_is_said_to_leave_a_drop_undecided_and_has_no_row_to_settle() -> None:
     page = await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing"))
     said = _scorecard(page)
     # What the aspect lacks changes how its row reads, so one line says what a drop there reads as.
     assert (
-        "On billing, a drop reads as not separated however large: a drop is read against a margin, and the aspect "
-        "declares none." in said
+        "On billing, the evidence cannot tell a drop of any size from no change: a drop is read against a margin, "
+        "and the aspect declares none." in said
     )
     (billing,) = page.readings.on_aspect("billing")
     assert billing.reading == "unclear" and "no margin was declared" in billing.reason
@@ -145,7 +145,7 @@ async def test_an_unclear_row_s_cases_show_it_no_worse_than_the_margin_and_not_b
     settle = _table(page, "to_settle")
     assert settle.title == "To settle"
     assert [(cells["shows"].text, cells["decided_by"].text) for cells in settle.rows] == [
-        ("no worse than the 70-point margin", "pass rate")
+        ("no worse than the 70-point margin", "Pass rate")
     ]
     note = page.blocks[page.blocks.index(settle) + 1]
     assert isinstance(note, DisclosureBlock)
@@ -271,7 +271,7 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     # The scorecard after the first screen; no control-based table.
     markdown = campaign_report_markdown(page)
     assert "<summary>By aspect, pair by pair</summary>" in said and "▸" not in said
-    assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+    assert "alpha ahead of beta." in markdown and "the evidence cannot tell alpha and beta apart." in markdown
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -435,7 +435,7 @@ def test_the_scorecard_is_one_matrix_of_aspects_by_the_kind_s_columns_with_its_r
         assert [column.header for column in matrix.columns] == columns
     else:
         assert matrix.title == "solo by aspect"
-        assert [column.header for column in matrix.columns][:2] == ["Aspect", "pass rate (%)"]
+        assert [column.header for column in matrix.columns][:2] == ["Aspect", "Pass rate (%)"]
     # The long form is folded, under the matrix, in the same section.
     folded = [
         block
@@ -597,18 +597,25 @@ async def test_an_asked_aspect_with_no_margin_reads_its_drop_against_zero_and_ne
     families hold both aspects, no line says billing is never shown worse, and its row reads in the superiority
     question's words."""
     page = await page_of("billing", "tone", margins={"billing": None})
-    assert "On billing, a drop reads as not separated" not in _scorecard(page)
+    assert "On billing, the evidence cannot tell a drop of any size from no change" not in _scorecard(page)
     assert "Each arm's 2 readings are corrected together." in _methods(page)
     (billing,) = page.readings.on_aspect("billing")
     assert billing.confirmatory and billing.margin is None and billing.drop_p is not None
+    # The fold's heading says what the row read, in the superiority question's words.
     assert (
-        row_words(billing)
-        == {"better": "shown better", "worse": "shown worse", "unclear": "not separated"}[billing.reading]
+        aspect_shows(page.readings, "billing")
+        == {
+            "better": "v2 shown better",
+            "worse": "v2 shown worse",
+            "unclear": "the evidence cannot tell v2 and production apart",
+        }[billing.reading]
     )
     # A superiority row that read no interval, or too few cases, separated nothing either way: it stays unclear.
     unread = billing.model_copy(update={"reading": "unclear", "gain_interval": None})
     few = billing.model_copy(update={"reading": "unclear", "control_cases": 2, "arm_cases": 2})
-    assert row_words(unread) == row_words(few) == "unclear"
+    for row in (unread, few):
+        rows = [row if other.aspect == "billing" else other for other in page.readings.readings]
+        assert aspect_shows(page.readings.model_copy(update={"readings": rows}), "billing") == "v2 unclear"
 
 
 def test_cases_and_trials_are_stated_apart_where_an_arm_ran_a_case_more_than_once() -> None:
@@ -633,13 +640,13 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
         rows[("billing", "v4", "no worse than the 10-point margin")],
         rows[("billing", "v4", "the 10-point floor holds")],
     )
-    assert (row["decided_by"].text, row["observed"].text) == ("pass rate", "31 cases, $0.22")
+    assert (row["decided_by"].text, row["observed"].text) == ("Pass rate", "31 cases, $0.22")
     assert (floor["decided_by"].text, floor["observed"].text) == ("`reply.cites_policy`", "41 cases, $0.29")
     v3 = [key for key in rows if key[:2] == ("billing", "v3")]
     assert v3 == [("billing", "v3", "no worse than the 10-point margin, and the 10-point floor holds")]
     merged = rows[v3[0]]
     assert (merged["decided_by"].text, merged["none"].text, merged["observed"].text) == (
-        "pass rate",
+        "Pass rate",
         "75 cases, $0.53",
         "233 cases, $1.6",
     )
@@ -712,7 +719,7 @@ def _on(lines: list[str], prefix: str) -> list[str]:
 
 #: How tone's v2 row and its pass-rate contrast read the same per-case values: the row shown better on its bounded
 #: interval corrected across v2's aspects, the contrast on the same method at its family's stricter level.
-_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads not separated"
+_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads cannot tell apart"
 
 
 def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_in_one_line() -> None:

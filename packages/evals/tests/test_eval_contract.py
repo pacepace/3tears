@@ -374,11 +374,16 @@ async def test_a_log_is_graded_as_logged_and_a_repeat_never_logged_is_excluded_n
 async def test_a_single_arm_prints_first_how_many_cases_passed_and_which_it_missed() -> None:
     result = await Eval(TICKETS, crash_first, ["label", "urgent"]).run(store=":memory:")
 
+    # The aspect page's verdict line, as the campaign page leads with its first sentence: the count, then the misses.
     first = result.render().splitlines()[0]
-    assert first == f"{result.name}: 2/4 cases passed; 2 misses: crash, both"
+    assert (
+        first == f"{result.name}: crash_first passed 6 of 12 trials on 4 cases. Cases that failed a trial: crash, both."
+    )
 
 
-async def test_a_single_arm_s_first_line_counts_the_cases_excluded_by_cause(tmp_path: Path) -> None:
+async def test_a_single_arm_s_first_line_says_what_its_page_says_of_the_trials_lost_and_its_lines_say_the_cause(
+    tmp_path: Path,
+) -> None:
     log = Log(tmp_path / "outputs.jsonl")
     log(TICKETS[0], {"label": "billing"})
     log(TICKETS[0], {"label": "billing"})
@@ -387,7 +392,13 @@ async def test_a_single_arm_s_first_line_counts_the_cases_excluded_by_cause(tmp_
 
     (cause, *_) = next(repeat for repeat in result.results() if repeat.case == "crash").errors
     assert cause.startswith(f"apparatus: NotLogged: {NOT_LOGGED}: case crash ")
-    assert result.render().splitlines()[0] == f"{result.name}: 1/1 cases passed; 0 misses; 1 excluded: {cause}"
+    # Half its trials were lost, so its page's verdict line is the setup gate's, and so is the print's first line;
+    # the cause each lost trial records is the arm's excluded line, below it.
+    rendered = result.render()
+    (verdict,) = [block.text for block in result.report.blocks if getattr(block, "source", None) == "verdict"]
+    assert rendered.splitlines()[0] == f"{result.name}: {verdict}"
+    assert verdict.startswith("The test setup failed: it measured the setup instead of the models.")
+    assert [line for line in rendered.splitlines() if line.strip().startswith("excluded: ") and NOT_LOGGED in line]
 
 
 # --- spend from Model -----------------------------------------------------------------------------------------------

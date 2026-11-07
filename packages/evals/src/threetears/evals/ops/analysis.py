@@ -268,9 +268,9 @@ class CampaignLine(EvalBaseModel):
             "writer's prose or by cutting the headline; distinct from verdict_short, which is the decision. Arms are "
             "named by their short names (else labels). The answer leads and a warning only qualifies it. A change: "
             "`<arm> improved` or `<N> candidates improved` where a candidate is shown better, else `No candidate "
-            "improved`, whether the candidates are equal, not separated or worse. A choice: `<arm> ahead` where one "
-            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Not "
-            "separated`. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
+            "improved`, whether the candidates are equal, undecided or worse. A choice: `<arm> ahead` where one "
+            "arm is shown ahead of another and behind none, else `Arms differ` where any pair separates, else `Cannot "
+            "tell apart` where the evidence tells no pair apart. A measurement: `Measured`. `No readings yet` where the readings hold no row of their kind. "
             "Where the arms the answer names (the improving arms, the leader, the measured arm) broke a floor or "
             "missed a bar it adds `, broke a floor`, `, missed a bar` or `, broke a floor and missed a bar` (floor "
             "first; `Measured, <arm> missed a bar` names the arm; several arms count, `2 candidates improved, 1 broke "
@@ -805,7 +805,7 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
         }
         if len(leaders := ahead - behind) == 1:
             return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
-        return "Arms differ" if ahead else "Not separated"
+        return "Arms differ" if ahead else "Cannot tell apart"
     if not readings.readings:
         return "No readings yet"
     better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))

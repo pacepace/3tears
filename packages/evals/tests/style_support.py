@@ -11,10 +11,13 @@ import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.model import ReportBlock
+from threetears.evals.analysis.report.verdict import guardrail_name
 from threetears.evals.analysis.style import StyleViolation, lint_prose
 
-__all__ = ["Absence", "absence_violations", "lint_page"]
+__all__ = ["Absence", "absence_violations", "lint_page", "reading_names"]
 
 #: A line quoting something whole, as the declared question does under the title: data, not prose.
 _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
@@ -94,7 +97,18 @@ class Absence:
     detail: str
 
 
-def absence_violations(blocks: Iterable[ReportBlock]) -> list[Absence]:
+def reading_names(bundles: Iterable[AnalysisContextBundle]) -> list[str]:
+    """Every measure and guardrail name a page over ``bundles`` prints, as it prints them: names, which
+    :func:`absence_violations` masks as it masks code (a guardrail named ``No invented total score`` states no
+    absence)."""
+    names: set[str] = set()
+    for bundle in bundles:
+        names |= {measure_name_of(bundle, key) for key in bundle.measure_catalog}
+        names |= {guardrail_name(bundle, check.name, check.reading) for check in bundle.guardrails.checks}
+    return sorted(names, key=len, reverse=True)
+
+
+def absence_violations(blocks: Iterable[ReportBlock], *, names: Iterable[str] = ()) -> list[Absence]:
     """Every line of a page's first screen that opens or turns on an absence (``No``, ``Nothing``, ``not``,
     ``never``, ``none``): the page says what it is, never what it is not. What warns and the report-wide caveats are
     exempt, since there the absence is the warning or changes the reading, and so is the question quoted; a block
@@ -102,10 +116,13 @@ def absence_violations(blocks: Iterable[ReportBlock]) -> list[Absence]:
 
     :param blocks: The page's first screen, in order (its blocks in the first-screen sections).
     :ptype blocks: Iterable[ReportBlock]
+    :param names: The page's measure and guardrail names (:func:`reading_names`), masked before matching.
+    :ptype names: Iterable[str]
     :return: One per absence found; empty when the first screen says only what the page is.
     :rtype: list[Absence]
     """
     found: list[Absence] = []
+    masks = sorted(set(names), key=len, reverse=True)
     for block in blocks:
         text = getattr(block, "text", None)
         if not isinstance(text, str) or block.section in _ABSENCE_SECTIONS:
@@ -114,5 +131,8 @@ def absence_violations(blocks: Iterable[ReportBlock]) -> list[Absence]:
             continue
         if str(getattr(block, "anchor", None) or "").startswith(_CAVEAT_ID):
             continue
-        found += [Absence(text, match.group(0)) for match in _ABSENCE.finditer(_CODE_SPAN.sub("", text))]
+        masked = _CODE_SPAN.sub("", text)
+        for name in masks:
+            masked = masked.replace(name, "")
+        found += [Absence(text, match.group(0)) for match in _ABSENCE.finditer(masked)]
     return found

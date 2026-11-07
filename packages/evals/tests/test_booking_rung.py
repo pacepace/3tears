@@ -92,14 +92,17 @@ async def test_offline_it_replays_the_loop_and_grades_the_day_each_cell_left(
     assert summary.status == "completed" and (summary.n_cases, summary.k_runs, summary.n_excluded) == (12, 3, 0)
     assert summary.errors == []
     # The did-nothing control: an agent that did nothing would pass the first check in the 4 full-day cases only,
-    # and the other two in every case, so their pass rates are printed as no measurement at all.
+    # and the other two in every case; each line says what the page says of an unproven check, then that baseline.
     assert [(goal.proof, goal.did_nothing_passed, goal.did_nothing_cases) for goal in summary.goal_checks] == [
         ("unproven", 4, 12),
         ("unproven", 12, 12),
         ("unproven", 12, 12),
     ]
     lines = [line for line in summary.render().splitlines() if "goal check" in line]
-    assert "NOT A MEASUREMENT" not in lines[0] and all("NOT A MEASUREMENT" in line for line in lines[1:])
+    assert "at launch one passed it in 4 of 12 case(s)" in lines[0] and all(
+        "at launch one passed it in 12 of 12 case(s)" in line for line in lines[1:]
+    )
+    assert all("so it is not shown to measure the behaviour" in line for line in lines)
     # Each cell, read back: the checks graded the day it left and the calls it made.
     cases = {case.id: case for case in off_loop(host.storage.query_test_cases, summary.scope_id)}
     for cell in off_loop(list_results, host.storage, summary.run_id, summary.scope_id):

@@ -44,8 +44,8 @@ too, so it is checked against people's labels before its scores are leaned on, a
 
 A runner given as a mapping, `{"v1": ..., "v2": ...}`: each runner is an arm, every arm runs over the same cases, and
 the first key is the **control** the others are tested against. Each reading gets a delta, an interval, and a
-**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), not separated (`v2 and v1 not
-separated`: the cases could not tell the arms apart, which never means "no difference"), `equivalent` (shown inside a
+**verdict**, naming both arms: separated (`v2 better than v1`, `v2 worse than v1`), undecided (`the evidence cannot
+tell v2 and v1 apart`, `cannot tell apart` in a table cell, which never means "no difference"), `equivalent` (shown inside a
 margin you declared), or `untested`. A guardrail is
 decided apart, `held`, `breached` or `undecided`, so a gain elsewhere cannot pay for it.
 
@@ -523,8 +523,8 @@ excludes zero. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `v2 better than v1` or `v2 worse
-than v1`, each arm by its label), **not separated** (the cases could not tell the arms apart, which never means "no
-difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
+than v1`, each arm by its label), **cannot tell apart** (typed `not_separated`: the cases could not tell the arms
+apart, which never means "no difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
 enough"), or **untested** (no test could decide). A report names, under Not tested, each measure that declares no
 margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or
 `undecided`. Each is also a typed value a program reads (`Result.verdicts()`), which the printed words are

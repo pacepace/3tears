@@ -97,7 +97,12 @@ def test_verbose_prints_each_result_whole(capsys: pytest.CaptureFixture[str]) ->
 def test_a_comparison_whose_gate_fails_exits_4(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([_write("regression.py", REGRESSION)]) == EXIT_GATE_FAILED
 
-    assert "exit 4: the gate failed on Accuracy: wrong worse than right" in capsys.readouterr().out
+    # The exit line opens with the result as the page leads with it, which is what the gate failed on.
+    exit_line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("exit 4: ")]
+    assert exit_line == [
+        "exit 4: Accuracy: wrong worse than right. Of 20 trials each, Accuracy was right on 20 for right and 0 for "
+        "wrong. Over 20 paired cases, the interval puts wrong between 63.3 and 100 points worse. The gate failed on it."
+    ]
 
 
 def test_a_run_stopped_short_exits_1(capsys: pytest.CaptureFixture[str]) -> None:
@@ -236,7 +241,7 @@ def test_a_python_file_imports_the_modules_beside_it_while_it_loads_and_while_it
     assert all(name in sys.modules for name in SIBLINGS)
     printed = capsys.readouterr().out
     for name in ("lazy", "eager", "other"):  # every case answered by the sibling's code
-        assert f"{name}: 4/4 cases passed; 0 misses" in printed
+        assert f"{name}: run passed 4 of 4 cases." in printed
     # Each directory first, in the order loaded, and once: the second file beside the first adds nothing.
     assert sys.path[:2] == [str(other), str(rung)]
     assert sys.path.count(str(rung)) == 1 and sys.path.count(str(other)) == 1

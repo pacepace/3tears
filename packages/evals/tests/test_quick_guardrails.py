@@ -123,7 +123,7 @@ class TestAScorerGuardrail:
         ]
         assert leaky[0]["delta"] == pytest.approx(-40.0) and leaky[0]["decision"].startswith("breached")
         (slip,) = comparison.guardrails("slip")
-        assert slip["decision"].startswith("undecided: not shown held, so not known to be safe")
+        assert slip["decision"].startswith("undecided: slip may be worse than current by more than the margin")
         # On the row's ruler, points for a pass/fail, as the margin column states it.
         assert "the interval reaches both sides of -10 pts, the declared margin" in slip["decision"]
         (same,) = comparison.guardrails("same")
@@ -155,8 +155,9 @@ class TestAScorerGuardrail:
         for outcome in ("held", "breached", "undecided"):
             assert f"| {outcome}: " in markdown
         breach, undecided = _standing(comparison)
-        assert breach == "leaky breached the guardrail No leak score."
-        assert undecided == "slip is not known to be safe on the guardrail No leak score."
+        # The verdict line's own words for what each guardrail means for the decision.
+        assert breach == "leaky breaches the No leak score guardrail."
+        assert undecided == "slip may do worse than current on the No leak score guardrail."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
         assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
@@ -168,10 +169,10 @@ class TestAScorerGuardrail:
         blocks = comparison.report.blocks
         assert comparison.contrasts() == [], "nothing but the guardrail is graded"
         named = [
-            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breached")
+            i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breaches")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text == "leaky breached the guardrail No leak score."
+        assert blocks[named[0]].text == "leaky breaches the No leak score guardrail."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 

@@ -1082,6 +1082,10 @@ def _campaign_page(
     declared = declared_arm_names(bundle.arms)
     writer = analysis_writer(analysis) if analysis is not None else None
     checked = fingerprints or {}
+    # Each aspect's graders' order, which its verdict line leads on the first of, as the campaign's lead does.
+    orders = {
+        aspect.label: aspect.design.measure_order if aspect.design is not None else [] for aspect in campaign.aspects
+    }
     reports = {
         aspect.aspect: build_code_only_report(
             aspect,
@@ -1093,6 +1097,7 @@ def _campaign_page(
             writer=writer,
             bundle_fingerprint=checked.get(aspect.aspect),
             trials=trials,
+            measure_order=orders.get(aspect.aspect, []),
         )
         for aspect in bundle.aspects
     }

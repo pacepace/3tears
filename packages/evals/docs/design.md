@@ -94,7 +94,7 @@ Five cases run three times are five pieces of evidence, not fifteen: repeats of 
 comparisons run on per-case means, every interval is computed over cases, and a reading of one case repeated
 has no interval.
 
-**A verdict comes from a corrected test, and "not separated" never means "no difference".**
+**A verdict comes from a corrected test, and "the evidence cannot tell them apart" never means "no difference".**
 Each contrast against the control is `improved`, `regressed`, `equivalent`, `not_separated` or
 `untested`, read off a Holm-adjusted p within one family: the aspect's, where it is asked a question (whenever that was asked: a question set after
 the runs is disclosed, not demoted), or else one exploratory family over every reading on a merit axis (the rig's own readings, such as the judge's time and spend, are on none).

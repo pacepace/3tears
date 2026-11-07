@@ -31,7 +31,7 @@ needs_human = "bool"
 first line says how it went:
 
 ```text
-triage: 16/30 cases passed; 14 misses: gdpr-delete, nonprofit, phish-suspend, phish-invoice, crash-at-checkout, and 9 more
+triage: triage passed 62 of 90 trials on 30 cases. Cases that failed a trial: refund-after-cancel, export-typo, slow-sync, gdpr-delete, nonprofit, and 9 more.
 ```
 
 Below it come each field's pass rate, each `category` label's precision and recall, the top misses with why each
@@ -86,7 +86,8 @@ pip install, fetch the examples from the repository first
 ## What is different
 
 - **A verdict, not a mean.** Every version is run over the same frozen cases and tested case by case against a control,
-  and evidence that cannot tell two versions apart says "not separated", never "no difference"
+  and evidence that cannot tell two versions apart says so ("the evidence cannot tell v2 and v1 apart"), never "no
+  difference"
   ([why](docs/design.md#numbers)).
 - **Guardrails apart from capability.** What a version must never do is decided on its own, so a gain cannot pay for
   a breach ([why](docs/design.md#guardrails-are-a-pillar-apart-from-capability)).

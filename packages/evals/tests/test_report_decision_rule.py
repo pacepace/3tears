@@ -288,7 +288,7 @@ async def test_on_four_cases_no_floor_is_broken_and_the_verdict_decides_nothing(
     floor = "4 cases are too few for the interval that would show it, which is estimated only from 5 independent cases"
     assert _floor_rows(report) == [
         (
-            "the pass rate",
+            "Pass rate",
             f"unclear: cheaper candidate's drop is past 10 points on the point estimate alone ({floor})",
         ),
         (
@@ -657,7 +657,7 @@ async def test_an_arrival_shaped_page_warns_of_nothing_and_says_why_on_the_floor
     report = await _rate_only_page([3, 3, 2, 2, 1, 1, 0], [1, 1, 1, 1, 1, 1, 0])
     assert _warnings(report) == [], "unclear is not broken: the page opens on no warning"
     reading, status = _floor_rows(report)[0]
-    assert reading == "the pass rate"
+    assert reading == "Pass rate"
     assert status.startswith(
         "unclear: candidate's drop is past 10 points on the point estimate alone, not on its interval (from a gain of "
     ), status
@@ -677,7 +677,7 @@ async def test_a_drop_whose_whole_interval_is_past_the_margin_breaks_and_one_rea
     markdown = report_markdown(shown)
     assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown, "under the title, never above it"
     reading, status = _floor_rows(shown)[0]
-    assert reading == "the pass rate" and status.startswith(
+    assert reading == "Pass rate" and status.startswith(
         "broken: candidate passed 30 of 60 to production's 60, a drop that exceeds the margin of 10 points on its "
         "whole interval (at least "
     ), status
@@ -706,8 +706,8 @@ async def test_a_readiness_shaped_reading_both_arms_never_pass_says_it_cannot_se
     bundle = await _assembled(comparison, _RATE_ONLY)
     report = build_code_only_report(bundle, assembled_at="2026-10-17T12:00:00+00:00", campaign_name="readiness")
     rows = dict(_floor_rows(report))
-    assert list(rows) == ["the pass rate", "Label matched", "On time score"]
-    assert rows["the pass rate"] == "unclear: the pass rate cannot separate the arms (both 0 of 18)"
+    assert list(rows) == ["Pass rate", "Label matched", "On time score"]
+    assert rows["Pass rate"] == "unclear: the pass rate cannot separate the arms (both 0 of 18)"
     assert rows["On time score"] == "unclear: On time score cannot separate the arms (both 0 of 18)"
     # 12 of 18 to 14 is an 11.1-point drop: past the margin on its point estimate, on its own row.
     assert rows["Label matched"].startswith(

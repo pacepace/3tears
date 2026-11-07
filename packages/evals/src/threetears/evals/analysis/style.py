@@ -21,7 +21,7 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -217,6 +217,32 @@ def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, st
     return name
 
 
+#: The reader's words for a contrast the evidence leaves undecided, as a table cell says them and the glossary defines
+#: them once: never "not separated", which a first-time reader takes for "the two are the same". A sentence says it
+#: whole, naming the arms (:func:`cannot_tell_apart`).
+CANNOT_TELL_APART = "cannot tell apart"
+
+
+def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
+    """The undecided reading as a sentence says it, each arm by name and the control last: ``the evidence cannot tell
+    v2 and v1 apart``; with several arms ``the evidence cannot tell v2 or v3 apart from v1``.
+
+    The one sentence form of :data:`CANNOT_TELL_APART`: every page, print and exit line that says a contrast is
+    undecided says it so, and never "not separated" or "nothing separated".
+
+    :param arms: The arms read against the control, as the page names them; at least one.
+    :ptype arms: Sequence[str]
+    :param control: The control, as the page names it.
+    :ptype control: str
+    :return: The clause, with no closing stop.
+    :rtype: str
+    """
+    if len(arms) == 1:
+        return f"the evidence cannot tell {arms[0]} and {control} apart"
+    named = f"{', '.join(arms[:-1])} or {arms[-1]}"
+    return f"the evidence cannot tell {named} apart from {control}"
+
+
 #: Every term of art a page may use, in one plain sentence each.
 GLOSSARY: dict[str, str] = {
     "control": (
@@ -240,7 +266,10 @@ GLOSSARY: dict[str, str] = {
         "Five independent cases per arm: below it a gap has no interval; from there an interval says whether the "
         "gap would hold on more cases."
     ),
-    "separated": "The difference from the control is larger than chance explains, after correcting for every test.",
+    CANNOT_TELL_APART: (
+        "The difference from the control could be chance either way, so neither arm is shown better, and it never "
+        "means the two are the same."
+    ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
@@ -259,7 +288,7 @@ GLOSSARY: dict[str, str] = {
     "pairing r": "How much a case's result on one arm predicts its result on the other; high means pairing helped.",
     "adjusted p": (
         "The chance of a change this large with no real difference, raised to allow for every comparison tested; "
-        "under 0.05 counts as separated."
+        "under 0.05 the evidence tells the arms apart."
     ),
     "decision": "What the guardrail or bar came to on this arm: held or breached, cleared or missed, else undecided.",
     "stratum": "A named group of cases the author set apart, read on its own beside the whole.",
@@ -384,6 +413,7 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
 
 __all__ = [
     "BANNED_PHRASES",
+    "CANNOT_TELL_APART",
     "CASE_LABEL_CHARS",
     "GLOSSARY",
     "HUMANIZE_OVERRIDES",
@@ -395,6 +425,7 @@ __all__ = [
     "StyleViolation",
     "arm_display_name",
     "arm_name",
+    "cannot_tell_apart",
     "code",
     "declared_check_name",
     "humanize",

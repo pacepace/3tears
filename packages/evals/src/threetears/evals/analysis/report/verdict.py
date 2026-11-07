@@ -5,28 +5,36 @@
 1. **The setup gate.** An arm lost more than a third of its trials to the test setup, or the arms' loss rates differ
    by more than a third of their trials: the run measured its test setup, not the models, so there is no verdict,
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
-2. **One arm.** ``<eval>: n/N cases passed; k misses: …`` — how its cases came out.
+2. **One arm.** ``agent passed 31 of 36 trials on 12 cases.`` — its pass rate as the count it is computed over
+   (:func:`passed_clause`), the campaign page's lead; then the cases it missed: ``Cases that failed a trial: r08,
+   r09, r10.``
 3. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
-4. **A declared question.** What its contrasts and guardrails came to, in their own verdict words.
-5. **Exploratory.** ``Exploratory:`` and the contrasts that separated — or ``nothing separated v2 from v1 on any
-   reading``, never "no difference". A guardrail an arm is not shown safe on is a second sentence: ``Not yet shown
-   safe: v2 on no invented total.``
+4. **A declared question.** What its contrasts came to on the measure it leads on, in their own verdict words
+   (``Accuracy: the evidence cannot tell v2 and v1 apart.``), then what else the evidence tells apart.
+5. **Exploratory.** ``Exploratory:`` and the same, or with no lead measure ``the evidence cannot tell v2 and v1 apart
+   on any reading``, never "no difference" and never "not separated", which a first-time reader took for "the same"
+   (:func:`~threetears.evals.analysis.style.cannot_tell_apart`).
 
-**No floor decides the verdict.** A floor only warns: a broken one is a line under this one
-(:mod:`~threetears.evals.analysis.report.decision`), and the verdict says what the contrasts came to beside it.
+A guardrail an arm is not shown safe on is a second sentence, what it means for the decision first: ``v2 may do worse
+than v1 on the No invented total score guardrail.``
 
-**A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
-fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
-the vocabulary it covers when this module is imported: a cause added to the kernel without words fails the import
-rather than reaching a page as its raw token.
+**One result, one sentence.** The aspect page's verdict and the quick print's first line print
+:attr:`VerdictLine.text`; the exit line opens with :attr:`~VerdictLine.lead`. A campaign page leading on a measure a
+contrast tested says the same decision and figures (:func:`led_sentences`, over the figures
+:func:`~threetears.evals.analysis.report.build.contrast_evidence` reads); one leading on an aspect's pass-rate row (its
+margin's reading) says the row's own, in the same form (``scorecard.row_sentence`` and ``scorecard.row_figures``).
+After the decision, each arm
+is the subject of its figures and the interval says what it allows (:func:`interval_words`), never its level, which
+the table's header states. Each measure and guardrail is named as the page names it, and a cost is never the lead
+(:func:`_is_cost`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, get_args
+from typing import TYPE_CHECKING, Final, Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -34,10 +42,15 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     FailCause,
 )
+from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize, measure_name
-from threetears.evals.analysis.report.words import LOWER_IS_BETTER, comparison_words
+from threetears.evals.analysis.style import cannot_tell_apart, measure_name
+from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
+
+if TYPE_CHECKING:
+    from threetears.evals.analysis.report.blocks import Verdict
 
 #: The fewest independent cases with a usable trial an arm needs before a rate on it is estimated, charted or
 #: compared: below it a t interval is too wide and unstable to read (:data:`~threetears.evals.analysis.stats.SMALL_N_BAND_FLOOR`),
@@ -273,10 +286,22 @@ def fail_words(cause: str) -> CauseWords:
 
 @dataclass(frozen=True)
 class VerdictLine:
-    """The verdict as the first screen prints it: which rule fired, and the sentences it wrote."""
+    """The verdict as the first screen prints it: which rule fired, and the sentences it wrote.
+
+    :ivar rule: The rule that fired.
+    :ivar text: Every sentence: the result, then what else the evidence tells apart and each guardrail an arm is not
+        shown safe on. The aspect page and the quick print print it.
+    :ivar lead: The result's sentence alone, which the campaign page leads with (its guardrails are its warnings) and
+        the exit line opens with; ``text`` where the line has one sentence.
+    """
 
     rule: VerdictRule
     text: str
+    lead: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.lead:
+            object.__setattr__(self, "lead", self.text)
 
 
 def lost_share(board: ArmScoreboard) -> float:
@@ -284,12 +309,164 @@ def lost_share(board: ArmScoreboard) -> float:
     return sum(board.lost.values()) / board.ran if board.ran else 0.0
 
 
+def passed_clause(arm: str, passed: int, trials: int, cases: int) -> str:
+    """One arm's pass rate as a sentence states it: the count it is computed over, ``reply passed 40 of 40 trials on
+    20 cases``, or ``reply passed 18 of 20 cases`` where each case ran once. The percent and its interval are the
+    scorecard's, beside the same count: a sentence carries at most three figures
+    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
+
+    :param arm: The arm, as the page names it.
+    :ptype arm: str
+    :param passed: Its usable trials that passed.
+    :ptype passed: int
+    :param trials: Its usable trials.
+    :ptype trials: int
+    :param cases: The independent cases they ran on.
+    :ptype cases: int
+    :return: The clause, with no closing stop.
+    :rtype: str
+    """
+    if trials == cases:
+        return f"{arm} passed {passed} of {cases} cases"
+    return f"{arm} passed {passed} of {trials} trials on {cases} cases"
+
+
+def interval_words(
+    arm: str,
+    low: float,
+    high: float,
+    *,
+    amount: Callable[[float], str],
+    unit: str = "",
+    higher_is_better: bool = True,
+) -> str:
+    """What an interval on an arm's change from the control allows, in a reader's words, the arm the subject: ``The
+    interval allows v2 to be as much as 19.7 points worse or 17.8 better.`` where it reaches both sides of zero,
+    ``The interval puts qwen3.8-flash between 3.4 and 10.8 points worse.`` where it lies on one side. Never a level:
+    the table's header states it. An interval reaching both sides never reads as "the same".
+
+    :param arm: The arm, as the page names it.
+    :ptype arm: str
+    :param low: The interval's low end, on the change's ruler (points for a rate).
+    :ptype low: float
+    :param high: Its high end.
+    :ptype high: float
+    :param amount: A change's size as the sentence states it, unsigned.
+    :ptype amount: Callable[[float], str]
+    :param unit: What follows the sizes once, `` points`` for a rate; empty where ``amount`` carries the unit.
+    :ptype unit: str
+    :param higher_is_better: The reading's direction: a rise is better where True.
+    :ptype higher_is_better: bool
+    :return: The sentence, with its closing stop.
+    :rtype: str
+    """
+    worse_end, better_end = (low, high) if higher_is_better else (high, low)
+    sign = 1 if higher_is_better else -1
+    if sign * worse_end >= 0:
+        near, far = sorted((abs(low), abs(high)))
+        return f"The interval puts {arm} between {amount(near)} and {amount(far)}{unit} better."
+    if sign * better_end <= 0:
+        near, far = sorted((abs(low), abs(high)))
+        return f"The interval puts {arm} between {amount(near)} and {amount(far)}{unit} worse."
+    return f"The interval allows {arm} to be as much as {amount(worse_end)}{unit} worse or {amount(better_end)} better."
+
+
+def _is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
+    """Whether a measure is a cost: money, or on the cost merit axis, as the aspect's catalog describes it. A cost is
+    never what a result leads on.
+
+    :param measure: The measure's key.
+    :ptype measure: str
+    :param bundle: The aspect's evidence, whose catalog describes it.
+    :ptype bundle: AnalysisContextBundle
+    :return: True for a cost.
+    :rtype: bool
+    """
+    described = bundle.measure_catalog.get(measure) or METRIC_DESCRIPTORS.get(measure)
+    return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
+
+
+def _lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Sequence[str]) -> str | None:
+    """The measure a result leads on: the first ``order`` lists (an aspect design's ``measure_order``, which an eval
+    files in the order it lists its graders) that a contrast tested and that is no cost; with no order listed, the
+    classifier's accuracy where no question is asked of the aspect; None where neither names one.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param tested: The measures a contrast tested, by key (never the pass rate, ``trial``).
+    :ptype tested: Iterable[str]
+    :param order: The graders' measures, in the order listed; empty where none is listed.
+    :ptype order: Sequence[str]
+    :return: The measure's key, or None.
+    :rtype: str | None
+    """
+    held = set(tested)
+    if not order:
+        return None if bundle.question_declared else ACCURACY_MEASURE
+    return next((name for name in order if name in held and not _is_cost(name, bundle)), None)
+
+
+def led_sentences(
+    bundle: AnalysisContextBundle,
+    verdicts: Sequence[Verdict],
+    order: Sequence[str],
+    *,
+    asked: bool,
+    on: str = "",
+    evidence: Callable[[Verdict], str | None] | None = None,
+    also: Sequence[str] = (),
+) -> list[str]:
+    """The result's sentence for each arm on the measure it leads on (:func:`_lead_measure`), in its verdict's words:
+    ``Accuracy: the evidence cannot tell v2 and v1 apart.`` A contrast the question does not ask, where one is asked,
+    is marked a lead. Empty where no contrast was tested on a lead measure.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param verdicts: The aspect's typed verdicts, worded as its page words them.
+    :ptype verdicts: Sequence[Verdict]
+    :param order: The graders' measures, in the order listed.
+    :ptype order: Sequence[str]
+    :param asked: Whether a question is asked, so a contrast outside it is marked a lead.
+    :ptype asked: bool
+    :param on: Where it was read, said after the measure's name (`` on billing``) on a page of several aspects.
+    :ptype on: str
+    :param evidence: The figures each verdict rests on, as sentences (both arms' readings, the change and its
+        interval, and for an undecided one the cases that would settle it), said after its decision; None says the
+        decision alone.
+    :ptype evidence: Callable[[Verdict], str | None] | None
+    :param also: What else the evidence tells apart, said after the last arm's decision, before its figures.
+    :ptype also: Sequence[str]
+    :return: One decision per arm, each with its closing stop and its figures after it.
+    :rtype: list[str]
+    """
+    led = _led(bundle, verdicts, order)
+    said = []
+    for index, verdict in enumerate(led):
+        decision = (
+            f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None or not asked else ', a lead'}"
+        )
+        if also and index == len(led) - 1:
+            decision += f"; also {'; '.join(also)}"
+        figures = evidence(verdict) if evidence is not None else None
+        said.append(f"{decision}." + (f" {figures}" if figures else ""))
+    return said
+
+
+def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
+    """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
+    contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
+    lead = _lead_measure(bundle, (verdict.name for verdict in contrasts), order)
+    return [verdict for verdict in contrasts if verdict.name == lead]
+
+
 def verdict_line(
     bundle: AnalysisContextBundle,
     arm: Callable[[str], str],
     *,
-    name: str = "",
     case_name: Callable[[str], str] | None = None,
+    verdicts: Sequence[Verdict] = (),
+    order: Sequence[str] = (),
+    evidence: Callable[[Verdict], str | None] | None = None,
 ) -> VerdictLine:
     """The verdict line, by the first rule that fires (the module docstring's order).
 
@@ -297,10 +474,18 @@ def verdict_line(
     :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key, as every table of the report does.
     :ptype arm: Callable[[str], str]
-    :param name: The eval's name, which a one-arm line leads with.
-    :ptype name: str
-    :param case_name: Names a case by its id, as the cases table does; its id where None.
+    :param case_name: Names a case by its id, as the cases table does; its id where None. One arm's line names the
+        cases it missed by it.
     :ptype case_name: Callable[[str], str] | None
+    :param verdicts: The aspect's typed verdicts as its page words them, whose words a comparison's line prints, so
+        it reads as every other surface does; none reads the bundle's contrasts in their verdict words alone.
+    :ptype verdicts: Sequence[Verdict]
+    :param order: The graders' measures, in the order the eval lists them (``AspectDesign.measure_order``), which a
+        comparison's line leads on the first of (:func:`_lead_measure`).
+    :ptype order: Sequence[str]
+    :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
+        says the decision alone.
+    :ptype evidence: Callable[[Verdict], str | None] | None
     :return: The rule and its sentences.
     :rtype: VerdictLine
     """
@@ -310,21 +495,56 @@ def verdict_line(
     if (setup := _setup_gate(bundle, arm)) is not None:
         return VerdictLine(rule="setup", text=setup)
     if len(boards) == 1:
-        return VerdictLine(rule="one_arm", text=_one_arm(bundle, name, case_name or (lambda case: case)))
+        (board,) = boards
+        result = f"{_one_arm(board, arm)}."
+        return VerdictLine(
+            rule="one_arm", text=result + _missed_cases(bundle, case_name or (lambda case: case)), lead=result
+        )
     declared_question = bundle.question_declared
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
         return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm))
-    if declared_question and (declared := _declared(bundle, arm)):
-        return VerdictLine(rule="declared", text=declared)
-    leads = _separated(bundle, arm, asked=False)
-    return VerdictLine(
-        rule="exploratory",
-        text="Exploratory: "
-        + ("; ".join(leads) if leads else f"{_nothing_separated(bundle, arm)} on any reading")
-        + "."
-        + _guardrail_words(bundle, arm),
+    rule: VerdictRule = "declared" if declared_question else "exploratory"
+    prefix = "" if declared_question else "Exploratory: "
+    if verdicts:
+        if led := _led(bundle, verdicts, order):
+            others = _also(bundle, verdicts, {verdict.heading for verdict in led})
+            result = " ".join(led_sentences(bundle, verdicts, order, asked=declared_question, evidence=evidence))
+            text = " ".join(
+                led_sentences(bundle, verdicts, order, asked=declared_question, evidence=evidence, also=others)
+            )
+            return VerdictLine(rule=rule, text=prefix + text + _guardrail_sentences(verdicts), lead=result)
+    said = (
+        _told_apart(bundle, verdicts, asked=declared_question)
+        if verdicts
+        else _separated(bundle, arm, asked=declared_question)
     )
+    costs_only = (
+        bool(verdicts)
+        and bool(said)
+        and all(
+            _is_cost(verdict.name, bundle)
+            for verdict in verdicts
+            if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
+        )
+    )
+    if said and costs_only:
+        # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost.
+        result = f"{_undecided(bundle, arm)} on every reading but cost; " + "; ".join(said)
+    elif said:
+        result = "; ".join(said)
+    elif declared_question and not any(family.aspect is not None for family in bundle.multiple_comparisons.families):
+        result = "The declared question is untested"
+    else:
+        result = _undecided(bundle, arm) + (
+            " on any reading the question asks" if declared_question else " on any reading"
+        )
+    if declared_question:
+        result = result[:1].upper() + result[1:]
+    guardrails = (
+        _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
+    )
+    return VerdictLine(rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.")
 
 
 def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
@@ -355,27 +575,87 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
-def _nothing_separated(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """That no contrast separated, the arms by name, the control last: ``nothing separated v2 from v1``,
-    ``nothing separated v2 or v3 from v1``. Never "no difference": a contrast not separated claims none."""
+def _undecided(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """That the evidence tells no arm apart from the control, the arms by name, the control last:
+    ``the evidence cannot tell v2 and v1 apart`` (:func:`~threetears.evals.analysis.style.cannot_tell_apart`). Never
+    "no difference", and never "nothing separated": an undecided contrast claims none."""
     key = _control_key(bundle) or bundle.scoreboard[0].variant_key
     others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key]
-    named = " or ".join(others) if len(others) <= 2 else f"{', '.join(others[:-1])} or {others[-1]}"
-    return f"nothing separated {named} from {arm(key)}"
+    return cannot_tell_apart(others, arm(key))
 
 
-def _one_arm(bundle: AnalysisContextBundle, name: str, case_name: Callable[[str], str]) -> str:
-    """``<eval>: n/N cases passed; k misses: …`` over the bundle's trials, case by case."""
-    by_case: dict[str, list[str]] = {}
-    for trial in bundle.trials:
-        by_case.setdefault(trial.case_id, []).append(trial.state)
-    usable = [case for case, states in by_case.items() if any(state != "lost" for state in states)]
-    missed = [case for case in usable if "failed" in by_case[case]]
-    text = f"{len(usable) - len(missed)}/{len(usable)} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
-    if missed:
-        shown = [case_name(case) for case in missed[:5]]
-        text += ": " + ", ".join(shown) + (f", and {len(missed) - 5} more" if len(missed) > 5 else "")
-    return f"{name}: {text}" if name else text
+def _one_arm(board: ArmScoreboard, arm: Callable[[str], str]) -> str:
+    """One arm's pass rate as the count it is computed over (:func:`passed_clause`)."""
+    if not board.usable:
+        return f"{arm(board.variant_key)} ran {board.ran} trials, all lost to the test setup"
+    return passed_clause(arm(board.variant_key), board.passed, board.usable, board.usable_cases)
+
+
+#: How many missed cases one arm's line names before it counts the rest.
+_MISSES_NAMED = 5
+
+
+def _missed_cases(bundle: AnalysisContextBundle, case_name: Callable[[str], str]) -> str:
+    """`` Cases that failed a trial: crash, both.`` — the cases one arm failed on at least one usable trial, in the
+    trials' order, the first :data:`_MISSES_NAMED` by name and a count of the rest, a sentence of its own so the
+    count line before it keeps its three figures; empty where it failed on none, or where the bundle holds only some
+    of its failed trials (``trials_omitted``)."""
+    if bundle.trials_omitted:
+        return ""
+    missed = list(dict.fromkeys(trial.case_id for trial in bundle.trials if trial.state == "failed"))
+    if not missed:
+        return ""
+    shown = [case_name(case) or case for case in missed[:_MISSES_NAMED]]
+    more = f", and {len(missed) - _MISSES_NAMED} more" if len(missed) > _MISSES_NAMED else ""
+    return f" Cases that failed a trial: {', '.join(shown)}{more}."
+
+
+def _also(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], led: set[str]) -> list[str]:
+    """What else the evidence tells apart, beside the measure a result leads on: each other contrast shown better or
+    worse, in its verdict's words, a cost after every other reading."""
+    found = [
+        verdict
+        for verdict in verdicts
+        if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and verdict.heading not in led
+    ]
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
+    return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
+
+
+def _told_apart(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], *, asked: bool) -> list[str]:
+    """Each contrast shown better or worse, in its verdict's words (``Accuracy: v2 better than v1``), a cost after every
+    other reading; ``asked`` reads only the question's family."""
+    found = [
+        verdict
+        for verdict in verdicts
+        if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and (verdict.aspect is not None or not asked)
+    ]
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
+    return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
+
+
+#: How a result's line says what a guardrail an arm is not shown safe on means for the decision, by its decision, the
+#: breached first: on the verdict line, the aspect page's contrasts and the campaign's warnings alike.
+GUARDRAIL_SAID: dict[str, str] = {
+    "breached": "{arm} breaches {named}",
+    "undecided": "{arm} may do worse than {control} on {named}",
+}
+
+
+def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
+    """`` v2 may do worse than v1 on the No invented total score guardrail.`` — one sentence per arm and decision,
+    each guardrail named as the page heads it; empty when every guardrail held."""
+    said = []
+    for decision, template in GUARDRAIL_SAID.items():
+        by_arm: dict[tuple[str, str], list[str]] = {}
+        for verdict in verdicts:
+            if verdict.kind == "guardrail" and verdict.outcome == decision:
+                names = by_arm.setdefault((verdict.arm, verdict.control or ""), [])
+                if verdict.heading not in names:
+                    names.append(verdict.heading)
+        for (name, control), headings in by_arm.items():
+            said.append(" " + template.format(arm=name, control=control, named=_guardrails_named(headings)) + ".")
+    return "".join(said)
 
 
 def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
@@ -402,25 +682,57 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     return "; ".join(said) + "; too few cases to call a difference."
 
 
-#: How the verdict leads a guardrail an arm is not shown safe on, by the guardrail's decision, the breached first.
-_GUARDRAIL_LEADS: dict[str, str] = {"breached": "Guardrail breached", "undecided": "Not yet shown safe"}
+def guardrail_name(bundle: AnalysisContextBundle, name: str, reading: str) -> str:
+    """A guardrail as every surface names it, as its verdict heads it: a judged dimension by
+    :func:`~threetears.evals.analysis.report.words.judged_heading`, a goal check by its declared name else its
+    expression, any other measure by its reader name.
+
+    :param bundle: The aspect's evidence, whose catalog and check names name it.
+    :ptype bundle: AnalysisContextBundle
+    :param name: The guardrail's measure key or judged dimension.
+    :ptype name: str
+    :param reading: ``judged`` for a judged dimension; anything else reads a measure.
+    :ptype reading: str
+    :return: The name.
+    :rtype: str
+    """
+    if reading == "judged":
+        return judged_heading(name)
+    described = bundle.measure_catalog.get(name)
+    return measure_name(
+        name, described.reader_name if described is not None else None, declared=bundle.check_name(name)
+    )
 
 
-def _guardrail_words(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """`` Not yet shown safe: v2 on no invented total.`` — one sentence per decision naming each arm and its
-    guardrails; empty when every guardrail held."""
+def guardrail_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
+    """What each guardrail an arm is not shown safe on means for the decision, one sentence per arm and decision,
+    read off the bundle's guardrail checks: ``v2 may do worse than v1 on the No invented total score guardrail.``
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key.
+    :ptype arm: Callable[[str], str]
+    :return: The sentences, the breached first; none where every guardrail held.
+    :rtype: list[str]
+    """
     said = []
-    for decision, lead in _GUARDRAIL_LEADS.items():
-        by_arm: dict[str, list[str]] = {}
+    for decision, template in GUARDRAIL_SAID.items():
+        by_arm: dict[tuple[str, str], list[str]] = {}
         for check in bundle.guardrails.checks:
             if check.decision == decision:
-                names = by_arm.setdefault(arm(check.contrast.variant_key), [])
-                if humanize("dimension", check.name) not in names:
-                    names.append(humanize("dimension", check.name))
-        if by_arm:
-            arms = "; ".join(f"{name} on {', '.join(names)}" for name, names in sorted(by_arm.items()))
-            said.append(f" {lead}: {arms}.")
-    return "".join(said)
+                heading = guardrail_name(bundle, check.name, check.reading)
+                names = by_arm.setdefault((arm(check.contrast.variant_key), arm(check.control.variant_key)), [])
+                if heading not in names:
+                    names.append(heading)
+        for (name, control), headings in by_arm.items():
+            said.append(template.format(arm=name, control=control, named=_guardrails_named(headings)) + ".")
+    return said
+
+
+def _guardrails_named(headings: Sequence[str]) -> str:
+    """Guardrails named in a sentence: ``the No leak score guardrail``, ``the A and B guardrails``."""
+    listed = headings[0] if len(headings) == 1 else f"{', '.join(headings[:-1])} and {headings[-1]}"
+    return f"the {listed} guardrail{'' if len(headings) == 1 else 's'}"
 
 
 def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
@@ -455,31 +767,19 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
             run_statuses=statuses.get(board.variant_key, ()),
         )
         most = "all" if board.lost[cause] == lost else "most"
-        alone = " Nothing was measured on it, and its run failed." if nothing(board) and not every_arm else ""
+        alone = " Its run failed before it measured a trial." if nothing(board) and not every_arm else ""
         parts.append(f"{arm(board.variant_key)} lost {lost} of {board.ran} trials, {most} because {said.words}.{alone}")
         if said.remedy not in remedies:
             remedies.append(said.remedy)
-    gap_words = "" if over else " The arms lost different shares of their trials, so they were not measured alike."
-    lead = "the test setup failed, not the models"
+    gap_words = (
+        ""
+        if over
+        else " The arms lost different shares of their trials, so their losses differ too much to compare them."
+    )
+    lead = "The test setup failed: it measured the setup instead of the models"
     if every_arm:
-        lead = "nothing was measured, because the test setup failed or the provider declined every call"
-    return f"No verdict: {lead}. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
-
-
-def _declared(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
-    """What the declared question's contrasts and guardrails came to, in their own words."""
-    if not bundle.question_declared:
-        return None
-    # The first screen quotes the question's words; the verdict names it, never repeats it.
-    separated = _separated(bundle, arm, asked=True)
-    tested = any(family.aspect is not None for family in bundle.multiple_comparisons.families)
-    if separated:
-        said = "Declared question: " + "; ".join(separated)
-    elif tested:
-        said = f"Declared question: {_nothing_separated(bundle, arm)}"
-    else:
-        said = "Declared question: not tested"
-    return said + "." + _guardrail_words(bundle, arm)
+        lead = "The test setup failed or the provider declined every call, so every trial was lost"
+    return f"{lead}. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
 
 
 #: The contrast verdicts the verdict line names as one arm better than the other: the directional ones. Narrower than
@@ -505,13 +805,16 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
                     declared=bundle.check_name(comparison.name),
                 )
                 if comparison.reading == "judged":
-                    reading = f"{humanize('dimension', comparison.name)} (judged)"
+                    reading = judged_heading(comparison.name)
                 elif comparison.reading == "trial":
-                    reading = "the pass rate"
+                    reading = PASS_RATE
                 words = comparison_words(
-                    comparison.verdict, arm(comparison.contrast.variant_key), arm(comparison.control.variant_key)
+                    comparison.verdict,
+                    arm(comparison.contrast.variant_key),
+                    arm(comparison.control.variant_key),
+                    higher_is_better=comparison.higher_is_better,
                 )
-                line = f"{words} on {reading}{'' if comparison.higher_is_better else LOWER_IS_BETTER}"
+                line = f"{reading}: {words}"
                 if line not in said:
                     said.append(line)
     return said
@@ -519,6 +822,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
 
 __all__ = [
     "FAIL_CAUSE_WORDS",
+    "GUARDRAIL_SAID",
     "ACCOUNT_REFUSED_REMEDY",
     "LOSS_CAUSE_WORDS",
     "NOTHING_MEASURED_REMEDY",
@@ -533,8 +837,13 @@ __all__ = [
     "cap_words",
     "cause_short",
     "fail_words",
+    "guardrail_lines",
+    "guardrail_name",
+    "interval_words",
+    "led_sentences",
     "loss_words",
     "measured_nothing",
     "lost_share",
+    "passed_clause",
     "verdict_line",
 ]

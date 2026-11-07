@@ -59,7 +59,8 @@ def _sign_flip_p(n: int) -> float:
 #: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
     "paired two-sided t-test on shared per-case values (where every difference is one amount, the bounded test by "
-    f"betting on the measure's declared range, and not separated with no range), α={SIGNIFICANCE_ALPHA}"
+    "betting on the measure's declared range; with no range the evidence cannot tell the arms apart), "
+    f"α={SIGNIFICANCE_ALPHA}"
 )
 
 # The test that runs when the two samples cannot be paired — no shared frozen
@@ -93,9 +94,9 @@ EQUIVALENCE_NEEDS_RANGE = (
 #: call it. Names the remedy, as :data:`EQUIVALENCE_NEEDS_RANGE` does.
 UNIFORM_MOVE_NEEDS_RANGE = (
     "declare value_range on this measure for a uniform move to be tested: every case moved by the same amount, and "
-    "with no declared range no test of a mean can call that separated (the exact sign-flip test asks whether the "
+    "with no declared range no test of a mean can tell that from no move (the exact sign-flip test asks whether the "
     "move is symmetric about zero, not whether the mean moved, and an unbounded value can hide a rare large move the "
-    "other way), so it is not separated and nothing here says the two are alike"
+    "other way), so the evidence cannot tell the two apart, and nothing here says they are alike"
 )
 
 #: Why a move with no spread is not tested on its declared range: a value contradicts the range.

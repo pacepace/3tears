@@ -150,9 +150,7 @@ async def test_a_run_whose_every_call_the_provider_declined_measured_nothing_and
     assert result.exit_code() == 1
     assert "the run measured nothing" in result.render()
     page = report_markdown(result.report)
-    assert (
-        "No verdict: nothing was measured, because the test setup failed or the provider declined every call." in page
-    )
+    assert "The test setup failed or the provider declined every call, so every trial was lost." in page
     assert "needs no fix" not in page, "a provider that declined every call is not a moment to wait out"
 
 
@@ -182,11 +180,11 @@ async def test_a_page_says_nothing_was_measured_only_of_a_run_that_failed_for_it
     (run_id,) = bundle.incomplete_runs
     assert bundle.incomplete_runs[run_id] == "failed"
     failed = verdict_line(bundle, lambda _key: "calls").text
-    assert failed.startswith("No verdict: nothing was measured,")
+    assert failed.startswith("The test setup failed or the provider declined every call, so every trial was lost.")
     restated = bundle.model_copy(update={"incomplete_runs": {} if status == "completed" else {run_id: status}})
     said = verdict_line(restated, lambda _key: "calls").text
-    assert said.startswith("No verdict: the test setup failed, not the models.")
-    assert "nothing was measured" not in said and "needs no fix, only a rerun" in said
+    assert said.startswith("The test setup failed: it measured the setup instead of the models.")
+    assert "every trial was lost" not in said and "needs no fix, only a rerun" in said
 
 
 async def test_a_run_the_account_stopped_names_the_account_in_its_remedy() -> None:

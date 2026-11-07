@@ -39,7 +39,6 @@ from pathlib import Path
 from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
     ConfusionCount,
@@ -68,7 +67,6 @@ from threetears.evals.kernel import (
     ArmGuardrails,
     GuardrailMargin,
     GuardrailReadings,
-    METRIC_DESCRIPTORS,
     TierCriterion,
     agreement_statistic,
     calibration_criterion,
@@ -83,12 +81,13 @@ from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.summary import CaseResult, EvalSummary, dollars_text
-from threetears.evals.analysis.report.build import contrast_rows, report_cell_labels
+from threetears.evals.analysis.report.build import aspect_verdict, contrast_rows, report_cell_labels
+from threetears.evals.analysis.report.campaign.names import measure_name_of
+from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, predicted_label
 from threetears.evals.quick.judged import Judge
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
@@ -514,73 +513,30 @@ class Result:
         for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
-            text = measure.text
-            if measure.name == MATCH_MEASURE and (classifier := self._classifier) is not None:
-                text = f"{classifier}{text.removeprefix(MATCH_MEASURE)}"
-            texts.append(text)
+            # Each measure under the name the page gives it, never its key.
+            texts.append(f"{self._printed_name(measure.name)}{measure.text.removeprefix(measure.name)}")
         if (omitted := summary.uncarried_text) is not None:
             texts.append(omitted)
         return texts
 
     def _verdict_line(self) -> str:
-        """The first line: what the comparison decided, or how the one arm's cases came out (:func:`_cases_verdict`).
-
-        A comparison's line leads on the question it was built to answer: its first grader, a field, a function or a
-        judged dimension (:meth:`_lead_measure`). What else separated
-        follows it, and a cost reading is never the lead on its own. A guardrail an arm breached, or is undecided on,
-        is said after the lead, never in its place.
+        """The first line: the eval's name, then its aspect's verdict line as its page prints it
+        (:func:`~threetears.evals.analysis.report.build.aspect_verdict`): one arm's pass rate as its count, or what the
+        comparison came to on the measure the eval's first grader reads, what else the evidence tells apart, and each
+        guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
         """
-        if len(self.arms) == 1:
-            (arm,) = self.arms
-            order = self._page_order()
-            return f"{self.name}: {_cases_verdict(self.summary, order=lambda result: order(arm, result))}"
-        rows = self.contrasts()
-        lead = self._lead_measure(rows)
-        led = [row for row in rows if lead is not None and row["measure_id"] == lead]
-        # What else separated, any cost after every other reading, so a cost reads after what the arms were for.
-        others = sorted(
-            (row for row in rows if row not in led and row["outcome"] in SEPARATED_VERDICTS),
-            key=lambda row: self._a_cost(row["measure_id"]),
-        )
-        # The report's words, which name both arms: ``Accuracy: v2 better than v1``.
-        worded = [f"{row['reading']}: {row['verdict']}" for row in others]
-        said = [f"{row['reading']}: {row['verdict']}" for row in led]
-        if said:
-            if worded:
-                said.append("also " + "; ".join(worded))
-            elif len(rows) > len(led):
-                said.append("nothing else separated")
-        elif others and not self._a_cost(others[0]["measure_id"]):
-            said = worded
-        else:
-            compared = " or ".join(arm for arm in self.arms if arm != self.control)
-            said.append(f"nothing separated {compared} from {self.control}" + (" but cost" if worded else ""))
-            said += worded
-        said += [
-            f"guardrail {row['guardrail']} {row['outcome']} for {row['arm'] or row['contrast']}"
-            for row in self.guardrails()
-            if row["outcome"] != "held"
-        ]
-        return f"{self.name}: " + "; ".join(said)
+        return f"{self.name}: {self._verdict().text}"
 
-    def _lead_measure(self, rows: Sequence[Mapping[str, Any]]) -> str | None:
-        """The measure a comparison's first line leads on: the first grader, whatever its kind, that the contrasts
-        tested and that is no cost (:attr:`grader_readings`); ``None`` when none was tested, as for a comparison graded
-        by guardrails alone, which are decided apart from the contrasts.
+    def _verdict(self) -> VerdictLine:
+        """The eval's verdict line, as its aspect's page opens with it, led on its graders' order."""
+        return aspect_verdict(self.report.bundle, measure_order=self.grader_readings)
 
-        A result built without its graders' order reads the classifier's accuracy, else the control's readings in the
-        order they are listed."""
-        tested = {row["measure_id"] for row in rows}
-        listed = list(self.grader_readings) or [
-            ACCURACY_MEASURE,
-            *(line.name for line in self.arms[self.control].measure_lines),
-        ]
-        return next((name for name in listed if name in tested and not self._a_cost(name)), None)
-
-    def _a_cost(self, measure: str | None) -> bool:
-        """Whether a measure is a cost: money, or on the cost merit axis, as the report's catalog describes it."""
-        described = self.report.bundle.measure_catalog.get(measure or "") or METRIC_DESCRIPTORS.get(measure or "")
-        return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
+    def _printed_name(self, measure: str) -> str:
+        """A measure as the page names it (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`):
+        ``Accuracy``, ``Number score``. The classifier's ``match`` is its accuracy, which the page leads on, so it is
+        named as the page names that."""
+        key = ACCURACY_MEASURE if measure == MATCH_MEASURE and self._classifier is not None else measure
+        return measure_name_of(self.report.bundle, key)
 
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
@@ -613,12 +569,17 @@ class Result:
         return 0
 
     def why_failed(self) -> str | None:
-        """Why :meth:`exit_code` is 4, in one line and the report's words: ``the gate failed on ...``, naming each
-        verdict it failed on (:meth:`gate`); ``None`` for any other exit code, whose cause the summary already says.
+        """Why :meth:`exit_code` is 4, in one line and the report's words: the result's sentence, as the page leads
+        with it and the first line prints it, then ``the gate failed on ...``, naming each verdict it failed on
+        (:meth:`gate`); ``None`` for any other exit code, whose cause the summary already says.
         """
         if self.exit_code() != 4:
             return None
-        return f"the gate {self.gate().why()}"
+        lead, gate = self._verdict().lead, self.gate()
+        # A gate failing only on what the sentence already says names it once, in the sentence.
+        if all(f"{failed.heading}: {failed.words}" in lead for failed in gate.failures):
+            return f"{lead} The gate failed on it."
+        return f"{lead} The gate {gate.why()}."
 
     def contrasts(self, reading: str | None = None) -> list[dict[str, Any]]:
         """Every contrast against the control the report tested, the ones its page leaves out under the case floor too.
@@ -918,44 +879,6 @@ def refuse_an_unusable_margin(margin: float | None, question: str | None) -> Non
 def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
     if arm not in arms:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
-
-
-def _cases_verdict(
-    summary: EvalSummary, *, order: Callable[[CaseResult], tuple[str, int, str, int, int]] | None = None
-) -> str:
-    """How one arm's cases came out, in plain words: passed of usable, the cases missed, the cases excluded by cause.
-
-    The cases missed are listed in ``order``, a case by its first result's place (the page's, from
-    :meth:`Result._page_order`), else in the summary's.
-
-    Counted as the page counts them, off each repeat's :attr:`~threetears.evals.analysis.summary.CaseResult.state`,
-    which the page's own trial reader decided: a case is usable when any of its repeats was not lost, and passed when
-    none of those failed — every check the template declares passed on each. A case every repeat of which was lost is
-    counted under the cause its first repeat records.
-    """
-    repeats: dict[str, list[CaseResult]] = {}
-    for result in summary.results():
-        repeats.setdefault(result.case, []).append(result)
-    usable = 0
-    missed: list[str] = []
-    excluded: dict[str, int] = {}
-    for case, results in repeats.items():
-        kept = [result for result in results if result.state != "lost"]
-        if not kept:
-            cause = (results[0].errors or ["no reason recorded"])[0]
-            excluded[cause] = excluded.get(cause, 0) + 1
-            continue
-        usable += 1
-        if any(result.state == "failed" for result in kept):
-            missed.append(case)
-    if order is not None:
-        missed.sort(key=lambda case: min(order(result) for result in repeats[case]))
-    text = f"{usable - len(missed)}/{usable} cases passed; {len(missed)} {'miss' if len(missed) == 1 else 'misses'}"
-    if missed:
-        text += f": {', '.join(missed[:QUIET_MISSES])}"
-        if len(missed) > QUIET_MISSES:
-            text += f", and {len(missed) - QUIET_MISSES} more"
-    return text + "".join(f"; {count} excluded: {cause}" for cause, count in excluded.items())
 
 
 def _compact(answer: Any) -> str:
@@ -1258,7 +1181,12 @@ def declare(
     bundle = fold.report.bundle
     # The same bundle laid out alone, its arms named by their variants as the eval names them, not by the campaign's
     # labels the page's fold reads.
-    report = build_code_only_report(bundle, assembled_at=fold.report.source.generated_at, campaign_name=campaign.name)
+    report = build_code_only_report(
+        bundle,
+        assembled_at=fold.report.source.generated_at,
+        campaign_name=campaign.name,
+        measure_order=list(dict.fromkeys(measure_order)),
+    )
     arm_variants = {
         arm: variant
         for arm, summary in arms.items()

@@ -99,7 +99,7 @@ async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_re
     assert "Recommended" not in first
     assert "recommendation" not in json.loads(serialize_report(page, "json"))
     measures = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "measures")
-    assert measures.rows[0]["measure"].text == "pass rate"
+    assert measures.rows[0]["measure"].text == "Pass rate"
     bars = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "bars")
     assert [(row["arm"].text, row["status"].text) for row in bars.rows] == [("alpha", "missed")]
     # No call is recorded, so the page prints no call line.
@@ -172,7 +172,8 @@ def test_each_guardrail_is_named_with_its_own_aspects_never_another_s() -> None:
     (line,) = guardrail_warnings(shape.campaign, shape.readings, reports, names=names)
     assert isinstance(line, DisclosureBlock) and line.section == "warnings"
     assert line.text == (
-        "v2 is not yet shown safe on the reply polite guardrail on billing and the reply on brand guardrail on tone."
+        "v2 may do worse than production on the reply polite (judged) guardrail on billing and the reply on brand "
+        "(judged) guardrail on tone."
     )
 
 
@@ -216,8 +217,8 @@ async def test_an_undecided_guardrail_no_arm_failed_says_the_cases_are_too_few_t
     (line,) = _warned(page.blocks, "guardrails")
     aspect = page.aspects[0].aspect
     assert line == (
-        f"same is not yet shown safe on the no leak guardrail on {aspect}: neither arm failed it on any of 30 cases, "
-        "too few cases to show same within its 5-point margin or beyond it."
+        f"same may do worse than current on the No leak score guardrail on {aspect}, by more than its 5-point margin. "
+        "Of the 30 cases that could fail it, neither arm failed any, too few to settle it."
     )
 
 
@@ -226,8 +227,7 @@ async def test_an_undecided_guardrail_counts_the_cases_each_arm_failed_it_on() -
     page = await _guarded(current=_answering(misses=10, leaks=0), slip=_answering(misses=10, leaks=2))
     (line,) = _warned(page.blocks, "guardrails")
     assert line.endswith(
-        ": slip failed it on 2 of 30 cases and current on 0, a case counted once however many of its trials failed "
-        "it, too few cases to show slip within its 5-point margin or beyond it."
+        ". Of the 30 cases that could fail it, slip failed 2 and current failed 0, too few to settle it."
     )
 
 
@@ -251,10 +251,14 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    assert lead == f"**{right.heading}: {right.words}.**"
+    # The decision, then the figures it rests on.
+    assert lead == (
+        f"**{right.heading}: {right.words}. Of 30 trials each, Right score held on 20 for current and 26 for same. "
+        "Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+    )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
-    assert warning.startswith("**same is not yet shown safe on the no leak guardrail")
+    assert warning.startswith("**same may do worse than current on the No leak score guardrail")
     html = header_html(page)
     assert html.index('<p class="verdict" data-tone="open">') < html.index('<p class="flag warning">')
 
@@ -283,7 +287,10 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
     reports = {fold.aspect: fold.report for fold in result.page.aspects}
     (row,) = result.page.readings.readings
     lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
-    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}.**"
+    assert lead == (
+        f"**Pass rate: same against current {READING_WORDS[row.reading]}. Of 30 cases each, current passed 20 and same "
+        "26. The interval puts same between 0.0129 and 43.3 points better.**"
+    )
     led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
     assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
 
@@ -312,9 +319,13 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
         if verdict.kind == "contrast" and verdict.name == "accuracy"
     ]
     lead, warning = _bold(result.page)
-    assert lead == f"**{accuracy.heading}: {accuracy.words}.**" and accuracy.heading == "Accuracy"
+    assert accuracy.heading == "Accuracy"
+    assert lead == (
+        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
+        "same. Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+    )
     assert "same" in accuracy.words and "current" in accuracy.words
-    assert warning.startswith("**same is not yet shown safe on the no secret guardrail")
+    assert warning.startswith("**same may do worse than current on the No secret score guardrail")
 
 
 def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_guardrail() -> None:
@@ -345,20 +356,32 @@ def test_with_a_declared_question_the_lead_is_its_measure_decided_ahead_of_the_g
     (row,) = shape.readings.readings
     assert row.confirmatory
     lead, warning = _bold(page)
-    assert lead == f"**Pass rate: v2 against production {READING_WORDS[row.reading]}.**"
-    assert warning == "**v2 is not yet shown safe on the reply polite guardrail on billing.**"
+    assert lead == (
+        f"**Pass rate: v2 against production {READING_WORDS[row.reading]}. Of 20 cases each, production passed 6 and "
+        "v2 19. The interval puts v2 between 28.4 and 88.3 points better.**"
+    )
+    assert warning == "**v2 may do worse than production on the reply polite (judged) guardrail on billing.**"
     html = header_html(page)
     assert html.index('<p class="verdict" data-tone="decided">') < html.index('<p class="flag warning">')
 
 
 @pytest.mark.parametrize(
-    ("passing", "words"),
-    [(19, "shown better"), (0, "shown worse"), (6, "not separated")],
-    ids=["shown-better", "shown-worse", "not-separated"],
+    ("passing", "words", "interval"),
+    [
+        (19, "v2 against production shown better", "The interval puts v2 between 28.4 and 88.3 points better."),
+        (0, "v2 against production shown worse", "The interval puts v2 between 1.3 and 62.7 points worse."),
+        (
+            6,
+            "the evidence cannot tell v2 and production apart",
+            "The interval allows v2 to be as much as 19 points worse or 19 better.",
+        ),
+    ],
+    ids=["shown-better", "shown-worse", "undecided"],
 )
-def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int, words: str) -> None:
+def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int, words: str, interval: str) -> None:
     """A superiority question (asked, no margin, owner 2026-11-06): the lead reads the pass rate against zero, shown
-    better, shown worse or not separated, decided rather than a lead, and never "no worse than the margin"."""
+    better, shown worse or that the evidence cannot tell the two apart, decided rather than a lead, and never "no
+    worse than the margin"."""
     shape = shape_of(
         "superiority",
         [AspectTrials("billing", [ArmTrials("production", passing=6), ArmTrials("v2", passing=passing)], margin=None)],
@@ -384,7 +407,7 @@ def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int
     }
     page = build_campaign_report(shape.campaign, shape.readings, reports)
     lead, _ = _bold(page)
-    assert lead == f"**Pass rate: v2 against production {words}.**"
+    assert lead == f"**Pass rate: {words}. Of 20 cases each, production passed 6 and v2 {passing}. {interval}**"
     markdown = campaign_report_markdown(page)
     assert "no worse than the margin" not in markdown and "No margin was declared" not in markdown
 

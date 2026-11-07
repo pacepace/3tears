@@ -38,7 +38,7 @@ from threetears.evals.analysis.arms import short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.campaign_readings import AspectReading, CampaignReadings, MeasureReading, PairReading
 from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
-from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money
+from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, is_money, number_in
 from threetears.evals.analysis.report.campaign import aggregate
 from threetears.evals.analysis.report.campaign.common import floor_of, points
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
@@ -65,11 +65,13 @@ from threetears.evals.analysis.report.model import (
     interval_text,
     table_row,
 )
+from threetears.evals.analysis.report.verdict import interval_words, passed_clause
+from threetears.evals.analysis.report.words import PASS_RATE
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import RateDrop
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, goal_check_of
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, METRIC_DESCRIPTORS
 
 __all__ = [
     "BAR_WORDS",
@@ -77,7 +79,8 @@ __all__ = [
     "READING_WORDS",
     "aspect_shows",
     "bar_blocks",
-    "row_words",
+    "row_figures",
+    "row_sentence",
     "campaign_verdict",
     "frontier_blocks",
     "measure_blocks",
@@ -112,7 +115,7 @@ _CONTRAST_WORDS: dict[str, str] = {
     "improved": "improved",
     "regressed": "regressed",
     "equivalent": "equivalent",
-    "not_separated": "not separated",
+    "not_separated": CANNOT_TELL_APART,
 }
 
 #: The contrast verdict that says what a row's reading says, for the two readings a contrast can also reach.
@@ -145,26 +148,110 @@ def _against_zero(row: AspectReading) -> bool:
     return row.margin is None and row.confirmatory
 
 
-def row_words(row: AspectReading) -> str:
-    """What a row shows in the page's words (:data:`READING_WORDS`), unmarked as a lead; under a superiority question
-    (asked with no margin) an unclear row whose interval was read on enough cases reads ``not separated``, as a
-    contrast neither side of zero does. One with no interval, or under the case floor, stays ``unclear``: nothing was
-    read to separate, and its reason says why.
+def _row_words(row: AspectReading) -> str:
+    """What a row shows in a table cell's words (:data:`READING_WORDS`), unmarked as a lead; under a superiority
+    question (asked with no margin) an unclear row whose interval was read on enough cases reads ``cannot tell apart``
+    (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), as a contrast neither side of zero does. One with no
+    interval, or under the case floor, stays ``unclear``, and its reason says why. A sentence says the row with
+    :func:`row_sentence`.
 
     :param row: The row.
     :ptype row: AspectReading
     :return: The words.
     :rtype: str
     """
-    read = row.gain_interval is not None and min(row.control_cases, row.arm_cases) >= SMALL_N_BAND_FLOOR
-    if row.reading == "unclear" and _against_zero(row) and read:
+    if _undecided(row):
         return _CONTRAST_WORDS["not_separated"]
     return READING_WORDS[row.reading]
 
 
+def row_figures(row: AspectReading, control: str) -> str:
+    """The figures a row's reading rests on, as sentences the lead says after its decision, each arm the subject and
+    each figure as the matrix's fold prints it: what each arm passed of its trials, then what the interval the row was
+    read on allows the arm to be against the control, in points; and for a row left unclear against its margin, the
+    count its To settle row states, one step down. A sentence carries at most three figures
+    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). The interval's level is the fold's.
+
+    :param row: The row.
+    :ptype row: AspectReading
+    :param control: The control, as the page names it.
+    :ptype control: str
+    :return: The sentences.
+    :rtype: str
+    """
+    unit = "trials" if row.control_trials != row.control_cases or row.arm_trials != row.arm_cases else "cases"
+    if row.control_trials == row.arm_trials:
+        said = [
+            f"Of {row.control_trials} {unit} each, {control} passed {row.control_passed} and {row.arm_label} "
+            f"{row.arm_passed}."
+        ]
+    else:
+        said = [
+            f"Of {row.control_trials} {unit}, {control} passed {row.control_passed}.",
+            f"Of {row.arm_trials}, {row.arm_label} passed {row.arm_passed}.",
+        ]
+    interval, _ = _shown_interval(row)
+    if interval is not None:
+        said.append(
+            interval_words(
+                row.arm_label,
+                interval[0],
+                interval[1],
+                amount=lambda value: number_in(abs(value), POINTS),
+                unit=" points",
+            )
+        )
+    need = row.projection.if_observed if row.projection is not None else None
+    if row.reading == "unclear" and row.margin is not None and need is not None and need.kind == "more":
+        said.append(
+            f"If the arms differ as observed, settling it takes {need.cases:,} cases in all (the To settle table)."
+        )
+    return " ".join(said)
+
+
+def _undecided(row: AspectReading) -> bool:
+    """Whether a row reads as a contrast neither side of zero does: unclear under a superiority question, its interval
+    read on enough cases."""
+    read = row.gain_interval is not None and min(row.control_cases, row.arm_cases) >= SMALL_N_BAND_FLOOR
+    return row.reading == "unclear" and _against_zero(row) and read
+
+
+def row_sentence(row: AspectReading, control: str, *, against: bool = True) -> str:
+    """What a row shows as a sentence says it, unmarked as a lead: ``v2 against v1 shown better``, or for a row the
+    evidence leaves undecided ``the evidence cannot tell v2 and v1 apart``
+    (:func:`~threetears.evals.analysis.style.cannot_tell_apart`). ``against`` False leaves the control unnamed where
+    the row is read beside others on one aspect (``v2 shown better``).
+
+    :param row: The row.
+    :ptype row: AspectReading
+    :param control: The control, as the page names it.
+    :ptype control: str
+    :param against: Whether the control is named.
+    :ptype against: bool
+    :return: The clause, with no closing stop.
+    :rtype: str
+    """
+    if _undecided(row):
+        return cannot_tell_apart([row.arm_label], control)
+    interval, _ = _shown_interval(row)
+    said = (
+        f"{row.arm_label} against {control} {READING_WORDS[row.reading]}"
+        if against
+        else f"{row.arm_label} {READING_WORDS[row.reading]}"
+    )
+    if row.reading == "within_margin" and interval is not None and interval[1] < 0:
+        # The reading in its own term first; that its whole interval lies below the control is the detail after it.
+        return f"{said}, though below {control}"
+    return (
+        f"{row.arm_label} against {control} {READING_WORDS[row.reading]}"
+        if against
+        else (f"{row.arm_label} {READING_WORDS[row.reading]}")
+    )
+
+
 def _reading_words(row: AspectReading) -> str:
     """What a row shows, a lead marked as one."""
-    words = row_words(row)
+    words = _row_words(row)
     return words if row.confirmatory else f"{words}, a lead"
 
 
@@ -619,7 +706,7 @@ def _reconciled(
     # The interval the contrast is drawn on, which is not always the test its p came from: a rate's is its bounded one.
     basis = comparison.interval_basis or ("t" if comparison.basis == "t" else "bounded")
     said = (
-        f"On {aspect}, {row.arm_label}'s row reads {row_words(row)} and its contrast on {reading} reads "
+        f"On {aspect}, {row.arm_label}'s row reads {_row_words(row)} and its contrast on {reading} reads "
         f"{_CONTRAST_WORDS[comparison.verdict]}, over the same per-case values. The row reads a bounded interval at "
         f"{_percent(level)}, {own}; the contrast a {basis} interval at {_percent(family_level)}, corrected within the "
         "aspect's family."
@@ -631,7 +718,7 @@ def _reconciled(
 
 def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: AspectNames) -> list[str]:
     """An aspect where only one side ran, read arm by arm; and an aspect with no margin asked no question, where a drop
-    reads as not separated (asked one, its drop is read against zero): the one line where what the aspect lacks
+    reads as the evidence leaving the arms undecided (asked one, its drop is read against zero): the one line where what the aspect lacks
     changes how its row reads."""
     lines: list[str] = []
     for aspect in campaign.aspects:
@@ -640,8 +727,8 @@ def _unread_lines(campaign: EvalCampaign, readings: CampaignReadings, names: Asp
             lines.append(f"{names(aspect.label)} holds the runs of one side only, so its figures are read arm by arm.")
         elif aspect.margin is None and not any(row.confirmatory for row in rows):
             lines.append(
-                f"On {names(aspect.label)}, a drop reads as not separated however large: a drop is read against a "
-                "margin, and the aspect declares none."
+                f"On {names(aspect.label)}, the evidence cannot tell a drop of any size from no change: a drop is "
+                "read against a margin, and the aspect declares none."
             )
     return lines
 
@@ -742,7 +829,7 @@ def _sizings(
             aspect=row.aspect,
             arm=row.arm_label,
             shows=f"no worse than the {format_number(row.margin)}-point margin",
-            decided_by="pass rate",
+            decided_by=PASS_RATE,
             why=row.reason,
             projection=row.projection,
         )
@@ -817,8 +904,8 @@ def _more(need: CasesNeeded, than: CasesNeeded) -> bool:
 
 
 def _rate_words(rate: RateVerdict) -> str:
-    """A rate a floor reads, as the sizing table names it: ``pass rate``, or the check's or dimension's own name."""
-    return "pass rate" if rate.rate.measure is None else rate.rate.name
+    """A rate a floor reads, as the sizing table names it: ``Pass rate``, or the check's or dimension's own name."""
+    return PASS_RATE if rate.rate.measure is None else rate.rate.name
 
 
 def _settle_note(sizings: Sequence[_Sizing]) -> str:
@@ -878,7 +965,10 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     rows = readings.on_aspect(aspect)
     if not rows:
         return "not compared"
-    return ", ".join(f"{row.arm_label} {_reading_words(row)}" for row in rows)
+    return ", ".join(
+        row_sentence(row, readings.control_label, against=False) + ("" if row.confirmatory else ", a lead")
+        for row in rows
+    )
 
 
 def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: AspectNames) -> str:
@@ -899,8 +989,8 @@ def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: 
 
 
 def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True) -> str | None:
-    """Every pair read on one aspect, as a fold's heading and the page's lead say them: ``alpha ahead of beta, beta
-    and gamma not separated``, a pair the question does not ask marked a lead unless ``marked`` is False (a page
+    """Every pair read on one aspect, as a fold's heading and the page's lead say them: ``alpha ahead of beta, the
+    evidence cannot tell beta and gamma apart``, a pair the question does not ask marked a lead unless ``marked`` is False (a page
     whose campaign asks nothing, which says so once); None where no pair was read there.
 
     :param readings: What code read off the campaign.
@@ -917,9 +1007,10 @@ def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True)
 
 
 def _pair_words(pair: PairReading, *, marked: bool = True) -> str:
-    """A pair as a fold's heading says it: ``alpha ahead of beta``, ``alpha and beta not separated``."""
+    """A pair as a fold's heading says it: ``alpha ahead of beta``, ``the evidence cannot tell alpha and beta
+    apart``."""
     if pair.ahead is None:
-        said = f"{pair.first_label} and {pair.second_label} not separated"
+        said = cannot_tell_apart([pair.first_label], pair.second_label)
     else:
         ahead, behind = (
             (pair.first_label, pair.second_label) if pair.ahead == pair.first else (pair.second_label, pair.first_label)
@@ -1185,7 +1276,7 @@ def measure_blocks(
     ]
     rows = []
     forms = _money_forms(readings, reports)
-    for reading in readings.measures:
+    for reading in _shown_measures(readings):
         form = forms.get(reading.measure)
         values: dict[str, CellValue | TableCell] = {
             "aspect": names.cell(reading.aspect),
@@ -1225,12 +1316,28 @@ def measure_blocks(
 
 
 def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
-    """A measure as the page names it on its aspect: a goal check through
-    :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`, by its declared display name else its
-    whole expression; any other measure as the readings name it."""
-    if goal_check_of(reading.measure) is None:
-        return reading.name
+    """A measure as the page names it on its aspect, and as every other surface names it
+    (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its declared display
+    name else its whole expression, any other measure by its reader name; the pass rate as a name, capitalised as the
+    others are (``Pass rate``)."""
+    if reading.measure == _PASS_RATE:
+        return reading.name[:1].upper() + reading.name[1:]
     return measure_name_of(reports[reading.aspect].bundle, reading.measure)
+
+
+#: The key the readings give an arm's own pass rate, every grader's reading together.
+_PASS_RATE = "passed"
+
+
+def _shown_measures(readings: CampaignReadings) -> list[MeasureReading]:
+    """The measures a measurement's scorecard shows: every one read, but a classifier's per-trial label match where its
+    accuracy is read on the same aspect and arm, since the two are one figure under two names."""
+    accurate = {(reading.aspect, reading.arm) for reading in readings.measures if reading.measure == ACCURACY_MEASURE}
+    return [
+        reading
+        for reading in readings.measures
+        if not (reading.measure == MATCH_MEASURE and (reading.aspect, reading.arm) in accurate)
+    ]
 
 
 def _measure_header(key: str, readings: CampaignReadings, reports: Mapping[str, Report]) -> str:
@@ -1249,8 +1356,9 @@ def _measure_matrix(
     each in the fold, and none here: the matrix holds one figure per cell."""
     arms = list(dict.fromkeys(reading.arm for reading in readings.measures))
     labels = {reading.arm: reading.arm_label for reading in readings.measures}
+    shown = _shown_measures(readings)
     measures: dict[str, MeasureReading] = {}
-    for reading in readings.measures:
+    for reading in shown:
         measures.setdefault(reading.measure, reading)
     forms = _money_forms(readings, reports)
     columns = [
@@ -1268,7 +1376,7 @@ def _measure_matrix(
     rows: list[dict[str, TableCell]] = []
     for aspect in campaign.aspects:
         for arm in arms:
-            held = [reading for reading in readings.measures if reading.aspect == aspect.label and reading.arm == arm]
+            held = [reading for reading in shown if reading.aspect == aspect.label and reading.arm == arm]
             if not held:
                 continue
             cells = {"aspect": names.cell(aspect.label)}
@@ -1329,9 +1437,8 @@ def measured_figure(reading: MeasureReading) -> str | None:
     """
     if reading.value is None or reading.passed is None or reading.trials is None:
         return None
-    if reading.trials == reading.cases:
-        return f"{reading.arm_label} passed {reading.passed} of {reading.cases} cases"
-    return f"{reading.arm_label} passed {reading.passed} of {reading.trials} trials on {reading.cases} cases"
+    # The one-arm verdict line's own clause, as the aspect's page and the quick print say it.
+    return passed_clause(reading.arm_label, reading.passed, reading.trials, reading.cases)
 
 
 def _money_forms(readings: CampaignReadings, reports: Mapping[str, Report]) -> dict[str, MoneyForm]:

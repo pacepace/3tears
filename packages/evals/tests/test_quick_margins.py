@@ -150,7 +150,7 @@ class TestHowManyCasesEquivalenceTakes:
     ) -> None:
         """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
         assert (await self._verdict(first - 1, margin, expected=expected)).startswith(
-            "cheaper and current not separated"
+            "the evidence cannot tell cheaper and current apart"
         )
         assert (await self._verdict(first, margin, expected=expected)).startswith("cheaper and current equivalent")
 
@@ -183,9 +183,9 @@ class TestAPassFailInterval:
 class TestNoMargin:
     async def test_no_contrast_reads_equivalent_and_the_report_says_why_in_one_line(self) -> None:
         comparison = await _compare()
-        assert _row(comparison, "correct")["verdict"].startswith("cheaper and current not separated")
+        assert _row(comparison, "correct")["verdict"].startswith("the evidence cannot tell cheaper and current apart")
         (line,) = _no_margin_lines(comparison)
-        assert "not separated never means the arms are alike" in line
+        assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
         advice = _no_margin_advice(comparison)
         assert "grader(correct, margin=...)" in advice["Correct score"]

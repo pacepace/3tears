@@ -31,7 +31,7 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals import Answer, Eval, Judge, World, grader
+from threetears.evals import Answer, Eval, Judge, Result, World, grader
 from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
@@ -281,7 +281,8 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
     )
     (line,) = _miss_lines(result.render())
     assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
-    assert any(text.startswith("  queue: mean") for text in result.render().splitlines())
+    # The classifier's label match is printed as the page names it: the Accuracy it leads on.
+    assert any(text.startswith("  Accuracy: mean") for text in result.render().splitlines())
     matrix, _ = result.labels()
     assert {(cell.expected, cell.predicted) for cell in matrix} >= {("billing", "bug")}
     # The guardrail field, named, is counted as itself: every answer said safe, as every case expected.
@@ -332,7 +333,9 @@ async def test_a_miss_s_reasons_print_on_one_line_and_the_first_line_keeps_and_n
     cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(7)]
     result = await Eval(cases, raises_over_lines, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     printed = result.render().splitlines()
-    assert printed[0].endswith("7 misses: 0, 1, 2, 3, 4, and 2 more")
+    # The first line names the first five cases missed, as the cases table names them, and counts the rest.
+    assert "Cases that failed a trial: " in printed[0] and printed[0].endswith(", and 2 more.")
+    assert printed[0].split("failed a trial: ", 1)[1].count(", ") == 5
     lines = _miss_lines(result.render())
     assert lines[0] == "  case 0 (repeat 1): failed: the candidate raised ValueError: first line second line"
     assert not [line for line in printed if line.strip() == "second line"], "no reason runs onto a line of its own"
@@ -477,6 +480,20 @@ def no_leak(case: Mapping[str, Any], out: Any) -> bool:
     return not out["leaks"]
 
 
+#: A sentence of the figures a decision rests on, which the first line says after it.
+_FIGURES = re.compile(
+    r" (?:Of [\d,]+ |Over [\d,]+ paired cases, |The interval |The mean is |The test read ).*?\.(?= \S|$)"
+)
+
+
+def _decided(result: Result) -> str:
+    """The print's first line with the figures after each decision left out: what the line decides. Each decision
+    states its figures, so the line holds some."""
+    line = result.render().splitlines()[0]
+    assert _FIGURES.search(line), line
+    return _FIGURES.sub("", line)
+
+
 async def test_a_comparison_leads_on_its_classifier_never_on_cost_and_names_a_guardrail_not_held_after() -> None:
     result = await Eval(PAIRED, {"dear": dear, "cheap": cheap}, [QUEUE, no_leak], k=2).run(
         store=":memory:", scope=SCOPE
@@ -486,9 +503,11 @@ async def test_a_comparison_leads_on_its_classifier_never_on_cost_and_names_a_gu
     (accuracy,) = result.contrasts("accuracy")
     (guarded,) = result.guardrails("cheap")
     assert guarded["outcome"] == "undecided"
-    assert result.render().splitlines()[0] == (
-        f"{result.name}: Accuracy: {accuracy['verdict']}; also {cost[0]['reading']}: {cost[0]['verdict']}; "
-        f"guardrail {guarded['guardrail']} undecided for cheap"
+    # The aspect page's verdict line: the lead, what else the evidence tells apart, the cost last, then what the
+    # guardrail means for the decision, each named as the page names it.
+    assert _decided(result) == (
+        f"{result.name}: Exploratory: Accuracy: {accuracy['verdict']}; also Production cost: {cost[0]['verdict']}. "
+        f"cheap may do worse than dear on the {guarded['guardrail']} guardrail."
     )
 
 
@@ -504,13 +523,14 @@ async def test_with_no_classifier_a_comparison_leads_on_its_first_grader() -> No
     )
     (first,) = result.contrasts("resolved")
     (cost,) = result.contrasts("production_replicating_cost")
-    assert result.render().splitlines()[0] == (
-        f"{result.name}: {first['reading']}: {first['verdict']}; also {cost['reading']}: {cost['verdict']}"
+    assert _decided(result) == (
+        f"{result.name}: Exploratory: {first['reading']}: {first['verdict']}; also Production cost: {cost['verdict']}."
     )
 
 
-def _worded(rows: list[dict[str, Any]]) -> str:
-    return "; ".join(f"{row['reading']}: {row['verdict']}" for row in rows)
+def _worded(rows: list[dict[str, Any]], *, joined: str = "; ") -> str:
+    """Rows as the verdict line words them: each measure as the page heads its verdict, a cost without its unit."""
+    return joined.join(f"{str(row['reading']).split(' ($/', 1)[0]}: {row['verdict']}" for row in rows)
 
 
 async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() -> None:
@@ -518,9 +538,10 @@ async def test_a_comparison_graded_by_a_guardrail_alone_never_leads_on_cost() ->
     (cost,) = result.contrasts("production_replicating_cost")
     assert cost["outcome"] == "improved"
     (guarded,) = result.guardrails("cheap")
+    # No reading leads, so no figures follow a decision: what the evidence leaves undecided, then the cost.
     assert result.render().splitlines()[0] == (
-        f"{result.name}: nothing separated cheap from dear but cost; {_worded([cost])}; "
-        f"guardrail {guarded['guardrail']} {guarded['outcome']} for cheap"
+        f"{result.name}: Exploratory: the evidence cannot tell cheap and dear apart on every reading but cost; "
+        f"{_worded([cost])}. cheap may do worse than dear on the {guarded['guardrail']} guardrail."
     )
 
 
@@ -531,7 +552,7 @@ async def test_a_judge_only_comparison_leads_on_its_first_judged_dimension() -> 
     (first,) = result.contrasts("answer.billing")
     (cost,) = result.contrasts("production_replicating_cost")
     assert first["outcome"] != "improved" and cost["outcome"] == "improved"
-    assert result.render().splitlines()[0] == f"{result.name}: {_worded([first])}; also {_worded([cost])}"
+    assert _decided(result) == f"{result.name}: Exploratory: {_worded([first])}; also {_worded([cost])}."
 
 
 async def test_a_judge_listed_first_leads_before_a_function_listed_after_it() -> None:
@@ -542,7 +563,7 @@ async def test_a_judge_listed_first_leads_before_a_function_listed_after_it() ->
         store=":memory:", scope=SCOPE
     )
     (first,) = result.contrasts("answer.billing")
-    assert result.render().splitlines()[0].startswith(f"{result.name}: {_worded([first])}; ")
+    assert _decided(result).startswith(f"{result.name}: Exploratory: {_worded([first])}")
 
 
 async def cheapest(case: Mapping[str, Any]) -> Answer:
@@ -560,17 +581,19 @@ async def test_three_arms_lead_on_the_classifier_for_every_arm_tested() -> None:
     cost = [row for row in result.contrasts("production_replicating_cost") if row["outcome"] == "improved"]
     assert sorted(row["arm"] for row in accuracy) == ["cheap", "cheapest"]
     assert cost, "the cost separated, and follows the lead"
-    assert result.render().splitlines()[0] == f"{result.name}: {_worded(accuracy)}; also {_worded(cost)}"
+    # One sentence per arm on the lead, what else the evidence tells apart after the last.
+    assert _decided(result) == (f"{result.name}: Exploratory: {_worded(accuracy, joined='. ')}; also {_worded(cost)}.")
 
 
-async def test_a_lead_with_nothing_else_separated_says_so() -> None:
+async def test_a_lead_with_nothing_else_told_apart_says_the_lead_alone() -> None:
     async def twin(case: Mapping[str, Any]) -> Answer:
         return await cheap(case)
 
     result = await Eval(PAIRED, {"cheap": cheap, "twin": twin}, [QUEUE], k=2).run(store=":memory:", scope=SCOPE)
     (accuracy,) = result.contrasts("accuracy")
     assert not [row for row in result.contrasts() if row["outcome"] in ("improved", "regressed")]
-    assert result.render().splitlines()[0] == f"{result.name}: {_worded([accuracy])}; nothing else separated"
+    # The line says what the result is, never what else it is not.
+    assert _decided(result) == f"{result.name}: Exploratory: {_worded([accuracy])}."
 
 
 def resolved(case: Mapping[str, Any], out: Any) -> bool:
@@ -589,7 +612,8 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
         store=":memory:", scope=SCOPE
     )
     (first,) = result.contrasts("resolved")
-    assert result.render().splitlines()[0].startswith(f"{result.name}: {first['reading']}: {first['verdict']}")
+    prefix = "" if question is not None else "Exploratory: "
+    assert result.render().splitlines()[0].startswith(f"{result.name}: {prefix}{first['reading']}: {first['verdict']}")
     (verdict,) = [
         verdict
         for verdict in result.page.aspects[0].report.verdicts
@@ -599,8 +623,9 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
     asked = question is not None
     # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
-    assert bold[0] == f"**{verdict.heading}: {verdict.words}.**"
-    assert bold[1].startswith("**cheap is not yet shown safe on the no leak guardrail")
+    said = bold[0].strip("*")
+    assert _FIGURES.search(said) and _FIGURES.sub("", said) == f"{verdict.heading}: {verdict.words}."
+    assert bold[1].startswith("**cheap may do worse than dear on the No leak score guardrail")
     assert ("Exploratory comparison." in page.splitlines()) is not asked
     assert result.question == question
 
@@ -625,14 +650,14 @@ def _missing(misses: int) -> Any:
 
 @pytest.mark.parametrize(
     ("misses", "reading", "words"),
-    [(0, "better", "shown better"), (30, "worse", "shown worse"), (15, "unclear", "not separated")],
-    ids=["shown-better", "shown-worse", "not-separated"],
+    [(0, "better", "shown better"), (30, "worse", "shown worse"), (15, "unclear", "cannot tell apart")],
+    ids=["shown-better", "shown-worse", "undecided"],
 )
 async def test_a_question_with_no_margin_reads_the_pass_rate_against_zero_and_files_no_margin(
     misses: int, reading: str, words: str
 ) -> None:
     """A question alone is a superiority question: v2's pass rate against v1's (who misses half) is shown better,
-    shown worse or not separated, against zero, and no margin is filed anywhere: not on the aspect, not on the result,
+    shown worse or undecided (the evidence cannot tell them apart), against zero, and no margin is filed anywhere: not on the aspect, not on the result,
     and the page never reads "no worse than the margin"."""
     result = await Eval(_LABELLED, {"v1": _missing(15), "v2": _missing(misses)}, ["label"], k=1, question=_BETTER).run(
         store=":memory:", scope=SCOPE

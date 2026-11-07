@@ -249,7 +249,9 @@ class Verdict(EvalDocumentModel):
     """One verdict the report states, typed: what a program reads instead of the words printed from it.
 
     The source of truth for every verdict the report prints: the contrasts table's ``verdict`` cell and the
-    guardrails table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse.
+    guardrails table's ``decision`` cell are each a verdict's :attr:`words`, rendered from it, never the reverse; an
+    undecided contrast's cell in its short form (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), since
+    its row names both arms.
     """
 
     kind: VerdictKind = Field(description="A contrast against the control, a bar on one cell, or a guardrail.")

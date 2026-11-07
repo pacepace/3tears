@@ -35,12 +35,21 @@ from packages.evals.tests.campaign_page_support import (
 )
 
 
+#: The lead on billing and tone: each aspect's decision, what Accuracy was on each arm, what the interval allows.
+_LEAD = (
+    "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 "
+    "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
+    "paired cases, the interval puts v2 between 21.3 and 96.3 points better."
+)
+
+
 async def test_with_no_report_the_page_leads_on_code_s_reading_and_holds_no_writer_s_words() -> None:
     page = await page_of("billing", "tone")
     assert page.basis == "code_only"
     # The page is code's: it says what code read, and nothing of a report it does not hold (H5).
     first = first_screen_markdown(page)
-    assert "**Accuracy on billing: v2 worse than production. Accuracy on tone: v2 better than production.**" in first
+    assert f"**{_LEAD}**" in first
     assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "memo"]
     with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
         CampaignReport.model_validate(
@@ -94,7 +103,10 @@ async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_ou
     page = await kind_page_of("billing", "refunds")
     assert page.readings.kind == "choice" and "recommendation" not in page.json_document()
     # The lead is each aspect's pairs; the cost's routing is a Design & provenance row, not a first-screen line.
-    lead = "On billing, alpha and beta not separated. On refunds, alpha and beta not separated."
+    lead = (
+        "On billing, the evidence cannot tell alpha and beta apart. On refunds, the evidence cannot tell alpha and "
+        "beta apart."
+    )
     assert opening(page) == [("verdict", lead)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)

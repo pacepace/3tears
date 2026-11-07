@@ -97,7 +97,9 @@ class TestALaunchFreezesWhetherEachCheckIsProven:
         summary = off_loop(summarize_run, host.eval_host, run.id, TOYHOST_SCOPE)
         lines = [line for line in summary.render().splitlines() if "goal check" in line]
         assert lines and all(
-            "— unproven: no control shows it tells acting from doing nothing" in line for line in lines
+            "— unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might "
+            "pass it, so it is not shown to measure the behaviour" in line
+            for line in lines
         )
 
 
@@ -130,13 +132,17 @@ class TestTheSummaryNeverPrintsAnUnqualifiedPassForAnUnprovenCheck:
     def test_a_refuted_check_says_its_control_does_not_show_it(self) -> None:
         assert "— refuted" in GoalCheckSummary(check="c", passed=8, n=8, proof="refuted").line()
 
-    def test_a_check_doing_nothing_passes_everywhere_is_marked_as_no_measurement(self) -> None:
+    def test_a_check_doing_nothing_passes_everywhere_says_what_the_page_says_then_the_baseline(self) -> None:
+        # The page's words for an unproven check, then what the run measured: every case passed idle.
         goal = GoalCheckSummary(check="c", passed=8, n=8, proof="unproven", did_nothing_passed=4, did_nothing_cases=4)
-        assert "NOT A MEASUREMENT: a candidate that did nothing passes it in 4 of 4 case(s)" in goal.line()
+        assert goal.line().endswith(
+            "— unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might "
+            "pass it, so it is not shown to measure the behaviour; at launch one passed it in 4 of 4 case(s)"
+        )
 
     def test_a_partial_baseline_is_stated_beside_the_unproven_mark(self) -> None:
         goal = GoalCheckSummary(check="c", passed=6, n=8, proof="unproven", did_nothing_passed=2, did_nothing_cases=4)
-        assert goal.line().endswith("; a candidate that did nothing passes it in 2 of 4 case(s)")
+        assert goal.line().endswith("; at launch one passed it in 2 of 4 case(s)")
 
 
 def _graded(run_id: str, check: str) -> Any:
