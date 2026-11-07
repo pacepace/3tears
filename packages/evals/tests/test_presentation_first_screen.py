@@ -1,7 +1,8 @@
 """A campaign's first screen says what the page is, never what it is not (presentation build, chunk 1).
 
 The owner's readings of 2026-11-06 (pages B and D) and the review's A2 and A6 hold the first screen to five things,
-each held here on the ladder's replayed pages, rungs 0 to 4, and the G2 fixtures:
+each held here on the ladder's replayed pages, rungs 0 to 4, and the G2 fixtures (rung 5's writer eval page, whose
+harness states its own answer as the lead, to the first two):
 
 - every page has an answer block, a lead, whether or not anything warns (W2, P1);
 - no first-screen line outside what warns and the report-wide caveats opens or turns on an absence
@@ -77,6 +78,15 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Rung]
     yield replayed
 
 
+@pytest.fixture(scope="module")
+def writer_page(tmp_path_factory: pytest.TempPathFactory) -> Iterator[CampaignReport]:
+    """Rung 5's writer eval replayed once, from its recordings, with no key: its campaign's page."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        copy = offline_copy("5-writer", tmp_path_factory.mktemp("rung5"), monkeypatch)
+        result = asyncio.run(load(copy / "writer.py", "writer", monkeypatch).writer_eval.run())
+        yield result.page
+
+
 def _first_screen(blocks: list[ReportBlock]) -> list[ReportBlock]:
     return [block for block in blocks if block.section in FIRST_SCREEN]
 
@@ -100,6 +110,15 @@ def test_every_rung_s_campaign_page_has_a_lead(rungs: dict[str, _Rung], name: st
     )
 
 
+def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_question(
+    writer_page: CampaignReport,
+) -> None:
+    said = _said(writer_page.blocks)
+    (lead,) = [block for block in said if block.source == "verdict"]
+    assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[1] is lead
+    assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68%")
+
+
 def test_one_arm_measured_leads_on_its_pass_rate_as_a_count(rungs: dict[str, _Rung]) -> None:
     (lead,) = [block for block in _said(rungs["rung2"].page.blocks) if block.source == "verdict"]
     assert lead.text == "reply passed 40 of 40 trials on 20 cases."
@@ -116,6 +135,10 @@ async def test_both_g2_fixtures_have_an_answer_block() -> None:
 @pytest.mark.parametrize("name", ["rung0", "rung1", "rung2", "rung4"])
 def test_no_first_screen_line_of_a_rung_states_an_absence(rungs: dict[str, _Rung], name: str) -> None:
     assert absence_violations(_first_screen(rungs[name].page.blocks)) == []
+
+
+def test_no_first_screen_line_of_the_writer_eval_s_page_states_an_absence(writer_page: CampaignReport) -> None:
+    assert absence_violations(_first_screen(writer_page.blocks)) == []
 
 
 def test_rung_3_s_one_absence_is_the_undecided_reading_s_own_phrase(rungs: dict[str, _Rung]) -> None:

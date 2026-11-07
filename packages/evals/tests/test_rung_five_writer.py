@@ -143,11 +143,13 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     assert "0 replayed" not in printed and "unasked" not in printed
     # Every judge call served from its recording: a refused one would exclude its result.
     assert printed.count("7 result(s): 7 scored, 0 excluded") == 2
-    # The page's first screen opens on the answer: the promotion reading and the judge's preference, in its words; and
-    # the eval declared its criteria as it launched, so the replay never reads them as set after its results.
+    # The page's first screen opens on its question, then the answer: the promotion reading and the judge's
+    # preference, in its words; and the eval declared its criteria as it launched, so the replay never reads them as
+    # set after its results.
     page = (writer_dir / ".evals" / "reports" / "writer" / "report.md").read_text(encoding="utf-8")
     first_screen = page.split("\n## ", 1)[0].splitlines()
-    assert first_screen[1] == (
+    assert first_screen[1] == '"Does lead-first write reports better than shipped?"'
+    assert first_screen[3] == (
         "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over "
         "shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle it.**"
     )

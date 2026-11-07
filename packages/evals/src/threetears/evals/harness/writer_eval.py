@@ -1109,7 +1109,7 @@ class WriterEval:
             arms=arms,
             host=host,
             campaign_id=campaign_id,
-            page=_led(campaign_report(host, campaign_id, self.scope_id), answer, side_by_side),
+            page=_with_side_by_side(campaign_report(host, campaign_id, self.scope_id, lead=[answer]), side_by_side),
             judge=self.judge.model_name,
             strata=dict(sorted(strata.items())),
             decisions=decisions,
@@ -1283,11 +1283,11 @@ def _answer_block(
     why: Mapping[str, str],
     cases: str,
 ) -> DisclosureBlock:
-    """The page's answer, first on it: for each candidate, its promotion reading and the judge's side-by-side
-    preference in one plain sentence (``Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68%
-    of its preference over shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle
-    it.``), the promotion's own sentence after it where the preference alone does not explain the decision. ``cases``
-    counts the side's cases in words (``7 held-out cases``)."""
+    """The page's answer, its lead under the question: for each candidate, its promotion reading and the judge's
+    side-by-side preference in one plain sentence (``Undecided, so shipped stays: across 7 held-out cases the judge gave
+    lead-first 68% of its preference over shipped (50% is even), too few cases to tell from an even split; about 39
+    cases would settle it.``), the promotion's own sentence after it where the preference alone does not explain the
+    decision. ``cases`` counts the side's cases in words (``7 held-out cases``)."""
     sentences = [
         _answer_sentence(control, arm, pairwise.get(arm), unread.get(arm), decisions.get(arm), why.get(arm), cases)
         for arm in candidates
@@ -1351,15 +1351,15 @@ def _cases(n: int, side: str) -> str:
     return f"{n} {side} case{'' if n == 1 else 's'}"
 
 
-def _led(page: CampaignReport, answer: DisclosureBlock, side_by_side: Sequence[ReportBlock]) -> CampaignReport:
-    """The campaign's page with the writer eval's answer first on it and its side-by-side section at the head of its
-    Scorecard: each section lays its blocks out in their order, so both lead their sections. A page a stored report
-    document draws holds no blocks of its own, and is kept as it is."""
+def _with_side_by_side(page: CampaignReport, side_by_side: Sequence[ReportBlock]) -> CampaignReport:
+    """The campaign's page, which states the writer eval's answer as its lead, with the side-by-side section at the
+    head of its Scorecard: each section lays its blocks out in their order, so it leads its section. A page a stored
+    report document draws holds no blocks of its own, and is kept as it is."""
     if page.doc_page is not None:
         return page
     blocks = list(page.blocks)
     at = next((index for index, block in enumerate(blocks) if block.section == "scorecard"), len(blocks))
-    return page.model_copy(update={"blocks": [answer, *blocks[:at], *side_by_side, *blocks[at:]]})
+    return page.model_copy(update={"blocks": [*blocks[:at], *side_by_side, *blocks[at:]]})
 
 
 def _levels(writer: Writer) -> dict[str, str]:

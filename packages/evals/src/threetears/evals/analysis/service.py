@@ -37,7 +37,7 @@ from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
-from threetears.evals.analysis.report.model import TrialDetail
+from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
@@ -1029,6 +1029,7 @@ def _campaign_page(
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
     folds_alone: bool = False,
+    lead: Sequence[ReportBlock] | None = None,
 ) -> CampaignReport:
     """Lay a campaign bundle out as code's page for the campaign: code's readings, where its report is, the call.
 
@@ -1059,6 +1060,9 @@ def _campaign_page(
     :param folds_alone: Whether the folds will be laid out without the page's own blocks, as a report document's
         evidence record is, so each keeps what only those blocks would state (its judge's calibration line).
     :ptype folds_alone: bool
+    :param lead: The page's answer where its caller states its own, in place of code's lead
+        (:func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report`, ``lead``); None for code's.
+    :ptype lead: Sequence[ReportBlock] | None
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1095,6 +1099,7 @@ def _campaign_page(
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
         arms=bundle.arms,
+        lead=lead,
         folds_alone=folds_alone,
     )
     if analysis is None:
@@ -1218,7 +1223,12 @@ def analysis_report(
 
 
 def campaign_report(
-    host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = "table"
+    host: EvalHost,
+    campaign_id: str,
+    scope_id: str,
+    *,
+    trials: TrialDetail = "table",
+    lead: Sequence[ReportBlock] | None = None,
 ) -> CampaignReport:
     """The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 
@@ -1262,6 +1272,11 @@ def campaign_report(
         record, which is most of a large campaign's page. A report document's page lays the folds, each such record
         in them, after the document as its evidence record with ``all``, and none with ``table``.
     :ptype trials: TrialDetail
+    :param lead: The page's answer where its caller states its own (a harness whose eval reads a figure of its own),
+        in place of the lead code writes on a code-only page
+        (:func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report`, ``lead``). A report document's
+        page draws its own document, so it does not carry one. None for code's lead.
+    :ptype lead: Sequence[ReportBlock] | None
     :return: The page; its ``basis`` says which it is.
     :rtype: CampaignReport
     :raises NotFoundError: No campaign with that id in the scope.
@@ -1269,20 +1284,26 @@ def campaign_report(
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     reported = host.storage.load_reported_analysis(campaign_id, scope_id)
     if reported is None:
-        return _code_only_page(host, campaign, trials=trials)
+        return _code_only_page(host, campaign, trials=trials, lead=lead)
     if reported.report_doc_id is not None:
         try:
             read = read_report_doc(host.storage, reported.report_doc_id, scope_id)
         except NotFoundError as missing:
-            return _stands_in(host, campaign, missing.message, trials=trials, unread_analysis_id=reported.id)
+            return _stands_in(host, campaign, missing.message, trials=trials, unread_analysis_id=reported.id, lead=lead)
         except RefusedInput as unread:
-            return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id)
-        return _doc_page(host, campaign, read, analysis_id=reported.id, trials=trials)
+            return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=reported.id, lead=lead)
+        return _doc_page(host, campaign, read, analysis_id=reported.id, trials=trials, lead=lead)
     # An analysis that links no report document was written by a retired writer (EvalAnalysis holds exactly one of a
     # memo, a plan and a document), so nothing of what it stored is read: code's page stands in for it.
     line = retired_generation(reported.basis) or NO_LONGER_READS
     return _stands_in(
-        host, campaign, f"analysis {reported.id}", trials=trials, unread_analysis_id=reported.id, line=line
+        host,
+        campaign,
+        f"analysis {reported.id}",
+        trials=trials,
+        unread_analysis_id=reported.id,
+        line=line,
+        lead=lead,
     )
 
 
@@ -1323,13 +1344,20 @@ def report_doc_report(
 
 
 def _doc_page(
-    host: EvalHost, campaign: EvalCampaign, read: StoredReportPage, *, analysis_id: str | None, trials: TrialDetail
+    host: EvalHost,
+    campaign: EvalCampaign,
+    read: StoredReportPage,
+    *,
+    analysis_id: str | None,
+    trials: TrialDetail,
+    lead: Sequence[ReportBlock] | None = None,
 ) -> CampaignReport:
     """A stored report document's page, its readings and folds off its snapshot's bundle laid out over the campaign as
     that bundle declared it (what the document was written against, which its analysis's ``design_snapshot`` copies);
     the code-only page of ``campaign`` with the one regenerate line where the snapshot holds no bundle or its bundle
     no longer lays out. With ``trials="all"`` the folds follow the document, each failed or lost trial's record in
-    them, as the code-only page draws them."""
+    them, as the code-only page draws them. A caller's ``lead`` shows only on the code-only page standing in: the
+    document's page holds no blocks of its own."""
     snapshot = read.snapshot
     try:
         if snapshot.bundle is None or snapshot.bundle_assembled_at is None:
@@ -1344,8 +1372,10 @@ def _doc_page(
         )
     except RefusedInput as unread:
         if analysis_id is None:
-            return _stands_in(host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id)
-        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=analysis_id)
+            return _stands_in(
+                host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id, lead=lead
+            )
+        return _stands_in(host, campaign, unread.fault, trials=trials, unread_analysis_id=analysis_id, lead=lead)
     return CampaignReport.model_validate(
         {
             **dict(page),
@@ -1368,6 +1398,7 @@ def _stands_in(
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     line: str = NO_LONGER_READS,
+    lead: Sequence[ReportBlock] | None = None,
 ) -> CampaignReport:
     """The code-only page standing in for an analysis or a report document this version no longer reads: its first
     screen says so in the one line (``NO_LONGER_READS``, or the retired writer's), and its ``needs_regeneration`` is
@@ -1381,6 +1412,7 @@ def _stands_in(
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=line,
+        lead=lead,
     )
     return CampaignReport.model_validate({**dict(page), "needs_regeneration": f"{line} ({why})"})
 
@@ -1393,6 +1425,7 @@ def _code_only_page(
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
+    lead: Sequence[ReportBlock] | None = None,
 ) -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
@@ -1410,6 +1443,8 @@ def _code_only_page(
     :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as the line says it.
     :ptype unread_line: str
+    :param lead: The page's answer where its caller states its own; None for code's lead.
+    :ptype lead: Sequence[ReportBlock] | None
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
@@ -1423,6 +1458,7 @@ def _code_only_page(
         unread_analysis_id=unread_analysis_id,
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
+        lead=lead,
     )
 
 

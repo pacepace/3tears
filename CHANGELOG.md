@@ -8,16 +8,17 @@ packages (bumped in lock-step).
 
 ### evals: a campaign's first screen says what the page is: a lead on every page, its rates with their counts
 
-**Changed:** every code-written campaign page opens on a lead, not only one where a guardrail warns: a comparison on
-its first measure's reading, a choice on its pairs, one arm measured on its pass rate as a count (`reply passed 40 of
-40 trials on 20 cases.`). A comparison that asks no question says so once, as what it is (`Exploratory comparison.`),
-and its readings no longer each say ", a lead". Every rate in the scorecard's matrix carries the count it is computed
-over (`100 (40 of 40 trials, 20 cases)`). A judge not yet calibrated against people's labels is a report-wide caveat
-on the first screen (`Judged scores on score are directional until people's labels calibrate the judge.`), its detail a
-row of Design & provenance. The cost's provider routing leaves the first screen for one Design & provenance row (an
-aspect's own page: its methods). How the intervals were read moves from the scorecard to the page's methods.
-`build_campaign_report(lead=...)` takes the blocks a caller states its own answer in, which replace code's lead in
-place, directly after the question line. The package's tests hold every first screen to the rule.
+**Changed:** every code-written campaign page opens on a lead, not only one where a guardrail warns: a comparison on its
+first measure's reading, a choice on its pairs, one arm measured on its pass rate as a count (`reply passed 40 of 40
+trials on 20 cases.`). A comparison that asks no question says so once, as what it is (`Exploratory comparison.`), and
+its readings no longer each say ", a lead". Every rate in the scorecard's matrix carries the count it is computed over
+(`100 (40 of 40 trials, 20 cases)`). A judge not yet calibrated against people's labels is a report-wide caveat on the
+first screen (`Judged scores on score are directional until people's labels calibrate the judge.`), its detail a row of
+Design & provenance. The cost's provider routing leaves the first screen for one Design & provenance row (an aspect's
+own page: its methods). How the intervals were read moves from the scorecard to the page's methods.
+`build_campaign_report(lead=...)`, and `campaign_report(lead=...)` for a code-only page, take the blocks a caller states
+its own answer in, which replace code's lead in place, directly after the question line. The package's tests hold every
+first screen to the rule.
 
 **Removed:** the lines stating an absence: `No recommendation was written: …`, `No call is recorded yet: …` (the call
 prints once recorded), `No question was declared, so every reading is a lead.`, `One arm is measured, so nothing is
@@ -48,18 +49,19 @@ Resolve the names you use (or import them from their modules) on the real clock 
 
 ### evals: the writer eval's page opens on its answer, its side-by-side tables are rows with columns, and a replay reads its criteria as declared
 
-**Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) opens, under its title, on one
-sentence per candidate: its promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays:
-across 7 held-out cases the judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to
-tell from an even split; about 39 cases would settle it."), with the promotion's own sentence after it where the
-preference alone does not explain the decision. Its Scorecard opens with the side-by-side tables and each candidate's
-promotion sentence. The side-by-side table in the print, in `pairwise.md` and on the page is two tables of rows with
-columns: the preference, a row per candidate and the pairs it reads (every pair, then both pages finished), and the
-judge's checks, a row per candidate. Four figures change form: the share (`0.6786` reads `68` under `Share (%)`), the
-difference and its interval (`0.3571`, `-0.2762 to 1` read `36`, `-28 to 100` in points), order consistency
-(`0.8571 (6 of 7)` reads `86% (6 of 7)`) and the first-slot lean (`0.07143` reads `7` in points). Each is read to
-whole points, with more decimals only where an interval's end would print as 0 or cross zero, or two figures would
-print alike. What a pass spent and the held-out cases to settle print as before.
+**Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) leads, under its question, on one
+sentence per candidate, as the campaign page's lead (`campaign_report(lead=...)`), so the page carries one answer: its
+promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays: across 7 held-out cases the
+judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to tell from an even split; about
+39 cases would settle it."), with the promotion's own sentence after it where the preference alone does not explain the
+decision. Its Scorecard opens with the side-by-side tables and each candidate's promotion sentence. The side-by-side
+table in the print, in `pairwise.md` and on the page is two tables of rows with columns: the preference, a row per
+candidate and the pairs it reads (every pair, then both pages finished), and the judge's checks, a row per candidate.
+Four figures change form: the share (`0.6786` reads `68` under `Share (%)`), the difference and its interval (`0.3571`,
+`-0.2762 to 1` read `36`, `-28 to 100` in points), order consistency (`0.8571 (6 of 7)` reads `86% (6 of 7)`) and the
+first-slot lean (`0.07143` reads `7` in points). Each is read to whole points, with more decimals only where an
+interval's end would print as 0 or cross zero, or two figures would print alike. What a pass spent and the held-out
+cases to settle print as before.
 
 **Fixed:** a writer eval files its campaign dated when its arms launched (`create_campaign`'s `declared_at`), as an
 `Eval` does, in place of when it was filed, after its results existed. Its page no longer says its criteria (the
