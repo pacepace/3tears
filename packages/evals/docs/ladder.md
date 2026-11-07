@@ -242,8 +242,8 @@ if __name__ == "__main__":
   page quotes the question under its title. Asked alone it is a superiority question ("does v2 do better?"), so no
   margin is filed and v2's pass rate reads shown better, shown worse or not separated, against zero. A question of
   "no worse than v1" writes its own margin, in the measure's units: `Eval(question=..., margin=0.05)` is 5 points.
-  Leave the question out and the readings are leads: the page says "No question was declared, so every reading is a
-  lead" and leads on the same first grader.
+  Leave the question out and the readings are leads: the page says "Exploratory comparison." once and leads on the
+  same first grader.
 - **`grader("total", margin=0.05)`** is the `total` field, graded with a margin: the largest difference too small to
   act on. Only with a margin can a reading come out **equivalent**, the one verdict that says "good enough". A case
   whose `total` is `null` expects none stated, so an invented total misses there too.

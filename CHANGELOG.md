@@ -17,7 +17,7 @@ on the first screen (`Judged scores on score are directional until people's labe
 row of Design & provenance. The cost's provider routing leaves the first screen for one Design & provenance row (an
 aspect's own page: its methods). How the intervals were read moves from the scorecard to the page's methods.
 `build_campaign_report(lead=...)` takes the blocks a caller states its own answer in, which replace code's lead in
-place, directly after the question line. `style.absence_violations` holds a first screen to the rule.
+place, directly after the question line. The package's tests hold every first screen to the rule.
 
 **Removed:** the lines stating an absence: `No recommendation was written: …`, `No call is recorded yet: …` (the call
 prints once recorded), `No question was declared, so every reading is a lead.`, `One arm is measured, so nothing is
@@ -26,8 +26,10 @@ compared …`, `No floor was declared on …` and `No declared question asks abo
 
 **Hosts:** a reader of a host's campaign page sees a lead sentence under the title on every page and no line saying
 what the page lacks; a report-wide caveat line for an uncalibrated judge where one graded; no cost-routing line on the
-first screen. A host matching any removed line, or importing `NO_RECOMMENDATION` or `NO_CALL`, stops: nothing replaces
-them. Nothing stored changes.
+first screen. In the HTML, `id="caveat-cost"` is gone and `id="caveat-judge"` is new. In the report JSON, a rate cell's
+`flag` in the scorecard's matrix now carries its count (`40 of 40 trials, 20 cases`, before any other mark). A host
+matching any removed line, or importing `NO_RECOMMENDATION` or `NO_CALL`, stops: nothing replaces them. Nothing
+stored changes.
 
 ### evals: 26 declared names only Discodon's tests import go provisional
 

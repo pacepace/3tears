@@ -466,17 +466,23 @@ def _criteria_table(
     ]
 
 
-def for_the_campaign(report: Report) -> Report:
+def for_the_campaign(report: Report, *, alone: bool = False) -> Report:
     """An aspect's own page as its fold on a campaign's page lays it out: without the report-wide disclosures the
     campaign states once for every aspect, found by the marks they carry (each caveat line's id, each full test-setup
     line's id, each provenance table's name), never by their words.
 
+    A fold laid out ``alone``, without the campaign's own blocks (a report document's evidence record, which is the
+    folds and the glossary), keeps its judge's calibration line (``setup-judge``): no other line on that page names
+    the judge, its dimensions or how many of its outputs to rate.
+
     :param report: The aspect's own page.
     :ptype report: Report
+    :param alone: Whether the fold is laid out without the campaign's own blocks.
+    :ptype alone: bool
     :return: The page without them.
     :rtype: Report
     """
-    marks = {*_CAVEAT_ANCHORS.values(), *_SETUP_ANCHORS.values()}
+    marks = {*_CAVEAT_ANCHORS.values(), *_SETUP_ANCHORS.values()} - ({_SETUP_ANCHORS["judge"]} if alone else set())
     kept = [
         block
         for block in report.blocks

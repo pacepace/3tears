@@ -1028,6 +1028,7 @@ def _campaign_page(
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
+    folds_alone: bool = False,
 ) -> CampaignReport:
     """Lay a campaign bundle out as code's page for the campaign: code's readings, where its report is, the call.
 
@@ -1055,6 +1056,9 @@ def _campaign_page(
     :param unread_line: What ``unread_analysis_id`` was, as the page's first screen says it: ``NO_LONGER_READS``, or
         the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
     :ptype unread_line: str
+    :param folds_alone: Whether the folds will be laid out without the page's own blocks, as a report document's
+        evidence record is, so each keeps what only those blocks would state (its judge's calibration line).
+    :ptype folds_alone: bool
     :return: The page.
     :rtype: CampaignReport
     """
@@ -1091,6 +1095,7 @@ def _campaign_page(
         unread_report_doc_id=unread_report_doc_id,
         unread_line=unread_line,
         arms=bundle.arms,
+        folds_alone=folds_alone,
     )
     if analysis is None:
         return page
@@ -1333,7 +1338,10 @@ def _doc_page(
             )
         bundle = CampaignBundle.from_dict(snapshot.bundle, what=f"report snapshot {snapshot.id}")
         declared = _with_declaration(campaign, bundle.declaration)
-        page = _campaign_page(declared, bundle, assembled_at=snapshot.bundle_assembled_at, trials=trials)
+        # The document's page drops the campaign's own blocks, so each fold keeps what only those would state.
+        page = _campaign_page(
+            declared, bundle, assembled_at=snapshot.bundle_assembled_at, trials=trials, folds_alone=True
+        )
     except RefusedInput as unread:
         if analysis_id is None:
             return _stands_in(host, campaign, unread.fault, trials=trials, unread_report_doc_id=read.record.id)

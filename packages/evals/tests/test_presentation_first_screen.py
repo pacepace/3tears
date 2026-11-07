@@ -5,7 +5,7 @@ each held here on the ladder's replayed pages, rungs 0 to 4, and the G2 fixtures
 
 - every page has an answer block, a lead, whether or not anything warns (W2, P1);
 - no first-screen line outside what warns and the report-wide caveats opens or turns on an absence
-  (:func:`~threetears.evals.analysis.style.absence_violations`; P6, H5, H12);
+  (:func:`~packages.evals.tests.style_support.absence_violations`; P6, H5, H12);
 - a rate the first screen shows carries the count it is computed over, in its line or its cell (H11);
 - every report-wide caveat code assigns lands on the first screen, once (A2's caveat clause);
 - rung 2's uncalibrated judge is one of them (P2), its detail one step down in Design & provenance.
@@ -34,13 +34,13 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
     TableBlock,
 )
-from threetears.evals.analysis.style import absence_violations
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.quick.files import load_evals
 
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_shapes_support import s4_change
+from packages.evals.tests.style_support import absence_violations
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,23 @@ def test_rung_3_s_one_absence_is_the_undecided_reading_s_own_phrase(rungs: dict[
     found = absence_violations(_first_screen(rungs["rung3"].page.blocks))
     assert [violation.detail for violation in found] == ["not separated"]
     assert all(violation.text == "Accuracy: v2 and v1 not separated." for violation in found)
+
+
+def test_rung_3_s_aspect_page_s_one_absence_is_its_verdict_line_s_own_words(rungs: dict[str, _Rung]) -> None:
+    # The aspect page's verdict line and G2's "No verdict" are verdict.py's words, which chunk 2 rewrites into what
+    # they mean; nothing else on those first screens says what the page lacks. When chunk 2 lands, each list is empty.
+    aspect = absence_violations(_first_screen(rungs["rung3"].report.blocks))
+    verdict = "Declared question: nothing separated v2 from v1. Not yet shown safe: v2 on no invented total."
+    assert [(found.detail, found.text) for found in aspect] == [("nothing separated", verdict)]
+
+
+async def test_g2_s_absences_are_its_verdict_line_s_own_words() -> None:
+    found = absence_violations(_first_screen((await g2_report()).blocks))
+    assert [violation.detail for violation in found] == ["No verdict", "not the"]
+    assert {violation.text.split(".")[0] for violation in found} == {
+        "No verdict: the test setup failed, not the models"
+    }
+    assert absence_violations(_first_screen((await g2_ruled_report())[1].blocks)) == []
 
 
 # --- a first-screen rate carries its count ----------------------------------------------------------------------------
@@ -245,7 +262,7 @@ def _line(text: str, *, section: str = "answer", source: str = "memo", anchor: s
 )
 def test_a_line_opening_or_turning_on_an_absence_is_one_violation(text: str, detail: str) -> None:
     (found,) = absence_violations([_line(text)])
-    assert (found.rule, found.text, found.detail) == ("absence", text, detail)
+    assert (found.text, found.detail) == (text, detail)
 
 
 def test_a_line_saying_what_the_page_is_passes() -> None:

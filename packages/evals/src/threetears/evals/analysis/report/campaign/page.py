@@ -88,6 +88,7 @@ def build_campaign_report(
     unread_line: str = NO_LONGER_READS,
     arms: Sequence[CampaignArm] | None = None,
     lead: Sequence[ReportBlock] | None = None,
+    folds_alone: bool = False,
 ) -> CampaignReport:
     """Lay a campaign out as code's page: under the title the question, where its report is, what warns and the
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
@@ -129,6 +130,10 @@ def build_campaign_report(
         the ``answer`` section. None for code's lead; an empty sequence is refused. Nothing else on the page changes
         with it.
     :ptype lead: Sequence[ReportBlock] | None
+    :param folds_alone: Whether the folds are laid out without the page's own blocks, as a report document's evidence
+        record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
+        line, which the page's own Design & provenance would otherwise state once.
+    :ptype folds_alone: bool
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
@@ -174,7 +179,7 @@ def build_campaign_report(
             aspect=aspect.label,
             shows=aspect_shows(readings, aspect.label),
             # What the campaign states once for every aspect, its fold does not say again.
-            report=for_the_campaign(reports[aspect.label]),
+            report=for_the_campaign(reports[aspect.label], alone=folds_alone),
         )
         for aspect in campaign.aspects
     ]
