@@ -3093,6 +3093,10 @@ def _marks(trials: Sequence[TrialRow]) -> str:
     return marks
 
 
+#: A check's name that says it is one (``Ticket status check``, ``Goal check 2``).
+_SAYS_CHECK = re.compile(r"\bcheck\b", re.IGNORECASE)
+
+
 def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
     """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
     goal check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression."""
@@ -3104,9 +3108,10 @@ def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
         # A check is named by its name, never by its expression and never a "pass rate" on one trial.
         # A goal check by its name; anything else a trial records as failed (a grader's ``total is False``) as code,
         # as written, since its reading names it already.
-        return "check: " + ", ".join(
-            check_names.get(check.expression) or code(check.expression) for check in trial.failed_checks
-        )
+        named = [check_names.get(check.expression) for check in trial.failed_checks]
+        said = ", ".join(name or code(check.expression) for name, check in zip(named, trial.failed_checks, strict=True))
+        # Where every name already says it is a check (``Ticket status check``), the cell never says so twice.
+        return said if all(name and _SAYS_CHECK.search(name) for name in named) else f"check: {said}"
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
         return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"

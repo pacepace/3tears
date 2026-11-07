@@ -289,9 +289,13 @@ instead, since its definition is the host's expression), and a case's trial id o
 
 **A goal check is named, never printed as its expression**, in every header, row and lead: by the display name its
 template declares (`goal_check_names`), else by what it tests, read off the expression (`state.refund.amount <= ...`
-is `Refund amount check`, `call_count("discord.send_message") >= 1 or ...` is `Send message calls check`), numbered
-only where two checks would share a name, and `Goal check` where the expression names nothing a reader can read. The
-same expression has the same name on every aspect and run. The Glossary defines each name by its expression, whole,
+is `Refund amount check`, and so is `state.order.total > 0 and state.refund.amount <= ...`, since a guarded check is
+named by what its guard lets through; `call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1`
+is `Send message or reply check`), numbered only where two checks would share a name, and `Goal check` where the
+expression names nothing a reader can read or tests more than two things (a production `call_count(...) >= 1 or ...`
+over three calls). A name is built from the expression's identifiers, never its literal text. An expression keeps its
+name on every aspect and run unless a check named beside it would share that name: then both are numbered, so a
+sibling check added in a later run can renumber it. The Glossary defines each name by its expression, whole,
 once, and names the aspect where one name stands for different expressions. A report document's own tables, and the
 evidence record laid out after it, print an undeclared check's expression for now: the report writer's recorded judge
 reads that text, and it is recorded again before they change.

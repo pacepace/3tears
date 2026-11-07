@@ -169,16 +169,70 @@ def _path(node: ast.expr) -> list[str] | None:
             return None
 
 
-def _subject_of(node: ast.AST, bound: frozenset[str]) -> str | None:
-    """The first subject the expression reads, in the order it is written: the action a call predicate names, else a
-    path's names, the world's root and a trailing ``length`` dropped; None where nothing in it names one."""
+#: A literal a call predicate's action is read from: a dotted identifier (``discord.send_message``). Any other text is a
+#: host's words, never a name's: a name is built from identifiers only, so no literal's markup reaches a page.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+#: The most subjects a check's name joins (``Send message or reply check``); a check reading more is a goal check.
+_MOST_SUBJECTS = 2
+
+
+@dataclass(frozen=True)
+class _Subject:
+    """One thing a check tests: its words (``send message``) and, for a call predicate, the action word after them
+    (``calls``)."""
+
+    words: str
+    action: str | None = None
+
+    def text(self, *, action: bool = True) -> str:
+        return f"{self.words} {self.action}" if action and self.action else self.words
+
+
+def _reads(node: ast.AST) -> set[tuple[str, ...]]:
+    """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent."""
+    found: set[tuple[str, ...]] = set()
+    for part in ast.walk(node):
+        if isinstance(part, ast.Call) and isinstance(part.func, ast.Name) and part.func.id in _ACTION_WORDS:
+            first = part.args[0] if part.args else None
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                found.add((part.func.id, first.value))
+        elif isinstance(part, ast.Attribute | ast.Name) and (path := _path(part)) is not None:
+            found.add(tuple(path))
+    return found
+
+
+def _consequents(operands: Sequence[ast.expr]) -> list[ast.expr]:
+    """An ``and``'s operands less its guards: an operand every path of which a later operand reads too
+    (``state.order.total > 0`` before ``state.refund.amount <= state.order.total``) only guards what follows it."""
+    reads = [_reads(operand) for operand in operands]
+    return [
+        operand
+        for index, operand in enumerate(operands)
+        if not (reads[index] and any(reads[index] <= later for later in reads[index + 1 :]))
+    ]
+
+
+def _subjects_of(node: ast.AST, bound: frozenset[str]) -> list[_Subject]:
+    """The subjects an expression tests, in the order it is written, each once: every operand's of an ``and`` or an
+    ``or`` (an ``and``'s guards passed over, :func:`_consequents`), else the first one it reads: the action a call
+    predicate names, else a path's names, the world's root and a trailing ``length`` dropped; none where nothing in it
+    names one."""
+    if isinstance(node, ast.BoolOp):
+        operands = _consequents(node.values) if isinstance(node.op, ast.And) else node.values
+        found: list[_Subject] = []
+        for operand in operands:
+            found.extend(one for one in _subjects_of(operand, bound) if one not in found)
+        return found
     if isinstance(node, ast.Call):
         name = node.func.id if isinstance(node.func, ast.Name) else None
         first = node.args[0] if node.args else None
         if name in _ACTION_WORDS and isinstance(first, ast.Constant) and isinstance(first.value, str):
-            return f"{re.sub(r'[_.]+', ' ', first.value.rsplit('.', 1)[-1]).strip()} {_ACTION_WORDS[name]}"
+            if not _IDENTIFIER.fullmatch(first.value):
+                return []
+            return [_Subject(re.sub(r"_+", " ", first.value.rsplit(".", 1)[-1]).strip(), _ACTION_WORDS[name])]
         if name == "passed" and not node.args:
-            return "deliberate pass"
+            return [_Subject("deliberate pass")]
         children: list[ast.AST] = [*node.args, *(keyword.value for keyword in node.keywords)]
     elif isinstance(node, ast.GeneratorExp | ast.ListComp):
         targets = {
@@ -189,23 +243,47 @@ def _subject_of(node: ast.AST, bound: frozenset[str]) -> str | None:
         children = [*(gen.iter for gen in node.generators), node.elt]
     elif isinstance(node, ast.expr) and (path := _path(node)) is not None:
         if path[0] in bound:
-            return None
+            return []
         words = path[1:] if path[0] in _ROOTS and len(path) > 1 else path
         words = words[:-1] if len(words) > 1 and words[-1] == "length" else words
-        return " ".join(re.sub(r"_+", " ", word) for word in words).strip() or None
+        said = " ".join(re.sub(r"_+", " ", word) for word in words).strip()
+        return [_Subject(said)] if said else []
     else:
         children = list(ast.iter_child_nodes(node))
     for child in children:
-        if (found := _subject_of(child, bound)) is not None:
+        if found := _subjects_of(child, bound):
             return found
+    return []
+
+
+def _joined(subjects: Sequence[_Subject], node: ast.AST) -> str | None:
+    """A check's subjects as its name says them: one alone; two joined by the word their ``and`` or ``or`` reads, the
+    action word they share said once and dropped (``Send message or reply``); None for none or more than
+    :data:`_MOST_SUBJECTS`."""
+    if not subjects or len(subjects) > _MOST_SUBJECTS:
+        return None
+    if len(subjects) == 1:
+        return subjects[0].text()
+    shared = len({one.action for one in subjects}) == 1
+    word = "and" if isinstance(_top_bool(node), ast.And) else "or"
+    return f" {word} ".join(one.text(action=not shared) for one in subjects)
+
+
+def _top_bool(node: ast.AST) -> ast.boolop | None:
+    """The first ``and`` or ``or`` an expression reads, outermost first."""
+    for part in ast.walk(node):
+        if isinstance(part, ast.BoolOp):
+            return part.op
     return None
 
 
 def _check_subject(expression: str) -> str | None:
     """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
-    ``state.refund.amount <= state.order.total``, ``Place order calls`` for ``call_count("inventory.place_order") >= 1
-    or ...``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression does not parse or names no
-    subject.
+    ``state.refund.amount <= state.order.total`` (and for it guarded by ``state.order.total > 0 and ...``, named by
+    what the guard lets through), ``Send message or reply`` for ``call_count("discord.send_message") >= 1 or
+    call_count("discord.reply") >= 1``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression
+    does not parse, names no subject, or tests more than two. A call's action is read only from a literal that is a
+    dotted identifier, never from other text.
 
     :param expression: The check, verbatim.
     :ptype expression: str
@@ -218,7 +296,7 @@ def _check_subject(expression: str) -> str | None:
         except SyntaxError:
             # NOSILENT: an expression this grammar cannot parse is named a goal check, never refused here.
             continue
-        found = _subject_of(tree.body, frozenset())
+        found = _joined(_subjects_of(tree.body, frozenset()), tree.body)
         return f"{found[:1].upper()}{found[1:]}" if found else None
     return None
 
@@ -226,9 +304,9 @@ def _check_subject(expression: str) -> str | None:
 def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
     """The name a page gives each of an aspect's goal checks, by expression: the display name ``declared`` gives it,
     else what it tests (:func:`_check_subject`) with ``check`` after it (``Refund amount check``), else
-    :data:`GOAL_CHECK`. An expression is named alike on every aspect and every run; only where two of ``checks`` would
-    share a name (or an unnamed one would take a declared one's) is each numbered, in the checks' sorted order
-    (``Ticket status check 1``, ``Ticket status check 2``).
+    :data:`GOAL_CHECK`. An expression is named alike wherever none of the ``checks`` beside it would share its name;
+    where two would (or an unnamed one would take a declared one's) each is numbered, in the checks' sorted order
+    (``Ticket status check 1``, ``Ticket status check 2``), so a check added beside it can move its number.
 
     :param checks: The checks a page names, by expression, in any order and with repeats.
     :ptype checks: Iterable[str]

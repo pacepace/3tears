@@ -10,13 +10,17 @@ packages (bumped in lock-step).
 
 **Changed:** every table header, reading row and lead names a goal check by the display name its template declares
 (`EvalTemplate.goal_check_names`), else by what it tests, read off its expression alone: `state.refund.amount <= ...`
-is `Refund amount check`, `call_count("discord.send_message") >= 1 or ...` is `Send message calls check`,
-`field_accuracy >= 0.92` is `Field accuracy check`. The same expression has the same name on every aspect and run;
-two checks that would share a name are numbered (`Ticket status check 1`, `Ticket status check 2`), and an expression
-that names nothing a reader can read is `Goal check`. A production campaign headed a table, and led its page, with a
+is `Refund amount check` (and so is `state.order.total > 0 and state.refund.amount <= ...`: a guarded check is
+named by what its guard lets through), `call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1`
+is `Send message or reply check`, `field_accuracy >= 0.92` is `Field accuracy check`. A check reading two subjects
+joins them by its `and` or `or`; one reading more (the production `call_count(...) >= 1 or ...` over three calls),
+or naming nothing a reader can read, is `Goal check`. A name is built from identifiers only: a call's action is read
+from a literal that is a dotted name, never from other text, so no literal's markup reaches a page. An expression
+keeps its name on every aspect and run where none of the checks named beside it would share that name; two that would
+are numbered (`Ticket status check 1`, `Ticket status check 2`), so a sibling check added in a later run can move a
+number. A trial's failed-check cell says `check:` only where a name does not say it is one. A production campaign headed a table, and led its page, with a
 four-line `call_count(...) >= 1 or ...`. The page's glossary defines each check's name by its expression, whole, on
-one line, once ("Send message calls check: The goal check `( call_count(...) >= 1 or ... )`, which code runs on every
-trial."), and says which aspect a name holds on where one name stands for different expressions; a check's entry has
+one line, once ("Goal check: The goal check `( call_count(...) >= 1 or ... )`, which code runs on every trial."), and says which aspect a name holds on where one name stands for different expressions; a check's entry has
 an id of its own (`g-check-...`). A check's column header links its entry, and every link to a check carries one hover
 ("Code runs this goal check on every trial; the glossary states it in full."), never the host's text. The Markdown
 glossary sets an expression in a span no backtick inside it can close. The Design & provenance `Checks` legend this

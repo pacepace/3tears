@@ -723,7 +723,9 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     # failure; the trial's record and the glossary print the expression as written, no underscores or dots stripped.
     name = report.bundle.named_checks()[expression]
     assert name == "Queue track calls check"
-    assert f"check: {name}" in whys and not [why for why in whys if why and expression in why]
+    # A name that says it is a check is never told so twice (``check: Queue track calls check``).
+    assert name in whys and f"check: {name}" not in whys
+    assert not [why for why in whys if why and expression in why]
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
     assert f"- `{name}`: `{expression}`" in markdown

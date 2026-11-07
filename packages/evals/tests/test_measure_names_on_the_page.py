@@ -4,8 +4,9 @@ definition of that name, once.
 The owner's ruling of 2026-11-09 (Q11): a check's expression is code, and a long one (a production campaign's
 ``call_count(...) >= 1 or ...``, laid out over four lines) made a paragraph of a table header and a lead. So a check is
 named by the display name its template declares, else by what it tests, read off its expression alone
-(``Send message calls check``, :func:`~threetears.evals.analysis.style.check_names`), and the page's glossary pairs
-the name with the expression it stands for.
+(``Refund amount check``, ``Send message or reply check``, :func:`~threetears.evals.analysis.style.check_names`;
+a check testing more than two subjects, as the production check does, is a ``Goal check``), and the page's glossary
+pairs the name with the expression it stands for.
 
 The shape here is one aspect, production against v2, graded on a four-line check (:data:`LONG`) and a short one, with
 the aspect's graders listing the long check first, so the lead reads it, and v2 shown worse on it. Each page is laid
@@ -55,8 +56,9 @@ LONG_LINE = (
 #: The aspect's second check.
 SHORT = "reply.cites_policy"
 
-#: What the page calls each, by what it tests.
-LONG_NAME, SHORT_NAME = "Send message calls check", "Reply cites policy check"
+#: What the page calls each, by what it tests: the long check tests three calls, more than a name joins, so it is a goal
+#: check (the coordinator's ruling on the measure-names verify, N-2).
+LONG_NAME, SHORT_NAME = "Goal check", "Reply cites policy check"
 
 #: What marks text as a check's expression rather than a name: a call, a comparison or a dotted path.
 _EXPRESSION = re.compile(r"call_count\(|>=|==|reply\.cites")
@@ -68,7 +70,7 @@ _ENTRIES = {
         f"- **{SHORT_NAME}**: The goal check `{SHORT}`, which code runs on every trial.",
     ],
     "html": [
-        f'<dt id="g-check-send-message-calls-check">{LONG_NAME}</dt><dd>The goal check <code>{escape(LONG_LINE)}</code>, '
+        f'<dt id="g-check-goal-check">{LONG_NAME}</dt><dd>The goal check <code>{escape(LONG_LINE)}</code>, '
         "which code runs on every trial.</dd>",
         f'<dt id="g-check-reply-cites-policy-check">{SHORT_NAME}</dt><dd>The goal check <code>{escape(SHORT)}</code>, '
         "which code runs on every trial.</dd>",
@@ -205,7 +207,15 @@ def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:
 @pytest.mark.parametrize(
     ("expression", "subject"),
     [
-        (LONG, "Send message calls"),
+        (LONG, None),
+        ('call_count("discord.send_message") >= 1', "Send message calls"),
+        ('call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1', "Send message or reply"),
+        ('call_count("discord.send_message") >= 1 or refused("discord.reply")', "Send message calls or reply refusals"),
+        ("state.ticket.status == 'closed' and state.ticket.tags.length >= 1", "Ticket status and ticket tags"),
+        ("state.order.total > 0 and state.refund.amount <= state.order.total", "Refund amount"),
+        ("state.refund is not None and state.refund.amount > 0", "Refund amount"),
+        ('call_count("x.[click](javascript:alert(1)) <img src=x onerror=alert(1)>") >= 1', None),
+        ('call_count("") >= 1', None),
         ("state.refund.amount <= state.order.total", "Refund amount"),
         ("state.ticket.tags.length >= 1", "Ticket tags"),
         ("field_accuracy >= 0.92", "Field accuracy"),
@@ -278,7 +288,7 @@ def _scorecard_headers(page: CampaignReport) -> list[str]:
 def test_one_expression_has_one_name_on_every_aspect_and_two_aspects_with_one_check_each_read_apart() -> None:
     refund = "state.refund.amount <= state.order.total"
     page = _measurement(("billing", (LONG,)), ("refunds", (refund,)))
-    assert sorted(_scorecard_headers(page)) == ["Refund amount check (%)", f"{LONG_NAME} (%)"]
+    assert sorted(_scorecard_headers(page)) == [f"{LONG_NAME} (%)", "Refund amount check (%)"]
     alike = _measurement(("billing", (LONG,)), ("refunds", (LONG,)))
     assert _scorecard_headers(alike) == [f"{LONG_NAME} (%)"]
     assert [name for name, _ in alike.check_glossary] == [LONG_NAME]
@@ -310,11 +320,13 @@ def test_a_name_inside_a_longer_one_is_never_linked_as_the_shorter() -> None:
     assert not re.search(r">Goal check</a> \d", said)
 
 
-#: An expression a host could write that is Markdown and markup outside a code span.
-HOSTILE = "answer == `x` or [click](javascript:alert(1)) <img src=x onerror=alert(1)>"
+#: An expression a host could write that parses, so it reaches the naming path, and whose literals are Markdown and
+#: markup outside a code span: a name is built from identifiers only, so none of it reaches the check's name.
+HOSTILE = 'call_count("x.`y` [click](javascript:alert(1)) <img src=x onerror=alert(1)>") >= 1'
 
 
 def test_a_hostile_expression_in_the_glossary_is_code_in_both_forms() -> None:
+    assert check_names([HOSTILE], {}) == {HOSTILE: "Goal check"}, "the literal is no identifier, so it names nothing"
     page = _measurement(("billing", (HOSTILE, SHORT)))
     markdown = campaign_report_markdown(page)
     assert f"- **Goal check**: The goal check {code_span(HOSTILE)}, which code runs on every trial." in markdown

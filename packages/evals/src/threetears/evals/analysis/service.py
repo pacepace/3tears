@@ -37,7 +37,9 @@ from threetears.evals.analysis.campaigns import campaign_arms
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import FINGERPRINT_PREFIX, BundleInspection, stored_shape_line
 from threetears.evals.analysis.report import CampaignReport, Verdict, build_campaign_report, build_code_only_report
-from threetears.evals.analysis.style import written_check_names
+from threetears.evals.analysis.report.figure_keys import input_check_name
+from threetears.evals.analysis.report_input_build import report_input
+from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.analysis.report.model import ReportBlock, TrialDetail
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.report.words import (
@@ -1364,16 +1366,19 @@ def report_doc_report(
 
 
 def _written_checks(bundle: CampaignBundle) -> CampaignBundle:
-    """``bundle`` with each aspect naming its goal checks as a report document's page does
-    (:func:`~threetears.evals.analysis.style.written_check_names`), so the evidence record laid out after the document
-    names each check as the document's own tables do and one page never carries a check under two forms. Only the
-    presentation names move (``goal_check_names``, no part of any fingerprint); every reading stays as read."""
-    aspects = [
-        aspect.model_copy(
-            update={"goal_check_names": written_check_names(aspect.named_checks(), aspect.goal_check_names)}
+    """``bundle`` with each aspect naming its goal checks as a report document's page does: each through
+    :func:`~threetears.evals.analysis.report.figure_keys.input_check_name` on the report input the bundle gives, the
+    one call the document's own tables name a check by, over the one set of checks that input reads. So the evidence
+    record laid out after the document names each check as the document's tables do and one page never carries a check
+    under two forms. Only the presentation names move (``goal_check_names``, no part of any fingerprint); every reading
+    stays as read."""
+    read = report_input(bundle)
+    aspects = []
+    for aspect in bundle.aspects:
+        names = {check: input_check_name(goal_check_measure(check), read) for check in aspect.named_checks()}
+        aspects.append(
+            aspect.model_copy(update={"goal_check_names": {check: name for check, name in names.items() if name}})
         )
-        for aspect in bundle.aspects
-    ]
     return bundle.model_copy(update={"aspects": aspects})
 
 
