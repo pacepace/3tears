@@ -6,7 +6,7 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-## v0.93.0 -- 2026-11-06
+## v0.93.0 -- 2026-11-07
 
 ### interfaces: one dependency-free package for the family's shared Protocols and vocabulary
 
@@ -74,8 +74,6 @@ the same classes, now from `threetears.interfaces`.
 in place of the package they took before. search's and iam's dependency floors name it in the same place.
 search's SearXNG and Tavily adapters write locator kinds with `LOCATOR_KIND_DIRECT_FILE` and
 `LOCATOR_KIND_CONTAINING_PAGE` instead of hand-typed strings; the values are unchanged.
-
-## v0.92.0 -- 2026-11-06
 
 ### core, agent-tools, registry: the tool-call wire protocol lives in core, and registry no longer depends on agent-tools
 
@@ -346,17 +344,6 @@ dropping one only when it is read, so abandoned sign-in state no longer accumula
 past it raises `MemoryStoreFullError`. `MemoryAttemptLimiter` sweeps lapsed windows the same way.
 Redemption and the injectable clock are unchanged. The stores are now supported for a single-process
 service with one event loop. State is lost on restart, and the stores are not thread-safe.
-
-### access-contracts: a new dependency-free leaf for the vocabulary iam and agent-acl share
-
-**Release step:** `3tears-access-contracts` is a new PyPI project, so it needs a pending trusted
-publisher on PyPI before the release that carries it (docs/releasing.md). iam and agent-acl
-hard-depend on it, so without it they are uninstallable at the new version.
-
-**Added:** `3tears-access-contracts` (`threetears.access.contracts`) depends on nothing and holds
-`ImpersonationCategory`, the six sensitive-action categories that agent-acl's impersonation deny-list
-and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
-so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
 
 ## v0.91.4 -- 2026-11-06
 
