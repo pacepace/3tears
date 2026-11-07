@@ -795,8 +795,9 @@ unless they share a group and withhold the same notes.
 
 **The same evidence mints the same bytes.** The snapshot's id is derived from the campaign's id and its report input,
 and the case is frozen at one instant: `--as-of`, or, omitted, the moment the campaign's evidence was complete (the
-latest of the campaign's creation and its runs' completions). The insight ledger is read as it stood then, so an
-insight a later analysis of this campaign minted never reaches its case. Re-minting the same export writes the same
+latest of the campaign's creation and its runs' completions). An exported insight observed at or after that instant
+is left out, so an insight a later analysis of this campaign minted never reaches its case; whether an insight kept is
+retracted is read from the export as it stands. Re-minting the same export writes the same
 file. The command exits 0 when the case is written, 2 when the mint is refused, and 3 when the profile factory raises.
 
 ## Judge campaigns: evaluating a judge itself

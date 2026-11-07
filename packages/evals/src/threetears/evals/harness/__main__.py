@@ -34,6 +34,7 @@ from typing import Final
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.harness.analyse import DEFAULT_BUDGET_USD, Filed, analyse, analysis_page, recording_path
 from threetears.evals.analysis.analyst.skill import AnalystSkill
+from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX
 from threetears.evals.harness.minting import (
     MintManifest,
     ProfileFile,
@@ -134,6 +135,16 @@ def _mint_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _skill_at(directory: str) -> AnalystSkill:
+    """The analyst skill a ``--skill`` directory holds, or a refusal naming why it is not one."""
+    try:
+        return AnalystSkill.at(directory)
+    except ValueError as unread:
+        raise RefusedInput(
+            f"--skill {directory}: {unread}", remedy="name a skill directory laid out as the shipped one"
+        ) from unread
+
+
 def _mint(argv: Sequence[str]) -> int:
     """Mint one writer case from a host's export, and say where it was written."""
     try:
@@ -141,6 +152,12 @@ def _mint(argv: Sequence[str]) -> int:
     except SystemExit as stopped:  # argparse's own exit: 0 after --help, 2 on a malformed command line
         return stopped.code if isinstance(stopped.code, int) else EXIT_REFUSED
     try:
+        out = Path(args.out)
+        if not out.name.endswith(WRITER_CASE_SUFFIX):
+            raise RefusedInput(
+                f"--out {args.out}: a writer case file's name ends in {WRITER_CASE_SUFFIX}",
+                remedy=f"name the file <case>{WRITER_CASE_SUFFIX}",
+            )
         documents = read_documents_file(args.documents)
         manifest = None if args.manifest is None else MintManifest.read(args.manifest)
         if manifest is not None and manifest.campaign_id != args.campaign:
@@ -156,7 +173,7 @@ def _mint(argv: Sequence[str]) -> int:
                 remedy="name it with --host module:callable, or as the declaration's built_by",
             )
         profile = host_profile_from(factory)
-        skill = None if args.skill is None else AnalystSkill.at(args.skill)
+        skill = None if args.skill is None else _skill_at(args.skill)
         case = asyncio.run(
             writer_case_from_export(
                 documents,
@@ -174,8 +191,13 @@ def _mint(argv: Sequence[str]) -> int:
                 as_of=args.as_of,
             )
         )
-        written = case.write(args.out)
-    except (ValueError, EvalServiceError, OSError) as refused:
+        try:
+            written = case.write(out)
+        except OSError as unwritten:
+            raise RefusedInput(
+                f"--out {out} cannot be written: {unwritten}", remedy="name a writable path"
+            ) from unwritten
+    except (RefusedInput, EvalServiceError) as refused:
         sys.stderr.write(f"{PROG} {MINT}: {refused}\n")
         return EXIT_REFUSED
     except Exception as unanticipated:

@@ -447,6 +447,28 @@ def test_each_section_is_checked_against_its_own_tags() -> None:
         assert surface.history_findings(release) == [], release.version
 
 
+def test_only_the_first_section_is_measured_against_the_working_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An older section whose tag does not exist yet (a release cut on another branch, not yet tagged) is not this
+    tree's surface: it yields nothing until its tag exists, and the first section is measured against the tree."""
+    measured: list[tuple[str, str]] = []
+
+    def section_findings(release: Any, before: Any, after: Any, after_label: str) -> list[Any]:
+        measured.append((release.version, after_label))
+        return [surface.Finding(f"{release.version} measured", False)]
+
+    monkeypatch.setattr(surface, "tag_exists", lambda tag: tag == "v1.0.0")
+    monkeypatch.setattr(surface, "exports_at", lambda ref: {})
+    monkeypatch.setattr(surface, "section_findings", section_findings)
+    migrations = _labelled(("unreleased", "v1.0.0"), ("2.0.0", "v1.0.0"))
+    [finding] = surface.history_of(migrations)
+    assert finding.problem == "unreleased measured"
+    assert measured == [("unreleased", "the working tree")]
+    # Where the untagged release is the first section, it is the one measured against the tree.
+    measured.clear()
+    assert [f.problem for f in surface.history_of(_labelled(("2.0.0", "v1.0.0")))] == ["2.0.0 measured"]
+    assert measured == [("2.0.0", "the working tree")]
+
+
 # --- a tagged release has its own section ------------------------------------------------------------------------
 
 

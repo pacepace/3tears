@@ -25,7 +25,7 @@ from threetears.evals.harness.__main__ import main
 from threetears.evals.kernel import EvalInsight
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host import HostProfile
-from threetears.evals.quick.cli import EXIT_OK, EXIT_REFUSED
+from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
 from threetears.evals.schema.hashing import identity_json
 
 #: The courier's capture: the export.
@@ -300,3 +300,102 @@ def test_a_factory_returning_neither_a_profile_nor_a_host_is_refused(
 def test_a_malformed_mint_command_line_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["mint", "--documents", "documents.json"]) == EXIT_REFUSED
     assert "the following arguments are required" in capsys.readouterr().err
+
+
+def broken_profile() -> HostProfile:
+    """A host's profile factory that raises, as one whose config is missing does."""
+    raise ValueError("the host's config file is missing")
+
+
+def test_a_profile_factory_raising_exits_three_with_its_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Not 2: a broken factory is the host's bug, not a refused export."""
+    out = tmp_path / f"{NAME}.json.gz"
+    spec = f"{__name__}:broken_profile"
+    assert main([*_files(tmp_path, built_by=spec), *_case_args(out)]) == EXIT_FAILED
+    err = capsys.readouterr().err
+    assert "failed on an unanticipated error" in err
+    assert "Traceback (most recent call last)" in err and "ValueError: the host's config file is missing" in err
+    assert not out.exists()
+
+
+def _refused(args: list[str], capsys: pytest.CaptureFixture[str]) -> str:
+    assert main(args) == EXIT_REFUSED
+    return capsys.readouterr().err
+
+
+def test_a_scope_the_campaign_is_not_in_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / f"{NAME}.json.gz"
+    err = _refused([*_files(tmp_path), *_case_args(out), "--scope", "elsewhere"], capsys)
+    assert f"in {_campaign(_documents())['scope_id']}, not in 'elsewhere'" in err
+    assert not out.exists()
+
+
+async def test_a_campaign_exported_in_two_scopes_needs_its_scope_named() -> None:
+    documents = _documents()
+    copied = {**_campaign(documents), "scope_id": "courier-depot-south"}
+    with pytest.raises(RefusedInput, match="in 2 scopes: courier-depot-north, courier-depot-south"):
+        await _minted([*documents, copied])
+    case = await _minted([*documents, copied], scope_id="courier-depot-north", as_of=FROZEN_AT)
+    assert case.snapshot.id == WriterCaseFile.read(held_out_path(NAME)).snapshot.id
+
+
+async def test_a_document_without_its_type_id_or_scope_is_refused_by_its_place() -> None:
+    documents = _documents()
+    del documents[3]["scope_id"]
+    with pytest.raises(RefusedInput, match="document 3 of the export carries no doc_type, id or scope_id"):
+        await _minted(documents)
+
+
+@pytest.mark.parametrize(
+    ("which", "content", "said"),
+    [
+        ("documents.json", "not json", "documents.json is not JSON"),
+        ("documents.json", '{"doc_type": "eval_campaign"}', "documents.json is not a JSON list of documents"),
+        ("profile.json", "[]", "profile.json is not a JSON object"),
+        ("profile.json", '{"built_by": 7}', "profile.json: built_by is a int, not a string"),
+        ("manifest.json", "not json", "manifest.json is not JSON"),
+        ("manifest.json", '{"reasoned_on": []}', "manifest.json does not read as a mint manifest"),
+    ],
+)
+def test_a_malformed_file_is_refused_naming_it(
+    which: str, content: str, said: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz")]
+    (tmp_path / which).write_text(content)
+    assert said in _refused(args, capsys)
+
+
+def test_a_missing_file_is_refused_naming_it(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz")]
+    (tmp_path / "documents.json").unlink()
+    assert "documents.json cannot be read" in _refused(args, capsys)
+
+
+def test_an_out_file_no_reader_would_find_is_refused_before_anything_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json")]
+    (tmp_path / "documents.json").unlink()  # read first, it would be the refusal
+    err = _refused(args, capsys)
+    assert f"{NAME}.json: a writer case file's name ends in .json.gz" in err
+    assert "documents.json" not in err
+
+
+def test_a_skill_named_on_the_command_line_is_the_one_whose_notes_are_withheld(tmp_path: Path) -> None:
+    campaign_id = _campaign(_documents())["id"]
+    shipped = load_skill()
+    note = "r3-classifier.md"
+    for path, text in shipped.files.items():
+        target = tmp_path / "skill" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{text}\nCampaign {campaign_id}." if path == f"exemplars/{note}" else text)
+    out = tmp_path / f"{NAME}.json.gz"
+    assert main([*_files(tmp_path), *_case_args(out), "--skill", str(tmp_path / "skill")]) == EXIT_OK
+    assert WriterCaseFile.read(out).withhold == [note]
+
+
+def test_a_directory_that_is_not_a_skill_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz"), "--skill", str(tmp_path / "none")]
+    assert f"--skill {tmp_path / 'none'}: no analyst skill directory" in _refused(args, capsys)

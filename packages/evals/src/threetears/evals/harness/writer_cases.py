@@ -276,6 +276,7 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
 
 #: The writer eval reads a case directory and mints each case; the export door (:mod:`.minting`) freezes one.
 __all__ = [
+    "WRITER_CASE_SUFFIX",
     "CaseMint",
     "ReasonedOn",
     "WithheldNote",

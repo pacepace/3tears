@@ -17,8 +17,9 @@ insights on the campaign's subject are read when present. Any other document is 
 it does not move with the clock; the freeze's two readings of the clock (the bundle's assembly and the freeze) are
 pinned to one instant, ``as_of``, so the bytes do not move either. Unnamed, the instant is the moment the campaign's
 evidence was complete: the latest of the campaign's creation and each run's completion (its creation, for a run that
-never completed). The insight ledger is read as it stood at that instant: an exported insight observed at or after it
-is left out of the store, so no insight a later analysis of this campaign minted reaches the case's bundle.
+never completed). An exported insight observed at or after that instant is left out of the store, so no insight a
+later analysis of this campaign minted reaches the case's bundle. Whether an insight kept is retracted is read from
+the export as it stands: its minting analysis's archived state, as exported.
 
 **The profile is code, and its declaration checks it.** The freeze calls the profile's live readers on every run: each
 sweepable's ``read`` (:meth:`~threetears.evals.kernel.host.sweepables.SweepableRegistry.resolve_levers`, from the
@@ -105,15 +106,14 @@ class MintManifest(EvalBaseModel):
         :ptype path: str | Path
         :return: The manifest.
         :rtype: MintManifest
-        :raises RefusedInput: The file does not read as a manifest.
-        :raises OSError: The file cannot be opened.
+        :raises RefusedInput: The file cannot be read, or does not read as a manifest.
         """
         source = Path(path)
         remedy = (
             'write {"campaign_id": "<id>", "reasoned_on": [{"doc_type": "<type>", "id": "<id>", "name": "<name>"}]}'
         )
         try:
-            content = json.loads(source.read_text(encoding="utf-8"))
+            content = json.loads(_text(source))
         except json.JSONDecodeError as unread:
             raise RefusedInput(f"{source} is not JSON: {unread}", remedy=remedy) from unread
         if not isinstance(content, dict):
@@ -196,13 +196,12 @@ def read_profile_file(path: str | Path) -> ProfileFile:
     :ptype path: str | Path
     :return: Its factory and its digest, each ``None`` when it names none.
     :rtype: ProfileFile
-    :raises RefusedInput: The file is not a JSON object, or either key is there and not a string.
-    :raises OSError: The file cannot be opened.
+    :raises RefusedInput: The file cannot be read, is not a JSON object, or either key is there and not a string.
     """
     source = Path(path)
     remedy = 'write {"built_by": "module:callable", "host_declarations_digest": "<64 hex>", ...}'
     try:
-        content = json.loads(source.read_text(encoding="utf-8"))
+        content = json.loads(_text(source))
     except json.JSONDecodeError as unread:
         raise RefusedInput(f"{source} is not JSON: {unread}", remedy=remedy) from unread
     if not isinstance(content, dict):
@@ -213,6 +212,14 @@ def read_profile_file(path: str | Path) -> ProfileFile:
             raise RefusedInput(f"{source}: {key} is a {type(value).__name__}, not a string", remedy=remedy)
     factory = built_by if isinstance(built_by, str) and ":" in built_by else None
     return ProfileFile(factory=factory, digest=digest if isinstance(digest, str) else None)
+
+
+def _text(source: Path) -> str:
+    """A file's text, or a refusal naming why it cannot be read."""
+    try:
+        return source.read_text(encoding="utf-8")
+    except OSError as unread:
+        raise RefusedInput(f"{source} cannot be read: {unread}", remedy="name a file this process can read") from unread
 
 
 def _folded(text: str) -> str:
@@ -257,12 +264,11 @@ def read_documents_file(path: str | Path) -> list[dict[str, Any]]:
     :ptype path: str | Path
     :return: The documents, in the file's order.
     :rtype: list[dict[str, Any]]
-    :raises RefusedInput: The file is not a JSON list of objects.
-    :raises OSError: The file cannot be opened.
+    :raises RefusedInput: The file cannot be read, or is not a JSON list of objects.
     """
     source = Path(path)
     try:
-        content = json.loads(source.read_text(encoding="utf-8"))
+        content = json.loads(_text(source))
     except json.JSONDecodeError as unread:
         raise RefusedInput(f"{source} is not JSON: {unread}", remedy=_EXPORT_REMEDY + ", as one JSON list") from unread
     if not isinstance(content, list) or not all(isinstance(document, dict) for document in content):
