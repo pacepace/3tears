@@ -226,8 +226,9 @@ def judged_heading(name: str) -> str:
 #: trials "passed" (the glossary's "passed"); a classifier's accuracy counts the trials it was right on.
 _READING_VERBS: dict[str, str] = {PASS_RATE: "passed", "Accuracy": "was right"}
 
-#: The verb any other counted reading takes: a pass/fail check's or score's trials it held on.
-_HELD = "held"
+#: The verb any other counted reading takes: a pass/fail check's or score's trials it was met on. Neutral, and no
+#: glossary term: "held" is a guardrail's decision (held or breached), so a lead's figure never borrows it.
+_MET = "was met"
 
 
 def reading_verb(heading: str) -> str:
@@ -239,7 +240,7 @@ def reading_verb(heading: str) -> str:
     :return: The verb.
     :rtype: str
     """
-    return _READING_VERBS.get(heading, _HELD)
+    return _READING_VERBS.get(heading, _MET)
 
 
 def one_figure_each(measures: Iterable[str], *, read: Iterable[str] = ()) -> list[str]:

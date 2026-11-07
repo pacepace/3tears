@@ -15,8 +15,9 @@ which a first-time reader took for "the same". The aspect page's verdict line an
 `verdict.verdict_line`'s text, and the exit line opens with its lead. A campaign page leading on a measure a contrast
 tested says the same decision and figures (`verdict.led_sentences`); one leading on an aspect's pass-rate row says
 the row's own, in the same form (`scorecard.row_sentence`, `scorecard.row_figures`). After the decision come the
-figures, a measure's in its own verb (only the pass rate's trials "passed"), and what the interval allows, its level
-left to the table's header: `Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was
+figures, a measure's in its own verb (only the pass rate's trials "passed"; a classifier's accuracy "was right
+on" them; any other counted reading "was met on" them, never "held", which is a guardrail's decision), and what the
+interval allows, its level left to the table's header: `Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was
 right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or
 17.8 better.` A row no worse than its margin but below the control on its whole interval opens on the scorecard
 cell's term, then says so (`qwen3.8-flash against September no worse than the margin, though below September. … The

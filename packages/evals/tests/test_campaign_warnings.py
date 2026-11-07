@@ -253,7 +253,7 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
     lead, warning = _bold(page)
     # The decision, then the figures it rests on.
     assert lead == (
-        f"**{right.heading}: {right.words}. Of 30 trials each, Right score held on 20 for current and 26 for same. "
+        f"**{right.heading}: {right.words}. Of 30 trials each, Right score was met on 20 for current and 26 for same. "
         "Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()

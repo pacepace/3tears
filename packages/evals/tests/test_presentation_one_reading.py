@@ -33,15 +33,23 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
-from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE
+from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
 from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report.words import PASS_RATE, judged_heading, reading_verb
+from threetears.evals.analysis.report.words import (
+    PASS_RATE,
+    campaign_arm_tags,
+    input_arm_tags,
+    judged_heading,
+    reader_arm_labels,
+    reading_verb,
+)
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 
+from packages.evals.tests.factories import analysed_aspect, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
 from packages.evals.tests.ladder_support import load, offline_copy
@@ -218,6 +226,15 @@ def test_a_measure_s_figure_takes_its_own_verb_and_only_the_pass_rate_passes(run
     for said in (rung.lead, rung.verdict, rung.first_line, rung.exit_line or ""):
         figures = said.split("apart. ", 1)[1]
         assert "Accuracy was right on" in figures and "passed" not in figures.split(" Over ", 1)[0]
+
+
+def test_any_other_counted_reading_s_verb_is_neutral_never_a_decision_word_of_the_glossary() -> None:
+    # "held" is a guardrail's decision (held or breached); a lead led by a pass/fail check or a judged dimension sits
+    # on a page whose guardrail table says it, so its figure takes a verb that decides nothing.
+    verb = reading_verb("No invented total score")
+    assert verb == "was met" and reading_verb("answer grounded (judged)") == verb
+    decisions = re.findall(r"\b[a-z]+\b", GLOSSARY["decision"].split(":", 1)[1])
+    assert "held" in decisions and not set(verb.split()) & set(decisions)
 
 
 def test_a_lead_under_a_margin_states_the_count_its_to_settle_row_states() -> None:
@@ -448,3 +465,24 @@ def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -
     assert any("persona holds character (judged)" in text for text in said)
     assert not [text for text in said if "persona.holds_character" in _CODE.sub("", text)]
     assert "| the pass rate |" not in campaign_report_markdown(page)
+
+
+def test_kairo_s_leads_name_every_arm_by_the_name_its_pages_print() -> None:
+    # The campaign page's lead and the stored analysis's listed lead name each arm as chunk 6's namer reads it at
+    # render time (the page by its charts' tags, the listing by its document's), never by its variant's own levels.
+    bundle = kairo_bundle()
+    page_names = reader_arm_labels(bundle, campaign_arm_tags(bundle.aspects, bundle.readings.control))
+    listed_names = reader_arm_labels(bundle, input_arm_tags(bundle))
+    (lead,) = _said(_kairo_page().blocks, "verdict", "answer")
+    stored = make_analysis(
+        campaign_id=bundle.campaign_id,
+        scope_id=bundle.scope_id,
+        aspects=[analysed_aspect(aspect) for aspect in bundle.aspects],
+        campaign_bundle=bundle.frame(),
+        observation_refs=bundle.run_ids,
+    )
+    listed = analysis_lead(stored, bundle=bundle).verdict
+    for said, names in ((lead.text, page_names), (listed, listed_names)):
+        assert set(names.values()) == {"September", "qwen3.8-flash", "1017"}
+        assert all(re.search(rf"(?<![\w.=]){re.escape(name)}(?![\w])", said) for name in names.values()), said
+        assert "model=" not in said, said

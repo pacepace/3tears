@@ -75,7 +75,7 @@ _RAW_KEY = re.compile(r"\{[a-z_.|]+\}")
 _HEADLINE = "The two token budgets read alike on invoice extraction."
 
 #: Code's verdict over the captured campaign: its question was declared and not tested.
-_CODE_VERDICT = "Declared question: not tested."
+_CODE_VERDICT = "The declared question is untested."
 
 
 def _captured() -> list[dict[str, Any]]:
@@ -374,8 +374,9 @@ def test_an_arm_a_person_labelled_is_listed_by_its_label() -> None:
 
     for printed in _lines(line):
         assert ELISION not in printed, printed
-    assert (
-        line.report.headline == "Declared question: nothing separated Extractor instructions or read twice from plain."
+    assert line.report.headline == (
+        "The evidence cannot tell Extractor instructions or read twice apart from plain on any reading the question "
+        "asks."
     )
     assert "Adopting Extractor instructions overrides the bar it misses on extract_invoice_fields." in (
         line.report.caveats
