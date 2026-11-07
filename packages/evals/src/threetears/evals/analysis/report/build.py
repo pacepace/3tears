@@ -144,6 +144,7 @@ from threetears.evals.analysis.report.words import (
     PASS_RATE,
     judged_heading,
     one_figure_each,
+    reading_verb,
     reading_heading,
 )
 from threetears.evals.analysis.reporting import self_judging_text
@@ -466,7 +467,7 @@ def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str 
             (verdict.control, *_side_reading(bundle, surface, comparison, comparison.control, ruler)),
             (verdict.arm, *_side_reading(bundle, surface, comparison, comparison.contrast, ruler)),
         ]
-        said = [_sides_sentence(sides, ruler)]
+        said = [_sides_sentence(sides, verdict.heading, comparison.reading)]
         low, high = (end * ruler.factor for end in comparison.interval)
         paired = (
             comparison.test == "paired" and not comparison.control.n_left_out and not comparison.contrast.n_left_out
@@ -488,16 +489,25 @@ def contrast_evidence(bundle: AnalysisContextBundle) -> Callable[[Verdict], str 
     return figures
 
 
-def _sides_sentence(sides: Sequence[tuple[str, str, int | None, int | None]], ruler: MeasureRuler) -> str:
-    """Both arms' figures in one sentence each arm the subject: ``Of 90 trials each, v1 passed 90 and v2 89.`` where
-    both are counted over as many trials; one sentence per arm where they differ; their means where the reading is
-    no rate (``The mean is 0.83 on v1 and 1 on v2.``)."""
+def _sides_sentence(sides: Sequence[tuple[str, str, int | None, int | None]], heading: str, reading: str) -> str:
+    """Both arms' figures in the reading's own words: the pass rate as what each arm passed (``Of 90 trials each, v1
+    passed 73 and v2 88.``); a counted measure as what it was on each arm's trials, in its own verb
+    (``Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.``), never "passed", which is the pass rate's;
+    one sentence per arm where they ran different trials; a reading that is no rate by its means."""
     (control, control_text, control_passed, control_trials), (arm, arm_text, arm_passed, arm_trials) = sides
-    if None in (control_passed, control_trials, arm_passed, arm_trials):
+    if control_passed is None or control_trials is None or arm_passed is None or arm_trials is None:
         return f"The mean is {control_text} on {control} and {arm_text} on {arm}."
+    if reading == "trial":
+        if control_trials == arm_trials:
+            return f"Of {control_trials} trials each, {control} passed {control_passed} and {arm} {arm_passed}."
+        return f"Of {control_trials} trials, {control} passed {control_passed}. Of {arm_trials}, {arm} passed {arm_passed}."
+    verb = reading_verb(heading)
     if control_trials == arm_trials:
-        return f"Of {control_trials} trials each, {control} passed {control_passed} and {arm} {arm_passed}."
-    return f"Of {control_trials} trials, {control} passed {control_passed}. Of {arm_trials}, {arm} passed {arm_passed}."
+        return f"Of {control_trials} trials each, {heading} {verb} on {control_passed} for {control} and {arm_passed} for {arm}."
+    return (
+        f"{heading} {verb} on {control_passed} of {control_trials} trials for {control}. {heading} {verb} on "
+        f"{arm_passed} of {arm_trials} for {arm}."
+    )
 
 
 def _amount(value: float, ruler: MeasureRuler, form: MoneyForm | None) -> str:

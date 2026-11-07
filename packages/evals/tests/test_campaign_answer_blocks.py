@@ -35,12 +35,12 @@ from packages.evals.tests.campaign_page_support import (
 )
 
 
-#: The lead on billing and tone: each aspect's decision, what each arm passed, what the interval allows.
+#: The lead on billing and tone: each aspect's decision, what Accuracy was on each arm, what the interval allows.
 _LEAD = (
-    "Accuracy on billing: v2 worse than production. Of 60 trials each, production passed 54 and v2 18. Over 20 "
-    "paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 better than "
-    "production. Of 60 trials each, production passed 18 and v2 57. Over 20 paired cases, the interval puts v2 "
-    "between 21.3 and 96.3 points better."
+    "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 "
+    "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
+    "paired cases, the interval puts v2 between 21.3 and 96.3 points better."
 )
 
 

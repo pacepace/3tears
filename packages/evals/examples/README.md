@@ -137,7 +137,7 @@ it, and reads v2 against v1 in one row
 ```text
 # v1 vs v2 · classify (invoices)
 "Does v2 read the currency an invoice charges in right more often than v1?"
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...

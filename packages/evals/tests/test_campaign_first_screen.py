@@ -53,12 +53,12 @@ _TITLE = "production vs v2 · billing, tone (support queue)"
 _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing."
 
 #: The lead a change over billing and tone opens on, on every page: each aspect's reading on its first measure, what
-#: each arm passed and what the interval allows.
+#: what Accuracy was on each arm and what the interval allows.
 _CHANGE_LEAD = (
-    "Accuracy on billing: v2 worse than production. Of 60 trials each, production passed 54 and v2 18. Over 20 "
-    "paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 better than "
-    "production. Of 60 trials each, production passed 18 and v2 57. Over 20 paired cases, the interval puts v2 "
-    "between 21.3 and 96.3 points better."
+    "Accuracy on billing: v2 worse than production. Of 60 trials each, Accuracy was right on 54 for production and "
+    "18 for v2. Over 20 paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 "
+    "better than production. Of 60 trials each, Accuracy was right on 18 for production and 57 for v2. Over 20 "
+    "paired cases, the interval puts v2 between 21.3 and 96.3 points better."
 )
 
 #: A change's first screen in Markdown, in order, each marker by the chunk that lays its part out. With no call

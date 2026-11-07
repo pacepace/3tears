@@ -206,6 +206,26 @@ def judged_heading(name: str) -> str:
     return f"{measure_name(name)} (judged)"
 
 
+#: The verb a counted reading's figure takes in a sentence, by its name as the page heads it: only the pass rate's
+#: trials "passed" (the glossary's "passed"); a classifier's accuracy counts the trials it was right on.
+_READING_VERBS: dict[str, str] = {PASS_RATE: "passed", "Accuracy": "was right"}
+
+#: The verb any other counted reading takes: a pass/fail check's or score's trials it held on.
+_HELD = "held"
+
+
+def reading_verb(heading: str) -> str:
+    """The verb a counted reading's figure takes in a sentence (:data:`_READING_VERBS`), never "passed" for a reading
+    that is not the pass rate.
+
+    :param heading: The reading, as the page heads it.
+    :ptype heading: str
+    :return: The verb.
+    :rtype: str
+    """
+    return _READING_VERBS.get(heading, _HELD)
+
+
 def one_figure_each(measures: Iterable[str], *, read: Iterable[str] = ()) -> list[str]:
     """``measures`` with each figure listed once: a classifier's per-trial label match is its accuracy, so where the
     accuracy is read the match is not listed under a second name.
@@ -353,6 +373,7 @@ __all__ = [
     "judged_heading",
     "one_figure_each",
     "reading_heading",
+    "reading_verb",
     "reading_name",
     "worded",
 ]

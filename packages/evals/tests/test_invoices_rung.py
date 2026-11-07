@@ -51,8 +51,8 @@ CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encodi
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired "
-    "cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
 )
 
 

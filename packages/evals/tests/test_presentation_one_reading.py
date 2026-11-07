@@ -35,7 +35,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE
 from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report.words import judged_heading
+from threetears.evals.analysis.report.words import PASS_RATE, judged_heading, reading_verb
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -108,10 +108,10 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 # --- one result, one sentence ----------------------------------------------------------------------------------------
 
 
-#: Rung 3's result as every surface says it: the decision, what each arm passed, what the interval allows.
+#: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired "
-    "cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
 )
 
 #: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
@@ -145,7 +145,8 @@ def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs:
     and how far the interval lets the candidate fall or rise, in points, its ends the contrasts table's."""
     rung = rungs["rung3"]
     lead = rung.lead
-    assert "v1 passed 90" in lead and "v2 89" in lead and "Of 90 trials each" in lead
+    # The figure is the measure's, in its own verb: the scoreboard's "passed" (73 and 88) is the pass rate's alone.
+    assert f"Of 90 trials each, Accuracy {reading_verb('Accuracy')} on 90 for v1 and 89 for v2." in lead
     assert "as much as 19.7 points worse or 17.8 better" in lead
     # No level the first screen leaves unexplained, no subject but an arm, no count of cases to settle without a margin.
     assert "%" not in lead and " It " not in lead and "settle" not in lead
@@ -190,16 +191,33 @@ def _kairo_page() -> CampaignReport:
     return build_campaign_report(campaign, bundle.readings, reports)
 
 
-def test_a_lead_says_an_arm_shown_worse_is_worse_whatever_its_margin_allows() -> None:
-    """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead says both,
-    September the subject of its own count."""
-    (lead,) = _said(_kairo_page().blocks, "verdict", "answer")
+def test_a_margin_lead_opens_on_its_cell_s_reading_then_says_an_arm_lies_below_the_control() -> None:
+    """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead opens on the
+    reading in the scorecard cell's own term, as 1017's does, then says it lies below September, September the
+    subject of its own count."""
+    page = _kairo_page()
+    (lead,) = _said(page.blocks, "verdict", "answer")
     assert lead.text == (
-        "Pass rate: qwen3.8-flash shown worse than September, but within the 15-point margin. Of 897 trials, September "
-        "passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 points "
-        "worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September passed 765 "
-        "and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better."
+        "Pass rate: qwen3.8-flash against September no worse than the margin, though below September. Of 897 trials, "
+        "September passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 "
+        "points worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September "
+        "passed 765 and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better."
     )
+    # Each arm's first clause carries its scorecard cell's reading term, word for word.
+    (rows,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "aspects"]
+    for row in rows.rows:
+        term = row["reading"].text
+        decision = f"Pass rate: {row['arm'].text} against September {term}"
+        assert decision in lead.text, (decision, lead.text)
+
+
+def test_a_measure_s_figure_takes_its_own_verb_and_only_the_pass_rate_passes(rungs: dict[str, _Surfaces]) -> None:
+    assert reading_verb("Accuracy") == "was right" and reading_verb(PASS_RATE) == "passed"
+    assert reading_verb("No invented total score") != "passed"
+    rung = rungs["rung3"]
+    for said in (rung.lead, rung.verdict, rung.first_line, rung.exit_line or ""):
+        figures = said.split("apart. ", 1)[1]
+        assert "Accuracy was right on" in figures and "passed" not in figures.split(" Over ", 1)[0]
 
 
 def test_a_lead_under_a_margin_states_the_count_its_to_settle_row_states() -> None:
@@ -211,7 +229,7 @@ def test_a_lead_under_a_margin_states_the_count_its_to_settle_row_states() -> No
         for row in settle.rows
         if row["shows"].text.startswith("no worse") and (found := re.match(r"(\d+) cases", row["observed"].text))
     ]
-    said = re.findall(r"settling it takes (\d+) cases in all, as To settle counts it\.", lead.text)
+    said = re.findall(r"settling it takes ([\d,]+) cases in all \(the To settle table\)\.", lead.text)
     assert said == counts and counts[:2] == ["233", "31"]
 
 

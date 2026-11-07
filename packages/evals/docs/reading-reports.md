@@ -203,7 +203,7 @@ page opens on its own first screen; the invoices example (rung 3) renders this (
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 (control) vs v2 · 6 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -223,7 +223,7 @@ the title. A declared triage campaign whose v2 broke its 5-point floor renders:
 
 v1 (control) vs v2 · 18 Oct 2026 · 20 cases × 2 repeats
 
-**Accuracy: v2 worse than v1. Of 40 trials each, v1 passed … and v2 …. Over 20 paired cases, the interval puts v2 between … and … points worse.**
+**Accuracy: v2 worse than v1. Of 40 trials each, Accuracy was right on … for v1 and … for v2. Over 20 paired cases, the interval puts v2 between … and … points worse.**
 
 **Adopting v2 overrides the 5-point floor it breaks on routing.**
 ```
@@ -245,8 +245,8 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
   `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
-  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what each arm passed (`Of 90 trials
-  each, v1 passed 90 and v2 89.`) and what the interval allows the candidate to be (`Over 30 paired cases, the
+  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
+  (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
   interval allows v2 to be as much as 19.7 points worse or 17.8 better.`, its level the table's header), then what
   else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an

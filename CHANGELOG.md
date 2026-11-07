@@ -14,13 +14,14 @@ and `cannot tell apart` in a table cell, defined once in the glossary (`style.CA
 which a first-time reader took for "the same". The aspect page's verdict line and the quick print's first line print
 `verdict.verdict_line`'s text, and the exit line opens with its lead. A campaign page leading on a measure a contrast
 tested says the same decision and figures (`verdict.led_sentences`); one leading on an aspect's pass-rate row says
-the row's own, in the same form (`scorecard.row_sentence`, `scorecard.row_figures`). After the decision each arm is
-the subject of its figures and the interval says what it allows, its level left to the table's header: `Accuracy:
-the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the
-interval allows v2 to be as much as 19.7 points worse or 17.8 better.` A row shown worse within its margin says both
-(`qwen3.8-flash shown worse than September, but within the 15-point margin. … The interval puts qwen3.8-flash between
-3.4 and 10.8 points worse.`), and a row left unclear against its margin states its To settle row's count (`If the arms
-differ as observed, settling it takes 233 cases in all, as To settle counts it.`); no lead counts cases otherwise. One
+the row's own, in the same form (`scorecard.row_sentence`, `scorecard.row_figures`). After the decision come the
+figures, a measure's in its own verb (only the pass rate's trials "passed"), and what the interval allows, its level
+left to the table's header: `Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was
+right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or
+17.8 better.` A row no worse than its margin but below the control on its whole interval opens on the scorecard
+cell's term, then says so (`qwen3.8-flash against September no worse than the margin, though below September. … The
+interval puts qwen3.8-flash between 3.4 and 10.8 points worse.`), and a row left unclear against its margin states its To settle row's count (`If the arms
+differ as observed, settling it takes 233 cases in all (the To settle table).`); no lead counts cases otherwise. One
 arm: `agent passed 31 of 36 trials on 12 cases.`, the aspect page and the print adding `Cases that failed a trial:
 r08, r09, r10.`. The aspect page's verdict drops `Declared question:`. An undecided guardrail reads what it means for
 the decision first, in the verdict line, the aspect page's contrasts and the campaign's warning alike (`v2 may do worse

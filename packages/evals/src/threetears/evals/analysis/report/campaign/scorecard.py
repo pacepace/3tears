@@ -204,7 +204,7 @@ def row_figures(row: AspectReading, control: str) -> str:
     need = row.projection.if_observed if row.projection is not None else None
     if row.reading == "unclear" and row.margin is not None and need is not None and need.kind == "more":
         said.append(
-            f"If the arms differ as observed, settling it takes {need.cases} cases in all, as To settle counts it."
+            f"If the arms differ as observed, settling it takes {need.cases:,} cases in all (the To settle table)."
         )
     return " ".join(said)
 
@@ -234,9 +234,14 @@ def row_sentence(row: AspectReading, control: str, *, against: bool = True) -> s
     if _undecided(row):
         return cannot_tell_apart([row.arm_label], control)
     interval, _ = _shown_interval(row)
-    if row.reading == "within_margin" and row.margin is not None and interval is not None and interval[1] < 0:
-        # Worse than the control on its whole interval, and no worse than the margin: both are what it read.
-        return f"{row.arm_label} shown worse than {control}, but within the {format_number(row.margin)}-point margin"
+    said = (
+        f"{row.arm_label} against {control} {READING_WORDS[row.reading]}"
+        if against
+        else f"{row.arm_label} {READING_WORDS[row.reading]}"
+    )
+    if row.reading == "within_margin" and interval is not None and interval[1] < 0:
+        # The reading in its own term first; that its whole interval lies below the control is the detail after it.
+        return f"{said}, though below {control}"
     return (
         f"{row.arm_label} against {control} {READING_WORDS[row.reading]}"
         if against

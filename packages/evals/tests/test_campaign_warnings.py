@@ -253,8 +253,8 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
     lead, warning = _bold(page)
     # The decision, then the figures it rests on.
     assert lead == (
-        f"**{right.heading}: {right.words}. Of 30 trials each, current passed 20 and same 26. Over 30 pa"
-        "ired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+        f"**{right.heading}: {right.words}. Of 30 trials each, Right score held on 20 for current and 26 for same. "
+        "Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
     )
     assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
@@ -321,8 +321,8 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     lead, warning = _bold(result.page)
     assert accuracy.heading == "Accuracy"
     assert lead == (
-        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, current passed 20 and same 26. Over 3"
-        "0 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
+        f"**{accuracy.heading}: {accuracy.words}. Of 30 trials each, Accuracy was right on 20 for current and 26 for "
+        "same. Over 30 paired cases, the interval puts same between 0.0129 and 43.3 points better.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same may do worse than current on the No secret score guardrail")
