@@ -44,7 +44,8 @@ import os
 import re
 import sys
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -585,6 +586,7 @@ class Calibration:
     :ivar results: Every judge arm's results.
     :ivar arms: What each judge arm ran.
     :ivar readings: The arms read per judge and criterion.
+    :ivar read_at: When the run began, in UTC.
     """
 
     found: list[Page]
@@ -594,12 +596,14 @@ class Calibration:
     results: list[EvalResult]
     arms: list[Arm]
     readings: JudgeKindReadings
+    read_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def summary(self, *, dry: bool) -> dict[str, Any]:
         """What the run found, as JSON: the pages, the rounds left out, the case sets, the arms and the agreement rows."""
         rows = agreement_rows(self.readings)
         return {
             "dry": dry,
+            "read_at": _iso(self.read_at),
             "pages": [{"run": p.run, "round": p.round, "total": p.total, "author": p.author} for p in self.found],
             "left_out": [{"run": out.run, "round": out.round, "why": out.why} for out in self.left],
             "case_sets": {
@@ -625,6 +629,7 @@ async def calibration(*, dry: bool, k: int, cap_usd: float, judges: Sequence[str
     :param judges: The live judges.
     :return: What it found.
     """
+    read_at = datetime.now(UTC)
     found, left = await pages()
     arms = (DRY_JUDGE,) if dry else tuple(judges)
     clients = judge_clients(dry=dry, judges=arms)
@@ -638,7 +643,7 @@ async def calibration(*, dry: bool, k: int, cap_usd: float, judges: Sequence[str
             landed, arm = await judge_arm(host, report, judge=judge, k=k, cap_usd=None if dry else caps[name])
             results.extend(landed)
             ran.append(arm)
-    return Calibration(found, left, host, frozen, results, ran, judge_kind_readings(results))
+    return Calibration(found, left, host, frozen, results, ran, judge_kind_readings(results), read_at)
 
 
 def judge_clients(*, dry: bool, judges: Sequence[str]) -> Any:
@@ -690,6 +695,9 @@ def anchor_rows(
                 "trial": result.k_iteration,
                 "score": None if trial is None else trial.score,
                 "served_model": None if trial is None else trial.served_model,
+                "temperature": None if trial is None else trial.judge_temperature,
+                "judge_config_id": None if trial is None else trial.judge_config_id,
+                "criterion_digest": None if trial is None else trial.criterion_digest,
                 "cost_usd": result.cost_usd,
             }
         )
@@ -795,6 +803,8 @@ class Reread:
     :ivar rows: This read's anchor rows.
     :ivar readings: This read, per criterion, for the agreement with the Opus editor.
     :ivar arm: What the judge arm ran.
+    :ivar k: The trials asked per case.
+    :ivar read_at: When the read began, in UTC.
     """
 
     judge: str
@@ -802,6 +812,8 @@ class Reread:
     rows: list[dict[str, Any]]
     readings: JudgeKindReadings
     arm: Arm
+    k: int
+    read_at: datetime
 
     @property
     def before(self) -> AnchorRead | None:
@@ -854,7 +866,8 @@ class Reread:
             )
         else:
             yield (
-                f"A reread asks {self.judge} the anchor cases again and compares it with its own stored read: it "
+                f"A reread asks {self.judge} the anchor cases again and compares it with its own stored read of "
+                f"{_when(self.stored.get('read_at'))}: it "
                 f"detects a judge or version shift, {purpose}."
             )
         yield ""
@@ -918,17 +931,57 @@ class Reread:
         if self.arm.stopped:
             yield f"This read stopped early: {self.arm.stopped}."
 
-    def record(self, of: Path) -> dict[str, Any]:
-        """What ``--out`` writes: this read, in the shape a later reread compares with."""
+    def settings(self) -> dict[str, Any]:
+        """The judge as this read sent it: the model asked, and every served model, temperature, prompt identity
+        (``judge_config_id``, a ``builtin:`` id naming the built-in prompt by its wording) and criterion digest its
+        trials recorded, with the trials asked per case."""
+
+        def seen(key: str) -> list[Any]:
+            return sorted({row[key] for row in self.rows if row[key] is not None}, key=str)
+
+        return {
+            "model": self.judge,
+            "served_models": seen("served_model"),
+            "temperatures": seen("temperature"),
+            "judge_config_ids": seen("judge_config_id"),
+            "criterion_digests": seen("criterion_digest"),
+            "trials_per_case": self.k,
+        }
+
+    def file_name(self) -> str:
+        """The name ``--out`` writes this read under: its UTC time first, so the newest by name is the newest read."""
+        return f"{self.read_at:%Y%m%dT%H%M%SZ}-reread.json"
+
+    def record(self, of: Path, at: Path) -> dict[str, Any]:
+        """What ``--out`` writes: this read, in the shape a later reread compares with.
+
+        :param of: The stored record this read was compared with.
+        :param at: The directory the record is written to, which ``reread_of`` is relative to.
+        """
         arm = {"judge": self.arm.judge, "case_set": PAIR_SET, "cases": self.arm.cases, "trials": self.arm.trials}
         return {
-            "reread_of": str(of),
+            "read_at": _iso(self.read_at),
+            "reread_of": os.path.relpath(of.resolve(), at.resolve()),
+            "reread_of_sha256": hashlib.sha256(of.read_bytes()).hexdigest(),
+            "held_within": HELD_WITHIN,
+            "judge_settings": self.settings(),
             "case_sets": {PAIR_SET: {"cases": self.arm.cases}},
             "arms": [{**arm, "stopped": self.arm.stopped}],
             "agreement_with_the_opus_editor": agreement_rows(self.readings),
             "anchor": self.rows,
             "readout": "\n".join(self.lines()),
         }
+
+
+def _iso(at: datetime) -> str:
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _when(read_at: str | None) -> str:
+    """A stored read's date as the reread prints it, or that the record holds none (an older record)."""
+    if read_at is None:
+        return "an unrecorded date"
+    return f"{datetime.fromisoformat(read_at).astimezone(UTC):%Y-%m-%d %H:%M} UTC"
 
 
 async def reread(
@@ -943,10 +996,12 @@ async def reread(
     :param k: Trials per case.
     :param cap_usd: The arm's ceiling on landed spend; ``None`` for a judge that spends nothing.
     """
+    read_at = datetime.now(UTC)
     host = await asyncio.to_thread(lambda: toyhost_host(clients=clients))
     report = await asyncio.to_thread(_freeze_set, host, PAIR_SET, pair_cases(found))
     results, arm = await judge_arm(host, report, judge=judge, k=k, cap_usd=cap_usd)
-    return Reread(judge, stored, anchor_rows(results, report, found), judge_kind_readings(results), arm)
+    rows = anchor_rows(results, report, found)
+    return Reread(judge, stored, rows, judge_kind_readings(results), arm, k, read_at)
 
 
 #: What ``--reread --help`` says the mode does.
@@ -958,7 +1013,9 @@ REREAD_HELP: Final = (
     "labels, so it detects a judge or version shift, never whether the judge is right; it names a served-model change "
     "between the reads as the likely cause, and prints agreement with the Opus editor's rubric totals as a second "
     "line. Before a live judge is called it prints the calls and their cost at the record's own cost per call. RECORD "
-    "is only read: --out writes the new read to a new directory, in the shape the next reread compares with."
+    "is only read: --out writes the new read to a new directory, named by its UTC time and carrying that time, the "
+    "tolerance in force, the judge's settings as sent and its source relative to itself, in the shape the next reread "
+    "compares with."
 )
 
 
@@ -1009,8 +1066,8 @@ def main(argv: Sequence[str]) -> int:
         cap = None if options.dry else options.cap_usd
         read = asyncio.run(_reread_run(stored, judge=judge, clients=clients, k=options.k, cap_usd=cap))
         if options.out is not None:
-            record = json.dumps(read.record(options.reread), indent=2, default=str)
-            (options.out / "reread.json").write_text(record, encoding="utf-8")
+            record = json.dumps(read.record(options.reread, options.out), indent=2, default=str)
+            (options.out / read.file_name()).write_text(record, encoding="utf-8")
         print("\n".join(read.lines()))
         return 0
     found = asyncio.run(

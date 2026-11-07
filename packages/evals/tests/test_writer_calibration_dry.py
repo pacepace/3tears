@@ -183,6 +183,7 @@ def test_the_summary_the_live_run_writes_carries_every_arm_row_and_left_out_roun
     assert all(f"| {run} round {round_} |" in summary["readout"] for run, round_ in _UNREPLAYED)
     # The anchor a later reread compares with: the pair arm's trials alone, the absolute set's left out, one row per
     # pair case.
+    assert summary["read_at"].endswith("Z")
     anchor = summary["anchor"]
     assert len(anchor) == 42 and {row["judge"] for row in anchor} == {DRY_JUDGE}
     assert [(row["run"], row["first"], row["second"]) for row in anchor] == [
