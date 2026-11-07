@@ -25,8 +25,9 @@ read from the goal grammar's own sets (`ACTION_BUILTINS`, `PATH_ROOTS`, `WORLD_R
 is one. A production campaign headed a table, and led its page, with a four-line `call_count(...) >= 1 or ...`. The
 page's glossary defines each check's name by its expression, whole, on one line, once ("Goal check: The goal check
 `( call_count(...) >= 1 or ... )`, which code runs on every trial."), and says which aspect a name holds on where one
-name stands for different expressions; a check's entry has an id of its own (`g-check-...`). A check's column
-header links its entry, and every link to a check carries one hover
+name stands for different expressions; a check's entry has an id of its own (`g-check-...`), which its Markdown row
+carries too. A check's column header links its own row, the one link that lands inside the closed Glossary, and every
+link to a check carries one hover
 ("Code runs this goal check on every trial; the glossary states it in full."), never the host's text. The Markdown
 glossary sets an expression in a span no backtick inside it can close. The Design & provenance `Checks` legend this
 replaces is gone. A column whose aspects name one check apart is headed by each name (`Total right / Sum right

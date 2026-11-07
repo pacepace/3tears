@@ -66,11 +66,17 @@ LONG_NAME, SHORT_NAME = "Goal check", "Reply cites policy check"
 #: What marks text as a check's expression rather than a name: a call, a comparison or a dotted path.
 _EXPRESSION = re.compile(r"call_count\(|>=|==|reply\.cites")
 
+
+def _anchor(name: str) -> str:
+    """A check's row id, as the page's glossary gives it."""
+    return "g-check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+
+
 #: The glossary's entry for each check, in Markdown and in HTML.
 _ENTRIES = {
     "markdown": [
-        f"- **{LONG_NAME}**: The goal check `{LONG_LINE}`, which code runs on every trial.",
-        f"- **{SHORT_NAME}**: The goal check `{SHORT}`, which code runs on every trial.",
+        f'- <a id="{_anchor(LONG_NAME)}"></a>**{LONG_NAME}**: The goal check `{LONG_LINE}`, which code runs on every trial.',
+        f'- <a id="{_anchor(SHORT_NAME)}"></a>**{SHORT_NAME}**: The goal check `{SHORT}`, which code runs on every trial.',
     ],
     "html": [
         f'<dt id="g-check-goal-check">{LONG_NAME}</dt><dd>The goal check <code>{escape(LONG_LINE)}</code>, '
@@ -335,7 +341,10 @@ def test_a_hostile_expression_in_the_glossary_is_code_in_both_forms() -> None:
     assert check_names([HOSTILE], {}) == {HOSTILE: "Goal check"}, "the literal is no identifier, so it names nothing"
     page = _measurement(("billing", (HOSTILE, SHORT)))
     markdown = campaign_report_markdown(page)
-    assert f"- **Goal check**: The goal check {code_span(HOSTILE)}, which code runs on every trial." in markdown
+    assert (
+        f'- <a id="g-check-goal-check"></a>**Goal check**: The goal check {code_span(HOSTILE)}, which code runs on every trial.'
+        in markdown
+    )
     unquoted = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)", "", markdown)
     assert "javascript:" not in unquoted and "<img" not in unquoted and "](" not in unquoted
     said = campaign_report_html(page)
@@ -410,8 +419,8 @@ def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form:
     if form == "markdown":
         assert "### Checks" in body
         assert (
-            "- **Field accuracy check**: The goal check `field_accuracy >= 0.92`, which code runs on every trial."
-            in body
+            '- <a id="g-check-field-accuracy-check"></a>**Field accuracy check**: The goal check `field_accuracy >= 0.92`, '
+            "which code runs on every trial." in body
         )
     else:
         assert '<dt id="g-check-field-accuracy-check">Field accuracy check</dt>' in body
@@ -462,3 +471,35 @@ def test_a_production_check_is_named_by_its_consequent_or_falls_back_to_a_goal_c
     expression: str, name: str
 ) -> None:
     assert check_names([expression], {}) == {expression: name}
+
+
+def _check_hrefs(said: str) -> list[str]:
+    """Every link a check's name carries on an HTML page, by the one hover every such link has."""
+    return re.findall(rf'<a href="#([^"]+)" title="{re.escape(escape(CHECK_LINK_TITLE))}">', said)
+
+
+@pytest.mark.parametrize("page", ["campaign", "measurement", "written"])
+def test_every_check_link_lands_on_its_own_row(page: str) -> None:
+    if page == "written":
+        said, _ = _written("html")
+    elif page == "measurement":
+        said = campaign_report_html(_measurement(("billing", (LONG, SHORT)), ("refunds", (SHORT,))))
+    else:
+        said = _rendered("campaign", "html")
+    hrefs = _check_hrefs(said)
+    assert hrefs, "the page links a check's name"
+    rows = set(re.findall(r'<dt id="(g-check-[^"]+)"', said))
+    assert set(hrefs) <= rows, f"a check's link lands nowhere: {sorted(set(hrefs) - rows)}"
+    assert "#glossary" not in hrefs
+
+
+@pytest.mark.parametrize("page", ["campaign", "written"])
+def test_a_markdown_check_row_carries_the_id_its_html_row_has(page: str) -> None:
+    said = _written("markdown")[0] if page == "written" else _rendered("campaign", "markdown")
+    html_rows = set(
+        re.findall(
+            r'<dt id="(g-check-[^"]+)"', _written("html")[0] if page == "written" else _rendered("campaign", "html")
+        )
+    )
+    md_rows = set(re.findall(r'^- <a id="(g-check-[^"]+)"></a>\*\*', said, flags=re.M))
+    assert md_rows and md_rows == html_rows

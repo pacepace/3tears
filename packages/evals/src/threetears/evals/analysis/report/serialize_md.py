@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.md_parts import (
     table_lines,
 )
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
+from threetears.evals.analysis.report.html_parts import check_anchor
 from threetears.evals.analysis.style import GLOSSARY, check_definition
 from threetears.evals.analysis.report.verdict import cause_short
 
@@ -156,9 +157,12 @@ def _glossary_lines(report: Report | CampaignReport, *, defined: Collection[str]
     """The page's glossary: each term it links, then each goal check's name, its expression set as a span no backtick
     inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; none of the checks
     ``defined`` names, which a report document's own Checks list defines; nothing when the page defines none."""
-    entries = [(term, GLOSSARY[term]) for term in report.terms]
+    entries = [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
+    # A check's row carries the id its HTML row has, so a link to it lands there in either form.
     entries += [
-        (name, check_definition(said, span=code_span)) for name, said in report.check_glossary if name not in defined
+        f'- <a id="{check_anchor(name)}"></a>**{name}**: {check_definition(said, span=code_span)}'
+        for name, said in report.check_glossary
+        if name not in defined
     ]
     if not entries:
         return []
@@ -166,7 +170,7 @@ def _glossary_lines(report: Report | CampaignReport, *, defined: Collection[str]
         "",
         f"## {SECTION_TITLES['glossary']}",
         "",
-        *(f"- **{term}**: {definition}" for term, definition in entries),
+        *entries,
     ]
 
 

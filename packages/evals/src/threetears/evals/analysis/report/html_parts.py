@@ -758,10 +758,14 @@ def _check_header(name: str, found: re.Match[str]) -> str:
     return f"{found[1]}{term_link(name, found[2])}{found[3]}"
 
 
+#: The namespace of a goal check's glossary row's id (:func:`check_anchor`).
+CHECK_ANCHOR_PREFIX = "g-check-"
+
+
 def check_anchor(name: str) -> str:
     """A goal check's glossary entry's id: the checks' own namespace, so a declared name that is a term of art's words
     (``Outcome``) never repeats the term's id."""
-    return f"g-check-{glossary_slug(name)}"
+    return f"{CHECK_ANCHOR_PREFIX}{glossary_slug(name)}"
 
 
 def inline_html(text: str) -> str:
@@ -818,6 +822,7 @@ def _arm_chip(tag: str, color: str | None, markup: str) -> str:
 
 
 __all__ = [
+    "CHECK_ANCHOR_PREFIX",
     "KIT_JS",
     "TRIAL_ID",
     "chart_html",

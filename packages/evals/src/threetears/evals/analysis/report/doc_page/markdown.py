@@ -40,6 +40,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     NEXT_TITLE,
     OMITTED_TITLE,
 )
+from threetears.evals.analysis.report.html_parts import check_anchor
 from threetears.evals.analysis.report.md_parts import (
     code_span,
     inert,
@@ -148,7 +149,8 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
             f"### {CHECKS_TITLE}",
             "",
             *(
-                f"- **{one_line(check.name)}**: {check_definition([(check.expression, None)], span=code_span)}"
+                f'- <a id="{check_anchor(check.name)}"></a>**{one_line(check.name)}**: '
+                f"{check_definition([(check.expression, None)], span=code_span)}"
                 for check in page.checks
             ),
         ]

@@ -84,6 +84,7 @@ from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
     TRIAL_ID,
     chart_html,
+    CHECK_ANCHOR_PREFIX,
     check_anchor,
     check_header_links,
     code_html,
@@ -663,7 +664,8 @@ def _links_in_sight(page: str) -> str:
     reader has not opened holds it, else the nearest place around it outside every such fold — a closed section's own
     ``<section>``, a closed table's own ``<details>``, an aspect's fold's ``<section>`` — whose heading every browser
     shows. No link may land inside a closed ``<details>``: a browser that does not open it on its own would leave the
-    reader where they were, and nothing on the page opens it. A trial id naming a trial the page does not hold
+    reader where they were, and nothing on the page opens it. The one exception is a link to a goal check's row
+    (``g-check-…``), which lands on the row: what a reader following a check's name wants is its expression. A trial id naming a trial the page does not hold
     is not linked.
 
     The links are the parser's own, rewritten where it found them, so nothing else has to agree with it on what a link
@@ -711,6 +713,10 @@ def _redrawn(page: str, link: _Link, outline: _Outline) -> tuple[str, int]:
     if page[link.start : after] != link.tag:
         raise ValueError(f"the link to #{link.target} is not where the outline read it")
     chain = outline.places.get(link.target)
+    if chain is not None and link.target.startswith(CHECK_ANCHOR_PREFIX):
+        # A goal check's name links its own row, the one place its expression stands: a reader following a header
+        # wants that row, and the glossary's heading names no check. The one link that may land inside a closed fold.
+        return link.tag, after
     if chain is None:
         text = page[after : link.end] if link.end is not None else ""
         # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote

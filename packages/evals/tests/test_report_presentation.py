@@ -412,7 +412,8 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         defined = re.findall(r'<dt id="g-([a-z0-9-]+)">', page)
         assert linked and linked | checks == set(defined) and len(defined) == len(set(defined))
         assert not linked & checks
-        assert 'href="#g-' not in page
+        # The one link into the closed glossary is a goal check's to its own row (coordinator ruling, 2026-11-07).
+        assert 'href="#g-' not in page.replace('href="#g-check-', "")
         assert set(report.terms) <= set(GLOSSARY)
         assert page.index('id="glossary"') > page.index('id="methods"'), "the glossary folds last"
 
@@ -729,7 +730,11 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     markdown = report_markdown(report)
     assert "Pass rate of" not in markdown and "call count(" not in markdown
     assert f"- `{name}`: `{expression}`" in markdown
-    assert f"- **{name}**: The goal check `{expression}`, which code runs on every trial." in markdown
+    anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    assert (
+        f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{expression}`, which code runs on every trial.'
+        in markdown
+    )
 
 
 async def test_what_a_trial_quotes_leaves_the_document_s_structure_intact(g2_ruled: tuple[Result, Report]) -> None:
