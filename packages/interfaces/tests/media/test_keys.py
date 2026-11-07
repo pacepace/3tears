@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.media.contracts.keys import SHARED_PREFIX, build_object_key, sanitize_segment
+from threetears.interfaces.media.keys import SHARED_PREFIX, build_object_key, sanitize_segment
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")

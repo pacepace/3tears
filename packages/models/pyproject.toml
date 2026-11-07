@@ -12,7 +12,7 @@ authors = [{name = "pace"}]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-    "3tears-media-contracts>=0.92.0,<0.93.0",
+    "3tears-interfaces>=0.92.0,<0.93.0",
     "3tears-observe>=0.92.0,<0.93.0",
     "3tears-tool-schema>=0.92.0,<0.93.0",
     "pydantic>=2.0",
@@ -78,7 +78,7 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
-3tears-media-contracts = { workspace = true }
+3tears-interfaces = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-langgraph = { workspace = true }
 3tears-tool-schema = { workspace = true }

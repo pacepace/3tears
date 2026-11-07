@@ -2,7 +2,7 @@
 
 Structured results cross the tool border under one named key,
 :data:`SEARCH_RESULTS_METADATA_KEY`, following the
-``OBJECT_HANDLE_METADATA_KEY`` precedent in ``media-contracts``: an
+``OBJECT_HANDLE_METADATA_KEY`` precedent in ``threetears.interfaces.media``: an
 explicit border projection (``to_metadata`` / ``from_metadata``), never an
 implicit dump at the call site. The payload embeds ``schema_version``
 (D13); changes are additive within a family minor, and a reader meeting a

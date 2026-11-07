@@ -25,7 +25,7 @@ classifiers = [
 # family leaves. Provider adapters are pure logic over the injected transport
 # and ship in the base package; anything with weight rides an extra.
 dependencies = [
-    "3tears-media-contracts>=0.92.0,<0.93.0",
+    "3tears-interfaces>=0.92.0,<0.93.0",
     "3tears-observe>=0.92.0,<0.93.0",
     "pydantic>=2.0",
     "pydantic-core",  # to_jsonable_python, PydanticUndefined (search.contracts._canonical); pydantic pins it
@@ -51,5 +51,5 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
-3tears-media-contracts = { workspace = true }
+3tears-interfaces = { workspace = true }
 3tears-observe = { workspace = true }

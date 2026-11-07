@@ -33,6 +33,7 @@ stale and must go.
 from __future__ import annotations
 
 import ast
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +64,61 @@ _SOURCE_ROOTS = tuple(
         if (path.parent / "pyproject.toml").is_file()
     )
 )
+
+#: modules this release moved, as (module path at the baseline tag, module path now). The 3tears-interfaces
+#: consolidation folded 3tears-media-contracts and 3tears-access-contracts into one package under new import
+#: paths, renaming no name. A name public at the baseline under the mapped old module, with the same name, was
+#: released before and is not new; every other name in the new modules answers to the gate as usual.
+_MOVED_MODULES: tuple[tuple[str, str], ...] = (
+    (
+        "packages/media-contracts/src/threetears/media/contracts/__init__.py",
+        "packages/interfaces/src/threetears/interfaces/media/__init__.py",
+    ),
+    (
+        "packages/media-contracts/src/threetears/media/contracts/protocols.py",
+        "packages/interfaces/src/threetears/interfaces/media/protocols.py",
+    ),
+    (
+        "packages/media-contracts/src/threetears/media/contracts/facets.py",
+        "packages/interfaces/src/threetears/interfaces/media/facets.py",
+    ),
+    (
+        "packages/media-contracts/src/threetears/media/contracts/keys.py",
+        "packages/interfaces/src/threetears/interfaces/media/keys.py",
+    ),
+    (
+        "packages/access-contracts/src/threetears/access/contracts/__init__.py",
+        "packages/interfaces/src/threetears/interfaces/access.py",
+    ),
+    (
+        "packages/access-contracts/src/threetears/access/contracts/categories.py",
+        "packages/interfaces/src/threetears/interfaces/access.py",
+    ),
+)
+
+
+def _public_at_baseline(
+    module: str,
+    name: str,
+    before: dict[str, frozenset[str] | set[str]],
+    moves: tuple[tuple[str, str], ...],
+) -> bool:
+    """whether ``name`` was public at the baseline in ``module``, or in a module ``moves`` maps to it.
+
+    :param module: the exporting module now
+    :ptype module: str
+    :param name: the name
+    :ptype name: str
+    :param before: module path -> public names, at the baseline tag, across every source root
+    :ptype before: dict[str, frozenset[str] | set[str]]
+    :param moves: (module path at the baseline, module path now) pairs
+    :ptype moves: tuple[tuple[str, str], ...]
+    :return: whether the name was already released there
+    :rtype: bool
+    """
+    if name in before.get(module, set()):
+        return True
+    return any(new == module and name in before.get(old, set()) for old, new in moves)
 
 
 @dataclass(frozen=True)
@@ -138,15 +194,19 @@ def scan() -> _Scan:
     added: set[tuple[str, str]] = set()
     uses: dict[str, frozenset[str]] = {}
     defines: dict[str, frozenset[str]] = {}
+    # a moved module's baseline surface lives under its old source root, which no longer exists in the tree
+    moved_roots = {old.partition("/src/")[0] + "/src" for old, _ in _MOVED_MODULES}
+    before: dict[str, frozenset[str] | set[str]] = {}
+    for source_root in sorted(set(_SOURCE_ROOTS) | moved_roots):
+        before.update(surface_at(_REPO_ROOT, baseline, source_root).modules)
     for source_root in _SOURCE_ROOTS:
         now = surface_now(_REPO_ROOT, source_root)
-        before = surface_at(_REPO_ROOT, baseline, source_root)
         for module, names in now.modules.items():
             for name in names:
                 if "." in name or " " in name:
                     continue
                 exported.add((module, name))
-                if name not in before.modules.get(module, set()):
+                if not _public_at_baseline(module, name, before, _MOVED_MODULES):
                     added.add((module, name))
         for path in sorted((_REPO_ROOT / source_root).rglob("*.py")):
             relative = path.relative_to(_REPO_ROOT).as_posix()
@@ -211,6 +271,36 @@ class TestPublicApiHasACaller:
             baseline="v0.0.0",
         )
         assert not unadopted.has_caller(enforcement, "run_demo")
+
+    def test_a_moved_name_is_not_new_and_a_new_name_in_a_moved_module_still_is(self) -> None:
+        """the move map excuses only a name released under the mapped old module, under the same name."""
+        old = "packages/old/src/threetears/old/contracts.py"
+        new = "packages/new/src/threetears/new/contracts.py"
+        before: dict[str, frozenset[str] | set[str]] = {old: frozenset({"Moved"})}
+        moves = ((old, new),)
+        assert _public_at_baseline(new, "Moved", before, moves)
+        assert not _public_at_baseline(new, "BrandNew", before, moves)
+        # without the map entry the same move reads as new, and a map for another module excuses nothing
+        assert not _public_at_baseline(new, "Moved", before, ())
+        assert not _public_at_baseline(new, "Moved", before, ((old, "packages/other/src/threetears/other.py"),))
+
+    def test_every_moved_module_is_a_real_move(self, scan: _Scan) -> None:
+        """guard the guard: a map entry with a mistyped path would excuse nothing, silently.
+
+        The old path is gone from the tree and was in history at or before the baseline (still true once a
+        later tag is the baseline); the new path is in the tree.
+        """
+        for old, new in _MOVED_MODULES:
+            assert not (_REPO_ROOT / old).exists(), f"{old} is still in the tree; it did not move"
+            assert (_REPO_ROOT / new).is_file(), f"{new} is not in the tree"
+            history = subprocess.run(
+                ["git", "rev-list", "-1", scan.baseline, "--", old],
+                cwd=_REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert history.stdout.strip(), f"{old} never existed at or before {scan.baseline}"
 
     def test_every_name_added_since_the_last_release_has_a_caller_or_names_one(self, scan: _Scan) -> None:
         ledger = _ledger()

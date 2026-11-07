@@ -4,7 +4,7 @@ The framework-aligned successor to the old ``tool_node`` media-catalog seam (the
 hand-rolled node's ``_maybe_catalog_object`` branch, removed with ``nodes.py``).
 Re-expressed onto :meth:`langchain.agents.middleware.AgentMiddleware.awrap_tool_call`:
 after a tool runs, when it streamed a large artifact to the object store and returned
-an :class:`~threetears.media.contracts.ObjectHandle` in its result artifact (under
+an :class:`~threetears.interfaces.media.ObjectHandle` in its result artifact (under
 ``OBJECT_HANDLE_METADATA_KEY``), the seam persists a catalog record via the injected
 :class:`~threetears.langgraph.catalog.ObjectCataloger`, stamped with the VERIFIED
 per-call identity read off ``config["configurable"]`` / ``call_context``.
@@ -31,7 +31,7 @@ from langchain.agents.middleware import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
+from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 from threetears.observe import contain, get_logger
 
 __all__ = ["ObjectCatalogMiddleware"]
@@ -128,7 +128,7 @@ class ObjectCatalogMiddleware(AgentMiddleware):
 
     The ``create_agent`` successor to the ``tool_node`` media-catalog seam. On every
     tool call it runs the tool, then -- when the result artifact carries an
-    :class:`~threetears.media.contracts.ObjectHandle` and a cataloger is injected --
+    :class:`~threetears.interfaces.media.ObjectHandle` and a cataloger is injected --
     persists a catalog record under the verified identity. The tool result flows
     through unchanged; a catalog failure is logged and tolerated. Opt-in: no cataloger
     on ``config["configurable"]`` -> no-op.

@@ -17,9 +17,9 @@ Two rules make the vocabulary safe to grow:
   without a coordinated release across every consumer.
 
 The vocabulary lives here, beside the carrier taxonomy it belongs to
-(:class:`~threetears.media.contracts.protocols.MediaInfo`'s ``media_category``
+(:class:`~threetears.interfaces.media.protocols.MediaInfo`'s ``media_category``
 and ``extraction_status``, and the
-:class:`~threetears.media.contracts.protocols.ObjectHandle` that answers "how
+:class:`~threetears.interfaces.media.protocols.ObjectHandle` that answers "how
 are the bytes fetchable"), rather than in each retrieval package that produces
 one. A second media vocabulary in a search or discovery leaf is this
 vocabulary, drifting.
@@ -66,7 +66,7 @@ class MediaFacets:
     for callers to compare against rather than as loose strings.
 
     ``width``/``height`` are pixel dimensions, spelled the way
-    :class:`~threetears.media.contracts.protocols.GeneratedImage` already
+    :class:`~threetears.interfaces.media.protocols.GeneratedImage` already
     spells them so the two can be read across without a translation step.
     """
 

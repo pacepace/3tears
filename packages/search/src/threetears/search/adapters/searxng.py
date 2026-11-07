@@ -185,7 +185,7 @@ SEARXNG_CATEGORIES: Final[tuple[str, ...]] = (
     "map",
 )
 
-#: the ``media-contracts`` carrier taxonomy, mapped onto SearXNG categories.
+#: the ``threetears.interfaces.media`` carrier taxonomy, mapped onto SearXNG categories.
 #: Only these three carriers have a category that means the same thing;
 #: anything else is honestly unsatisfiable rather than approximated.
 _CARRIER_CATEGORIES: Final[Mapping[str, str]] = {
@@ -194,7 +194,7 @@ _CARRIER_CATEGORIES: Final[Mapping[str, str]] = {
     "audio": "music",
 }
 
-#: SearXNG's own category, mapped back onto the ``media-contracts`` carrier
+#: SearXNG's own category, mapped back onto the ``threetears.interfaces.media`` carrier
 #: taxonomy for the ``media_category`` facet. Categories with no carrier
 #: meaning (``general``, ``it``, ``map``, ...) contribute no facet -- absence
 #: means "not reported", which is the truth.
@@ -830,7 +830,7 @@ class SearxngAdapter:
         key = criterion.key
         carrier = plan.accept(
             key,
-            _text(criterion.value, key, "a media-contracts carrier name as a non-empty string"),
+            _text(criterion.value, key, "a threetears.interfaces.media carrier name as a non-empty string"),
             consequence="the search was not scoped to a category",
         )
         if carrier is None:
@@ -1409,7 +1409,7 @@ class SearxngAdapter:
         return tuple(scores)
 
     def _facets(self, raw: Mapping[str, object], *, has_bytes: bool) -> dict[str, JsonValue]:
-        """Carrier facets, in the ``media-contracts`` vocabulary (SR-C2/C3).
+        """Carrier facets, in the ``threetears.interfaces.media`` vocabulary (SR-C2/C3).
 
         :param raw: one provider result object
         :ptype raw: Mapping[str, object]

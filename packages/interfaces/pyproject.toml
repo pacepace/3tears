@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "3tears-access-contracts"
+name = "3tears-interfaces"
 version = "0.92.0"
-description = "Dependency-free identity and authorization vocabulary shared by 3tears-iam and 3tears-agent-acl"
+description = "Dependency-free Protocols and shared vocabulary for the 3tears family"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
@@ -13,6 +13,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
@@ -20,10 +21,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
-# contracts package: stays dependency-free by design, enforced by the
-# contract-purity check in tests/enforcement/. iam (authentication) and
-# agent-acl (authorization) both depend on this package; it depends on nothing,
-# so speaking the shared vocabulary never costs either side the other's closure.
+# The interfaces package: Protocols, the value types and enums that cross them, and pure
+# helpers over those types. No implementations, no third-party imports, no dependencies --
+# enforced by the dependency-free checks in tests/enforcement/. Providers and consumers on
+# both sides of every Protocol here depend on this package; it depends on nothing, so
+# speaking the vocabulary never costs either side the other's closure.
 dependencies = []
 
 [project.urls]

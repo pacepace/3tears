@@ -47,7 +47,7 @@ import importlib
 for module in MODULES:
     importlib.import_module(module)
 
-from threetears.access.contracts import ImpersonationCategory
+from threetears.interfaces.access import ImpersonationCategory
 from threetears.iam import stepup, totp
 from threetears.iam.stores.memory import MemoryAttemptLimiter
 from threetears.iam.tokens import HmacSigner, HmacVerifier, TokenType, mint_token_pair, verify_session_token

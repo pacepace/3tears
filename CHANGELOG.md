@@ -6,6 +6,66 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### interfaces: one dependency-free package for the family's shared Protocols and vocabulary
+
+**Release step:** `3tears-interfaces` is a new PyPI project, so it needs a pending trusted publisher on PyPI
+before the release that carries it (docs/releasing.md). Nine family packages hard-depend on it, so without it
+they are uninstallable at the new version.
+
+**Added:** `3tears-interfaces` (`threetears.interfaces`), one module per domain:
+
+- `threetears.interfaces.access`: `ImpersonationCategory`, the six sensitive-action categories agent-acl's
+  impersonation deny-list and iam's step-up check both enforce.
+- `threetears.interfaces.media`: the media capability Protocols (`VisionProvider`, `ReferenceVisionProvider`,
+  `TextProvider`, `TranscriptionProvider`, `ImageGenerationBackend`, `MediaStorage`, `ObjectStore`), the value
+  types that cross them (`MediaInfo`, `GeneratedImage`, `ObjectHandle`, `ObjectListing`, `MediaSizeLimitExceeded`,
+  `MediaFacets`), the `EXTRACTION_STATUS_*`, `GENERATION_*`, `LOCATOR_KIND_*` and `OBJECT_HANDLE_METADATA_KEY`
+  constants, and the object-key helpers `build_object_key`, `sanitize_segment` and `SHARED_PREFIX`. Its
+  `protocols`, `facets` and `keys` submodules keep their names.
+
+The rule, stated in the package docstring and README: Protocols, the value types and enums that cross them, and
+pure helpers over those types; no implementations, no third-party imports, no dependencies. The dependency-free
+checks in `tests/enforcement/` (`test_the_interfaces_package_stays_dependency_free`, and the declared-imports
+gate's exclusion) now police `packages/interfaces` (and `packages/tool-schema`, which keeps the same rule).
+
+**Removed / Breaking:** `3tears-media-contracts` and `3tears-access-contracts` are gone from the family, with no
+shim. `3tears-access-contracts` never reached PyPI. Replace the distribution `3tears-media-contracts` or
+`3tears-access-contracts` with `3tears-interfaces`, then rewrite imports. The rows run longest prefix first, so
+a find/replace applied top to bottom is safe:
+
+| Old import path | New import path |
+|---|---|
+| `threetears.access.contracts.categories.ImpersonationCategory` | `threetears.interfaces.access.ImpersonationCategory` |
+| `threetears.access.contracts.categories` | `threetears.interfaces.access` |
+| `threetears.access.contracts.ImpersonationCategory` | `threetears.interfaces.access.ImpersonationCategory` |
+| `threetears.access.contracts.__version__` | `threetears.interfaces.__version__` |
+| `threetears.access.contracts` | `threetears.interfaces.access` |
+| `threetears.media.contracts.protocols` (all its names below) | `threetears.interfaces.media.protocols` |
+| `threetears.media.contracts.facets` (`LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`, `MediaFacets`) | `threetears.interfaces.media.facets` |
+| `threetears.media.contracts.keys` (`SHARED_PREFIX`, `build_object_key`, `sanitize_segment`) | `threetears.interfaces.media.keys` |
+| `threetears.media.contracts.__version__` | `threetears.interfaces.__version__` |
+| `threetears.media.contracts` | `threetears.interfaces.media` |
+
+Every name `threetears.media.contracts` exported keeps its name under `threetears.interfaces.media`:
+`EXTRACTION_STATUS_COMPLETE`, `EXTRACTION_STATUS_FAILED`, `EXTRACTION_STATUS_NONE`, `EXTRACTION_STATUS_PENDING`,
+`EXTRACTION_STATUS_REFUSED`, `EXTRACTION_STATUS_UNCHANGED`, `GENERATION_IGNORED`, `GENERATION_SEED`,
+`GENERATION_SIZE`, `GENERATION_SOURCE_USED`, `LOCATOR_KIND_CONTAINING_PAGE`, `LOCATOR_KIND_DIRECT_FILE`,
+`OBJECT_HANDLE_METADATA_KEY`, `GeneratedImage`, `ImageGenerationBackend`, `MediaFacets`, `MediaInfo`,
+`MediaSizeLimitExceeded`, `MediaStorage`, `ObjectHandle`, `ObjectListing`, `ObjectStore`, `TextProvider`,
+`TranscriptionProvider`, `ReferenceVisionProvider`, `VisionProvider`, `build_object_key`, `sanitize_segment`.
+For a sed: `s/threetears\.access\.contracts\.categories/threetears.interfaces.access/g`, then
+`s/threetears\.access\.contracts/threetears.interfaces.access/g`, then
+`s/threetears\.media\.contracts/threetears.interfaces.media/g` (the `__version__` rows are the only ones the
+sed gets wrong).
+
+Unchanged: `threetears.agent.acl.ImpersonationCategory` and `threetears.agent.tools.protocols` still re-export
+the same classes, now from `threetears.interfaces`.
+
+**Changed:** `3tears-agent-acl`, `3tears-agent-tools`, `3tears-backup`, `3tears-geo`, `3tears-iam`,
+`3tears-langgraph`, `3tears-models`, `3tears-object-store` and `3tears-search` now depend on `3tears-interfaces`
+in place of the package they took before. search's and iam's dependency floors name it in the same place.
+
+
 ## v0.92.0 -- 2026-11-06
 
 ### core, agent-tools, registry: the tool-call wire protocol lives in core, and registry no longer depends on agent-tools

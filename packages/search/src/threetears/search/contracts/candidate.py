@@ -3,7 +3,7 @@
 A candidate is identity + locators + provenance + scores + fidelity + an
 optional content slot + open facets. There is deliberately NO closed
 carrier union ("web | image | pdf" is prohibited): carrier-specific data
-rides ``facets``, keyed by the ``media-contracts`` vocabulary, and a
+rides ``facets``, keyed by the ``threetears.interfaces.media`` vocabulary, and a
 consumer that does not recognise a facet ignores it rather than failing
 (SR-C2, SR-C3). Adding a carrier must require no change here.
 
@@ -120,7 +120,7 @@ class Candidate(ContractModel):
     fidelity_achieved: str | None = None
     #: the information itself, when present (SR-A2).
     content: ContentSlot | None = None
-    #: additive carrier facets, keyed by the ``media-contracts`` vocabulary
+    #: additive carrier facets, keyed by the ``threetears.interfaces.media`` vocabulary
     #: (``media_category``, ``extraction_status``, ``has_downloadable_data``,
     #: pixel dimensions, rights status, ...). Unrecognised facets are
     #: ignorable by contract (SR-C2); never a closed carrier union.

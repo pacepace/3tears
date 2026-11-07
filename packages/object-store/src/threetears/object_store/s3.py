@@ -1,6 +1,6 @@
 """Streaming S3-compatible object store (aiobotocore).
 
-Implements :class:`threetears.media.contracts.ObjectStore` over any
+Implements :class:`threetears.interfaces.media.ObjectStore` over any
 S3-compatible backend (MinIO in dev, S3 in prod). Never buffers a whole
 object: uploads stream through one part-size buffer at a time via S3
 multipart (or a single PUT when the whole object fits one part); downloads
@@ -34,7 +34,7 @@ import botocore.session  # type: ignore[import-untyped]
 from aiobotocore.session import get_session  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
-from threetears.media.contracts import ObjectListing, ObjectStore
+from threetears.interfaces.media import ObjectListing, ObjectStore
 from threetears.observe import get_logger
 
 __all__ = ["S3ObjectStore"]

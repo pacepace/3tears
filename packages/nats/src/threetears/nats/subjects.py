@@ -192,7 +192,7 @@ def sanitize_subject_segment(segment: str | UUID) -> str:
     than in :mod:`threetears.nats.subject_permissions` because that module
     already imports this one, so the reverse direction would be an import
     cycle at module load; and it is NOT named ``sanitize_segment`` because
-    :func:`threetears.media.contracts.keys.sanitize_segment` already owns
+    :func:`threetears.interfaces.media.keys.sanitize_segment` already owns
     that name with slugifying (not dot-mapping) semantics.
     :func:`threetears.core.namespaces.sanitize_segment` delegates here.
 

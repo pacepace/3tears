@@ -94,7 +94,7 @@ try:
 except ImportError:  # NOSILENT: no detector; UTF-8 with replacement is the stated last resort
     _CHARSET_DETECTOR = False
 
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_FAILED,
     EXTRACTION_STATUS_REFUSED,
@@ -198,7 +198,7 @@ _TEXT_CONTENT_TYPES: Final[tuple[str, ...]] = (
     "application/*+xml",
 )
 
-#: :attr:`Candidate.facets` key carrying the ``media-contracts`` ``EXTRACTION_STATUS_*`` vocabulary.
+#: :attr:`Candidate.facets` key carrying the ``threetears.interfaces.media`` ``EXTRACTION_STATUS_*`` vocabulary.
 EXTRACTION_STATUS_FACET: Final[str] = "extraction_status"
 
 #: :attr:`Candidate.facets` key carrying why an extraction was refused or failed, in a sentence a
@@ -1470,7 +1470,7 @@ def _marked(
 
     :param candidate: the candidate whose extraction did not produce text
     :ptype candidate: Candidate
-    :param status: the ``media-contracts`` status to record
+    :param status: the ``threetears.interfaces.media`` status to record
     :ptype status: str
     :param reason: why, in a sentence a person can read
     :ptype reason: str

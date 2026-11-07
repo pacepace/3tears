@@ -82,7 +82,7 @@ from threetears.agent.tools.langchain_adapter import to_langchain_tool
 from threetears.agent.tools.config import PDF_PARSE_TIMEOUT_SECONDS as DEFAULT_PDF_PARSE_TIMEOUT_SECONDS
 from threetears.agent.tools.document import DocumentParseError, OcrConfig, parse_document
 from threetears.agent.tools.search_transport import build_fetch_transport
-from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
+from threetears.interfaces.media import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_UNCHANGED
 from threetears.search.bind import project_failure_metadata, project_metadata, shown_date
 from threetears.search.contracts import (
     Candidate,

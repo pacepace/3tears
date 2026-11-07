@@ -33,9 +33,9 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-# the sensitive-action taxonomy lives in the dependency-free contracts leaf, which iam's
+# the sensitive-action taxonomy lives in the dependency-free interfaces package, which iam's
 # step-up check reads too; re-exported here, so this module's name is that same class.
-from threetears.access.contracts import ImpersonationCategory
+from threetears.interfaces.access import ImpersonationCategory
 from threetears.agent.acl.cache import AclCache
 from threetears.agent.acl.evaluator import evaluate_with_trail
 from threetears.agent.acl.types import (

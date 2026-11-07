@@ -2,7 +2,7 @@
 enforcement: every ``extraction_status`` spelling in SQL is a named constant.
 
 ``MediaInfo.extraction_status`` is a plain ``str`` field whose values live in
-two places at once. ``media-contracts`` names them
+two places at once. ``threetears.interfaces.media`` names them
 (``EXTRACTION_STATUS_*``); ``agent-memory`` writes them into DDL --
 ``agent-memory``'s v021 migration declares the column ``TEXT NOT NULL
 DEFAULT 'none'``, and v022 builds a partial index on
@@ -18,13 +18,13 @@ quiet day.
 So the DDL is the canonical statement of this vocabulary and the constants
 name what is stored (docs/search-spec.md §3.5, ruled before the constants
 were written). This guard holds that direction: every status spelling
-appearing in SQL must be one ``media-contracts`` names. The reverse is not
+appearing in SQL must be one ``threetears.interfaces.media`` names. The reverse is not
 required -- ``refused`` is contract vocabulary that no migration has needed,
 which is the normal state for a value the database stores but never
 predicates on.
 
 Two mechanisms, because the two sides are written differently. The constants
-are imported (``media-contracts`` is dependency-free and importing it costs
+are imported (``threetears.interfaces.media`` is dependency-free and importing it costs
 nothing); the DDL is scanned as text, because the spellings live *inside* SQL
 strings where an AST walk sees one opaque constant.
 """
@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_FAILED,
     EXTRACTION_STATUS_NONE,
@@ -114,9 +114,9 @@ def test_every_status_spelling_in_sql_is_a_named_constant() -> None:
             unnamed[str(path.relative_to(_REPO_ROOT))] = stray
 
     assert not unnamed, (
-        "status spellings in SQL that media-contracts does not name: "
+        "status spellings in SQL that threetears.interfaces.media does not name: "
         f"{unnamed}. Add the constant to "
-        "packages/media-contracts/src/threetears/media/contracts/protocols.py, "
+        "packages/interfaces/src/threetears/interfaces/media/protocols.py, "
         "or fix the SQL -- but read docs/search-spec.md §3.5 first: a spelling "
         "already in a column default or an index predicate is changed by a "
         "migration, not by editing the constant."

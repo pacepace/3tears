@@ -81,7 +81,7 @@ more than one pod where checkpoints need to stay coherent.
 - [`nats`](nats.md) -- the L2 tier and the sandboxed-agent proxy path.
 - [`agent-knowledge`](agent-knowledge.md) -- its `wrap_model_call`
   middleware targets LangGraph agents built here.
-- [`media-contracts`](media-contracts.md) -- the catalog middleware's
+- [`interfaces`](interfaces.md) -- the catalog middleware's
   media-handling contract.
 
 ## Install

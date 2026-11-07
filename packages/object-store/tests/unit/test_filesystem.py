@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from threetears.media.contracts import ObjectStore
+from threetears.interfaces.media import ObjectStore
 from threetears.object_store.encrypted import EncryptedObjectStore
 from threetears.object_store.filesystem import FilesystemObjectStore
 

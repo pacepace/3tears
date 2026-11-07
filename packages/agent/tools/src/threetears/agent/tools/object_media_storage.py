@@ -27,7 +27,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
-from threetears.media.contracts import MediaInfo, MediaSizeLimitExceeded
+from threetears.interfaces.media import MediaInfo, MediaSizeLimitExceeded
 from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.consume import ConsumeObjectError, open_object_stream, resolve_object

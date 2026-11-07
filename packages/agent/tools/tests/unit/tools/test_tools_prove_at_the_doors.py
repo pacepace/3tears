@@ -22,7 +22,7 @@ from threetears.core.security import (
 )
 from threetears.core.security.identity_token import PLATFORM_CUSTOMER_SENTINEL, IdentityClaims
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 
 from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,

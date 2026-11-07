@@ -23,7 +23,7 @@ from sqlalchemy import Column, MetaData, String, Table
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.nats.errors import KvError
 
 from threetears.agent.tools.l1_cache import create_tool_pod_l1_backend

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from threetears.access.contracts import ImpersonationCategory
+from threetears.interfaces.access import ImpersonationCategory
 from threetears.iam.stepup import (
     StepUpRequiredError,
     SteppableClaims,

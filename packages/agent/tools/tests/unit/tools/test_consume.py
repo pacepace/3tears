@@ -25,7 +25,7 @@ from threetears.agent.tools.consume import (
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.object_resolver import ResolveObjectError
 from threetears.core.testing.replay_guard import FakeReplayGuard
-from threetears.media.contracts import ObjectHandle, ObjectListing
+from threetears.interfaces.media import ObjectHandle, ObjectListing
 
 from packages.agent.tools.tests.unit.tools.pod_auth import (
     ScopeRecordingTool,
@@ -49,7 +49,7 @@ _OWNED_KEY = f"{_CUSTOMER}/conversation-{_CONVERSATION}/reports/2026/06/30/{_OBJ
 _FOREIGN_KEY = f"{_OTHER_CUSTOMER}/conversation-{_CONVERSATION}/reports/2026/06/30/{_OBJECT}/report.md"
 
 
-# parity-with: threetears.media.contracts.ObjectStore
+# parity-with: threetears.interfaces.media.ObjectStore
 class _FakeReadStore:
     """Serves reads + presigns for the consume path; records the calls."""
 

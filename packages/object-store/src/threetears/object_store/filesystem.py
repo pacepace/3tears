@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid7
 
-from threetears.media.contracts import ObjectListing
+from threetears.interfaces.media import ObjectListing
 
 __all__ = ["FilesystemObjectStore"]
 

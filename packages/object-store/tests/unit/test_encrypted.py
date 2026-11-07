@@ -13,7 +13,7 @@ import pytest
 from cryptography.exceptions import InvalidTag
 from pydantic import SecretStr
 
-from threetears.media.contracts import ObjectListing, ObjectStore
+from threetears.interfaces.media import ObjectListing, ObjectStore
 from threetears.object_store.encrypted import EncryptedObjectStore
 
 

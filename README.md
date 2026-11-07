@@ -133,7 +133,7 @@ Cross-pod plumbing: transport, identity, scheduling, and the things every pod ne
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, a `@traced` decorator, ContextVar-backed tags, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast and per-message echo, for coherent cross-pod cache reloads |
 | [`3tears-iam`](packages/iam/) | `threetears.iam` | Identity and access primitives. Passwords, OAuth2/OIDC, SAML, GitHub sign-in, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them |
-| [`3tears-access-contracts`](packages/access-contracts/) | `threetears.access.contracts` | Dependency-free identity and authorization vocabulary shared by `iam` and `agent-acl`, such as the sensitive-action categories both enforce |
+| [`3tears-interfaces`](packages/interfaces/) | `threetears.interfaces` | The family's shared Protocols and vocabulary, with no dependencies: `interfaces.access` (the sensitive-action categories `iam` and `agent-acl` both enforce) and `interfaces.media` (the media capability Protocols providers implement and tools accept) |
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |
 | [`3tears-geo`](packages/geo/) | `threetears.geo` | Slippy-map tile geometry. WKB decoding, zoom bands, and MVT encoding in application code, with no PostGIS dependency |
@@ -175,7 +175,6 @@ Getting content in from the open web, and describing it once it is here.
 |---|---|---|
 | [`3tears-search`](packages/search/) | `threetears.search` | Provider-agnostic web and media search. Provider contracts with per-criterion dispositions, SearXNG and Tavily adapters, injected budget and rate-limiter ports, and a shared provider-conformance suite |
 | [`3tears-scrape`](packages/scrape/) | `threetears.scrape` | AI-driven, self-healing web scraping. Pluggable render backends plus LLM-proposed extraction candidates, each structurally validated and judged against real page content, then persisted as a reusable recipe rather than a hand-written per-site parser |
-| [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
 
 ### Evaluation
 
@@ -248,8 +247,7 @@ graph LR
         OBJ[object-store]
         CORE[core]
         NATS[nats]
-        MEDIA[media-contracts]
-        ACCESS[access-contracts]
+        IFACE[interfaces]
         TSCHEMA[tool-schema]
     end
 
@@ -268,7 +266,7 @@ graph LR
     TOOLS --> MEM
     TOOLS --> AUDIT
     TOOLS --> LG
-    TOOLS --> MEDIA
+    TOOLS --> IFACE
     TOOLS --> TSCHEMA
     MODELS --> TSCHEMA
     KNOW --> MEM
@@ -279,13 +277,13 @@ graph LR
     WAKE --> SKILL
     SKILL --> CORE
     ACL --> CORE
-    ACL --> ACCESS
+    ACL --> IFACE
     LG --> CORE
     AUDIT --> NATS
     MCP --> NATS
     BACK --> OBJ
     OBJ --> CORE
-    SEARCH --> MEDIA
+    SEARCH --> IFACE
     CORE --> L1
     CORE --> L2
     CORE --> L3
@@ -297,7 +295,7 @@ graph LR
 ```
 
 Two things the diagram is telling you deliberately. **`search` connects only to
-`media-contracts`** -- it takes no `core` dependency at all, so it runs from a one-shot
+`interfaces`** -- it takes no `core` dependency at all, so it runs from a one-shot
 `asyncio.run()` with no broker, and nothing consumes it yet: wiring it into `agent-tools`
 is a later phase. **`observe` is on every box and drawn on none**, because an arrow from
 every package to one node is noise rather than information.

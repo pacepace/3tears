@@ -90,7 +90,7 @@ and `mapbox-vector-tile`, real dependencies rather than pure Python.
   the single-flight gates the tile collection is built on.
 - [`object-store`](object-store.md) -- the usual choice for the injected durable
   tier, though nothing here imports it; anything with the same two methods works.
-- [`media-contracts`](media-contracts.md) -- a declared dependency, for the
+- [`interfaces`](interfaces.md) -- a declared dependency, for the
   contracts that keep this decoupled from whoever produces the source features.
 - [`observe`](observe.md) -- structured logging throughout.
 

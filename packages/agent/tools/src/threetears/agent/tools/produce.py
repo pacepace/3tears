@@ -3,7 +3,7 @@
 A producing tool -- one that generates an artifact too big to cross NATS (a
 pcap, a database dump, a rendered report) -- calls this from inside its
 ``execute`` to push the bytes out-of-band and get back a small
-:class:`~threetears.media.contracts.ObjectHandle` to return in
+:class:`~threetears.interfaces.media.ObjectHandle` to return in
 ``ToolResult.metadata``. The bytes never travel with the handle.
 
 The object store and the VERIFIED caller identity both ride on the per-call
@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 from uuid import uuid7
 
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     OBJECT_HANDLE_METADATA_KEY,
     ObjectHandle,
     build_object_key,
@@ -192,7 +192,7 @@ def object_handle_result_metadata(handle: ObjectHandle) -> dict[str, Any]:
     A producing tool returns ``ToolResult(content=<summary>, metadata=...)``;
     pass the handle from :func:`stream_result_to_object_store` here to get the
     metadata the agent's catalog seam recognises (the handle under
-    :data:`~threetears.media.contracts.OBJECT_HANDLE_METADATA_KEY`). Merge extra
+    :data:`~threetears.interfaces.media.OBJECT_HANDLE_METADATA_KEY`). Merge extra
     keys in if the tool also carries its own metadata.
 
     :param handle: the handle for the streamed object

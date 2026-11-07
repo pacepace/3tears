@@ -28,7 +28,7 @@ dependencies = [
     # the sensitive-action taxonomy stepup names (ImpersonationCategory), in the dependency-free
     # leaf agent-acl's impersonation deny-list reads too. One class for both checks, without
     # installing the authorization layer to name it.
-    "3tears-access-contracts>=0.92.0,<0.93.0",
+    "3tears-interfaces>=0.92.0,<0.93.0",
     # argon2id for password hashing, bcrypt for verify-then-upgrade of hashes
     # migrated in from an older system. bcrypt is verify-only here: nothing in
     # this package ever WRITES a bcrypt hash.
@@ -97,7 +97,7 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-observe = { workspace = true }
-3tears-access-contracts = { workspace = true }
+3tears-interfaces = { workspace = true }
 3tears-nats = { workspace = true }
 
 [tool.mypy]

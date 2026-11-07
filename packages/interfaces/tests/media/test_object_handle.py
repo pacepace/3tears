@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
+from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 
 _OBJ = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
 

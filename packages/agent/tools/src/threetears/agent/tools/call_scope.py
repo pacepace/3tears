@@ -52,7 +52,7 @@ from typing import TYPE_CHECKING, AsyncIterator, Awaitable, Callable
 from uuid import UUID
 
 from threetears.core.security.door_request import DoorCredential
-from threetears.media.contracts import ObjectStore
+from threetears.interfaces.media import ObjectStore
 
 from threetears.agent.tools.context_envelope import CallContext
 

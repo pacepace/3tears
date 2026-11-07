@@ -34,7 +34,7 @@ from threetears.core.security.identity_token import (
     generate_signing_keypair,
     sign_identity_token,
 )
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.nats import IncomingMessage, NatsClient, Subjects
 
 from packages.agent.tools.tests.unit.tools.pod_auth import RecordingNatsClient
