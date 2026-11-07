@@ -41,6 +41,7 @@ A browser renderer that restates this rule pins itself to the same cases this pa
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
@@ -135,6 +136,25 @@ def spell_count(count: int) -> str:
     :rtype: str
     """
     return group_thousands(str(int(count)))
+
+
+#: A count a stored sentence carries bare: ``6224 of 6224 score(s)``, ``1234 result(s)``, a share's ``1234 with {...}``.
+#: Never a digit run inside a name, a decimal or a setting (``gpt-4o-2024``, ``1.2345``, ``max_tokens=10240``).
+_STORED_COUNT = re.compile(r"(?<![\w.,=-])\d{4,}(?=(?: of \d+)? (?:score|result)\(s\)| with \{)")
+
+
+def spell_stored_counts(sentence: str) -> str:
+    """A sentence the bundle stores, with its counts as a page prints them (:func:`spell_count`): ``6224 of 6224
+    score(s)`` reads ``6,224 of 6,224 score(s)``. The stored sentence stays as assembled, since the bundle fingerprints
+    it; only its printing groups the counts, as :func:`~threetears.evals.analysis.report.words.reason_words` rewords
+    a stored reason.
+
+    :param sentence: The sentence as stored.
+    :ptype sentence: str
+    :return: The sentence as printed.
+    :rtype: str
+    """
+    return _STORED_COUNT.sub(lambda count: spell_count(int(count.group())), sentence)
 
 
 def spell_dollars(amount: float) -> str:
@@ -480,5 +500,6 @@ __all__ = [
     "money_form",
     "spell_count",
     "spell_dollars",
+    "spell_stored_counts",
     "spell_multiple",
 ]

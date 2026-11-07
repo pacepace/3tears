@@ -50,6 +50,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.style import ArmName, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.numbers import spell_stored_counts
 
 __all__ = [
     "aspect_provenance_blocks",
@@ -376,7 +377,7 @@ def _setup_detail(kind: _SetupKind, bundle: AnalysisContextBundle, arm: Callable
     names the role and what was sent against what was asked), and for latency the arms it holds for, where it does
     not hold for every arm; each judge's state and next step; the cost's routing, where any arm was priced."""
     if kind == "settings":
-        return _settings_in_words((bundle.request_settings_disclosure or "").strip()) or None
+        return _settings_in_words(spell_stored_counts((bundle.request_settings_disclosure or "").strip())) or None
     if kind == "judge":
         return " ".join(_calibration_sentences(bundle)) or None
     if kind == "cost":

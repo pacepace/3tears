@@ -23,7 +23,7 @@ import statistics
 
 from pydantic import Field
 
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, spell_stored_counts
 from threetears.evals.analysis.summary import dollars_text
 from threetears.evals.analysis.agreement import JudgeSelfAgreement, self_agreement_of_repeats
 from threetears.evals.kernel.judge_temperature import (
@@ -159,7 +159,7 @@ class JudgeTemperatureComparison(EvalBaseModel):
             "ledgered under judge, never the candidate's",
         ]
         if not self.comparable:
-            lines.append(f"NOT COMPARABLE: {self.incomparable}")
+            lines.append(f"NOT COMPARABLE: {spell_stored_counts(self.incomparable or '')}")
         if self.stopped:
             lines.append(f"stopped: {self.stopped}")
         lines += [f"skipped {skip.result_id}: {skip.reason}" for skip in self.skipped]

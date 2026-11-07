@@ -60,7 +60,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
-from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form
+from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form, spell_stored_counts
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.blocks import bare_columns, money_columns, percent_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
@@ -3518,7 +3518,7 @@ def _method_blocks(
             + (f", against {others}" if others else "")
             + f"; above {format_number(100 * flagged.threshold)}%, the arms are not compared on the same trials.",
         )
-    say("measurement", bundle.model_identity_disclosure)
+    say("measurement", spell_stored_counts(bundle.model_identity_disclosure or ""))
     for reading in bundle.arm_served_models:
         if reading.state == "pooled":
             say(

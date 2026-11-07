@@ -28,7 +28,12 @@ from threetears.evals.analysis import (
     summarize_run,
 )
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.reporting import model_identity_disclosure, unconfirmed_model_identities
+from threetears.evals.analysis.reporting import (
+    RequestSettingsReading,
+    model_identity_disclosure,
+    request_settings_disclosure,
+    unconfirmed_model_identities,
+)
 from threetears.evals.kernel import EvalStorage
 from threetears.evals import Answer
 from threetears.evals.quick.one_call import callable_host
@@ -265,6 +270,36 @@ class TestTheBundleAndItsCodeOnlyReport:
         assert bundle.model_identity_disclosure is None
         report = build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00")
         assert _said(report) == []
+
+
+    def test_the_page_groups_the_stored_counts_and_the_bundle_keeps_them_as_stored(self) -> None:
+        # The bundle fingerprints its disclosures, so their counts stay bare as assembled ("6224 of 6224"); the page
+        # prints a count the one way the package spells it ("6,224 of 6,224"), grouping it on its way out.
+        identity = model_identity_disclosure(
+            [
+                UnconfirmedModelIdentity(role="candidate", requested=[_ALIAS], n_unrecorded=1234, n_total=5678),
+                UnconfirmedModelIdentity(role="judge", requested=[_ALIAS], n_unrecorded=6224, n_total=6224),
+            ]
+        )
+        settings = request_settings_disclosure(
+            [
+                RequestSettingsReading(
+                    role="judge", asked=[], sent=[], n_total=6224, n_unverified=6224, n_not_as_asked=0, n_unenforced=0
+                )
+            ]
+        )
+        assert identity is not None and settings is not None
+        bundle = _campaign_bundle(served=None).model_copy(
+            update={"model_identity_disclosure": identity, "request_settings_disclosure": settings}
+        )
+
+        page = report_markdown(build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00"))
+
+        assert "in 1234 of 5678 result(s)" in identity and "produced 6224 of 6224 score(s)" in identity
+        assert "for 6224 of 6224 score(s)" in settings
+        assert "in 1,234 of 5,678 result(s)" in page and "produced 6,224 of 6,224 score(s)" in page
+        assert "for 6,224 of 6,224 score(s)" in page
+        assert "6224" not in page and "1234" not in page
 
 
 class TestTheAnalysisReport:
