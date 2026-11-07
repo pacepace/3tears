@@ -10,21 +10,26 @@ packages (bumped in lock-step).
 
 **Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) opens, under its title, on one
 sentence per candidate: its promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays:
-side by side, the judge gave lead-first a share of 0.68 of each pair against shipped (0.5 is no preference), which 7
-held-out cases cannot tell apart from no preference."), with the promotion's own sentence after it where the
+across 7 held-out cases the judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to
+tell from an even split; about 39 cases would settle it."), with the promotion's own sentence after it where the
 preference alone does not explain the decision. Its Scorecard opens with the side-by-side tables and each candidate's
 promotion sentence. The side-by-side table in the print, in `pairwise.md` and on the page is two tables of rows with
 columns: the preference, a row per candidate and the pairs it reads (every pair, then both pages finished), and the
-judge's checks, a row per candidate; every figure in them, and the share in the answer, is read to two decimals.
+judge's checks, a row per candidate. Four figures change form: the share (`0.6786` reads `68` under `Share (%)`), the
+difference and its interval (`0.3571`, `-0.2762 to 1` read `36`, `-28 to 100` in points), order consistency
+(`0.8571 (6 of 7)` reads `86% (6 of 7)`) and the first-slot lean (`0.07143` reads `7` in points). Each is read to
+whole points, with more decimals only where an interval's end would print as 0 or cross zero, or two figures would
+print alike. What a pass spent and the held-out cases to settle print as before.
 
 **Fixed:** a writer eval files its campaign dated when its arms launched (`create_campaign`'s `declared_at`), as an
 `Eval` does, in place of when it was filed, after its results existed. Its page no longer says its criteria (the
 aspect, the control, a margin) were set after the results, on a replay of a declared eval or a recording run.
 
 **Hosts:** a host reading a writer eval's print or `pairwise.md` by its key-and-value rows (`| share | 0.6786 |`)
-reads the preference table's columns instead (`| lead-first | every pair | not separated | 0.68 | ... |`), at two
-decimals. A writer eval's campaign filed before this release keeps its late-criteria lines; running the eval again files
-it dated at launch.
+reads the preference table's columns instead (`| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |`),
+the share, difference, interval, order consistency and lean in percent or points as above. An absent cell in those
+tables prints `—` (an em dash) where it printed `-`. A writer eval's campaign filed before this release keeps its
+late-criteria lines; running the eval again files it dated at launch.
 
 ### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
 

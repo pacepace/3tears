@@ -8,12 +8,14 @@ replayed page, where the preference is read and does not separate, is held in ``
 
 Mutations that turn this file red: the answer missing, or behind the question; its decision word, share or reason
 not the result's; the promotion's own sentence missing from the page; the side-by-side table laid out as key and value;
-the campaign filed dated after its arms ran, so its criteria read as set after its results.
+the campaign filed dated after its arms ran, so its criteria read as set after its results; an interval end
+rounded onto zero, or two ends rounded alike.
 """
 
 from __future__ import annotations
 
 import socket
+from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
@@ -80,11 +82,11 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     assert isinstance(answer, DisclosureBlock) and (answer.section, answer.source) == ("answer", "verdict")
     assert answer.tone == "open", "undecided is no decision"
     assert isinstance(question, DisclosureBlock) and question.text == f'"{QUESTION}"'
-    # Its words are the result's: the decision, the judge's share at the tables' precision, and why it cannot count.
+    # Its words are the result's: the decision, the judge's share as the table prints it, and why it cannot count.
+    share = round(read.share * 100)
     assert answer.text == (
-        f"Undecided, so shipped stays: side by side, the judge gave variant a share of {round(read.share, 2):g} of "
-        "each pair against shipped (0.5 is no preference), but its two reading orders disagreed too often for that "
-        f"to count ({read.void})."
+        f"Undecided, so shipped stays: across 1 held-out case the judge gave variant {share}% of its preference over "
+        f"shipped (50% is even), but its two reading orders disagreed too often for that to count ({read.void})."
     )
     # The promotion's own sentence is on the page, one step down, as the print says it.
     said = [block.text for block in result.page.blocks if isinstance(block, DisclosureBlock)]
@@ -102,15 +104,15 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
         ("variant", "every pair"),
         ("variant", "both pages finished"),
     ]
-    assert values[0]["reads"] == "untested (void)" and values[0]["share"] == round(read.share, 2)
+    assert values[0]["reads"] == "untested (void)" and values[0]["share"] == share
     checks = tables["judge_checks"].values()
     assert [row["candidate"] for row in checks] == ["variant"]
-    assert checks[0]["order_consistency"] == f"0 ({read.order_consistent} of {read.both_orders})"
+    assert checks[0]["order_consistency"] == f"0% ({read.order_consistent} of {read.both_orders})"
     # The same tables in the print and in pairwise.md: no key-and-value row.
     written = result.write(tmp_path / "report")
     pairwise = written["pairwise"].read_text(encoding="utf-8")
     assert result.pairwise_text() in pairwise and result.pairwise_text() in result.render()
-    assert "| Candidate | Pairs | Reads | Share | Difference |" in pairwise
+    assert "| Candidate | Pairs | Reads | Share (%) | Difference (pts) |" in pairwise
     assert "| share |" not in pairwise and "| reads |" not in pairwise
 
     # The written page opens on the answer, under the title, before anything else.
@@ -130,3 +132,21 @@ async def test_a_replay_of_a_declared_eval_reads_its_criteria_as_set_before_its_
     assert fold.report.bundle.reading_scope.late_criteria == []
     page = result.write(tmp_path / "report")["markdown"].read_text(encoding="utf-8")
     assert "set after the results" not in page and "Criteria set late" not in page
+
+
+async def test_an_interval_end_near_zero_keeps_its_sign_and_two_near_ends_stay_apart(
+    tmp_path: Path, offline: None
+) -> None:
+    result = await _replayed(tmp_path)
+    read = result.pairwise["variant"]
+
+    def row(delta: float, interval: tuple[float, float]) -> str:
+        primary = read.primary.model_copy(update={"delta": delta, "interval": interval})
+        shown = replace(result, pairwise={"variant": replace(read, primary=primary)}).pairwise_text()
+        (line,) = [line for line in shown.splitlines() if line.startswith("| variant | every pair |")]
+        return line
+
+    # A low end of -0.004 points crosses zero: it is never printed as 0, so the crossing stays on the page.
+    assert row(0.2, (-0.00004, 0.4)).endswith("| 20 | -0.004 to 40 |")
+    # Two ends that whole points would print alike take the decimals that tell them apart.
+    assert row(0.3402, (0.3401, 0.3404)).endswith("| 34.02 | 34.01 to 34.04 |")

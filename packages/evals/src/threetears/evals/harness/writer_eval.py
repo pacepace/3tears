@@ -225,16 +225,16 @@ _PREFERENCE_COLUMNS: Final = (
     ("candidate", "Candidate"),
     ("pairs", "Pairs"),
     ("reads", "Reads"),
-    ("share", "Share"),
-    ("difference", "Difference"),
-    ("interval", "Interval"),
+    ("share", "Share (%)"),
+    ("difference", "Difference (pts)"),
+    ("interval", "Interval (pts)"),
 )
 
 #: The judge's checks table's columns, by key and header: a row per candidate.
 _CHECK_COLUMNS: Final = (
     ("candidate", "Candidate"),
     ("order_consistency", "Order consistency"),
-    ("first_slot_lean", "First-slot lean"),
+    ("first_slot_lean", "First-slot lean (pts)"),
     ("cannot_tell", "Can't tell"),
     ("to_settle", "Held-out cases to settle"),
     ("spent", "Spent"),
@@ -244,15 +244,16 @@ _CHECK_COLUMNS: Final = (
 _EVERY_PAIR: Final = "every pair"
 _BOTH_FINISHED: Final = "both pages finished"
 
-#: The decimals every side-by-side figure is read to, in the tables and in the answer alike.
-_PAIRWISE_DECIMALS: Final = 2
+#: The most decimals a side-by-side figure is read to (:func:`_places`).
+_MOST_PLACES: Final = 6
 
-#: What the pairwise table says once, above it: what a share and order consistency are.
+#: What the side-by-side tables say once, above them: what a share, a difference, order consistency and the lean are.
 _PAIRWISE_LEAD: Final = (
-    "Side by side, the judge read each case's two pages in both orders: a share is the part of a pair it gave the "
-    "candidate (0.5 is no preference), and the reading over every pair is the promotion's primary reading; order "
-    "consistency is the part of cases whose two orders agreed, and first-slot lean how far the judge favoured the page "
-    "it read first (-0.5 to 0.5)."
+    "Side by side, the judge read each case's two pages in both orders and said how strongly it preferred one: a "
+    "share is the part of its preference it gave the candidate, averaged over the cases (50% is even), and the "
+    "reading over every pair is the promotion's primary reading; a difference is the candidate's share less the "
+    "control's, in points; order consistency is the part of cases whose two orders agreed, and first-slot lean how far "
+    "the judge favoured the page it read first, in points (-50 to 50)."
 )
 
 #: What a promotion decision leads the page's answer with, by decision: the candidate's name and the control's fill it.
@@ -446,8 +447,8 @@ class WriterResult:
         and disclosures.
 
         Each reading is a measure the writer host declares, named as its descriptor names it, then each judged
-        dimension of the template's rubric. The pairwise table has a column per candidate
-        (:meth:`pairwise_text`). ``full`` adds every arm's whole summary and the campaign's page.
+        dimension of the template's rubric; then the side-by-side tables (:meth:`pairwise_text`). ``full`` adds every
+        arm's whole summary and the campaign's page.
 
         :param full: Every arm's whole summary and the whole page, as Markdown, after the quiet summary.
         :ptype full: bool
@@ -1098,7 +1099,7 @@ class WriterEval:
             unread,
             decisions=decisions,
             why=why,
-            cases=f"{next(iter(arms.values())).n_cases} {_SIDE_WORDS[self.side]}",
+            cases=_cases(next(iter(arms.values())).n_cases, _SIDE_WORDS[self.side]),
         )
         return WriterResult(
             name=self.name,
@@ -1129,14 +1130,27 @@ def _pairwise_reads(verdict: Verdict) -> str:
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
 
 
-def _rounded(value: float | None) -> float | None:
-    """A side-by-side figure at the decimals the tables and the answer read it to (:data:`_PAIRWISE_DECIMALS`)."""
-    return None if value is None else round(value, _PAIRWISE_DECIMALS)
+def _places(values: Sequence[float]) -> int:
+    """The fewest decimals, none at first, at which every one of ``values`` keeps its sign (no end that is not 0 prints
+    as 0, and none crosses zero) and values that differ still differ: an interval's ends read as distinct and a
+    crossing stays visible, whatever the rounding (P19)."""
+    for places in range(_MOST_PLACES + 1):
+        rounded = [round(value, places) for value in values]
+        if all(
+            (low > 0) == (value > 0) and (low < 0) == (value < 0) for low, value in zip(rounded, values, strict=True)
+        ):
+            if len(set(rounded)) == len(set(values)):
+                return places
+    return _MOST_PLACES
 
 
-def _spelled(value: float | None) -> str:
-    """A side-by-side figure as its table cell prints it (:func:`_rounded`, then the number rule)."""
-    return render_cell(_rounded(value))
+def _in_points(value: float | None) -> float | None:
+    """A side-by-side figure, a part from 0 to 1 or a difference of parts, in percent or points (x 100), at the
+    decimals :func:`_places` reads it to alone: the one figure the tables and the answer print."""
+    if value is None:
+        return None
+    points = value * 100
+    return round(points, _places([points]))
 
 
 def _cells(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
@@ -1161,6 +1175,11 @@ def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, Ta
         reads = _pairwise_reads(verdict)
         if pairs == _EVERY_PAIR and read.void is not None:
             reads = f"{reads} (void)"
+        # The difference and its interval's ends at one precision, the fewest decimals that keep each end's sign and
+        # the three apart.
+        spread = [point * 100 for point in (verdict.delta, *(verdict.interval or ())) if point is not None]
+        places = _places(spread)
+        delta = None if verdict.delta is None else round(verdict.delta * 100, places)
         interval = verdict.interval
         rows.append(
             _cells(
@@ -1168,9 +1187,11 @@ def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, Ta
                     "candidate": arm,
                     "pairs": pairs,
                     "reads": reads,
-                    "share": _rounded(share),
-                    "difference": _rounded(verdict.delta),
-                    "interval": None if interval is None else f"{_spelled(interval[0])} to {_spelled(interval[1])}",
+                    "share": _in_points(share),
+                    "difference": delta,
+                    "interval": None
+                    if interval is None
+                    else " to ".join(render_cell(round(end * 100, places)) for end in interval),
                 }
             )
         )
@@ -1188,8 +1209,8 @@ def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
             "candidate": arm,
             "order_consistency": None
             if rate is None
-            else f"{_spelled(rate)} ({read.order_consistent} of {read.both_orders})",
-            "first_slot_lean": _rounded(read.first_slot_bias),
+            else f"{render_cell(_in_points(rate))}% ({read.order_consistent} of {read.both_orders})",
+            "first_slot_lean": _in_points(read.first_slot_bias),
             "cannot_tell": read.cannot_tell,
             "to_settle": None
             if settle is None
@@ -1214,7 +1235,7 @@ def _side_by_side_blocks(
     checks table (a row per candidate), a line for each pass that did not complete, and each candidate's promotion
     reading in its own sentence."""
     level = next((read.primary.interval_level for read in pairwise.values() if read.primary.interval_level), None)
-    interval = "Interval" if level is None else f"Interval, {format_number(level * 100)}%"
+    interval = "Interval (pts)" if level is None else f"Interval, {format_number(level * 100)}% (pts)"
     preference = [
         TableColumn(key=key, header=interval if key == "interval" else header) for key, header in _PREFERENCE_COLUMNS
     ]
@@ -1263,9 +1284,10 @@ def _answer_block(
     cases: str,
 ) -> DisclosureBlock:
     """The page's answer, first on it: for each candidate, its promotion reading and the judge's side-by-side
-    preference in one plain sentence (``Undecided, so shipped stays: side by side, the judge gave lead-first a share of
-    0.68 of each pair ...``), the promotion's own sentence after it where the preference alone does not explain the
-    decision. ``cases`` counts the side's cases in words (``7 held-out``)."""
+    preference in one plain sentence (``Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68%
+    of its preference over shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle
+    it.``), the promotion's own sentence after it where the preference alone does not explain the decision. ``cases``
+    counts the side's cases in words (``7 held-out cases``)."""
     sentences = [
         _answer_sentence(control, arm, pairwise.get(arm), unread.get(arm), decisions.get(arm), why.get(arm), cases)
         for arm in candidates
@@ -1293,22 +1315,26 @@ def _answer_sentence(
     improved = primary.outcome == "improved" and primary.reason != "too_few_cases" and read.void is None
     regressed = primary.outcome == "regressed" and primary.reason != "too_few_cases" and read.void is None
     if read.share is None:
-        preference = f"side by side, the judge scored no pair of {arm} against {control}"
+        preference = f"across {cases} the judge scored no pair of {arm} against {control}"
     else:
         preference = (
-            f"side by side, the judge gave {arm} a share of {_spelled(read.share)} of each pair against {control} "
-            "(0.5 is no preference)"
+            f"across {cases} the judge gave {arm} {render_cell(_in_points(read.share))}% of its preference over "
+            f"{control} (50% is even)"
         )
+    settle = read.cases_to_settle
     if read.void is not None:
         preference += f", but its two reading orders disagreed too often for that to count ({read.void})"
     elif primary.reason == "too_few_cases":
-        preference += f", on {cases} cases, too few to read"
+        preference += ", too few cases to read"
     elif improved or regressed:
-        preference += f", which {cases} cases tell apart from no preference"
+        preference += ", enough cases to tell from an even split"
     elif primary.outcome == "not_separated":
-        preference += f", which {cases} cases cannot tell apart from no preference"
+        preference += ", too few cases to tell from an even split"
+        if settle is not None:
+            about = f"more than {PROJECTION_CASE_CAP}" if settle > PROJECTION_CASE_CAP else f"about {settle}"
+            preference += f"; {about} cases would settle it"
     else:
-        preference += f", which {cases} cases read as {primary.outcome.replace('_', ' ')}"
+        preference += f", which reads as {primary.outcome.replace('_', ' ')}"
     if decision is None:
         return f"{preference[0].upper()}{preference[1:]}; a promotion is read on the held-out side only."
     lead = _DECISION_LEADS[decision].format(candidate=arm, control=control)
@@ -1318,6 +1344,11 @@ def _answer_sentence(
         or (decision == "undecided" and not improved)
     )
     return f"{lead}: {preference}." + ("" if explained or why is None else f" {why}")
+
+
+def _cases(n: int, side: str) -> str:
+    """The side's cases in words: ``7 held-out cases``, ``1 dev case``."""
+    return f"{n} {side} case{'' if n == 1 else 's'}"
 
 
 def _led(page: CampaignReport, answer: DisclosureBlock, side_by_side: Sequence[ReportBlock]) -> CampaignReport:

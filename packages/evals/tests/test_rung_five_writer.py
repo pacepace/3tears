@@ -131,8 +131,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     lines = printed.splitlines()
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
     # The pairwise preference, the primary reading: lead-first's share, not separated at 7 cases, a row with columns.
-    assert "| lead-first | every pair | not separated | 0.68 | 0.36 | -0.28 to 1 |" in lines
-    assert any(line.startswith("| lead-first | 0.86 (6 of 7) | 0.07 | 0 | 39 | ") for line in lines)
+    assert "| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |" in lines
+    assert any(line.startswith("| lead-first | 86% (6 of 7) | 7 | 0 | 39 | ") for line in lines)
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
         "promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only "
@@ -148,8 +148,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     page = (writer_dir / ".evals" / "reports" / "writer" / "report.md").read_text(encoding="utf-8")
     first_screen = page.split("\n## ", 1)[0].splitlines()
     assert first_screen[1] == (
-        "**Undecided, so shipped stays: side by side, the judge gave lead-first a share of 0.68 of each pair against "
-        "shipped (0.5 is no preference), which 7 held-out cases cannot tell apart from no preference.**"
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
 

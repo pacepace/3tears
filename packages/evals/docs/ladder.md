@@ -500,14 +500,14 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
 | report_writer.evidence_fits_claims (judged) | 4.43 | 4.86 |
 ...
-| Candidate | Pairs | Reads | Share | Difference | Interval, 95% |
+| Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval, 95% (pts) |
 |---|---|---|---|---|---|
-| lead-first | every pair | not separated | 0.68 | 0.36 | -0.28 to 1 |
+| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |
 | lead-first | both pages finished | untested | — | — | — |
 
-| Candidate | Order consistency | First-slot lean | Can't tell | Held-out cases to settle | Spent |
+| Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |
 |---|---|---|---|---|---|
-| lead-first | 0.86 (6 of 7) | 0.07 | 0 | 39 | $0.1404 of $1.95 |
+| lead-first | 86% (6 of 7) | 7 | 0 | 39 | $0.1404 of $1.95 |
 ...
 promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -519,7 +519,7 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 sentence, and the same two side-by-side tables head its Scorecard:
 
 ```text
-**Undecided, so shipped stays: side by side, the judge gave lead-first a share of 0.68 of each pair against shipped (0.5 is no preference), which 7 held-out cases cannot tell apart from no preference.**
+**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle it.**
 ```
 
 Further down it reads the two code measures that moved most:
@@ -543,7 +543,7 @@ it may spend, and what to do when a recording run is cut short.
 **The lesson: a judge that scores one page at a time sits at the ceiling here, so the reading that decides is the
 judge's preference between two pages.** Every judged item reads 5 or near it for both arms: the writer revises each page
 until the editor passes it on the same rubric, so the scores bunch at the top and cannot tell the arms apart. Read side
-by side, the same judge gave lead-first a share of 0.68 (0.5 is no preference), and its two orders agreed on 6 of the 7
+by side, the same judge gave lead-first 68% of its preference (50% is even), and its two orders agreed on 6 of the 7
 cases. Two code measures moved the same way: 3 of 7 lead-first reports finished against 1 of 7, with fewer must-fix
 findings left open (0.29 a report against 0.43). None of it separates. That preference is the promotion read's primary
 reading, fixed before the run: it reads `promote` only when the preference favours the candidate on enough held-out
