@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 from enum import StrEnum
 from unittest.mock import patch
@@ -460,3 +462,37 @@ class TestACredentialBreakerSaysItIsOne:
         assert str(raised.value).startswith("Circuit open for anthropic, retry in")
         [opened] = [r for r in caplog.records if "opening" in r.getMessage()]
         assert opened.__dict__["extra_data"]["credential_scoped"] is False
+
+
+class TestTheFingerprintKeyIsDrawnOnFirstUse:
+    def test_importing_the_factory_draws_no_randomness(self) -> None:
+        script = (
+            "import secrets\n"
+            "def refuse(*a, **k):\n"
+            "    raise AssertionError('randomness drawn at import')\n"
+            "secrets.token_bytes = refuse\n"
+            "secrets.token_hex = refuse\n"
+            "import threetears.models.factory\n"
+            "from threetears.models import circuit_breaker\n"
+            "circuit_breaker.CircuitBreakerRegistry()\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+        assert done.returncode == 0, done.stderr
+
+    def test_each_registry_still_draws_its_own_key_once_on_first_credential(self) -> None:
+        draws: list[bytes] = []
+
+        def draw(size: int) -> bytes:
+            draws.append(bytes([len(draws) + 1]) * size)
+            return draws[-1]
+
+        with patch("threetears.models.circuit_breaker.secrets.token_bytes", draw):
+            first, second = CircuitBreakerRegistry(), CircuitBreakerRegistry()
+            assert draws == []
+            first.get("anthropic")
+            assert draws == []
+            first.get("anthropic", credential="sk-a")
+            first.get("anthropic", credential="sk-b")
+            second.get("anthropic", credential="sk-a")
+        assert len(draws) == 2
+        assert draws[0] != draws[1]
