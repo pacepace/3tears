@@ -579,6 +579,26 @@ async def test_a_batch_whose_judging_costs_past_its_reservation_leaves_the_next_
     assert offline == []
 
 
+async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_would(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """The one cap refused: a $3 cap gives each arm $1.20, under the first batch's two reports at $0.75. The refusal
+    names the smallest cap that admits it, two arms' $1.50 over the four fifths the arms share: $3.75."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, cases, arms, batch_size=2, max_cost_usd=3.0).run()
+
+    assert str(refused.value) == (
+        "the first batch's 2 report(s) at $0.75 each could pass an arm's $1.20 part of max_cost_usd $3.00, after the "
+        "pairwise pass's $0.60 (pairwise_share 0.2); a max_cost_usd of $3.75 or more admits it, or lower budget_usd"
+    )
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
+    assert offline == []
+
+
 #: Seeded fixtures prototype 5 wrote no page over: each arm writes nothing on them, so nothing of theirs is judged.
 UNJUDGED: Final = ("r1", "r2", "r3", "r4")
 

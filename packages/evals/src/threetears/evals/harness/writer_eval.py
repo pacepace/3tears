@@ -1051,7 +1051,9 @@ class WriterEval:
                 )
             launched += planned if batch is None else batch
             # A batch's runs each run under the batch's own reservation, which its arm's spend so far leaves room
-            # for, so no arm passes its part; one batch of every case runs under the whole part, as it always has.
+            # for; one batch of every case runs under the whole part, as it always has. The engine checks a run's cap
+            # between cells, so cells running at the crossing finish past it, and the last batch can take an arm past
+            # its part by what they go on to spend (an unbatched run overshoots the same way: #1111).
             reservation = costs.arm(size) if len(batches) > 1 else share
             ran = await self._launch_batch(host, template_id, ref, dict.fromkeys(arms, reservation), arms)
             for arm, run_id in ran.items():

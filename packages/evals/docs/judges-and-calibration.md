@@ -898,15 +898,17 @@ The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and s
 
 **The spend cap is a budget the run runs under.** Before each batch the run checks that the batch's worst case (its
 reports at `budget_usd`, their judging and its pairs at the judge's floor) fits what each part has left after its spend
-so far, as its runs and passes recorded it. Each batch's runs run under that reservation, so no arm passes its part,
-and a batch that came in under it leaves the rest to the next. The first batch that does not fit is not launched: the
+so far, as its runs and passes recorded it. Each batch's runs run under that reservation. The engine checks a run's
+cap between cells, so cells running when it is crossed finish past it, and the last admitted batch can take an arm
+past its part by what those cells go on to spend, as an unbatched run can (#1111). A batch that came in under
+its reservation leaves the rest to the next. The first batch that does not fit is not launched: the
 run stops at the spend cap, reads what it has, and its pass's record and line say so once, with the spend and the
 reservation (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a spend cap that cannot admit the first batch
 is refused, naming the smallest that would. At `--cap-usd 45` each arm's part is $18. A batch of 4 reserves
 4 × ($1.50 + 7 dimensions × 2 attempts × the rung-5 judge's $0.0101 floor) = $6.57 (a judge that prices nothing: $6),
 so reservations alone admit two batches, 8 cases; at the recorded 25-case runs' $0.44 per case for the costlier arm,
 every batch of the 25 is admitted. A landslide that launches 8 cases costs about 8 × $0.66 (both arms: $16.62 over 25
-in the recorded no-editor run) + 7 pairs × $0.016 = $5.43.
+in the recorded no-editor run) + 7 pairs × $0.016 = $5.39.
 
 **A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
 verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.

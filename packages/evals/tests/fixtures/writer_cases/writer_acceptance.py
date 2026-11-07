@@ -67,7 +67,7 @@ floor) fits what each part's recorded spend so far leaves, and the run stops at 
 when the next would not; only a spend cap that cannot admit the first batch is refused, naming the smallest that
 would. At ``--cap-usd 45`` each arm's part is $18 and a batch of 4 reserves $6.57 with the rung-5 judge's floor ($6 for
 a judge that prices nothing): two batches on reservations alone, every batch of 25 at the recorded runs' spend. A
-landslide that launches 8 cases costs about 8 × $0.66 for both arms + 7 pairs × $0.016 = $5.43, from the recorded
+landslide that launches 8 cases costs about 8 × $0.66 for both arms + 7 pairs × $0.016 = $5.39, from the recorded
 no-editor run (the docs' stopping-rule section shows the derivation).
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
