@@ -271,7 +271,6 @@ class TestTheBundleAndItsCodeOnlyReport:
         report = build_code_only_report(bundle, assembled_at="2026-10-12T00:00:00+00:00")
         assert _said(report) == []
 
-
     def test_the_page_groups_the_stored_counts_and_the_bundle_keeps_them_as_stored(self) -> None:
         # The bundle fingerprints its disclosures, so their counts stay bare as assembled ("6224 of 6224"); the page
         # prints a count the one way the package spells it ("6,224 of 6,224"), grouping it on its way out.
