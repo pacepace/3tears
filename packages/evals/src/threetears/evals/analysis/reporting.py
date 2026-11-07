@@ -43,7 +43,6 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from pydantic import Field, model_validator
 
-from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.host.profile import HostProfile
@@ -453,11 +452,11 @@ class UnconfirmedModelIdentity(EvalBaseModel):
         named = f" (the responses that named one named {', '.join(self.served_models)})" if self.served_models else ""
         if self.role == "candidate":
             return (
-                f"the candidate{asked} made calls whose response named no model in {spell_count(self.n_unrecorded)} of "
-                f"{spell_count(self.n_total)} result(s){named}"
+                f"the candidate{asked} made calls whose response named no model in {self.n_unrecorded} of "
+                f"{self.n_total} result(s){named}"
             )
         return (
-            f"the judge{asked} produced {spell_count(self.n_unrecorded)} of {spell_count(self.n_total)} score(s) whose response named no "
+            f"the judge{asked} produced {self.n_unrecorded} of {self.n_total} score(s) whose response named no "
             f"model{named}"
         )
 
@@ -676,7 +675,7 @@ class RequestSettingsReading(EvalBaseModel):
         """
         unit = _ROLE_UNIT[self.role]
         if self.state == "unverified":
-            return f"unverified ({spell_count(self.n_unverified)} of {spell_count(self.n_total)} {unit} not reported)"
+            return f"unverified ({self.n_unverified} of {self.n_total} {unit} not reported)"
         if self.state == "mixed":
             return "mixed: " + _shares_words(self.sent, unit)
         return request_settings_words(self.sent[0].settings)
@@ -698,16 +697,16 @@ class RequestSettingsReading(EvalBaseModel):
         elif self.sent and self.n_not_as_asked:
             said.append(
                 f"{name} was asked for {asked} and sent {request_settings_words(self.sent[0].settings)} on "
-                f"{spell_count(self.n_not_as_asked)} of {spell_count(self.n_total)} {unit}"
+                f"{self.n_not_as_asked} of {self.n_total} {unit}"
             )
         if self.n_unverified:
             said.append(
-                f"{name}'s client did not report what it sent for {spell_count(self.n_unverified)} of {spell_count(self.n_total)} {unit}, so "
+                f"{name}'s client did not report what it sent for {self.n_unverified} of {self.n_total} {unit}, so "
                 f"those cannot say whether what was asked ({asked}) was applied"
             )
         if self.n_unenforced:
             said.append(
-                f"{name}'s settings were sent without enforcement on {spell_count(self.n_unenforced)} of {spell_count(self.n_total)} {unit}; the "
+                f"{name}'s settings were sent without enforcement on {self.n_unenforced} of {self.n_total} {unit}; the "
                 "provider may have ignored any the serving model does not take"
             )
         return said
@@ -721,7 +720,7 @@ _COUNT_WORDS: dict[int, str] = {2: "two", 3: "three", 4: "four"}
 
 def _shares_words(shares: Sequence[SentSettingsShare], unit: str) -> str:
     """Several sent values with their counts, the unit named once: ``3 score(s) with {...}, 1 with {...}``."""
-    counted = [f"{spell_count(share.count)} with {request_settings_words(share.settings)}" for share in shares]
+    counted = [f"{share.count} with {request_settings_words(share.settings)}" for share in shares]
     first, *rest = counted
     head, _, tail = first.partition(" ")
     return ", ".join([f"{head} {unit} {tail}", *rest])
