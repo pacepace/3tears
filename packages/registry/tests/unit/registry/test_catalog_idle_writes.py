@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.core.tool_wire import RegistrationManifest, ToolManifestEntry
 from threetears.core.testing.kv import FakeKvBucket
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import WRITE_FAILURE_THRESHOLD, CopyStatus, ToolCatalog

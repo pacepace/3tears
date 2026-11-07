@@ -209,7 +209,8 @@ what a package talks to outside the process.
 
 Follow the arrows and they all end in the same place: `core` and the three tiers.
 `agent-acl` and `langgraph` are shared by most of the agent family, and `agent-tools` is
-the hub that `registry`, `agent-workspace` and `scrape` all build on.
+the hub that `agent-workspace` and `scrape` build on. `registry` reads the tool pods' wire
+protocol from `core` and does not depend on `agent-tools`.
 
 ```mermaid
 graph LR
@@ -261,7 +262,6 @@ graph LR
 
     SCRAPE --> TOOLS
     SCRAPE --> MODELS
-    REG --> TOOLS
     REG --> ACL
     WORK --> TOOLS
     WORK --> AUDIT

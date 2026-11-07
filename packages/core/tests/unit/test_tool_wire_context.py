@@ -20,8 +20,7 @@ from uuid import UUID, uuid7
 import pytest
 from pydantic import ValidationError
 
-from threetears.agent.tools.context_envelope import CallContext, bind_log_context
-from threetears.agent.tools.server import CallRequest
+from threetears.core.tool_wire import CallContext, CallRequest, bind_log_context
 from threetears.observe import clear_context
 from threetears.observe.logging import get_context
 
@@ -144,7 +143,8 @@ class TestCallRequestRejectsLegacyFlatFields:
         message = str(excinfo.value)
         assert "conversation_id" in message
         assert "CallContext" in message
-        assert "threetears.agent.tools.context_envelope" in message
+        # the core path, which every install of either side carries; a registry-only install has no agent-tools
+        assert "threetears.core.tool_wire.CallContext" in message
 
     def test_user_id_flat_field_rejected(self) -> None:
         """a flat ``user_id`` produces a validation error naming the field."""
