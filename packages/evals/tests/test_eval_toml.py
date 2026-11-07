@@ -107,10 +107,11 @@ def test_the_command_line_runs_the_file_from_another_directory_and_fills_braces_
     assert main([str(rung_zero / "triage.toml")]) == 0
 
     printed = capsys.readouterr().out
-    assert "category: mean 1 (n=9" in printed
-    assert "urgent: mean 1 (n=9" in printed
+    # Each measure printed as the page names it: the classifier's label match as its Accuracy.
+    assert "Accuracy: mean 1 (n=9" in printed
+    assert "Urgent score: mean 1 (n=9" in printed
     # The recorded model never sets needs_human, so the two emails that need a person miss on it.
-    assert "needs_human: mean 0.3333 (n=9" in printed
+    assert "Needs human score: mean 0.3333 (n=9" in printed
     assert Path(".evals/reports/triage/report.html").is_file()
 
 

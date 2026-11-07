@@ -405,10 +405,11 @@ async def test_the_glossary_lists_only_what_the_page_uses_and_explains_the_contr
     assert "cannot change" not in GLOSSARY["floor status"] and "interval" in GLOSSARY["floor status"]
 
 
-async def test_one_arm_reads_n_of_n_cases_passed_first() -> None:
+async def test_one_arm_reads_its_pass_rate_as_a_count_first_then_the_cases_it_missed() -> None:
     one = await Eval(CASES, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     (verdict,) = [b for b in one.report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: case \d(, case \d)*", verdict.text), verdict.text
+    said = r"production passed \d+ of 12 trials on 4 cases\. Cases that failed a trial: case \d(, case \d)*\."
+    assert re.fullmatch(said, verdict.text), verdict.text
 
 
 async def test_one_arm_heads_its_readings_as_readings_since_nothing_is_contrasted() -> None:
@@ -425,7 +426,8 @@ async def test_a_case_its_author_named_is_named_so_everywhere_and_numbered_other
     one = await Eval(named, {"production": answering(10, 0.003)}, ["label"], k=3, name="queue").run(store=":memory:")
     report = one.report
     (verdict,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
-    assert re.fullmatch(r"queue: \d/4 cases passed; \d miss(es)?: queue-\d(, queue-\d)*", verdict.text), verdict.text
+    said = r"production passed \d+ of 12 trials on 4 cases\. Cases that failed a trial: queue-\d(, queue-\d)*\."
+    assert re.fullmatch(said, verdict.text), verdict.text
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
     assert sorted(row["case"] for row in cases.values()) == [f"queue-{index}" for index in range(4)]
     # Only a failed or lost trial has a record, so its summary is read off the first record the page lays out; a

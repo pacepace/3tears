@@ -128,15 +128,15 @@ def test_a_check_unevaluable_against_a_starting_state_loses_only_its_own_baselin
     assert baseline == {LIT_IFF_DARK: 0}
 
 
-async def test_a_check_doing_nothing_passes_in_every_case_never_reads_as_a_measurement() -> None:
+async def test_a_check_doing_nothing_passes_in_every_case_is_never_shown_to_measure_the_behaviour() -> None:
     never_needless = 'all(it.to != variation.lamp for it in calls("room.switch"))'
     summary = (await Eval(CASES, room()(sensible), [never_needless], k=1).run(store=":memory:")).summary
     (goal,) = summary.goal_checks
     assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
     (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
     assert line.endswith(
-        "passed 2/2 — NOT A MEASUREMENT: a candidate that did nothing passes it in 2 of 2 case(s), "
-        "so this pass rate does not beat doing nothing"
+        "passed 2/2 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure "
+        "the behaviour; a candidate that did nothing passes it in 2 of 2 case(s)"
     )
 
 

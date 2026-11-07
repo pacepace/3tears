@@ -6,6 +6,40 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: one result, one sentence: the undecided reading says what it means, on every surface
+
+**Changed:** a contrast the evidence leaves undecided reads `the evidence cannot tell v2 and v1 apart` in a sentence
+and `cannot tell apart` in a table cell, defined once in the glossary (`style.CANNOT_TELL_APART`,
+`style.cannot_tell_apart`), never "not separated" or "nothing separated", which a first-time reader took for "the same".
+The campaign page's lead, the aspect page's verdict line, the quick print's first line and the exit line now print one
+sentence from one function (`verdict.verdict_line`, its `lead` the campaign's lead and the exit line's opening):
+the decision, then the figures it rests on, each as the table one step down prints it (`Accuracy: the evidence cannot
+tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1
+pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the
+arms differ as observed.`); a pass-rate lead the same from its row (`It passed 18 of 20 on production. …`, the To
+settle table's count where it has one); one arm `agent passed 31 of 36 trials on 12 cases.`, the
+aspect page and the print adding `Cases that failed a trial: r08, r09, r10.`. The aspect page's verdict drops
+`Declared question:`; an undecided guardrail reads what it means for the decision first, on every surface:
+`v2 may do worse than v1 on the No invented total score guardrail.`, the campaign's warning then counting the cases
+that could fail it (`Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.`). The
+setup gate opens `The test setup failed: it measured the setup instead of the models.` Each guardrail and
+measure keeps one reader name on every surface: the print names measures as the page does (`Accuracy`, `Number score`,
+never `currency` or `number`), a measurement's scorecard heads `Pass rate` and drops the classifier's `Label matched`
+column beside its `Accuracy`. A goal check a candidate that did nothing could pass reads, on the page and in the print
+alike, `unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the
+behaviour`, the print adding the baseline it measured; `NOT A MEASUREMENT` goes. `build_code_only_report` takes the
+aspect's `measure_order`, which its verdict line leads on. A reserved judge axis is headed by its plain name on every
+code-written surface (`outcome (judged)`, never `__outcome__ (judged)`), its judge disclosure too.
+
+**Hosts:** a reader of a host's code page, aspect page, quick print or exit line sees `the evidence cannot tell v2 and
+v1 apart` (`cannot tell apart` in a cell, `Cannot tell apart` as a campaign listing's status) where it read `v2 and v1
+not separated`, `nothing separated v2 from v1` or `Not separated`; a guardrail decision cell reading `undecided: v2 may
+be worse than v1 by more than the margin` where it read `undecided: not shown held, so not known to be safe`. The lead, the
+print's first line and the `exit 4:` line are worded anew and carry their figures (above), and the print's measure lines are named as the page names
+them. A host matching any of those strings, or reading `Verdict.words` for "not separated", updates its match. The
+writer page's chart notes and pills keep "not separated" until rung 5's judge recording is made again. Nothing stored
+changes.
+
 ### evals: a campaign's first screen says what the page is: a lead on every page, its rates with their counts
 
 **Changed:** every code-written campaign page opens on a lead, not only one where a guardrail warns: a comparison on

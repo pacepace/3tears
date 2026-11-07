@@ -40,7 +40,8 @@ async def test_with_no_report_the_page_leads_on_code_s_reading_and_holds_no_writ
     assert page.basis == "code_only"
     # The page is code's: it says what code read, and nothing of a report it does not hold (H5).
     first = first_screen_markdown(page)
-    assert "**Accuracy on billing: v2 worse than production. Accuracy on tone: v2 better than production.**" in first
+    assert "**Accuracy on billing: v2 worse than production. It reads 90% on production, 54 of 60 trials." in first
+    assert "Accuracy on tone: v2 better than production. It reads 30% on production, 18 of 60 trials." in first
     assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "memo"]
     with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
         CampaignReport.model_validate(
@@ -94,7 +95,10 @@ async def test_a_choice_with_no_report_leads_on_its_pairs_then_lays_the_pairs_ou
     page = await kind_page_of("billing", "refunds")
     assert page.readings.kind == "choice" and "recommendation" not in page.json_document()
     # The lead is each aspect's pairs; the cost's routing is a Design & provenance row, not a first-screen line.
-    lead = "On billing, alpha and beta not separated. On refunds, alpha and beta not separated."
+    lead = (
+        "On billing, the evidence cannot tell alpha and beta apart. On refunds, the evidence cannot tell alpha and "
+        "beta apart."
+    )
     assert opening(page) == [("verdict", lead)]
     # The pairs are code's readings, laid out after the answer wherever the scorecard puts them.
     markdown, html = campaign_report_markdown(page), campaign_report_html(page)

@@ -55,7 +55,8 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     measured_figure,
     pair_blocks,
     pairs_words,
-    row_words,
+    row_figures,
+    row_sentence,
     settle_blocks,
     table_blocks,
 )
@@ -68,10 +69,10 @@ from threetears.evals.analysis.report.model import (
     ReportBlock,
 )
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.analysis.quantities import is_money
 from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCall
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.analysis.report.build import contrast_evidence
+from threetears.evals.analysis.report.verdict import led_sentences
 
 __all__ = ["build_campaign_report"]
 
@@ -212,7 +213,8 @@ def _lead_blocks(
 
     Where the aspect's design lists its graders' measures (``AspectDesign.measure_order``, which an eval files in the
     order it lists its graders), the lead is the first of them a contrast tested that is no cost, in the aspect page's
-    own words (``Accuracy: v2 and v1 not separated, a lead.``): the measure an eval's printed line leads on, and the
+    own words (``Accuracy: the evidence cannot tell v2 and v1 apart, a lead.``,
+    :func:`~threetears.evals.analysis.report.verdict.led_sentences`): the measure an eval's printed line leads on, and the
     one its question asks, where it asks one. Where it lists none, the lead is the classifier's accuracy where the
     aspect reads one and no question is asked of it; else the question's measure, the aspect's pass rate (``Pass rate:
     v2 against v1 shown better.``), or with no question the pass rate as every grader's reading together. A reading
@@ -228,26 +230,23 @@ def _lead_blocks(
     sentences: list[str] = []
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
-        lead = _lead_measure(aspect, reports[aspect.label])
-        led = [
-            verdict
-            for verdict in reports[aspect.label].verdicts
-            if verdict.kind == "contrast" and verdict.reading != "trial" and verdict.name == lead
-        ]
-        if led:
-            sentences += [
-                f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None or not asked else ', a lead'}."
-                for verdict in led
-            ]
+        report = reports[aspect.label]
+        order = aspect.design.measure_order if aspect.design is not None else []
+        # The aspect's own verdict line's sentence, as its page and the quick print say it (verdict.py).
+        figures = contrast_evidence(report.bundle)
+        if led := led_sentences(report.bundle, report.verdicts, order, asked=asked, on=on, evidence=figures):
+            sentences += led
         elif rows := readings.on_aspect(aspect.label):
             sentences += [
-                f"Pass rate{on}: {row.arm_label} against {readings.control_label} {row_words(row)}"
-                f"{'' if row.confirmatory or not asked else ', a lead'}."
+                f"Pass rate{on}: {row_sentence(row, readings.control_label)}"
+                f"{'' if row.confirmatory or not asked else ', a lead'}. {row_figures(row, readings.control_label)}"
                 for row in rows
             ]
         elif paired := pairs_words(readings, aspect.label, marked=asked):
-            # An arm's label is a name, printed as given, even where it opens the sentence.
-            sentences.append(f"On {names(aspect.label)}, {paired}." if several else f"{paired}.")
+            # An arm's label is a name, printed as given, even where it opens the sentence; the undecided reading's
+            # own words open with a capital, as a sentence does.
+            opened = paired[:1].upper() + paired[1:] if paired.startswith("the evidence ") else paired
+            sentences.append(f"On {names(aspect.label)}, {paired}." if several else f"{opened}.")
         elif measured := _measured_lead(aspect, readings):
             prefix = f"On {names(aspect.label)}, " if several else ""
             sentences += [f"{prefix}{said}." for said in measured]
@@ -284,23 +283,6 @@ def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
         if reading.aspect == aspect.label and reading.measure == "passed"
         if (figure := measured_figure(reading)) is not None
     ]
-
-
-def _lead_measure(aspect: Aspect, report: Report) -> str | None:
-    """The measure an aspect's lead reads: the first its design's ``measure_order`` lists that a contrast tested and
-    that is no cost; with no order listed, the classifier's accuracy where no question is asked of the aspect; None
-    where neither names one, and the lead reads the pass rate."""
-    order = aspect.design.measure_order if aspect.design is not None else []
-    if not order:
-        return None if report.bundle.question_declared else ACCURACY_MEASURE
-    tested = {verdict.name for verdict in report.verdicts if verdict.kind == "contrast" and verdict.reading != "trial"}
-    return next((name for name in order if name in tested and not _a_cost(name, report)), None)
-
-
-def _a_cost(measure: str, report: Report) -> bool:
-    """Whether a measure is a cost: money, or on the cost merit axis, as the aspect's catalog describes it."""
-    described = report.bundle.measure_catalog.get(measure) or METRIC_DESCRIPTORS.get(measure)
-    return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
 
 
 def _title(campaign: EvalCampaign, readings: CampaignReadings, arms: Sequence[CampaignArm] | None) -> str:

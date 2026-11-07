@@ -145,6 +145,6 @@ async def test_compare_s_disclosures_are_the_builder_s(comparison: Result) -> No
     (fold,) = by_service.aspects
     said = [text for text in _disclosures(fold.report.blocks) if text.startswith("No margin is declared")]
     assert len(said) == 1
-    assert "not separated never means the arms are alike" in said[0]
+    assert "cannot tell apart never means the arms are alike" in said[0]
     (table,) = [b for b in fold.report.blocks if isinstance(b, TableBlock) and b.name == "no_margin"]
     assert [row["reading"] for row in table.values()].count("Accuracy") == 1

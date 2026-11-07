@@ -1,9 +1,11 @@
 """What warns on a campaign's page, for every kind, under its question and answer: one plain line per arm for the bars
 it misses, then one per arm for the floors it breaks, then one per arm and decision for the guardrails it is not
-shown safe on. Each line says what the warning means for the arm, names the aspects it holds on, and leaves the
-figures to the tables below, but for one: an undecided guardrail on a pass/fail check says how many cases each arm
-failed it on and that so few cases cannot decide it, so a reader never reads the sample's size as a defect. Each only
-warns, and this is where it warns."""
+shown safe on. Each line says what the warning means for the decision first, names the aspects it holds on, and
+leaves the figures to the tables below, but for one: an undecided guardrail on a pass/fail check then says how many
+cases could fail it and how many each arm failed it on, too few to settle it, so a reader never reads the sample's
+size as a defect. Each guardrail is named as the page names its measure everywhere
+(:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`). Each only warns, and this is where it
+warns."""
 
 from __future__ import annotations
 
@@ -14,9 +16,8 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
-from threetears.evals.analysis.style import humanize
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
 
@@ -37,20 +38,25 @@ def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[Repo
     return [DisclosureBlock(section="warnings", source="bar", text=text) for *_, text in _bar_lines(readings, names)]
 
 
-#: How a guardrail's line says what it means for an arm, by the guardrail's decision, the breached first.
-_GUARDRAIL_WORDS: dict[str, str] = {"breached": "breaches", "undecided": "is not yet shown safe on"}
+#: How a guardrail's line says what it means for the decision, by the guardrail's decision, the breached first: the
+#: same words the aspect's verdict line says it in (:mod:`~threetears.evals.analysis.report.verdict`).
+_GUARDRAIL_WORDS: dict[str, str] = {
+    "breached": "{arm} breaches {each}",
+    "undecided": "{arm} may do worse than {control} on {each}",
+}
 
 
 def guardrail_warnings(
     campaign: EvalCampaign, readings: CampaignReadings, reports: Mapping[str, Report], *, names: AspectNames
 ) -> list[ReportBlock]:
     """One line per arm and decision naming each guardrail it is not shown safe on with the aspects that guardrail
-    holds on, after the broken floors: ``v2 is not yet shown safe on the no invented total guardrail on classify and
-    the polite guardrail on tone.`` Each guardrail is paired with its own aspects, never with another's. A guardrail
-    only warns: no line says an arm is not adopted. A line naming one undecided pass/fail check says what leaves it
-    undecided (:func:`_undecided_bound`): ``v2 is not yet shown safe on the no invented total guardrail on classify:
-    v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few
-    cases to show v2 within its 2-point margin or beyond it.``
+    holds on, after the broken floors, what it means for the decision first: ``v2 may do worse than v1 on the No
+    invented total score guardrail on classify and the Polite guardrail on tone.`` Each guardrail is paired with its
+    own aspects, never with another's, and named as the page names its measure. A guardrail only warns: no line says
+    an arm is not adopted. A line naming one undecided pass/fail check then says what leaves it undecided
+    (:func:`_undecided_bound`): ``v2 may do worse than v1 on the No invented total score guardrail on classify, by
+    more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle
+    it.``
 
     :param campaign: The campaign.
     :ptype campaign: EvalCampaign
@@ -80,7 +86,7 @@ def guardrail_warnings(
                 if check.decision != decision:
                     continue
                 arm = label(check.contrast.variant_key)
-                aspects = by_arm.setdefault(arm, {}).setdefault(humanize("dimension", check.name), [])
+                aspects = by_arm.setdefault(arm, {}).setdefault(measure_name_of(bundle, check.name), [])
                 if aspect.label not in aspects:
                     aspects.append(aspect.label)
                 checks_of.setdefault(arm, []).append((check, bundle, label(check.control.variant_key)))
@@ -96,15 +102,17 @@ def guardrail_warnings(
             if decision == "undecided" and len(checks_of[arm]) == 1:
                 ((check, bundle, control),) = checks_of[arm]
                 bound = _undecided_bound(check, bundle, arm=arm, control=control)
-            text = f"{arm} {words} {listed(each)}{f': {bound}' if bound else ''}."
+            said = words.format(arm=arm, control=readings.control_label, each=listed(each))
+            text = f"{said}{bound}." if bound else f"{said}."
             blocks.append(DisclosureBlock(section="warnings", source="guardrails", text=text, term="guardrail"))
     return blocks
 
 
 def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, arm: str, control: str) -> str | None:
-    """What leaves one undecided guardrail undecided, where it is a pass/fail check read on a declared margin: how
-    many of the cases each arm failed it on, and that so few cases cannot show the arm within the margin or beyond
-    it. ``neither arm failed it on any of 30 cases, too few cases to show v2 within its 5-point margin or beyond it``.
+    """What leaves one undecided guardrail undecided, where it is a pass/fail check read on a declared margin: the
+    margin the arm may be worse than the control by, then how many cases could fail it and how many each arm failed
+    it on, too few to settle it: ``, by more than its 5-point margin. Of the 30 cases that could fail it, neither arm
+    failed any, too few to settle it``.
 
     The counts are read off the readings: a case an arm failed it on is one where a trial of that arm failed the
     check (``TrialRow.failed_checks``), and an arm whose every value is the check's good end failed it on none. None
@@ -120,7 +128,7 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
     :ptype arm: str
     :param control: The control, by name.
     :ptype control: str
-    :return: The words, or None.
+    :return: The words, opening with the comma that follows the guardrail's name, or None.
     :rtype: str | None
     """
     descriptor = bundle.measure_catalog.get(check.name)
@@ -135,10 +143,12 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
         return None
     good = 1.0 if check.higher_is_better else 0.0
     cases = check.contrast.n_cases
-    margin = f"{format_number(check.margin * 100)}-point margin"
-    tail = f"too few cases to show {arm} within its {margin} or beyond it"
+    head = (
+        f", by more than its {format_number(check.margin * 100)}-point margin. Of the {cases} cases that could fail it"
+    )
+    tail = "too few to settle it"
     if check.control.mean == good and check.contrast.mean == good:
-        return f"neither arm failed it on any of {cases} cases, {tail}"
+        return f"{head}, neither arm failed any, {tail}"
     if bundle.trials_omitted:
         return None
     name = descriptor.reader_name or check.name
@@ -154,8 +164,8 @@ def _undecided_bound(check: GuardrailCheck, bundle: AnalysisContextBundle, *, ar
 
     # A count of cases, never of trials: with repeats it can run against the per-trial rates the tables show.
     return (
-        f"{arm} failed it on {failed(check.contrast.variant_key)} of {cases} cases and {control} on "
-        f"{failed(check.control.variant_key)}, a case counted once however many of its trials failed it, {tail}"
+        f"{head}, {arm} failed {failed(check.contrast.variant_key)} and {control} failed "
+        f"{failed(check.control.variant_key)}, {tail}"
     )
 
 

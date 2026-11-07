@@ -304,9 +304,10 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
             _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
         )
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
-        (said,) = [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
-        # One sentence, then the readings listed once each in a table beside it.
+        # The readings listed once each in a table titled for what they are; the sentence saying no question asks
+        # about them is retired (presentation build, chunk 1: a page says what it is, never what it lacks).
+        assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
         (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
         named = [str(row["reading"]) for row in listed.values()]
-        assert said.section == listed.section == "not_tested" and f"{CAPABILITY} (judged)" in named
-        assert not any(BOUNDARY in name for name in named) and BOUNDARY not in said.text
+        assert listed.section == "not_tested" and listed.title == "Unasked readings"
+        assert f"{CAPABILITY} (judged)" in named and not any(BOUNDARY in name for name in named)

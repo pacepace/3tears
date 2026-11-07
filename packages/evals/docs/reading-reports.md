@@ -147,8 +147,8 @@ the matrix's last row, `All aspects (equal weight)`.
 above zero), **shown worse** (its drop's interval lies wholly past the aspect's margin), **no worse than the margin**
 (neither, and its drop's interval at 95%, the floor's own, lies wholly within the margin: `within_margin` in the
 JSON) or **unclear**. An aspect declaring no margin is never no worse than one: asked a question it is a superiority
-question, shown worse where its drop's interval lies wholly below zero and **not separated** where neither side
-clears; asked none, it is never shown worse. "Shown worse" is a
+question, shown worse where its drop's interval lies wholly below zero and **cannot tell apart** where neither
+side clears; asked none, it is never shown worse. "Shown worse" is a
 drop past the margin, which is worse than the control; "no worse than the margin" says the margin, since within it
 the candidate may still be a little worse. A reading on an aspect the question does not ask about is
 marked `a lead`: worth chasing, not yet shown. A choice reads each pair: one arm **ahead** where the whole interval
@@ -239,11 +239,13 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   date, then the design (`30 cases × 3 repeats`). After that an arm is its given label (`production`), the control
   marked `▸` in a table. Only the arms line and the verdict name a model.
 - **Verdict**, written by code and never by a model, result first: one sentence for the result, a second only for
-  a guardrail. The first rule that fires: the test setup lost too much (`No verdict: the test setup failed, not the
-  models.`, the arm, the cause, the fix; `No verdict: nothing was measured, because the test setup failed or the
-  provider declined every call.` when every arm's run failed having measured nothing); one arm (`emails: 18/30 cases passed; 12 misses: double-charge,
-  gdpr-delete, …`, each case by the name its author gave it, else `case N`); which arm passed more, when an arm is
-  under the case floor; a declared question's contrasts (`Declared question: v2 worse than v1 on Accuracy; …`);
+  a guardrail. It is the campaign page's lead sentence, the quick print's first line and the exit line's opening, word
+  for word. The first rule that fires: the test setup lost too much (`The test setup failed: it measured the setup
+  instead of the models.`, the arm, the cause, the fix; `The test setup failed or the provider declined every
+  call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
+  90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
+  `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
+  first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), then what else the evidence tells apart;
   `Exploratory:` (linked to the glossary) and what separated, or `nothing separated v2 from v1 on any reading`,
   never "no difference". A guardrail an arm is not shown safe on is the second sentence: `Not yet shown safe: v2 on
   no invented total.` No floor writes this line.
@@ -430,14 +432,14 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, `v2 and v1 not separated`. The verdict line names the reading too (`v2 better than v1 on
-cost per reply (lower is better)`).
+the measure's margin`, `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
+verdict line names the reading first (`Accuracy: v2 better than v1`).
 
 | Verdict | Means | Do |
 |---|---|---|
 | better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
-| not separated | the cases could not tell the arms apart, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
+| cannot tell apart (typed `not_separated`) | the cases could not tell the arms apart, which never means they are the same, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 
 Latency read while other cells or runs executed beside it is never in this table: the bundle withholds it

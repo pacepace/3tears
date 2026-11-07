@@ -451,7 +451,7 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
     assert read("change", readings=both) == "2 candidates improved"
     assert read("change", readings=[_change_row(aspect, *third, "better")]) == "third improved", "label, no short name"
     assert read("choice") == "No readings yet"
-    assert read("choice", pairs=[_pair(aspect, one, two, None)]) == "Not separated"
+    assert read("choice", pairs=[_pair(aspect, one, two, None)]) == "Cannot tell apart"
     assert read("choice", pairs=[_pair(aspect, one, two, two[0])]) == "fast ahead"
     cycle = [_pair(aspect, one, two, one[0]), _pair(aspect, two, third, two[0]), _pair(aspect, third, one, third[0])]
     assert read("choice", pairs=cycle) == "Arms differ", "an arm ahead of one and behind another leads nowhere"

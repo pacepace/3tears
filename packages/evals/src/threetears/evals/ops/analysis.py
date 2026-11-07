@@ -776,7 +776,7 @@ def _outcome(readings: CampaignReadings, arms: Sequence[CampaignArm]) -> str:
         }
         if len(leaders := ahead - behind) == 1:
             return qualified(f"{named(next(iter(leaders)))} ahead", leaders)
-        return "Arms differ" if ahead else "Not separated"
+        return "Arms differ" if ahead else "Cannot tell apart"
     if not readings.readings:
         return "No readings yet"
     better = list(dict.fromkeys(row.arm for row in readings.readings if row.reading == "better"))

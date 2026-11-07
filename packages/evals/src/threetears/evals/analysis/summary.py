@@ -115,7 +115,7 @@ from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.report.build import NO_STRATUM, TOO_FEW_CASES
+from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
 
@@ -317,18 +317,18 @@ class GoalCheckSummary(BaseModel):
             baseline = f"a candidate that did nothing passes it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
         if self.proven:
             return head if baseline is None else f"{head} ({baseline})"
-        if baseline is not None and self.did_nothing_passed == self.did_nothing_cases:
-            return f"{head} — NOT A MEASUREMENT: {baseline}, so this pass rate does not beat doing nothing"
+        # The page's words for a check not shown to beat doing nothing, and what follows from it; the do-nothing
+        # baseline, which only a run that measured it knows, after them.
         reason = {
-            "refuted": "refuted: its control does not show it tells acting from doing nothing",
+            "refuted": CHECK_PROOF_WORDS["refuted"],
             "unproven": (
                 "unproven: its proof was recorded under an earlier proof rule and needs re-proving by a new launch"
                 if self.stale_proof
-                else "unproven: no control shows it tells acting from doing nothing"
+                else CHECK_PROOF_WORDS["unproven"]
             ),
-            None: "unproven: this run recorded no proof that it tells acting from doing nothing",
+            None: "unproven: this run recorded no proof that it can tell acting from doing nothing",
         }[self.proof]
-        return f"{head} — {reason}" + ("" if baseline is None else f"; {baseline}")
+        return f"{head} — {reason}, {NOT_SHOWN_TO_MEASURE}" + ("" if baseline is None else f"; {baseline}")
 
 
 class DimensionSummary(BaseModel):

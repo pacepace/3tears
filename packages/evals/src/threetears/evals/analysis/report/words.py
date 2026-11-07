@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ComparisonVerdict
 from threetears.evals.kernel.analysis_measures import BarDecision
-from threetears.evals.analysis.style import arm_display_name, arm_name, measure_name
+from threetears.evals.analysis.style import arm_display_name, arm_name, cannot_tell_apart, measure_name
 from threetears.evals.kernel.campaign import (
     ConfidenceTier,
 )
@@ -90,7 +90,7 @@ COMPARISON_VERDICT_WORDS = worded(
         "improved": "{arm} better than {control}{better_end}",
         "regressed": "{arm} worse than {control}{better_end}",
         "equivalent": "{arm} and {control} equivalent, within the measure's margin",
-        "not_separated": "{arm} and {control} not separated",
+        "not_separated": cannot_tell_apart(["{arm}"], "{control}"),
         "untested": "untested",
     },
     ComparisonVerdict,
@@ -103,7 +103,7 @@ LOWER_IS_BETTER = " (lower is better)"
 
 def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, higher_is_better: bool = True) -> str:
     """A contrast's verdict in words, each arm by its label: ``v2 better than v1``, ``v2 worse than v1 (lower is
-    better)``, ``v2 and v1 not separated``.
+    better)``, ``the evidence cannot tell v2 and v1 apart``.
 
     :param verdict: What the contrast's test came to.
     :ptype verdict: ComparisonVerdict
@@ -126,7 +126,7 @@ GUARDRAIL_DECISION_WORDS = worded(
     {
         "held": "held: {arm} shown no worse than {control} by more than the margin",
         "breached": "breached: {arm} shown worse than {control} by more than the margin",
-        "undecided": "undecided: not shown held, so not known to be safe",
+        "undecided": "undecided: {arm} may be worse than {control} by more than the margin",
     },
     GuardrailDecision,
     "a guardrail decision",
@@ -185,6 +185,9 @@ def reading_heading(
         return "the pass rate"
     if reading != "judged" and goal_check_of(name) is not None:
         return measure_name(name, declared=declared)
+    if reading == "judged":
+        # A reserved judge axis by its plain name before the mark, never its stored id (``__outcome__ (judged)``).
+        return f"{reading_name(name)} (judged)"
     return reading_name(surface.measure_heading(name, reading))
 
 

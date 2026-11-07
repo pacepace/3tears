@@ -76,11 +76,11 @@ triage_eval = Eval("emails.jsonl", runner=triage, grader=["category", "urgent", 
 What it printed:
 
 ```text
-emails: 18/30 cases passed; 12 misses: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more
+emails: triage passed 70 of 90 trials on 30 cases. Cases that failed a trial: double-charge, refund-after-cancel, gdpr-delete, book-demo, phish-suspend, and 7 more.
 90 result(s): 90 scored
-  urgent: mean 0.8333 (n=90, min 0, max 1)
-  escalates: mean 0.9889 (n=90, min 0, max 1)
-  category: mean 0.9 (n=90, min 0, max 1)
+  Urgent score: mean 0.8333 (n=90, min 0, max 1)
+  Escalates score: mean 0.9889 (n=90, min 0, max 1)
+  Accuracy: mean 0.9 (n=90, min 0, max 1)
   per label:
     account: precision 1 (17/17 over 7 cases, 95% CI 0.5687-1), recall 0.8095 (17/21 over 7 cases, ...
     ...
@@ -159,7 +159,7 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
 What it printed:
 
 ```text
-replies: 20/20 cases passed; 0 misses
+replies: reply passed 40 of 40 trials on 20 cases.
 judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
 40 result(s): 40 scored, 0 excluded
   answer.grounded (judged pass/fail): mean 1 (n=40, min 1, max 1)
@@ -240,7 +240,8 @@ if __name__ == "__main__":
 - **`question=`** is the one sentence the comparison answers, asked before any reading is seen. Its measure is the
   first grader, here `currency` (the classifier's accuracy): the printed first line and the page lead on it, and the
   page quotes the question under its title. Asked alone it is a superiority question ("does v2 do better?"), so no
-  margin is filed and v2's pass rate reads shown better, shown worse or not separated, against zero. A question of
+  margin is filed and v2's pass rate reads shown better, shown worse or that the evidence cannot tell the two apart,
+  against zero. A question of
   "no worse than v1" writes its own margin, in the measure's units: `Eval(question=..., margin=0.05)` is 5 points.
   Leave the question out and the readings are leads: the page says "Exploratory comparison." once and leads on the
   same first grader.
@@ -258,16 +259,16 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: Accuracy: v2 and v1 not separated; nothing else separated; guardrail No invented total score undecided for v2
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
-  number: mean 0.8333 (n=90, min 0, max 1)
+  Number score: mean 0.8333 (n=90, min 0, max 1)
   ...
 v2: 90 result(s): 89 scored, 1 failed by the candidate
-  number: mean 1 (n=89, min 1, max 1)
+  Number score: mean 1 (n=89, min 1, max 1)
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: the gate failed on guardrail No invented total score, v2 vs v1: undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it)
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -277,22 +278,23 @@ guardrail's row, and the trials' census:
 ```text
 # v1 vs v2 · classify (invoices)
 "Does v2 read the currency an invoice charges in right more often than v1?"
-**Accuracy: v2 and v1 not separated.**
-**v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.**
-| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | not separated |
-| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.8, 35.4] pts | v2 and v1 not separated | 30 paired |
-| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: not shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
+**Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed.**
+**v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
+| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |
+| Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
+| No invented total score | v2 | 98.9% | 98.9% | 30 paired | 0 pts | [-13.4, 13.4] pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
 
 The page leads on the question's measure, the first grader's accuracy, as the printed line does, and says beside it
 what leaves the guardrail undecided. Because the question was asked before the readings were seen, each reading is an
-answer, set without ", a lead". v2's pass rate, 16.7 points above v1's, is not separated from it: its interval reaches
-below zero.
+answer, set without ", a lead". v2's pass rate is 16.7 points above v1's, and still the evidence cannot tell the two
+apart: its interval reaches below zero. That never means they are the same.
 
 **The lesson: a report that cannot decide says which question it could not answer, and what would answer it,
 rather than declaring a winner.** v2 read every invoice number it answered where v1 missed six of the ten noisy ones,
-and still v2 and v1 are not separated: on 30 invoices the corrected interval on that gain reaches below zero.
+and still the evidence cannot tell v2 and v1 apart: on 30 invoices the corrected interval on that gain reaches below
+zero.
 The guardrail is the question the first screen's warning names as unanswered: each arm stated a total once on a noisy invoice that prints
 none, the interval on the difference is ±13 points against a margin of 2, and an undecided guardrail is never read as
 held, so the gate fails and the run exits 4. What would answer it is a narrower interval on that guardrail, and only
@@ -394,12 +396,12 @@ booking = Eval(
 What it printed:
 
 ```text
-booking: 9/12 cases passed; 3 misses: r08, r09, r10
+booking: agent passed 31 of 36 trials on 12 cases. Cases that failed a trial: r08, r09, r10.
 36 result(s): 36 scored
-  in_window: mean 1 (n=36, min 1, max 1)
-  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it tells acting from doing nothing; a candidate that did nothing passes it in 4 of 12 case(s)
-  goal check not intersects(state.booked, state.busy): passed 32/36 — NOT A MEASUREMENT: a candidate that did nothing passes it in 12 of 12 case(s), so this pass rate does not beat doing nothing
-  goal check call_count("day.book") <= 1: passed 35/36 — NOT A MEASUREMENT: a candidate that did nothing passes it in 12 of 12 case(s), so this pass rate does not beat doing nothing
+  In window score: mean 1 (n=36, min 1, max 1)
+  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 4 of 12 case(s)
+  goal check not intersects(state.booked, state.busy): passed 32/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 12 of 12 case(s)
+  goal check call_count("day.book") <= 1: passed 35/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 12 of 12 case(s)
 ```
 
 **The lesson: grade what the agent did, and only with checks that can fail.** Most misses are the agent booking a
@@ -523,8 +525,8 @@ A report finished is one the editor cleared, so it is stored finished rather tha
 (`.evals/reports/writer/report.md`) reads the two code measures that moved most:
 
 ```text
-| Report finished | 14.3% [2.6%, 51.3%] | 42.9% [15.8%, 75%] | 28.6 pts | [-74.6, 100] pts | lead-first and shipped not separated | 7 paired |
-| Must-fix findings open | 0.4286 [0, 0.9229] | 0.2857 [0, 0.9848] | -0.1429 | [-1.313, 1.027] | lead-first and shipped not separated | 7 paired |
+| Report finished | 14.3% [2.6%, 51.3%] | 42.9% [15.8%, 75%] | 28.6 pts | [-74.6, 100] pts | cannot tell apart | 7 paired |
+| Must-fix findings open | 0.4286 [0, 0.9229] | 0.2857 [0, 0.9848] | -0.1429 | [-1.313, 1.027] | cannot tell apart | 7 paired |
 ```
 
 | What | Recorded |

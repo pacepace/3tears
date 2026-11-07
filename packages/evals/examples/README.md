@@ -137,18 +137,18 @@ it, and reads v2 against v1 in one row
 ```text
 # v1 vs v2 · classify (invoices)
 "Does v2 read the currency an invoice charges in right more often than v1?"
-**Accuracy: v2 and v1 not separated.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed.**
 ...
-**v2 is not yet shown safe on the no invented total guardrail on classify: v2 failed it on 1 of 30 cases and v1 on 1, a case counted once however many of its trials failed it, too few cases to show v2 within its 2-point margin or beyond it.**
+**v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...
 | Aspect | Cases | ▸ v1 (%) | v2 (pts) |
 |---|---|---|---|
-| classify | 30 | 81.1 | 16.7 (not separated) |
+| classify | 30 | 81.1 (73 of 90 trials, 30 cases) | 16.7 (cannot tell apart) |
 ```
 
-with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
-shown held, so not known to be safe (the interval reaches both sides of -2 pts, the declared margin, so the arm is
-shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
+with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: v2
+may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the
+arm is shown neither within it nor beyond it)`. That is the lesson: rather than declare a winner, the report names the question it could not
 answer, and what would answer it is more hard-negative cases, invoices that print no amount due (7 of the 30). One
 v2 trial failed (`a model the candidate runs failed or refused`), its recorded error `the candidate raised
 ValidationError: 1 validation error for Invoice` on `Invalid JSON`: malformed JSON from the model, counted against v2.

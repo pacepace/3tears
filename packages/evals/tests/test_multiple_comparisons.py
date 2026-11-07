@@ -483,7 +483,7 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
     (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]  # type: ignore[attr-defined]
-    assert " not separated (" in row["verdict"] and "declare value_range" in row["verdict"]
+    assert row["verdict"].startswith("cannot tell apart (") and "declare value_range" in row["verdict"]
 
 
 @pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])

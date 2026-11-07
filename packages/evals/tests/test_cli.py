@@ -127,7 +127,11 @@ def test_report_of_a_campaign_with_no_analysis_is_the_code_only_report(capsys: p
     title = out.splitlines()[0]
     # The page is headed by the campaign's title, its name the qualifier in parentheses.
     assert title.startswith("# ") and title.endswith(f"({campaign.name})")
-    assert out.splitlines()[1:4] == ["Exploratory comparison.", "", "**planner-lite and planner-pro not separated.**"]
+    assert out.splitlines()[1:4] == [
+        "Exploratory comparison.",
+        "",
+        "**The evidence cannot tell planner-lite and planner-pro apart.**",
+    ]
     assert f"| Analysis | {NO_ANALYSIS} |" in out and out.count(NO_ANALYSIS) == 1
     assert "**Scoreboard**" in out and "## Cases" in out and "## Methods" in out
 

@@ -20,9 +20,9 @@ The sections below are a change's; a choice's pairs are read by the same step-do
 as one family at the campaign's α, separately for gains and for drops: a gain is the change tested against zero, a
 drop the change tested against the aspect's margin. **The question's type decides the margin**: a question asked with
 no margin is a superiority question, its drop tested against zero as its gain is, so its row reads shown better, shown
-worse or neither (the page says not separated); a question with a margin is a non-inferiority question, its drop
-tested against the margin its author declared; an aspect asked nothing (every reading a lead) with no margin tests no
-drop. Each direction's claims are one-sided, read off a two-sided
+worse or neither (the page says the evidence cannot tell them apart); a question with a margin is a non-inferiority
+question, its drop tested against the margin its author declared; an aspect asked nothing (every reading a lead) with
+no margin tests no drop. Each direction's claims are one-sided, read off a two-sided
 interval, so each errs at most α/2 and the gains and drops together at most α, per candidate. **There is no error
 control across candidates**: with several candidates, one of them is shown better or worse by chance more often than
 α. Floors are read intersection-union, each at its nominal level with no correction, since a warning that fires less
@@ -1048,6 +1048,7 @@ def _reason(
                     f"{arm}'s {side} clears zero at {_percent(INTERVAL_LEVEL)}, not at the {_percent(level)} its "
                     f"{side}s are read at, corrected across {arm}'s aspects"
                 )
+        # Frozen with an analysis's readings (its frame), so its words stay as stored: a page states it as a reason.
         return f"its interval reaches zero, so {arm} and {control} are not separated"
     if row.margin is None:
         if rate.interval[1] < 0:

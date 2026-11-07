@@ -202,7 +202,7 @@ async def test_against_reads_the_same_runs_against_another_control_and_runs_noth
     rows = {row["contrast"]: row for row in on_b.contrasts("accuracy")}
     assert rows["Callable prompt v2, model b"]["control"] == "Callable prompt v1, model b"
     assert rows["Callable prompt v2, model b"]["verdict"] == (
-        "Callable prompt v2, model b and Callable prompt v1, model b not separated"
+        "the evidence cannot tell Callable prompt v2, model b and Callable prompt v1, model b apart"
     )
     assert rows["Callable prompt v1, model a"]["delta"] == pytest.approx(-50.0)
     with pytest.raises(ValueError, match="names no arm"):

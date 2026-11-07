@@ -70,8 +70,10 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
     return found
 
 
-#: The words a line states an absence by: what a page does not hold, rather than what it does.
-_ABSENCE = re.compile(r"\b(?:No|Nothing|nothing|not|never|none)\b(?:\s+[\w-]+)?")
+#: The words a line states an absence by: what a page does not hold, rather than what it does. A capital ``No`` opens
+#: a sentence (or follows a colon); inside one it starts a name (the ``No invented total score`` guardrail), not an
+#: absence, which mid-sentence is spelled ``no``.
+_ABSENCE = re.compile(r"(?:(?<!\S)(?<![\w,]\s)No|\bNothing|\bnothing|\bnot|\bnever|\bnone)\b(?:\s+[\w-]+)?")
 
 #: The first-screen sections and sources a line may state an absence in: what warns (a campaign's ``warnings``; an
 #: aspect page's broken floor, missed bar and guardrail lines and its case-floor caveat), where an absence is the

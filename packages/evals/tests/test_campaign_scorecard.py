@@ -95,13 +95,13 @@ def _unasked(label: str) -> Callable[[AnalysisContextBundle], AnalysisContextBun
     return change
 
 
-async def test_an_aspect_with_no_margin_is_said_to_read_a_drop_as_not_separated_and_has_no_row_to_settle() -> None:
+async def test_an_aspect_with_no_margin_is_said_to_leave_a_drop_undecided_and_has_no_row_to_settle() -> None:
     page = await page_of("billing", "tone", margins={"billing": None}, bundle=_unasked("billing"))
     said = _scorecard(page)
     # What the aspect lacks changes how its row reads, so one line says what a drop there reads as.
     assert (
-        "On billing, a drop reads as not separated however large: a drop is read against a margin, and the aspect "
-        "declares none." in said
+        "On billing, the evidence cannot tell a drop of any size from no change: a drop is read against a margin, "
+        "and the aspect declares none." in said
     )
     (billing,) = page.readings.on_aspect("billing")
     assert billing.reading == "unclear" and "no margin was declared" in billing.reason
@@ -270,7 +270,7 @@ async def test_a_choice_shows_an_arm_ahead_on_one_aspect_and_no_separation_on_an
     # The scorecard after the first screen; no control-based table.
     markdown = campaign_report_markdown(page)
     assert "<summary>By aspect, pair by pair</summary>" in said and "▸" not in said
-    assert "alpha ahead of beta." in markdown and "alpha and beta not separated." in markdown
+    assert "alpha ahead of beta." in markdown and "the evidence cannot tell alpha and beta apart." in markdown
 
 
 async def test_a_choice_with_nothing_separated_says_so_on_every_pair() -> None:
@@ -434,7 +434,7 @@ def test_the_scorecard_is_one_matrix_of_aspects_by_the_kind_s_columns_with_its_r
         assert [column.header for column in matrix.columns] == columns
     else:
         assert matrix.title == "solo by aspect"
-        assert [column.header for column in matrix.columns][:2] == ["Aspect", "pass rate (%)"]
+        assert [column.header for column in matrix.columns][:2] == ["Aspect", "Pass rate (%)"]
     # The long form is folded, under the matrix, in the same section.
     folded = [
         block
@@ -711,7 +711,7 @@ def _on(lines: list[str], prefix: str) -> list[str]:
 
 #: How tone's v2 row and its pass-rate contrast read the same per-case values: the row shown better on its bounded
 #: interval corrected across v2's aspects, the contrast on the same method at its family's stricter level.
-_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads not separated"
+_TONE_PASS_RATE = "On tone, v2's row reads shown better and its contrast on the pass rate reads cannot tell apart"
 
 
 def test_a_contrast_reading_a_row_s_own_values_to_another_verdict_is_reconciled_in_one_line() -> None:

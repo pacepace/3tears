@@ -120,7 +120,8 @@ grades what the agent asked for, and passes one that asked for the right thing a
 do something, so doing nothing passes it). It is **proven** only when it gives opposite verdicts on the
 do-nothing control (the seed untouched, no calls), which the engine derives, and on an end state you author where
 the behaviour happened. The quick path authors none, so its checks are `unproven`, and the summary says in how
-many cases an agent that did nothing would pass; a check that passes in every case is marked `NOT A MEASUREMENT`.
+many cases an agent that did nothing would pass, beside the page's words for an unproven check (`so it is not shown
+to measure the behaviour`).
 A `hold` check passes doing nothing by design, so only a control can prove it. A control shows only that the
 check tells the two outcomes apart: it is not a reference solution and does not show the task can be solved.
 
