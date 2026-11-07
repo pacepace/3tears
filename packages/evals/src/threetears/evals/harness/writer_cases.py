@@ -4,7 +4,8 @@ A writer case is a frozen report snapshot (:class:`~threetears.evals.kernel.repo
 and what its mint names: its split group, its stratum (the domain it comes from, which a writer campaign's readings
 split by) and the exemplar notes its analyst is never given. A store's case lives under a template in one scope; a
 :class:`WriterCaseFile` carries the same case anywhere, as one gzipped JSON document (``<name>.json.gz``):
-``{format, name, group, stratum, withhold, snapshot}``.
+``{format, name, group, stratum, withhold, snapshot}``, and, for a case minted from a host's export with notes to
+withhold, ``minted``: which documents that reasoned on its campaign led to each withheld note, and which led to none.
 
 **Every source is one format.** A snapshot frozen from a campaign (:func:`writer_case_freeze`, over any host whose
 profile declares the campaign's measures, such as a quick eval's own) and a bare report input frozen with no campaign
@@ -29,7 +30,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill
 from threetears.evals.kernel.errors import NotFoundError
@@ -51,6 +52,51 @@ WRITER_CASE_SUFFIX = ".json.gz"
 
 #: The format every file written by this build declares, and the only one it reads.
 WriterCaseFormat = Literal["writer-case/1"]
+
+
+#: The record of a mint's withholding is a value inside a case file, never a stored document: plain models, immutable
+#: and refusing a key they do not declare, as the report input's parts are. Not ``EvalBaseModel``, whose subclasses
+#: declaring a ``doc_type`` are the stored documents, and ``ReasonedOn.doc_type`` names a host's document instead.
+_VALUE = ConfigDict(frozen=True, extra="forbid")
+
+
+class ReasonedOn(BaseModel):
+    """One stored document that reasoned on a campaign, as a host's mint manifest names it."""
+
+    model_config = _VALUE
+
+    doc_type: str = Field(min_length=1, description="Its document type: an analysis, a report, an insight.")
+    id: str = Field(min_length=1, description="Its id in the host's store.")
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="What a reader knows it by: an insight's statement, a report's title, an analysis's date and model.",
+    )
+
+
+class WithheldNote(BaseModel):
+    """One note a minted case withholds, and the documents that led to it."""
+
+    model_config = _VALUE
+
+    note: str = Field(min_length=1, description="The note's file name in the analyst skill.")
+    reasoned_on: list[ReasonedOn] = Field(
+        default_factory=list,
+        description="The documents whose id or name the note holds; empty for a note withheld by name alone.",
+    )
+
+
+class CaseMint(BaseModel):
+    """What a mint from a host's export withheld, and what it found no note for."""
+
+    model_config = _VALUE
+
+    withheld: list[WithheldNote] = Field(default_factory=list, description="Each note withheld, in withhold order.")
+    unmatched: list[ReasonedOn] = Field(
+        default_factory=list,
+        description="The documents that reasoned on the campaign whose id and name no note holds: nothing was withheld "
+        "for them, and a reader checks by hand that no note retells them.",
+    )
 
 
 class WriterCaseFile(EvalBaseModel):
@@ -76,6 +122,12 @@ class WriterCaseFile(EvalBaseModel):
         default_factory=list, description="The exemplar notes, by file name, the case's analyst is never given."
     )
     snapshot: EvalReportSnapshot = Field(description="The report snapshot the case is written over, frozen whole.")
+    minted: CaseMint | None = Field(
+        default=None,
+        exclude_if=lambda minted: minted is None,
+        description="Why each note is withheld, for a case minted from a host's export with notes to withhold; "
+        "omitted from the file otherwise.",
+    )
 
     def write(self, path: str | Path) -> Path:
         """Write the case to a file, its directory made when missing.
@@ -234,5 +286,14 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
     return cases
 
 
-#: The writer eval reads a case directory and mints each case; the freeze and the format's names wait for a caller.
-__all__ = ["WriterCaseFile", "WriterCaseFormat", "read_writer_cases"]
+#: The writer eval reads a case directory and mints each case; the export door (:mod:`.minting`) freezes one.
+__all__ = [
+    "WRITER_CASE_SUFFIX",
+    "CaseMint",
+    "ReasonedOn",
+    "WithheldNote",
+    "WriterCaseFile",
+    "WriterCaseFormat",
+    "read_writer_cases",
+    "writer_case_freeze",
+]

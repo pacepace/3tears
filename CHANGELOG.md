@@ -42,6 +42,65 @@ its written report whole with the one line above, `analyses_list` and `campaigns
 findings count. A host that matched the regenerate line to offer "generate again" for such an analysis sees the
 stored-shape line instead; regenerating stays a deliberate act.
 
+### Tests: a freeze no longer imports a lazy name under freezegun's fake clock, and a leaked freeze blames its test
+
+**Fixed:** freezegun's `start()` reads every attribute of every loaded module after it has swapped in its fake
+`date`, so in a process that had imported `threetears.evals` without reading `Model`, a core test's freeze imported
+the providers under the fake. A pydantic `date` field there cannot build on `FakeDate`, so `start()` raised with the
+clock already frozen, and every later test in the process read it (the testament pool interleaves packages; a
+per-package shard never did). A repo-wide test plugin, `tests/clock_isolation.py`, resolves every loaded lazy
+`threetears` name before each test, fails a test that leaves the clock frozen at its teardown, and fails each test
+after it at setup, naming the test that leaked it.
+
+**Hosts:** a suite that freezes the clock with freezegun after `import threetears.evals` and before reading a lazy
+name (`Model`, `Eval`, ...) gets the same raise, and a freezegun `start()` that raises leaves the process frozen.
+Resolve the names you use (or import them from their modules) on the real clock before you freeze
+([adopting a host](packages/evals/docs/adopting-a-host.md#freezing-the-clock-in-your-suite)).
+
+### evals: the writer eval's page opens on its answer, its side-by-side tables are rows with columns, and a replay reads its criteria as declared
+
+**Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) opens, under its title, on one
+sentence per candidate: its promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays:
+across 7 held-out cases the judge gave lead-first 68% of its preference over shipped (50% is even), too few cases to
+tell from an even split; about 39 cases would settle it."), with the promotion's own sentence after it where the
+preference alone does not explain the decision. Its Scorecard opens with the side-by-side tables and each candidate's
+promotion sentence. The side-by-side table in the print, in `pairwise.md` and on the page is two tables of rows with
+columns: the preference, a row per candidate and the pairs it reads (every pair, then both pages finished), and the
+judge's checks, a row per candidate. Four figures change form: the share (`0.6786` reads `68` under `Share (%)`), the
+difference and its interval (`0.3571`, `-0.2762 to 1` read `36`, `-28 to 100` in points), order consistency
+(`0.8571 (6 of 7)` reads `86% (6 of 7)`) and the first-slot lean (`0.07143` reads `7` in points). Each is read to
+whole points, with more decimals only where an interval's end would print as 0 or cross zero, or two figures would
+print alike. What a pass spent and the held-out cases to settle print as before.
+
+**Fixed:** a writer eval files its campaign dated when its arms launched (`create_campaign`'s `declared_at`), as an
+`Eval` does, in place of when it was filed, after its results existed. Its page no longer says its criteria (the
+aspect, the control, a margin) were set after the results, on a replay of a declared eval or a recording run.
+
+**Hosts:** a host reading a writer eval's print or `pairwise.md` by its key-and-value rows (`| share | 0.6786 |`)
+reads the preference table's columns instead (`| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |`),
+the share, difference, interval, order consistency and lean in percent or points as above. An absent cell in those
+tables prints `—` (an em dash) where it printed `-`. A writer eval's campaign filed before this release keeps its
+late-criteria lines; running the eval again files it dated at launch.
+
+### evals: a writer case is minted from a host's read-only export
+
+**Added:** `writer_case_from_export` (`threetears.evals.harness`, provisional) freezes one campaign of a host's export
+into a portable writer case, over a store in memory, writing nothing to the host's store. `python -m
+threetears.evals.harness mint` writes the case file from three files: the campaign's documents as stored, the host's
+profile declaration (`built_by`, the factory of its live profile, and `host_declarations_digest`, which the live
+profile must match), and a manifest of the analyses, reports and insights that reasoned on the campaign. Each note of
+the analyst skill holding one's id or name is withheld, and the case file records why (`WriterCaseFile.minted`, a
+`CaseMint` of `WithheldNote`s and the unmatched `ReasonedOn`s; omitted from a case minted otherwise, so no committed
+case moves). An export missing a document the freeze reads is refused by its type. The case is frozen at `--as-of`,
+or at the moment the campaign's evidence was complete, and the insight ledger is read as it stood then, so the same
+export writes the same bytes. `writer_case_freeze` gains its first caller. The courier's capture mints the committed
+held-out courier case. `python -m threetears.evals.harness FILE --write-report MODEL` is unchanged.
+
+**Hosts:** to mint from production, export each campaign's closure (at least the campaign, its runs, their results
+and traces, the templates and test cases they ran, every insight on its subject and the analyses that minted them),
+your profile declaration with `built_by` as `module:callable`, and the manifest; run the mint in your own environment.
+See "Minting a case from a production export" in `packages/evals/docs/serving.md`. Nothing stored changes.
+
 ### evals: MIGRATIONS.toml ships in the wheel
 
 **Hosts:** MIGRATIONS.toml ships in the wheel at threetears/evals/MIGRATIONS.toml

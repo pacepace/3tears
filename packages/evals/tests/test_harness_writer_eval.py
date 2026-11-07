@@ -671,24 +671,24 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     assert read.read_on == read.job_id and read.job_id.startswith("action:")
     assert read.void is not None and result.decisions == {"variant": "undecided"}
 
-    # The summary and the written page carry the pass's readings as one table, a column per candidate.
+    # The summary and the written page carry the pass's readings as two tables of rows with columns: the preference,
+    # a row per candidate and the pairs it reads, and the judge's checks, a row per candidate.
     text = result.render()
     table = result.pairwise_text()
     assert table in text
-    rows = {line.split(" | ")[0].removeprefix("| "): line for line in table.splitlines() if line.startswith("| ")}
-    assert rows["preference"] == "| preference | variant |"
+    lines = [line for line in table.splitlines() if line.startswith("| ")]
+    assert lines[0] == "| Candidate | Pairs | Reads | Share (%) | Difference (pts) | Interval (pts) |"
     # One case is too few for the test to run, and the orders' disagreement voids it besides.
     assert read.primary.outcome == "untested"
-    assert rows["reads"] == "| reads | untested (void) |"
-    assert rows["share"] == "| share | 0.5 |"
-    assert rows["order consistency"] == "| order consistency | 0 (0 of 1) |"
+    every, finished, checks = [line for line in lines if line.startswith("| variant | ")]
+    assert every.startswith("| variant | every pair | untested (void) | 50 | ")
+    assert finished.startswith("| variant | both pages finished | ")
+    assert (
+        "| Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |"
+        in lines
+    )
     # Report B was preferred in both orders: a lean away from the page read first.
-    assert rows["first-slot lean"] == "| first-slot lean | -0.25 |"
-    assert rows["can't tell"] == "| can't tell | 0 |"
-    assert rows["held-out cases to settle"] == "| held-out cases to settle | - |"
-    assert rows["spent"] == "| spent | $0 of $1.6 |"
-    for label in ("difference", "reads, both pages finished", "share, both pages finished"):
-        assert label in rows
+    assert checks == "| variant | 0% (0 of 1) | -25 | 0 | — | $0 of $1.6 |"
     assert sum(1 for line in table.splitlines() if line and not line.startswith("|")) == 1, "one sentence over it"
     written = result.write(tmp_path / "report")
     assert table in written["pairwise"].read_text(encoding="utf-8")
@@ -791,7 +791,7 @@ async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
     assert report.read_on == report.job_id
     assert result.exit_code() == 1
     text = result.render()
-    assert "| reads | untested |" in text
+    assert any(line.startswith("| variant | every pair | untested | ") for line in text.splitlines())
     assert f"pairwise pass of variant: stopped before its last pair: {report.stopped}" in text
     assert offline == []
 
@@ -812,7 +812,15 @@ async def test_three_arms_split_the_pass_s_reserve_between_the_two_candidates(
         assert read.primary.control == "shipped" and read.cap_usd == pytest.approx(8.0 * 0.2 / 2)
         assert read.read_on == read.job_id
     assert list(result.decisions) == ["variant", "fewer"]
-    assert "| preference | variant | fewer |" in result.render()
+    rows = [line for line in result.render().splitlines() if line.startswith(("| variant | ", "| fewer | "))]
+    assert [row.split(" | ")[0] for row in rows] == [
+        "| variant",
+        "| variant",
+        "| fewer",
+        "| fewer",
+        "| variant",
+        "| fewer",
+    ]
     assert offline == []
 
 
@@ -834,7 +842,12 @@ async def test_a_pass_its_part_cannot_cover_is_refused_with_nothing_spent_said_a
     assert result.promotion_why["variant"].startswith("Undecided: no pairwise pass was read")
     assert result.exit_code() == 1
     assert f"pairwise pass of variant: {why}" in result.render()
-    assert "| reads | - |" in result.render()
+    # The unread pass's row in each table: the preference table's six columns and the checks table's six, all dashes.
+    tables = result.pairwise_text().split("\n\n")
+    preference = next(table for table in tables if table.startswith("| Candidate | Pairs |"))
+    checks_table = next(table for table in tables if table.startswith("| Candidate | Order consistency |"))
+    assert "| variant | — | — | — | — | — |" in preference.splitlines()
+    assert "| variant | — | — | — | — | — |" in checks_table.splitlines()
     # The campaign is filed asking the generic question.
     campaign = await asyncio.to_thread(
         EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite")).load_campaign, result.campaign_id, SCOPE

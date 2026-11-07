@@ -261,6 +261,17 @@ Gemini's flash-lite judges, both through OpenRouter), records the run when `RECO
 and otherwise replays the recording kept beside it, so it runs offline on what a real model said rather than on a
 stand-in's text, and its test checks the recording still covers its prompts ([the examples' README](../examples/README.md#recording)).
 
+### Freezing the clock in your suite
+
+**Resolve the names you use before you freeze, or import them from their modules first.** `threetears.evals`
+serves its ladder (`Eval`, `Model`, `World`, ...) lazily, so `import threetears.evals` loads none of it.
+freezegun's `start()` swaps in its fake `date` and `datetime`, then reads every attribute of every loaded module,
+and that read imports each lazy name's module under the fakes. A pydantic model there with a `date` field cannot
+build on freezegun's `FakeDate`, so `start()` raises after it has frozen the clock and before your `with` block
+entered, and nothing stops it: every later test in the process reads a frozen clock, and each import of that model
+fails the same way. Read `threetears.evals.Model` (and any other name you freeze around) once, on the real clock,
+in a session fixture or at the top of the test module, and a freeze afterwards imports nothing.
+
 ## Bringing a provider
 
 **The engine calls models through one port, and names no provider.** A client is anything with

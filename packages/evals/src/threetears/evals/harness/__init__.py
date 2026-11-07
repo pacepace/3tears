@@ -10,9 +10,12 @@ analyst and its editor that write a campaign's page. An eval file imports its na
   ``python -m threetears.evals FILE`` runs every writer eval a file defines. Its judge is any :class:`WriterJudge`, the shipped ``Model`` among them.
 - :class:`WriterCaseFile` is one portable case (a frozen report snapshot and what minting it names), and
   :func:`read_writer_cases` reads a directory of them; minting one names a :class:`WriterSplit` and answers a
-  :class:`MintedWriterCase`, on a :data:`WriterSide`.
+  :class:`MintedWriterCase`, on a :data:`WriterSide`. :func:`writer_case_from_export` mints one from a host's
+  export of a campaign's documents, for a host that may only read its store, withholding the notes the
+  :class:`ReasonedOn` documents lead to and recording why in the case's :class:`CaseMint` (one :class:`WithheldNote`
+  per note).
 
-Five modules build it, each for one part of a writer eval:
+Six modules build it, each for one part of a writer eval:
 
 - :mod:`~threetears.evals.harness.writer_eval`: the eval, its arms and its result;
 - :mod:`~threetears.evals.harness.writer_host`: a host that launches report writer arms over a store, beside the
@@ -21,6 +24,8 @@ Five modules build it, each for one part of a writer eval:
   recorded once;
 - :mod:`~threetears.evals.harness.writer_cases`: a writer case frozen into a portable file, read back and minted
   into any scope;
+- :mod:`~threetears.evals.harness.minting`: a writer case minted from a host's export, which ``python -m
+  threetears.evals.harness mint`` writes to a file;
 - :mod:`~threetears.evals.harness.analyse`: the report writer's report on one campaign of the quick path, replayed
   from its recording with no key, written beside the eval's own report; ``python -m threetears.evals.harness FILE
   --write-report MODEL`` (:mod:`~threetears.evals.harness.__main__`) runs an eval file, then analyses each result.
@@ -39,7 +44,15 @@ door's alone until it returns a value of the harness's own.
 from __future__ import annotations
 
 from threetears.evals.analysis.analyst.skill import AnalystSkill, SkillText
-from threetears.evals.harness.writer_cases import WriterCaseFile, WriterCaseFormat, read_writer_cases
+from threetears.evals.harness.minting import writer_case_from_export
+from threetears.evals.harness.writer_cases import (
+    CaseMint,
+    ReasonedOn,
+    WithheldNote,
+    WriterCaseFile,
+    WriterCaseFormat,
+    read_writer_cases,
+)
 from threetears.evals.harness.writer_eval import Writer, WriterEval, WriterPairwise, WriterResult
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.ops.report_writer.writer_bank import MintedWriterCase, WriterSplit
@@ -47,8 +60,11 @@ from threetears.evals.ops.report_writer.writer_kind import WriterSide
 
 __all__ = [
     "AnalystSkill",
+    "CaseMint",
     "MintedWriterCase",
+    "ReasonedOn",
     "SkillText",
+    "WithheldNote",
     "Writer",
     "WriterCaseFile",
     "WriterCaseFormat",
@@ -59,4 +75,5 @@ __all__ = [
     "WriterSide",
     "WriterSplit",
     "read_writer_cases",
+    "writer_case_from_export",
 ]
