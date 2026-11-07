@@ -1,8 +1,13 @@
-"""a freeze imports nothing under the fake clock, and a test that leaves the clock frozen fails, not its neighbours."""
+"""a freeze imports nothing under the fake clock, and a leaked freeze blames the test that leaked it, not the ones after."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+
+#: The repository's root, where ``tests.clock_isolation`` imports from.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # a lazy package whose name, read, imports a module declaring a pydantic ``date`` field: what ``threetears.evals``
 # serving ``Model`` is. It is loaded at import, as a test module of another package loads it at collection.
@@ -52,8 +57,15 @@ def test_a_freeze_left_running_fails_the_test_that_started_it():
     _LEFT_RUNNING.start()
 
 
+# the freeze is never stopped, as when start() raised: nothing in the process thaws the clock
+
+
 def test_the_next_test_is_not_blamed():
-    _LEFT_RUNNING.stop()
+    pass
+
+
+def test_nor_any_test_after_it():
+    pass
 """
 
 
@@ -81,16 +93,27 @@ def test_without_the_plugin_the_freeze_raises_and_stays_frozen(pytester: pytest.
     result.stdout.fnmatch_lines(["*PydanticSchemaGenerationError*FakeDate*"], consecutive=False)
 
 
-def test_a_freeze_imports_nothing_under_the_fake_and_a_leak_fails_only_its_test(pytester: pytest.Pytester) -> None:
+def test_a_freeze_imports_nothing_under_the_fake_and_a_leak_blames_only_its_test(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In its own process too, since the leak is left unrepaired; the plugin is found from the repo root."""
+    monkeypatch.setenv("PYTHONPATH", str(_REPO_ROOT))
     pytester.makeconftest('pytest_plugins = ["tests.clock_isolation"]')
     _session(pytester)
-    result = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio")
-    # a teardown error is reported on top of the passed call, so the leaking test also counts as passed
-    result.assert_outcomes(passed=3, errors=1)
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-p", "no:asyncio")
+    # the leaking test's call passed and its teardown errs; the two after it err at setup and never run
+    result.assert_outcomes(passed=2, errors=3)
+    headers = sorted(line.strip("_ ") for line in result.stdout.lines if line.lstrip("_ ").startswith("ERROR at "))
+    assert headers == [
+        "ERROR at setup of test_nor_any_test_after_it",
+        "ERROR at setup of test_the_next_test_is_not_blamed",
+        "ERROR at teardown of test_a_freeze_left_running_fails_the_test_that_started_it",
+    ]
     result.stdout.fnmatch_lines(
         [
-            "*ERROR at teardown of test_a_freeze_left_running_fails_the_test_that_started_it*",
             "*the clock is still frozen after this test*",
+            "*the clock was frozen before this test began*an earlier test in this process leaked it, not this one*",
+            "*Leaked by: test_clock.py::test_a_freeze_left_running_fails_the_test_that_started_it*",
         ],
         consecutive=False,
     )

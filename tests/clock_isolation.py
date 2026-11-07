@@ -10,7 +10,8 @@ only one process holding a freeze and a lazy package nobody had read yet, which 
 (the testament pool) gives and a per-package shard does not.
 
 So before each test every lazy ``threetears`` name already loaded is resolved, on the real clock, and after it the
-clock must be the real one again.
+clock must be the real one again. A test that leaves it frozen fails at teardown; every test after it in the process
+fails at setup, naming the test that leaked it, so a leak blames only the test that made it.
 """
 
 from __future__ import annotations
@@ -35,9 +36,9 @@ def resolve_lazy_names() -> None:
         seen = len(sys.modules)
         for name, module in list(sys.modules.items()):
             if name.startswith("threetears.") and module is not None and "__getattr__" in vars(module):
-                for attribute in dir(module):
-                    if attribute.startswith("_"):
-                        continue
+                # every name dir() lists that the module does not hold is served by its __getattr__: the names a
+                # freeze's walk reads, dunders included
+                for attribute in set(dir(module)) - set(vars(module)):
                     try:
                         getattr(module, attribute)
                     except ImportError:  # NOSILENT: an extra this environment lacks; a freeze's walk skips it too
@@ -59,12 +60,24 @@ def frozen_names() -> list[str]:
     return [name for name, value in clock.items() if value.__module__ not in ("datetime", "time")]
 
 
+#: Each test after whose teardown the clock was found frozen, so a later test's setup can name the last of them.
+_LEAKED_BY: list[str] = []
+
+
 @pytest.fixture(autouse=True)
-def _clock_isolation() -> Iterator[None]:
-    """Resolve the lazy names before the test; fail it if the clock is still frozen after every other teardown."""
+def _clock_isolation(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Refuse to start on a frozen clock; resolve the lazy names; fail the test if it leaves the clock frozen."""
+    if frozen := frozen_names():
+        leaker = _LEAKED_BY[-1] if _LEAKED_BY else "a freeze outside any test (at import or collection)"
+        pytest.fail(
+            f"the clock was frozen before this test began ({', '.join(frozen)} are freezegun's): an earlier test in "
+            f"this process leaked it, not this one. Leaked by: {leaker}.",
+            pytrace=False,
+        )
     resolve_lazy_names()
     yield
     if frozen := frozen_names():
+        _LEAKED_BY.append(request.node.nodeid)
         pytest.fail(
             f"the clock is still frozen after this test ({', '.join(frozen)} are freezegun's): a freeze it started "
             "was never stopped, or its start() raised, and every later test in the process reads a frozen clock. "
