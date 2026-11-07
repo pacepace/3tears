@@ -181,6 +181,14 @@ def test_the_summary_the_live_run_writes_carries_every_arm_row_and_left_out_roun
     assert len(agreement) == 8 and all(line.count("|") == 9 for line in agreement)
     assert sum(1 for line in lines if line.startswith(f"| {DRY_JUDGE} | writer-opus-")) == 2
     assert all(f"| {run} round {round_} |" in summary["readout"] for run, round_ in _UNREPLAYED)
+    # The anchor a later reread compares with: the pair arm's trials alone, the absolute set's left out, one row per
+    # pair case.
+    anchor = summary["anchor"]
+    assert len(anchor) == 42 and {row["judge"] for row in anchor} == {DRY_JUDGE}
+    assert [(row["run"], row["first"], row["second"]) for row in anchor] == [
+        (pair.a.run, pair.a.round, pair.b.round) for pair in pairs(dry.found)
+    ]
+    assert all(row["score"] in range(1, 6) and row["served_model"] == DRY_JUDGE for row in anchor)
 
 
 def test_a_live_runs_cap_is_split_by_the_calls_each_arm_plans(dry: Calibration) -> None:

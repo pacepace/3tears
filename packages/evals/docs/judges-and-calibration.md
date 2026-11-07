@@ -948,7 +948,9 @@ the gate's judge reads it, and is paired with the review of that round.
 | `writer-opus-abs` | 196: 28 pages × the 7 items, on the gate's own criteria | the Opus item score, 2 → 5, 1 → 3, 0 → 1 |
 | `writer-opus-pair` | 42: every two rounds of one run, in both orders | from Δ, the Opus total of B less A's: +2 or more → 5, +1 → 4, 0 → 3, -1 → 2, -2 or less → 1 |
 
-A judge arm over each set is read per criterion through `judge_kind_readings`.
+A judge arm over each set is read per criterion through `judge_kind_readings`. `--reread` asks one judge the pair set
+again and compares the read with its own stored one on preference, order consistency and first-slot lean: a
+test-retest that detects a judge or version shift, never whether the judge is right (`--reread --help` says how).
 
 **These labels are an agent's, so they never calibrate a judge.** An authored case is read as its author's label,
 and agent ratings are never pooled with people's. So:
