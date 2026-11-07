@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.94.0 -- 2026-11-07
+
 ### core: a scoped snapshot's diff counts every group, and an answer the L3 rail cut fails loud
 
 **Fixed (core):** a scoped snapshot's diff counted a scope's groups in one statement, one row a group, and the L3
