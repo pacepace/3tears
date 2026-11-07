@@ -915,7 +915,7 @@ async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_
     result = await Eval(_PRICED, _priced, [_right], k=1).run(store=":memory:")
     matrix = _table(result.page, "scorecard")
     spend = next(
-        column.key for column in matrix.columns if column.header == "Measuring spend, all roles ($/1,000 replies)"
+        column.key for column in matrix.columns if column.header == "Measuring spend, all roles, per 1,000 replies"
     )
     (row,) = matrix.rows
     cell = row[spend]
@@ -923,7 +923,7 @@ async def test_a_measurement_s_money_reads_per_1000_replies_in_one_form_never_a_
     assert cell.text == f"${cell.value:.{cell.decimals}f}" and "/1000" not in cell.text
     measures = _table(result.page, "measures")
     (folded,) = [
-        line for line in measures.rows if line["measure"].text == "Measuring spend, all roles ($/1,000 replies)"
+        line for line in measures.rows if line["measure"].text == "Measuring spend, all roles, per 1,000 replies"
     ]
     assert folded["value"].text == cell.text
     assert re.fullmatch(r"\[\$\d+\.\d+, \$\d+\.\d+\]", str(folded["interval"].value))

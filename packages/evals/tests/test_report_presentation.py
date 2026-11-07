@@ -324,10 +324,11 @@ async def test_a_money_interval_reads_its_ends_on_its_means_ruler() -> None:
     the count; under a cent even per 1,000,000 it reads there, to the decimals its least amount needs, and never with
     the per-1,000 mark beside the count."""
     pages = await _money_pages()
-    assert "| Production cost ($/1,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in pages["page 2"]
-    assert "| Production cost ($/1,000,000 replies) | $3.00 [$3.00, $3.00] | 4 |" in pages["under a cent per 1,000"]
+    assert "| Production cost, per 1,000 replies | $3.00 [$3.00, $3.00] | 4 |" in pages["page 2"]
+    assert "| Production cost, per 1,000,000 replies | $3.00 [$3.00, $3.00] | 4 |" in pages["under a cent per 1,000"]
     assert (
-        "| Production cost ($/1,000,000 replies) | $0.0030 [$0.0030, $0.0030] | 4 |" in pages["under a cent at the cap"]
+        "| Production cost, per 1,000,000 replies | $0.0030 [$0.0030, $0.0030] | 4 |"
+        in pages["under a cent at the cap"]
     )
     read = 0
     for page in pages.values():

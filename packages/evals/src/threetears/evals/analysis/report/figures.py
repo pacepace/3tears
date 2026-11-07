@@ -45,13 +45,14 @@ SURFACE_ORDER_NO_CONTROL = (
 #: The cost per reply below which, on every arm, a report states cost per 1,000 replies instead.
 REPLY_COST_FLOOR = 0.01
 
-#: The words a heading adds when a per-reply cost is stated per 1,000 replies, and the label a column's header or a
-#: reading's name carries for it. Replies, as the scoreboard counts them: one trial is one reply.
+#: The words a heading adds when a per-reply cost is stated per 1,000 replies, after the measure's name and a comma
+#: (``Production cost, per 1,000 replies``), as a column's header or a reading's name carries it on every page.
+#: Replies, as the scoreboard counts them: one trial is one reply.
 PER_THOUSAND_REPLIES = "per 1,000 replies"
-PER_THOUSAND_LABEL = "($/1,000 replies)"
 
-#: The heading's words for money drawn per 1,000,000 replies.
-PER_MILLION_LABEL = "($/1,000,000 replies)"
+#: The retired bracket form of :data:`PER_THOUSAND_REPLIES`, which no page prints: kept only so prose that writes it
+#: with its digits is read as the package's unit phrase (:mod:`~threetears.evals.analysis.report.figure_keys`).
+PER_THOUSAND_LABEL = "($/1,000 replies)"
 
 #: The words a cost stated per 1,000,000 replies carries, as a measure in ``usd_per_1m`` declares it.
 PER_MILLION_REPLIES = "per 1,000,000 replies"
@@ -87,13 +88,13 @@ class MeasureRuler(NamedTuple):
     def scaled(self, heading: str) -> str:
         """``heading`` with the scale a reader needs to read its figures, where the figures do not carry it.
 
-        A cost stated per 1,000 replies (or per 1,000,000, where it is under a cent per 1,000) says so beside its
-        name, since ``$0.0459`` alone reads as a cost per reply; every other ruler's figures carry their own unit, so
-        the heading stands alone.
+        A cost stated per 1,000 replies (or per 1,000,000, where it is under a cent per 1,000) says so after its
+        name (``Production cost, per 1,000 replies``), as every page spells it, since ``$0.0459`` alone reads as a cost
+        per reply; every other ruler's figures carry their own unit, so the heading stands alone.
         """
         if not self.per:
             return heading
-        return f"{heading} {PER_MILLION_LABEL if self.per == PER_MILLION_REPLIES else PER_THOUSAND_LABEL}"
+        return f"{heading}, {self.per}"
 
     def labelled(self, heading: str) -> str:
         """``heading`` with its unit, for a row whose figures are stated as bare numbers beside it.

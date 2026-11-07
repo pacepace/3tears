@@ -229,7 +229,7 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
             for key, cell in row.items():
                 # A money measure's cell in a scorecard table reads per 1,000 replies, as its header says.
                 if cell.decimals is not None and block.name == "scorecard":
-                    assert heads[key].endswith("($/1,000 replies)"), heads[key]
+                    assert heads[key].endswith(", per 1,000 replies"), heads[key]
     markdown = campaign_report_markdown(rung.page)
     (test_cost,) = [line for line in markdown.splitlines() if line.startswith("| Test cost |")]
     for found in _MONEY.finditer(test_cost):

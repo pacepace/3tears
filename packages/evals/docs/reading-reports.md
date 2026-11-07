@@ -498,7 +498,7 @@ No report states a change as a percent of the control: a Δ is in the reading's 
 on 0–1 (a pass rate, an accuracy, a precision, a pass/fail grader or judged dimension) is stated as a percent to one
 decimal, `98.9%`, and a change in it in points, `-1.1 pts`, with its interval `[-4.2, 2] pts`; the level every
 interval holds at is said once, in the column's header (`Interval (99%)`). A cost per reply under a cent on every arm
-is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost ($/1,000 replies)`).
+is stated per 1,000 replies, and the heading says so (`Cost per 1,000 replies`, `Production cost, per 1,000 replies`).
 
 ## Reading the guardrails
 

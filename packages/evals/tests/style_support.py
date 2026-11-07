@@ -22,9 +22,10 @@ __all__ = ["Absence", "absence_violations", "lint_page", "reading_names", "unlin
 #: A line quoting something whole, as the declared question does under the title: data, not prose.
 _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
 
-#: A header's closing unit, which names what its column's figures are in (``(%)``, ``($/1,000 replies)``): a name
-#: with its unit is still the name.
-_HEADER_UNIT = re.compile(r"\s*\([^()]*\)$")
+#: A header's closing unit, which names what its column's figures are in (``(%)``, ``(pts)``), or the count a money
+#: measure is drawn per after its name (``, per 1,000 replies``, as every page spells it): a name with its unit is
+#: still the name.
+_HEADER_UNIT = re.compile(r"\s*\([^()]*\)$|, per [\d,]+ \w+$")
 
 
 def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:

@@ -134,25 +134,29 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 /* tables */
 /* A table wider than its frame scrolls inside it: a shadow shows at an edge only while more lies past it (the covers
    scroll with the content, the shadows stay with the frame), and the first column stays in view. */
-.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);
+.tbl{overflow-x:auto;isolation:isolate;border:1px solid var(--line);border-radius:var(--r);
   background:linear-gradient(to right,var(--surface) 40%,transparent) left/2.5rem 100% no-repeat local,
     linear-gradient(to left,var(--surface) 40%,transparent) right/2.5rem 100% no-repeat local,
     radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
     var(--surface)}
-/* the pinned column wraps within a third of the frame, so a long label never hides the columns past it; an unbroken
-   one (an expression, a model id) breaks anywhere rather than run over the column beside it */
+/* the pinned column is at least a floor and at most about a third of the frame wide, so a long label never hides
+   the columns past it and the columns past it never crush it: it wraps at its spaces (and after a hyphen), never inside
+   a word; only an id-like cell (an expression, a digest, a token longer than the floor holds: classed unbroken)
+   breaks anywhere. The frame isolates its cells' stacking, so the page's sticky nav paints over a pinned cell. */
 .tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--line);
-  white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:min(14rem,35vw)}
+  white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;min-width:min(8rem,30vw);max-width:min(14rem,35vw)}
 .tbl :is(th,td):first-child .armchip{white-space:normal}
 .tbl th:first-child{z-index:2;background:var(--sunk)}
 /* a table keyed by two columns (keys-2) keeps both in view: the first held at exactly its cap, so the second pins
-   where the first ends */
+   where the first ends; the second has a floor of its own */
 .tbl.keys-2 :is(th,td):first-child{width:min(14rem,35vw);min-width:min(14rem,35vw)}
 .tbl.keys-2 :is(th,td):nth-child(2){position:sticky;left:min(14rem,35vw);z-index:1;background:var(--surface);
-  box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:min(9rem,22vw)}
+  box-shadow:inset -1px 0 0 var(--line);white-space:normal;overflow-wrap:normal;word-break:normal;hyphens:manual;
+  min-width:min(8rem,22vw);max-width:min(9rem,22vw)}
 .tbl.keys-2 :is(th,td):nth-child(2) .armchip{white-space:normal}
 .tbl.keys-2 th:nth-child(2){z-index:2;background:var(--sunk)}
+.tbl :is(th,td):first-child.unbroken,.tbl.keys-2 :is(th,td):nth-child(2).unbroken{overflow-wrap:anywhere}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0;white-space:normal;min-width:4.5rem}
@@ -198,7 +202,9 @@ select{font:inherit;font-size:var(--t-sm);padding:.35rem .5rem;border:1px solid 
 .method{font-size:var(--t-sm);color:var(--ink-2);display:grid;gap:.5rem;max-width:var(--col)}
 .method dt{font-weight:600;color:var(--ink)}
 .method dd{margin:0 0 .4rem;overflow-wrap:anywhere}
-@media (max-width:640px){h1{font-size:1.75rem}.part h2{font-size:var(--t-lg)}}
+/* a frame under 700 px (a host's at a 1024 px window, a phone) sets headings a step smaller and tighter, so a
+   headline holds three lines, not five */
+@media (max-width:700px){h1{font-size:1.5rem;line-height:1.2}h2{font-size:1.125rem;line-height:1.3}h3{font-size:var(--t-base);line-height:1.35}.part h2{font-size:var(--t-lg)}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 .armchip{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap}
 .armchip .tag{display:inline-grid;place-items:center;width:1.25rem;height:1.25rem;border-radius:4px;color:var(--on-fill);font-size:var(--t-xs);font-weight:600;font-family:var(--f-mono)}

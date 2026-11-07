@@ -8,6 +8,8 @@ translation replaces them in one place.
 
 from __future__ import annotations
 
+from threetears.evals.analysis.style import CANNOT_TELL_APART
+
 __all__ = [
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
@@ -258,6 +260,8 @@ CONTRAST_VERDICT_WORDS: dict[str, str] = {
     "improved": "Improved",
     "regressed": "Regressed",
     "equivalent": "Equivalent",
+    # Frozen: a written page's text (``doc_page_text``) prints this table, and rung 5's recorded judge replays against
+    # that text, so the glossary's words wait on a new recording (owner spend).
     "not_separated": "Not separated",
     "untested": "Untested",
 }
@@ -434,7 +438,9 @@ HUMAN_PREF_NOTE = "The share of {n} blind ratings preferring {control} over {arm
 #: A chart whose figures have no mean, drawn at a percentile instead.
 STATISTIC_NOTE = "Each bar is the arm's {statistic}."
 
-#: GENERATOR §3: which way a change reads, by the direction of the change, never by the margin.
+#: GENERATOR §3: which way a change reads, by the direction of the change, never by the margin. Frozen in the old words
+#: for an interval across zero: a written page's text (``doc_page_text``) prints a chart's notes, and rung 5's recorded
+#: judge replays against that text, so the glossary's words wait on a new recording (owner spend).
 _CHANGE_WORDS: dict[str, str] = {"worse": "worse", "better": "better", "": "not separated"}
 
 
@@ -450,7 +456,9 @@ def change_words(direction: str) -> str:
 
 
 #: GENERATOR §3: a reading's status as the options table's pill says it, the margin verdict in the words.
-_READING_WORDS: dict[str, str] = {"worse": "Worse", "better": "Better", "": "Not separated"}
+#: An interval across zero is the undecided reading in the glossary's words
+#: (:data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`), never "not separated".
+_READING_WORDS: dict[str, str] = {"worse": "Worse", "better": "Better", "": CANNOT_TELL_APART.capitalize()}
 _MARGIN_WORDS: dict[bool, str] = {True: "within margin", False: "outside margin"}
 
 
