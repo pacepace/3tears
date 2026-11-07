@@ -31,7 +31,7 @@ failed. A report document's own tables, and the evidence record laid out after t
 (`written_check_names`, `input_check_name`, both new, provisional), the record through `input_check_name` on the
 report input the bundle gives, so both name over one set of checks; the report writer's recorded judge was recorded
 again over the named pages. This reverses the earlier rule that an
-undeclared check is printed by its whole expression (owner ruling, 2026-11-09).
+undeclared check is printed by its whole expression (owner ruling, 2026-11-07).
 
 **Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
 a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
@@ -101,7 +101,7 @@ rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes
 
 ### evals: money reads two significant figures per amount, and an undecided reading says "cannot tell apart" everywhere
 
-**Changed:** owner rulings Q2 and Q3 (2026-11-09). A chart's note, a Change table, the corrected-comparisons verdict,
+**Changed:** owner rulings Q2 and Q3 (2026-11-07). A chart's note, a Change table, the corrected-comparisons verdict,
 the writer eval's side-by-side table, the promotion readout and its sentence say the glossary's `cannot tell apart`
 (a sentence: `the evidence cannot tell lead-first and shipped apart`), never `not separated`; a stored reason keeps its
 stored words and a page rewords it. Money reads by one count of significant figures per set, not one count of decimals

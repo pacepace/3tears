@@ -2,7 +2,7 @@
 template declares (``EvalTemplate.goal_check_names``), else ``Goal check``, numbered where an aspect reads several,
 through the one door (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`,
 ``AnalysisContextBundle.check_name``, ``AnalysisContextBundle.named_checks``, ``AspectNames.check_names``). The owner
-ruled it on 2026-11-09 (Q11), reversing the rule that printed an unnamed check by its whole expression.
+ruled it on 2026-11-07 (Q11), reversing the rule that printed an unnamed check by its whole expression.
 
 The sweep runs over the shared shapes with every check named, the page's folds included: a change whose floor reads
 one check and whose call overrides it, a choice, a change of one aspect, and a measurement held to a bar on a check.

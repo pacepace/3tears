@@ -641,7 +641,7 @@ def test_one_sizing_table_holds_the_row_s_count_and_the_floor_s_with_the_rate_th
         rows[("billing", "v4", "the 10-point floor holds")],
     )
     assert (row["decided_by"].text, row["observed"].text) == ("Pass rate", "31 cases, $0.22")
-    # The check by its name, never its expression (owner ruling, 2026-11-09): S1 names no check, so by what it tests.
+    # The check by its name, never its expression (owner ruling, 2026-11-07): S1 names no check, so by what it tests.
     assert (floor["decided_by"].text, floor["observed"].text) == ("Reply cites policy check", "41 cases, $0.29")
     v3 = [key for key in rows if key[:2] == ("billing", "v3")]
     assert v3 == [("billing", "v3", "no worse than the 10-point margin, and the 10-point floor holds")]

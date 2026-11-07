@@ -406,7 +406,7 @@ spent, which is measuring cost: never tested between arms, and labelled `Measuri
 one way per set: a column, an axis or a family of figures is spelled by one rule throughout, and where any amount in
 it is too small for cents the whole set reads per 1,000 replies, which the heading says (`Cost per 1,000 replies`,
 `Production cost, per 1,000 replies`). The rule is one count of significant figures, not one count of decimals (owner
-ruling Q3, 2026-11-09, which replaces the 2026-10-27 reading of one decimal count per set): each amount reads to two
+ruling Q3, 2026-11-07, which replaces the 2026-10-27 reading of one decimal count per set): each amount reads to two
 significant figures, so `$0.0080` sits beside `$0.11`, never `$0.1100`. A total reads to cents from a dollar up
 (`$1,208.00`); a rate reads to its two figures at every magnitude: whole dollars from $10 (`$75 [$73, $77]`), and
 from $100 its figures round into the dollars (`$120` for $123). Only an interval whose two ends would read

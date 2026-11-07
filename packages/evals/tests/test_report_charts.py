@@ -209,7 +209,7 @@ def test_a_table_spells_each_value_by_the_number_rule_not_the_axis_s_rounding() 
         }
     )
     # Money in a table reads to its own two significant figures and cents at least, whatever digits the axis rounds
-    # its ticks to (owner ruling Q3, 2026-11-09).
+    # its ticks to (owner ruling Q3, 2026-11-07).
     assert stacked.values_table() == (["Row", "Value", "Parts"], [["arm", "$4.00", "calls $3.00 · retries $1.00"]])
 
 

@@ -956,7 +956,7 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
 
 def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_cents() -> None:
     """A step's price a month reads in its prices' one form (#993): each to two significant figures and cents at
-    least, a total of $10 or more to cents too (``$1,239.34``, never ``$1,239``: owner ruling Q3, 2026-11-09). No dollar
+    least, a total of $10 or more to cents too (``$1,239.34``, never ``$1,239``: owner ruling Q3, 2026-11-07). No dollar
     amount prints four digits ungrouped, in the table or in the bars' values."""
     large_seen = small_seen = False
     for name, held in fixture_inputs().items():

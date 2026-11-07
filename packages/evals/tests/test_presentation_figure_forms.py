@@ -425,7 +425,7 @@ _RETIRED = re.compile(r"\bnot separated\b", re.IGNORECASE)
 
 
 def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_words() -> None:
-    """Owner ruling Q2, landed with rung 5's judge recorded again (2026-11-09): every table a written page draws, the
+    """Owner ruling Q2, landed with rung 5's judge recorded again (2026-11-07): every table a written page draws, the
     corrected comparisons and a chart's values table among them, says an undecided reading ``cannot tell apart``, never
     ``not separated``. The writer's own sentences are its words, not the package's, so only the rows code lays out are
     held here."""

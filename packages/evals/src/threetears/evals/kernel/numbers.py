@@ -178,7 +178,7 @@ PER_THOUSAND_MARK = "/1000"
 @dataclass(frozen=True)
 class MoneyForm:
     """One spelling of money for a whole set of amounts: a column, a chart's axis, a figure-key family
-    (``cost_per_1k.*``). Every member of the set is written by one rule (#993, as the 2026-11-09 ruling reads it: one
+    (``cost_per_1k.*``). Every member of the set is written by one rule (#993, as the 2026-11-07 ruling reads it: one
     count of significant figures, never one count of decimals), which :func:`money_form` chooses from the set: each
     amount to two significant figures, so $0.008 reads ``$0.0080`` beside ``$0.11``, never ``$0.1100`` (owner ruling
     Q3). A total reads to cents from a dollar up whatever its size (``$1,208.00``); a rate (money per something) reads
@@ -345,7 +345,7 @@ class MoneyForm:
 
 def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconciles: bool = False) -> MoneyForm:
     """The one form a set of amounts is spelled in (:class:`MoneyForm`), chosen from the whole set: plain dollars, each
-    amount to two significant figures (owner ruling Q3, 2026-11-09). A total reads to cents from a dollar up whatever
+    amount to two significant figures (owner ruling Q3, 2026-11-07). A total reads to cents from a dollar up whatever
     its size; a rate reads in whole dollars from :data:`RATE_WHOLE_FROM`, to its two figures ($123 reads ``$120``). An
     interval whose two ends would read alike takes one figure more where it is spelled (:meth:`MoneyForm.spell_ends`,
     :meth:`MoneyForm.places_of`), never the whole set. ``None`` and non-finite members say nothing of the form and are passed over. Charts, figure keys and

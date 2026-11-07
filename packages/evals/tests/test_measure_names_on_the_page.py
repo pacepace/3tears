@@ -1,7 +1,7 @@
 """A goal check is named by what it tests in every header and every lead, and its expression is the glossary's
 definition of that name, once.
 
-The owner's ruling of 2026-11-09 (Q11): a check's expression is code, and a long one (a production campaign's
+The owner's ruling of 2026-11-07 (Q11): a check's expression is code, and a long one (a production campaign's
 ``call_count(...) >= 1 or ...``, laid out over four lines) made a paragraph of a table header and a lead. So a check is
 named by the display name its template declares, else by what it tests, read off its expression alone
 (``Refund amount check``, ``Send message or reply check``, :func:`~threetears.evals.analysis.style.check_names`;

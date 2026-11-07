@@ -258,7 +258,7 @@ def _places(amounts: Iterable[str]) -> set[int]:
 
 
 def _two_forms(amounts: Iterable[str]) -> bool:
-    """Whether a set of amounts reads in two forms of money (owner ruling Q3, 2026-11-09: one count of significant
+    """Whether a set of amounts reads in two forms of money (owner ruling Q3, 2026-11-07: one count of significant
     figures per set, never one count of decimals): an amount under a dollar to other than two significant figures, or
     three where it reconciles with a month beside it; one from a dollar to $10 to other than cents; or amounts from $10
     up both in whole dollars (a rate's) and to cents (a total's)."""
@@ -404,7 +404,7 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
             re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-") for term, words in GLOSSARY.items() if words in said
         }
         # Beside the terms it links, the glossary defines each goal check's name by its expression (the owner's
-        # ruling of 2026-11-09), one entry per check the aspect reads.
+        # ruling of 2026-11-07), one entry per check the aspect reads.
         checks = {
             "check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
             for name in report.bundle.named_checks().values()
@@ -719,7 +719,7 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     whys = [row["why"] for row in table.values()]
-    # By its name, never its expression (the owner's ruling of 2026-11-09), and no "Pass rate of" on one trial's
+    # By its name, never its expression (the owner's ruling of 2026-11-07), and no "Pass rate of" on one trial's
     # failure; the trial's record and the glossary print the expression as written, no underscores or dots stripped.
     name = report.bundle.named_checks()[expression]
     assert name == "Queue track calls check"
