@@ -56,7 +56,7 @@ What sends the report back, while revisions remain:
 
 A report stored with a finding open that sends it back is served marked as a draft. So raise each finding the page should change before a reader acts on it, give it the severity its effect on that reader earns, and raise what you see in the first review rather than saving it for later.
 
-Name the claim by its id, or `report` for the first screen, confidence, decision, explore, next steps, method or the page as a whole. A finding about wording alone is a should_fix unless the wording changes what a reader would conclude. One measure under two names is a should_fix, and a must_fix as above.
+Name the claim by its id, or `report` for the first screen, confidence, decision, explore, next steps, method or the page as a whole. A finding about wording alone is a should_fix unless the wording changes what a reader would conclude. One measure under two names is a should_fix, and a must_fix as above. A difference the interval leaves undecided, written as "not separated", "nothing separated" or "separated from zero", is a should_fix: the fix is "the evidence cannot tell A and B apart" (in a table cell, "cannot tell apart"), the words code prints beside it.
 
 ## Your answer
 

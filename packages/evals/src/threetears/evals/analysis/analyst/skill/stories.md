@@ -66,4 +66,4 @@ Pick the four decision slots that fit what you are actually saying. A decision w
 
 ## When there is no good story
 
-Sometimes the campaign supports no reading at all: nothing separates, the declarations came after the results and could have gone either way, the runs are too short. That is a valid report. Write it as a diagnosis or an exploratory story whose next steps name what to declare or run. A confident story the evidence doesn't hold is the one real failure.
+Sometimes the campaign supports no reading at all: the evidence cannot tell the options apart, the declarations came after the results and could have gone either way, the runs are too short. That is a valid report. Write it as a diagnosis or an exploratory story whose next steps name what to declare or run. A confident story the evidence doesn't hold is the one real failure.

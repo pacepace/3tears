@@ -8,7 +8,7 @@ Each claim carries one block. Choose the one that answers the claim's question m
 |---|---|---|---|
 | `forest` | How much did each option change against the control, and does the interval clear zero or the margin? | A change and interval per option, one unit, one level; the margin if one was declared | Confirmatory readings and corrected contrasts share one chart; the margin band is read as the verdict and the size is left out |
 | `bars` | How big is each option on one magnitude (cost, error rate, tasks passed)? | One value per row in one unit; a declared budget for a reference line | The axis doesn't start at zero; a rate near its ceiling is drawn as a pass rate instead of a failure rate from zero |
-| `diverging_bars` | Where, across strata or levers, is a difference positive or negative, and how large? | A signed difference per row; intervals if any row is read as separated | Uncorrected stratum deltas are read as confirmed; rows not separated from zero are drawn as strongly as those that are |
+| `diverging_bars` | Where, across strata or levers, is a difference positive or negative, and how large? | A signed difference per row; intervals if any row is read as excluding zero | Uncorrected stratum deltas are read as confirmed; rows whose interval reaches zero are drawn as strongly as those whose interval excludes it |
 | `dot_interval` | Where does each option's rate sit against a floor, with its uncertainty? | A rate and interval per row; the floor's criterion | The gap is a few points and bars from zero would hide it (use this, not bars), or it shows no interval and the reader assumes certainty |
 | `lines` | How does a measure move along an ordered axis: turn depth, version, date, input length? | Ordered categories; values per series; bands on at most two series | The x axis has no order; too many series each carry a band |
 | `scatter_frontier` | Which options trade one measure against another, and which are on the frontier? | Two measures per option; a floor or price line where declared | The reader reads slope as value across unlike scales; never swap it for a dual-axis chart |
@@ -46,13 +46,13 @@ An interval marked **computed** was computed here from a rate's count (binomial)
 - **A reference line sits only at a declared threshold.** A floor, budget or margin the campaign declared, read where the chart reads. A line at a convenient value looks like a rule nobody set.
 - **Small multiples only where the kind draws panels.** One panel per arm, aspect or task, sharing axes so the eye compares like with like.
 - **One identity per arm for the whole page.** The same color and tag everywhere, with the control marked. Color is never the only cue, and status always carries an icon and a word.
-- **Descriptive versus inferential.** Breakdowns computed after the fact are uncorrected. Bold only the rows separated at the stated level, and call them leads.
+- **Descriptive versus inferential.** Breakdowns computed after the fact are uncorrected. Bold only the rows whose interval excludes zero at the stated level, and call them leads.
 - **Every chart's figures are in the appendix.** Hover adds detail but is never the only way to read a value.
 
 ## Fitting the block to the claim
 
 - **A claim about a gap draws the gap.** "Costs more than", "beats", "falls behind": draw the difference between the arms with its interval (`compare`, a `forest` over `contrasts`, `diverging_bars`), paired where a contrast pairs them, not each arm's level. A percent or a multiple beside the gap comes from the same basis as the gap: a paired gap's share of the control, never one read off unpaired means while the block shows the paired gap. Where no key states it on that basis, state the gap and its interval, and log a `capability_gap`.
-- **Effects with intervals are drawn with them.** When the figures a claim compares carry intervals (a lever's effect, a contrast), choose a block that draws them. A lattice or bars of point estimates hides which effects are separated.
+- **Effects with intervals are drawn with them.** When the figures a claim compares carry intervals (a lever's effect, a contrast), choose a block that draws them. A lattice or bars of point estimates hides which effects the evidence can tell apart from zero.
 - **The claim's figure is in its block.** The figure a claim turns on appears in its block's values table. If it doesn't, change the block or the claim.
 - **A caption describes only what its block draws.** Bold rows, intervals, a band, an overall row: name one only if `block_render` shows it there. A caption promising a row or a mark the block lacks reads as a missing figure.
 - **Every arm a claim compares gets its figure.** A claim about several arms states the figure for each one ("53% for one, 48% for the other"), not for one and lets the reader assume the rest.

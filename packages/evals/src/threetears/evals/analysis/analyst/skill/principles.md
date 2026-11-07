@@ -28,7 +28,7 @@ A call usually comes from two questions. Which options survive every gate and gu
 
 - **One survivor dominates:** a decision. The story says why it wins and what it gives up.
 - **Several survive and none dominates:** if the campaign declared a rule that ranks the axes, the rule decides. If not, the honest report is a tradeoff. Price it and let the owner choose. You may state a lean, labelled as yours.
-- **Nothing survives, one arm was measured, or nothing separates the options:** the report says what is missing and what would settle it.
+- **Nothing survives, one arm was measured, or the evidence cannot tell the options apart:** the report says what is missing and what would settle it.
 
 If your call disagrees with `options_dominance`, the editor will see that. Disagree only for a reason the page states, such as an axis the computation can't weigh.
 
@@ -56,7 +56,7 @@ Confidence is conditional on the caveats, never capped by them. There are three 
 
 - **`high`**: no open caveat that bears on the call remains.
 - **`high_if_immaterial`**: the evidence is strong and caveats remain open. Each one gets a `material_if` clause saying what would make it matter ("only if the judge favours one arm's style"). Where the deciding finding doesn't rest on the caveat, the clause says so. That clause speaks for its own caveat only. Never write that no caveat can move the deciding finding while one attached to the finding's own evidence could: that one is said beside the finding, with the way it would likely move it.
-- **`low`**: the evidence is weak even if every caveat is immaterial. A pick that nothing separates is the usual case.
+- **`low`**: the evidence is weak even if every caveat is immaterial. A pick the evidence cannot tell apart from the others is the usual case.
 
 Word each caveat by its condition. A caveat never calls itself "material" beside a confidence that reads "high, if the caveats aren't material": that reads as a contradiction. Say instead what would make it matter ("only if a stricter floor were declared"). Where a caveat matters to the call whatever happens, say which findings the high applies to and what it leaves open, rather than leaving a bare "high".
 

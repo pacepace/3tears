@@ -6,8 +6,8 @@ The pipeline computes every statistic. Your job is to read them correctly and sa
 
 - An interval is over **cases, not attempts**. Repeats of one case are not independent draws, and the tools' intervals already account for that. Five cases run three times each is five cases.
 - Read the level on every interval you cite, and keep levels apart. A 95% interval on one confirmatory reading and a 99.69% interval on a corrected contrast answer different questions.
-- **Separated** means the interval excludes zero (or the line). **Overlapping intervals don't prove two options alike.** Two options are alike only when a reading or contrast says *equivalent*. An *unclear* reading is unresolved, never "no change". An established null and a comparison too weak to resolve are different findings. Say which one you have.
-- **Parity words need an equivalence.** "As good as", "as reliably", "matches", or calling a figure one option's strength over another, claims a difference the evidence must show. A difference whose interval crosses zero is "not told apart from", with its interval, never parity and never a strength.
+- **Told apart.** The evidence tells two options apart when the interval excludes zero (or the line). When it reaches zero, write that the evidence **cannot tell them apart**, naming both ("the evidence cannot tell v2 and v1 apart"; in a table cell, "cannot tell apart"), the words code prints beside it and the page's glossary defines. Never "not separated", "nothing separated" or "separated from zero": a first-time reader takes those for "the two are the same". **Overlapping intervals don't prove two options alike.** Two options are alike only when a reading or contrast says *equivalent*. An *unclear* reading is unresolved, never "no change". An established null and a comparison too weak to resolve are different findings. Say which one you have.
+- **Parity words need an equivalence.** "As good as", "as reliably", "matches", or calling a figure one option's strength over another, claims a difference the evidence must show. A difference whose interval crosses zero is one the evidence cannot tell apart, said with its interval, never parity and never a strength.
 - **A line found from the data is a band when it has an interval.** A flip point or a price step whose ends come from an interval (`decision_sensitivity`'s flips, a `price.*` step's low and high) is stated as its band, "from {low} to {high}", never as one sharp value ("at {point}"). Inside the band this run doesn't settle the call; say so where the reader would act on it.
 
 ## Caveats on the evidence a claim rests on
@@ -24,7 +24,7 @@ A margin says how much worse a candidate may be and still count as acceptable (n
 
 - `hi < 0`: **worse**. Lead with the size, then whether the margin allows it.
 - `lo > 0`: **better**.
-- otherwise: **not separated**.
+- otherwise: **cannot tell apart**.
 - It is within the margin when `-lo < M`. The **flip margin** is `-lo`: the margin at which the verdict changes. `decision_sensitivity` returns where the call flips, and the figure key `flip_margin.<candidate>` names it.
 
 Why size first: "within the margin" is true of a candidate that is clearly worse by an amount the margin happens to allow. If that clause leads, a regression reads as a pass.
@@ -56,7 +56,7 @@ When you pick the one option out of many that clears a line, its estimate is opt
 
 ## Corrected versus uncorrected
 
-Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals relative to the same contrast uncorrected. Compare like with like: a reading against the control may be unpaired and so wider than a corrected paired contrast. Check the two intervals before you say which is wider. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A separated stratum is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
+Contrasts across many arms and measures are corrected for multiplicity, which widens their intervals relative to the same contrast uncorrected. Compare like with like: a reading against the control may be unpaired and so wider than a corrected paired contrast. Check the two intervals before you say which is wider. That is what lets you call one *improved* or *regressed* without being fooled by the number of comparisons. Breakdowns you request by stratum, task or cell (`measure_breakdown`) are uncorrected and exploratory. A stratum whose interval excludes zero is a lead to follow up, not a finding. Phrase it that way once, then don't hedge every sentence.
 
 A contrast tests cases, not trials: each case's repeats are averaged first. `contrasts_list` gives each contrast's count and pairing (`contrast.<arm>.<measure>.n_cases`, `.paired`, `.pairing_r`). Cite them when you state the test's basis ("paired over 299 cases").
 
