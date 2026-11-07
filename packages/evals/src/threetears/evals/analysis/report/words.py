@@ -242,7 +242,7 @@ PASS_RATE = "Pass rate"
 
 def judged_heading(name: str) -> str:
     """A judged dimension as every surface names it: its name as :func:`~threetears.evals.analysis.style.measure_name`
-    spells it, marked judged (``persona holds character (judged)``, ``outcome (judged)``), never its stored id.
+    spells it, marked judged (``reply stays on topic (judged)``, ``outcome (judged)``), never its stored id.
 
     :param name: The dimension, as the rubric names it.
     :ptype name: str

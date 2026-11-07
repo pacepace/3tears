@@ -673,6 +673,7 @@ def _page(
                 "exploratory"
                 if verdict.rule == "exploratory" or (verdict.rule == "too_small" and not bundle.question_declared)
                 else CANNOT_TELL_APART
+                # prose-canary: allow — VerdictLine.text is the verdict rule's sentence, not anything a model wrote
                 if "cannot tell" in verdict.text
                 else None
             ),
@@ -1862,6 +1863,7 @@ def _verdict_cell(verdict: Verdict) -> str:
     if verdict.outcome != "not_separated" or verdict.control is None:
         return verdict.words
     sentence = comparison_words("not_separated", verdict.arm, verdict.control)
+    # prose-canary: allow — Verdict.words is the sentence comparison_words rendered, not anything a model wrote
     return CANNOT_TELL_APART + verdict.words.removeprefix(sentence)
 
 

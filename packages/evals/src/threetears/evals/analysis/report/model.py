@@ -120,6 +120,7 @@ _NAMING_COLUMNS = frozenset({"reading", "measure"})
 def _said_terms(block: DisclosureBlock) -> list[str]:
     """The glossary terms a line says in a form of its own: the undecided reading in its sentence form (``the evidence
     cannot tell v2 and v1 apart``), which the page links where it says it."""
+    # prose-canary: allow — a DisclosureBlock's text is a line the report's code wrote, not anything a model wrote
     return [CANNOT_TELL_APART] if CANNOT_TELL_APART_PHRASE.search(block.text) else []
 
 

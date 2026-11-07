@@ -279,7 +279,7 @@ def _trial(block: TrialBlock, *, prefix: str = "") -> list[str]:
 
 
 def world_count(parts: Sequence[str]) -> str:
-    """A case's world state as a record counts it: ``World state: 2 parts (music, discord)``.
+    """A case's world state as a record counts it: ``World state: 2 parts (orders, inventory)``.
 
     :param parts: The state's parts' names, in its order.
     :ptype parts: Sequence[str]

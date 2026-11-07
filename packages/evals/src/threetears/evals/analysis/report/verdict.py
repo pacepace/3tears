@@ -771,15 +771,15 @@ def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str
         parts.append(f"{arm(board.variant_key)} lost {lost} of {board.ran} trials, {most} because {said.words}.{alone}")
         if said.remedy not in remedies:
             remedies.append(said.remedy)
-    gap_words = (
-        ""
+    apart = (
+        []
         if over
-        else " The arms lost different shares of their trials, so their losses differ too much to compare them."
+        else ["The arms lost different shares of their trials, so their losses differ too much to compare them."]
     )
     lead = "The test setup failed: it measured the setup instead of the models"
     if every_arm:
         lead = "The test setup failed or the provider declined every call, so every trial was lost"
-    return f"{lead}. {' '.join(parts)}{gap_words} Fix: {'; '.join(remedies)}."
+    return " ".join([f"{lead}.", *parts, *apart, f"Fix: {'; '.join(remedies)}."])
 
 
 #: The contrast verdicts the verdict line names as one arm better than the other: the directional ones. Narrower than

@@ -535,6 +535,7 @@ class Result:
         for measure in lines:
             if measure.name == CONFUSION_CELL_MEASURE or measure.state == "not_carried":
                 continue
+            # prose-canary: allow — MeasureLine.text is the summary's own line, not anything a model wrote
             said = measure.text.removeprefix(measure.name)
             figures = held.get(measure.name)
             descriptor = catalog.get(measure.name) or METRIC_DESCRIPTORS.get(measure.name)
