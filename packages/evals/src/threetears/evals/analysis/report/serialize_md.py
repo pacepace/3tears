@@ -153,17 +153,19 @@ def _section_lines(
     return lines
 
 
+def _check_row(name: str, said: Sequence[tuple[str, str | None]]) -> str:
+    """A goal check's glossary row: its anchor, its name, then the expression it stands for, as a span."""
+    anchor, definition = check_anchor(name), check_definition(said, span=code_span)
+    return f'- <a id="{anchor}"></a>**{name}**: {definition}'  # one line: a name, and an expression laid on one line
+
+
 def _glossary_lines(report: Report | CampaignReport, *, defined: Collection[str] = ()) -> list[str]:
     """The page's glossary: each term it links, then each goal check's name, its expression set as a span no backtick
     inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; none of the checks
     ``defined`` names, which a report document's own Checks list defines; nothing when the page defines none."""
     entries = [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
     # A check's row carries the id its HTML row has, so a link to it lands there in either form.
-    entries += [
-        f'- <a id="{check_anchor(name)}"></a>**{name}**: {check_definition(said, span=code_span)}'
-        for name, said in report.check_glossary
-        if name not in defined
-    ]
+    entries += [_check_row(name, said) for name, said in report.check_glossary if name not in defined]
     if not entries:
         return []
     return [

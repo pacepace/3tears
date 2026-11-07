@@ -1873,6 +1873,12 @@ scope holds no version of is minted over their stored ids through `mint_case_set
 and reported under `case_set` as `<name> v1`; a scope holding any version keeps it (the next version is
 `case_set_mint`'s), so a host's own minting script over `case_set_mint` can be dropped.
 
+**A stored template's presentation fields reach it through `update_template`.** The seed fills empty slots only, and
+the template digest a reset reads leaves `goal_check_names` and `stratum_names` out, so `update_template` is the one
+seam that gives a stored template a check's or a stratum's reader name. A name holds at most `DECLARED_NAME_CHARS`
+characters, and `check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the
+ones worth a declared name.
+
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
 wrote, and a release step reads drift and resets what is behind, deliberately (never at boot, so a store an operator

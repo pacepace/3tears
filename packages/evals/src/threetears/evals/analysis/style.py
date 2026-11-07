@@ -201,7 +201,7 @@ class _Subject:
 def _reads(node: ast.AST) -> set[tuple[str, ...]]:
     """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent. A
     path under a root that names no subject (a case parameter, a generator's element) is the expectation, not what is
-    tested, so a guard reading one beside the end state (``contains(state.music.queue, variation.track)``) is still a
+    tested, so a guard reading one beside the end state (``contains(state.inventory.orders, variation.sku)``) is still a
     guard when a later operand reads that end state."""
     found: set[tuple[str, ...]] = set()
     # A predicate's own name (``contains``, ``call_count``) is the function a call makes, never a path it reads.

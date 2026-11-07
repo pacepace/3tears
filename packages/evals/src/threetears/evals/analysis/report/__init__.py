@@ -115,6 +115,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 
 from threetears.evals.analysis.report.doc_page.model import (
     DocCaveatLine,
+    DocCheck,
     DocClaim,
     DocConfidence,
     DocEvidence,
@@ -196,6 +197,7 @@ __all__ = [
     "PageMasthead",
     "PageSlot",
     "DocCaveatLine",
+    "DocCheck",
     "DocClaim",
     "DocConfidence",
     "DocEvidence",

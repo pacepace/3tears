@@ -4783,8 +4783,8 @@
     },
     "threetears.evals.run.update_template": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "update_template(host: EvalHost, template_id: str, scope_id: str, fields: dict[str, Any]) -> EvalTemplate",
+      "tier": "host-contract"
     },
     "threetears.evals.run.validated_kind_spec": {
       "kind": "function",
@@ -5367,6 +5367,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.DocCaveatLine": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocCheck": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
