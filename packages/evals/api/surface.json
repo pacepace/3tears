@@ -4998,7 +4998,7 @@
     },
     "threetears.evals.analysis.campaign_report": {
       "kind": "function",
-      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table') -> CampaignReport",
+      "signature": "campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table', lead: Sequence[ReportBlock] | None = None) -> CampaignReport",
       "tier": "stable"
     },
     "threetears.evals.analysis.campaign_report_html": {

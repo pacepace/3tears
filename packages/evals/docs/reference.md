@@ -552,7 +552,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 - **`assemble_context_bundle`** · function · Assemble the closed context bundle for a campaign's runs.
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, aspect: str | None = None, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
 - **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
-  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table') -> CampaignReport`
+  <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table', lead: Sequence[ReportBlock] | None = None) -> CampaignReport`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
