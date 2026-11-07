@@ -20,6 +20,7 @@ directory; the doc's commands drifting from the script's.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import re
 import socket
@@ -53,7 +54,6 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
 )
 from packages.evals.tests.writer_case_support import SEED
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.analysis.analyst.skill_ledger import skill_record
 from threetears.evals.harness import WriterCaseFile
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS
 from threetears.evals.ops.report_writer.preference import preference_rubric
@@ -341,19 +341,52 @@ def test_the_readout_prints_the_read_and_the_criterion_with_its_verdict(
     assert campaign is not None and campaign.question == writer_acceptance.QUESTION
 
 
+def _priced(found: Acceptance, arms: tuple[float | None, ...], pass_usd: float | None, *, dry: bool) -> Acceptance:
+    """The dry run's acceptance with each arm's spend and the pass's set as a run might price them."""
+    summaries = {
+        name: summary.model_copy(update={"total_cost_usd": usd})
+        for (name, summary), usd in zip(found.result.arms.items(), arms, strict=True)
+    }
+    return dataclasses.replace(
+        found,
+        dry=dry,
+        result=dataclasses.replace(found.result, arms=summaries),
+        report=found.report.model_copy(update={"cost_usd": pass_usd}),
+    )
+
+
+#: Each arm's spend and the pass's, whether the run is dry, and the line the readout states against the envelope:
+#: every part counted, an unpriced part read as "at least", and a dry run's prices never read as spent.
+ENVELOPE_LINES: Final = (
+    ((0.40, 0.35), 1.25, False, "This run spent $2.00 of the $50.00 monthly envelope in PROMOTIONS.toml."),
+    ((None, 0.35), 1.25, False, "This run spent at least $1.60 of the $50.00 monthly envelope in PROMOTIONS.toml."),
+    (
+        (0.40, 0.35),
+        1.25,
+        True,
+        "Priced as a live run, this dry run would spend $2.00 of the $50.00 monthly envelope in PROMOTIONS.toml.",
+    ),
+)
+
+
+@pytest.mark.parametrize(("arms", "pass_usd", "is_dry", "line"), ENVELOPE_LINES)
 def test_the_readout_states_the_runs_spend_against_the_monthly_envelope_once(
     dry: tuple[Acceptance, list[object]],
+    arms: tuple[float | None, ...],
+    pass_usd: float,
+    is_dry: bool,
+    line: str,
 ) -> None:
-    """The envelope beside the shipped skill's verdict is read, and disclosed once against the whole run's spend:
-    both arms and the pass, never a refusal."""
-    found, _ = dry
+    """The envelope beside the shipped skill's verdict (the owner's $50 a month) is read, and disclosed once against
+    the whole run's spend, both arms and the pass, in its own paragraph after the spend table: never a refusal."""
+    found = _priced(dry[0], arms, pass_usd, dry=is_dry)
     lines = list(found.readout())
-    envelope = skill_record(load_skill()).monthly_envelope_usd
-    parts = [arm.total_cost_usd for arm in found.result.arms.values()] + [found.report.cost_usd]
-    spent = sum(part for part in parts if part is not None)
-    assert spent > 0  # the scripted replies are priced, so a line that dropped a part would read short
-    named = [line for line in lines if "monthly envelope" in line]
-    assert named == [f"This run spent ${spent:.2f} of the ${envelope:.2f} monthly envelope in PROMOTIONS.toml."]
+    assert [each for each in lines if "monthly envelope" in each] == [line]
+    at = lines.index(line)
+    # A blank line closes the spend table first, so the sentence never reads as one of its rows.
+    paragraph = lines[at - 2 : at] if is_dry else lines[at - 1 : at]
+    assert paragraph[0] == "" and not any(each.startswith("|") for each in paragraph), paragraph
+    assert lines[at - len(paragraph) - 1].startswith("| pairwise pass")
     assert found.criterion.verdict() in lines
 
 

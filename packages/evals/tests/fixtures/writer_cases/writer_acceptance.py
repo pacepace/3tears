@@ -793,8 +793,8 @@ class Acceptance:
             yield f"| {arm} | {_cap(summary.max_cost_usd)} | {spent} |"
         pass_cost = "unpriced" if self.report.cost_usd is None else f"${self.report.cost_usd:.2f}"
         yield f"| pairwise pass ({self.report.calls_made} calls) | {_cap(self.report.cap_usd)} | {pass_cost} |"
+        yield ""
         if self.dry:
-            yield ""
             yield "In a dry run the spend is the scripted replies' own prices; nothing was paid."
         yield self.envelope_line()
         yield ""
@@ -823,6 +823,11 @@ class Acceptance:
         spent = sum(part for part in parts if part is not None)
         some = "" if None not in parts else "at least "
         envelope = self.read.shipped.monthly_envelope_usd
+        if self.dry:
+            return (
+                f"Priced as a live run, this dry run would spend {some}${spent:.2f} of the ${envelope:.2f} monthly "
+                "envelope in PROMOTIONS.toml."
+            )
         return f"This run spent {some}${spent:.2f} of the ${envelope:.2f} monthly envelope in PROMOTIONS.toml."
 
     def _two_editors(self) -> Iterator[str]:

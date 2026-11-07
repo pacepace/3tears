@@ -1042,7 +1042,9 @@ def test_an_id_is_one_word_where_the_cap_holds_it_and_wraps_where_no_column_has_
     (frame,) = [rule for rule in rules if rule.selector == ".tbl" and not rule.at]
     assert frame.declarations()["container-type"] == "scroll-state"
     assert by[("", ".tbl :is(th,td):first-child")]["width"] == "min(var(--id1),35vw)"
-    assert by[("", ".tbl.keys-2 :is(th,td):nth-child(2)")]["width"] == "min(var(--id2),35vw)"
+    # The second key's width never passes its own cap.
+    second = by[("", ".tbl.keys-2 :is(th,td):nth-child(2)")]
+    assert second["width"] == f"min(var(--id2),{second['max-width'].removeprefix('min(')}", second
 
 
 #: Every visible table frame: whether it scrolls, its pinned columns' widths and where the second is pinned, and each
@@ -1124,6 +1126,13 @@ def test_no_pinned_id_breaks_after_its_hyphen_in_a_host_s_frame_and_one_too_long
         assert name != "aspect" or (ids["cases"]["scrolls"] and "abt-genre-you-cant-stand" in page), "the control"
         held = [(frame["table"], word) for frame in drawn["frames"] for word in frame["broken"] if len(word) <= 28]
         assert held == [], name
+        assert '<span class="id' in page, f"the control: {name} pins a hyphenated id"
+        # The first key is held at its estimated width, so a cell wider than the estimate would run under the second:
+        # in every two-key frame the second starts where the first ends.
+        two_keys = [frame for frame in drawn["frames"] if frame["left"] is not None]
+        assert name != "aspect" or len(two_keys) >= 2, "the control: Kairo's contrasts and strata keep two keys"
+        for frame in two_keys:
+            assert frame["left"] == pytest.approx(frame["keys"][0], abs=0.5), (name, width, frame)
     probe = report_page([_keyed_table([LONG_ID, TOO_LONG_ID], figures=16)])
     for at, broken in ((width, {TOO_LONG_ID}), (390, {LONG_ID, TOO_LONG_ID})):
         drawn = _drawn_ids(probe, at, tmp_path, f"probe-{at}")

@@ -572,13 +572,16 @@ _CHIP_REM = 1.5
 def _frame_widths(block: TableBlock) -> str:
     """The frame's style attribute: the widths its pinned columns are laid out at, or none.
 
-    ``--key`` is a two-key table's first column, held at exactly that width (:func:`_key_rem`). ``--id1`` and
-    ``--id2`` are the width that holds a pinned column's longest ``long`` hyphenated word whole (:func:`_id_rem`): a
-    column with a width is given it before the columns past it grow, so the word breaks after a hyphen only where
-    those columns at their narrowest leave no room for it.
+    ``--key`` is a two-key table's first column, held at exactly that width (:func:`_key_rem`). ``--id1`` (a one-key
+    table's pinned column) and ``--id2`` (a two-key table's second) are the width that holds the column's longest
+    ``long`` hyphenated word whole (:func:`_id_rem`): a column with a width is given it before the columns past it
+    grow, so the word breaks after a hyphen only where those columns at their narrowest leave no room for it.
     """
     widths = [f"--key:{_key_rem(block)}rem"] if block.key_columns == 2 else []
+    # A two-key table's first column is held at --key, which already holds its words.
     for at, column in enumerate(block.columns[: block.key_columns], start=1):
+        if at == 1 and block.key_columns == 2:
+            continue
         rem = _id_rem(block, column.key)
         if rem is not None:
             widths.append(f"--id{at}:{rem}rem")
