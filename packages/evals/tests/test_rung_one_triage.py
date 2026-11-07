@@ -123,7 +123,8 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     above = lines[: lines.index("## classify")]
     assert "**triage by aspect**" in above and not any("control" in line for line in above)
     matrix, *rows = [line for line in above if line.startswith("| classify |")]
-    assert matrix.startswith("| classify | 77.8 | 0.9 | 1 | 0.9048 | 0.8182 |")
+    # The pass rate carries the count it is computed over beside it (presentation build, chunk 1).
+    assert matrix.startswith("| classify | 77.8 (70 of 90 trials, 30 cases) | 0.9 | 1 | 0.9048 | 0.8182 |")
     assert rows and all(line.startswith("| classify | triage |") for line in rows)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.
     measured = {line.split(" | ")[2] for line in rows}

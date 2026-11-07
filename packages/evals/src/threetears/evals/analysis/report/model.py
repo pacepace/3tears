@@ -277,11 +277,11 @@ class CampaignReport(EvalDocumentModel):
     steps, how the campaign was set up, then one fold per aspect.
 
     **The first screen, in order** (:data:`FIRST_SCREEN`: the ``header``, ``answer``, ``warnings`` and ``scoreboard``
-    sections), under the title: the question, or the line saying none was asked; the line saying where the
-    campaign's report is, or that none was written; what warns, one plain line
+    sections), under the title: the question, or with none asked of a comparison that it is exploratory; the lead,
+    on every page; the line saying where the campaign's report is, where it has one; what warns, one plain line
     per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on; each report-wide
-    caveat once; the person's call, or that none is recorded, and any broken floor it overrides. Nothing stands above
-    the title.
+    caveat once; the person's call, once one is recorded, and any broken floor it overrides. The first screen says
+    what the page is, never what it lacks. Nothing stands above the title.
 
     **Then, each under its heading** (:attr:`headed_sections`), in the order
     :func:`~threetears.evals.analysis.report.campaign.page.build_campaign_report` describes: the Scorecard, the

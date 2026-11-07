@@ -267,7 +267,7 @@ GLOSSARY: dict[str, str] = {
     "margin": "The smallest change worth acting on, declared before the run.",
     "guardrail": "A reading an arm must not get worse on, whatever it gains elsewhere.",
     "bar": "A threshold a reading must clear on its own, without a control.",
-    "exploratory": "No question was declared, so the page offers leads, not decisions.",
+    "exploratory": "Run before any question was declared: each reading is a lead for a later run to test.",
     "floor status": (
         "Broken where an interval shows the arm past the floor, or it costs no less; held where one shows it "
         "within, from 5 cases per arm."

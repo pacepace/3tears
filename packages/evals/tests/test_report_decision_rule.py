@@ -766,15 +766,14 @@ async def test_a_floor_naming_one_reading_reads_that_rate_alone() -> None:
     assert (absent.outcome, absent.reason) == ("unclear", "tone was not measured on both arms")
 
 
-async def test_a_question_that_declares_no_floor_says_so_in_one_line() -> None:
+async def test_a_question_that_declares_no_floor_has_no_floor_block() -> None:
+    """The page says what it holds, never what it lacks (presentation build, chunk 1): a question with no floor
+    declared prints no Floors section and no line saying none was declared."""
     bundle, _, _ = await _ruled([3] * 7, [2] * 7, floors=())
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00:00+00:00", campaign_name="no floors")
-    decision = [block for block in report.blocks if block.section == "decision"]
-    assert [(type(block).__name__, getattr(block, "text", None)) for block in decision] == [
-        ("DisclosureBlock", f"No floor was declared on {bundle.aspect}.")
-    ]
+    assert not [block for block in report.blocks if block.section == "decision"]
     assert _warnings(report) == []
-    assert f"## Floors\n\nNo floor was declared on {bundle.aspect}.\n" in report_markdown(report)
+    assert "## Floors" not in report_markdown(report) and "No floor was declared" not in report_markdown(report)
 
 
 async def test_an_exploratory_comparison_has_no_floor_block_at_all() -> None:

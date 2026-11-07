@@ -3,16 +3,16 @@ then one fold per aspect.
 
 Code reports, the writer recommends, a person decides, and the page keeps the three apart. This page is code's: the
 writer's report is a report document, which its own page draws (:mod:`threetears.evals.analysis.report.doc_page`).
-The first screen is the decision. Under the title, for every kind: **the question**, or that none was asked
-(:mod:`.provenance`); where a guardrail warns, **the lead** under it: one sentence per candidate on the first measure
-the aspect's design lists in its graders' order, the one an eval's question asks and its printed line leads on; with no
-order listed, on the question's measure, the aspect's pass rate, or with no question asked on the classifier's
-accuracy; so the guardrail's warning sits beside the lead and never in its place (a page no guardrail warns on leads on
-its scorecard); one line on where the campaign's
-report is: the report document it is stored as, the analysis this version no longer reads or a retired writer wrote,
-or that no recommendation was written (:mod:`.answer_blocks`); then **what warns**, one line per arm for the bars it
-misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`), and each report-wide caveat
-once (:mod:`.provenance`); then the person's call (a measurement's only once one is recorded).
+The first screen is the decision, and says what the page is, never what it lacks. Under the title, for every kind:
+**the question**, or with none asked of a page comparing arms that it is an exploratory comparison
+(:mod:`.provenance`); then, on every page, **the lead**: one sentence per candidate on the first measure the aspect's
+design lists in its graders' order, the one an eval's question asks and its printed line leads on; with no order
+listed, on the question's measure, the aspect's pass rate, or with no question asked on the classifier's accuracy; for
+one arm measured, its pass rate with the count it is computed over; so a guardrail's warning sits beside the lead and
+never in its place; where the campaign's report is, where it has one: the report document it is stored as, or the
+analysis this version no longer reads or a retired writer wrote (:mod:`.answer_blocks`); then **what warns**, one line
+per arm for the bars it misses, the floors it breaks and the guardrails it is not shown safe on (:mod:`.warnings`), and
+each report-wide caveat once (:mod:`.provenance`); then the person's call, once one is recorded.
 
 Then, under **Scorecard**, code's readings by the campaign's kind (:mod:`.scorecard`), the figures across aspects
 (:mod:`.aggregate`), how deep each arm ran (:mod:`.depth_blocks`) and every kind's bars; then **Design &
@@ -36,7 +36,6 @@ from threetears.evals.analysis.report.campaign.aggregate import aggregate_blocks
 from threetears.evals.analysis.report.campaign.depth_blocks import depth_blocks, depth_provenance_blocks
 from threetears.evals.analysis.report.campaign.answer_blocks import (
     NO_LONGER_READS,
-    NO_RECOMMENDATION,
     call_blocks,
     report_doc_blocks,
     unread_analysis_blocks,
@@ -53,7 +52,9 @@ from threetears.evals.analysis.report.campaign.scorecard import (
     bar_blocks,
     frontier_blocks,
     measure_blocks,
+    measured_figure,
     pair_blocks,
+    pairs_words,
     row_words,
     settle_blocks,
     table_blocks,
@@ -86,6 +87,8 @@ def build_campaign_report(
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
     arms: Sequence[CampaignArm] | None = None,
+    lead: Sequence[ReportBlock] | None = None,
+    folds_alone: bool = False,
 ) -> CampaignReport:
     """Lay a campaign out as code's page: under the title the question, where its report is, what warns and the
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
@@ -100,13 +103,13 @@ def build_campaign_report(
     :param call: The person's call; None while none is recorded.
     :ptype call: CampaignCall | None
     :param report_doc_id: The report document of the analysis the page is laid out for, when it is one
-        (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there, in place of
-        "no analysis has been generated"; None for any other page.
+        (``EvalAnalysis.report_doc_id``): the first screen says the report is written and stored there; None for any
+        other page.
     :ptype report_doc_id: str | None
     :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
         for: the first screen says so in the one regenerate line
-        (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), in place of "no analysis has
-        been generated", and the page names it (``CampaignReport.unread_analysis_id``); None for any other page.
+        (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), and the page names it
+        (``CampaignReport.unread_analysis_id``); None for any other page.
     :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: The report document, read by its id, this version no longer reads, which this
         code-only page stands in for: the first screen says so in the same line
@@ -119,31 +122,39 @@ def build_campaign_report(
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the title names; None names the arms its readings label.
     :ptype arms: Sequence[CampaignArm] | None
+    :param lead: The page's answer where its caller states its own, in place of the lead code writes from the
+        readings: the way a harness whose eval reads a figure of its own (a judge's preference, a promotion's
+        reading) states its answer on the page, as its own blocks with their own tone. They replace code's lead
+        block in place, in their order: on every campaign page that is directly after the question line (or the
+        line saying the page is an exploratory comparison), before where the report is and what warns. Each is in
+        the ``answer`` section. None for code's lead; an empty sequence is refused. Nothing else on the page changes
+        with it.
+    :ptype lead: Sequence[ReportBlock] | None
+    :param folds_alone: Whether the folds are laid out without the page's own blocks, as a report document's evidence
+        record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
+        line, which the page's own Design & provenance would otherwise state once.
+    :ptype folds_alone: bool
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
-    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, or the readings
-        are of another campaign.
+    :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
+        are of another campaign, or a given lead is empty or holds a block outside the ``answer`` section.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
+    if lead is not None:
+        _check_lead(lead)
     kind = readings.kind
     bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
     names = AspectNames.of(bundles)
-    # The first screen is the decision: the question, the lead where a guardrail warns, then where the campaign's report
-    # is, then what warns, one line per arm, and each report-wide caveat once.
-    guardrails = guardrail_warnings(campaign, readings, reports, names=names)
+    # The first screen is the decision: the question, the lead, then where the campaign's report is where it has one,
+    # then what warns, one line per arm, and each report-wide caveat once.
     blocks: list[ReportBlock] = [
-        *question_blocks(campaign),
-        *(_lead_blocks(campaign, readings, reports, names=names) if guardrails else []),
+        *question_blocks(campaign, compares=kind != "measurement"),
+        *(_lead_blocks(campaign, readings, reports, names=names) if lead is None else lead),
         *report_doc_blocks(report_doc_id),
         *unread_analysis_blocks(unread_analysis_id, unread_report_doc_id, line=unread_line),
-    ]
-    noted = any(named is not None for named in (report_doc_id, unread_analysis_id, unread_report_doc_id))
-    if kind != "measurement" and not noted:
-        blocks.append(DisclosureBlock(section="answer", source="memo", text=NO_RECOMMENDATION))
-    blocks += [
         *bar_warnings(readings, names=names),
         *floor_warnings(readings, names=names),
-        *guardrails,
+        *guardrail_warnings(campaign, readings, reports, names=names),
         *caveat_blocks(bundles, section="warnings"),
     ]
     if kind == "change":
@@ -157,8 +168,7 @@ def build_campaign_report(
     blocks += aggregate_blocks(campaign, readings, reports)
     blocks += depth_blocks(campaign, readings, reports, names=names)
     blocks += bar_blocks(readings, reports, names=names)
-    if kind != "measurement" or call is not None:
-        blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
+    blocks += call_blocks(campaign, readings, call, names=names, reports=reports)
     # Design & provenance: what each declared check name stands for, the design and when each criterion was set,
     # then what depth says once.
     blocks += check_legend_blocks(names)
@@ -169,7 +179,7 @@ def build_campaign_report(
             aspect=aspect.label,
             shows=aspect_shows(readings, aspect.label),
             # What the campaign states once for every aspect, its fold does not say again.
-            report=for_the_campaign(reports[aspect.label]),
+            report=for_the_campaign(reports[aspect.label], alone=folds_alone),
         )
         for aspect in campaign.aspects
     ]
@@ -196,18 +206,25 @@ def _lead_blocks(
     *,
     names: AspectNames,
 ) -> list[ReportBlock]:
-    """The page's lead, its verdict line, one sentence per candidate on each aspect in the campaign's order, naming
-    the reading and both arms: never a cost reading, and never a guardrail's, whose warning follows it.
+    """The page's lead, its verdict line, on every page where its caller states no answer of its own: one sentence
+    per candidate on each aspect in the campaign's order, naming the reading and both arms; for one arm measured, the arm's pass rate with its count. Never a cost reading, and never a
+    guardrail's, whose warning follows it.
 
     Where the aspect's design lists its graders' measures (``AspectDesign.measure_order``, which an eval files in the
     order it lists its graders), the lead is the first of them a contrast tested that is no cost, in the aspect page's
     own words (``Accuracy: v2 and v1 not separated, a lead.``): the measure an eval's printed line leads on, and the
     one its question asks, where it asks one. Where it lists none, the lead is the classifier's accuracy where the
     aspect reads one and no question is asked of it; else the question's measure, the aspect's pass rate (``Pass rate:
-    v2 against v1 shown better.``), or with no question the pass rate as every grader's reading together. An aspect
-    with no candidate read against a control says what its fold heads it with. The tone is decided where every
-    aspect is asked a question, else open."""
+    v2 against v1 shown better.``), or with no question the pass rate as every grader's reading together. A reading
+    the question does not ask is marked a lead, unless the campaign asks none, which its first line says once
+    (``Exploratory comparison.``). A choice leads on each aspect's pairs. One arm measured leads on its pass rate, as
+    its count (``reply passed 40 of 40 trials on 20 cases.``), its percent and interval in the scorecard under it. An aspect with none of these says what its fold heads it with. The tone is decided where every aspect
+    is asked a question, else open."""
+    bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
+    rule = "declared" if bundles and all(bundle.question_declared for bundle in bundles) else "exploratory"
+    tone = DisclosureBlock.verdict_tone(rule)
     several = len(campaign.aspects) > 1
+    asked = bool(campaign.question.strip())
     sentences: list[str] = []
     for aspect in campaign.aspects:
         on = f" on {names(aspect.label)}" if several else ""
@@ -219,23 +236,53 @@ def _lead_blocks(
         ]
         if led:
             sentences += [
-                f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None else ', a lead'}."
+                f"{verdict.heading}{on}: {verdict.words}{'' if verdict.aspect is not None or not asked else ', a lead'}."
                 for verdict in led
             ]
         elif rows := readings.on_aspect(aspect.label):
             sentences += [
                 f"Pass rate{on}: {row.arm_label} against {readings.control_label} {row_words(row)}"
-                f"{'' if row.confirmatory else ', a lead'}."
+                f"{'' if row.confirmatory or not asked else ', a lead'}."
                 for row in rows
             ]
+        elif paired := pairs_words(readings, aspect.label, marked=asked):
+            # An arm's label is a name, printed as given, even where it opens the sentence.
+            sentences.append(f"On {names(aspect.label)}, {paired}." if several else f"{paired}.")
+        elif measured := _measured_lead(aspect, readings):
+            prefix = f"On {names(aspect.label)}, " if several else ""
+            sentences += [f"{prefix}{said}." for said in measured]
         else:
             sentences.append(f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}.")
-    bundles = [reports[aspect.label].bundle for aspect in campaign.aspects]
-    rule = "declared" if bundles and all(bundle.question_declared for bundle in bundles) else "exploratory"
-    return [
-        DisclosureBlock(
-            section="answer", source="verdict", text=" ".join(sentences), tone=DisclosureBlock.verdict_tone(rule)
+    return [DisclosureBlock(section="answer", source="verdict", text=" ".join(sentences), tone=tone)]
+
+
+def _check_lead(lead: Sequence[ReportBlock]) -> None:
+    """Refuse a caller's lead that would not stand where code's does: empty, or with a block outside the answer.
+
+    :raises RefusedInput: It is empty, or a block of it is in another section.
+    """
+    if not lead:
+        raise RefusedInput(
+            "the page's lead is given as no block at all",
+            remedy="pass None for code's lead, or the blocks that state the caller's answer",
         )
+    if stray := sorted({block.section for block in lead if block.section != "answer"}):
+        raise RefusedInput(
+            f"the page's lead holds a block in section(s) {', '.join(stray)}, not the answer",
+            remedy='give each block of the lead section="answer", where code\'s lead stands',
+        )
+
+
+def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
+    """Each measured arm's pass rate on an aspect, as the count it is computed over
+    (:func:`~.scorecard.measured_figure`): the figure every grader's reading makes together, as the aspect's printed
+    line leads on its cases passed; none where no arm was measured there."""
+    return [
+        figure
+        for reading in readings.measures
+        # ``passed``: the trials' own pass rate, as the readings key it.
+        if reading.aspect == aspect.label and reading.measure == "passed"
+        if (figure := measured_figure(reading)) is not None
     ]
 
 

@@ -1,17 +1,20 @@
 """The style rules applied to a whole rendered page: test support, since nothing in the package lints a page.
 
 The package applies :func:`~threetears.evals.analysis.style.lint_prose` to nothing it writes at run time; its tests hold
-the text code writes to the rules by linting the rendered ``report.md`` through here.
+the text code writes to the rules by linting the rendered ``report.md`` through here. :func:`absence_violations` holds a
+page's first screen to saying what the page is, never what it is not (the presentation review's A6).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 
+from threetears.evals.analysis.report.model import ReportBlock
 from threetears.evals.analysis.style import StyleViolation, lint_prose
 
-__all__ = ["lint_page"]
+__all__ = ["Absence", "absence_violations", "lint_page"]
 
 #: A line quoting something whole, as the declared question does under the title: data, not prose.
 _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
@@ -64,4 +67,52 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         if _QUOTED_LINE.match(line):
             continue
         found += lint_prose(line.lstrip("-> *").strip(), question=question)
+    return found
+
+
+#: The words a line states an absence by: what a page does not hold, rather than what it does.
+_ABSENCE = re.compile(r"\b(?:No|Nothing|nothing|not|never|none)\b(?:\s+[\w-]+)?")
+
+#: The first-screen sections and sources a line may state an absence in: what warns (a campaign's ``warnings``; an
+#: aspect page's broken floor, missed bar and guardrail lines and its case-floor caveat), where an absence is the
+#: warning, and the question, which is the author's words, quoted.
+_ABSENCE_SECTIONS = frozenset({"warnings"})
+_ABSENCE_SOURCES = frozenset({"floor", "bar", "guardrails", "caveat", "basis"})
+
+#: The id prefix of a report-wide caveat line, which states an absence where that absence changes the reading.
+_CAVEAT_ID = "caveat-"
+
+#: Code a reader copies, not prose.
+_CODE_SPAN = re.compile(r"`[^`]*`")
+
+
+@dataclass(frozen=True)
+class Absence:
+    """One first-screen line that states an absence: the line, and the absence's words (``not separated``)."""
+
+    text: str
+    detail: str
+
+
+def absence_violations(blocks: Iterable[ReportBlock]) -> list[Absence]:
+    """Every line of a page's first screen that opens or turns on an absence (``No``, ``Nothing``, ``not``,
+    ``never``, ``none``): the page says what it is, never what it is not. What warns and the report-wide caveats are
+    exempt, since there the absence is the warning or changes the reading, and so is the question quoted; a block
+    with no words (a table, a chart) holds none.
+
+    :param blocks: The page's first screen, in order (its blocks in the first-screen sections).
+    :ptype blocks: Iterable[ReportBlock]
+    :return: One per absence found; empty when the first screen says only what the page is.
+    :rtype: list[Absence]
+    """
+    found: list[Absence] = []
+    for block in blocks:
+        text = getattr(block, "text", None)
+        if not isinstance(text, str) or block.section in _ABSENCE_SECTIONS:
+            continue
+        if getattr(block, "source", None) in _ABSENCE_SOURCES:
+            continue
+        if str(getattr(block, "anchor", None) or "").startswith(_CAVEAT_ID):
+            continue
+        found += [Absence(text, match.group(0)) for match in _ABSENCE.finditer(_CODE_SPAN.sub("", text))]
     return found

@@ -23,7 +23,7 @@ from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.report.campaign.scorecard import READING_WORDS
 from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
 from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
-from threetears.evals.analysis.report.campaign_page import NO_CALL, build_campaign_report, campaign_warnings
+from threetears.evals.analysis.report.campaign_page import build_campaign_report, campaign_warnings
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
@@ -102,7 +102,8 @@ async def test_a_measurement_s_missed_bar_warns_under_its_title_and_no_arm_is_re
     assert measures.rows[0]["measure"].text == "pass rate"
     bars = next(block for block in page.blocks if isinstance(block, TableBlock) and block.name == "bars")
     assert [(row["arm"].text, row["status"].text) for row in bars.rows] == [("alpha", "missed")]
-    assert NO_CALL not in first
+    # No call is recorded, so the page prints no call line.
+    assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "call"]
 
 
 async def test_a_missed_bar_warns_on_a_choice_too() -> None:
@@ -234,8 +235,9 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
     None
 ):
     """The one rule with no question asked and a function grader first: the eval files its graders' order on the
-    aspect's design, so the first bold line reads that grader, in the aspect page's words, naming both arms and marked
-    a lead; the guardrail's warning is the next, never in its place."""
+    aspect's design, so the first bold line reads that grader, in the aspect page's words, naming both arms, under the
+    line saying once that the page is an exploratory comparison; the guardrail's warning is the next, never in its
+    place."""
     result = await Eval(
         _THIRTY,
         {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
@@ -249,7 +251,8 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
         if verdict.kind == "contrast" and verdict.name == "_right"
     ]
     lead, warning = _bold(page)
-    assert lead == f"**{right.heading}: {right.words}, a lead.**"
+    assert lead == f"**{right.heading}: {right.words}.**"
+    assert "Exploratory comparison." in campaign_report_markdown(page).splitlines()
     assert "same" in right.words and "current" in right.words
     assert warning.startswith("**same is not yet shown safe on the no leak guardrail")
     html = header_html(page)
@@ -258,8 +261,8 @@ async def test_with_no_question_and_no_classifier_the_lead_is_the_first_grader_a
 
 async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_on_the_pass_rate() -> None:
     """A campaign stored with no graders' order, as every campaign filed before the order was, asking no question and
-    reading no classifier, leads as it did: on the pass rate, every grader's reading together, marked a lead. The same
-    campaign stating its order leads on its first grader."""
+    reading no classifier, leads as it did: on the pass rate, every grader's reading together, which the page's one
+    exploratory line marks a lead. The same campaign stating its order leads on its first grader."""
     result = await Eval(
         _THIRTY,
         {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)},
@@ -280,9 +283,9 @@ async def test_a_campaign_stating_no_grader_order_and_asking_no_question_leads_o
     reports = {fold.aspect: fold.report for fold in result.page.aspects}
     (row,) = result.page.readings.readings
     lead, _ = _bold(build_campaign_report(unstated, result.page.readings, reports))
-    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}, a lead.**"
+    assert lead == f"**Pass rate: same against current {READING_WORDS[row.reading]}.**"
     led, _ = _bold(build_campaign_report(stated, result.page.readings, reports))
-    assert led.startswith("**Right score: ") and led.endswith(", a lead.**")
+    assert led.startswith("**Right score: ") and led.endswith(".**") and ", a lead" not in led
 
 
 async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_aspect_page_s_words() -> None:
@@ -309,7 +312,7 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
         if verdict.kind == "contrast" and verdict.name == "accuracy"
     ]
     lead, warning = _bold(result.page)
-    assert lead == f"**{accuracy.heading}: {accuracy.words}, a lead.**" and accuracy.heading == "Accuracy"
+    assert lead == f"**{accuracy.heading}: {accuracy.words}.**" and accuracy.heading == "Accuracy"
     assert "same" in accuracy.words and "current" in accuracy.words
     assert warning.startswith("**same is not yet shown safe on the no secret guardrail")
 
@@ -386,9 +389,12 @@ def test_a_question_with_no_margin_leads_on_the_superiority_verdict(passing: int
     assert "no worse than the margin" not in markdown and "No margin was declared" not in markdown
 
 
-async def test_a_page_no_guardrail_warns_on_leads_on_its_scorecard_with_no_lead_line() -> None:
-    """With nothing to take the lead's place the first screen is as it was, the scorecard its first reading."""
+async def test_a_page_no_guardrail_warns_on_still_leads_on_its_first_grader() -> None:
+    """Every page leads (W2, P1): with nothing that warns, the lead is the first screen's one bold line, the same
+    sentence a guardrail's warning would sit beside."""
     result = await Eval(
         _THIRTY, {"current": _answering(misses=10, leaks=0), "same": _answering(misses=4, leaks=0)}, [_right], k=1
     ).run(store=":memory:")
-    assert _warned(result.page.blocks, "verdict") == [] and _bold(result.page) == []
+    (lead,) = _warned(result.page.blocks, "verdict")
+    assert lead.startswith("Right score: ") and "same" in lead and "current" in lead
+    assert _bold(result.page) == [f"**{lead}**"]

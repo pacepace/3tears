@@ -1,9 +1,9 @@
 """The lines on a campaign's page that say what became of its analysis, and the person's call.
 
-Code's page says where the campaign's report is: one line naming the report document it is stored as
-(:func:`report_doc_blocks`); one line where the analysis it stands in for is one this version no longer reads or a
-retired writer wrote (:func:`unread_analysis_blocks`, :func:`retired_generation`); or, with neither, that no
-recommendation was written (:data:`NO_RECOMMENDATION`). Then **the person's call**, or that none is recorded yet; a
+Code's page says where the campaign's report is, where it has one: one line naming the report document it is stored
+as (:func:`report_doc_blocks`); one line where the analysis it stands in for is one this version no longer reads or
+a retired writer wrote (:func:`unread_analysis_blocks`, :func:`retired_generation`). With neither, the page says
+nothing of a report: it is code's page, and says what code read. Then **the person's call**, once one is recorded; a
 call adopting an arm past a broken floor says which floor it overrides (:func:`call_blocks`).
 """
 
@@ -22,17 +22,12 @@ from threetears.evals.kernel.declaration import CampaignCall, Floor, aware_insta
 from threetears.evals.kernel.metrics import goal_check_of
 
 __all__ = [
-    "NO_CALL",
     "NO_LONGER_READS",
-    "NO_RECOMMENDATION",
     "call_blocks",
     "report_doc_blocks",
     "retired_generation",
     "unread_analysis_blocks",
 ]
-
-#: The first screen's line where no report was written over the campaign, and it stands in for none.
-NO_RECOMMENDATION = "No recommendation was written: no analysis has been generated over this campaign."
 
 #: The first screen's line where the analysis laid out is a report document's (``EvalAnalysis.report_doc_id``): the
 #: report is stored apart, and this page is code's over the same evidence.
@@ -60,15 +55,12 @@ _RETIRED_GENERATION = (
 #: Each retired writer, by what it stored (``EvalAnalysis.basis``), as :func:`retired_generation` names it.
 _RETIRED_WRITERS: dict[str, str] = {"memo": "the memo writer", "plan": "the report planner"}
 
-#: The first screen's line on the code-only page that stands in for an analysis this version no longer reads, in place
-#: of "no analysis has been generated"; ``{line}`` is :data:`NO_LONGER_READS` or the retired writer's line.
+#: The first screen's line on the code-only page that stands in for an analysis this version no longer reads;
+#: ``{line}`` is :data:`NO_LONGER_READS` or the retired writer's line.
 _UNREAD_ANALYSIS = "This campaign's analysis {analysis_id} was {line}."
 
 #: The same line where the code-only page stands in for one report document read by its id.
 _UNREAD_REPORT_DOC = "Report document {report_doc_id} was " + NO_LONGER_READS + "."
-
-#: The first screen's line while no person has made the call.
-NO_CALL = "No call is recorded yet: a person decides, over code's readings."
 
 
 def report_doc_blocks(report_doc_id: str | None) -> list[ReportBlock]:
@@ -141,8 +133,8 @@ def call_blocks(
     names: AspectNames,
     reports: Mapping[str, Report],
 ) -> list[ReportBlock]:
-    """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; a line
-    saying none is recorded while none is.
+    """The person's call, who made it and when, their reason quoted, and every floor and bar it overrides; nothing
+    while none is recorded.
 
     Every override the call stored is said, as stored, whatever the readings on this page now say of it: one that no
     longer warns is marked so, never dropped. Beside them, a floor broken or a bar missed here that the call does not
@@ -160,11 +152,11 @@ def call_blocks(
     :ptype names: AspectNames
     :param reports: Each aspect's own page, by its label, whose evidence names a bar's measure.
     :ptype reports: Mapping[str, Report]
-    :return: The call's lines.
+    :return: The call's lines; none while no call is recorded.
     :rtype: list[ReportBlock]
     """
     if call is None:
-        return [DisclosureBlock(section="header", source="call", text=NO_CALL)]
+        return []
     named = next((arm for arm in campaign.arms if arm.variant_key == call.variant_key), None)
     keys = {call.variant_key, *(resolve_control_arm(named).variant_keys if named is not None else [])}
     verb = "keep" if readings.control in keys else "adopt"

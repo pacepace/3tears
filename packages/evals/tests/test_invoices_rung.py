@@ -96,10 +96,11 @@ async def test_offline_it_replays_both_prompts_and_decides_by_the_typed_verdicts
         "**Declared question: nothing separated v2 from v1. Not yet shown safe: v2 on no invented total.**"
     )
     # The one failure cause beside checks and the judge heads its own column; no legend line is needed under it. Both
-    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost, so
-    # the report-wide line on provider routing sits between the result and the scoreboard (owner, 2026-10-25).
-    assert lines[7] == COST_ROUTING_CAVEAT
-    assert lines[11] == (
+    # prompts cost well under a cent per invoice, so the cost column reads per 1,000 replies. The page prints a cost,
+    # and its provider routing is said in the methods, not between the result and the scoreboard (owner reading,
+    # 2026-11-06): the scoreboard follows the result.
+    assert lines[7] == "**Scoreboard**" and COST_ROUTING_CAVEAT in report_markdown(result.report)
+    assert lines[9] == (
         "| Arm | Ran | Usable | Passed | Failed by check | Failed by judge | Model failed | Cost per 1,000 replies |"
     )
     assert page_violations(result.report) == []
@@ -157,7 +158,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     # lead and never in its place, and picks no arm.
     assert lines[0] == "# v1 vs v2 · classify (invoices)"
     assert lines[1] == f'"{QUESTION}"'
-    assert "No question was declared, so every reading is a lead." not in lines
+    assert "Exploratory comparison." not in lines
     bold = [line for line in first_screen if line.startswith("**")]
     # The guardrail says what leaves it undecided: one noisy invoice each, and too few cases to bound two points.
     warning = (
@@ -175,7 +176,7 @@ async def test_its_campaign_page_leads_on_its_questions_measure_with_the_guardra
     # The question asks whether v2 does better and writes no margin (a superiority question): the pass rate is read
     # against zero both ways, so no line says it is never shown worse, no margin is filed, and the row reads not
     # separated, its interval reaching below zero.
-    assert "No margin was declared on classify, so no arm is ever shown worse there." not in lines
+    assert not [line for line in lines if line.startswith("On classify, a drop reads as not separated")]
     assert module.invoices.margin is None and result.margin is None
     assert (
         "| classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | not separated |"
