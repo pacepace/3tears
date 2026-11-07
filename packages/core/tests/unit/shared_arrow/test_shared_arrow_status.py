@@ -19,6 +19,7 @@ import pyarrow as pa
 import pytest
 
 from threetears.core.shared_arrow import Parts, SharedArrowStore
+from threetears.observe import remove_tree as threetears_remove_tree
 
 TABLE = "t"
 
@@ -201,3 +202,54 @@ class TestStatusIsExact:
             again = SharedArrowStore(tmp_path / "shm", max_bytes=64 << 20)
             assert _told(again) == _walked(again)
             assert "v1" in _told(again)["versions"]
+
+
+class TestTwoSweepsRemovingOneDirectory:
+    def test_a_partial_removal_recorded_after_another_sweep_removed_the_rest_counts_nothing_stale(
+        self, store: SharedArrowStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store.publish("v1", {TABLE: _parts({"VA": 1, "GA": 2})})
+        held = store.lease("v1")
+        store.publish("v2", {"other": _table(4)})
+        # sweep A (the lease's release) retires v1; its removal leaves one file and its listing of what is left
+        # waits for sweep B, which removes the directory whole and forgets it
+        left_listed, b_done = threading.Event(), threading.Event()
+        removing = threetears_remove_tree
+        stat = Path.stat
+        a_thread: list[threading.Thread] = []
+        partial: list[Path] = []
+
+        def on_a() -> bool:
+            return bool(a_thread) and threading.current_thread() is a_thread[0]
+
+        def remove_partly(path: Any, **kwargs: Any) -> None:
+            if on_a() and Path(path).name.startswith(".retiring-") and not partial:
+                # the file left is a table's, so a stale record of it would count real bytes
+                files = sorted(Path(path).iterdir(), key=lambda entry: entry.name.startswith("."))
+                for entry in files[1:]:
+                    entry.unlink()
+                partial.append(files[0])
+                return
+            removing(path, **kwargs)
+
+        def stat_then_wait(path: Path, *args: Any, **kwargs: Any) -> Any:
+            answer = stat(path, *args, **kwargs)
+            if on_a() and partial and path == partial[0] and not left_listed.is_set():
+                left_listed.set()
+                b_done.wait(1)  # under the store's lock B cannot run: A goes on alone after a moment
+            return answer
+
+        monkeypatch.setattr("threetears.core.shared_arrow.remove_tree", remove_partly)
+        monkeypatch.setattr(Path, "stat", stat_then_wait)
+        a_thread.append(threading.Thread(target=held.release))
+        a_thread[0].start()
+        assert left_listed.wait(10), "sweep A never listed what its removal left"
+        b_sweep = threading.Thread(target=store.sweep)
+        b_sweep.start()
+        b_sweep.join(10)
+        b_done.set()
+        a_thread[0].join(10)
+        b_sweep.join(10)
+        assert not a_thread[0].is_alive() and not b_sweep.is_alive()
+        assert _told(store) == _walked(store)
+        assert _told(store)["versions"] == ["v2"]

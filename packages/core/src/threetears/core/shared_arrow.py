@@ -1733,11 +1733,13 @@ class SharedArrowStore:
             for old, new in gone:
                 self._held.moved(old, new)
         # renamed out of their names under the lock (nothing opens them again); their files go after it, and the
-        # tally forgets them once they are gone: what a removal left (a later sweep retries it) is counted still
+        # tally forgets them once they are gone: what a removal left (a later sweep retries it) is counted still.
+        # What is left is listed under the lock: two sweeps may remove the same directory, and a listing taken
+        # before the other's removal and recorded after its forgetting would count files that are gone
         for _, path in gone:
             remove_tree(path, log=log, what="a retired shared Arrow directory (a later sweep retries it)")
-            left = _directory_files(path)
             with self._state:
+                left = _directory_files(path)
                 if left:
                     self._held.add(path, left)
                 else:
