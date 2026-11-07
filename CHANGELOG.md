@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### Tests: a freeze no longer imports a lazy name under freezegun's fake clock, and a leaked freeze blames its test
+
+**Fixed:** freezegun's `start()` reads every attribute of every loaded module after it has swapped in its fake
+`date`, so in a process that had imported `threetears.evals` without reading `Model`, a core test's freeze imported
+the providers under the fake. A pydantic `date` field there cannot build on `FakeDate`, so `start()` raised with the
+clock already frozen, and every later test in the process read it (the testament pool interleaves packages; a
+per-package shard never did). A repo-wide test plugin, `tests/clock_isolation.py`, resolves every loaded lazy
+`threetears` name before each test, fails a test that leaves the clock frozen at its teardown, and fails each test
+after it at setup, naming the test that leaked it.
+
+**Hosts:** a suite that freezes the clock with freezegun after `import threetears.evals` and before reading a lazy
+name (`Model`, `Eval`, ...) gets the same raise, and a freezegun `start()` that raises leaves the process frozen.
+Resolve the names you use (or import them from their modules) on the real clock before you freeze
+([adopting a host](packages/evals/docs/adopting-a-host.md#freezing-the-clock-in-your-suite)).
+
 ### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
 
 **Added:** a dollar budget under a report's first-turn ceiling cannot admit even one turn of the two a report takes
