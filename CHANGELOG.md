@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a writer case is minted from a host's read-only export
+
+**Added:** `writer_case_from_export` (`threetears.evals.harness`, provisional) freezes one campaign of a host's export
+into a portable writer case, over a store in memory, writing nothing to the host's store. `python -m
+threetears.evals.harness mint` writes the case file from three files: the campaign's documents as stored, the host's
+profile declaration (`built_by`, the factory of its live profile, and `host_declarations_digest`, which the live
+profile must match), and a manifest of the analyses, reports and insights that reasoned on the campaign. Each note of
+the analyst skill holding one's id or name is withheld, and the case file records why (`WriterCaseFile.minted`, a
+`CaseMint` of `WithheldNote`s and the unmatched `ReasonedOn`s; omitted from a case minted otherwise, so no committed
+case moves). An export missing a document the freeze reads is refused by its type. The case is frozen at `--as-of`,
+or at the moment the campaign's evidence was complete, and the insight ledger is read as it stood then, so the same
+export writes the same bytes. `writer_case_freeze` gains its first caller. The courier's capture mints the committed
+held-out courier case. `python -m threetears.evals.harness FILE --write-report MODEL` is unchanged.
+
+**Hosts:** to mint from production, export each campaign's closure (at least the campaign, its runs, their results
+and traces, the templates and test cases they ran, every insight on its subject and the analyses that minted them),
+your profile declaration with `built_by` as `module:callable`, and the manifest; run the mint in your own environment.
+See "Minting a case from a production export" in `packages/evals/docs/serving.md`. Nothing stored changes.
+
 ### evals: MIGRATIONS.toml ships in the wheel
 
 **Hosts:** MIGRATIONS.toml ships in the wheel at threetears/evals/MIGRATIONS.toml

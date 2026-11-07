@@ -731,6 +731,75 @@ registry. It builds its case bank from its own campaigns through four actions, a
   finished beside the primary, and for a primary that does not separate, the held-out cases that would settle it.
   With no pass named it never promotes. It records nothing; a person records the call with `campaign_record`.
 
+### Minting a case from a production export
+
+A host whose production store may only be read mints its writer cases from an export. It writes three files per
+campaign, and the command freezes the campaign from them into one case file (`format: writer-case/1`), writing
+nothing to the host's store:
+
+```
+python -m threetears.evals.harness mint --documents documents.json --profile profile.json --manifest manifest.json \
+    --campaign CAMPAIGN --name NAME --group GROUP [--stratum STRATUM] [--withhold NOTE ...] [--skill DIR] \
+    [--as-of INSTANT] [--scope SCOPE] [--host module:callable] [--created-by WHO] --out NAME.json.gz
+```
+
+It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds.
+
+**`documents.json`** is one JSON list of the campaign's closure, each document verbatim as stored, with its
+`doc_type`, `id` and `scope_id`. The freeze reads these and ignores every other document, so a host may export every
+eval document reachable from the campaign:
+
+| Document type | What it holds | Without it |
+|---|---|---|
+| `eval_campaign` | the campaign named | refused |
+| `eval_run` | every run the campaign names | refused, naming the runs missing |
+| `eval_template` | the template every run ran | refused, naming the templates missing |
+| `eval_result` | the runs' results | refused |
+| `eval_trace` | the results' traces, where a judge's evidence is read | refused when a result records a trace |
+| `eval_test_case` | the cases the runs ran, read for their strata | read when present |
+| `eval_insight` | every insight on the campaign's subject in its scope, from any campaign | read when present |
+| `eval_analysis` | the analyses that minted those insights, read for whether each still stands | read when present |
+
+The insight ledger is the subject's, not the campaign's: an insight a sibling campaign minted on the same subject is in
+the bundle an analysis of this campaign reads, so the export carries it. Nothing else of a sibling campaign is read.
+
+**`profile.json`** is the host's declaration of its profile, a JSON object. The mint reads two keys:
+
+| Key | What it is |
+|---|---|
+| `built_by` | the factory, `module:callable`: no arguments, returning the `HostProfile` the runs were measured under, or the `EvalHost` carrying it (only its profile is read) |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it |
+
+The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
+sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built
+live from `built_by` (or `--host`, which takes its place), and a live profile whose digest is not the declared one is
+refused, naming both: the campaign was measured under other sweepables or another world.
+
+**`manifest.json`** names the documents that reasoned on the campaign; any other key is the host's:
+
+```json
+{"campaign_id": "CAMPAIGN",
+ "reasoned_on": [{"doc_type": "eval_insight", "id": "...", "name": "the insight's statement"},
+                 {"doc_type": "eval_report_doc", "id": "...", "name": "the report's title"}]}
+```
+
+A case withholds notes of the analyst skill (the shipped one, or `--skill DIR`), by file name. Every note holding a
+listed document's id or name, read case- and whitespace-blind, is withheld, and so is a note naming the campaign's id;
+an id or a name under 12 characters matches nothing. The case file records which document led to each note and
+which documents no note holds (`minted`), so a reader checks those by hand. `--withhold` adds notes by name, and a note
+the skill does not hold is refused. A manifest of another campaign is refused.
+
+**The blindness rule.** A case's analyst must not have read about its campaign. List every analysis, report and
+insight that reasoned on it, and mint one campaign as one case: two cases of one campaign are one case counted twice,
+unless they share a group and withhold the same notes.
+
+**The same evidence mints the same bytes.** The snapshot's id is derived from the campaign's id and its report input,
+and the case is frozen at one instant: `--as-of`, or, omitted, the moment the campaign's evidence was complete (the
+latest of the campaign's creation and its runs' completions). An exported insight observed at or after that instant
+is left out, so an insight a later analysis of this campaign minted never reaches its case; whether an insight kept is
+retracted is read from the export as it stands. Re-minting the same export writes the same
+file. The command exits 0 when the case is written, 2 when the mint is refused, and 3 when the profile factory raises.
+
 ## Judge campaigns: evaluating a judge itself
 
 A judge campaign (the `judge` kind) makes a judge configuration the subject: its model, its prompt per criterion and

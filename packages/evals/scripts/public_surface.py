@@ -1695,7 +1695,7 @@ def all_findings(
         *tier_findings(installed),
         *record_findings(installed, newest),
         *snapshot_findings(installed, recorded, newest, released_names(newest)),
-        *(f for release in migrations.releases if release.since for f in history_findings(release)),
+        *history_of(migrations),
         *labelling_findings(migrations, tag, shipped=tag is not None and package_at(tag)),
     ]
 
@@ -1845,13 +1845,24 @@ def section_findings(
     return findings
 
 
-def history_findings(release: Release) -> list[Finding]:
+def history_findings(release: Release, *, newest: bool | None = None) -> list[Finding]:
     """Where a section disagrees with the two releases it sits between (:func:`section_findings`), both read from
     git: ``since``, and the version's own tag, or the working tree before that tag exists. A checkout without the
     tags cannot check it and says so rather than passing.
+
+    Only the newest section (the first, the release being prepared) is measured against the working tree. An older
+    section whose tag does not exist yet is a release cut on another branch and not yet tagged (develop's, say,
+    while a feature branch above it records its own work in a newer section): what this tree holds is not that
+    release's surface, so the section yields nothing until its tag exists, and where it is the first section it is
+    measured as the newest.
+
+    :param release: The section.
+    :param newest: Whether it is the first section; ``None`` reads that from ``MIGRATIONS.toml``.
     """
     assert release.since is not None
     tag = f"v{release.version}"
+    if newest is None:
+        newest = load_migrations().releases[0].version == release.version
     if not tag_exists(release.since):
         return [
             Finding(
@@ -1861,8 +1872,21 @@ def history_findings(release: Release) -> list[Finding]:
             )
         ]
     after_ref = tag if tag_exists(tag) else None
+    if after_ref is None and not newest:
+        return []
     after_label = tag if after_ref else "the working tree"
     return section_findings(release, exports_at(release.since), exports_at(after_ref), after_label)
+
+
+def history_of(migrations: Migrations) -> list[Finding]:
+    """Every section with a ``since`` held to its own two releases (:func:`history_findings`), the first as the
+    newest."""
+    return [
+        finding
+        for at, release in enumerate(migrations.releases)
+        if release.since
+        for finding in history_findings(release, newest=at == 0)
+    ]
 
 
 # --- labelling: a tagged release has its own section -------------------------------------------------------------

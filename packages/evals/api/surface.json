@@ -7131,6 +7131,11 @@
       "signature": "AnalystSkill(files: Mapping[str, str])",
       "tier": "host-contract"
     },
+    "threetears.evals.harness.CaseMint": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.harness.MintedWriterCase": {
       "kind": "model",
       "signature": "",
@@ -7141,8 +7146,18 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.harness.ReasonedOn": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.harness.SkillText": {
       "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.harness.WithheldNote": {
+      "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
@@ -7150,6 +7165,11 @@
       "kind": "dataclass",
       "signature": "Writer(model_id: str, skill: AnalystSkill | None = None, effort: str | None = None, revisions: int = 2, editor_model: str | None = None)",
       "tier": "host-contract"
+    },
+    "threetears.evals.harness.writer_case_from_export": {
+      "kind": "async function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.harness.WriterCaseFile": {
       "kind": "model",
