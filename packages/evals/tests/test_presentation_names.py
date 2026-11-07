@@ -43,6 +43,7 @@ from packages.evals.tests.doc_writer_support import (
     scripted_reply,
     submission,
 )
+from packages.evals.tests.factories import fixture_variant_key
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, WRITER, ops_fixture, settled
@@ -55,7 +56,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.report.build import NO_ANALYSIS
-from threetears.evals.analysis.campaign_title import arms_line, named_title
+from threetears.evals.analysis.campaign_title import arms_line, declared_title
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
@@ -75,6 +76,7 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.style import GLOSSARY, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops import WriterLimits, analysis_generate, campaigns_list
 from threetears.evals.ops.analysis import QUESTION_SHORT_CHARS, CampaignDefinition, campaign_create
@@ -172,24 +174,27 @@ def test_a_page_heads_with_the_campaign_s_name_and_names_each_arm_once_under_it(
     assert not re.search(r"^## (classify|score)$", rung.markdown, flags=re.MULTILINE)
 
 
+def _titled(name: str, control: list[str], candidates: list[str], aspects: list[tuple[str, str | None]]) -> str:
+    """The listing title over arms of these labels, read through the title a frozen bundle's arms are given."""
+    arms = [
+        CampaignArm(label=label, role=role, variant_key=fixture_variant_key(label))
+        for role, labels in (("control", control), ("candidate", candidates))
+        for label in labels
+    ]
+    return declared_title(name, arms, aspects)
+
+
 def test_a_listing_title_names_each_part_once() -> None:
     # An arm named as its campaign is, on an aspect the engine labelled: the name alone.
-    assert named_title("triage", control=[], candidates=["triage"], aspects=[("classify", None)]) == "triage"
+    assert _titled("triage", [], ["triage"], [("classify", None)]) == "triage"
+    assert _titled("invoices", ["v1"], ["v2"], [("classify", None)]) == "v1 vs v2 (invoices)"
     assert (
-        named_title("invoices", control=["v1"], candidates=["v2"], aspects=[("classify", None)])
-        == "v1 vs v2 (invoices)"
-    )
-    assert (
-        named_title(
-            "support queue", control=["production"], candidates=["v2"], aspects=[("billing", None), ("tone", None)]
-        )
+        _titled("support queue", ["production"], ["v2"], [("billing", None), ("tone", None)])
         == "production vs v2 · billing, tone (support queue)"
     )
     # A name that names every arm (Kairo's round 2) is not followed by the arms again.
     kairo = "Kairo round 2: September vs qwen3.8-flash and 1017 on character v2"
-    title = named_title(
-        kairo, control=["September"], candidates=["qwen3.8-flash", "1017"], aspects=[("character adherence (v2)", None)]
-    )
+    title = _titled(kairo, ["September"], ["qwen3.8-flash", "1017"], [("character adherence (v2)", None)])
     assert title == f"{kairo} · character adherence (v2)"
     for arm in ("September", "qwen3.8-flash", "1017"):
         assert _named(arm, title) == 1

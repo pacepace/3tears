@@ -115,7 +115,9 @@ def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_q
 ) -> None:
     said = _said(writer_page.blocks)
     (lead,) = [block for block in said if block.source == "verdict"]
-    assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[1] is lead
+    # Directly under the question and the line of what the page compares (presentation chunk 4).
+    assert said[0].text == '"Does lead-first write reports better than shipped?"' and said[2] is lead
+    assert said[1].text == "shipped vs lead-first · report-writing"
     assert lead.text.startswith("Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68%")
 
 

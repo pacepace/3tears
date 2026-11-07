@@ -21,7 +21,6 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Sequence
 
-from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, printed_aspect_name
@@ -33,8 +32,6 @@ __all__ = [
     "campaign_title",
     "title_arm_names",
     "declared_title",
-    "named_title",
-    "report_input_title",
     "title_arm_name",
 ]
 
@@ -95,10 +92,10 @@ def declared_title(
     :rtype: str
     """
     control, candidates = title_arm_names(arms, given)
-    return named_title(name, control=control, candidates=candidates, aspects=aspects)
+    return _named_title(name, control=control, candidates=candidates, aspects=aspects)
 
 
-def named_title(
+def _named_title(
     name: str, *, control: Sequence[str], candidates: Sequence[str], aspects: Sequence[tuple[str, str | None]]
 ) -> str:
     """The title over arms already named, for a page that names its arms its own way (a frozen bundle's).
@@ -142,24 +139,6 @@ def arms_line(
         *([] if _said(name, measure, [*control, *candidates]) else [measure]),
     ]
     return " · ".join(parts)
-
-
-def report_input_title(report_input: ReportInput) -> str:
-    """The title over a report input, as a planned page or a document page heads the campaign: its arms by the short
-    name each declares, else the name the page prints (the control first), and its aspects by the name each prints.
-
-    :param report_input: The campaign's results as the page was built from them.
-    :ptype report_input: ReportInput
-    :return: The title.
-    :rtype: str
-    """
-    arms = report_input.arms
-    return named_title(
-        report_input.meta.campaign,
-        control=[arm.short_name or arm.name or arm.id for arm in arms if arm.role == "control"],
-        candidates=[arm.short_name or arm.name or arm.id for arm in arms if arm.role != "control"],
-        aspects=[(aspect.name or aspect.id, None) for aspect in report_input.aspects],
-    )
 
 
 def _names_all(name: str, arms: Sequence[str]) -> bool:

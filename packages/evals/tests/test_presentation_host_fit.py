@@ -703,4 +703,4 @@ def test_a_written_report_s_evidence_record_lays_its_tables_out_as_the_campaign_
     # The aspects' contrasts are in it, framed as on the campaign page: the reading first, which stays in view.
     assert 'data-table="comparisons"' in record
     contrasts = record.split('data-table="comparisons"', 1)[1].split("</tr>", 1)[0]
-    assert re.findall(r"<th[^>]*>([^<]+)", contrasts)[0] == "Reading"
+    assert re.findall(r"<th[^>]*>(?:<a[^>]*>)?([^<]+)", contrasts)[0] == "Reading"

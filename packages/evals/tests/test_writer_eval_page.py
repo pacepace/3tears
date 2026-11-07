@@ -77,8 +77,10 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     read = result.pairwise["variant"]
     assert result.decisions == {"variant": "undecided"} and read.void is not None and read.share is not None
 
-    # The answer is the page's lead, directly under the question, set apart as the verdict line.
-    question, answer = result.page.blocks[:2]
+    # The answer is the page's lead, under the question and the line of what the page compares (presentation chunk
+    # 4), set apart as the verdict line.
+    question, compares, answer = result.page.blocks[:3]
+    assert isinstance(compares, DisclosureBlock) and compares.text == "shipped vs variant · report-writing"
     assert isinstance(answer, DisclosureBlock) and (answer.section, answer.source) == ("answer", "verdict")
     assert answer.tone == "open", "undecided is no decision"
     assert isinstance(question, DisclosureBlock) and question.text == f'"{QUESTION}"'
@@ -115,9 +117,10 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
     assert "| Candidate | Pairs | Reads | Share (%) | Difference (pts) |" in pairwise
     assert "| share |" not in pairwise and "| reads |" not in pairwise
 
-    # The written page opens on the question under the title, then the answer, before anything else.
+    # The written page opens on the question under the title, then what it compares (presentation chunk 4), then the
+    # answer, before anything else.
     page = written["markdown"].read_text(encoding="utf-8").splitlines()
-    assert page[1] == f'"{QUESTION}"' and page[3] == f"**{answer.text}**"
+    assert page[1] == f'"{QUESTION}"' and page[3] == compares.text and page[5] == f"**{answer.text}**"
 
 
 async def test_a_replay_of_a_declared_eval_reads_its_criteria_as_set_before_its_results(

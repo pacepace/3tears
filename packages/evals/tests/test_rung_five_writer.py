@@ -149,7 +149,9 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     page = (writer_dir / ".evals" / "reports" / "writer" / "report.md").read_text(encoding="utf-8")
     first_screen = page.split("\n## ", 1)[0].splitlines()
     assert first_screen[1] == '"Does lead-first write reports better than shipped?"'
-    assert first_screen[3] == (
+    # What the page compares and on what is the line under the question (presentation chunk 4), then the answer.
+    assert first_screen[3] == "shipped vs lead-first · report-writing"
+    assert first_screen[5] == (
         "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over "
         "shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle it.**"
     )
