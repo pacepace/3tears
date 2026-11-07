@@ -16,7 +16,9 @@ editor's own model. ``await WriterEval(...).run()``:
    ``max_cost_usd`` (below). A replayed writer prices nothing, and the engine admits an unpriced arm only because its
    launch names that part, so the part is the ceiling every arm runs under;
 5. **files the campaign**: the control is the first arm, one design axis per lever the arms differ on (the skill, the
-   effort, the revisions, the editor's model, the model), the eval's ``question`` and its ``margin``, if it declares one;
+   effort, the revisions, the editor's model, the model), the eval's ``question`` and its ``margin``, if it declares one,
+   all dated when the arms launched (``create_campaign``'s ``declared_at``): the eval fixed them in the call, before
+   any result existed, so a replay of a declared eval never reads as criteria set after its results;
 6. **runs the pairwise pass** (:func:`~threetears.evals.ops.report_writer.writer_pairwise.writer_pairwise`) for each
    candidate against the control, on the eval's own host over the same store: the eval's judge reads each case's two
    pages side by side, in both orders, its calls admitted under the candidate's part of the pass's reserve;
@@ -25,7 +27,8 @@ editor's own model. ``await WriterEval(...).run()``:
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
    design, and a dev run says so instead of reading it (its pass is still run and printed);
 8. returns a :class:`WriterResult`, which prints the campaign's readings and each pass's as tables and writes the
-   campaign's page.
+   campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
+   with the side-by-side tables at the head of its Scorecard.
 
 **A report budget that cannot admit even one turn is refused before anything runs; one under two turns is warned.**
 The cap holds back the next turn's ceiling against what was actually spent, so the arithmetic proves a budget too small
@@ -118,11 +121,22 @@ from threetears.evals.analysis import (
     GateResult,
     campaign_report,
     campaign_report_markdown,
+    create_campaign,
     gate_verdicts,
     summarize_run,
 )
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
-from threetears.evals.analysis.report.blocks import Verdict
+from threetears.evals.analysis.quantities import render_cell
+from threetears.evals.analysis.report.blocks import (
+    CellValue,
+    DisclosureBlock,
+    ReportBlock,
+    TableBlock,
+    TableCell,
+    TableColumn,
+    Verdict,
+)
+from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
@@ -132,7 +146,7 @@ from threetears.evals.kernel.numbers import format_number, group_thousands, spel
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
-from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
+from threetears.evals.ops.analysis import CampaignDefinition
 from threetears.evals.ops.report_writer.tally import MIN_TURNS_FOR_A_REPORT, ReportBudget
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
 from threetears.evals.ops.report_writer.writer_bank import (
@@ -163,7 +177,7 @@ from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
-from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult, utc_now_iso
 from threetears.evals.schema.turns import TurnCeiling
 
 #: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
@@ -205,27 +219,48 @@ _TEMPLATE_NAME = "report writer"
 #: The part of ``max_cost_usd`` a writer eval reserves for its pairwise passes unless told (the module docstring).
 PAIRWISE_SHARE: Final = 0.2
 
-#: The pairwise table's rows, in order; the interval's carries its level when a pass read one.
-_PAIRWISE_ROWS: Final = (
-    "reads",
-    "share",
-    "difference",
-    "interval",
-    "reads, both pages finished",
-    "share, both pages finished",
-    "order consistency",
-    "first-slot lean",
-    "can't tell",
-    "held-out cases to settle",
-    "spent",
+#: The preference table's columns, by key and header: a row per candidate and the pairs it reads; the interval's header
+#: carries its level when a pass read one.
+_PREFERENCE_COLUMNS: Final = (
+    ("candidate", "Candidate"),
+    ("pairs", "Pairs"),
+    ("reads", "Reads"),
+    ("share", "Share"),
+    ("difference", "Difference"),
+    ("interval", "Interval"),
 )
+
+#: The judge's checks table's columns, by key and header: a row per candidate.
+_CHECK_COLUMNS: Final = (
+    ("candidate", "Candidate"),
+    ("order_consistency", "Order consistency"),
+    ("first_slot_lean", "First-slot lean"),
+    ("cannot_tell", "Can't tell"),
+    ("to_settle", "Held-out cases to settle"),
+    ("spent", "Spent"),
+)
+
+#: The two sets of pairs a preference row reads: every pair, and those whose two pages were both stored finished.
+_EVERY_PAIR: Final = "every pair"
+_BOTH_FINISHED: Final = "both pages finished"
+
+#: The decimals every side-by-side figure is read to, in the tables and in the answer alike.
+_PAIRWISE_DECIMALS: Final = 2
 
 #: What the pairwise table says once, above it: what a share and order consistency are.
 _PAIRWISE_LEAD: Final = (
     "Side by side, the judge read each case's two pages in both orders: a share is the part of a pair it gave the "
-    "candidate (0.5 is no preference), order consistency the part of cases whose two orders agreed, and first-slot "
-    "lean how far it favoured the page it read first (-0.5 to 0.5)."
+    "candidate (0.5 is no preference), and the reading over every pair is the promotion's primary reading; order "
+    "consistency is the part of cases whose two orders agreed, and first-slot lean how far the judge favoured the page "
+    "it read first (-0.5 to 0.5)."
 )
+
+#: What a promotion decision leads the page's answer with, by decision: the candidate's name and the control's fill it.
+_DECISION_LEADS: Final[Mapping[str, str]] = {
+    "promote": "Promote {candidate}",
+    "keep": "Keep {control}",
+    "undecided": "Undecided, so {control} stays",
+}
 
 
 @dataclass(frozen=True)
@@ -482,71 +517,33 @@ class WriterResult:
         return {**written, "pairwise": pairwise}
 
     def pairwise_text(self) -> str:
-        """Each candidate's pairwise pass as one table, a column per candidate, under the one sentence defining its
-        terms; then a line for each pass that did not complete.
+        """Each candidate's pairwise pass as two tables under the one sentence defining their terms, then a line for
+        each pass that did not complete: the tables the page's Scorecard opens with (:func:`_side_by_side_blocks`).
 
-        The rows: what the preference reads (``void`` beside it when the order checks void it), the candidate's mean
-        share, its difference from the control's and the interval on it, the same reading over the pairs whose pages
-        were both stored finished, order consistency, the lean to the page read first, the answers the judge could not
-        tell, the held-out cases like these that would settle a reading that did not separate, and what the pass spent
-        of its part.
+        The preference table has a row per candidate and the pairs it reads (every pair, a missing page counted as the
+        side it leaves, then the pairs whose two pages were both stored finished): what the preference reads (``void``
+        beside it when the order checks void it), the candidate's mean share, its difference from the control's and the
+        interval on it. The judge's checks table has a row per candidate: order consistency, the lean to the page read
+        first, the answers the judge could not tell, the held-out cases like these that would settle a reading that did
+        not separate, and what the pass spent of its part.
 
         :return: The text, as Markdown.
         :rtype: str
         """
-        arms = [arm for arm in self.arms if arm != self.control]
-        level = next(
-            (read.primary.interval_level for read in self.pairwise.values() if read.primary.interval_level), None
-        )
-        labels = tuple(
-            f"{row}, {format_number(level * 100)}%" if row == "interval" and level is not None else row
-            for row in _PAIRWISE_ROWS
-        )
-        columns = {arm: self._pairwise_column(arm) for arm in arms}
-        lines = [
-            _PAIRWISE_LEAD,
-            "",
-            "| preference | " + " | ".join(arms) + " |",
-            "|---|" + "---|" * len(arms),
-            *(
-                f"| {label} | " + " | ".join(columns[arm][row] for arm in arms) + " |"
-                for row, label in enumerate(labels)
-            ),
-        ]
+        lines = [_PAIRWISE_LEAD]
+        for block in _side_by_side_blocks(
+            self.control, self.pairwise, self.pairwise_unread, candidates=self._candidates, why=self.promotion_why
+        ):
+            if isinstance(block, TableBlock):
+                lines += ["", *table_lines(block)]
         if self.pairwise_unread:
             lines += ["", *(f"pairwise pass of {arm}: {why}" for arm, why in self.pairwise_unread.items())]
         return "\n".join(lines)
 
-    def _pairwise_column(self, arm: str) -> list[str]:
-        """One candidate's cells of the pairwise table, in its rows' order; a dash in each when its pass is unread."""
-        read = self.pairwise.get(arm)
-        if read is None:
-            return ["-"] * len(_PAIRWISE_ROWS)
-        reads = _pairwise_reads(read.primary)
-        if read.void is not None:
-            reads = f"{reads} (void)"
-        interval = read.primary.interval
-        rate, settle = read.order_consistency, read.cases_to_settle
-        spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
-        return [
-            reads,
-            _number(read.share),
-            _number(read.primary.delta),
-            "-" if interval is None else f"{format_number(interval[0])} to {format_number(interval[1])}",
-            _pairwise_reads(read.finished_only),
-            _number(read.finished_share),
-            "not measured"
-            if rate is None
-            else f"{format_number(rate)} ({read.order_consistent} of {read.both_orders})",
-            _number(read.first_slot_bias),
-            str(read.cannot_tell),
-            "-"
-            if settle is None
-            else f"more than {PROJECTION_CASE_CAP}"
-            if settle > PROJECTION_CASE_CAP
-            else str(settle),
-            spent if read.cap_usd is None else f"{spent} of {format_number(read.cap_usd, prefix='$')}",
-        ]
+    @property
+    def _candidates(self) -> list[str]:
+        """Every arm but the control, in the order the arms were given."""
+        return [arm for arm in self.arms if arm != self.control]
 
     def exit_code(self) -> int:
         """What a command line exits with: 0; 1 when an arm's run or a pairwise pass did not complete; 4 when a
@@ -782,6 +779,9 @@ class WriterEval:
                 "max_cost_usd or lower budget_usd"
             )
         await self._refuse_judging_past_its_part(host, template_id, cases=len(on_side) * self.k)
+        # The design, the question, the margin and the control are fixed here, in the call, before any arm runs: the
+        # campaign, filed once they have, is dated now, so its criteria read as set before its results.
+        declared_at = utc_now_iso()
         launches = {arm: self._launch(template_id, case_set, writer, share) for arm, writer in self.arms.items()}
         for arguments in launches.values():  # every arm is quoted, and refused, before any is started
             await quote_launch(host.launch, **arguments)
@@ -800,7 +800,7 @@ class WriterEval:
             floors,
         )
         campaign_id = await run_blocking(
-            eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id
+            eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id, declared_at
         )
         passes = {arm: await self._pairwise(host, campaign_id, arm) for arm in list(self.arms)[1:]}
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
@@ -1015,8 +1015,9 @@ class WriterEval:
             },
         }
 
-    def _file_campaign(self, host: EvalHost, run_ids: Mapping[str, str], template_id: str) -> str:
-        """File the campaign over every arm's run, control first; its id. Blocking."""
+    def _file_campaign(self, host: EvalHost, run_ids: Mapping[str, str], template_id: str, declared_at: str) -> str:
+        """File the campaign over every arm's run, control first, its design, question, margin and control dated
+        ``declared_at``, when the arms launched; its id. Blocking."""
         control, *candidates = self.arms
         levels = {arm: _levels(writer) for arm, writer in self.arms.items()}
         axes = []
@@ -1026,34 +1027,39 @@ class WriterEval:
                 shown = {value: next(arm for arm in self.arms if levels[arm][lever] == value) for value in values}
                 axes.append({"axis_id": lever, "values": [{"content": v, "display": shown[v]} for v in values]})
         asked = self.question or f"Does {' or '.join(candidates)} write reports better than {control}?"
-        line = campaign_create(
-            host,
-            CampaignDefinition(
-                name=self.name,
-                subject_id=self.name,
-                behavior="report-writing",
-                question=asked,
-                arms=[
-                    {"label": arm, "role": "control" if arm == control else "candidate", "from_run_ids": [run_id]}
-                    for arm, run_id in run_ids.items()
-                ],
-                aspects=[
-                    {
-                        "template_id": template_id,
-                        "run_ids": list(run_ids.values()),
-                        "margin": self.margin,
-                        "design": {
-                            "axes": axes,
-                            "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
-                            "intended_repetitions": self.k,
-                        },
-                    }
-                ],
-            ),
-            self.scope_id,
-            created_by=CREATED_BY,
+        definition = CampaignDefinition(
+            name=self.name,
+            subject_id=self.name,
+            behavior="report-writing",
+            question=asked,
+            arms=[
+                {"label": arm, "role": "control" if arm == control else "candidate", "from_run_ids": [run_id]}
+                for arm, run_id in run_ids.items()
+            ],
+            aspects=[
+                {
+                    "template_id": template_id,
+                    "run_ids": list(run_ids.values()),
+                    "margin": self.margin,
+                    "design": {
+                        "axes": axes,
+                        "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                        "intended_repetitions": self.k,
+                    },
+                }
+            ],
         )
-        return line.id
+        campaign = create_campaign(
+            host.storage,
+            definition.model_dump(exclude={"aspects_from", "exploratory"}),
+            scope_id=self.scope_id,
+            created_by=CREATED_BY,
+            profile=host.profile,
+            exploratory=definition.exploratory,
+            aspects_from=definition.aspects_from,
+            declared_at=declared_at,
+        )
+        return campaign.id
 
     def _declared(
         self,
@@ -1075,32 +1081,44 @@ class WriterEval:
                 arm: writer_promotion(host, campaign_id, self.scope_id, candidate=arm, pairwise_job=ran.status)
                 for arm, ran in passes.items()
             }
+        arms = {
+            arm: summarize_run(host, run_id, self.scope_id, case_names=case_names) for arm, run_id in run_ids.items()
+        }
+        pairwise = {
+            arm: _read_pass(ran.status, promotions.get(arm)) for arm, ran in passes.items() if ran.status is not None
+        }
+        unread = {arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None}
+        decisions: dict[str, str] = {arm: read.decision for arm, read in promotions.items()}
+        why = {arm: read.why for arm, read in promotions.items()}
+        side_by_side = _side_by_side_blocks(control, pairwise, unread, candidates=list(passes), why=why)
+        answer = _answer_block(
+            control,
+            list(passes),
+            pairwise,
+            unread,
+            decisions=decisions,
+            why=why,
+            cases=f"{next(iter(arms.values())).n_cases} {_SIDE_WORDS[self.side]}",
+        )
         return WriterResult(
             name=self.name,
             scope_id=self.scope_id,
             side=self.side,
             control=control,
-            arms={
-                arm: summarize_run(host, run_id, self.scope_id, case_names=case_names)
-                for arm, run_id in run_ids.items()
-            },
+            arms=arms,
             host=host,
             campaign_id=campaign_id,
-            page=campaign_report(host, campaign_id, self.scope_id),
+            page=_led(campaign_report(host, campaign_id, self.scope_id), answer, side_by_side),
             judge=self.judge.model_name,
             strata=dict(sorted(strata.items())),
-            decisions={arm: read.decision for arm, read in promotions.items()},
-            promotion_why={arm: read.why for arm, read in promotions.items()},
+            decisions=decisions,
+            promotion_why=why,
             gates={arm: gate_verdicts(read.verdicts) for arm, read in promotions.items()},
             store=where,
             disclosures=disclosures,
             k=self.k,
-            pairwise={
-                arm: _read_pass(ran.status, promotions.get(arm))
-                for arm, ran in passes.items()
-                if ran.status is not None
-            },
-            pairwise_unread={arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None},
+            pairwise=pairwise,
+            pairwise_unread=unread,
         )
 
 
@@ -1111,9 +1129,206 @@ def _pairwise_reads(verdict: Verdict) -> str:
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
 
 
-def _number(value: float | None) -> str:
-    """A number as a cell prints it; a dash for none."""
-    return "-" if value is None else format_number(value)
+def _rounded(value: float | None) -> float | None:
+    """A side-by-side figure at the decimals the tables and the answer read it to (:data:`_PAIRWISE_DECIMALS`)."""
+    return None if value is None else round(value, _PAIRWISE_DECIMALS)
+
+
+def _spelled(value: float | None) -> str:
+    """A side-by-side figure as its table cell prints it (:func:`_rounded`, then the number rule)."""
+    return render_cell(_rounded(value))
+
+
+def _cells(values: Mapping[str, CellValue]) -> dict[str, TableCell]:
+    """One table row's cells, by column key."""
+    return {key: TableCell(value=value) for key, value in values.items()}
+
+
+def _preference_rows(arm: str, read: WriterPairwise | None) -> list[dict[str, TableCell]]:
+    """A candidate's rows of the preference table: every pair, then the pairs whose two pages were both finished; one
+    row of the candidate alone when its pass was not read."""
+    if read is None:
+        return [
+            _cells(
+                {"candidate": arm, "pairs": None, "reads": None, "share": None, "difference": None, "interval": None}
+            )
+        ]
+    rows = []
+    for pairs, verdict, share in (
+        (_EVERY_PAIR, read.primary, read.share),
+        (_BOTH_FINISHED, read.finished_only, read.finished_share),
+    ):
+        reads = _pairwise_reads(verdict)
+        if pairs == _EVERY_PAIR and read.void is not None:
+            reads = f"{reads} (void)"
+        interval = verdict.interval
+        rows.append(
+            _cells(
+                {
+                    "candidate": arm,
+                    "pairs": pairs,
+                    "reads": reads,
+                    "share": _rounded(share),
+                    "difference": _rounded(verdict.delta),
+                    "interval": None if interval is None else f"{_spelled(interval[0])} to {_spelled(interval[1])}",
+                }
+            )
+        )
+    return rows
+
+
+def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
+    """A candidate's row of the judge's checks table; the candidate alone when its pass was not read."""
+    if read is None:
+        return _cells({key: arm if key == "candidate" else None for key, _ in _CHECK_COLUMNS})
+    rate, settle = read.order_consistency, read.cases_to_settle
+    spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
+    return _cells(
+        {
+            "candidate": arm,
+            "order_consistency": None
+            if rate is None
+            else f"{_spelled(rate)} ({read.order_consistent} of {read.both_orders})",
+            "first_slot_lean": _rounded(read.first_slot_bias),
+            "cannot_tell": read.cannot_tell,
+            "to_settle": None
+            if settle is None
+            else f"more than {PROJECTION_CASE_CAP}"
+            if settle > PROJECTION_CASE_CAP
+            else settle,
+            "spent": spent if read.cap_usd is None else f"{spent} of {format_number(read.cap_usd, prefix='$')}",
+        }
+    )
+
+
+def _side_by_side_blocks(
+    control: str,
+    pairwise: Mapping[str, WriterPairwise],
+    unread: Mapping[str, str],
+    *,
+    candidates: Sequence[str],
+    why: Mapping[str, str],
+) -> list[ReportBlock]:
+    """The side-by-side section the page's Scorecard opens with, whose tables the print and ``pairwise.md`` lay out:
+    the one sentence defining its terms, the preference table (a row per candidate and the pairs it reads), the judge's
+    checks table (a row per candidate), a line for each pass that did not complete, and each candidate's promotion
+    reading in its own sentence."""
+    level = next((read.primary.interval_level for read in pairwise.values() if read.primary.interval_level), None)
+    interval = "Interval" if level is None else f"Interval, {format_number(level * 100)}%"
+    preference = [
+        TableColumn(key=key, header=interval if key == "interval" else header) for key, header in _PREFERENCE_COLUMNS
+    ]
+    rows = [row for arm in candidates for row in _preference_rows(arm, pairwise.get(arm))]
+    checks = [_check_row(arm, pairwise.get(arm)) for arm in candidates]
+    return [
+        DisclosureBlock(section="scorecard", source="comparisons", text=_PAIRWISE_LEAD),
+        TableBlock(
+            section="scorecard",
+            name="side_by_side",
+            title=f"Side by side against {control}",
+            columns=preference,
+            rows=rows,
+            order="the candidates in the order the arms were given, every pair before both pages finished",
+            total_rows=len(rows),
+        ),
+        TableBlock(
+            section="scorecard",
+            name="judge_checks",
+            title="The judge's checks",
+            columns=[TableColumn(key=key, header=header) for key, header in _CHECK_COLUMNS],
+            rows=checks,
+            order="the candidates in the order the arms were given",
+            total_rows=len(checks),
+        ),
+        *(
+            DisclosureBlock(section="scorecard", source="comparisons", text=f"Pairwise pass of {arm}: {reason}")
+            for arm, reason in unread.items()
+        ),
+        *(
+            DisclosureBlock(section="scorecard", source="comparisons", text=f"Promotion of {arm}: {why[arm]}")
+            for arm in candidates
+            if arm in why
+        ),
+    ]
+
+
+def _answer_block(
+    control: str,
+    candidates: Sequence[str],
+    pairwise: Mapping[str, WriterPairwise],
+    unread: Mapping[str, str],
+    *,
+    decisions: Mapping[str, str],
+    why: Mapping[str, str],
+    cases: str,
+) -> DisclosureBlock:
+    """The page's answer, first on it: for each candidate, its promotion reading and the judge's side-by-side
+    preference in one plain sentence (``Undecided, so shipped stays: side by side, the judge gave lead-first a share of
+    0.68 of each pair ...``), the promotion's own sentence after it where the preference alone does not explain the
+    decision. ``cases`` counts the side's cases in words (``7 held-out``)."""
+    sentences = [
+        _answer_sentence(control, arm, pairwise.get(arm), unread.get(arm), decisions.get(arm), why.get(arm), cases)
+        for arm in candidates
+    ]
+    decided = all(decisions.get(arm) in ("promote", "keep") for arm in candidates)
+    return DisclosureBlock(
+        section="answer", source="verdict", text=" ".join(sentences), tone="decided" if decided else "open"
+    )
+
+
+def _answer_sentence(
+    control: str,
+    arm: str,
+    read: WriterPairwise | None,
+    unread: str | None,
+    decision: str | None,
+    why: str | None,
+    cases: str,
+) -> str:
+    """One candidate's sentence of the page's answer (:func:`_answer_block`)."""
+    if read is None:
+        missed = f"the judge's side-by-side pass of {arm} against {control} did not complete: {unread}"
+        return why if why is not None else f"{missed[0].upper()}{missed[1:]}."
+    primary = read.primary
+    improved = primary.outcome == "improved" and primary.reason != "too_few_cases" and read.void is None
+    regressed = primary.outcome == "regressed" and primary.reason != "too_few_cases" and read.void is None
+    if read.share is None:
+        preference = f"side by side, the judge scored no pair of {arm} against {control}"
+    else:
+        preference = (
+            f"side by side, the judge gave {arm} a share of {_spelled(read.share)} of each pair against {control} "
+            "(0.5 is no preference)"
+        )
+    if read.void is not None:
+        preference += f", but its two reading orders disagreed too often for that to count ({read.void})"
+    elif primary.reason == "too_few_cases":
+        preference += f", on {cases} cases, too few to read"
+    elif improved or regressed:
+        preference += f", which {cases} cases tell apart from no preference"
+    elif primary.outcome == "not_separated":
+        preference += f", which {cases} cases cannot tell apart from no preference"
+    else:
+        preference += f", which {cases} cases read as {primary.outcome.replace('_', ' ')}"
+    if decision is None:
+        return f"{preference[0].upper()}{preference[1:]}; a promotion is read on the held-out side only."
+    lead = _DECISION_LEADS[decision].format(candidate=arm, control=control)
+    explained = (
+        (decision == "promote" and improved)
+        or (decision == "keep" and regressed)
+        or (decision == "undecided" and not improved)
+    )
+    return f"{lead}: {preference}." + ("" if explained or why is None else f" {why}")
+
+
+def _led(page: CampaignReport, answer: DisclosureBlock, side_by_side: Sequence[ReportBlock]) -> CampaignReport:
+    """The campaign's page with the writer eval's answer first on it and its side-by-side section at the head of its
+    Scorecard: each section lays its blocks out in their order, so both lead their sections. A page a stored report
+    document draws holds no blocks of its own, and is kept as it is."""
+    if page.doc_page is not None:
+        return page
+    blocks = list(page.blocks)
+    at = next((index for index, block in enumerate(blocks) if block.section == "scorecard"), len(blocks))
+    return page.model_copy(update={"blocks": [answer, *blocks[:at], *side_by_side, *blocks[at:]]})
 
 
 def _levels(writer: Writer) -> dict[str, str]:

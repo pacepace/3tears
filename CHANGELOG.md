@@ -6,6 +6,26 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer eval's page opens on its answer, its side-by-side tables are rows with columns, and a replay reads its criteria as declared
+
+**Changed:** a writer eval's page (`WriterResult.page`, `report.html`, `report.md`) opens, under its title, on one
+sentence per candidate: its promotion reading and the judge's side-by-side preference ("Undecided, so shipped stays:
+side by side, the judge gave lead-first a share of 0.68 of each pair against shipped (0.5 is no preference), which 7
+held-out cases cannot tell apart from no preference."), with the promotion's own sentence after it where the
+preference alone does not explain the decision. Its Scorecard opens with the side-by-side tables and each candidate's
+promotion sentence. The side-by-side table in the print, in `pairwise.md` and on the page is two tables of rows with
+columns: the preference, a row per candidate and the pairs it reads (every pair, then both pages finished), and the
+judge's checks, a row per candidate; every figure in them, and the share in the answer, is read to two decimals.
+
+**Fixed:** a writer eval files its campaign dated when its arms launched (`create_campaign`'s `declared_at`), as an
+`Eval` does, in place of when it was filed, after its results existed. Its page no longer says its criteria (the
+aspect, the control, a margin) were set after the results, on a replay of a declared eval or a recording run.
+
+**Hosts:** a host reading a writer eval's print or `pairwise.md` by its key-and-value rows (`| share | 0.6786 |`)
+reads the preference table's columns instead (`| lead-first | every pair | not separated | 0.68 | ... |`), at two
+decimals. A writer eval's campaign filed before this release keeps its late-criteria lines; running the eval again files
+it dated at launch.
+
 ### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
 
 **Added:** a dollar budget under a report's first-turn ceiling cannot admit even one turn of the two a report takes

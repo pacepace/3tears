@@ -500,19 +500,14 @@ writer: lead-first against shipped, 7 held-out case(s) x 1, judged by google/gem
 | report_writer.actionable_next_steps (judged) | 5.00 | 5.00 |
 | report_writer.evidence_fits_claims (judged) | 4.43 | 4.86 |
 ...
-| preference | lead-first |
-|---|---|
-| reads | not separated |
-| share | 0.6786 |
-| difference | 0.3571 |
-| interval, 95% | -0.2762 to 1 |
-| reads, both pages finished | untested |
-| share, both pages finished | - |
-| order consistency | 0.8571 (6 of 7) |
-| first-slot lean | 0.07143 |
-| can't tell | 0 |
-| held-out cases to settle | 39 |
-| spent | $0.1404 of $1.95 |
+| Candidate | Pairs | Reads | Share | Difference | Interval, 95% |
+|---|---|---|---|---|---|
+| lead-first | every pair | not separated | 0.68 | 0.36 | -0.28 to 1 |
+| lead-first | both pages finished | untested | — | — | — |
+
+| Candidate | Order consistency | First-slot lean | Can't tell | Held-out cases to settle | Spent |
+|---|---|---|---|---|---|
+| lead-first | 0.86 (6 of 7) | 0.07 | 0 | 39 | $0.1404 of $1.95 |
 ...
 promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only an improved primary reading promotes.
 shipped: writer turns replayed from .../examples/5-writer/recordings/turns/shipped-4e14e276b568-claude-sonnet-5-5-medium-r2
@@ -520,7 +515,14 @@ lead-first: writer turns replayed from .../examples/5-writer/recordings/turns/le
 ```
 
 A report finished is one the editor cleared, so it is stored finished rather than as a draft. The report
-(`.evals/reports/writer/report.md`) reads the two code measures that moved most:
+(`.evals/reports/writer/report.md`) opens with the answer, the promotion reading and the judge's preference in one
+sentence, and the same two side-by-side tables head its Scorecard:
+
+```text
+**Undecided, so shipped stays: side by side, the judge gave lead-first a share of 0.68 of each pair against shipped (0.5 is no preference), which 7 held-out cases cannot tell apart from no preference.**
+```
+
+Further down it reads the two code measures that moved most:
 
 ```text
 | Report finished | 14.3% [2.6%, 51.3%] | 42.9% [15.8%, 75%] | 28.6 pts | [-74.6, 100] pts | lead-first and shipped not separated | 7 paired |
