@@ -19,19 +19,15 @@
 A guardrail an arm is not shown safe on is a second sentence, what it means for the decision first: ``v2 may do worse
 than v1 on the No invented total score guardrail.``
 
-**One result, one sentence.** The campaign page's lead, the aspect page's verdict, the quick print's first line and the
-exit line all print the sentence this module writes (:class:`VerdictLine`): the lead its :attr:`~VerdictLine.lead`,
-the aspect page and the print its :attr:`~VerdictLine.text`, the exit line its lead and why the gate failed. Each
-measure and guardrail is named as the page names it (its :class:`~threetears.evals.analysis.report.blocks.Verdict`'s
-heading), and a cost is never the lead (:func:`is_cost`).
-
-**No floor decides the verdict.** A floor only warns: a broken one is a line under this one
-(:mod:`~threetears.evals.analysis.report.decision`), and the verdict says what the contrasts came to beside it.
-
-**A cause cannot exist without its words.** Every way a trial is lost (:data:`LOSS_CAUSE_WORDS`) and every way one
-fails (:data:`FAIL_CAUSE_WORDS`) is worded here, with the remedy a reader acts on, and each table is checked against
-the vocabulary it covers when this module is imported: a cause added to the kernel without words fails the import
-rather than reaching a page as its raw token.
+**One result, one sentence.** The aspect page's verdict and the quick print's first line print
+:attr:`VerdictLine.text`; the exit line opens with :attr:`~VerdictLine.lead`. A campaign page leading on a measure a
+contrast tested says the same decision and figures (:func:`led_sentences`, over the figures
+:func:`~threetears.evals.analysis.report.build.contrast_evidence` reads); one leading on an aspect's pass-rate row (its
+margin's reading) says the row's own, in the same form (``scorecard.row_sentence`` and ``scorecard.row_figures``).
+After the decision, each arm
+is the subject of its figures and the interval says what it allows (:func:`interval_words`), never its level, which
+the table's header states. Each measure and guardrail is named as the page names it, and a cost is never the lead
+(:func:`_is_cost`).
 """
 
 from __future__ import annotations
@@ -48,8 +44,8 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
-from threetears.evals.analysis.style import cannot_tell_apart, humanize, measure_name
-from threetears.evals.analysis.report.words import LOWER_IS_BETTER, comparison_words
+from threetears.evals.analysis.style import cannot_tell_apart, measure_name
+from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 
@@ -335,7 +331,47 @@ def passed_clause(arm: str, passed: int, trials: int, cases: int) -> str:
     return f"{arm} passed {passed} of {trials} trials on {cases} cases"
 
 
-def is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
+def interval_words(
+    arm: str,
+    low: float,
+    high: float,
+    *,
+    amount: Callable[[float], str],
+    unit: str = "",
+    higher_is_better: bool = True,
+) -> str:
+    """What an interval on an arm's change from the control allows, in a reader's words, the arm the subject: ``The
+    interval allows v2 to be as much as 19.7 points worse or 17.8 better.`` where it reaches both sides of zero,
+    ``The interval puts qwen3.8-flash between 3.4 and 10.8 points worse.`` where it lies on one side. Never a level:
+    the table's header states it. An interval reaching both sides never reads as "the same".
+
+    :param arm: The arm, as the page names it.
+    :ptype arm: str
+    :param low: The interval's low end, on the change's ruler (points for a rate).
+    :ptype low: float
+    :param high: Its high end.
+    :ptype high: float
+    :param amount: A change's size as the sentence states it, unsigned.
+    :ptype amount: Callable[[float], str]
+    :param unit: What follows the sizes once, `` points`` for a rate; empty where ``amount`` carries the unit.
+    :ptype unit: str
+    :param higher_is_better: The reading's direction: a rise is better where True.
+    :ptype higher_is_better: bool
+    :return: The sentence, with its closing stop.
+    :rtype: str
+    """
+    worse_end, better_end = (low, high) if higher_is_better else (high, low)
+    sign = 1 if higher_is_better else -1
+    if sign * worse_end >= 0:
+        near, far = sorted((abs(low), abs(high)))
+        return f"The interval puts {arm} between {amount(near)} and {amount(far)}{unit} better."
+    if sign * better_end <= 0:
+        near, far = sorted((abs(low), abs(high)))
+        return f"The interval puts {arm} between {amount(near)} and {amount(far)}{unit} worse."
+    return f"The interval allows {arm} to be as much as {amount(worse_end)}{unit} worse or {amount(better_end)} better."
+
+
+def _is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
     """Whether a measure is a cost: money, or on the cost merit axis, as the aspect's catalog describes it. A cost is
     never what a result leads on.
 
@@ -350,7 +386,7 @@ def is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
     return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
 
 
-def lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Sequence[str]) -> str | None:
+def _lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Sequence[str]) -> str | None:
     """The measure a result leads on: the first ``order`` lists (an aspect design's ``measure_order``, which an eval
     files in the order it lists its graders) that a contrast tested and that is no cost; with no order listed, the
     classifier's accuracy where no question is asked of the aspect; None where neither names one.
@@ -367,7 +403,7 @@ def lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: Se
     held = set(tested)
     if not order:
         return None if bundle.question_declared else ACCURACY_MEASURE
-    return next((name for name in order if name in held and not is_cost(name, bundle)), None)
+    return next((name for name in order if name in held and not _is_cost(name, bundle)), None)
 
 
 def led_sentences(
@@ -380,7 +416,7 @@ def led_sentences(
     evidence: Callable[[Verdict], str | None] | None = None,
     also: Sequence[str] = (),
 ) -> list[str]:
-    """The result's sentence for each arm on the measure it leads on (:func:`lead_measure`), in its verdict's words:
+    """The result's sentence for each arm on the measure it leads on (:func:`_lead_measure`), in its verdict's words:
     ``Accuracy: the evidence cannot tell v2 and v1 apart.`` A contrast the question does not ask, where one is asked,
     is marked a lead. Empty where no contrast was tested on a lead measure.
 
@@ -417,9 +453,9 @@ def led_sentences(
 
 
 def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
-    """The contrast verdicts on the measure a result leads on (:func:`lead_measure`)."""
+    """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
     contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
-    lead = lead_measure(bundle, (verdict.name for verdict in contrasts), order)
+    lead = _lead_measure(bundle, (verdict.name for verdict in contrasts), order)
     return [verdict for verdict in contrasts if verdict.name == lead]
 
 
@@ -445,7 +481,7 @@ def verdict_line(
         it reads as every other surface does; none reads the bundle's contrasts in their verdict words alone.
     :ptype verdicts: Sequence[Verdict]
     :param order: The graders' measures, in the order the eval lists them (``AspectDesign.measure_order``), which a
-        comparison's line leads on the first of (:func:`lead_measure`).
+        comparison's line leads on the first of (:func:`_lead_measure`).
     :ptype order: Sequence[str]
     :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
         says the decision alone.
@@ -487,7 +523,7 @@ def verdict_line(
         bool(verdicts)
         and bool(said)
         and all(
-            is_cost(verdict.name, bundle)
+            _is_cost(verdict.name, bundle)
             for verdict in verdicts
             if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
         )
@@ -505,7 +541,9 @@ def verdict_line(
         )
     if declared_question:
         result = result[:1].upper() + result[1:]
-    guardrails = _guardrail_sentences(verdicts) if verdicts else _guardrail_words(bundle, arm)
+    guardrails = (
+        _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
+    )
     return VerdictLine(rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.")
 
 
@@ -580,7 +618,7 @@ def _also(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], led: set[s
         for verdict in verdicts
         if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and verdict.heading not in led
     ]
-    found.sort(key=lambda verdict: is_cost(verdict.name, bundle))
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
     return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
 
 
@@ -592,13 +630,13 @@ def _told_apart(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], *, a
         for verdict in verdicts
         if verdict.kind == "contrast" and verdict.outcome in _DIRECTIONAL and (verdict.aspect is not None or not asked)
     ]
-    found.sort(key=lambda verdict: is_cost(verdict.name, bundle))
+    found.sort(key=lambda verdict: _is_cost(verdict.name, bundle))
     return list(dict.fromkeys(f"{verdict.heading}: {verdict.words}" for verdict in found))
 
 
 #: How a result's line says what a guardrail an arm is not shown safe on means for the decision, by its decision, the
-#: breached first.
-_GUARDRAIL_SAID: dict[str, str] = {
+#: breached first: on the verdict line, the aspect page's contrasts and the campaign's warnings alike.
+GUARDRAIL_SAID: dict[str, str] = {
     "breached": "{arm} breaches {named}",
     "undecided": "{arm} may do worse than {control} on {named}",
 }
@@ -608,7 +646,7 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
     """`` v2 may do worse than v1 on the No invented total score guardrail.`` — one sentence per arm and decision,
     each guardrail named as the page heads it; empty when every guardrail held."""
     said = []
-    for decision, template in _GUARDRAIL_SAID.items():
+    for decision, template in GUARDRAIL_SAID.items():
         by_arm: dict[tuple[str, str], list[str]] = {}
         for verdict in verdicts:
             if verdict.kind == "guardrail" and verdict.outcome == decision:
@@ -616,9 +654,7 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
                 if verdict.heading not in names:
                     names.append(verdict.heading)
         for (name, control), headings in by_arm.items():
-            listed = headings[0] if len(headings) == 1 else f"{', '.join(headings[:-1])} and {headings[-1]}"
-            named = f"the {listed} guardrail{'' if len(headings) == 1 else 's'}"
-            said.append(" " + template.format(arm=name, control=control, named=named) + ".")
+            said.append(" " + template.format(arm=name, control=control, named=_guardrails_named(headings)) + ".")
     return "".join(said)
 
 
@@ -646,28 +682,57 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     return "; ".join(said) + "; too few cases to call a difference."
 
 
-def _guardrail_words(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """:func:`_guardrail_sentences` read off the bundle's guardrail checks, where no typed verdict is given: each
-    guardrail named as the page names its measure."""
+def guardrail_name(bundle: AnalysisContextBundle, name: str, reading: str) -> str:
+    """A guardrail as every surface names it, as its verdict heads it: a judged dimension by
+    :func:`~threetears.evals.analysis.report.words.judged_heading`, a goal check by its declared name else its
+    expression, any other measure by its reader name.
+
+    :param bundle: The aspect's evidence, whose catalog and check names name it.
+    :ptype bundle: AnalysisContextBundle
+    :param name: The guardrail's measure key or judged dimension.
+    :ptype name: str
+    :param reading: ``judged`` for a judged dimension; anything else reads a measure.
+    :ptype reading: str
+    :return: The name.
+    :rtype: str
+    """
+    if reading == "judged":
+        return judged_heading(name)
+    described = bundle.measure_catalog.get(name)
+    return measure_name(
+        name, described.reader_name if described is not None else None, declared=bundle.check_name(name)
+    )
+
+
+def guardrail_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
+    """What each guardrail an arm is not shown safe on means for the decision, one sentence per arm and decision,
+    read off the bundle's guardrail checks: ``v2 may do worse than v1 on the No invented total score guardrail.``
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key.
+    :ptype arm: Callable[[str], str]
+    :return: The sentences, the breached first; none where every guardrail held.
+    :rtype: list[str]
+    """
     said = []
-    for decision, template in _GUARDRAIL_SAID.items():
+    for decision, template in GUARDRAIL_SAID.items():
         by_arm: dict[tuple[str, str], list[str]] = {}
         for check in bundle.guardrails.checks:
             if check.decision == decision:
-                described = bundle.measure_catalog.get(check.name)
-                heading = measure_name(
-                    check.name,
-                    described.reader_name if described is not None else None,
-                    declared=bundle.check_name(check.name),
-                )
+                heading = guardrail_name(bundle, check.name, check.reading)
                 names = by_arm.setdefault((arm(check.contrast.variant_key), arm(check.control.variant_key)), [])
                 if heading not in names:
                     names.append(heading)
         for (name, control), headings in by_arm.items():
-            listed = headings[0] if len(headings) == 1 else f"{', '.join(headings[:-1])} and {headings[-1]}"
-            named = f"the {listed} guardrail{'' if len(headings) == 1 else 's'}"
-            said.append(" " + template.format(arm=name, control=control, named=named) + ".")
-    return "".join(said)
+            said.append(template.format(arm=name, control=control, named=_guardrails_named(headings)) + ".")
+    return said
+
+
+def _guardrails_named(headings: Sequence[str]) -> str:
+    """Guardrails named in a sentence: ``the No leak score guardrail``, ``the A and B guardrails``."""
+    listed = headings[0] if len(headings) == 1 else f"{', '.join(headings[:-1])} and {headings[-1]}"
+    return f"the {listed} guardrail{'' if len(headings) == 1 else 's'}"
 
 
 def _setup_gate(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str | None:
@@ -740,13 +805,16 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
                     declared=bundle.check_name(comparison.name),
                 )
                 if comparison.reading == "judged":
-                    reading = f"{humanize('dimension', comparison.name)} (judged)"
+                    reading = judged_heading(comparison.name)
                 elif comparison.reading == "trial":
-                    reading = "the pass rate"
+                    reading = PASS_RATE
                 words = comparison_words(
-                    comparison.verdict, arm(comparison.contrast.variant_key), arm(comparison.control.variant_key)
+                    comparison.verdict,
+                    arm(comparison.contrast.variant_key),
+                    arm(comparison.control.variant_key),
+                    higher_is_better=comparison.higher_is_better,
                 )
-                line = f"{words} on {reading}{'' if comparison.higher_is_better else LOWER_IS_BETTER}"
+                line = f"{reading}: {words}"
                 if line not in said:
                     said.append(line)
     return said
@@ -754,6 +822,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
 
 __all__ = [
     "FAIL_CAUSE_WORDS",
+    "GUARDRAIL_SAID",
     "ACCOUNT_REFUSED_REMEDY",
     "LOSS_CAUSE_WORDS",
     "NOTHING_MEASURED_REMEDY",
@@ -768,8 +837,9 @@ __all__ = [
     "cap_words",
     "cause_short",
     "fail_words",
-    "is_cost",
-    "lead_measure",
+    "guardrail_lines",
+    "guardrail_name",
+    "interval_words",
     "led_sentences",
     "loss_words",
     "measured_nothing",

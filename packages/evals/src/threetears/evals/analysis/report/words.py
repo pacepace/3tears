@@ -25,7 +25,7 @@ from threetears.evals.kernel.campaign import (
     ConfidenceTier,
 )
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
-from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
 
 if TYPE_CHECKING:
@@ -165,7 +165,7 @@ def reading_heading(
 
     A goal check by its declared display name, else its expression, verbatim as code
     (:func:`~threetears.evals.analysis.style.measure_name`); how
-    each trial ended (a ``trial`` reading) as a floor names it, "the pass rate"; any other reading by the
+    each trial ended (a ``trial`` reading) as :data:`PASS_RATE`; any other reading by the
     surface's heading, a reserved judge axis by its plain name (:func:`reading_name`).
 
     :param surface: The decision surface the reading is on.
@@ -182,13 +182,45 @@ def reading_heading(
     :rtype: str
     """
     if reading == "trial":
-        return "the pass rate"
+        return PASS_RATE
     if reading != "judged" and goal_check_of(name) is not None:
         return measure_name(name, declared=declared)
     if reading == "judged":
-        # A reserved judge axis by its plain name before the mark, never its stored id (``__outcome__ (judged)``).
-        return f"{reading_name(name)} (judged)"
+        return judged_heading(name)
     return reading_name(surface.measure_heading(name, reading))
+
+
+#: The overall pass rate as every surface names it: a name, capitalised as every other reading's is.
+PASS_RATE = "Pass rate"
+
+
+def judged_heading(name: str) -> str:
+    """A judged dimension as every surface names it: its name as :func:`~threetears.evals.analysis.style.measure_name`
+    spells it, marked judged (``persona holds character (judged)``, ``outcome (judged)``), never its stored id.
+
+    :param name: The dimension, as the rubric names it.
+    :ptype name: str
+    :return: The name.
+    :rtype: str
+    """
+    return f"{measure_name(name)} (judged)"
+
+
+def one_figure_each(measures: Iterable[str], *, read: Iterable[str] = ()) -> list[str]:
+    """``measures`` with each figure listed once: a classifier's per-trial label match is its accuracy, so where the
+    accuracy is read the match is not listed under a second name.
+
+    :param measures: Measure keys, in order.
+    :ptype measures: Iterable[str]
+    :param read: Every measure the page reads elsewhere, whose accuracy names the match where ``measures`` lacks it.
+    :ptype read: Iterable[str]
+    :return: The keys, in order, the match left out where the accuracy is read.
+    :rtype: list[str]
+    """
+    held = list(measures)
+    if ACCURACY_MEASURE not in held and ACCURACY_MEASURE not in set(read):
+        return held
+    return [key for key in held if key != MATCH_MEASURE]
 
 
 def positions(numbers: list[int]) -> str:
@@ -317,6 +349,9 @@ __all__ = [
     "counted",
     "guardrail_words",
     "positions",
+    "PASS_RATE",
+    "judged_heading",
+    "one_figure_each",
     "reading_heading",
     "reading_name",
     "worded",

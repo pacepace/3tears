@@ -23,7 +23,6 @@ import pytest
 
 from threetears.evals import Eval, Result, grader
 from threetears.evals.storage import InMemoryDocumentStore
-from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 
 from threetears.evals.analysis import (
     DEFAULT_FAIL_ON,
@@ -94,14 +93,12 @@ class TestTheReportCarriesTypedVerdicts:
         comparison = await _compare({"current": 0, "worse": 30, "same": 0})
         table = next(b for b in comparison.report.blocks if isinstance(b, TableBlock) and b.name == "comparisons")
         typed = comparison.verdicts(kind="contrast")
-        # Each cell is its verdict's words, an undecided one in its short cell form, since the row names both arms.
-        cells = [
-            CANNOT_TELL_APART + verdict.words.removeprefix(cannot_tell_apart([verdict.arm], verdict.control or ""))
-            if verdict.outcome == "not_separated"
-            else verdict.words
-            for verdict in typed
+        # Each cell is its verdict's words; an undecided one's cell is the short form, since the row names both arms.
+        assert [(verdict.arm, verdict.words) for verdict in typed] == [
+            ("same", "the evidence cannot tell same and current apart"),
+            ("worse", "worse worse than current"),
         ]
-        assert [row["verdict"] for row in table.values()] == cells
+        assert [row["verdict"] for row in table.values()] == ["cannot tell apart", "worse worse than current"]
         by_arm = {verdict.arm: verdict for verdict in typed}
         assert (by_arm["worse"].outcome, by_arm["worse"].reason) == ("regressed", "separated")
         assert by_arm["same"].outcome in ("not_separated", "untested")

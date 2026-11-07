@@ -115,6 +115,7 @@ from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.bundle.trials import read_trial
 from threetears.evals.kernel.surface import STRATUM_MIN_CASES
 from threetears.evals.kernel.text_block import one_line
+from threetears.evals.analysis.report.words import judged_heading
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NO_STRATUM, NOT_SHOWN_TO_MEASURE, TOO_FEW_CASES
 from threetears.evals.kernel.remedies import FIND_RUN
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, iter_run_results
@@ -317,8 +318,8 @@ class GoalCheckSummary(BaseModel):
             baseline = f"a candidate that did nothing passes it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
         if self.proven:
             return head if baseline is None else f"{head} ({baseline})"
-        # The page's words for a check not shown to beat doing nothing, and what follows from it; the do-nothing
-        # baseline, which only a run that measured it knows, after them.
+        # The page's words for a check not shown to beat doing nothing, and what follows from it; then what this run
+        # measured a candidate that did nothing to pass, which only a launch knows.
         reason = {
             "refuted": CHECK_PROOF_WORDS["refuted"],
             "unproven": (
@@ -328,7 +329,10 @@ class GoalCheckSummary(BaseModel):
             ),
             None: "unproven: this run recorded no proof that it can tell acting from doing nothing",
         }[self.proof]
-        return f"{head} — {reason}, {NOT_SHOWN_TO_MEASURE}" + ("" if baseline is None else f"; {baseline}")
+        measured = None
+        if self.did_nothing_passed is not None and self.did_nothing_cases:
+            measured = f"at launch one passed it in {self.did_nothing_passed} of {self.did_nothing_cases} case(s)"
+        return f"{head} — {reason}; {NOT_SHOWN_TO_MEASURE}" + ("" if measured is None else f"; {measured}")
 
 
 class DimensionSummary(BaseModel):
@@ -1264,8 +1268,8 @@ def _proportion(
 
 def _dimension_line(dimension: DimensionSummary) -> str:
     """One judged dimension's line: its scale, its mean and range, and how often the judge could not tell."""
-    scale = {"ordinal": "judged 1-5", "pass_fail": "judged pass/fail", None: "judged"}[dimension.scale]
-    line = f"{dimension.name} ({scale}): "
+    scale = {"ordinal": ", scored 1-5", "pass_fail": ", scored pass/fail", None: ""}[dimension.scale]
+    line = f"{judged_heading(dimension.name)}{scale}: "
     if dimension.mean is None or dimension.minimum is None or dimension.maximum is None:
         line += "no result carries a score"
     else:

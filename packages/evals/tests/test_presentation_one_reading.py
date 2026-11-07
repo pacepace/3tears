@@ -1,23 +1,23 @@
-"""One result, one reading, one sentence, on every surface a reader meets it (presentation build, chunk 2).
+"""One result, one reading, one sentence, on every surface a reader meets it.
 
-The owner's reading of page B (2026-11-06) took "not separated" for "the two are roughly equal" (H7): the review's A7
-holds a page to a phrase a first-time reader cannot take for "the same". The review's P41 found one rung 3 result
-phrased four ways (the campaign page's lead, the aspect page's verdict, the quick print's first line, the exit line)
-and a measure named two ways (A3's single-name clause). Held here on the ladder's replayed rungs, offline:
+A first-time reader took "not separated" for "the two are roughly equal", and small figures beside an undecided
+reading for "the same". Held here on the ladder's replayed rungs, offline, and on Kairo round 2's committed bundle:
 
-- the campaign page's lead, the aspect page's verdict, the print's first line and the exit line carry one sentence,
-  one phrase and one measure name (rungs 3 and 4);
+- the campaign page's lead, the aspect page's verdict, the print's first line and the exit line carry one sentence:
+  the decision, what each arm passed, and what the interval allows the candidate to be, in points (rungs 3 and 4);
+- a lead on a row under a margin states the count its To settle row states, and no other lead counts cases to settle;
 - no surface code writes prints the retired phrase ("not separated", "nothing separated"); the undecided reading is
-  :data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`, defined once in the glossary;
-- a guardrail key and a measure key read one name on every surface (P14, P15), and the undecided guardrail's line says
-  what it means for the decision before the count of cases that could fail it (H6, P26);
-- rung 4's page and print say one thing of a goal check a candidate that did nothing could pass (P25).
+  :data:`~threetears.evals.analysis.style.CANNOT_TELL_APART`, defined once in the glossary and linked at its first use;
+- each guardrail and measure reads one name on every surface, and the undecided guardrail's line says what it means
+  for the decision before the count of cases that could fail it;
+- rung 4's page and print say one thing of a goal check a candidate that did nothing could pass.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from html import escape
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +26,7 @@ import pytest
 
 from threetears.evals.analysis import (
     GLOSSARY,
+    build_campaign_report,
     build_code_only_report,
     campaign_report_html,
     campaign_report_markdown,
@@ -34,8 +35,10 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE
 from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.words import judged_heading
+from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, lint_prose
+from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.quick.files import load_evals
 from threetears.evals.quick.result import Result
 
@@ -105,65 +108,111 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 # --- one result, one sentence ----------------------------------------------------------------------------------------
 
 
+#: Rung 3's result as every surface says it: the decision, what each arm passed, what the interval allows.
+_RUNG_3_LEAD = (
+    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired "
+    "cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
+)
+
+#: What rung 3's undecided guardrail means for the decision, as its verdict line says it.
+_RUNG_3_GUARDRAIL = "v2 may do worse than v1 on the No invented total score guardrail."
+
+
 def test_rung_3_s_four_surfaces_say_one_sentence_in_one_phrase_and_one_measure_name(
     rungs: dict[str, _Surfaces],
 ) -> None:
     rung = rungs["rung3"]
-    decision = "Accuracy: the evidence cannot tell v2 and v1 apart."
-    # The page leads with the decision and the figures it rests on; the guardrail is its warning, one line down.
-    assert rung.lead.startswith(f"{decision} ")
+    # The page leads with the result; the guardrail is its warning, one line down.
+    assert rung.lead == _RUNG_3_LEAD
     # The aspect page and the print say the same sentences, then what the guardrail means for the decision.
-    guardrail = "v2 may do worse than v1 on the No invented total score guardrail."
-    assert rung.verdict == f"{rung.lead} {guardrail}"
-    assert rung.first_line == f"invoices: {rung.lead} {guardrail}"
-    # The exit line opens with them, then why the gate failed, on the guardrail by the same name.
-    assert rung.exit_code == 4 and rung.exit_line is not None
-    assert rung.exit_line.startswith(f"{rung.lead} The gate failed on guardrail No invented total score, v2 vs v1: ")
-    # One measure name for the lead, never the classifier field's ("currency") or the key's.
-    for said in (rung.lead, rung.verdict, rung.first_line, rung.exit_line):
-        assert said.count(cannot_tell_apart(["v2"], "v1")) == 1 and "Accuracy" in said
-        assert "currency" not in said and "accuracy" not in said
+    assert rung.verdict == f"{_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    assert rung.first_line == f"invoices: {_RUNG_3_LEAD} {_RUNG_3_GUARDRAIL}"
+    # The exit line opens with the result, then why the gate failed, on the guardrail by the same name.
+    assert rung.exit_code == 4
+    assert rung.exit_line == (
+        f"{_RUNG_3_LEAD} The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse "
+        "than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is "
+        "shown neither within it nor beyond it)."
+    )
     # The print names each arm's measures as the page does: the classifier's match is the Accuracy the page leads on.
     printed = str(rung.result)
     assert "  Accuracy: mean " in printed and "  currency: mean" not in printed
     assert "  No invented total score: mean " in printed and "  no_invented_total:" not in printed
 
 
-def test_rung_3_s_lead_carries_both_arms_figures_the_change_and_the_cases_to_settle(
-    rungs: dict[str, _Surfaces],
-) -> None:
-    """The host's iframe pass (finding 1): a lead that says only "undecided" leaves the figures five screens down. The
-    decision comes first, then both arms' readings with their counts, the change over the cases it was read on and its
-    interval, each as the contrasts table one step down prints it, and the cases that would settle it."""
+def test_page_b_s_lead_says_what_the_interval_allows_each_arm_the_subject(rungs: dict[str, _Surfaces]) -> None:
+    """A first-time reader of an undecided lead takes small figures for "the same"; the lead says what each arm passed
+    and how far the interval lets the candidate fall or rise, in points, its ends the contrasts table's."""
     rung = rungs["rung3"]
-    assert rung.lead == (
-        "Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on "
-        "v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. "
-        "About "
-        f"{_cases_to_settle(rung.lead)} cases per arm would settle it, if the arms differ as observed."
-    )
-    # Every figure is the aspect page's contrasts row, at the same value and precision.
+    lead = rung.lead
+    assert "v1 passed 90" in lead and "v2 89" in lead and "Of 90 trials each" in lead
+    assert "as much as 19.7 points worse or 17.8 better" in lead
+    # No level the first screen leaves unexplained, no subject but an arm, no count of cases to settle without a margin.
+    assert "%" not in lead and " It " not in lead and "settle" not in lead
     (contrasts,) = [
         block for block in rung.result.report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"
     ]
     (row,) = [row for row in contrasts.rows if row["reading"].text == "Accuracy"]
-    assert row["control"].text.startswith("100% ") and row["arm"].text.startswith("98.9% ")
-    assert (row["change"].text, row["interval"].text, row["cases"].text) == (
-        "-1.1 pts",
-        "[-19.7, 17.8] pts",
-        "30 paired",
+    assert (row["interval"].text, row["cases"].text) == ("[-19.7, 17.8] pts", "30 paired")
+    assert lint_prose(lead) == []
+    # The lead links the phrase's one definition at its first use, in the header, before any table says it.
+    html = campaign_report_html(rung.result.page)
+    header = html[: html.index("</header>")]
+    assert f'title="{escape(GLOSSARY[CANNOT_TELL_APART])}"' in header
+
+
+def _kairo_page() -> CampaignReport:
+    """Kairo round 2's campaign page over its committed bundle, as the campaign declared itself then."""
+    bundle = kairo_bundle()
+    declared = bundle.declaration
+    campaign = EvalCampaign.model_validate(
+        {
+            "id": bundle.campaign_id,
+            "scope_id": bundle.scope_id,
+            "name": bundle.name,
+            "subject_id": bundle.subject_id,
+            "subject_kind": bundle.subject_kind,
+            "behavior": bundle.behavior,
+            "created_by": declared.declared_by or "unknown",
+            "question": declared.question,
+            "declared_at": declared.declared_at,
+            "declared_by": declared.declared_by or "",
+            "arms": list(declared.arms),
+            "aspects": list(declared.aspects),
+            "floors": list(declared.floors),
+        }
     )
-    assert "Interval (99.2%)" in [column.header for column in contrasts.columns]
-    # Each sentence keeps to the style's three figures.
-    assert lint_prose(rung.lead) == []
+    labels = bundle.readings.arm_labels()
+    reports = {
+        aspect.aspect: build_code_only_report(aspect, assembled_at="2026-10-31T00:00:00+00:00", arm_labels=labels)
+        for aspect in bundle.aspects
+    }
+    return build_campaign_report(campaign, bundle.readings, reports)
 
 
-def _cases_to_settle(lead: str) -> str:
-    """The cases-to-settle count a lead states, read back: a thousands-grouped whole number of at least the case floor."""
-    found = re.search(r"About ([\d,]+) cases per arm would settle it", lead)
-    assert found is not None, lead
-    assert int(found.group(1).replace(",", "")) > 30
-    return found.group(1)
+def test_a_lead_says_an_arm_shown_worse_is_worse_whatever_its_margin_allows() -> None:
+    """qwen3.8-flash's interval on its drop lies wholly below zero and within the 15-point margin: the lead says both,
+    September the subject of its own count."""
+    (lead,) = _said(_kairo_page().blocks, "verdict", "answer")
+    assert lead.text == (
+        "Pass rate: qwen3.8-flash shown worse than September, but within the 15-point margin. Of 897 trials, September "
+        "passed 765. Of 895, qwen3.8-flash passed 695. The interval puts qwen3.8-flash between 3.4 and 10.8 points "
+        "worse. Pass rate: 1017 against September no worse than the margin. Of 897 trials each, September passed 765 "
+        "and 1017 738. The interval allows 1017 to be as much as 5.8 points worse or 1.1 better."
+    )
+
+
+def test_a_lead_under_a_margin_states_the_count_its_to_settle_row_states() -> None:
+    page = s1_change().page()
+    (lead,) = _said(page.blocks, "verdict", "answer")
+    (settle,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "to_settle"]
+    counts = [
+        found.group(1)
+        for row in settle.rows
+        if row["shows"].text.startswith("no worse") and (found := re.match(r"(\d+) cases", row["observed"].text))
+    ]
+    said = re.findall(r"settling it takes (\d+) cases in all, as To settle counts it\.", lead.text)
+    assert said == counts and counts[:2] == ["233", "31"]
 
 
 def test_rung_4_s_three_surfaces_say_one_sentence_and_it_exits_clean(rungs: dict[str, _Surfaces]) -> None:
@@ -305,10 +354,12 @@ def test_rung_4_s_page_and_print_say_one_thing_of_each_unproven_goal_check(rungs
     assert len(check_lines) == 3
     unproven = CHECK_PROOF_WORDS["unproven"]
     for line in check_lines:
-        # The page's words for what the check is and what follows; the baseline the run measured after them.
-        assert f"{unproven}, {NOT_SHOWN_TO_MEASURE}; a candidate that did nothing passes it in " in line, line
+        # The page's words for what the check is and what follows; then what the launch measured, which the page
+        # cannot know, said as the launch's.
+        assert f"{unproven}; {NOT_SHOWN_TO_MEASURE}; at launch one passed it in " in line, line
     assert "NOT A MEASUREMENT" not in printed and "does not beat doing nothing" not in printed
-    assert page.count(f"is {unproven}.") == 3 and page.count(NOT_SHOWN_TO_MEASURE) == 3
+    sentence = f"{NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
+    assert page.count(f"is {unproven}. {sentence}") == 3
 
 
 # --- reading names, never identifiers --------------------------------------------------------------------------------
@@ -318,9 +369,9 @@ _DUNDER = re.compile(r"__[a-z_]+__")
 
 
 def test_no_code_written_page_prints_a_reserved_judge_axis_by_its_stored_id() -> None:
-    """The host's iframe pass (finding 8): Kairo's judged axes headed ``__outcome__ (judged)``. Each aspect's own page
-    over Kairo's committed bundle names them as every surface does, ``outcome (judged)``, in every line and every
-    table's headers and readings code writes; a trial's stored error, quoted as recorded, is the run's words."""
+    """Each aspect's own page over Kairo's committed bundle names its judge's reserved axes as every surface does,
+    ``outcome (judged)``, never ``__outcome__``, in every line and every table's headers and readings code writes; a
+    trial's stored error, quoted as recorded, is the run's words."""
     pages = [
         build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00+00:00") for bundle in kairo_bundle().aspects
     ]
@@ -334,3 +385,48 @@ def test_no_code_written_page_prints_a_reserved_judge_axis_by_its_stored_id() ->
                 said += [column.header for column in block.columns]
                 said += [row["reading"].text for row in block.rows if "reading" in row]
         assert said and not [text for text in said if _DUNDER.search(text)]
+
+
+#: Code a reader copies (a key quoted in a trial record), not a name.
+_CODE = re.compile(r"`[^`]*`")
+
+#: A judged dimension, a classifier's label match and the overall pass rate under a second name: what one reading
+#: name per measure rules out.
+_SECOND_NAMES = re.compile(r"\| the pass rate \||[a-z]+\.[a-z_]+ \(judged|\| Label matched \|")
+
+
+@pytest.mark.parametrize("name", ["rung0", "rung2", "rung3"])
+def test_every_measure_reads_one_name_on_page_aspect_page_print_and_exit_line(
+    rungs: dict[str, _Surfaces], name: str
+) -> None:
+    surfaces = _rendered(rungs[name])
+    for surface, text in surfaces.items():
+        # A trial's record quotes each dimension by its key, as code: that is the key, not a name.
+        said = _CODE.sub("", text)
+        assert not _SECOND_NAMES.search(said), (surface, _SECOND_NAMES.findall(said))
+
+
+def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: dict[str, _Surfaces]) -> None:
+    surfaces = _rendered(rungs["rung2"])
+    for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
+        named = judged_heading(dimension)
+        assert named == f"{dimension.replace('.', ' ')} (judged)"
+        assert f"| {named} |" in surfaces["aspect.md"] and f"  {named}, scored pass/fail: mean " in surfaces["print"]
+        assert dimension not in surfaces["print"]
+
+
+def test_kairo_s_judged_dimension_reads_one_name_in_its_contrasts_and_floors() -> None:
+    # Every table header and reading cell, and every line code writes, names it one way; a trial's record quotes the
+    # judge's own rubric, keyed by the dimension, as stored.
+    page = _kairo_page()
+    said: list[str] = []
+    for report in [fold.report for fold in page.aspects]:
+        for block in [*page.blocks, *report.blocks]:
+            if isinstance(block, DisclosureBlock):
+                said.append(block.text)
+            elif isinstance(block, TableBlock):
+                said += [column.header for column in block.columns]
+                said += [row[key].text for row in block.rows for key in ("reading", "rate", "guardrail") if key in row]
+    assert any("persona holds character (judged)" in text for text in said)
+    assert not [text for text in said if "persona.holds_character" in _CODE.sub("", text)]
+    assert "| the pass rate |" not in campaign_report_markdown(page)

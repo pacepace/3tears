@@ -35,13 +35,21 @@ from packages.evals.tests.campaign_page_support import (
 )
 
 
+#: The lead on billing and tone: each aspect's decision, what each arm passed, what the interval allows.
+_LEAD = (
+    "Accuracy on billing: v2 worse than production. Of 60 trials each, production passed 54 and v2 18. Over 20 "
+    "paired cases, the interval puts v2 between 17.2 and 92.3 points worse. Accuracy on tone: v2 better than "
+    "production. Of 60 trials each, production passed 18 and v2 57. Over 20 paired cases, the interval puts v2 "
+    "between 21.3 and 96.3 points better."
+)
+
+
 async def test_with_no_report_the_page_leads_on_code_s_reading_and_holds_no_writer_s_words() -> None:
     page = await page_of("billing", "tone")
     assert page.basis == "code_only"
     # The page is code's: it says what code read, and nothing of a report it does not hold (H5).
     first = first_screen_markdown(page)
-    assert "**Accuracy on billing: v2 worse than production. It reads 90% on production, 54 of 60 trials." in first
-    assert "Accuracy on tone: v2 better than production. It reads 30% on production, 18 of 60 trials." in first
+    assert f"**{_LEAD}**" in first
     assert not [block for block in page.blocks if isinstance(block, DisclosureBlock) and block.source == "memo"]
     with pytest.raises(ValueError, match="'text' found using 'kind' does not match any of the expected tags"):
         CampaignReport.model_validate(

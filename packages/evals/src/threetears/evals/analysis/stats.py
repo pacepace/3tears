@@ -59,7 +59,8 @@ def _sign_flip_p(n: int) -> float:
 #: statistics it rests on rather than presenting a bare verdict.
 PAIRED_TEST_NAME = (
     "paired two-sided t-test on shared per-case values (where every difference is one amount, the bounded test by "
-    f"betting on the measure's declared range, and not separated with no range), α={SIGNIFICANCE_ALPHA}"
+    "betting on the measure's declared range; with no range the evidence cannot tell the arms apart), "
+    f"α={SIGNIFICANCE_ALPHA}"
 )
 
 # The test that runs when the two samples cannot be paired — no shared frozen

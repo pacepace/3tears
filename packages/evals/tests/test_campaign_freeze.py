@@ -359,11 +359,13 @@ def test_a_guardrail_s_margin_is_timed_whatever_is_asked_and_said_once() -> None
     assert timing_caveats([page]) == [
         f"Criteria on {bundle.aspect} were set after the results there existed, so they were not fixed in advance."
     ]
-    # Design & provenance also holds the test setup's rows (the cost's routing, chunk 1); the criteria's are their own.
-    (table,) = [
-        block
+    # Its criteria table dates the margin; the test setup table beside it (cost as routed, always) never says it.
+    tables = {
+        block.name: block
         for block in provenance_blocks([page], {}, names=AspectNames.of([page]))
-        if isinstance(block, TableBlock) and block.name == "criteria_set"
-    ]
-    guard_rows = [row for row in table.values() if "guardrail" in str(row["criterion"])]
+        if isinstance(block, TableBlock)
+    }
+    assert sorted(tables) == ["criteria_set", "test_setup"]
+    guard_rows = [row for row in tables["criteria_set"].values() if "guardrail" in str(row["criterion"])]
     assert guard_rows == [{"criterion": "guardrail margin on tone", "set_on": "15 Mar 2026", "aspects": bundle.aspect}]
+    assert not any("guardrail" in str(value) for row in tables["test_setup"].values() for value in row.values())

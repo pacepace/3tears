@@ -258,7 +258,7 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
         assert table.section == "contrasts"
         (row,) = table.values()
-        assert row["guardrail"] == f"{BOUNDARY} (judged)"
+        assert row["guardrail"] == "boundary correct (judged)"
         assert str(row["decision"]).startswith("breached")
         assert any(
             b.section == "contrasts" and b.source == "guardrails"
@@ -304,10 +304,11 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
             _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
         )
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
-        # The readings listed once each in a table titled for what they are; the sentence saying no question asks
-        # about them is retired (presentation build, chunk 1: a page says what it is, never what it lacks).
+        # The readings listed once each in a table, with no sentence saying what the question did not ask: the table
+        # says what the readings are.
         assert not [b for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "scope"]
         (listed,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "unasked"]
         named = [str(row["reading"]) for row in listed.values()]
         assert listed.section == "not_tested" and listed.title == "Unasked readings"
-        assert f"{CAPABILITY} (judged)" in named and not any(BOUNDARY in name for name in named)
+        assert "task correct (judged)" in named
+        assert not any(BOUNDARY in name for name in named)

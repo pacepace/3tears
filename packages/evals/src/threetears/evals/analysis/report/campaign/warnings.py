@@ -4,7 +4,7 @@ shown safe on. Each line says what the warning means for the decision first, nam
 leaves the figures to the tables below, but for one: an undecided guardrail on a pass/fail check then says how many
 cases could fail it and how many each arm failed it on, too few to settle it, so a reader never reads the sample's
 size as a defect. Each guardrail is named as the page names its measure everywhere
-(:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`). Each only warns, and this is where it
+(:func:`~threetears.evals.analysis.report.verdict.guardrail_name`). Each only warns, and this is where it
 warns."""
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import BarStatus, CampaignReadings, FloorStatus
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames
+from threetears.evals.analysis.report.verdict import GUARDRAIL_SAID, guardrail_name
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.surface import GuardrailCheck
@@ -36,14 +37,6 @@ def bar_warnings(readings: CampaignReadings, *, names: AspectNames) -> list[Repo
     :rtype: list[ReportBlock]
     """
     return [DisclosureBlock(section="warnings", source="bar", text=text) for *_, text in _bar_lines(readings, names)]
-
-
-#: How a guardrail's line says what it means for the decision, by the guardrail's decision, the breached first: the
-#: same words the aspect's verdict line says it in (:mod:`~threetears.evals.analysis.report.verdict`).
-_GUARDRAIL_WORDS: dict[str, str] = {
-    "breached": "{arm} breaches {each}",
-    "undecided": "{arm} may do worse than {control} on {each}",
-}
 
 
 def guardrail_warnings(
@@ -71,7 +64,7 @@ def guardrail_warnings(
     """
     labels = readings.arm_labels()
     blocks: list[ReportBlock] = []
-    for decision, words in _GUARDRAIL_WORDS.items():
+    for decision, words in GUARDRAIL_SAID.items():
         # Each arm's guardrails, each with the aspects it holds on, in the order first met; and each arm's checks.
         by_arm: dict[str, dict[str, list[str]]] = {}
         checks_of: dict[str, list[tuple[GuardrailCheck, AnalysisContextBundle, str]]] = {}
@@ -86,7 +79,8 @@ def guardrail_warnings(
                 if check.decision != decision:
                     continue
                 arm = label(check.contrast.variant_key)
-                aspects = by_arm.setdefault(arm, {}).setdefault(measure_name_of(bundle, check.name), [])
+                named = guardrail_name(bundle, check.name, check.reading)
+                aspects = by_arm.setdefault(arm, {}).setdefault(named, [])
                 if aspect.label not in aspects:
                     aspects.append(aspect.label)
                 checks_of.setdefault(arm, []).append((check, bundle, label(check.control.variant_key)))
@@ -102,7 +96,7 @@ def guardrail_warnings(
             if decision == "undecided" and len(checks_of[arm]) == 1:
                 ((check, bundle, control),) = checks_of[arm]
                 bound = _undecided_bound(check, bundle, arm=arm, control=control)
-            said = words.format(arm=arm, control=readings.control_label, each=listed(each))
+            said = words.format(arm=arm, control=readings.control_label, named=listed(each))
             text = f"{said}{bound}." if bound else f"{said}."
             blocks.append(DisclosureBlock(section="warnings", source="guardrails", text=text, term="guardrail"))
     return blocks

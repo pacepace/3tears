@@ -73,6 +73,7 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.build import contrast_evidence
 from threetears.evals.analysis.report.verdict import led_sentences
+from threetears.evals.analysis.style import CANNOT_TELL_APART
 
 __all__ = ["build_campaign_report"]
 
@@ -252,7 +253,10 @@ def _lead_blocks(
             sentences += [f"{prefix}{said}." for said in measured]
         else:
             sentences.append(f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}.")
-    return [DisclosureBlock(section="answer", source="verdict", text=" ".join(sentences), tone=tone)]
+    text = " ".join(sentences)
+    # Where the lead says the evidence cannot tell arms apart, it links that phrase's one definition at its first use.
+    term = CANNOT_TELL_APART if "cannot tell" in text else None
+    return [DisclosureBlock(section="answer", source="verdict", text=text, tone=tone, term=term)]
 
 
 def _check_lead(lead: Sequence[ReportBlock]) -> None:

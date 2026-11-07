@@ -218,8 +218,8 @@ def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, st
 
 
 #: The reader's words for a contrast the evidence leaves undecided, as a table cell says them and the glossary defines
-#: them once: never "not separated", which a first-time reader took for "the two are the same" (the presentation
-#: review's H7 and A7). A sentence says it whole, naming the arms (:func:`cannot_tell_apart`).
+#: them once: never "not separated", which a first-time reader takes for "the two are the same". A sentence says it
+#: whole, naming the arms (:func:`cannot_tell_apart`).
 CANNOT_TELL_APART = "cannot tell apart"
 
 

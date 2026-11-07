@@ -162,9 +162,9 @@ What it printed:
 replies: reply passed 40 of 40 trials on 20 cases.
 judge: 0 labels: judge uncalibrated (examples/2-replies/labels.csv is not there yet); next step: rate about 20 outputs of each dimension in the to_label.csv the report writes, which holds 40 per dimension, without looking at the judge's verdict
 40 result(s): 40 scored, 0 excluded
-  answer.grounded (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  answer.answers (judged pass/fail): mean 1 (n=40, min 1, max 1)
-  answer.safe (judged pass/fail): mean 1 (n=40, min 1, max 1)
+  answer grounded (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
+  answer answers (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
+  answer safe (judged), scored pass/fail: mean 1 (n=40, min 1, max 1)
   total spend: $0.0168, the results' cost (candidate $0.00175, judge $0.0151)
 stored in .evals/evals.sqlite, scope 'replies'
 report: .evals/reports/replies/report.html
@@ -259,7 +259,7 @@ What the recording printed (made at `max_tokens=8192`), first lines, errors and 
 exits 4:
 
 ```text
-invoices: Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: mean 0.8333 (n=90, min 0, max 1)
   ...
@@ -268,7 +268,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -278,7 +278,7 @@ guardrail's row, and the trials' census:
 ```text
 # v1 vs v2 · classify (invoices)
 "Does v2 read the currency an invoice charges in right more often than v1?"
-**Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, 89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About 8,537 cases per arm would settle it, if the arms differ as observed.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better.**
 **v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | classify | v2 | 30 | 73 of 90 trials | 88 of 90 trials | 16.7 | [-1.5, 25.9] | — | cannot tell apart |
 | Number score | 83.3% [66.8%, 92.5%] | 100% [88.1%, 100%] | 16.7 pts | [-7.8, 35.4] pts | cannot tell apart | 30 paired |
@@ -399,9 +399,9 @@ What it printed:
 booking: agent passed 31 of 36 trials on 12 cases. Cases that failed a trial: r08, r09, r10.
 36 result(s): 36 scored
   In window score: mean 1 (n=36, min 1, max 1)
-  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 4 of 12 case(s)
-  goal check not intersects(state.booked, state.busy): passed 32/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 12 of 12 case(s)
-  goal check call_count("day.book") <= 1: passed 35/36 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure the behaviour; a candidate that did nothing passes it in 12 of 12 case(s)
+  goal check (state.booked.length >= 1) == (variation.expect == "book"): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 4 of 12 case(s)
+  goal check not intersects(state.booked, state.busy): passed 32/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)
+  goal check call_count("day.book") <= 1: passed 35/36 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing might pass it, so it is not shown to measure the behaviour; at launch one passed it in 12 of 12 case(s)
 ```
 
 **The lesson: grade what the agent did, and only with checks that can fail.** Most misses are the agent booking a

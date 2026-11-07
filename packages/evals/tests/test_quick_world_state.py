@@ -135,8 +135,8 @@ async def test_a_check_doing_nothing_passes_in_every_case_is_never_shown_to_meas
     assert (goal.passed, goal.n, goal.did_nothing_passed, goal.did_nothing_cases) == (2, 2, 2, 2)
     (line,) = [line for line in summary.render().splitlines() if "goal check" in line]
     assert line.endswith(
-        "passed 2/2 — unproven: no control shows it can tell acting from doing nothing, so it is not shown to measure "
-        "the behaviour; a candidate that did nothing passes it in 2 of 2 case(s)"
+        "passed 2/2 — unproven: no control shows it can tell acting from doing nothing; a candidate that did nothing "
+        "might pass it, so it is not shown to measure the behaviour; at launch one passed it in 2 of 2 case(s)"
     )
 
 

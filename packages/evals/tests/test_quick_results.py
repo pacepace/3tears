@@ -480,8 +480,10 @@ def no_leak(case: Mapping[str, Any], out: Any) -> bool:
     return not out["leaks"]
 
 
-#: A sentence of the figures a decision rests on, which the first line says after it (the host's iframe pass, finding 1).
-_FIGURES = re.compile(r" (?:It reads|The change is|Its \S+ interval is|About [\d,]+ cases) .*?\.(?= \S|$)")
+#: A sentence of the figures a decision rests on, which the first line says after it.
+_FIGURES = re.compile(
+    r" (?:Of [\d,]+ |Over [\d,]+ paired cases, |The interval |The mean is |The test read ).*?\.(?= \S|$)"
+)
 
 
 def _decided(result: Result) -> str:
@@ -621,7 +623,8 @@ async def test_the_printed_line_and_the_page_lead_on_one_measure_the_first_grade
     bold = [line for line in page.split("\n## ", 1)[0].splitlines() if line.startswith("**")]
     asked = question is not None
     # Unasked, the page says once that it is an exploratory comparison, so its lead does not say "a lead" again.
-    assert bold[0].startswith(f"**{verdict.heading}: {verdict.words}. It reads ")
+    said = bold[0].strip("*")
+    assert _FIGURES.search(said) and _FIGURES.sub("", said) == f"{verdict.heading}: {verdict.words}."
     assert bold[1].startswith("**cheap may do worse than dear on the No leak score guardrail")
     assert ("Exploratory comparison." in page.splitlines()) is not asked
     assert result.question == question

@@ -99,8 +99,8 @@ async def test_offline_it_replays_the_loop_and_grades_the_day_each_cell_left(
         ("unproven", 12, 12),
     ]
     lines = [line for line in summary.render().splitlines() if "goal check" in line]
-    assert "passes it in 4 of 12 case(s)" in lines[0] and all(
-        "passes it in 12 of 12 case(s)" in line for line in lines[1:]
+    assert "at launch one passed it in 4 of 12 case(s)" in lines[0] and all(
+        "at launch one passed it in 12 of 12 case(s)" in line for line in lines[1:]
     )
     assert all("so it is not shown to measure the behaviour" in line for line in lines)
     # Each cell, read back: the checks graded the day it left and the calls it made.

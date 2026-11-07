@@ -48,12 +48,11 @@ QUESTION = "Does v2 read the currency an invoice charges in right more often tha
 CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encoding="utf-8").splitlines()]
 
 
-#: The result's sentences on every surface: the decision, then the figures it rests on (the host's iframe pass, finding
-#: 1), each as the aspect's contrasts table prints it.
+#: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
+#: prints them.
 _LEAD = (
-    "Accuracy: the evidence cannot tell v2 and v1 apart. It reads 100% on v1, 90 of 90 trials. It reads 98.9% on v2, "
-    "89 of 90 trials. The change is -1.1 pts over 30 paired cases. Its 99.2% interval is [-19.7, 17.8] pts. About "
-    "8,537 cases per arm would settle it, if the arms differ as observed."
+    "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, v1 passed 90 and v2 89. Over 30 paired "
+    "cases, the interval allows v2 to be as much as 19.7 points worse or 17.8 better."
 )
 
 
