@@ -74,7 +74,7 @@ from threetears.evals.analysis.report.model import (
     TrialBlock,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.style import GLOSSARY, lint_prose
+from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -237,10 +237,17 @@ def _first_uses(page: str) -> dict[str, str]:
     where its words never stand in such text."""
     body, _, glossary = page.partition('<section id="glossary">')
     defined = [html.unescape(term) for term in re.findall(r'<dt id="g-[^"]*">([^<]*)</dt>', glossary)]
-    by_definition = {GLOSSARY[term]: term for term in defined}
+    # A term of art's link carries its sentence; a goal check's name (defined by the page, not GLOSSARY) carries one
+    # hover for every check, so its link is read by the name it shows.
+    by_definition = {GLOSSARY[term]: term for term in defined if term in GLOSSARY}
     seen: dict[str, str] = {}
     opened: list[str] = []
+    naming = False
     for token in _TAG.split(body):
+        if naming and not token.startswith("<"):
+            if (shown := html.unescape(token)) in defined:
+                seen.setdefault(shown, "linked")
+            naming = False
         if token.startswith("<"):
             found = _TAG_NAME.match(token)
             if found is None:
@@ -251,9 +258,11 @@ def _first_uses(page: str) -> dict[str, str]:
                     pass
                 continue
             if name == "a" and (title := _LINK_TITLE.match(token)) is not None:
-                term = by_definition.get(html.unescape(title.group("title")))
+                said = html.unescape(title.group("title"))
+                term = by_definition.get(said)
                 if term is not None:
                     seen.setdefault(term, "linked")
+                naming = said == CHECK_LINK_TITLE
             if name not in _VOID and not token.endswith("/>"):
                 # The declared question is the author's words, quoted whole and never linked.
                 opened.append("question" if 'class="question"' in token else name)

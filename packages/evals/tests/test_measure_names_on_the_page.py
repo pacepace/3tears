@@ -15,6 +15,7 @@ place the expression stands.
 from __future__ import annotations
 
 import re
+import html
 from html import escape
 
 import pytest
@@ -28,7 +29,7 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.report.model import DisclosureBlock, ReportBlock, TableBlock
-from threetears.evals.analysis.style import check_names
+from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names
 from threetears.evals.kernel.metrics import goal_check_measure
 
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
@@ -169,19 +170,21 @@ def test_the_glossary_defines_each_check_s_name_by_its_expression_the_one_place_
     said = _rendered(page, form)
     for entry in _ENTRIES[form]:
         assert said.count(entry) == 1
-    # A link's hover reads its term's definition; with those and the entries aside, no expression is printed.
-    rest = re.sub(r'\btitle="[^"]*"', "", said)
+    # With the entries aside, no expression is printed, in text or in an attribute.
+    rest = said
     for entry in _ENTRIES[form]:
         rest = rest.replace(entry, "")
     assert LONG not in rest and escape(LONG) not in rest
     assert not re.search(r"call_count\(", rest)
 
 
-def test_a_lead_s_name_links_its_glossary_entry_whose_hover_reads_the_expression() -> None:
+def test_a_lead_s_name_links_its_glossary_entry_and_no_attribute_carries_the_expression() -> None:
     said = _rendered("campaign", "html")
     link = re.search(r'<a href="#[^"]+" title="([^"]*)">Goal check 1</a>: v2 worse than production', said)
     assert link is not None
-    assert link.group(1) == escape(f"The goal check {LONG_LINE}, which code runs on every trial.")
+    # The expression is a host's text: the hover says where it is, and no attribute anywhere carries it.
+    assert link.group(1) == escape(CHECK_LINK_TITLE)
+    assert not [value for value in re.findall(r'="([^"]*)"', said) if "call_count(" in html.unescape(value)]
 
 
 def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:

@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import functools
-import re
 
 import pytest
 
@@ -172,9 +171,7 @@ def test_a_goal_check_with_no_declared_name_is_named_alike_by_every_reader() -> 
         update={"measures": {**held.measures, key: held.measures[key].model_copy(update={"label": check})}}
     )
     printed = measure_words(labelled, key)
-    # Never its expression (owner ruling, 2026-11-09): a goal check, numbered where the input reads several.
-    assert re.fullmatch(r"Goal check(?: \d+)?", printed), printed
-    assert check not in printed
+    assert printed == f"`{check}`"
     assert reader_name("measure", key, labelled) == printed
 
 

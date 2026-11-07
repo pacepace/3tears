@@ -22,7 +22,7 @@ from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, CHART_STYL
 from threetears.evals.analysis.report.charts import ChartStatus
 from threetears.evals.analysis.report.svg import GLYPH_STYLE, interval_glyph_svg
 from threetears.evals.analysis.quantities import PERCENT, POINTS, is_money, number_in, with_unit
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.style import CHECK_LINK_TITLE, GLOSSARY
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema.hashing import round_floats
 
@@ -203,13 +203,12 @@ def _header(text: str, term: str | None) -> str:
     return term_link(term, shown) if term else shown
 
 
-def term_link(term: str, label: str, *, css: str = "", definition: str | None = None) -> str:
-    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place:
-    ``definition`` where the page defines the term itself (a goal check's name), else the term's :data:`GLOSSARY`
-    sentence."""
+def term_link(term: str, label: str, *, css: str = "") -> str:
+    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place; a
+    term the page defines itself (a goal check's name) carries :data:`CHECK_LINK_TITLE`, since its definition is a
+    host's text, which no attribute carries."""
     style = f' class="{css}"' if css else ""
-    # A hover shows text, never markup: a definition's code span (a check's expression) reads without its ticks.
-    said = _CODE.sub(r"\1", definition) if definition is not None else GLOSSARY[term]
+    said = GLOSSARY.get(term, CHECK_LINK_TITLE)
     return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(said)}">{label}</a>'
 
 

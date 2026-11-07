@@ -155,6 +155,11 @@ def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str,
     return {check: declared.get(check) or numbered[check] for check in every}
 
 
+#: The hover a link to a check's name carries: never the check's expression or its name, which are a host's text and
+#: never belong in an attribute; the glossary entry the link lands on states them.
+CHECK_LINK_TITLE = "A goal check code runs on every trial; the glossary states it in full."
+
+
 #: A line break in a check's expression, with the indentation around it: laid out on one line, a reader's line wraps
 #: where the page does. Whitespace inside a line, a quoted string's included, stays as written.
 _ONE_LINE = re.compile(r"[ \t]*\r?\n[ \t]*")
@@ -501,6 +506,7 @@ __all__ = [
     "CANNOT_TELL_APART",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
+    "CHECK_LINK_TITLE",
     "GLOSSARY",
     "GOAL_CHECK",
     "HUMANIZE_OVERRIDES",

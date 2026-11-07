@@ -62,7 +62,8 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.model import DocPage
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
-from threetears.evals.analysis.report.model import CampaignReport
+from threetears.evals.analysis.report.html_parts import table_html
+from threetears.evals.analysis.report.model import CampaignReport, TableCell, TableColumn
 from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import STRATUM_MIN_CASES, EvalStorage
@@ -427,23 +428,47 @@ def _framed(page: str, name: str) -> tuple[str, str]:
     return frame.group(1), held[frame.end() :].split("</table>", 1)[0]
 
 
+#: An id-like run longer than a pinned column's cap holds on one line: a goal check's expression, as a table that pins a
+#: check's own text (a trial's record, a host's table) prints it.
+_LONG_RUN = 'call_count("discord.send_message")>=1_or_call_count("music.queue_voice")>=1'
+
+
+def _probe() -> TableBlock:
+    """A table pinning :data:`_LONG_RUN` beside a reading of words."""
+    return TableBlock(
+        section="contrasts",
+        name="probe",
+        title="Probe",
+        columns=[TableColumn(key="reading", header="Reading"), TableColumn(key="value", header="Value")],
+        rows=[
+            {"reading": TableCell(value=f"`{_LONG_RUN}`"), "value": TableCell(value="1")},
+            {"reading": TableCell(value="outcome (judged)"), "value": TableCell(value="2")},
+        ],
+        order="as written",
+        total_rows=2,
+    )
+
+
 def test_an_unbroken_expression_in_the_pinned_column_wraps_inside_it_on_the_kairo_contrasts() -> None:
-    """Kairo's contrasts pin a reading named by its expression (``call_count("discord.send_message") >= 1 or …``),
-    a run longer than the column's cap holds on one line. The serializer classes that cell ``unbroken``, which the
-    pinned column breaks anywhere, and nothing inside the cell (its code, the expression's fold, its summary) holds it
-    whole, so it never runs over the column beside it. A reading of words (``outcome (judged)``) is not classed: it
-    wraps at its spaces."""
+    """Kairo's contrasts pin each reading by its name: its goal check reads ``Goal check`` (the owner's ruling of
+    2026-11-09; its expression is the glossary's), which wraps at its spaces as ``outcome (judged)`` does, so neither is
+    classed. An id-like run longer than the column's cap holds on one line (:data:`_LONG_RUN`) is classed
+    ``unbroken``, which the pinned column breaks anywhere, and nothing inside the cell (its code, an expression's fold,
+    its summary) holds it whole, so it never runs over the column beside it."""
     page = _kairo_page()
     _frame, table = _framed(page, "comparisons")
     firsts = [
         (css, html.unescape(re.sub(r"<[^>]+>", "", cell)))
         for css, cell in re.findall(r'<tr[^>]*><td(?: class="([^"]*)")?[^>]*>(.*?)</td>', table)
     ]
-    unbroken = max((run for _css, text in firsts for run in text.split()), key=len)
-    assert 'call_count("discord.send_message")' in unbroken, "the control: the pinned column holds the expression"
     classed = {text: "unbroken" in css.split() for css, text in firsts}
-    assert all(classed[text] for text in classed if unbroken in text), "the expression's cell is id-like"
-    assert not classed["outcome (judged)"], "a reading of words wraps at its spaces"
+    assert "Goal check" in classed, "the control: the pinned column names the check"
+    assert not [text for text in classed if "call_count(" in text], "no pinned cell prints the expression"
+    assert not classed["Goal check"] and not classed["outcome (judged)"], "a reading of words wraps at its spaces"
+    cells = re.findall(r'<tr[^>]*><td(?: class="([^"]*)")?[^>]*>(.*?)</td>', table_html(_probe()))
+    (shown,) = [html.unescape(re.sub(r"<[^>]+>", "", cell)) for css, cell in cells if "unbroken" in css.split()]
+    assert _LONG_RUN in shown, "the id-like run's cell, and only it, is classed"
+    unbroken = _LONG_RUN
     rules = _rules(_style(page))
     (first,) = [rule for rule in rules if rule.selector == ".tbl :is(th,td):first-child"]
     pinned = first.declarations()
@@ -807,8 +832,11 @@ def test_a_pinned_column_holds_its_floor_and_wraps_only_at_its_words_on_kairo_s_
     688, while the table measured as fitting its frame. Drawn here at both frames: every pinned cell is at least its
     floor wide, and no word in one breaks across lines unless the cell is id-like."""
     _browser()
+    # Kairo's readings are pinned by name (the owner's ruling of 2026-11-09), so no expression is: the probe table,
+    # laid out in the same page, pins one, the id-like cell the stylesheet lets a pinned column break anywhere.
+    aspect = _kairo_page().replace("</article>", table_html(_probe()) + "</article>", 1)
     pages = {
-        "aspect": (_kairo_page(), ("comparisons", "comparison_statistics")),
+        "aspect": (aspect, ("comparisons", "comparison_statistics", "probe")),
         "campaign": (_kairo_campaign_html(), ("scorecard",)),
     }
     for name, (page, tables) in pages.items():

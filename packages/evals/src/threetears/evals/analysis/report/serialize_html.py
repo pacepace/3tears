@@ -95,7 +95,7 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -226,7 +226,8 @@ def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
     own). Each term is linked once this way; the glossary at the foot defines it."""
     definitions = dict(glossary)
-    by_definition = {definition: term for term, definition in glossary}
+    # A link's title names its term: a check's name carries one title for every check, so it is read off the link.
+    by_definition = {GLOSSARY[term]: term for term in definitions if term in GLOSSARY}
     pending = {
         # The undecided reading is linked in its sentence form too: ``cannot tell v2 and v1 apart``.
         term: CANNOT_TELL_APART_PHRASE
@@ -239,7 +240,7 @@ def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
     for token in _TAG.split(markup):
         if not token.startswith("<"):
             if token and pending and not any(name in _UNLINKED_IN for name in opened):
-                token = _linked_once(token, pending, definitions)
+                token = _linked_once(token, pending)
             out.append(token)
             continue
         out.append(token)
@@ -259,9 +260,9 @@ def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
     return "".join(out)
 
 
-def _linked_once(text: str, pending: dict[str, re.Pattern[str]], definitions: dict[str, str]) -> str:
-    """``text`` with the first use of each pending term in it linked to its entry in ``definitions``, the longest first
-    where two start alike; each term linked is no longer pending."""
+def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
+    """``text`` with the first use of each pending term in it linked, the longest first where two start alike; each
+    term linked is no longer pending."""
     found = sorted(
         (
             (match.start(), -len(match.group(0)), match.end(), term)
@@ -274,7 +275,7 @@ def _linked_once(text: str, pending: dict[str, re.Pattern[str]], definitions: di
     for start, _, end, term in found:
         if start < at:
             continue
-        said += [text[at:start], term_link(term, text[start:end], definition=definitions[term])]
+        said += [text[at:start], term_link(term, text[start:end])]
         pending.pop(term)
         at = end
     return "".join([*said, text[at:]])

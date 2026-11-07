@@ -338,7 +338,7 @@ def test_each_confusion_panel_names_its_axis_and_arm_and_reads_each_cell_by_its_
 
 
 # =============================================================================
-# A check named by its name, never its expression (owner ruling, 2026-11-09)
+# A check named as the code it is
 # =============================================================================
 
 
@@ -354,12 +354,11 @@ def _bare_checks() -> list[tuple[ReportInput, str, str]]:
     return found
 
 
-def test_a_check_labelled_by_its_bare_expression_heads_its_column_as_a_goal_check() -> None:
+def test_a_check_named_by_its_bare_expression_heads_its_column_as_code() -> None:
     for held, key, check in _bare_checks():
         block = block_render(held, block_kind="table", query=_query("measures", measures=[key]))
-        named = [column for column in block.columns if re.fullmatch(r"Goal check(?: \d+)?(?: \(.*\))?", column)]
-        assert named, block.columns
-        assert not [column for column in block.columns if check in column], block.columns
+        assert f"`{check}`" in block.columns, block.columns
+        assert check not in [column.strip("`") for column in block.columns if not column.startswith("`")]
 
 
 # =============================================================================

@@ -142,11 +142,9 @@ _GLOSSARY_ROW = {
 
 
 def _without_entries(said: str, form: str, names: Mapping[str, str]) -> str:
-    """``said`` without each check's glossary entry and, in HTML, without the hover a link to it carries, which reads
-    the same definition."""
+    """``said`` without each check's glossary entry, the one place its expression stands beside its name."""
     for check, name in names.items():
         said = said.replace(_GLOSSARY_ROW[form](name, check), "")
-        said = said.replace(f'title="{escape(_definition(check).replace("`", ""))}"', "")
     return said
 
 
