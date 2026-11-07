@@ -272,7 +272,7 @@ async def test_a_close_run_goes_to_the_cap_and_reads_what_one_batch_of_every_cas
     assert batched_judge.calls.count(asked) == whole_judge.calls.count(asked) == 2 * CASES == stepped.calls_made
     assert {arm: summary.n_cases for arm, summary in batched.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
     said = (
-        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, so the gated readings and "
+        f"The arms ran every held-out case, {BATCH} at a time in the bet's order, so the gated readings and "
         "guardrails were read once, on every case."
     )
     assert said in batched.disclosures
@@ -310,7 +310,7 @@ async def test_an_improved_stop_whose_guardrails_are_not_shown_held_goes_on_to_t
     assert "had a second look" in stopping.line
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: CASES, CANDIDATE: CASES}
     said = (
-        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, so the gated readings and "
+        f"The arms ran every held-out case, {BATCH} at a time in the bet's order, so the gated readings and "
         "guardrails were read on every case."
     )
     assert said in result.disclosures
@@ -431,7 +431,7 @@ async def test_three_arms_each_candidate_stops_at_its_own_stop_and_its_readings_
     assert result.pairwise[CANDIDATE].read_on == result.pairwise[CANDIDATE].job_id
     assert result.decisions[CANDIDATE] == "keep"
     said = (
-        f"The arms ran all {CASES} held-out cases, {BATCH} at a time in the bet's order, and each candidate stopped "
+        f"The arms ran every held-out case, {BATCH} at a time in the bet's order, and each candidate stopped "
         f"launching at its own stop, so its gated readings and guardrails were read once, on the cases launched by "
         f"then: 6 for {CANDIDATE}, 7 for twin."
     )

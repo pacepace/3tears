@@ -482,7 +482,7 @@ def _launched_line(
     reports = [report for ran in passes.values() if (report := _report_of(ran)) is not None]
     again = any(report.stopping is not None and report.stopping.past_the_stop for report in reports)
     ran = (
-        f"The arms ran all {planned} {side} cases"
+        f"The arms ran every {side} case"
         if launched >= planned
         else f"Read on {launched} cases: the arms ran {launched} of the {planned} {side} cases"
     )
@@ -581,6 +581,8 @@ class WriterResult:
         completed, or stopped before its last pair.
     :ivar cases: The side's case files the arms ran, by name, sorted: what a later run's ``WriterPrior`` names.
     :ivar resolution: The resolution floor's line, as the disclosures carry it.
+    :ivar launch_line: Where a run launched in batches stopped launching, as the disclosures carry it; empty for one
+        launched at once.
     """
 
     name: str
@@ -603,6 +605,7 @@ class WriterResult:
     pairwise_unread: dict[str, str] = field(default_factory=dict)
     cases: tuple[str, ...] = ()
     resolution: str = ""
+    launch_line: str = ""
 
     def __str__(self) -> str:
         """The quiet summary (:meth:`render`)."""
@@ -984,6 +987,8 @@ class WriterEval:
             case_ids=planned,
             max_cases=len(planned),
             declared_at=declared_at,
+            # Recorded as declared, so the batches launch, and every later read judges, in this one order.
+            order=[planned[index] for index in bet_order(len(planned))] if batched else None,
             batch_size=self.batch_size if batched else None,
         )
         names = frozenset(case.name for case, _ in on_side)
@@ -997,7 +1002,7 @@ class WriterEval:
         share = self._arm_part
         # Under a rule to stop, the cases launch in the bet's own order, a batch at a time, so each look reads a
         # prefix of the one bet; otherwise the side's set launches whole, as one batch.
-        order = [planned[index] for index in bet_order(len(planned))]
+        order = rule.bet
         batches: list[list[str] | None] = (
             [order[start : start + self.batch_size] for start in range(0, len(order), self.batch_size)]
             if batched
@@ -1638,6 +1643,7 @@ class WriterEval:
             pairwise_unread=unread,
             cases=cases,
             resolution=resolution,
+            launch_line=launch_line or "",
         )
 
 

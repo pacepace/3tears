@@ -1939,13 +1939,26 @@ def bet_order(n: int) -> tuple[int, ...]:
     case ids). A reader that stops early judges the planned cases in this order, so each reading is a prefix of one
     bet (:func:`bounded_mean_p`'s ``planned_n``), whatever order the cases were launched or finished in.
 
+    **The shuffle is the package's own**, not ``random.shuffle``, whose algorithm Python does not promise to keep: a
+    Fisher-Yates walk from the last place down, each place swapped with one drawn below it by rejection over the
+    generator's bits, seeded by a string: the order ``random.shuffle`` gives on Python 3.14, where it was taken from,
+    so no reading already made moves. ``tests/test_bet_fixed_for_n.py`` pins it for several counts, so a Python
+    that changed the generator's bits would turn that test red rather than move a recorded bet.
+
     :param n: The cases planned.
     :ptype n: int
     :return: The order, a permutation of ``range(n)``.
     :rtype: tuple[int, ...]
     """
     order = list(range(n))
-    random.Random(f"bounded-mean-bet-order-{n}").shuffle(order)
+    drawn = random.Random(f"bounded-mean-bet-order-{n}")
+    for place in reversed(range(1, n)):
+        below = place + 1
+        bits = below.bit_length()
+        swap = drawn.getrandbits(bits)
+        while swap >= below:
+            swap = drawn.getrandbits(bits)
+        order[place], order[swap] = order[swap], order[place]
     return tuple(order)
 
 

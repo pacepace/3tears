@@ -764,6 +764,8 @@ class Acceptance:
     cap_usd: float
     editor_model: str | None = None
     variant: Variant = VARIANTS[HOLLOW]
+    #: What the last recorded live run on these same case files spent, both arms and the pass; None for none given.
+    prior_spent_usd: float | None = None
 
     def readout(self) -> Iterator[str]:
         """The printed readout: the question, the arms, the caps and spend, the read's tables, then the verdict."""
@@ -836,27 +838,39 @@ class Acceptance:
         yield self.criterion.verdict()
         if self.candidate.editor().digest != self.shipped.editor().digest:
             yield from self._two_editors()
-        # The floor's line is printed once, before anything is bought (main), so the readout leaves it to that print.
-        yield from (line for line in result.disclosures if line != result.resolution)
+        # The floor's line is printed once, before anything is bought (main), so the readout leaves it to that print; a
+        # stop that saved something says where it stopped launching in its own sentence, so the launch line is left.
+        said = {result.resolution, *([result.launch_line] if saved is not None else [])}
+        yield from (line for line in result.disclosures if line not in said)
+
+    @property
+    def spent_usd(self) -> tuple[float, bool]:
+        """What the run spent, both arms and the pass, and whether every part of it was priced."""
+        parts = [summary.total_cost_usd for summary in self.result.arms.values()] + [self.report.cost_usd]
+        return sum(part for part in parts if part is not None), None not in parts
 
     def envelope_line(self) -> str:
         """The run's spend against the standing monthly envelope beside the shipped skill's verdict in the skill
-        ledger: a disclosure, never a refusal, since the envelope stands in for per-run approval."""
-        parts = [summary.total_cost_usd for summary in self.result.arms.values()] + [self.report.cost_usd]
-        spent = sum(part for part in parts if part is not None)
-        some = "" if None not in parts else "at least "
+        ledger: a disclosure, never a refusal, since the envelope stands in for per-run approval. A dry run's figure is
+        its scripted turns priced, which estimates nothing live, so it is said as that, beside what the last recorded
+        live run on these cases spent when one is given."""
+        spent, priced = self.spent_usd
+        some = "" if priced else "at least "
         envelope = self.read.shipped.monthly_envelope_usd
         if self.dry:
+            head = f"The scripted turns, priced, come to {some}${spent:.2f}, which estimates nothing live"
+            if self.prior_spent_usd is None:
+                return f"{head}; the monthly envelope in PROMOTIONS.toml is ${envelope:.2f}."
             return (
-                f"Priced as a live run, this dry run would spend {some}${spent:.2f} of the ${envelope:.2f} monthly "
-                "envelope in PROMOTIONS.toml."
+                f"{head}; the last recorded live run on these cases spent ${self.prior_spent_usd:.2f} of the "
+                f"${envelope:.2f} monthly envelope in PROMOTIONS.toml."
             )
         return f"This run spent {some}${spent:.2f} of the ${envelope:.2f} monthly envelope in PROMOTIONS.toml."
 
     def saved(self) -> str | None:
         """Where a run launched in batches stopped, and what the stop saved against running every planned case, in one
-        sentence; ``None`` for a run that launched every case at once, and for one the spend cap stopped, whose stop
-        line already says where and what it had spent. The saving is this run's own spend per case
+        sentence; ``None`` for a run that launched every case at once, for one that read every case (the launch line
+        says so), and for one the spend cap stopped, whose stop line already says where and what it had spent. The saving is this run's own spend per case
         launched (the arms') and per case judged (the pass's), times the cases it did not reach."""
         stopping = self.report.stopping
         if stopping is None or stopping.rule is None or stopping.rule.batch_size is None:
@@ -879,7 +893,7 @@ class Acceptance:
         if stopping.stopped_on == "spend_cap":
             return None  # the stop line states where the spend cap stopped the run, and what it had spent
         if launched >= planned and reached >= planned:
-            return f"{where}, and spent ${spent:.2f}; the stop saved nothing."
+            return None  # nothing was saved, and the launch line says the arms ran every case
         return (
             f"{where}, and spent ${spent:.2f}; at its own spend per case, all {planned} would have cost about "
             f"${spent + saved:.2f}, so the stop saved about ${saved:.2f}."
@@ -941,6 +955,7 @@ class Acceptance:
             "stopping": None if self.report.stopping is None else self.report.stopping.model_dump(mode="json"),
             "cases": list(self.result.cases),
             "resolution": self.result.resolution,
+            "spent_usd": self.spent_usd[0],
             "pairwise": self.report.model_dump(mode="json"),
             "promotion": self.read.model_dump(mode="json"),
             "criterion": {
@@ -1088,6 +1103,7 @@ async def acceptance(
     stop_when: StopWhen = "never",
     prior: WriterPrior | None = None,
     batch_size: int | None = None,
+    prior_spent_usd: float | None = None,
 ) -> Acceptance:
     """Run both arms, the pairwise pass and the promotion read, and decide the pass criterion.
 
@@ -1101,6 +1117,8 @@ async def acceptance(
     :param stop_when: The pairwise pass's stopping rule, declared before any arm launches (the module docstring).
     :param prior: An earlier run on these cases (:func:`read_prior`), whose projection the resolution line carries.
     :param batch_size: Under ``separated``, the cases the arms launch at a time; ``None`` for the writer eval's own.
+    :param prior_spent_usd: What ``prior``'s run spent (:func:`read_prior_spend`), which a dry run's envelope line
+        states beside its own scripted figure when the prior ran these same case files.
     :return: What it found.
     """
     if variant is not None and candidate_skill is not None:
@@ -1159,7 +1177,34 @@ async def acceptance(
         cap_usd=cap_usd,
         editor_model=editor_model,
         variant=chosen,
+        # Only a prior run on these same case files says what a live run on them spends.
+        prior_spent_usd=prior_spent_usd if prior is not None and prior.case_names == frozenset(result.cases) else None,
     )
+
+
+def read_prior_spend(path: Path) -> float | None:
+    """What an earlier run's ``acceptance.json`` says the run spent, both arms and the pass: its ``spent_usd``, or, in
+    a record from before it carried one, its readout's spend table summed; ``None`` when neither reads.
+
+    :param path: The earlier run's ``acceptance.json``.
+    :return: The dollars, or ``None``.
+    """
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(spent := summary.get("spent_usd"), int | float):
+        return float(spent)
+    lines = str(summary.get("readout", "")).splitlines()
+    if "| Part | Cap | Spent |" not in lines:
+        return None
+    rows = lines[lines.index("| Part | Cap | Spent |") + 2 :]
+    total = 0.0
+    for row in rows:
+        if not row.startswith("| "):
+            break
+        cell = row.rstrip(" |").rsplit("| ", 1)[-1]
+        if not cell.startswith("$"):
+            return None
+        total += float(cell[1:])
+    return total
 
 
 def read_prior(path: Path) -> WriterPrior:
@@ -1259,6 +1304,7 @@ def main(argv: Sequence[str]) -> int:
             stop_when="separated" if options.stop_when == "separated" else "never",
             prior=prior,
             batch_size=options.batch_size,
+            prior_spent_usd=None if options.prior is None else read_prior_spend(options.prior),
         )
     )
     summary = found.summary()

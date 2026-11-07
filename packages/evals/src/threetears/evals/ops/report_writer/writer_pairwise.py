@@ -177,6 +177,12 @@ class StoppingRule(EvalBaseModel):
         default=None,
         description="When the rule was declared, ISO-8601 with an offset; None for no time, which reads as late.",
     )
+    order: list[str] | None = Field(
+        default=None,
+        description="The planned cases in the order the bet reads them, recorded as declared, so a later read replays "
+        "that order whatever derives it then; None for a rule recorded before orders were, whose order is "
+        "bet_order(max_cases) over case_ids.",
+    )
     batch_size: int | None = Field(
         default=None,
         ge=1,
@@ -195,7 +201,17 @@ class StoppingRule(EvalBaseModel):
     def _counted(self) -> StoppingRule:
         if self.max_cases != len(self.case_ids):
             raise ValueError(f"max_cases is the {len(self.case_ids)} cases planned, not {self.max_cases}")
+        if self.order is not None and sorted(self.order) != self.case_ids:
+            raise ValueError("a stopping rule's order lists its planned cases, each once")
         return self
+
+    @property
+    def bet(self) -> list[str]:
+        """The planned cases in the order the bet reads them: the order recorded, or, for a rule that recorded none,
+        :func:`~threetears.evals.analysis.stats.bet_order` of their count over them."""
+        if self.order is not None:
+            return list(self.order)
+        return [self.case_ids[index] for index in bet_order(self.max_cases)]
 
     @field_validator("declared_at")
     @classmethod
@@ -927,7 +943,7 @@ def _plan(rule: StoppingRule | None, case_ids: Sequence[str]) -> _Plan:
     if rule is None or rule.stop_when == "never":
         return _Plan(judged=found, bet=None, planned_n=None, absent=absent, unplanned=unplanned)
     present = set(found)
-    bet = [planned[index] for index in bet_order(rule.max_cases) if planned[index] in present]
+    bet = [case_id for case_id in rule.bet if case_id in present]
     return _Plan(judged=bet, bet=bet, planned_n=rule.max_cases, absent=absent, unplanned=unplanned)
 
 
