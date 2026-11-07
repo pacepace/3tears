@@ -557,6 +557,8 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
   <br>`assemble_context_bundle(campaign: EvalCampaign, *, aspect: str | None = None, storage: CampaignReadStore, insights_as_of: str | None = None, profile: HostProfile) -> AnalysisContextBundle`
 - **`campaign_report`** · function · The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
   <br>`campaign_report(host: EvalHost, campaign_id: str, scope_id: str, *, trials: TrialDetail = 'table', lead: Sequence[ReportBlock] | None = None) -> CampaignReport`
+- **`check_names`** · *host contract* · function · The name a page gives each of an aspect's goal checks, by expression: the display name `declared` gives it, else what it tests (`_check_subject`) with `check` after it (`Refund amount check`), else `GOAL_CHECK`.
+  <br>`check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]`
 - **`create_campaign`** · function · Create and persist a campaign: one question, its arms, its aspects and its floors.
   <br>`create_campaign(storage: CampaignStore, definition: dict[str, Any], *, scope_id: str, created_by: str, profile: HostProfile, exploratory: bool = False, aspects_from: Sequence[str | Mapping[str, Any]] = (), declared_at: str | None = None) -> EvalCampaign`
 - **`dollars_text`** · function · Spend as a person reads it: dollars and cents from ten cents up, three significant figures below.
@@ -618,6 +620,10 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
   <br>`= 14`
+- **`DECLARED_NAME_CHARS`** · *host contract* · constant (int) · The most characters a declared display name holds: an aspect's short name, a goal check's name, a stratum's name.
+  <br>`= 32`
+- **`GOAL_CHECK`** · *host contract* · constant (str) · What a page calls a goal check its template names nothing and whose expression names no subject a reader can read (`_check_subject`): numbered where an aspect reads several such (`check_names`).
+  <br>`= 'Goal check'`
 - **`READ_TIER_ROW_BUDGET`** · *host contract* · constant (int) · The readings readers' budget (`READING_BUDGET`) under the name a host already reads; also how many projected score records one call may carry before its observer line is logged at WARNING (#652), a signal set to fire before a page is slow, not a latency limit (`elapsed_ms` rides on the same line for a host that would rather alert on time).
   <br>`= 66003`
 

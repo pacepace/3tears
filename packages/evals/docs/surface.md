@@ -4,7 +4,7 @@
 where each is imported from. What a name does is in the [reference](reference.md#public-api), which lists the
 same names; what each tier promises is in [stability tiers](adopting-a-host.md#stability-tiers).
 
-491 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
+494 names are declared: the `host-contract` and `stable` tiers. A root exports more, as `provisional` names, most of
 them the types a declared signature reaches; they import, and nothing about them is promised.
 
 A declared name goes provisional once nothing outside the package imports it, unless one of these holds:
@@ -94,7 +94,7 @@ What a host writes against beyond the rungs: the host and profile, registries, t
 - `kernel`: `AdmissionRefusedError`, `CandidateKind`, `CandidateKindDefect`, `CandidateOutput`, `CandidatePreparationFailed`, `CandidateTelemetry`, `CappedCompletion`, `CassetteStore`, `CellCassettes`, `CellSink`, `CellSpanWindow`, `ConflictError`, `default_job_timeout`, `DefinitionStore`, `EvalCampaign`, `EvalServiceError`, `EvalStorage`, `IDENTITY_VERSION`, `JobStore`, `MetricDescriptor`, `NotFoundError`, `ProviderRefusedError`, `ResultStore`, `RunRecordStore`, `RunStore`, `StorageError`, `strict_response_format`, `UnportableSchema`, `UnreadableRunError`, `ValidationFailedError`, `VariantConfig`, `withhold_failure_detail`, `WorldSession`
 - `kernel.host`: `Bar`, `BarRegistry`, `CompletionClients`, `CompletionRole`, `default_cell_timeout`, `EvalHost`, `HostProfile`, `KindContract`, `load_bar_registry`, `MeasureRegistry`, `MemberActsOn`, `PassThreshold`, `SeedRefused`, `SHARED_CORE`, `Sweepable`, `SweepableRegistry`, `TemplateCaseFields`, `TemplateChecks`, `WorldDimension`, `WorldRegistry`
 - `run`: `admit_template`, `Ceilings`, `corpus_digests`, `definition_drift`, `DefinitionReset`, `execute_run`, `JUDGE_REQUEST_SETTINGS`, `KindFactory`, `KindLauncher`, `KindWiring`, `launch_run`, `LaunchableKind`, `LaunchHost`, `LaunchRequest`, `LaunchSettings`, `load_seed_corpus`, `price_subject_call_floor`, `reset_definitions`, `run_blocking`, `RunnerOptions`, `SeedCaseSet`, `SeedJudgeCase`, `SeedTemplateCase`, `SIMULATOR_REQUEST_SETTINGS`, `start_run`, `SubjectResolver`, `UnknownSubject`
-- `analysis`: `host_declarations_digest`, `READ_TIER_ROW_BUDGET`
+- `analysis`: `check_names`, `DECLARED_NAME_CHARS`, `GOAL_CHECK`, `host_declarations_digest`, `READ_TIER_ROW_BUDGET`
 - `actions`: `definition_drift_actions`, `render_jobs_started`
 - `storage`: `bridge_async_store`, `DocTypeRoute`, `InMemoryDocumentStore`, `RoutedDocumentStore`, `SqliteDocumentStore`
 - `testing`: `check_completion_conformance`, `check_refusal_negotiation`, `CompletionGuard`, `jobs_conformance_cases`, `JobsConformanceHost`, `NegotiationConformanceFailure`, `RecordedCompletions`, `RecordedPrompt`, `RecordingRefused`, `RouterTransport`, `STORE_CONFORMANCE_CASES`, `StoreConformanceCase`

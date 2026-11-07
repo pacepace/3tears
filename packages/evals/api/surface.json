@@ -5151,6 +5151,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.check_names": {
+      "kind": "function",
+      "signature": "check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]",
+      "tier": "host-contract"
+    },
     "threetears.evals.analysis.compare_two_runs": {
       "kind": "function",
       "signature": "",
@@ -5270,6 +5275,11 @@
       "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.analysis.DECLARED_NAME_CHARS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.DeclaredCellCoverage": {
       "kind": "model",
@@ -5680,6 +5690,11 @@
       "kind": "constant (dict)",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.analysis.GOAL_CHECK": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.GoalCheckProofReading": {
       "kind": "model",

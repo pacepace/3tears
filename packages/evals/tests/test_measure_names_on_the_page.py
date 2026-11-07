@@ -427,3 +427,38 @@ def test_the_text_the_judge_reads_carries_no_checks_list() -> None:
     assert page.doc_page is not None
     said = doc_page_text(page.doc_page)
     assert "Checks" not in said and "field_accuracy >= 0.92" not in said
+
+
+#: The shapes of four production checks a host seeds (the identifiers are the host's kind, not its text), each with
+#: the name the namer gives it: a guard over the end state and a case parameter is passed over, so its consequent
+#: names the check; a check testing three or more things falls back to a goal check, which a host names by declaring
+#: one.
+_PRODUCTION_SHAPES = {
+    "three subjects joined by or": (
+        'call_count("music.queue_voice") >= 1 or call_count("discord.send_message") >= 1'
+        " or state.music.budget.used <= state.music.budget.limit",
+        "Goal check",
+    ),
+    "a contains guard before its consequent": (
+        'contains(state.music.queue, variation.stale_track) and state.music.queue.position > 0 and call_count("music.queue_ready") >= 1',
+        "Music queue position and queue ready calls check",
+    ),
+    "a case-parameter condition or two calls, twice": (
+        '(not contains(["joke", "chat"], variation.ask) or call_count("research.search") >= 1'
+        ' or call_count("research.read") >= 1) and (not contains(["fact"], variation.ask)'
+        ' or call_count("research.cite") >= 1 or call_count("research.verify") >= 1)',
+        "Goal check",
+    ),
+    "three not-any clauses": (
+        "not any(it.stale for it in state.music.queue) and not any(it.repeat for it in state.music.intros)"
+        " and not any(it.broken for it in state.music.links)",
+        "Goal check",
+    ),
+}
+
+
+@pytest.mark.parametrize(("expression", "name"), list(_PRODUCTION_SHAPES.values()), ids=list(_PRODUCTION_SHAPES))
+def test_a_production_check_is_named_by_its_consequent_or_falls_back_to_a_goal_check(
+    expression: str, name: str
+) -> None:
+    assert check_names([expression], {}) == {expression: name}

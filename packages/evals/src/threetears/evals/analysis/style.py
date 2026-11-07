@@ -199,15 +199,23 @@ class _Subject:
 
 
 def _reads(node: ast.AST) -> set[tuple[str, ...]]:
-    """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent."""
+    """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent. A
+    path under a root that names no subject (a case parameter, a generator's element) is the expectation, not what is
+    tested, so a guard reading one beside the end state (``contains(state.music.queue, variation.track)``) is still a
+    guard when a later operand reads that end state."""
     found: set[tuple[str, ...]] = set()
+    # A predicate's own name (``contains``, ``call_count``) is the function a call makes, never a path it reads.
+    called = {id(part.func) for part in ast.walk(node) if isinstance(part, ast.Call)}
     for part in ast.walk(node):
+        if id(part) in called:
+            continue
         if isinstance(part, ast.Call) and isinstance(part.func, ast.Name) and _action_word(part.func.id) is not None:
             first = part.args[0] if part.args else None
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
                 found.add((part.func.id, first.value))
         elif isinstance(part, ast.Attribute | ast.Name) and (path := _path(part)) is not None:
-            found.add(tuple(path))
+            if path[0] not in _NO_SUBJECT_ROOTS:
+                found.add(tuple(path))
     return found
 
 

@@ -293,11 +293,15 @@ is `Refund amount check`, and so is `state.order.total > 0 and state.refund.amou
 named by what its guard lets through; `call_count("discord.send_message") >= 1 or call_count("discord.reply") >= 1`
 is `Send message or reply check`), numbered only where two checks would share a name, and `Goal check` where the
 expression names nothing a reader can read or tests more than two things (a production `call_count(...) >= 1 or ...`
-over three calls). A name is built from the expression's identifiers, never its literal text. An expression keeps its
+over three calls). A host that wants a better name than `Goal check` declares one (`goal_check_names`). A case
+parameter (`variation.ask`) is what a check holds the end state to, never what it tests, and a guard over the end
+state is passed over for what it lets through. A name is built from the expression's identifiers, never its literal
+text. An expression keeps its
 name on every aspect and run unless a check named beside it would share that name: then both are numbered, so a
 sibling check added in a later run can renumber it. The Glossary defines each name by its expression, whole,
 once, and names the aspect where one name stands for different expressions. A report document's own tables, and the
-evidence record laid out after it, name a check the same way, through one call over one set of checks.
+evidence record laid out after it, name a check the same way, through one call over one set of checks, and the
+document's appendix lists its Checks after Method, each name defined by its expression once.
 
 - **Decision**: the aspect's floors, in the `Floors on <aspect>` table: one row per floor and reading, the floor's
   own sentence first (`no pass rate drops by more than 5 points`; a floor naming one reading says `no tone rate drops
