@@ -3088,14 +3088,18 @@ def _marks(trials: Sequence[TrialRow]) -> str:
 
 def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
     """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
-    check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression."""
+    goal check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression."""
     if trial.state == "passed":
         return None
     if trial.state == "lost":
         return f"lost: {cause_short(trial.cause or 'unknown')}"
     if trial.cause == "check" and trial.failed_checks:
         # A check is named by its name, never by its expression and never a "pass rate" on one trial.
-        return "check: " + ", ".join(check_names.get(check.expression) or GOAL_CHECK for check in trial.failed_checks)
+        # A goal check by its name; anything else a trial records as failed (a grader's ``total is False``) as code,
+        # as written, since its reading names it already.
+        return "check: " + ", ".join(
+            check_names.get(check.expression) or code(check.expression) for check in trial.failed_checks
+        )
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
         return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"

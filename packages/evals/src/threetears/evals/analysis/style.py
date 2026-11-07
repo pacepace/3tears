@@ -105,7 +105,7 @@ def code(text: str) -> str:
 
 
 #: What a page calls a goal check its template names nothing and whose expression names no subject a reader can read
-#: (:func:`check_subject`): numbered where an aspect reads several such (:func:`check_names`).
+#: (:func:`_check_subject`): numbered where an aspect reads several such (:func:`check_names`).
 GOAL_CHECK = "Goal check"
 
 
@@ -201,9 +201,9 @@ def _subject_of(node: ast.AST, bound: frozenset[str]) -> str | None:
     return None
 
 
-def check_subject(expression: str) -> str | None:
+def _check_subject(expression: str) -> str | None:
     """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
-    ``state.refund.amount <= state.order.total``, ``Send message calls`` for ``call_count("discord.send_message") >= 1
+    ``state.refund.amount <= state.order.total``, ``Place order calls`` for ``call_count("inventory.place_order") >= 1
     or ...``, ``Field accuracy`` for ``field_accuracy >= 0.92``; None where the expression does not parse or names no
     subject.
 
@@ -225,7 +225,7 @@ def check_subject(expression: str) -> str | None:
 
 def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
     """The name a page gives each of an aspect's goal checks, by expression: the display name ``declared`` gives it,
-    else what it tests (:func:`check_subject`) with ``check`` after it (``Refund amount check``), else
+    else what it tests (:func:`_check_subject`) with ``check`` after it (``Refund amount check``), else
     :data:`GOAL_CHECK`. An expression is named alike on every aspect and every run; only where two of ``checks`` would
     share a name (or an unnamed one would take a declared one's) is each numbered, in the checks' sorted order
     (``Ticket status check 1``, ``Ticket status check 2``).
@@ -239,7 +239,7 @@ def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str,
     """
     every = sorted({*checks, *declared})
     taken = {name.casefold() for name in declared.values()}
-    named = {check: f"{subject} check" if (subject := check_subject(check)) else GOAL_CHECK for check in every}
+    named = {check: f"{subject} check" if (subject := _check_subject(check)) else GOAL_CHECK for check in every}
     shared: dict[str, list[str]] = {}
     for check in every:
         if check not in declared:
@@ -278,7 +278,7 @@ CHECK_LINK_TITLE = "Code runs this goal check on every trial; the glossary state
 _ONE_LINE = re.compile(r"[ \t]*\r?\n[ \t]*")
 
 
-def check_expression(expression: str) -> str:
+def _check_expression(expression: str) -> str:
     """A check's expression on one line, as the glossary prints it: each line break and the indentation around it a
     single space, every other character as written."""
     return _ONE_LINE.sub(" ", expression).strip()
@@ -304,7 +304,7 @@ def check_definition(
     :return: The sentence.
     :rtype: str
     """
-    said = [span(check_expression(check)) + (f" on {words(aspect)}" if aspect else "") for check, aspect in by_aspect]
+    said = [span(_check_expression(check)) + (f" on {words(aspect)}" if aspect else "") for check, aspect in by_aspect]
     checks = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
     return f"The goal check {checks}, which code runs on every trial."
 
@@ -647,9 +647,7 @@ __all__ = [
     "arm_name",
     "cannot_tell_apart",
     "check_definition",
-    "check_expression",
     "check_names",
-    "check_subject",
     "code",
     "declared_check_name",
     "humanize",

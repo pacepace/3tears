@@ -30,10 +30,9 @@ undeclared check is printed by its whole expression (owner ruling, 2026-11-09).
 
 **Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
 a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
-where it returned None for an undeclared one. `style.check_subject`, `style.check_names`, `style.check_definition`,
-`style.check_expression`, `style.written_check_names`, `style.GOAL_CHECK` and `style.CHECK_LINK_TITLE` are new.
-`measure_name(goal_check_key)` with no `declared` returns the check's subject name, where it returned the expression
-as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins (new) are what the serializers
+where it returned None for an undeclared one. `style.check_names`, `style.check_definition`,
+`style.written_check_names`, `style.GOAL_CHECK` and `style.CHECK_LINK_TITLE` are new. `measure_name(goal_check_key)`
+with no `declared` returns the check's subject name, where it returned the expression as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins (new) are what the serializers
 print. A host pinning a header, a lead or the provenance legend that printed a check's expression updates its match.
 Nothing stored changes: the campaign's readings keep a check's expression in their frozen words, and the writer's
 report input keeps its label.

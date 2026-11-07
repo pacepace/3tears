@@ -3724,12 +3724,13 @@ class AnalysisContextBundle(EvalDocumentModel):
         :func:`~threetears.evals.analysis.style.check_names`), numbered only where two would share a name. Presentation
         only, computed at render time: nothing stored moves.
 
-        :return: Each check's name, by its expression: every check the catalog reads, a trial failed, a proof states, a
-            bar is held on or a declared floor reads.
+        :return: Each check's name, by its expression: every check the catalog reads, a proof states, a bar is held on
+            or a declared floor reads. A trial's failed checks are not read here: a goal check one failed is in the
+            catalog, and what else a trial records as failed (a grader's ``total is False`` on the quick path) is no
+            goal check, which its own reading names.
         :rtype: dict[str, str]
         """
         read = [check for name in self.measure_catalog if (check := goal_check_of(name)) is not None]
-        read += [check.expression for trial in self.trials for check in trial.failed_checks]
         read += [proof.check for proof in self.goal_check_proofs]
         read += [check for bar in self.bar_adjudications if (check := goal_check_of(bar.measure_id)) is not None]
         floors = self.declared.floors if self.declared is not None else []

@@ -31,7 +31,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.md_parts import code_span
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
-from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names, check_subject
+from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.ops.analysis import report_read
@@ -218,7 +218,8 @@ def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:
     ],
 )
 def test_a_check_s_subject_is_read_off_its_expression_alone(expression: str, subject: str | None) -> None:
-    assert check_subject(expression) == subject
+    # One check alone: named by its subject, else a goal check where its expression names none.
+    assert check_names([expression], {}) == {expression: f"{subject} check" if subject else "Goal check"}
 
 
 @pytest.mark.parametrize(

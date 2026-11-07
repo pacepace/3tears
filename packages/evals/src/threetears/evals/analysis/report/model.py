@@ -157,12 +157,9 @@ def _named_terms(block: TableBlock) -> list[str]:
     return list(dict.fromkeys(by_words[words.casefold()] for words in named if words.casefold() in by_words))
 
 
-#: A glossary entry for a goal check's name: the name, then each expression it stands for, with the aspect it does so
-#: on, or None where it stands for one expression on every aspect the page reads.
-CheckEntry = tuple[str, list[tuple[str, str | None]]]
-
-
-def _check_entries(read: Sequence[tuple[str | None, AnalysisContextBundle]]) -> list[CheckEntry]:
+def _check_entries(
+    read: Sequence[tuple[str | None, AnalysisContextBundle]],
+) -> list[tuple[str, list[tuple[str, str | None]]]]:
     """The glossary's entry for each goal check's name the page prints: the name, then the expression it stands for,
     the one place a page prints a check's expression beside its name, since every header and lead names the check
     (``AnalysisContextBundle.named_checks``). A check a page names by its expression itself (a report document's page,
@@ -175,7 +172,7 @@ def _check_entries(read: Sequence[tuple[str | None, AnalysisContextBundle]]) -> 
         the page's order.
     :ptype read: Sequence[tuple[str | None, AnalysisContextBundle]]
     :return: ``(name, [(expression, aspect or None), ...])`` per name, in the order first named.
-    :rtype: list[CheckEntry]
+    :rtype: list[tuple[str, list[tuple[str, str | None]]]]
     """
     by_name: dict[str, dict[str, list[str]]] = {}
     names_of: dict[str, set[str]] = {}
@@ -187,7 +184,7 @@ def _check_entries(read: Sequence[tuple[str | None, AnalysisContextBundle]]) -> 
             if aspect is not None and aspect not in on:
                 on.append(aspect)
             names_of.setdefault(check, set()).add(name)
-    entries: list[CheckEntry] = []
+    entries: list[tuple[str, list[tuple[str, str | None]]]] = []
     for name, checks in by_name.items():
         alone = len(checks) == 1 and all(len(names_of[check]) == 1 for check in checks)
         entries.append((name, [(check, None if alone or not on else ", ".join(on)) for check, on in checks.items()]))
@@ -288,7 +285,7 @@ class Report(EvalDocumentModel):
         return linked
 
     @property
-    def check_glossary(self) -> list[CheckEntry]:
+    def check_glossary(self) -> list[tuple[str, list[tuple[str, str | None]]]]:
         """The glossary's goal-check entries: each check's name with the expression it stands for (:func:`_check_entries`),
         which each serializer sets as code in its own form."""
         return _check_entries([(None, self.bundle)])
@@ -580,7 +577,7 @@ class CampaignReport(EvalDocumentModel):
         return linked
 
     @property
-    def check_glossary(self) -> list[CheckEntry]:
+    def check_glossary(self) -> list[tuple[str, list[tuple[str, str | None]]]]:
         """The glossary's goal-check entries across the aspects: each check's name with the expression it stands for,
         the aspect it does so on where that is not every aspect alike, which each serializer sets as code in its own
         form."""

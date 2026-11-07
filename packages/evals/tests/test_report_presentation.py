@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
+from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_measure
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
 from threetears.evals.analysis import (
     ArmServedModel,
@@ -688,7 +689,9 @@ async def test_a_failed_check_reads_as_its_name_in_the_trials_table_its_expressi
             "failed_checks": [TrialCheck(name=f"Pass rate of {expression}", expression=expression)],
         }
     )
-    bundle = coded.bundle.model_copy(update={"trials": trials})
+    # A goal check a trial fails is one the aspect reads: its catalog describes it.
+    catalog = {**coded.bundle.measure_catalog, goal_check_measure(expression): describe_goal_check_rate(expression)}
+    bundle = coded.bundle.model_copy(update={"trials": trials, "measure_catalog": catalog})
     report = build_code_only_report(bundle, assembled_at="2026-10-14T00:00Z")
     (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "trials"]
     whys = [row["why"] for row in table.values()]
