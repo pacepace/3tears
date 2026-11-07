@@ -5,7 +5,7 @@ the agent (or a graph step) calls it with either pre-compiled Markdown
 (``content``) or structured ``findings``. The tool renders the report, streams
 the bytes to the pod's object store via the produce seam
 (:func:`~threetears.agent.tools.produce.stream_result_to_object_store`), and
-returns a small :class:`~threetears.media.contracts.ObjectHandle` in
+returns a small :class:`~threetears.interfaces.media.ObjectHandle` in
 ``ToolResult.metadata`` -- the rendered bytes never cross NATS. The agent's
 catalog seam persists the handle into the hub-owned object catalog.
 
@@ -34,7 +34,7 @@ import tempfile
 from datetime import UTC, datetime
 from typing import Any, AsyncIterator
 
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.observe import contain, get_logger
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
@@ -290,7 +290,7 @@ async def _presign_delivery_url(s3_key: str, ttl: int) -> str | None:
         return None
     try:
         return await scope.object_store.presigned_get_url(s3_key, expires_in=ttl)
-    except Exception as exc:  # prawduct:allow prawduct/broad-except -- delivery is best-effort on an already-produced+cataloged object; the producer stays impl-free (media-contracts only) so it cannot import the store impl's concrete exception types. Logged with context below; the report still returns successfully.
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- delivery is best-effort on an already-produced+cataloged object; the producer stays impl-free (threetears.interfaces only) so it cannot import the store impl's concrete exception types. Logged with context below; the report still returns successfully.
         contain(
             exc,
             log=_log,

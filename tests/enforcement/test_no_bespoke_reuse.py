@@ -109,7 +109,7 @@ _SANCTIONED_HTTPX_SITES: frozenset[str] = frozenset(
         "packages/search/src/threetears/search/standalone.py",
         # 3tears-models' transport to the self-hosted image servers (ComfyUI, SwarmUI) that
         # ``ComfyUIClient`` and ``SwarmUIClient`` drive. The models package must not import core
-        # (its dependencies are media-contracts, observe and tool-schema), so core's
+        # (its dependencies are interfaces, observe and tool-schema), so core's
         # ``TracedHttpClient`` is out of reach; this is the ONE module in models' image providers
         # permitted to open a long-lived client, and both clients reach their server through its
         # ``ImageServerTransport`` rather than holding one. It discharges the full obligation set:

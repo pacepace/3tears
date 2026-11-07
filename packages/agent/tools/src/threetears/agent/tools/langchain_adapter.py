@@ -51,7 +51,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, ToolException
 
-from threetears.media.contracts import ObjectStore
+from threetears.interfaces.media import ObjectStore
 
 from threetears.agent.tools.base_tool import TearsTool, ToolResult
 from threetears.agent.tools.call_scope import ContextFactory, build_call_scope, enter_call_scope

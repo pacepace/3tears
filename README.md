@@ -82,7 +82,7 @@ Every package shares the `threetears.*` import namespace. The `agent-*` packages
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, the `@traced` decorator, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs broadcast over NATS, so every pod reloads its caches coherently |
 | [`3tears-iam`](packages/iam/) | `threetears.iam` | Passwords, OAuth2/OIDC, SAML, GitHub sign-in, session tokens, DPoP, TOTP, WebAuthn, and the anti-automation controls that guard them |
-| [`3tears-access-contracts`](packages/access-contracts/) | `threetears.access.contracts` | Dependency-free identity and authorization vocabulary shared by `iam` and `agent-acl`, such as the sensitive-action categories both enforce |
+| [`3tears-interfaces`](packages/interfaces/) | `threetears.interfaces` | The family's shared Protocols and vocabulary, with no dependencies: `interfaces.access` (the sensitive-action categories `iam` and `agent-acl` both enforce) and `interfaces.media` (the media capability Protocols providers implement and tools accept) |
 | [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing: a NATS KV-backed catalog, discovery, and a load-balancing call proxy |
 | [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Multi-pod-safe scheduled jobs: a cross-pod-locked tick loop, reschedule math, and store protocols |
 | [`3tears-langgraph`](packages/langgraph/) | `threetears.langgraph` | A three-tier LangGraph checkpoint saver, agent middleware (prompt caching, summarizing, tool-result offload, tool-loop budgets), and streaming |
@@ -92,7 +92,6 @@ Every package shares the `threetears.*` import namespace. The `agent-*` packages
 | [`3tears-channels`](packages/channels/) | `threetears.channels` | One message protocol with Slack, Discord and WebSocket adapters, plus email sending and an HTTP webhook receiver |
 | [`3tears-search`](packages/search/) | `threetears.search` | Provider-agnostic web and media search, with SearXNG, Tavily and Brave Answers adapters |
 | [`3tears-scrape`](packages/scrape/) | `threetears.scrape` | Self-healing web scraping: a model proposes extractions, each is checked against the real page, and the winner is kept as a reusable recipe |
-| [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
 | [`3tears-evals`](packages/evals/) | `threetears.evals` | Evals for LLM features, from a classifier to a tool-using agent: each version runs over the same cases, and the report says what moved and whether the move is real. Its public API is still changing |
 | [`3tears-enforcement`](packages/enforcement/) | `threetears.enforcement` | AST-based enforcement scanners and shared test utilities, run from pytest in any repo |
 

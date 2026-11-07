@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from langchain_core.tools import StructuredTool
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_PENDING,
     MediaSizeLimitExceeded,

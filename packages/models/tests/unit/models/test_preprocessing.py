@@ -14,7 +14,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from threetears.media.contracts import ObjectHandle
+from threetears.interfaces.media import ObjectHandle
 from threetears.models.capabilities import ModelCapabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.preprocessing import (

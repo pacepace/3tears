@@ -23,7 +23,7 @@ from threetears.agent.tools.produce import (
     object_handle_result_metadata,
     stream_result_to_object_store,
 )
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle, ObjectListing
+from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectHandle, ObjectListing
 from threetears.core.testing.replay_guard import FakeReplayGuard
 
 from packages.agent.tools.tests.unit.tools.pod_auth import (
@@ -44,7 +44,7 @@ _OBJECT_FOR_META = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
 _CREATED = datetime(2026, 6, 30, 14, 5, 0, tzinfo=UTC)
 
 
-# parity-with: threetears.media.contracts.ObjectStore
+# parity-with: threetears.interfaces.media.ObjectStore
 class _FakeStore:
     """Records the single ``put`` a produce call makes; ignores reads."""
 

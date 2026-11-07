@@ -68,7 +68,7 @@ Everything else follows from that:
   `threetears.core`, and the three modules that need them (`dpop`,
   `stores.attempt_limiter`, TOTP sealing) use core's own, behind the `core` extra.
   The sensitive-action taxonomy (`ImpersonationCategory`) comes from
-  `3tears-access-contracts`, the dependency-free leaf agent-acl reads too.
+  `3tears-interfaces`, the dependency-free package agent-acl reads too.
 
 ## Public surface
 

@@ -34,7 +34,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
-from threetears.media.contracts import GENERATION_IGNORED, GENERATION_SOURCE_USED
+from threetears.interfaces.media import GENERATION_IGNORED, GENERATION_SOURCE_USED
 
 from threetears.agent.tools.protocols import (
     GeneratedImage,
@@ -207,7 +207,7 @@ class ImageGenerationContext(Protocol):
         what was made; the tool puts its own notes on the line after it.
 
         ``image.metadata`` carries what the backend said it did (the
-        ``GENERATION_*`` keys of :mod:`threetears.media.contracts`) and
+        ``GENERATION_*`` keys of :mod:`threetears.interfaces.media`) and
         :data:`GENERATION_SOURCE_LABEL`.
 
         Implementations may raise; the tool catches the exception and

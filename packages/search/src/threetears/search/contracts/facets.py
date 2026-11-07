@@ -1,15 +1,15 @@
-"""Well-known facet keys -- found in ``media-contracts``, not invented (SR-C3, G13).
+"""Well-known facet keys -- found in ``threetears.interfaces.media``, not invented (SR-C3, G13).
 
 The result core stays carrier-agnostic (SR-C1); carrier data rides
 ``Candidate.facets``, keyed by the vocabulary the family already publishes
-in ``3tears-media-contracts``. SR-C3 is two-sided: the facets are open AND
+in ``3tears-interfaces``. SR-C3 is two-sided: the facets are open AND
 the published vocabulary is *pinned rather than redeclared* (success check
 13). The keys below are exactly ``MediaInfo``'s field names, and the pin is
 structural -- if the vocabulary ever drifts, importing this module fails
 loudly instead of the two vocabularies diverging silently.
 
 The genuinely new facets SR-C3 names -- rights status, pixel dimensions,
-direct-file-versus-containing-page -- landed in ``media-contracts`` itself
+direct-file-versus-containing-page -- landed in ``threetears.interfaces.media`` itself
 as ``MediaFacets`` (search-spec.md §4 item 1), and their keys are pinned
 here the same structural way: the key names are that dataclass's own field
 names, checked at import.
@@ -25,8 +25,8 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Final
 
-from threetears.media.contracts import MediaInfo
-from threetears.media.contracts.facets import MediaFacets
+from threetears.interfaces.media import MediaInfo
+from threetears.interfaces.media.facets import MediaFacets
 
 __all__ = [
     "FACET_EXTRACTION_STATUS",
@@ -68,7 +68,7 @@ FACET_LOCATOR_KIND: Final[str] = "locator_kind"
 _MEDIA_INFO_FIELD_NAMES: Final[frozenset[str]] = frozenset(field.name for field in fields(MediaInfo))
 _MEDIA_FACET_FIELD_NAMES: Final[frozenset[str]] = frozenset(field.name for field in fields(MediaFacets))
 
-#: every pinned key, paired with the ``media-contracts`` type whose field
+#: every pinned key, paired with the ``threetears.interfaces.media`` type whose field
 #: names it is pinned to.
 _PINNED: Final[tuple[tuple[str, str, frozenset[str]], ...]] = tuple(
     (key, "MediaInfo", _MEDIA_INFO_FIELD_NAMES)
@@ -81,6 +81,6 @@ _PINNED: Final[tuple[tuple[str, str, frozenset[str]], ...]] = tuple(
 for _key, _owner, _owner_fields in _PINNED:
     if _key not in _owner_fields:
         raise ImportError(
-            f"facet key {_key!r} is no longer a field of threetears.media.contracts.{_owner}; "
-            f"the facet vocabulary is pinned to media-contracts (SR-C3) and must move with it"
+            f"facet key {_key!r} is no longer a field of threetears.interfaces.media.{_owner}; "
+            f"the facet vocabulary is pinned to threetears.interfaces.media (SR-C3) and must move with it"
         )

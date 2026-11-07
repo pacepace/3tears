@@ -83,8 +83,8 @@ log at a verification boundary.
 rules, `ReplayGuard`, `WindowedCounter` and `seal`/`open_secret` already exist in
 `threetears.core`; the three modules that need them use core's own, behind the
 `core` extra, so a consumer doing only sign-in and sessions installs no core. The
-sensitive-action taxonomy comes from [`access-contracts`](access-contracts.md), the
-dependency-free leaf agent-acl's deny-list reads too, rather than from agent-acl
+sensitive-action taxonomy comes from [`interfaces`](interfaces.md), the
+dependency-free package agent-acl's deny-list reads too, rather than from agent-acl
 itself. Two of those had been copied by hand into a downstream repo precisely
 because no import path connected them -- this package is that path.
 

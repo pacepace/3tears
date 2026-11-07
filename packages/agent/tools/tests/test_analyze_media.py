@@ -13,7 +13,7 @@ from threetears.agent.tools.builtin.analyze_media import (
     create_analyze_media_tool,
 )
 from threetears.agent.tools.protocols import MediaInfo
-from threetears.media.contracts import MediaSizeLimitExceeded
+from threetears.interfaces.media import MediaSizeLimitExceeded
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 Every provider turns the same ``size`` / ``aspect`` arguments into a width and a
 height, and every one says what it did in the result's metadata under the
-``GENERATION_*`` keys of :mod:`threetears.media.contracts`. Both live here so the
+``GENERATION_*`` keys of :mod:`threetears.interfaces.media`. Both live here so the
 five providers read and report them one way.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from threetears.media.contracts import GENERATION_IGNORED, GENERATION_SEED, GENERATION_SIZE, GENERATION_SOURCE_USED
+from threetears.interfaces.media import GENERATION_IGNORED, GENERATION_SEED, GENERATION_SIZE, GENERATION_SOURCE_USED
 
 __all__ = [
     "ASPECTS",

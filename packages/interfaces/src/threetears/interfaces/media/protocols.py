@@ -52,7 +52,7 @@ __all__ = [
 # ``StrEnum``: consumers assign and compare bare ``str`` today, and the
 # column carries no CHECK constraint, so a producer may legitimately store
 # a value this list has not caught up with. Read an unrecognised status the
-# way :mod:`threetears.media.contracts.facets` reads an unrecognised facet
+# way :mod:`threetears.interfaces.media.facets` reads an unrecognised facet
 # -- ignore it, do not reject it.
 
 #: No extraction has been attempted. The column's server default, and the

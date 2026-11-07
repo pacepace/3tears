@@ -16,7 +16,7 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.deliver import DeliverObjectTool
 from threetears.agent.tools.object_resolver import ResolveObjectError
-from threetears.media.contracts import ObjectHandle, ObjectListing
+from threetears.interfaces.media import ObjectHandle, ObjectListing
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
@@ -41,7 +41,7 @@ class _FakeResolver:
         return self._handle
 
 
-# parity-with: threetears.media.contracts.ObjectStore
+# parity-with: threetears.interfaces.media.ObjectStore
 class _FakeStore:
     """Serves presigns for the deliver path; records the calls."""
 

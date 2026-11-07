@@ -192,8 +192,9 @@ def sanitize_subject_segment(segment: str | UUID) -> str:
     than in :mod:`threetears.nats.subject_permissions` because that module
     already imports this one, so the reverse direction would be an import
     cycle at module load; and it is NOT named ``sanitize_segment`` because
-    :func:`threetears.media.contracts.keys.sanitize_segment` already owns
-    that name with slugifying (not dot-mapping) semantics.
+    the media object-key builder's segment sanitizer
+    (:func:`threetears.interfaces.media.build_object_key`) slugifies rather
+    than dot-maps, and one name for two rules invites the wrong one.
     :func:`threetears.core.namespaces.sanitize_segment` delegates here.
 
     **not injective, and therefore never a security boundary.** ``a.b`` and

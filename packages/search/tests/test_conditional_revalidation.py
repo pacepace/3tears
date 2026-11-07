@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from threetears.media.contracts import (
+from threetears.interfaces.media import (
     EXTRACTION_STATUS_COMPLETE,
     EXTRACTION_STATUS_UNCHANGED,
 )

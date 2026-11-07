@@ -31,7 +31,7 @@ names, so a later re-cut of the layers stays cheap.
 - `Candidate` -- the carrier-neutral result core: identity, locators,
   provenance, named provenanced scores (never a single `score` field, D1),
   fidelity available/achieved, an optional content slot, and additive facets
-  keyed by the `media-contracts` vocabulary.
+  keyed by the `threetears.interfaces.media` vocabulary.
 - `Spend` -- every resource a call consumed: money (Decimal), wall-clock,
   call count, weighted provider units, bytes.
 - The typed error taxonomy (SR-J1), every error carrying `Spend` (SR-E3).
@@ -125,7 +125,7 @@ placeholder protocol would only be a second vocabulary to migrate off.
 ## Import-cleanliness
 
 Importing `threetears.search.contracts` pulls nothing beyond stdlib, pydantic,
-and `3tears-media-contracts`. Nothing in this package imports
+and `3tears-interfaces`. Nothing in this package imports
 `threetears.core`, `threetears.agent.*`, langchain, or NATS. Nothing reads
 environment variables -- the host passes base URLs, secret references, and
 transport (SR-K1).

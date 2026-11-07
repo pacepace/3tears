@@ -41,7 +41,7 @@ from pydantic import JsonValue
 from threetears.agent.tools.text_window import NOTE_ALLOWANCE
 from threetears.agent.tools.builtin.web_fetch import WebFetchTool, create_web_fetch_tool
 from threetears.agent.tools.builtin.web_search import WebSearchTool, create_web_search_tool
-from threetears.media.contracts import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_REFUSED
+from threetears.interfaces.media import EXTRACTION_STATUS_COMPLETE, EXTRACTION_STATUS_REFUSED
 from threetears.search.contracts import (
     SEARCH_RESULTS_METADATA_KEY,
     EGRESS_DIRECT,
@@ -795,7 +795,7 @@ class TestConditionalRevalidationAtTheToolBorder:
         assert "unchanged" in result.content.lower()
 
     async def test_the_typed_status_says_unchanged(self) -> None:
-        from threetears.media.contracts import EXTRACTION_STATUS_UNCHANGED
+        from threetears.interfaces.media import EXTRACTION_STATUS_UNCHANGED
         from threetears.search.contracts import SEARCH_RESULTS_METADATA_KEY
         from threetears.search.extract import EXTRACTION_STATUS_FACET
         from threetears.search.testing.http_server import LocalHttpServer, Reply

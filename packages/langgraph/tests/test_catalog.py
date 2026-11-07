@@ -25,7 +25,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.errors import GraphBubbleUp
 
 from threetears.langgraph.middleware_catalog import ObjectCatalogMiddleware
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
+from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")

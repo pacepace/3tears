@@ -17,7 +17,7 @@ import pytest
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.reports import PandocNotFoundError, PdfRenderer
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectListing
+from threetears.interfaces.media import OBJECT_HANDLE_METADATA_KEY, ObjectListing
 
 from threetears.agent.tools.report import ReportTool
 
@@ -27,7 +27,7 @@ _CONVERSATION = UUID("019f1900-0000-7000-8000-0000000000cc")
 _PRESIGN_URL = "https://minio.example/3tears-objects/key?sig=abc"
 
 
-# parity-with: threetears.media.contracts.ObjectStore
+# parity-with: threetears.interfaces.media.ObjectStore
 class _FakeStore:
     """Records the single ``put`` and hands back a fixed presigned URL."""
 

@@ -14,7 +14,7 @@ the RFC, what has shipped, and what is deferred with evidence.
 |---|---|
 | Phase 0 — dependency hygiene | **Done.** Every workspace package's declarations now match its actual imports (verified mechanically). The declared `agent-tools ↔ agent-memory` cycle is gone. `channels` is intentionally untouched: its agent-wake edge is declared via the `webhook` extra and its core imports are deferred — both sanctioned shapes (see enforcement semantics below). |
 | Enforcement check #1 — declared-vs-actual | **Done.** `threetears.enforcement.dependency_alignment`: `dependency.missing` / `dependency.stale`, strict by default, exemptions require rationales. |
-| Phase 1a — `3tears-media-contracts` | **Done.** Pure media protocols extracted to a dependency-free package (`threetears.media.contracts`); `threetears.agent.tools.protocols` is a re-export shim; `3tears-models` depends on contracts + observe only. |
+| Phase 1a — `3tears-media-contracts` | **Done.** Pure media protocols extracted to a dependency-free package (`threetears.media.contracts`); `threetears.agent.tools.protocols` is a re-export shim; `3tears-models` depends on contracts + observe only. Folded into `3tears-interfaces` (`threetears.interfaces.media`) on 2026-11-06. |
 | Enforcement check #2 — contract purity | **Done.** `contract.impure`: designated contracts packages may import only stdlib, their own namespace, and configured extras. `TYPE_CHECKING` imports are exempt. |
 | Import-cost regression test | **Done.** `packages/models/tests/test_import_cost.py` asserts in a fresh interpreter that `import threetears.models` loads no `threetears.agent*`, `threetears.core`, `threetears.nats`, sqlalchemy, asyncpg, pgvector, or nats modules. |
 
