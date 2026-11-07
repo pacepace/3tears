@@ -24,6 +24,12 @@ table                 rows and cells
 grouped by aspect in the input's order, the aspect named in its own column and every figure that aspect's own (a
 measure's ``per_arm`` on the lead aspect, its ``by_aspect`` entry on another; a dash where the aspect did not read it).
 
+**A page lays every arm by measure out the narrower way** (:func:`laid_out`): where the arms are fewer than the figures,
+a figure per row and an arm per column, headed by its tag and name, as every stratum is, so a frame as narrow as a
+host's (688 px) holds a two-arm campaign's fifteen figures; an arm per row where the arms are as many or more. The
+table's rows stay an arm each: the page's text form, which the editor and a writer eval's judge read, lays it out as
+it is.
+
 **Every table the input holds** (:func:`every_table`): a report document's full-results appendix. It is each table
 above, in that order, where the input holds a row of it: every arm by measure always, the
 rest as the input holds contrasts, strata or tasks, gates or guardrails, configurations and cells. Which tables print
@@ -84,6 +90,8 @@ from threetears.evals.analysis.report.parts.words import (
     ASPECTS_TABLE_ORDER,
     CONTRAST_VERDICT_WORDS,
     COST_HEADER,
+    FIGURES_BY_ASPECT_ORDER,
+    FIGURES_TABLE_ORDER,
     FULL_RESULTS_HEADERS,
     FULL_RESULTS_TITLES,
     GATE_UNKNOWN,
@@ -97,7 +105,7 @@ from threetears.evals.analysis.report_input import Aspect, Contrast, Criterion, 
 from threetears.evals.analysis.report_margins import aspect_board, criterion_figures, criterion_places, on_aspect
 from threetears.evals.analysis.style import humanize
 
-__all__ = ["every_table"]
+__all__ = ["every_table", "laid_out"]
 
 
 #: Each corrected comparison's verdict's pill: a separated gain or equivalence good, a regression bad, the rest
@@ -585,3 +593,55 @@ def every_table(report_input: ReportInput, look: PageLook) -> list[TableBlock]:
     :rtype: list[TableBlock]
     """
     return [table for build in _TABLES.values() for table in build(report_input, look) if table.rows]
+
+
+def laid_out(table: TableBlock) -> TableBlock:
+    """A Full results table as a page lays it out: every arm by measure the way that gives it fewer columns, each cell as
+    it was, its money's form included; any other table as it is.
+
+    Built, the table is an arm per row and a figure per column. Where the arms are fewer than the figures (two or three
+    arms read on fifteen figures), it is turned a figure per row and an arm per column, its aspect first where it names
+    one; where the arms are as many as the figures or more (an eighteen-arm sweep read on six), it stays as built. The
+    HTML page and the Markdown both lay it out here, so the two read alike.
+
+    :param table: A table :func:`every_table` returned.
+    :ptype table: TableBlock
+    :return: The table to lay out.
+    :rtype: TableBlock
+    """
+    if table.name != "arms_by_measure" or not table.rows:
+        return table
+    grouped = any(column.key == "aspect" for column in table.columns)
+    places: dict[str, list[dict[str, TableCell]]] = {}
+    for row in table.rows:
+        places.setdefault(row["aspect"].text if grouped else "", []).append(row)
+    arms = next(iter(places.values()))
+    figures = [column for column in table.columns if column.key not in ("arm", "aspect")]
+    if len(arms) >= len(figures):
+        return table
+    heads = [
+        TableColumn(key=f"arm:{at}", header=f"{chip.tag} · {chip.text}" if chip.tag else chip.text)
+        for at, chip in enumerate(row["arm"] for row in arms)
+    ]
+    rows: list[dict[str, TableCell]] = []
+    for aspect, held in places.items():
+        for column in figures:
+            cells = {f"arm:{at}": row[column.key] for at, row in enumerate(held)}
+            if grouped and all(cell.value is None for cell in cells.values()):
+                continue
+            rows.append(
+                {
+                    **({"aspect": TableCell(value=aspect)} if grouped else {}),
+                    "measure": TableCell(value=column.header),
+                    **cells,
+                }
+            )
+    columns = [*([_column("aspect")] if grouped else []), _column("measure"), *heads]
+    return table.model_copy(
+        update={
+            "columns": columns,
+            "rows": rows,
+            "order": FIGURES_BY_ASPECT_ORDER if grouped else FIGURES_TABLE_ORDER,
+            "total_rows": len(rows),
+        }
+    )

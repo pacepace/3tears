@@ -5,13 +5,13 @@ escaping ever to fail) asks for the static page: ``static=True`` on ``report_htm
 threaded through ``serialize_report``, ``report_read`` and the ``report_read`` action. Held here, on the pages whose
 every field carries markup (:mod:`~packages.evals.tests.hostile_page_support`):
 
-- it carries no ``<script>`` and no ``<link>``, not even the package's own, no ``on*`` attribute, no ``javascript:``
+- it carries no ``<script>`` and no ``<link>``, no ``on*`` attribute, no ``javascript:``
   value in any attribute (``data-*`` included: it has no chart data either), and no ``url(`` or ``@import`` in its
   styles;
 - every chart is its figure's title and its table of values, and no rule the page ships hides that table: the one
   that does needs a drawn ``div.chart`` beside it, and the static page writes none, so no empty box stands either;
-- its text falls back to the system faces the kit's stylesheet names after each Plex face;
-- it is the default page less exactly the kit's script, the font links and each ``div.chart``, so the default page,
+- its text is a host's face, else the system faces the kit's stylesheet names after each Plex face;
+- it is the default page less exactly the kit's script and each ``div.chart``, so the default page,
   which the no-script contract still holds, is the one it always was;
 - the package writes no script and no link into Markdown or JSON, and the option changes neither;
 - ``report_read`` returns it for a code-only report, a memo analysis and a planned one, and the action takes it.
@@ -61,14 +61,15 @@ async def test_the_static_page_of_a_hostile_campaign_runs_and_loads_nothing_and_
 def test_the_static_page_falls_back_to_the_system_faces_the_kit_names_after_each_plex_face() -> None:
     css = "".join(parsed(report_html(hostile_report(), static=True)).styles)
     for face in ("display", "body", "mono"):
-        declared = re.search(rf"--f-{face}:([^;]+);", css)
+        # The face a host sets, else the kit's own stack, its fallback.
+        declared = re.search(rf"--f-{face}:var\(--host-font-(?:body|mono),([^;]+)\);", css)
         assert declared is not None, f"the kit names no --f-{face}"
         stack = [name.strip().strip('"') for name in declared.group(1).split(",")]
         assert stack[0].startswith("IBM Plex") and len(stack) > 2
         assert stack[-1] in {"sans-serif", "monospace"}, f"--f-{face} ends in no generic family"
 
 
-async def test_the_default_pages_are_the_static_pages_plus_the_script_the_fonts_and_the_chart_boxes() -> None:
+async def test_the_default_pages_are_the_static_pages_plus_the_script_and_the_chart_boxes() -> None:
     report, campaign = hostile_report(), await hostile_campaign_page()
     pages = [
         (report_html(report), report_html(report, static=False), report_html(report, static=True)),

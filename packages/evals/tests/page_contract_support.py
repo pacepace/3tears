@@ -1,24 +1,23 @@
 """What a report's HTML page may load or run, read by parsing it: the contract every page test holds the page to.
 
-The principle: nothing an author or a model wrote can make the page run, embed or load anything. The package itself
-writes exactly two things that do. Its fonts: three links in the head, a preconnect to each Google Fonts host and the
-stylesheet naming the three IBM Plex faces, the same three the kit's reference memos carry
-(``docs/eval-report-kit/references/*.src.html``); those pass only in the head and only attribute for attribute. And
-the kit's script: one ``<script>``, with no attribute, as the last element of the body, whose text is byte for byte
-the ``kit/kit.js`` the package ships (:data:`KIT_JS`), which draws each chart from the JSON in its ``data-chart``.
-That one passes only alone: a second ``<script>``, a copy of the kit beside it, a script with a ``src`` or any other
-attribute, one in the head, one followed by another element, or one whose text differs by a byte is refused, and so
-is the kit's own then.
+The principle: nothing an author or a model wrote can make the page run, embed or load anything, and the page loads
+nothing at all. The package itself writes exactly one thing that runs: the kit's script, one ``<script>``, with no
+attribute, as the last element of the body, whose text is byte for byte the ``kit/kit.js`` the package ships
+(:data:`KIT_JS`), which draws each chart from the JSON in its ``data-chart``. That one passes only alone: a second
+``<script>``, a copy of the kit beside it, a script with a ``src`` or any other attribute, one in the head, one
+followed by another element, or one whose text differs by a byte is refused, and so is the kit's own then. Its faces
+are a local stack, so no ``<link>`` passes anywhere, the Google Fonts links the kit's reference memos carry
+(:data:`FONT_LINK_MARKUP`, which a hostile field copies) among them.
 
 What :func:`what_runs` refuses, on any element wherever it sits:
 
 - an element that runs, embeds, loads or submits (:data:`ACTIVE_ELEMENTS`): ``script`` other than the kit's,
   ``iframe``, ``frame``, ``frameset``, ``object``, ``embed``, ``portal``, ``base``, ``img``, ``picture``, ``video``,
-  ``audio``, ``source``, ``track``, ``form``, a ``link`` other than the font links in the head, and inside an inline
+  ``audio``, ``source``, ``track``, ``form``, ``link``, and inside an inline
   SVG ``image``, ``use`` and ``foreignObject``; an ``input`` of ``type=image``; a ``meta`` with ``http-equiv``;
 - an attribute that loads or navigates (:data:`LOADING_ATTRIBUTES`): ``src``, ``srcset``, ``poster``, ``data``,
   ``action``, ``formaction``, ``xlink:href``, ``background``, ``ping``, and an ``href`` that is not a link to a place
-  on the page itself (``#F1``, ``#T3``) and not one of the font links in the head;
+  on the page itself (``#F1``, ``#T3``);
 - a ``style`` attribute whose value holds ``url(``, and a ``<style>`` element whose text holds ``url(`` or
   ``@import``;
 - an event-handler attribute (``on*``);
@@ -37,35 +36,19 @@ from importlib.resources import files
 
 __all__ = [
     "ACTIVE_ELEMENTS",
-    "FONT_LINKS",
     "FONT_LINK_MARKUP",
     "KIT_JS",
     "LOADING_ATTRIBUTES",
     "Page",
-    "font_links",
+    "links",
     "kit_script",
     "parsed",
     "what_runs",
-    "without_font_links",
     "without_kit_script",
 ]
 
-#: The package's three font links, attribute for attribute, in the order the head carries them.
-FONT_LINKS: tuple[tuple[tuple[str, str | None], ...], ...] = (
-    (("rel", "preconnect"), ("href", "https://fonts.googleapis.com")),
-    (("rel", "preconnect"), ("href", "https://fonts.gstatic.com"), ("crossorigin", None)),
-    (
-        ("rel", "stylesheet"),
-        (
-            "href",
-            "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500"
-            "&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400"
-            "&display=swap",
-        ),
-    ),
-)
-
-#: The same three links as the reference memos write them, verbatim (their source's lines 3 and 4).
+#: The three Google Fonts links the kit's reference memos write, verbatim (their source's lines 3 and 4): markup no
+#: report page carries, which a hostile field copies to show a copy is text.
 FONT_LINK_MARKUP = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
@@ -77,7 +60,7 @@ FONT_LINK_MARKUP = (
 KIT_JS = files("threetears.evals.analysis.report").joinpath("kit", "kit.js").read_text(encoding="utf-8")
 
 #: Elements that execute, embed, load or submit something, the SVG ones by the parser's lower-cased names. A ``link``
-#: is among them; only the package's font links, in the head, pass.
+#: is among them: the page loads nothing.
 ACTIVE_ELEMENTS = frozenset(
     {
         "script",
@@ -103,7 +86,7 @@ ACTIVE_ELEMENTS = frozenset(
 )
 
 #: Attributes that load a resource or navigate somewhere, on whatever element carries them. ``href`` is checked
-#: apart: a link to a place on the page is the page's own, and the font links in the head are the package's.
+#: apart: a link to a place on the page is the page's own.
 LOADING_ATTRIBUTES = frozenset(
     {"src", "srcset", "poster", "data", "action", "formaction", "xlink:href", "background", "ping"}
 )
@@ -168,7 +151,7 @@ def parsed(page: str) -> Page:
     return parser
 
 
-def font_links(page: str) -> list[tuple[tuple[str, str | None], ...]]:
+def links(page: str) -> list[tuple[tuple[str, str | None], ...]]:
     """Every ``<link>`` on the page, as its attributes in order."""
     return [tuple(attrs) for tag, attrs in parsed(page).tags if tag == "link"]
 
@@ -186,14 +169,13 @@ def kit_script(read: Page) -> int | None:
 
 
 def what_runs(page: str) -> list[str]:
-    """Everything on the page that would execute, embed, load or navigate away, the package's font links in the head
-    and its one kit script aside — empty for a page that keeps the contract."""
+    """Everything on the page that would execute, embed, load or navigate away, its one kit script aside — empty for a
+    page that keeps the contract."""
     found: list[str] = []
     read = parsed(page)
     kit = kit_script(read)
     for at, ((tag, attrs), in_head) in enumerate(zip(read.tags, read.in_head, strict=True)):
-        font_link = tag == "link" and in_head and tuple(attrs) in FONT_LINKS
-        if tag in ACTIVE_ELEMENTS and not font_link and at != kit:
+        if tag in ACTIVE_ELEMENTS and at != kit:
             found.append(f"<{tag}>")
         if tag == "input" and any(name == "type" and (value or "").strip().lower() == "image" for name, value in attrs):
             found.append("<input type=image>")
@@ -204,7 +186,7 @@ def what_runs(page: str) -> list[str]:
                 found.append(f"{tag}[{name}]")
             if name in LOADING_ATTRIBUTES:
                 found.append(f"{tag}[{name}]")
-            if name == "href" and not font_link and not (value or "").startswith("#"):
+            if name == "href" and not (value or "").startswith("#"):
                 found.append(f"{tag}[href]")
             if name == "style" and value is not None and "url(" in _compact(value):
                 found.append(f"{tag}[style=url()]")
@@ -220,13 +202,6 @@ def what_runs(page: str) -> list[str]:
 def _compact(value: str) -> str:
     """``value`` in lower case with every whitespace character taken out, as a browser reads a URL's scheme."""
     return "".join(value.split()).lower()
-
-
-def without_font_links(page: str) -> str:
-    """``page`` with the package's font links taken out of its head, once; the page unchanged where its head does
-    not carry them exactly, so a check of the rest still sees whatever is there."""
-    head, marker, body = page.partition("</head>")
-    return head.replace(FONT_LINK_MARKUP, "", 1) + marker + body
 
 
 def without_kit_script(page: str) -> str:

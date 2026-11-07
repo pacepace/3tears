@@ -1,18 +1,17 @@
 """The report's HTML runs one script, the kit's own, and nothing an author wrote can make it run or load anything.
 
 The principle: nothing an author or a model wrote can make the page run or load anything. The package itself writes
-two things that do (:mod:`~packages.evals.tests.page_contract_support`): the kit's fonts, three links in the head, a
-preconnect to each Google Fonts host and one stylesheet, matched attribute for attribute; and the kit's script, one
-``<script>`` at the end of the body whose text is byte for byte the ``kit.js`` the package ships, which draws each
-chart from the JSON in its ``data-chart``. Any other ``<link>``, any other ``<script>`` (a second copy of the kit, one
+one thing that does (:mod:`~packages.evals.tests.page_contract_support`): the kit's script, one ``<script>`` at the
+end of the body whose text is byte for byte the ``kit.js`` the package ships, which draws each chart from the JSON in
+its ``data-chart``. The page loads nothing, its faces a local stack. Any ``<link>``, any other ``<script>`` (a second copy of the kit, one
 with a ``src``, one whose text differs), any element that embeds or loads, any ``on*`` attribute and any
 ``javascript:`` URL outside a ``data-*`` attribute is refused.
 
 Read by parsing the page, not by searching its text: an element is a ``<script>`` because the parser opened one,
 and a string that merely contains the word does not count either way. Checked on the toy host's real report and on
 a report whose author wrote markup into every field a model fills — a script, a handler, a ``javascript:`` link, an
-iframe, a stylesheet link to another host and a copy of the package's own font link — the case the property exists
-for, since a page that loads only its own fonts while its prose is polite does not keep it. A campaign's page is held
+iframe, a stylesheet link to another host and a copy of the reference memos' font links — the case the property exists for,
+since a page that loads nothing while its prose is polite does not keep it. A campaign's page is held
 to the same case: its campaign name, arm labels, aspect labels, fold lines, memo and folded pages all carry the
 markup, since it lays out each aspect's page again and rewrites the ids and links in it.
 
@@ -50,9 +49,8 @@ from packages.evals.tests.hostile_page_support import (
 )
 from packages.evals.tests.page_contract_support import (
     FONT_LINK_MARKUP,
-    FONT_LINKS,
     KIT_JS,
-    font_links,
+    links,
     parsed,
     what_runs,
 )
@@ -66,7 +64,7 @@ async def test_markup_a_host_or_a_model_put_on_a_campaign_page_is_text_not_marku
     read = parsed(page)
 
     assert what_runs(page) == []
-    assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
+    assert links(page) == [], "an author's link, even a copy of the reference memos' font links, is text"
     assert any("<script>alert(1)</script>" in text for text in read.text), "the words survive as text"
     assert any('onerror="alert(4)"' in text for text in read.text)
     assert any(HOSTILE_ASPECT in text for text in read.text), "the aspect's label is words too"
@@ -90,15 +88,14 @@ async def test_the_toy_report_s_html_carries_the_kit_s_script_and_no_other() -> 
     assert list(read.scripts.values()) == [KIT_JS], "the script is the shipped kit.js, byte for byte"
     assert read.tags[-1] == ("script", []), "with no attribute, after every other element"
     assert what_runs(page) == []
-    assert font_links(page) == list(FONT_LINKS), "the page loads the kit's fonts and nothing else"
-    assert page.index(FONT_LINK_MARKUP) < page.index("</head>"), "the font links are in the head, verbatim"
+    assert links(page) == [], "the page loads nothing: no font link, no stylesheet link"
 
 
 def test_markup_an_author_wrote_is_text_not_markup() -> None:
     page = report_html(hostile_report())
 
     assert what_runs(page) == []
-    assert font_links(page) == list(FONT_LINKS), "an author's link, even a copy of the package's, is text"
+    assert links(page) == [], "an author's link, even a copy of the reference memos' font links, is text"
     assert any("<script>alert(1)</script>" in text for text in parsed(page).text), "the words survive as text"
     assert any(FONT_LINK_MARKUP.split(">", 1)[0] in text for text in parsed(page).text), "so is the copied font link"
 
@@ -118,7 +115,7 @@ async def test_a_closed_value_that_bypassed_validation_is_escaped_too() -> None:
     page = report_html(report.model_copy(update={"blocks": blocks}))
 
     assert what_runs(page) == []
-    assert font_links(page) == list(FONT_LINKS)
+    assert links(page) == []
     campaign = campaign_report_html((await hostile_campaign_page()).model_copy(update={"basis": breakout}))
     assert what_runs(campaign) == []
     assert any(dict(attrs).get("data-basis") == breakout for tag, attrs in parsed(campaign).tags if tag == "article")
@@ -319,6 +316,7 @@ _LOADERS: list[tuple[str, list[str]]] = [
     ('<iframe srcdoc="x"></iframe>', ["<iframe>"]),
     ("<p>y</p>" + FONT_LINK_MARKUP, ["<link>", "link[href]", "<link>", "link[href]", "<link>", "link[href]"]),
     ("<html><head></head><body>" + FONT_LINK_MARKUP + "</body></html>", ["<link>", "link[href]"] * 3),
+    ("<html><head>" + FONT_LINK_MARKUP + "</head><body></body></html>", ["<link>", "link[href]"] * 3),
 ]
 
 
@@ -342,18 +340,17 @@ def test_the_check_passes_the_kit_s_script_only_alone_verbatim_and_last() -> Non
 
 
 def test_the_check_refuses_every_element_and_attribute_that_loads_embeds_or_navigates() -> None:
-    """Each page holds one offender, and the check names it; the font links pass only in the head."""
+    """Each page holds one offender, and the check names it; a link is refused in the head as in the body."""
     for page, refused in _LOADERS:
         assert what_runs(page) == refused, page
 
 
-def test_the_check_passes_a_page_that_loads_only_the_font_links_and_runs_only_the_kit() -> None:
-    """A page as the package writes one: the font links in the head, links to places on the page, inline SVG with a
+def test_the_check_passes_a_page_that_loads_nothing_and_runs_only_the_kit() -> None:
+    """A page as the package writes one: no link in the head, links to places on the page, inline SVG with a
     title, a ``data-*`` attribute, a chart whose JSON carries a ``javascript:`` string as data, a style attribute
     naming no URL, the word ``url(`` in prose, and the kit's script last."""
     page = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>t</title>'
-        + FONT_LINK_MARKUP
         + "<style>body { color: var(--ink); }</style></head><body>"
         '<nav><a href="#memo">Memo</a></nav><article data-basis="analysis"><section id="memo">'
         '<p style="--w: 3">Read url(x) and javascript: in prose.</p><a href="#g-interval" title="t">interval</a>'
@@ -362,20 +359,14 @@ def test_the_check_passes_a_page_that_loads_only_the_font_links_and_runs_only_th
         f"</section></article><script>{KIT_JS}</script></body></html>"
     )
     assert what_runs(page) == []
-    assert font_links(page) == list(FONT_LINKS)
+    assert links(page) == []
 
 
-def test_the_check_passes_the_package_s_font_links_and_no_other_link() -> None:
-    """Only the three font links pass, attribute for attribute: another host, another rel, an extra attribute or a
-    handler on one of them is a link that loads something the package did not write."""
-    assert what_runs(FONT_LINK_MARKUP) == []
+def test_the_check_passes_no_link_at_all() -> None:
+    """The page loads nothing, so every link is refused: the reference memos' font links, another host, another rel,
+    an extra attribute or a handler on one."""
+    assert what_runs(FONT_LINK_MARKUP) == ["<link>", "link[href]"] * 3
     assert what_runs('<link rel="stylesheet" href="https://evil.example/x.css">') == ["<link>", "link[href]"]
-    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com.evil.example">') == [
-        "<link>",
-        "link[href]",
-    ]
-    assert what_runs('<link rel="prefetch" href="https://fonts.googleapis.com">') == ["<link>", "link[href]"]
-    assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" id="x">') == ["<link>", "link[href]"]
     assert what_runs('<link rel="preconnect" href="https://fonts.googleapis.com" onload="x">') == [
         "<link>",
         "link[href]",

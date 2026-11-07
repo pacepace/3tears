@@ -1,29 +1,30 @@
 # Kit API
 
-`kit.css` is the visual system: tokens, type, layout, tables, pills, controls. `kit.js` holds the chart and naming helpers. Both are inlined into each page by `scripts/build.py`. There are no dependencies beyond Google Fonts (IBM Plex Sans, Sans Condensed, Mono).
+`kit.css` is the visual system: tokens, type, layout, tables, pills, controls. `kit.js` holds the chart and naming helpers. Both are inlined into each page by `scripts/build.py`. The stylesheet fetches nothing: its faces are a local stack (IBM Plex Sans, Sans Condensed and Mono where installed, then the system's, ending in a generic family). The reference memos' sources link Plex from Google Fonts; the package's report pages link nothing.
 
 ## Tokens (kit.css)
 
 | Token | Use |
 |---|---|
-| `--host-accent` | **The only token a host overrides** (give light and dark values). Drives `--accent`, `--accent-wash`, focus rings and the recommended-row highlight. |
-| `--bg --surface --sunk --ink --ink-2 --muted --line --base` | Neutrals, with a slight cool bias. |
+| `--host-font-body`, `--host-font-mono`, `--host-color-text`, `--host-color-muted`, `--host-color-surface`, `--host-color-link`, `--host-color-accent` | **The tokens a host sets**, on the page's `<html>` tag. The kit reads each with its own value as the fallback and declares none of them, so a host's value wins in either theme. They set `--f-body`/`--f-display`, `--f-mono`, `--ink`, `--muted`, `--bg`/`--surface`, `--link` and `--accent`. |
+| `--bg --surface --ink --muted --accent --link` | Neutrals and the accent, read from the host tokens. |
+| `--ink-2 --sunk --line --base --accent-wash --shade` | Mixed from those by `color-mix`, so a host's palette carries through: secondary text, the sunken tint, rules, the accent's wash, a scroll shadow. |
 | `--on-fill` | Text set on a filled mark (a pressed segment, an arm's tag square, a count inside a bar). |
 | `--s1 … --s5` | Series colors in fixed order: blue, orange, aqua, gold, violet. The control uses `--ink-2`. |
 | `--good --warn --bad` and `*-wash` | Status. Always shown with ✓ ! ✕ and a word (`pill()`). |
 | `--seq-0 … --seq-5`, `--seq-t0 … --seq-t5` | Sequential ramp and the matching text color for each step. The dark ramp runs light-on-dark. |
 | `--div-neg --div-mid --div-pos` | Diverging ramp for difference heatmaps. |
-| `--f-display --f-body --f-mono` | Plex Sans Condensed, Plex Sans, Plex Mono. |
+| `--f-display --f-body --f-mono` | Plex Sans Condensed, Plex Sans, Plex Mono, each then the system's faces and a generic family. |
 
 **Outcomes** (how each trial ended, as a stacked bar draws them) take status colours, never a series color, since series colors name arms: passed is `--good`, solid; every failure cause is `--bad` under a texture of its own (`pattern`: `hatch`, `cross`, `dots`, `rows`, `cols`, in that order), so five causes read as five looks and no failure reads as a pass even without color; a loss cause is a neutral, `--base` then `--muted` solid, then each textured. The legend names every cause in its look.
 
 **Arms** take one color for the whole page, by their letter tag (GENERATOR.md §6.1): the control (`P`) `--ink-2`, the candidates (`A`, `B`, …) `--s1 … --s5` in order, plus a shape (scatter) or the tag in a square (bars), so color is never the only cue.
 
-Dark values are defined twice, under `prefers-color-scheme: dark` (guarded by `:not([data-theme="light"])`) and under `[data-theme="dark"]`, so a host toggle wins both ways.
+Dark values are defined twice, under `prefers-color-scheme: dark` (guarded by `:not([data-theme="light"])`) and under `[data-theme="dark"]`, so a host toggle wins both ways. Neither block declares a `--host-*` token.
 
 ## Layout classes
 
-`.page` (68rem) · `.prose` (44rem) · `.mast` · `.bluf` · `.decision` (4 slots; `.rec` highlights one) · `section > header` (`.eyebrow`, `h2`, `.takeaway`) · `.part` (divider before Explore and Full results) · `.fig` (card for a chart) · `.grid2` · `.mult` (auto-fill small multiples; a chart's `panel_min_rem` sets the narrowest column) · `.tbl` (scrolling table wrapper) · `tr.hl` (recommended row) · `.controls` `.ctl` `.seg` `.toggle` · `.callout` · `.stats .stat .big .lab` · `.method` (definition list) · `.flag` (amber confidence line) · `.armchip .tag` · `.excard` (failure example card: `.top`, `.q`, `dl`, `.reason`, `pre`, `.note`) · `.gate` (gate matrix table) · `.lattice` (factor tiles) · `.mx` (cell grids: heatmap, difference, confusion). The kit's HTML kinds write these; their column counts are set inline from the data.
+`.page` (68rem) · `.prose` (44rem) · `.mast` · `.bluf` · `.decision` (cards that wrap, the last row's stretching so no cell is left empty; `.rec` highlights one) · `section > header` (`.eyebrow`, `h2`, `.takeaway`) · `.part` (divider before Explore and Full results) · `.fig` (card for a chart) · `.grid2` · `.mult` (auto-fill small multiples; a chart's `panel_min_rem` sets the narrowest column) · `.tbl` (scrolling table wrapper: a shadow at an edge while more lies past it, the first column sticky) · `tr.hl` (recommended row) · `.controls` `.ctl` `.seg` `.toggle` · `.callout` · `.stats .stat .big .lab` · `.method` (definition list) · `.flag` (amber confidence line) · `.armchip .tag` · `.excard` (failure example card: `.top`, `.q`, `dl`, `.reason`, `pre`, `.note`) · `.gate` (gate matrix table) · `.lattice` (factor tiles) · `.mx` (cell grids: heatmap, difference, confusion). The kit's HTML kinds write these; their column counts are set inline from the data.
 
 ## Chart data: the `data-chart` contract
 

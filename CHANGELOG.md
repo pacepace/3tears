@@ -6,6 +6,36 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the report page fits the host that frames it
+
+**Changed:** every table scrolls inside its own frame with a shadow at an edge while more lies past it and its first
+column sticky, wrapping within a third of the frame, its headers wrapping, so it reads in a 688 px host frame (the
+static page too: the stylesheet draws the shadow); a chart's values table wraps its cells of words. The To settle table leads with the arm and both counts (`Arm`, `If no difference`, `If as observed`), then
+the aspect, what settling shows and `Why unclear`, which wraps. By stratum states a cell of one case run once as its
+count (`1 case`) and never `1 trials`, and past six strata lays a stratum per row with the arms as columns; where every stratum holds under the cases a stratum needs, one line says so
+(`Every stratum holds 1 to 2 cases; a stratum is read alone from 10 cases.`) and no cell repeats `too few cases to read
+alone`. A written report's page (HTML and Markdown) lays Every arm by measure out the way with fewer columns: a figure per row
+and an arm per column where the arms are fewer than the figures, as Every stratum is (`parts.full_results.laid_out`; the page's text, which the editor and a writer eval's judge read,
+keeps an arm per row, so rung 5's recorded judge replays as recorded); its
+rerun-size (settle) table holds four columns (`Arm`, `Against`, `Settles it 4 runs in 5`, `The same, one-sided`, each
+size with what it counts) and no longer prints the half-the-time sizes, the trial and repeat columns, how often a run
+reads the other side or the note explaining that column (`settle_cases` still carries every figure, citable by key).
+A written report's masthead reads a count of one singular (`vs 1 candidate`, `× 1 repeat`), and its cards wrap with the
+last row stretching, so a short card leaves no empty cell. `docs/eval-report-kit/scripts/check.py` checks 688 px beside
+1200 and 390, and fails a table that scrolls with its first column.
+
+**Hosts:** the page reads seven tokens and declares none: `--host-font-body`, `--host-font-mono`, `--host-color-text`,
+`--host-color-muted`, `--host-color-surface`, `--host-color-link` and `--host-color-accent`, each with the page's own
+value (light and dark) as its fallback, so a host's value wins in either theme; secondary text, rules, the sunken tint
+and the accent's wash mix from them by `color-mix`, and the arm, outcome, status and scale colours stay the page's.
+`--host-accent` is retired: a host that set it sets `--host-color-accent`. The page opens with exactly one
+`<html lang="en">` tag, right after the doctype, which a host rewrites to stamp `data-theme` (which wins over the
+reader's colour scheme) and an inline `style` with its tokens. The fonts are no longer fetched: the three Google Fonts
+links are gone, the faces are IBM Plex where installed, then the system's, each stack ending in a generic family, so a
+policy needs no `style-src`/`font-src` for the Google hosts. A host matching `Needed, one-sided`, `A fresh run reads
+the other side` or the To settle column order updates its match. `docs/adopting-a-host.md` (Fitting the report page to
+the host) states the contract. Nothing stored changes.
+
 ### evals: one result, one sentence: the undecided reading says what it means, on every surface
 
 **Changed:** a contrast the evidence leaves undecided reads `the evidence cannot tell v2 and v1 apart` in a sentence

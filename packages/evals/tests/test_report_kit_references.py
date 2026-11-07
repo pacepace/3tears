@@ -5,7 +5,7 @@ and the data into the built page committed beside them. Two contracts hold for e
 
 - building the source reproduces the committed page byte for byte, so the built page never drifts from its
   source, its data or the kit;
-- ``scripts/check.py`` passes on the built page at 1200 and 390 px, light and dark: no console errors, no
+- ``scripts/check.py`` passes on the built page at 1200, 688 and 390 px, light and dark: no console errors, no
   sideways scroll, nothing past the right edge, no overlapping chart labels (GENERATOR.md §8, items 1-3).
 
 - the Kairo page says what the plan it was written from says (the retired report planner's reference plan, kept as
@@ -79,7 +79,7 @@ def test_a_reference_passes_the_render_checks(name: str, tmp_path: Path) -> None
     page = _build(name, tmp_path)
     checked, runs = render_checked(page, tmp_path / "screenshots")
     assert checked.returncode == 0, checked.stdout + checked.stderr
-    assert len(runs) == 4 and all(line.startswith("ok") for line in runs), checked.stdout
+    assert len(runs) == 6 and all(line.startswith("ok") for line in runs), checked.stdout
 
 
 #: Reads the Kairo page's first-screen prose and its Method pairs once its script has drawn them.

@@ -742,8 +742,8 @@ async def test_every_colour_is_a_variable_both_schemes_define() -> None:
         for variable in re.findall(r"var\((--[\w-]+)", rules)
         if not re.match(r"--(f|t)-|--(col|wide|r)$", variable)
     }
-    # A colour the light block derives from another token (``--accent: var(--host-accent)``) follows that token,
-    # which each dark block sets in its place.
+    # A colour the light block sets as another token (``--a: var(--b)``) follows that token, which each dark block sets
+    # in its place.
     derived = dict(re.findall(r"(--[\w-]+):\s*var\((--[\w-]+)\)", light))
     for variable in used:
         defined = derived.get(variable, variable)

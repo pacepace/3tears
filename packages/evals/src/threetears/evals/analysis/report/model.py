@@ -207,8 +207,7 @@ class Report(EvalDocumentModel):
         """Write the report as one self-contained page, its Markdown, and the bundle it was computed from.
 
         ``report.html`` needs nothing beside it — no script file, no stylesheet file, no image; its one script, the kit's
-        chart drawing, is inlined in it; it loads the kit's fonts
-        from Google Fonts where it can reach them and reads the same in the system's faces where it cannot — and
+        chart drawing, is inlined in it; it loads nothing, its faces a local stack ending in a generic family — and
         ``bundle.json`` is the bundle with its ``schema_version``, so the fingerprint the page names is the one a reader
         computes from the file (``AnalysisContextBundle.from_json(...).fingerprint(like=named)``, in the named one's version: an
         unprefixed one was taken before ``v2:``). ``report.md`` is the same page as Markdown.

@@ -1,35 +1,58 @@
 /* Layout: decision-memo column (68ch prose) with charts breaking out to a wide band.
-   Host apps override the --host-* tokens only; everything else derives from them. */
+   Host tokens: a host sets any of the seven --host-* properties (inline, on the html element) and the page reads
+   them, its own value the fallback; the page never declares one, so a host's value wins in either theme. Text, muted
+   text, surface, link and accent come from them; secondary text, rules, the sunken tint and the accent's wash mix from
+   those, so a host's palette carries through. Arm, outcome and scale colours stay the page's. Fonts are a local stack: nothing is
+   fetched, and every stack ends in a generic family. */
 :root{
-  --host-accent:#1f5fbf;
-  --bg:#f5f6f8; --surface:#ffffff; --sunk:#eef0f3;
-  --ink:#11151b; --ink-2:#465061; --muted:#7f8896;
-  --line:#e1e5eb; --base:#c3cad4;
-  --accent:var(--host-accent); --accent-wash:#e6eefa; --on-fill:#ffffff;
+  --bg:var(--host-color-surface,#f5f6f8); --surface:var(--host-color-surface,#ffffff);
+  --ink:var(--host-color-text,#11151b); --muted:var(--host-color-muted,#7f8896);
+  --accent:var(--host-color-accent,#1f5fbf); --on-fill:#ffffff;
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
+  --shade:color-mix(in srgb,var(--ink) 18%,transparent);
   --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#c98500; --s5:#6250d6;
   --good:#0b7f0b; --good-wash:#e3f3e3; --warn:#a86a00; --warn-wash:#fbf0d9; --bad:#c22f2f; --bad-wash:#fbe5e5;
   --seq-0:#eef4fc; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#5598e7; --seq-4:#256abf; --seq-5:#104281;
   --seq-t0:#11151b; --seq-t1:#11151b; --seq-t2:#11151b; --seq-t3:#ffffff; --seq-t4:#ffffff; --seq-t5:#ffffff;
   --div-neg:#d03b3b; --div-mid:#f0efec; --div-pos:#2a78d6;
-  --f-display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
-  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
-  --f-mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --f-display:var(--host-font-body,"IBM Plex Sans Condensed","IBM Plex Sans","Arial Narrow",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
+  --f-body:var(--host-font-body,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif);
+  --f-mono:var(--host-font-mono,"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace);
   --t-xs:.75rem; --t-sm:.8125rem; --t-base:.9375rem; --t-md:1.0625rem; --t-lg:1.375rem; --t-xl:1.875rem; --t-hero:2.25rem;
   --col:44rem; --wide:68rem; --r:6px;
 }
+/* Dark: the OS's, unless the host stamps data-theme="light"; data-theme="dark" sets it whatever the OS says. Each
+   theme declares the mixed colours again, the same mixes, so every token a rule colours with is set in each theme. */
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
-  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
-  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#828b99);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --shade:rgb(0 0 0/.55);
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
   --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
   --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
   --seq-t0:#eef1f5; --seq-t1:#eef1f5; --seq-t2:#eef1f5; --seq-t3:#ffffff; --seq-t4:#0e1115; --seq-t5:#0e1115;
   --div-neg:#e66767; --div-mid:#383835; --div-pos:#3987e5; color-scheme:dark}}
 :root[data-theme="dark"]{
-  --host-accent:#6aa2f0; --bg:#0e1115; --surface:#161a20; --sunk:#1d222a;
-  --ink:#eef1f5; --ink-2:#b5bdc9; --muted:#828b99; --line:#262c35; --base:#3a424e;
-  --accent-wash:#1a2a42; --on-fill:#ffffff;
+  --bg:var(--host-color-surface,#0e1115); --surface:var(--host-color-surface,#161a20);
+  --ink:var(--host-color-text,#eef1f5); --muted:var(--host-color-muted,#828b99);
+  --accent:var(--host-color-accent,#6aa2f0); --on-fill:#ffffff; --shade:rgb(0 0 0/.55);
+  --link:var(--host-color-link,var(--accent));
+  --ink-2:color-mix(in srgb,var(--ink) 55%,var(--muted));
+  --sunk:color-mix(in srgb,var(--ink) 5%,var(--surface));
+  --line:color-mix(in srgb,var(--ink) 11%,var(--surface));
+  --base:color-mix(in srgb,var(--ink) 22%,var(--surface));
+  --accent-wash:color-mix(in srgb,var(--accent) 12%,var(--surface));
   --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#9085e9;
   --good:#3cbf3c; --good-wash:#15291a; --warn:#e0a32e; --warn-wash:#2e2512; --bad:#ef6a6a; --bad-wash:#331a1b;
   --seq-0:#18202b; --seq-1:#173252; --seq-2:#1c4b84; --seq-3:#2a6cc0; --seq-4:#5598e7; --seq-5:#a8cdf6;
@@ -46,7 +69,7 @@ h1{font-size:var(--t-hero);line-height:1.12;font-weight:600}
 h2{font-size:var(--t-lg);font-weight:600;line-height:1.2}
 h3{font-size:var(--t-md);font-weight:600}
 p{margin:0}
-a{color:var(--accent)}
+a{color:var(--link)}
 code,.mono{font-family:var(--f-mono);font-size:.92em}
 .num{font-variant-numeric:tabular-nums}
 
@@ -57,8 +80,9 @@ code,.mono{font-family:var(--f-mono);font-size:.92em}
 .mast .kind{color:var(--accent);font-weight:600}
 .bluf{display:grid;gap:1.25rem;padding-block:1.75rem 2rem}
 .bluf .lede{font-size:var(--t-md);color:var(--ink-2);max-width:var(--col)}
-.decision{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
-.decision>div{background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
+/* cards wrap and the last row's stretch to fill it, so a short card never leaves an empty cell beside it */
+.decision{display:flex;flex-wrap:wrap;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.decision>div{flex:1 1 15rem;background:var(--surface);padding:1rem 1.1rem;display:grid;gap:.35rem;align-content:start;min-width:0}
 .decision .k{font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
 .decision .v{font-size:var(--t-base)}
 .decision .v strong{font-weight:600}
@@ -104,15 +128,27 @@ section>header{display:grid;gap:.35rem;max-width:var(--col)}
 #tip b{font-weight:600}
 
 /* tables */
-.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+/* A table wider than its frame scrolls inside it: a shadow shows at an edge only while more lies past it (the covers
+   scroll with the content, the shadows stay with the frame), and the first column stays in view. */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);
+  background:linear-gradient(to right,var(--surface) 40%,transparent) left/2.5rem 100% no-repeat local,
+    linear-gradient(to left,var(--surface) 40%,transparent) right/2.5rem 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%,var(--shade),transparent) left/.9rem 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%,var(--shade),transparent) right/.9rem 100% no-repeat scroll,
+    var(--surface)}
+/* the pinned column wraps within a third of the frame, so a long label never hides the columns past it */
+.tbl :is(th,td):first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:inset -1px 0 0 var(--line);
+  white-space:normal;overflow-wrap:break-word;min-width:0;max-width:min(14rem,35vw)}
+.tbl :is(th,td):first-child .armchip{white-space:normal}
+.tbl th:first-child{z-index:2;background:var(--sunk)}
 table{border-collapse:collapse;width:100%;font-size:var(--t-sm)}
 th,td{padding:.5rem .7rem;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0}
+th{font-weight:600;color:var(--muted);font-size:var(--t-xs);text-transform:uppercase;letter-spacing:.05em;background:var(--sunk);position:sticky;top:0;white-space:normal;min-width:4.5rem}
 td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:0}
 tr.hl td{background:var(--accent-wash)}
-tr.hl td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-td.wrap{white-space:normal;min-width:14rem}
+tr.hl td:first-child{background:var(--accent-wash);box-shadow:inset 3px 0 0 var(--accent),inset -1px 0 0 var(--line)}
+td.wrap{white-space:normal;min-width:min(14rem,60vw)}
 th.sort{cursor:pointer;user-select:none}
 th.sort:hover{color:var(--ink)}
 th.sort[aria-sort]::after{content:" ↓";color:var(--accent)}

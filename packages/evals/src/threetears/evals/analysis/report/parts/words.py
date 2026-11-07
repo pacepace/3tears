@@ -51,6 +51,8 @@ __all__ = [
     "EXPECTED_TERM",
     "EXPLORE_HEADERS",
     "EXPLORE_TITLE",
+    "FIGURES_BY_ASPECT_ORDER",
+    "FIGURES_TABLE_ORDER",
     "FULL_RESULTS_HEADERS",
     "FULL_RESULTS_TITLES",
     "GATE_UNKNOWN",
@@ -161,6 +163,15 @@ ASPECT_HEADER_TEMPLATE = "{aspect} {header}"
 
 #: The by-measure table's row order where it lays out more than one aspect.
 ASPECTS_TABLE_ORDER = "by aspect in the campaign's aspect order, then in the campaign's arm order"
+
+#: The order of every arm by measure as a page lays it out, a figure per row and an arm per column.
+FIGURES_TABLE_ORDER = "each figure in the input's order; the arms as columns in the campaign's arm order"
+
+#: The same, where more than one aspect holds figures.
+FIGURES_BY_ASPECT_ORDER = (
+    "by aspect in the campaign's aspect order, then each figure in the input's order; the arms as columns in the "
+    "campaign's arm order"
+)
 
 #: A count out of a total, as a cell's marker reads it: passes over usable trials, usable trials over those run.
 PASSES_TEMPLATE = "{passed} of {usable}"
@@ -330,13 +341,13 @@ LEVER_NOTE = (
 BAR_WORD = "bar"
 BAR_STRIP_NOTE = "Each dot is the arm's value, with the interval its bar was read on; a hollow dot misses its bar."
 
-#: A settle chart's or table's caption: what its figure is, ``{each}`` naming where it sits for the kind drawn
-#: (:data:`SETTLE_EACH`, a bar's length, or a table's column by its header).
+#: A settle chart's caption: what its bars are (:data:`SETTLE_EACH`). A settle table carries none: its columns are
+#: the sizes, each named by its header.
 SETTLE_NOTE = (
     "{each} how often a fresh run of today's size would read the figure on the other side of its line, if the "
     "truth is today's estimate ({level}); it plans a run and tests nothing."
 )
-SETTLE_EACH = {"bars": "Each bar is", "table": 'In each row, "{column}" is'}
+SETTLE_EACH = "Each bar is"
 
 #: What a settle row against an aspect's margin, or a floor, is settled against.
 SETTLE_MARGIN_TEMPLATE = "the margin on {aspect}"
@@ -593,15 +604,8 @@ TABLE_HEADERS = {
     "line": "Line",
     "distance": "Distance toward passing",
     "settles": "Settles",
-    "counted": "Sizes count",
-    "cases_needed": "Needed, one-sided",
-    "cases_needed_two_sided": "Needed, two-sided",
-    "today": "Today",
-    "trials_needed": "Trials needed, one-sided",
-    "trials_needed_two_sided": "Trials needed, two-sided",
-    "repeats": "Repeats of a case",
-    "today_trials": "Trials today",
-    "wrong_side": "A fresh run reads the other side",
+    "needed": "Settles it 4 runs in 5",
+    "needed_one_sided": "The same, one-sided",
     "setting": "Setting",
     "move": "Move",
 }

@@ -6,19 +6,16 @@ field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``j
 exactly one script, written by this module and never from a field: the kit's ``kit.js``, shipped beside this module
 as package data, inlined verbatim as the last element of the body. It draws each chart from its data, and a chart's
 data reaches the page only as JSON escaped into its ``data-chart`` attribute, every string in it text the kit sets as
-text. The one thing the page loads is the package's own too: the kit's fonts (IBM Plex Sans, Sans Condensed and
-Mono), two preconnects and one stylesheet link to the Google Fonts hosts, the same three links the kit's reference
-pages carry. Where a host's policy blocks those hosts the page reads the same in the system faces the kit names after
-each Plex face. Every other link is a ``#`` link to a place on the page itself. Drill-down is ``<details>``; moving
+text. The page loads nothing: its faces are a local stack (IBM Plex Sans, Sans Condensed and Mono where the reader
+has them, then the system's faces, ending in a generic family), so a sandboxed frame that blocks every host sets it as
+it would anywhere. Every link is a ``#`` link to a place on the page itself. Drill-down is ``<details>``; moving
 between the screens is ``#`` anchors; neither needs the script.
 
 **The static page** (``static=True`` on :func:`report_html` and :func:`campaign_report_html`) is for a host whose
 policy lets a page neither run nor load anything (``default-src 'none'``), even were escaping ever to fail. It is the
-default page less exactly three things, the kit's script, the three font links, and each chart's ``div.chart`` with
-its data, and plus each chart drawn on the server as inline SVG
+default page less exactly two things, the kit's script and each chart's ``div.chart`` with its data, and plus each chart drawn on the server as inline SVG
 (:func:`~threetears.evals.analysis.report.chart_svg.chart_drawing`) with the drawings' stylesheet. So it carries no
-``<script>`` and no ``<link>``; its text is set in the system faces the kit's stylesheet names after each Plex face;
-every chart the kit draws as a picture is that picture, drawn with no script, and its table of values stays shown
+``<script>`` and no ``<link>``; every chart the kit draws as a picture is that picture, drawn with no script, and its table of values stays shown
 under it, since the one rule that hides the table needs a ``div.chart`` beside it; a chart not drawn there (interval
 rows, a gate matrix, a lattice, example cards) says in one line that it is shown as its table. The default page is
 unchanged by the option, byte for byte.
@@ -49,9 +46,14 @@ held to a readable measure, tables and figures breaking out to the full width), 
 state is a ``.pill`` (an icon and the word, never a colour alone), headings are in the kit's display face, and the
 glossary is a ``.method`` list. Light and dark follow the reader's setting, and a ``data-theme`` a host's page sets.
 
-**A host restyles one thing: ``--host-accent``.** It is a CSS token, not a parameter: a host framing the page
-overrides it (light and dark values) in its own stylesheet, and the series, status and sequential colours stay
-fixed, so a brand colour can never make a fail look like a pass.
+**A host restyles it through seven tokens, and only those.** The stylesheet reads ``--host-font-body``,
+``--host-font-mono``, ``--host-color-text``, ``--host-color-muted``, ``--host-color-surface``, ``--host-color-link`` and
+``--host-color-accent``, each with the kit's own value as its fallback, and declares none of them, so a host's value
+wins in either theme; secondary text, rules and tints mix from them. The series, outcome, status and sequential
+colours stay fixed, so a brand colour can never make a fail look like a pass. The page opens with exactly one
+``<html lang="en">`` tag, right after the doctype, which a host framing it in a ``srcdoc`` rewrites to stamp
+``data-theme`` and an inline ``style`` with its tokens (``docs/adopting-a-host.md``); ``data-theme`` wins over the
+reader's colour-scheme setting either way.
 """
 
 from __future__ import annotations
@@ -110,9 +112,9 @@ def report_html(report: Report, *, static: bool = False) -> str:
 
     :param report: The report.
     :ptype report: Report
-    :param static: Write the static page: no ``<script>``, no ``<link>``, the text in the system faces the kit's
-        stylesheet names, and every chart drawn as inline SVG above its table of values. False (the default) writes the page with the kit's
-        script and font links, byte for byte as before the option existed.
+    :param static: Write the static page: no ``<script>``, no ``<link>``, and every chart drawn as inline SVG above its
+        table of values. False (the default) writes the page with the kit's script, byte for byte as before the option
+        existed.
     :ptype static: bool
     :return: The page.
     :rtype: str

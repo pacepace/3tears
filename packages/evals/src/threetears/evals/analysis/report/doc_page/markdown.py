@@ -39,6 +39,7 @@ from threetears.evals.analysis.report.doc_page.words import (
     OMITTED_TITLE,
 )
 from threetears.evals.analysis.report.md_parts import inert, markdown_table, one_line, paragraphs, table_lines
+from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report.parts.model import PageMasthead
 from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
 
@@ -122,7 +123,7 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
     yield [f"## {APPENDIX_TITLE}"]
     key = page.arms_key
     yield [f"### {key.eyebrow}", "", inert(key.takeaway), "", *table_lines(key.table)]
-    for table in page.full_results:
+    for table in map(laid_out, page.full_results):
         yield [f"### {one_line(table.title)}", "", *table_lines(table)]
     if page.omitted:
         yield [

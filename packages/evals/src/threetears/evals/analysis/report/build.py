@@ -2584,6 +2584,9 @@ def _strata_blocks(
         {stratum.stratum for cell in cells for stratum in cell.strata}, key=lambda name: (name is None, name or "")
     )
     columns = {name: f"stratum_{index}" for index, name in enumerate(names)}
+    # Where every stratum is too small to read alone, one line says so and no cell repeats it.
+    sizes = [stratum.n_cases for cell in cells for stratum in cell.strata]
+    all_thin = max(sizes) < STRATUM_MIN_CASES
     rows: list[dict[str, CellValue]] = []
     thin: list[str] = []
     for cell in cells:
@@ -2599,7 +2602,7 @@ def _strata_blocks(
             cases[columns[name]] = None
         for name, stratum in by_name.items():
             cases[columns[name]] = _cases_text(stratum.n_observations, stratum.n_cases)
-            if stratum.n_cases < STRATUM_MIN_CASES:
+            if stratum.n_cases < STRATUM_MIN_CASES and not all_thin:
                 cases[columns[name]] = f"{cases[columns[name]]} — {TOO_FEW_CASES}"
                 plural = "" if stratum.n_cases == 1 else "s"
                 thin.append(
@@ -2608,28 +2611,41 @@ def _strata_blocks(
         rows.append(cases)
         rows.extend(_measure_rows(arm, cell, by_name, columns, surface, rulers, check_names=check_names))
         rows.extend(_judged_rows(arm, cell, by_name, columns, rulers))
-    blocks: list[ReportBlock] = [
-        TableBlock(
-            section="contrasts",
-            name="strata",
-            title="By stratum",
-            columns=[
-                TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
-                TableColumn(key="reading", header="Reading"),
-                TableColumn(key="all", header="All cases", term="cases"),
-                *(
-                    TableColumn(key=columns[name], header=_stratum_word(name, stratum_names), term="stratum")
-                    for name in names
-                ),
-            ],
-            rows=[table_row(row) for row in rows],
-            order=surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
-            + " Within each arm: its cases, then each measure by name, then each judged dimension.",
-            total_rows=len(rows),
-            details=True,
+    order = (
+        surface_order_sentence(has_control_row=any(cell.variant_key == control for cell in cells))
+        + " Within each arm: its cases, then each measure by name, then each judged dimension."
+    )
+    table = TableBlock(
+        section="contrasts",
+        name="strata",
+        title="By stratum",
+        columns=[
+            TableColumn(key="arm", header="Arm", term="control" if control is not None else None),
+            TableColumn(key="reading", header="Reading"),
+            TableColumn(key="all", header="All cases", term="cases"),
+            *(
+                TableColumn(key=columns[name], header=_stratum_word(name, stratum_names), term="stratum")
+                for name in names
+            ),
+        ],
+        rows=[table_row(row) for row in rows],
+        order=order,
+        total_rows=len(rows),
+        details=True,
+    )
+    blocks: list[ReportBlock] = [_by_stratum_row(table) if len(names) > _STRATA_COLUMNS else table]
+    if all_thin:
+        low, high = min(sizes), max(sizes)
+        span = f"{low} case{'' if low == 1 else 's'}" if low == high else f"{low} to {high} cases"
+        blocks.insert(
+            0,
+            DisclosureBlock(
+                section="contrasts",
+                source="strata",
+                text=f"Every stratum holds {span}; a stratum is read alone from {STRATUM_MIN_CASES} cases.",
+            ),
         )
-    ]
-    if thin:
+    elif thin:
         # A list of counts belongs beside the table it qualifies, in the methods' fold, not in a line of prose.
         blocks.append(
             _note(
@@ -2641,6 +2657,48 @@ def _strata_blocks(
     return blocks
 
 
+#: The most strata the table by stratum lays out as columns, beside the arm, the reading and the pooled figure; more,
+#: and a stratum is a row, each arm a column, so the table stays as wide as the arms, never as the strata.
+_STRATA_COLUMNS = 6
+
+
+def _by_stratum_row(table: TableBlock) -> TableBlock:
+    """The table by stratum turned a stratum per row: all cases first, then each stratum, each reading under it in the
+    arms' own order, every arm a column holding its cell as it was; a row no arm holds is left out."""
+    arms = list(dict.fromkeys(row["arm"].text for row in table.rows))
+    readings = list(dict.fromkeys(row["reading"].text for row in table.rows))
+    held = {(row["arm"].text, row["reading"].text): row for row in table.rows}
+    places = [column for column in table.columns if column.key not in ("arm", "reading")]
+    rows: list[dict[str, TableCell]] = []
+    for place in places:
+        for reading in readings:
+            cells = {
+                f"arm_{at}": held[arm, reading][place.key] if (arm, reading) in held else TableCell(value=None)
+                for at, arm in enumerate(arms)
+            }
+            if all(cell.value is None for cell in cells.values()):
+                continue
+            rows.append({"stratum": TableCell(value=place.header), "reading": TableCell(value=reading), **cells})
+    control = next((column.term for column in table.columns if column.key == "arm"), None)
+    return table.model_copy(
+        update={
+            "columns": [
+                TableColumn(key="stratum", header="Stratum", term="stratum"),
+                TableColumn(key="reading", header="Reading"),
+                *(
+                    TableColumn(key=f"arm_{at}", header=arm, term=control if arm.startswith("▸ ") else None)
+                    for at, arm in enumerate(arms)
+                ),
+            ],
+            "rows": rows,
+            "order": "All cases, then each stratum by name; within each, its cases, then each measure by name, then "
+            "each judged dimension. The arms are the columns, in the order the arms' rows would take: "
+            + table.order.split(" Within each arm")[0],
+            "total_rows": len(rows),
+        }
+    )
+
+
 def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
     """A stratum as a column header and a disclosure name it: its declared display name, else its id, else
     :data:`NO_STRATUM`."""
@@ -2648,10 +2706,14 @@ def _stratum_word(name: str | None, declared: Mapping[str, str]) -> str:
 
 
 def _cases_text(n_trials: int, n_cases: int | None) -> str:
-    """How many cases and trials a figure rests on — cases first, since they are the independent draws."""
+    """How many cases and trials a figure rests on — cases first, since they are the independent draws; one case run
+    once is its count alone (``1 case``), and a count of one is never plural."""
+    trials = f"{n_trials} trial{'' if n_trials == 1 else 's'}"
     if n_cases is None:
-        return f"{n_trials} trials, cases unrecorded"
-    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {n_trials} trials"
+        return f"{trials}, cases unrecorded"
+    if n_cases == 1 and n_trials == 1:
+        return "1 case"
+    return f"{n_cases} case{'' if n_cases == 1 else 's'}, {trials}"
 
 
 def _measure_rows(

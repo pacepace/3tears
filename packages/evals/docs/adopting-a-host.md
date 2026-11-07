@@ -1635,6 +1635,47 @@ filed issues, run `analyst_gaps_list` from a scheduled job of your own and post 
 To let your own agents investigate a campaign the way the analyst does, mount the `evals_analyst` tool beside `evals`
 ([serving](serving.md#the-analysts-tool)).
 
+### Fitting the report page to the host
+
+A report page framed in your app should look like your app. You can set its faces and its main colours, and stamp
+its theme. The page reads seven CSS custom properties and declares none of them. Each falls back to the page's own
+value, so you set only the ones you want:
+
+| Token | What it sets | Page default, light / dark |
+|---|---|---|
+| `--host-font-body` | body text and headings | `"IBM Plex Sans"` (headings `"IBM Plex Sans Condensed"`), then `system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif` |
+| `--host-font-mono` | ids, expressions, payloads | `"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace` |
+| `--host-color-text` | text | `#11151b` / `#eef1f5` |
+| `--host-color-muted` | quiet text: table headers, captions | `#7f8896` / `#828b99` |
+| `--host-color-surface` | the ground and every card | `#f5f6f8` and `#ffffff` / `#0e1115` and `#161a20` |
+| `--host-color-link` | links | the accent |
+| `--host-color-accent` | the accent: the decided verdict, the recommended row, focus | `#1f5fbf` / `#6aa2f0` |
+
+The page mixes its secondary text, rules, sunken tint and the accent's wash from these with `color-mix`, so they follow
+your palette. The arm, outcome, status and scale colours stay the page's: a brand colour can never make a fail look
+like a pass.
+
+**Where to set them.** A `srcdoc` frame cannot see your stylesheet, so set them on the page's own `<html>` tag. Every
+page opens with exactly one `<html lang="en">`, right after `<!doctype html>`. Rewrite that tag before you hand the
+page to the frame:
+
+```html
+<html lang="en" data-theme="dark" style="--host-font-body:'Bricolage Grotesque',sans-serif;--host-color-accent:#d8b46a">
+```
+
+An inline style beats every rule in the page, in either theme. Pass the values for the theme you stamp. Leave out any
+value holding `;`, `{` or `}`, and leave a page untouched if it does not carry exactly one such tag.
+
+**The theme.** `data-theme="dark"` or `"light"` on that tag wins over the reader's colour-scheme setting. Without it
+the page follows the setting, which a sandboxed frame reads from the operating system, not from your app.
+
+**Fonts.** The page fetches nothing: no font host, no stylesheet link. A face reaches the frame only if the frame
+can load it, which a sandbox usually cannot, so end every font value in a generic family (`sans-serif`, `monospace`).
+IBM Plex is used where the reader has it installed, else the system's faces.
+
+**Width.** Every table fits a 688 px frame or scrolls inside its own frame. A shadow at an edge shows there is more,
+and the first column stays in view while you scroll.
+
 ## The engine's prompts: shipped defaults, optional overrides
 
 **The report writer reads a skill, not a prompt you hold.** A campaign report is written by the analyst and its
