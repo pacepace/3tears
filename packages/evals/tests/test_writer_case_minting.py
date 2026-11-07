@@ -12,6 +12,7 @@ manifest of what reasoned on the campaign) and writes that case. The notes withh
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from threetears.evals.kernel import EvalInsight
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
+from threetears.evals.schema import eval_trace_doc_id
 from threetears.evals.schema.hashing import identity_json
 
 #: The courier's capture: the export.
@@ -208,11 +210,34 @@ async def test_minting_the_same_evidence_again_writes_the_same_bytes_at_the_evid
     assert case.snapshot.id == WriterCaseFile.read(held_out_path(NAME)).snapshot.id
 
 
-@pytest.mark.parametrize("doc_type", ["eval_campaign", "eval_run", "eval_template", "eval_result", "eval_trace"])
-async def test_an_export_without_a_document_type_the_freeze_reads_is_refused_by_its_name(doc_type: str) -> None:
+@pytest.mark.parametrize(
+    ("doc_type", "said"),
+    [
+        ("eval_campaign", "the export holds no eval_campaign document"),
+        ("eval_run", "the export holds no eval_run document"),
+        ("eval_template", "the export holds no eval_template document"),
+        ("eval_result", "the export holds no eval_result document"),
+        ("eval_trace", "results record traces the export does not hold: eval_trace "),
+    ],
+)
+async def test_an_export_without_a_document_type_the_freeze_reads_is_refused_by_its_name(
+    doc_type: str, said: str
+) -> None:
     documents = [document for document in _documents() if document["doc_type"] != doc_type]
-    with pytest.raises(RefusedInput, match=rf"the export holds no {doc_type}\b"):
+    with pytest.raises(RefusedInput, match=re.escape(said)):
         await _minted(documents)
+
+
+async def test_a_result_whose_trace_the_export_lacks_is_refused_naming_the_trace() -> None:
+    """One trace missing, or exported under another id, is refused by its id: no result's evidence is dropped unsaid."""
+    documents = _documents()
+    (result,) = [document for document in documents if document["doc_type"] == "eval_result"][:1]
+    missing = eval_trace_doc_id(result["id"])
+    kept = [document for document in documents if document["id"] != missing]
+    misfiled = [*kept, {**next(d for d in documents if d["id"] == missing), "id": f"{result['id']}:other"}]
+    for export in (kept, misfiled):
+        with pytest.raises(RefusedInput, match=rf"the export does not hold: eval_trace {re.escape(missing)}(?![\w:])"):
+            await _minted(export)
 
 
 async def test_an_export_missing_one_of_the_campaigns_runs_is_refused_naming_it() -> None:
@@ -325,19 +350,23 @@ def _refused(args: list[str], capsys: pytest.CaptureFixture[str]) -> str:
     return capsys.readouterr().err
 
 
-def test_a_scope_the_campaign_is_not_in_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_scope_no_document_is_in_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     out = tmp_path / f"{NAME}.json.gz"
     err = _refused([*_files(tmp_path), *_case_args(out), "--scope", "elsewhere"], capsys)
-    assert f"in {_campaign(_documents())['scope_id']}, not in 'elsewhere'" in err
+    assert "--scope elsewhere: the export holds no document in it" in err
     assert not out.exists()
 
 
-async def test_a_campaign_exported_in_two_scopes_needs_its_scope_named() -> None:
+def test_a_campaign_exported_in_two_scopes_is_read_in_the_one_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     documents = _documents()
     copied = {**_campaign(documents), "scope_id": "courier-depot-south"}
-    with pytest.raises(RefusedInput, match="in 2 scopes: courier-depot-north, courier-depot-south"):
-        await _minted([*documents, copied])
-    case = await _minted([*documents, copied], scope_id="courier-depot-north", as_of=FROZEN_AT)
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz"), "--as-of", FROZEN_AT]
+    (tmp_path / "documents.json").write_text(json.dumps([*documents, copied]))
+    assert "in 2 scopes: courier-depot-north, courier-depot-south" in _refused(args, capsys)
+    assert main([*args, "--scope", "courier-depot-north"]) == EXIT_OK
+    case = WriterCaseFile.read(tmp_path / f"{NAME}.json.gz")
     assert case.snapshot.id == WriterCaseFile.read(held_out_path(NAME)).snapshot.id
 
 
@@ -354,7 +383,11 @@ async def test_a_document_without_its_type_id_or_scope_is_refused_by_its_place()
         ("documents.json", "not json", "documents.json is not JSON"),
         ("documents.json", '{"doc_type": "eval_campaign"}', "documents.json is not a JSON list of documents"),
         ("profile.json", "[]", "profile.json is not a JSON object"),
-        ("profile.json", '{"built_by": 7}', "profile.json: built_by is a int, not a string"),
+        (
+            "profile.json",
+            '{"built_by": 7, "host_declarations_digest": "d"}',
+            "profile.json: built_by is a int, not a string",
+        ),
         ("manifest.json", "not json", "manifest.json is not JSON"),
         ("manifest.json", '{"reasoned_on": []}', "manifest.json does not read as a mint manifest"),
     ],
@@ -399,3 +432,27 @@ def test_a_skill_named_on_the_command_line_is_the_one_whose_notes_are_withheld(t
 def test_a_directory_that_is_not_a_skill_is_refused(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz"), "--skill", str(tmp_path / "none")]
     assert f"--skill {tmp_path / 'none'}: no analyst skill directory" in _refused(args, capsys)
+
+
+def test_a_declaration_without_its_digest_is_refused_naming_the_key_it_holds_instead(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = [*_files(tmp_path), *_case_args(tmp_path / f"{NAME}.json.gz")]
+    (tmp_path / "profile.json").write_text(json.dumps({"built_by": FACTORY, "declarations_digest": _declared_digest()}))
+    err = _refused(args, capsys)
+    assert "profile.json declares no 'host_declarations_digest'; it holds 'declarations_digest'" in err
+
+
+def test_the_export_is_checked_before_the_profile_factory_is_imported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry check: an export refused where the host's module does not import says what is wrong with the export."""
+    args = [*_files(tmp_path, built_by="nowhere_host.evals:build_profile"), *_case_args(tmp_path / f"{NAME}.json.gz")]
+    results_dropped = [document for document in _documents() if document["doc_type"] != "eval_result"]
+    (tmp_path / "documents.json").write_text(json.dumps(results_dropped))
+    err = _refused(args, capsys)
+    assert "the export holds no eval_result document" in err
+    assert "nowhere_host" not in err
+    # With the export sound, the same command stops at the factory.
+    (tmp_path / "documents.json").write_text(json.dumps(_documents()))
+    assert "cannot import 'nowhere_host.evals'" in _refused(args, capsys)

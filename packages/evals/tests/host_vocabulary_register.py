@@ -375,6 +375,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "harness/__init__.py": {},
     "harness/__main__.py": {},
     "harness/analyse.py": {},
+    "harness/minting.py": {},
     "harness/writer_cases.py": {},
     "harness/writer_eval.py": {},
     "harness/writer_host.py": {},

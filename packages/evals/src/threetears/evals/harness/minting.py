@@ -66,6 +66,7 @@ from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.storage import InMemoryDocumentStore
 
 #: The document types a mint refuses to go without, in the order it checks them.
@@ -137,11 +138,11 @@ class ProfileFile:
 
     :ivar factory: ``module:callable`` building the live profile (the declaration's ``built_by``), or ``None`` when
         it names no callable.
-    :ivar digest: The declaration's ``host_declarations_digest``, or ``None`` when it carries none.
+    :ivar digest: The declaration's ``host_declarations_digest``.
     """
 
     factory: str | None
-    digest: str | None
+    digest: str
 
 
 def host_profile_from(spec: str) -> HostProfile:
@@ -160,7 +161,7 @@ def host_profile_from(spec: str) -> HostProfile:
     if not colon or not module_name or not attribute:
         raise RefusedInput(
             f"a profile factory is named module:factory, a module path and a callable in it, not {spec!r}",
-            remedy="name it as package.module:build_profile",
+            remedy="name it as package.module:callable, a callable that module defines",
         )
     try:
         module = importlib.import_module(module_name)
@@ -194,12 +195,13 @@ def read_profile_file(path: str | Path) -> ProfileFile:
 
     :param path: The file, a JSON object.
     :ptype path: str | Path
-    :return: Its factory and its digest, each ``None`` when it names none.
+    :return: Its factory (``None`` when ``built_by`` names no callable) and its digest.
     :rtype: ProfileFile
-    :raises RefusedInput: The file cannot be read, is not a JSON object, or either key is there and not a string.
+    :raises RefusedInput: The file cannot be read or is not a JSON object, ``built_by`` is there and not a string, or
+        ``host_declarations_digest`` is missing (naming any key that looks like it) or not a string.
     """
     source = Path(path)
-    remedy = 'write {"built_by": "module:callable", "host_declarations_digest": "<64 hex>", ...}'
+    remedy = "write a JSON object whose 'built_by' is a module:callable importable here and whose 'host_declarations_digest' is the profile's digest"
     try:
         content = json.loads(_text(source))
     except json.JSONDecodeError as unread:
@@ -207,11 +209,18 @@ def read_profile_file(path: str | Path) -> ProfileFile:
     if not isinstance(content, dict):
         raise RefusedInput(f"{source} is not a JSON object", remedy=remedy)
     built_by, digest = content.get("built_by"), content.get("host_declarations_digest")
+    if "host_declarations_digest" not in content:
+        near = sorted(key for key in content if "digest" in key.casefold())
+        nearly = f"; it holds {', '.join(repr(key) for key in near)}" if near else ""
+        raise RefusedInput(
+            f"{source} declares no 'host_declarations_digest'{nearly}",
+            remedy="name the digest under 'host_declarations_digest', computed with the package's own function",
+        )
     for key, value in (("built_by", built_by), ("host_declarations_digest", digest)):
-        if value is not None and not isinstance(value, str):
+        if (value is not None or key == "host_declarations_digest") and not isinstance(value, str):
             raise RefusedInput(f"{source}: {key} is a {type(value).__name__}, not a string", remedy=remedy)
     factory = built_by if isinstance(built_by, str) and ":" in built_by else None
-    return ProfileFile(factory=factory, digest=digest if isinstance(digest, str) else None)
+    return ProfileFile(factory=factory, digest=str(digest))
 
 
 def _text(source: Path) -> str:
@@ -322,9 +331,7 @@ class _Evidence:
     instant: str
 
 
-def _evidence(
-    documents: Iterable[Mapping[str, Any]], campaign_id: str, scope_id: str | None, as_of: str | None
-) -> _Evidence:
+def _evidence(documents: Iterable[Mapping[str, Any]], campaign_id: str, as_of: str | None) -> _Evidence:
     """Load the export into a store in memory and check it holds what the freeze reads. Blocking."""
     store, loaded = _store(documents)
     present = {document["doc_type"] for document in loaded}
@@ -340,18 +347,13 @@ def _evidence(
     )
     if not scopes:
         raise _missing("eval_campaign", [campaign_id], campaign_id)
-    if scope_id is None:
-        if len(scopes) > 1:
-            raise RefusedInput(
-                f"the export holds campaign {campaign_id!r} in {len(scopes)} scopes: {', '.join(scopes)}",
-                remedy="name the scope to freeze it in",
-            )
-        (scope_id,) = scopes
-    elif scope_id not in scopes:
+    # The scope is the campaign document's own, never chosen here: an export holding the campaign in two is ambiguous.
+    if len(scopes) > 1:
         raise RefusedInput(
-            f"the export holds campaign {campaign_id!r} in {', '.join(scopes)}, not in {scope_id!r}",
-            remedy="name the scope the campaign document carries, or none",
+            f"the export holds campaign {campaign_id!r} in {len(scopes)} scopes: {', '.join(scopes)}",
+            remedy="export one scope's closure, or pass --scope naming the one to read",
         )
+    (scope_id,) = scopes
     storage = EvalStorage(store)
     campaign = storage.load_campaign(campaign_id, scope_id)
     if campaign is None:
@@ -372,10 +374,16 @@ def _evidence(
     ]
     if not results:
         raise RefusedInput(f"the export holds no eval_result of campaign {campaign_id!r}'s runs", remedy=_EXPORT_REMEDY)
-    if "eval_trace" not in present and any(document.get("has_trace") is True for document in results):
+    traces = {document["id"] for document in loaded if document["doc_type"] == "eval_trace"}
+    if untraced := sorted(
+        trace_id
+        for document in results
+        if document.get("has_trace") is True and (trace_id := eval_trace_doc_id(document["id"])) not in traces
+    ):
         raise RefusedInput(
-            f"campaign {campaign_id!r}'s results record traces and the export holds no eval_trace",
-            remedy=_EXPORT_REMEDY,
+            f"campaign {campaign_id!r}'s results record traces the export does not hold: eval_trace "
+            f"{', '.join(untraced)}",
+            remedy=_EXPORT_REMEDY + "; each result's trace under the id its result names",
         )
     instant = (
         _instant(as_of, "as_of")
@@ -399,6 +407,23 @@ def _evidence(
     return _Evidence(storage=storage, scope_id=scope_id, instant=instant)
 
 
+async def export_checked(documents: Iterable[Mapping[str, Any]], *, campaign_id: str, as_of: str | None = None) -> str:
+    """Check, with no profile, that an export holds what a mint of the campaign reads: a dry check of an export.
+
+    :param documents: The export, as :func:`writer_case_from_export` takes it.
+    :ptype documents: Iterable[Mapping[str, Any]]
+    :param campaign_id: The campaign.
+    :ptype campaign_id: str
+    :param as_of: The instant it would be frozen at; ``None`` for the moment its evidence was complete.
+    :ptype as_of: str | None
+    :return: The instant the case would be frozen at.
+    :rtype: str
+    :raises RefusedInput: As :func:`writer_case_from_export` refuses the documents.
+    """
+    evidence = await run_blocking(None, _evidence, documents, campaign_id, as_of)
+    return evidence.instant
+
+
 async def writer_case_from_export(
     documents: Iterable[Mapping[str, Any]],
     profile: HostProfile,
@@ -406,7 +431,6 @@ async def writer_case_from_export(
     campaign_id: str,
     name: str,
     created_by: str,
-    scope_id: str | None = None,
     group: str | None = None,
     stratum: str | None = None,
     reasoned_on: Collection[ReasonedOn] = (),
@@ -431,8 +455,6 @@ async def writer_case_from_export(
     :ptype name: str
     :param created_by: Who mints it, as the host names the caller; the snapshot records it.
     :ptype created_by: str
-    :param scope_id: The scope the campaign lives in; ``None`` for the campaign document's own.
-    :ptype scope_id: str | None
     :param group: The split group; ``None`` for the case's name.
     :ptype group: str | None
     :param stratum: The kind of case it is (the domain it comes from).
@@ -454,7 +476,7 @@ async def writer_case_from_export(
     :ptype as_of: str | None
     :return: The case, unwritten (:meth:`~threetears.evals.harness.WriterCaseFile.write` writes it).
     :rtype: WriterCaseFile
-    :raises RefusedInput: The export lacks a document the freeze needs, the campaign is not in the scope named,
+    :raises RefusedInput: The export lacks a document the freeze needs, holds the campaign in two scopes,
         ``as_of`` is not an instant, the profile's declarations are not the ones declared, or ``withhold`` names a
         note the skill does not hold.
     :raises ValidationFailedError: As :func:`~threetears.evals.ops.analyst.report_snapshot_freeze` refuses.
@@ -467,7 +489,7 @@ async def writer_case_from_export(
             remedy="mint with the profile of the build that measured the campaign, or export its declaration again",
         )
     notes, record = _withheld(skill or load_skill(), campaign_id, reasoned_on, withhold)
-    evidence = await run_blocking(None, _evidence, documents, campaign_id, scope_id, as_of)
+    evidence = await run_blocking(None, _evidence, documents, campaign_id, as_of)
     host = OpsHost.reading(
         EvalHost(
             profile=profile,
@@ -495,6 +517,7 @@ async def writer_case_from_export(
 #: The door is on the harness's root; the file readers and the manifest are the command line's.
 __all__ = [
     "MintManifest",
+    "export_checked",
     "ProfileFile",
     "host_profile_from",
     "read_documents_file",

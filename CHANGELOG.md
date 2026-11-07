@@ -23,7 +23,10 @@ held-out courier case. `python -m threetears.evals.harness FILE --write-report M
 **Hosts:** to mint from production, export each campaign's closure (at least the campaign, its runs, their results
 and traces, the templates and test cases they ran, every insight on its subject and the analyses that minted them),
 your profile declaration with `built_by` as `module:callable`, and the manifest; run the mint in your own environment.
-See "Minting a case from a production export" in `packages/evals/docs/serving.md`. Nothing stored changes.
+See "Minting a case from a production export" in `packages/evals/docs/serving.md`. Hosts compute and invert the
+digest with the package's own function: `threetears.evals.analysis.host_declarations_digest`, and
+`threetears.evals.schema.judge_config_of` and `is_builtin_judge_config_id`, all three now host-contract. Nothing stored
+changes.
 
 ### evals: 26 declared names only Discodon's tests import go provisional
 

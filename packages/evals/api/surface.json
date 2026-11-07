@@ -608,8 +608,8 @@
     },
     "threetears.evals.schema.is_builtin_judge_config_id": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "is_builtin_judge_config_id(config_id: str | None) -> bool",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.is_pass": {
       "kind": "function",
@@ -653,8 +653,8 @@
     },
     "threetears.evals.schema.judge_config_of": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "judge_config_of(recorded: str | None) -> str | None",
+      "tier": "host-contract"
     },
     "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE": {
       "kind": "constant (str)",
@@ -5740,6 +5740,11 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.analysis.host_declarations_digest": {
+      "kind": "function",
+      "signature": "host_declarations_digest(profile: HostProfile) -> str",
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.humanize": {
       "kind": "function",

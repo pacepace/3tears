@@ -743,7 +743,10 @@ python -m threetears.evals.harness mint --documents documents.json --profile pro
     [--as-of INSTANT] [--scope SCOPE] [--host module:callable] [--created-by WHO] --out NAME.json.gz
 ```
 
-It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds.
+It runs in the host's own environment: the freeze calls the profile's readers, which only the host's code holds. The
+three files and the export are checked before the profile's factory is imported, so an export is dry-checked anywhere:
+a refusal of the documents, the manifest or the declaration comes first. `--scope` reads only the documents of that
+scope; omitted, the campaign is read in the scope its document carries, and an export holding it in two is refused.
 
 **`documents.json`** is one JSON list of the campaign's closure, each document verbatim as stored, with its
 `doc_type`, `id` and `scope_id`. The freeze reads these and ignores every other document, so a host may export every
@@ -755,7 +758,7 @@ eval document reachable from the campaign:
 | `eval_run` | every run the campaign names | refused, naming the runs missing |
 | `eval_template` | the template every run ran | refused, naming the templates missing |
 | `eval_result` | the runs' results | refused |
-| `eval_trace` | the results' traces, where a judge's evidence is read | refused when a result records a trace |
+| `eval_trace` | the results' traces, where a judge's evidence is read | refused, naming each trace a result records and the export lacks |
 | `eval_test_case` | the cases the runs ran, read for their strata | read when present |
 | `eval_insight` | every insight on the campaign's subject in its scope, from any campaign | read when present |
 | `eval_analysis` | the analyses that minted those insights, read for whether each still stands | read when present |
@@ -768,7 +771,7 @@ the bundle an analysis of this campaign reads, so the export carries it. Nothing
 | Key | What it is |
 |---|---|
 | `built_by` | the factory, `module:callable`: no arguments, returning the `HostProfile` the runs were measured under, or the `EvalHost` carrying it (only its profile is read) |
-| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
 
 The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
 sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built
