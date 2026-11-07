@@ -18,6 +18,7 @@ from typing import Any, get_args
 
 import pytest
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -48,7 +49,7 @@ from threetears.evals.analysis.report.decision import (
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, bounded_difference_interval, difference_interval
 from threetears.evals.analysis.style import lint_prose
-from packages.evals.tests.style_support import lint_page
+from packages.evals.tests.style_support import unlinked, lint_page
 from threetears.evals.kernel import RefusedInput
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
 
@@ -260,7 +261,9 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     bundle, _, _ = await _shape(14)
     report = _page(bundle)
     (warning,) = _warnings(report)
-    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    # The aspect as the page names it: the quick path's label by the campaign's name.
+    named = aspect_name(bundle, campaign=report.source.campaign_name)
+    assert warning == f"Adopting candidate overrides the 10-point floor it breaks on {named}."
     assert lint_prose(warning) == []
     header = [block for block in report.blocks if block.section == "header"]
     sources = [block.source for block in header if isinstance(block, DisclosureBlock)]
@@ -270,7 +273,8 @@ async def test_a_broken_floor_s_warning_is_one_line_under_the_verdict_never_abov
     assert lines[0] == f"# {report.title}"
     verdict = next(block.text for block in header if isinstance(block, DisclosureBlock) and block.source == "verdict")
     assert lines.index(f"**{warning}**") == lines.index(f"**{verdict}**") + 2
-    page = report_html(report)
+    # The line's words as printed: a term it first uses is linked inside it.
+    page = unlinked(report_html(report))
     header_html = page[page.index("<header>") : page.index("</header>")]
     assert header_html.index("<h1>") < header_html.index(
         f'<p class="flag warning"><b aria-hidden="true">!</b><strong>{warning}</strong></p>'

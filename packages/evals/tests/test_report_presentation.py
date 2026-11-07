@@ -68,14 +68,16 @@ async def test_the_first_screen_reads_the_question_the_arms_then_the_result(g2_r
     # The title heads the campaign by the title code builds (what it compares and on what, its name a qualifier; no
     # floor is broken on four cases, so none warns under the verdict); the question declared before the run is quoted whole on its own line under it, the contract the verdict reads; then
     # the subhead says what the question need not: each arm with its version. Then the verdict, which no floor decides.
-    assert lines[0] == "# production vs cheaper candidate · classify (G2: can the cheaper model replace production?)"
+    assert lines[0] == "# G2: can the cheaper model replace production?"
     assert lines[1] == f'"{G2_QUESTION}"'
+    # The heading is a question, which names no aspect, so the arms line names it.
     assert lines[3] == (
-        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · 14 Oct 2026 · "
+        "deepseek-v4.1-flash (production, control) vs deepseek-v4-flash (cheaper candidate) · classify · 14 Oct 2026 · "
         "4 cases × 3 repeats"
     )
     assert '<p class="floor"' not in report_html(report)
     # The Decision section opens on the aspect's floors.
+    # A campaign name that asks a question is no name for an aspect: the label stands.
     assert "\n## Floors\n\n**Floors on classify**\n" in report_markdown(report)
     assert lines[5] == "**cheaper candidate passed less often than production; too few cases to call a difference.**"
     # The page prints a cost, and its provider routing is said in the methods, not here: on the first screen the cost
@@ -375,7 +377,7 @@ async def test_every_linked_term_is_defined_once_in_the_glossary() -> None:
         linked = {
             re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-") for term, words in GLOSSARY.items() if words in said
         }
-        defined = re.findall(r'<dt id="g-([a-z-]+)">', page)
+        defined = re.findall(r'<dt id="g-([a-z0-9-]+)">', page)
         assert linked and linked == set(defined) and len(defined) == len(set(defined))
         assert 'href="#g-' not in page
         assert set(report.terms) <= set(GLOSSARY)
@@ -516,12 +518,12 @@ async def test_the_trials_section_lists_only_what_went_wrong_and_folds_the_passe
     assert [row["result"] for row in passed.values()] == [
         f"`{trial.result_id}`" for trial in report.bundle.trials if trial.state == "passed"
     ]
-    # The cases table's links: the failed ids first, then the passed, so a row's marks lead to its records.
+    # The cases table's links: every trial of the case, in its ids' own order (a row
+    # reads T1 T2 T3 on every replay; which failed is the marks' to say).
     (cases,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "cases"]
-    states = {trial.trial_id: trial.state for trial in report.bundle.trials}
     for row in cases.values():
-        listed = [states[trial_id] for trial_id in str(row["trials"]).split()]
-        assert listed == sorted(listed, key=lambda state: state == "passed"), row["trials"]
+        numbers = [int(trial_id.removeprefix("T")) for trial_id in str(row["trials"]).split()]
+        assert numbers == sorted(numbers), row["trials"]
     # Both doors: the records open, the passed table a closed fold with its table set off by blank lines.
     markdown = report_markdown(report)
     assert f'<details id="{failed[0].trial_id}" open><summary>' in markdown

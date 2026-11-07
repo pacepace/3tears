@@ -6,8 +6,12 @@ Two readings of one page, both deterministic (a page reads to the same text ever
   analyst's ``report_check`` returns for a draft. Each claim is headed by its id and weight (the editor's findings name
   a claim by its id), and each block by its kind and what code fixed about it (its interval level, unit, axis and
   reference line), then its values table.
-- :func:`above_appendix_text`, the text a reader reads above the appendix, as it is printed and nothing more (no claim
-  id, no block's kind): the page's half of the invariant that no internal id appears above the appendix. Example
+- :func:`above_appendix_text`, the text above the appendix with nothing more than a reader's page prints (no claim
+  id, no block's kind): the page's half of the invariant that no internal id appears above the appendix. Its
+  masthead and its findings are the editor's view, as recorded reviews were keyed on them: the run's stored date, each
+  count as stored, a finding as the editor wrote it, where a reader's page prints the date in its one form, each part
+  once (:func:`~threetears.evals.analysis.report.doc_page.model.masthead_parts`) and a finding's words
+  (``DocFinding.said``); neither adds an id. Example
   cards are left out of it: they show a trial's and a case's ids so a reader can look the trial up, which the
   invariant exempts, and only the renderer draws them. Besides its values table, each chart gives its title (the
   values table's caption, which a screen reader reads and the page shows where the chart is not drawn), then every
@@ -237,7 +241,8 @@ def doc_page_text(page: DocPage) -> str:
 
 
 def above_appendix_text(page: DocPage) -> str:
-    """The text a reader reads above the page's appendix, as printed, example cards left out (this module's account).
+    """The text above the page's appendix, example cards left out, its masthead and findings the editor's view (this
+    module's account).
 
     :param page: The page.
     :ptype page: DocPage

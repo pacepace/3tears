@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from threetears.evals.kernel.metrics import goal_check_of
@@ -46,6 +47,23 @@ _PAIR = re.compile(r"^(?P<axis>[\w.-]+)=(?P<level>.+)$")
 #: What marks a case label as no name: whitespace (a sentence, or a stratum before a label), the run of hex a
 #: generated id carries, or a bare number, which a sentence would read as a count.
 _NOT_A_NAME = re.compile(r"\s|[0-9a-f]{12,}|^\d+$")
+
+
+def page_date(stamp: str) -> str:
+    """A date or an ISO-8601 instant in the one form every page dates in (``14 Oct 2026``), or as given when it does
+    not parse.
+
+    :param stamp: The date or instant, as stored.
+    :ptype stamp: str
+    :return: The date as a page prints it.
+    :rtype: str
+    """
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        # NOSILENT: an unparseable stamp is printed as stored rather than dropped or reformatted.
+        return stamp
+    return f"{moment.day} {moment:%b %Y}"
 
 
 def humanize(kind: HumanizeKind, identifier: str) -> str:
@@ -222,6 +240,10 @@ def arm_display_name(name: str, levers: Iterable[str], declared: Mapping[str, st
 #: whole, naming the arms (:func:`cannot_tell_apart`).
 CANNOT_TELL_APART = "cannot tell apart"
 
+#: The undecided reading where a sentence says it about its arms (``the evidence cannot tell v2 and v1 apart``,
+#: :func:`cannot_tell_apart`) or a cell in its short form: what a page links to the glossary's entry.
+CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b", re.IGNORECASE)
+
 
 def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
     """The undecided reading as a sentence says it, each arm by name and the control last: ``the evidence cannot tell
@@ -262,6 +284,13 @@ GLOSSARY: dict[str, str] = {
     "failed by check": "A trial that broke a rule code checks, such as a required tool call.",
     "failed by judge": "A trial the judge model scored below the bar on some dimension.",
     "cost per reply": "What production would spend per reply on the models the arm runs, as its runs were routed.",
+    "measuring spend, all roles": (
+        "What measuring a trial cost: every call billed, the judge's and any simulated user's included, not what "
+        "production would spend."
+    ),
+    "cost per 1,000 replies": (
+        "What production would spend on 1,000 replies on the models the arm runs, as its runs were routed."
+    ),
     "case floor": (
         "Five independent cases per arm: below it a gap has no interval; from there an interval says whether the "
         "gap would hold on more cases."
@@ -305,9 +334,14 @@ GLOSSARY: dict[str, str] = {
         "A difference as this run measured it, before its interval says how far more cases could move it."
     ),
     "judge": "The model that scores each trial's transcript against a rubric.",
+    "judged score": ("A judge's score on one dimension of a trial, from 1 to 5 where 5 is best, or pass or fail."),
     "calibrated": "A judge whose scores have been shown to agree with people's.",
     "marks": "✓ passed, ✗ failed, – lost to the test setup; one mark per repeat.",
     "ran": "Every trial the arm ran, usable or not.",
+    "verdict": (
+        "What a contrast came to for the arm against the control: shown better or worse, within the margin, or the "
+        "evidence cannot tell them apart."
+    ),
     "passed": "Usable trials that met every check and cleared every judged bar.",
     "flag": (
         "Regression marks a case a candidate passed on a smaller share of its usable trials than the control; a tie "
@@ -414,6 +448,7 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
 __all__ = [
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
+    "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "GLOSSARY",
     "HUMANIZE_OVERRIDES",
@@ -433,5 +468,6 @@ __all__ = [
     "lever_reader_name",
     "lint_prose",
     "measure_name",
+    "page_date",
     "sentences",
 ]

@@ -4,8 +4,8 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 
 - **declared fields**: ``created_at``, the question and its short form, the declared arms (label, short name, role)
   and the recorded call, as stored;
-- **the short question** is cut at a word boundary to at most ``QUESTION_SHORT_CHARS`` characters, an ellipsis
-  marking the cut, and is the question whole when it fits;
+- **the short question** is the question whole, its spaces collapsed, where it fits in ``QUESTION_SHORT_CHARS``
+  characters, and empty where it is longer: a listing prints a question whole or not at all, never cut;
 - **the report**: ``report_state`` is ``none`` with no live analysis and ``report`` is then None; ``written`` for one
   this build reads over the runs the campaign holds, with a headline (a passed document's own, else code's verdict;
   ``test_host_surfaces_listing.py`` holds which) and its attempt's cost;
@@ -65,7 +65,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.declaration import CampaignCall, printed_aspect_name
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.kernel.judge_cases import JUDGE_KIND
-from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.kernel.campaign import EvalAnalysis, EvalCampaign
 from threetears.evals.ops import analysis as ops_analysis
 from threetears.evals.ops import (
     CampaignChanges,
@@ -80,7 +80,6 @@ from threetears.evals.ops.analysis import (
     QUESTION_SHORT_CHARS,
     CampaignLine,
     campaign_title,
-    question_short,
 )
 
 
@@ -89,14 +88,42 @@ def _line(lines: list[CampaignLine], campaign_id: str) -> CampaignLine:
     return line
 
 
-def test_a_question_that_fits_is_listed_whole_and_a_long_one_is_cut_at_a_word() -> None:
-    assert question_short("Which  model\nanswers best?") == "Which model answers best?"
-    long = "Does the faster model hold its quality " + "on every aspect we measure " * 5
-    cut = question_short(long)
-    assert len(cut) <= QUESTION_SHORT_CHARS and cut.endswith("…")
-    assert long.startswith(cut[:-1]) and long[len(cut) - 1] == " ", "cut where a word ends"
-    assert question_short("x" * 300) == "x" * (QUESTION_SHORT_CHARS - 1) + "…"
-    assert question_short("") == ""
+def _declared_aspect(campaign: EvalCampaign) -> dict[str, Any]:
+    """The fixture campaign's one aspect as an author declares it on a new campaign: its design, and no run."""
+    (aspect,) = campaign.aspects
+    assert aspect.design is not None
+    return {
+        "label": aspect.label,
+        "run_ids": [],
+        "design": aspect.design.model_dump(mode="json", exclude={"merit_axes"}),
+    }
+
+
+def test_a_question_that_fits_is_listed_whole_and_a_long_one_is_never_cut() -> None:
+    fixture = ops_fixture()
+    host = fixture.host.eval_host
+    long = "Does the faster model hold its quality" + " on every aspect we measure" * 5
+    assert len(long) > QUESTION_SHORT_CHARS
+    asked = {}
+    for name, question in (("fits", "Which  model\nanswers best?"), ("long", long)):
+        asked[name] = campaign_create(
+            host,
+            CampaignDefinition(
+                name=name,
+                subject_id=TOYHOST_SUBJECT.subject_id,
+                behavior=fixture.campaign.behavior,
+                question=question,
+                aspects=[_declared_aspect(fixture.campaign)],
+            ),
+            TOYHOST_SCOPE,
+            created_by=CALLER.identity,
+        ).id
+    lines = campaigns_list(host, TOYHOST_SCOPE).campaigns
+    fits, cut = _line(lines, asked["fits"]), _line(lines, asked["long"])
+    assert (fits.question, fits.question_short) == ("Which  model\nanswers best?", "Which model answers best?")
+    # Whole or not at all: the question field holds it whole, the short form nothing, and no line holds a cut.
+    assert (cut.question, cut.question_short) == (long, "")
+    assert "…" not in cut.model_dump_json()
 
 
 def test_a_campaign_with_no_report_lists_its_declared_fields_and_no_report() -> None:
@@ -107,7 +134,9 @@ def test_a_campaign_with_no_report_lists_its_declared_fields_and_no_report() -> 
     line = _line(campaigns_list(fixture.host.eval_host, TOYHOST_SCOPE).campaigns, fixture.campaign.id)
 
     assert (line.created_at, line.question) == (stored.created_at, stored.question)
-    assert line.question_short == question_short(stored.question)
+    assert line.question_short == (
+        " ".join(stored.question.split()) if len(stored.question) <= QUESTION_SHORT_CHARS else ""
+    )
     assert [(arm.label, arm.short_name, arm.role) for arm in line.arms] == [
         (arm.label, arm.short_name, arm.role) for arm in stored.arms
     ]

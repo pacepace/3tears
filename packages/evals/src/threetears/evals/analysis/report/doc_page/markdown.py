@@ -27,6 +27,7 @@ from threetears.evals.analysis.report.doc_page.model import (
     DocPage,
     caveats_line,
     draft_line,
+    masthead_parts,
     open_findings_line,
 )
 from threetears.evals.analysis.report.doc_page.words import (
@@ -41,7 +42,7 @@ from threetears.evals.analysis.report.doc_page.words import (
 from threetears.evals.analysis.report.md_parts import inert, markdown_table, one_line, paragraphs, table_lines
 from threetears.evals.analysis.report.parts.full_results import laid_out
 from threetears.evals.analysis.report.parts.model import PageMasthead
-from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL, RUN_TEMPLATE, SYNTHETIC
+from threetears.evals.analysis.report.parts.words import CONFIDENCE_LABEL
 
 #: The module's entry point, which the campaign page's serializer calls for a report document's page (the report
 #: read).
@@ -52,14 +53,7 @@ _WEIGHT_HEADINGS = {"lead": "## ", "support": "### ", "detail": "#### "}
 
 
 def _masthead(masthead: PageMasthead) -> str:
-    parts = [
-        masthead.kind,
-        masthead.system,
-        masthead.counts,
-        RUN_TEMPLATE.format(date=masthead.run_date) if masthead.run_date else "",
-        SYNTHETIC if masthead.synthetic else "",
-    ]
-    return inert(" · ".join(one_line(part) for part in parts if part))
+    return inert(" · ".join(one_line(part) for part in masthead_parts(masthead)))
 
 
 def _values(block: ChartBlock | TableBlock) -> list[str]:
@@ -144,7 +138,7 @@ def _lines(page: DocPage) -> Iterator[list[str]]:
         yield [
             f"### {FINDINGS_TITLE}",
             "",
-            *(f"- **{finding.severity}** · {finding.about}: {one_line(finding.finding)}" for finding in page.findings),
+            *(f"- **{finding.severity}** · {finding.about}: {one_line(finding.said)}" for finding in page.findings),
         ]
     if page.made:
         yield [inert(f"_{one_line(page.made)}_")]

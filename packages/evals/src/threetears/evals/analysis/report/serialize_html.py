@@ -58,15 +58,18 @@ reader's colour-scheme setting either way.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.schema import TrialState
 from threetears.evals.analysis.report.blocks import (
     FIRST_SCREEN,
+    FLAGGED_CAVEATS,
+    FOLD_SECTION_TITLES,
     FOLDED_SECTIONS,
     SECTION_TITLES,
     ChartBlock,
@@ -91,8 +94,8 @@ from threetears.evals.analysis.report.html_parts import (
     term_link,
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
-from threetears.evals.analysis.report.serialize_md import trial_summary
-from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -137,6 +140,7 @@ def report_html(report: Report, *, static: bool = False) -> str:
     nav = [*present, *(["glossary"] if report.terms else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
     parts += _sections(report, present, static=static)
+    parts = [_first_uses("\n".join(parts), report.terms)]
     parts += _glossary(report.terms)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
@@ -186,7 +190,7 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     titles = report.section_titles
     # Each nav link names the section itself, whose heading every browser shows, a closed one's included.
     links = [(section, titles[section]) for section in before]
-    links += [(fold_anchor(slug), fold.aspect) for fold, slug in zip(report.aspects, slugs, strict=True)]
+    links += [(fold_anchor(slug), fold.heading) for fold, slug in zip(report.aspects, slugs, strict=True)]
     links += [(section, titles[section]) for section in after]
     links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{escape(text)}</a>' for href, text in links) + "</nav>")
@@ -196,9 +200,83 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         parts += _aspect_fold(fold, slug, static=static)
     for section in after:
         parts += _campaign_section(report, section, static=static)
+    parts = [_first_uses("\n".join(parts), report.terms)]
     parts += _glossary(report.terms)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
+
+
+#: A start or end tag in the page's markup, and its element's name.
+_TAG = re.compile(r"(<[^>]*>)")
+_TAG_NAME = re.compile(r"</?\s*([a-zA-Z][a-zA-Z0-9]*)")
+_TITLE = re.compile(r'\btitle="([^"]*)"')
+
+#: Where a glossary term is never linked: inside a link, code a reader copies, a heading, a fold's summary, a table
+#: (a header links its own term where it names one, and a cell links only where it says), the navigation, a chart,
+#: the head of the page, or the declared question (``_QUOTED``, the author's words).
+_QUOTED = "quoted:"
+_UNLINKED_IN: frozenset[str] = frozenset(
+    {"a", "code", "pre", "summary", "h1", "h2", "h3", "h4", "h5", "h6", "th", "td", "nav", "svg", "script", "style"}
+    | {"title", f"{_QUOTED}p"}
+)
+
+
+def _first_uses(markup: str, terms: Sequence[str]) -> str:
+    """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
+    time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
+    own). Each term is linked once this way; the glossary at the foot defines it."""
+    by_definition = {GLOSSARY[term]: term for term in terms}
+    pending = {
+        # The undecided reading is linked in its sentence form too: ``cannot tell v2 and v1 apart``.
+        term: CANNOT_TELL_APART_PHRASE
+        if term == CANNOT_TELL_APART
+        else re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE)
+        for term in terms
+    }
+    opened: list[str] = []
+    out: list[str] = []
+    for token in _TAG.split(markup):
+        if not token.startswith("<"):
+            if token and pending and not any(name in _UNLINKED_IN for name in opened):
+                token = _linked_once(token, pending)
+            out.append(token)
+            continue
+        out.append(token)
+        found = _TAG_NAME.match(token)
+        if found is None:
+            continue
+        name = found.group(1).lower()
+        if token.startswith("</"):
+            while opened and opened.pop().removeprefix(_QUOTED) != name:
+                pass
+            continue
+        if name == "a" and (title := _TITLE.search(token)) is not None:
+            pending.pop(by_definition.get(html.unescape(title.group(1)), ""), None)
+        if name not in _VOID_ELEMENTS and not token.endswith("/>"):
+            # The question is the author's words, quoted whole: nothing is linked inside it.
+            opened.append(f"{_QUOTED}{name}" if 'class="question"' in token else name)
+    return "".join(out)
+
+
+def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
+    """``text`` with the first use of each pending term in it linked, the longest first where two start alike; each
+    term linked is no longer pending."""
+    found = sorted(
+        (
+            (match.start(), -len(match.group(0)), match.end(), term)
+            for term, pattern in pending.items()
+            if (match := pattern.search(text)) is not None
+        ),
+    )
+    said: list[str] = []
+    at = 0
+    for start, _, end, term in found:
+        if start < at:
+            continue
+        said += [text[at:start], term_link(term, text[start:end])]
+        pending.pop(term)
+        at = end
+    return "".join([*said, text[at:]])
 
 
 def _appendix(report: CampaignReport, static: bool) -> list[str]:
@@ -222,7 +300,12 @@ def _campaign_section(report: CampaignReport, section: str, *, static: bool) -> 
     blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
     return [
         f'<section id="{section}">',
-        *_section(section, report.section_titles[section], _folded(blocks, static=static), count=None),
+        *_section(
+            section,
+            report.section_titles[section],
+            _folded(blocks, static=static, heading=report.section_titles[section]),
+            count=None,
+        ),
         "</section>",
     ]
 
@@ -248,13 +331,13 @@ def _aspect_fold(fold: CampaignAspectFold, slug: str, *, static: bool) -> list[s
     head = fold.head
     body = [
         *(_block(block, index, static=static) for index, block in enumerate(head)),
-        *_sections(report, _present_sections(report), static=static),
+        *_sections(report, _present_sections(report), static=static, renamed=FOLD_SECTION_TITLES),
     ]
     prefix = f"a-{slug}--"
     inner = _prefixed("\n".join(body), prefix)
     return [
         f'<section id="{fold_anchor(slug)}">',
-        f'<details class="section"><summary><h2>{escape(fold.aspect)}</h2> '
+        f'<details class="section"><summary><h2>{escape(fold.heading)}</h2> '
         f'<span class="count">· {escape(fold.shows)}</span></summary>',
         f'<div class="section-body" id="{fold_anchor(slug)}--body">',
         inner,
@@ -286,15 +369,18 @@ def _present_sections(report: Report) -> list[str]:
     return [section for section in sections if any(block.section == section for block in report.blocks)]
 
 
-def _sections(report: Report, present: Sequence[str], *, static: bool) -> list[str]:
+def _sections(
+    report: Report, present: Sequence[str], *, static: bool, renamed: Mapping[str, str] | None = None
+) -> list[str]:
     """Each section after the first screen, in a ``<section>`` of its id."""
     titles = report.section_titles
     parts: list[str] = []
     for section in present:
         blocks = [(index, block) for index, block in enumerate(report.blocks) if block.section == section]
         parts.append(f'<section id="{section}">')
-        body = _folded(blocks, static=static)
-        parts.extend(_section(section, titles[section], body, count=_section_count(section, blocks)))
+        body = _folded(blocks, static=static, heading=titles[section])
+        title = (renamed or {}).get(section, titles[section])
+        parts.extend(_section(section, title, body, count=_section_count(section, blocks)))
         parts.append("</section>")
     return parts
 
@@ -342,8 +428,9 @@ def _section_count(section: str, blocks: Sequence[tuple[int, ReportBlock]]) -> i
     return None if table is None else table.total_rows
 
 
-def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[str]:
-    """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``."""
+def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool, heading: str | None = None) -> list[str]:
+    """A section's blocks, each consecutive run naming one fold inside one closed ``<details>``; a table titled as the
+    section's ``heading`` untitled, so no heading prints twice."""
     parts: list[str] = []
     open_fold: str | None = None
     for index, block in blocks:
@@ -353,6 +440,10 @@ def _folded(blocks: Sequence[tuple[int, ReportBlock]], *, static: bool) -> list[
             if block.fold is not None:
                 parts.append(f'<details class="fold"><summary>{escape(block.fold)}</summary>')
             open_fold = block.fold
+        if isinstance(block, TableBlock) and block.fold is None and not block.details and block.title == heading:
+            # A table in a section of its own name is titled once, by the section's heading: drawn as one in a fold of
+            # that name is, without a title of its own.
+            block = block.model_copy(update={"fold": block.title})
         parts.append(_block(block, index, static=static))
     if open_fold is not None:
         parts.append("</details>")
@@ -379,6 +470,11 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>Why</dt><dd>{escape(block.cause_words)}</dd>")
     if block.first_input:
         parts.append(f"<dt>What the case asked</dt><dd><pre>{escape(block.first_input)}</pre></dd>")
+    if block.world:
+        parts.append(
+            f"<dt>{escape(world_count(block.world_parts))}</dt><dd><details><summary>"
+            f"{escape(block.case_label)}'s world state</summary><pre>{escape(block.world)}</pre></details></dd>"
+        )
     if block.excerpt:
         parts.append(f"<dt>What the judge saw (its last part)</dt><dd><pre>{escape(block.excerpt)}</pre></dd>")
     if block.failed_checks:
@@ -401,7 +497,7 @@ def _trial(block: TrialBlock) -> str:
         parts.append(f"<dt>What the judge said</dt><dd><ul>{judged}</ul></dd>")
     if block.error_words:
         parts.append(f"<dt>Recorded error</dt><dd><pre>{escape(block.error_words)}</pre></dd>")
-    parts.append(f"<dt>Stored result</dt><dd><code>{escape(block.result_id)}</code> (read it with result_get)</dd>")
+    parts.append(f"<dt>Stored result</dt><dd><code>{escape(block.result_id)}</code></dd>")
     opened = " open" if block.open else ""
     return (
         f'<details class="trial" id="{escape(block.trial_id)}" data-state="{escape(block.state)}"{opened}>'
@@ -442,9 +538,12 @@ def _disclosure(block: DisclosureBlock) -> str:
     if block.section in ("header", "warnings") and block.source in _WARNING_SOURCES:
         # What warns, under the title: the kit's flag, set apart, never announced over it.
         return f'<p class="flag warning"{anchor}>{_FLAG_ICON}<strong>{text}</strong></p>'
-    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
-        # A report-wide caveat, once, beside what warns: a flag too, in normal weight.
+    if block.anchor in FLAGGED_CAVEATS:
+        # When the criteria were set, once, beside what warns: the one report-wide caveat set apart, in normal weight.
         return f'<p class="flag report-caveat"{anchor} data-source="{escape(block.source)}">{_FLAG_ICON}<span>{text}</span></p>'
+    if block.section == "warnings" or (block.section == "header" and block.anchor is not None):
+        # Every other report-wide caveat, once: a plain line under the flag, never a callout of the same weight.
+        return f'<p class="line report-caveat"{anchor} data-source="{escape(block.source)}">{text}</p>'
     if block.source == "verdict":
         tone = f' data-tone="{escape(block.tone)}"' if block.tone is not None else ""
         return f'<p class="verdict"{tone}><strong>{text}</strong></p>'

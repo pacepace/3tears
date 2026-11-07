@@ -143,11 +143,13 @@ def test_a_passed_document_lists_its_own_headline_with_code_s_caveats_beside_it(
     assert analysed.verdict == " ".join([*line.report.caveats, _CODE_VERDICT]), "the analysis line is still code's"
 
 
-def test_a_draft_lists_code_s_verdict_never_the_writer_s_headline() -> None:
+def test_a_draft_lists_its_own_headline_marked_a_draft_with_code_s_caveats_beside_it() -> None:
+    # Re-pinned at the presentation chunk 4 merge: a draft lists "Draft: <its headline>" (DRAFT_HEADLINE), where it
+    # listed code's verdict; code's caveats stay beside it.
     _, line = _listed(_edited(_as_draft))
     assert line.report is not None and line.report.draft
 
-    assert line.report.headline == _CODE_VERDICT
+    assert line.report.headline == f"Draft: {_HEADLINE}"
     assert len(line.report.caveats) == 2
 
 

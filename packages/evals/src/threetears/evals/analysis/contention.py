@@ -157,6 +157,21 @@ def contended_latency_sentence(withheld: int, of: int, *, where: str = "", decla
     )
 
 
+def reader_latency_sentence(sentence: str) -> str:
+    """A stored latency sentence (:func:`contended_latency_sentence`, :func:`marked_latency_sentence`) as a page
+    prints it: without the execution mode's id, the launch setting set as code a reader copies. The stored sentence
+    stays as frozen; only its printing changes.
+
+    :param sentence: The sentence, as a bundle holds it.
+    :ptype sentence: str
+    :return: The sentence a page prints.
+    :rtype: str
+    """
+    return sentence.replace(f" (execution_mode `{CONCURRENT}`)", "").replace(
+        "measure_latency=True", "`measure_latency=True`"
+    )
+
+
 def marked_latency_sentence(marked: int, of: int) -> str | None:
     """The line a ONE-run surface prints beside latency it shows that was read under concurrency, or ``None``.
 
@@ -182,6 +197,7 @@ def marked_latency_sentence(marked: int, of: int) -> str | None:
 
 __all__ = [
     "CONCURRENT",
+    "reader_latency_sentence",
     "EXECUTION_MODE",
     "contended_latency_sentence",
     "marked_latency_sentence",

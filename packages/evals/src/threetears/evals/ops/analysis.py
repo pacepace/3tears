@@ -170,11 +170,11 @@ class CampaignLineReport(EvalBaseModel):
     analysis_id: str
     headline: str = Field(
         description=(
-            "What the report says, in one line. A report document its editor passed (not a draft) is listed by its own "
-            "headline, every figure key written out as its page prints it; a draft, a retired writer's analysis or a "
-            "document that no longer reads is listed by code's verdict over the evidence it was written from, never "
-            "a writer's words (the verdict AnalysisLine.verdict ends with); one this build cannot read by its "
-            "regenerate line. Never a warning: those are caveats."
+            "What the report says, in one line. A report document is listed by its own headline, every figure key "
+            "written out as its page prints it, a draft's marked `Draft: ` (DRAFT_HEADLINE); a retired writer's "
+            "analysis, a document that no longer reads or a report with no document is listed by code's verdict over "
+            "the evidence it was written from, never a writer's words (the verdict AnalysisLine.verdict ends with); one "
+            "this build cannot read by its regenerate line. Never a warning: those are caveats."
         )
     )
     caveats: list[str] = Field(
@@ -223,7 +223,10 @@ class CampaignLine(EvalBaseModel):
             "The arms are its declared arms' short names (else labels), control first, joined ` vs `, or, past "
             f"{TITLE_ARMS}, `<control> vs N candidates`; a campaign declaring none names the distinct candidate models "
             "of its runs, and a judge campaign counts its judges. The measure is its aspects' printed names, or past "
-            f"{TITLE_ASPECTS} `N aspects`. Nothing from a call, a recommendation or a verdict enters it."
+            f"{TITLE_ASPECTS} `N aspects`; an aspect the engine labelled (`classify`, `score`) by the campaign's name. "
+            "Each name once: the arms are left out where the name names every one (`<name> · <measure>`), the measure "
+            "where it is the name or an arm, and the name alone stands where nothing else is left. Nothing from a "
+            "call, a recommendation or a verdict enters it. A report page heads with the name alone."
         ),
     )
     name: str
@@ -240,8 +243,9 @@ class CampaignLine(EvalBaseModel):
     question_short: str = Field(
         default="",
         description=(
-            f"The question cut to at most {QUESTION_SHORT_CHARS} characters at a word boundary, ending in an ellipsis "
-            "where it was cut; empty asks none."
+            f"The question whole, its spaces collapsed, where it is at most {QUESTION_SHORT_CHARS} characters; empty "
+            "where it is longer (read question) or it asks none. Never cut: a listing prints a question whole or not "
+            "at all."
         ),
     )
     arms: list[CampaignLineArm] = Field(
@@ -682,7 +686,7 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         aspect_runs={aspect.label: list(aspect.run_ids) for aspect in campaign.aspects},
         created_at=campaign.created_at,
         question=campaign.question,
-        question_short=question_short(campaign.question),
+        question_short=_whole_question(campaign.question),
         arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
         call=(
             CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
@@ -838,21 +842,15 @@ def _refuse_long_name(name: str) -> None:
         )
 
 
-def question_short(question: str) -> str:
-    """A question cut to :data:`QUESTION_SHORT_CHARS` characters at a word boundary, an ellipsis marking the cut.
-
-    :param question: The question, as declared.
-    :ptype question: str
-    :return: It whole when it fits; else its words up to the limit and ``…``, or its first characters and ``…`` when
-        its first word alone is longer.
-    :rtype: str
-    """
+def _whole_question(question: str) -> str:
+    """A question as a listing line holds it (:attr:`CampaignLine.question_short`): whole, its spaces collapsed, where
+    it fits in :data:`QUESTION_SHORT_CHARS` characters; else nothing, never a cut."""
     text = " ".join(question.split())
-    if len(text) <= QUESTION_SHORT_CHARS:
-        return text
-    room = text[: QUESTION_SHORT_CHARS - 1]
-    cut = room.rsplit(" ", 1)[0] if " " in room else room
-    return cut.rstrip(" ,;:.-") + "…"
+    return text if len(text) <= QUESTION_SHORT_CHARS else ""
+
+
+#: How a draft is listed: its own headline, marked, so no reader takes it for a report its editor passed.
+DRAFT_HEADLINE = "Draft: {headline}"
 
 
 def _runs_moved(analysis: EvalAnalysis, campaign: EvalCampaign, frozen: CampaignBundle) -> bool:
@@ -875,8 +873,8 @@ def _with_report(
     """The line with its reported analysis: what it says, what code reads of it, whether it needs regeneration, and
     its cost, all off the one frozen bundle ``read`` holds.
 
-    Its headline is the stored document's own, its figure keys written out, where the document reads and its editor
-    passed it (not a draft); else code's verdict, and the regenerate line where the bundle does not read. Code's
+    Its headline is the stored document's own, its figure keys written out, where the document reads, a draft's
+    marked (:data:`DRAFT_HEADLINE`); else code's verdict, and the regenerate line where the bundle does not read. Code's
     warnings and timing caveats are listed beside it, never in it, and so is the line saying the evidence is of an
     earlier shape read as stored."""
     reading = _analysis_reading(host, analysis, campaign, read)
@@ -928,19 +926,20 @@ def _headline(host: EvalHost, reading: _AnalysisReading) -> tuple[str, str | Non
     """What a listed report says in one line, and why its document no longer reads where it was found not to.
 
     Its stored document's headline, every figure key written out
-    (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), where the document reads, its editor passed
-    it and the frozen bundle reads; else code's verdict alone, or the regenerate line where the bundle does not read.
-    A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why is returned,
-    so the line says to regenerate as the report read does. Blocking."""
+    (:func:`~threetears.evals.analysis.report_doc_store.stored_headline`), a draft's marked (:data:`DRAFT_HEADLINE`),
+    where the document and the frozen bundle read; else code's verdict alone, or the regenerate line where the bundle
+    does not read. A headline whose snapshot no longer reads is listed by code's verdict, never by its braces, and why
+    is returned, so the line says to regenerate as the report read does. Blocking."""
     code = reading.lead.verdict if reading.lead is not None else reading.line.verdict
-    if reading.doc is None or reading.doc.draft or reading.lead is None:
+    if reading.doc is None or reading.lead is None:
         return code, None
     try:
-        return stored_headline(host.storage, reading.doc), None
+        headline = stored_headline(host.storage, reading.doc)
     except RefusedInput as unread:
         # NOSILENT: the line lists code's verdict and says to regenerate (why_regenerate), as the report read lays this
         # document out code-only with the one regenerate line.
         return code, unread.fault
+    return (DRAFT_HEADLINE.format(headline=headline) if reading.doc.draft else headline), None
 
 
 def _runs_title(campaign: EvalCampaign, runs: Sequence[EvalRun]) -> str:

@@ -46,8 +46,10 @@ _SCORECARD: dict[str, tuple[str, str, str]] = {
     "measurement": ("measures", "**alpha by aspect**", 'data-table="scorecard"'),
 }
 
-#: The title a change over billing and tone heads its page with: what it compares and on what, its name a qualifier.
-_TITLE = "production vs v2 · billing, tone (support queue)"
+#: The title a change over billing and tone heads its page with: its name; what it
+#: compares and on what is the arms line under the question.
+_TITLE = "support queue"
+_ARMS = "production vs v2 · billing, tone"
 
 #: The line a change's first screen warns of billing's broken floor in.
 _FLOOR_WARNING = "Adopting v2 overrides the 10-point floor it breaks on billing."
@@ -66,6 +68,7 @@ _CHANGE_LEAD = (
 _CHANGE_MARKDOWN: list[tuple[str, str]] = [
     ("03", f"# {_TITLE}"),
     ("03", f'"{QUESTION}"'),
+    ("p4", _ARMS),
     ("p1", f"**{_CHANGE_LEAD}**"),
     ("03", f"**{_FLOOR_WARNING}**"),
 ]

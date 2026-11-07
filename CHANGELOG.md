@@ -6,6 +6,42 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: each name once, each term defined, each heading once, one order on every replay
+
+**Changed:** a code page, an aspect page and a report document's page head with the campaign's name (its `<title>`
+too); what the page compares and on what is the line under the question (`v1 vs v2 · billing, tone`). A listing
+title (`CampaignLine.title`, `AnalysisLine.title`) names each part once: no arm the name already names, no measure
+that is the name (`triage`, never `triage · classify (triage)`). An aspect the quick path labelled `classify` or
+`score` is called by the campaign's name wherever a page names it, unless the name is cut at its cap or asks a
+question; a fold named as its page heads `Evidence`, and a fold heads its methods `Aspect methods`, so no heading
+prints twice. The criteria-set-late line names what was set late (`The aspect, control and margin on X were set
+after the results there existed, …`) and is the one flagged caveat; untimed results, latency, request settings and
+an uncalibrated judge are plain lines under it; criteria set at one time on the same aspects share one row. No prose
+carries `key=value`, an execution-mode id or a bundle digest: the judge's settings read as words, judges that read
+alike are one line naming their dimensions, the settings an arm left unchecked are listed once for the arms they
+cover (`every arm left unchecked whether …`) and each arm's own moves follow (`arm v2 set model to …`), the latency
+detail drops the execution mode's id, Methods carries an `Evidence` row and a `Fingerprint` cell where it printed
+`Bundle v2:…, shape 65`, and no cell prints `grader(…)` or a tool name (`(read it with result_get)` goes). A lever
+run at one level reads `One model ran, so this page says nothing of changing the model.` where it read `unswept`.
+Every glossary term a page defines is linked where the page first uses it in prose; the first screen's
+judge line links `judged score`, which states the 1 to 5 scale once; the glossary defines `cost per 1,000 replies`
+and `measuring spend, all roles`, as the headers name them. A table in a section of its own name is titled by the
+section's heading alone. A case row's trial ids read in their own order (`T7 T8 T9`), its marks repeat by repeat with
+ties in id order. A host's world state in what a case asked prints as a count (`World state: 2 parts (music,
+discord)`) and a fold titled by the case, never open JSON. A report document's masthead dates `Run 14 Mar 2026` and
+names an aspect once; an editor's finding prints a figure key as its value, a key that names no figure here in
+words, and a claim's id as `claim 2`; the text the editor and the judge read keeps the masthead and the findings as
+stored, so recorded reviews replay. A settle table's `Settles` cell reads `today's estimate clears the line`, never
+the enum's word. A measurement's fold opens on its pass rate as a count, never a bare `measured`.
+
+**Hosts:** a campaign listing lists a report document by its own headline, a draft's marked `Draft: …`;
+`CampaignLine.question_short` holds the question whole or nothing, never a cut (read `question` where it is empty),
+and `question_short()` is removed from `threetears.evals.ops.analysis`. `TrialBlock.first_input` no longer carries
+a host's world state: it is `TrialBlock.world`, its parts' names `world_parts` (both new). Additive:
+`CampaignAspectFold.name` and `heading`, `DocFinding.words` and `said`. A host pinning a report's first line, a
+listing title, the late line's words, a judge's methods line, the Methods `Bundle` row, a fold's heading or a
+rendered masthead date updates its match; see MIGRATIONS. Nothing stored changes.
+
 ### evals: figures read in one money form at one precision, and charts read cold
 
 **Changed:** money reads one form per figure type at two significant figures (`money_form`, `money_ruler`; owner
@@ -163,8 +199,8 @@ stored-shape line instead; regenerating stays a deliberate act.
 ### evals: a campaign's listing leads with its report's own headline, and no arm is named by a cut prompt
 
 **Changed:** `campaigns_list` lists a report document its editor passed by that document's own headline
-(`CampaignLine.report.headline`), every figure key written out as its page prints it; a draft, a retired writer's
-analysis and a document that no longer reads are listed by code's verdict alone. Code's warnings (each bar an arm misses,
+(`CampaignLine.report.headline`), every figure key written out as its page prints it; a draft by its own headline marked
+`Draft: `; a retired writer's analysis and a document that no longer reads are listed by code's verdict alone. Code's warnings (each bar an arm misses,
 each floor a candidate breaks) and its line on when criteria were set leave the headline for a new list beside it,
 `CampaignLine.report.caveats`. A document whose snapshot no longer reads is listed by code's verdict and as needing
 regeneration. At render time only, every code-written surface (the campaign and aspect pages, the report document's

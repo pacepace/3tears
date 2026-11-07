@@ -41,7 +41,7 @@ from threetears.evals.quick.files import load_evals
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
 from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.report_shapes_support import s4_change
-from packages.evals.tests.style_support import absence_violations, reading_names
+from packages.evals.tests.style_support import absence_violations, reading_names, unlinked
 
 
 @dataclass(frozen=True)
@@ -202,7 +202,8 @@ def test_rung_2_s_first_screen_carries_its_judge_caveat_and_its_detail_one_step_
     page = rungs["rung2"].page
     (caveat,) = [block for block in _said(page.blocks) if block.anchor == "caveat-judge"]
     assert caveat.section == "warnings"
-    assert caveat.text == "Judged scores on score are directional until people's labels calibrate the judge."
+    # The aspect the quick path labelled `score` is called by the campaign's name.
+    assert caveat.text == "Judged scores on replies are directional until people's labels calibrate the judge."
     (setup,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "test_setup"]
     (row,) = [row for row in setup.rows if row["setup"].text == "judge scores directional"]
     assert row["detail"].text.startswith("Judge google/gemini-2.5-flash-lite is uncalibrated on ")
@@ -233,8 +234,12 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
         block for block in computed.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
     ]
     index = computed.blocks.index(code_lead)
-    # Where code's lead stood, directly after the question line, the caller's block stands, as given, its tone kept.
-    assert supplied.blocks[index] == given and supplied.blocks[index - 1].source == "basis"
+    # Where code's lead stood, directly after the question line and the arms line under it, the caller's block
+    # stands, as given, its tone kept.
+    assert supplied.blocks[index] == given and [block.source for block in supplied.blocks[index - 2 : index]] == [
+        "basis",
+        "arms",
+    ]
     assert (
         supplied.blocks[:index] + supplied.blocks[index + 1 :] == computed.blocks[:index] + computed.blocks[index + 1 :]
     )
@@ -242,7 +247,7 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
     # same.
     alike = given.model_copy(update={"tone": code_lead.tone, "term": code_lead.term})
     same_tone = build_campaign_report(shape.campaign, shape.readings, shape.reports, lead=[alike])
-    for render in (campaign_report_markdown, campaign_report_html):
+    for render in (campaign_report_markdown, lambda page: unlinked(campaign_report_html(page))):
         before = render(computed)
         after = render(same_tone)
         assert before.count(code_lead.text) == 1 and after.count(given.text) == 1

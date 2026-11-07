@@ -110,7 +110,7 @@ def aggregate_blocks(
     aggregate = readings.aggregate
     if aggregate is None:
         return []
-    names = AspectNames.of(report.bundle for report in reports.values())
+    names = AspectNames.of((report.bundle for report in reports.values()), campaign=campaign.name or None)
     row = _row_aggregate(readings) is not None
     charted = _charted(readings, aggregate)
     blocks: list[ReportBlock] = []

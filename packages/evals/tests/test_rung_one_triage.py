@@ -128,15 +128,17 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     assert " · " in arm
     # The Scorecard names the one arm as the eval does, never `control`: one arm is measured, so its matrix has no
     # Arm column and its title names the arm, and every folded row under it names the arm.
-    above = lines[: lines.index("## classify")]
+    # The aspect the engine labelled `classify` is called by the campaign's name, and its fold, named as the page
+    # is, heads as its evidence.
+    above = lines[: lines.index("## Evidence")]
     assert "**triage by aspect**" in above and not any("control" in line for line in above)
-    matrix, *rows = [line for line in above if line.startswith("| classify |")]
+    matrix, *rows = [line for line in above if line.startswith("| emails |")]
     # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
     # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8).
     assert matrix.startswith(
-        "| classify | 77.8 (70 of 90 trials, 30 cases) | 90 (81 of 90 trials, 30 cases) | 100 (17 of 17 trials, 7 cases) |"
+        "| emails | 77.8 (70 of 90 trials, 30 cases) | 90 (81 of 90 trials, 30 cases) | 100 (17 of 17 trials, 7 cases) |"
     )
-    assert rows and all(line.startswith("| classify | triage |") for line in rows)
+    assert rows and all(line.startswith("| emails | triage |") for line in rows)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.
     measured = {line.split(" | ")[2] for line in rows}
     assert lint_page(page, names={arm.split(" · ")[0], *measured}) == []

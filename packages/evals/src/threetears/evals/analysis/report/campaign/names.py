@@ -35,15 +35,19 @@ from threetears.evals.kernel.declaration import printed_aspect_name
 __all__ = ["AspectNames", "aspect_name", "check_legend_blocks", "legend", "measure_name_of"]
 
 
-def aspect_name(bundle: AnalysisContextBundle) -> str:
-    """What the page calls the aspect ``bundle`` reads: its declared short name, else its label, as declared.
+def aspect_name(bundle: AnalysisContextBundle, *, campaign: str | None = None) -> str:
+    """What the page calls the aspect ``bundle`` reads: its declared short name, else its label, as declared; a label
+    the engine gave (``classify``, ``score``) gives way to the campaign's name where the page has it
+    (:func:`~threetears.evals.kernel.declaration.printed_aspect_name`).
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
+    :param campaign: The campaign's name; None keeps every label.
+    :ptype campaign: str | None
     :return: The aspect's name on the page.
     :rtype: str
     """
-    return printed_aspect_name(bundle.aspect, bundle.short_name)
+    return printed_aspect_name(bundle.aspect, bundle.short_name, campaign=campaign)
 
 
 @dataclass(frozen=True)
@@ -63,18 +67,21 @@ class AspectNames:
     folds: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, bundles: Iterable[AnalysisContextBundle]) -> AspectNames:
+    def of(cls, bundles: Iterable[AnalysisContextBundle], *, campaign: str | None = None) -> AspectNames:
         """The names of the aspects ``bundles`` read.
 
         :param bundles: Each aspect's evidence, in the campaign's order.
         :ptype bundles: Iterable[AnalysisContextBundle]
+        :param campaign: The campaign's name, which an engine-given label gives way to (:func:`aspect_name`); None
+            keeps every label.
+        :ptype campaign: str | None
         :return: Their names.
         :rtype: AspectNames
         """
         held = list(bundles)
         labels = [bundle.aspect for bundle in held]
         return cls(
-            {bundle.aspect: aspect_name(bundle) for bundle in held},
+            {bundle.aspect: aspect_name(bundle, campaign=campaign) for bundle in held},
             {bundle.aspect: dict(bundle.goal_check_names) for bundle in held},
             {label: fold_anchor(slug) for label, slug in zip(labels, fold_ids(labels), strict=True)},
         )

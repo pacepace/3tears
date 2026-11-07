@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
+from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -102,7 +103,10 @@ async def test_a_broken_floor_is_the_page_s_first_warning_line() -> None:
     markdown = report_markdown(report)
     assert "See the decision rule above." not in markdown and "Still open" not in markdown
     (warning,) = _warnings(report)
-    assert warning == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    assert (
+        warning
+        == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {aspect_name(bundle, campaign=TITLE)}."
+    )
     assert markdown.startswith("# ") and f"\n**{warning}**\n" in markdown
     assert lint_page(markdown, question=G2_QUESTION) == []
 
@@ -113,7 +117,10 @@ async def test_the_broken_rate_floor_is_one_warning_and_the_verdict_names_no_kee
     _, bundle = await _compare(0.003301, shown=True)
     report = build_code_only_report(bundle, assembled_at="2026-10-14T19:23:41+00:00", campaign_name=TITLE)
     (rate,) = _warnings(report)
-    assert rate == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {bundle.aspect}."
+    assert (
+        rate
+        == f"Adopting cheaper candidate overrides the 10-point floor it breaks on {aspect_name(bundle, campaign=TITLE)}."
+    )
     assert lint_prose(rate) == []
     (verdict,) = [b.text for b in report.blocks if isinstance(b, DisclosureBlock) and b.source == "verdict"]
     assert not verdict.startswith("Keep")

@@ -316,11 +316,12 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     assert CANNOT_TELL_APART in GLOSSARY and "same" in GLOSSARY[CANNOT_TELL_APART]
     assert not any(_RETIRED.search(words) for words in GLOSSARY.values())
     assert "separated" not in GLOSSARY
-    # A table cell says the short form; the column it sits in links the one definition.
+    # A table cell says the short form; its column holds every verdict, so it links the verdict's definition, and
+    # the line that says the undecided reading links the one definition.
     report = rungs["rung3"].result.report
     (contrasts,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
-    assert column.term == CANNOT_TELL_APART
+    assert column.term == "verdict"
     assert {row["verdict"].text.split(";")[0] for row in contrasts.rows} == {CANNOT_TELL_APART}
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
@@ -362,7 +363,7 @@ def test_the_undecided_guardrail_says_what_it_means_first_then_the_cases_that_co
 ) -> None:
     (warning,) = _said(rungs["rung3"].result.page.blocks, "guardrails", "warnings")
     assert warning.text == (
-        "v2 may do worse than v1 on the No invented total score guardrail on classify, by more than its 2-point "
+        "v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point "
         "margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it."
     )
 

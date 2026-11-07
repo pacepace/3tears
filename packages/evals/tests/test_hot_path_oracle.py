@@ -31,7 +31,7 @@ without the goldens growing to megabytes. Each campaign's goldens are one file, 
 **The build is not compared.** Which version of 3tears-evals read a page is the build's identity, not the page's
 content, and a release bump would otherwise move every bundle and every code-only page. A bundle carries it as
 ``package_version``, which its fingerprint already leaves out (a build is not evidence), and a code-only
-page prints it in one place, its methods table's Bundle row (``3tears-evals <version>,``). The oracle puts
+page prints it in one place, its methods table's Evidence row (``3tears-evals <version>,``). The oracle puts
 :data:`GOLDEN_VERSION` in both places before it compares or writes, so the goldens hold that version whatever build
 reads them. Nothing else the fingerprint leaves out is the build's: ``first_result_at`` is when the results were
 written, and the presentation and pricing fields are what the page prints, so all of them stay compared.

@@ -27,6 +27,8 @@ from threetears.evals.analysis.report.blocks import TableBlock
 from threetears.evals.analysis.report.doc_page.words import CAVEATS_TEMPLATE, DRAFT_OPEN, DRAFT_UNCLEARED, FINDINGS_OPEN
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.model import PageArmsKey, PageChart, PageMasthead, PageSlot
+from threetears.evals.analysis.report.parts.words import RUN_TEMPLATE, SYNTHETIC
+from threetears.evals.analysis.style import page_date
 from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.prose import ModelProse
 
@@ -42,6 +44,7 @@ __all__ = [
     "DocTerm",
     "caveats_line",
     "draft_line",
+    "masthead_parts",
     "open_findings_line",
 ]
 
@@ -129,7 +132,19 @@ class DocFinding(EvalDocumentModel):
     about: str = Field(description="What it is about, in code's words: a claim by its place, or the page.")
     claim_place: int | None = Field(description="The claim's place on the page; None for the page as a whole.")
     severity: str = Field(description="Its severity, in code's words.")
-    finding: ModelProse = Field(description="What the editor found.")
+    finding: ModelProse = Field(description="What the editor found, as written: what the editor and the judge read.")
+    words: ModelProse = Field(
+        default="",
+        description=(
+            "What the editor found as a reader's page prints it: each figure key it quotes written out as its value, "
+            "each claim's id as the claim's place; empty reads the finding as written."
+        ),
+    )
+
+    @property
+    def said(self) -> str:
+        """The finding as a reader's page prints it (:attr:`words`), else as written."""
+        return self.words or self.finding
 
 
 class DocPage(EvalDocumentModel):
@@ -223,3 +238,27 @@ def open_findings_line(page: DocPage) -> str:
         return ""
     count = len(page.findings)
     return FINDINGS_OPEN.format(count=f"{count} review finding" if count == 1 else f"{count} review findings")
+
+
+def masthead_parts(masthead: PageMasthead) -> list[str]:
+    """The masthead's parts as a reader's page prints them: the kind, the system, the counts without a part the system
+    already names, and the run's date in the one form every page dates in (``Run 14 Mar 2026``). The masthead itself
+    stays as the editor and the judge read it (``doc_page_text``), so a recorded review keeps its key.
+
+    :param masthead: The page's masthead.
+    :ptype masthead: PageMasthead
+    :return: The parts, each non-empty, in order.
+    :rtype: list[str]
+    """
+    counts = " · ".join(part for part in masthead.counts.split(" · ") if part and part != masthead.system)
+    return [
+        part
+        for part in (
+            masthead.kind,
+            masthead.system,
+            counts,
+            RUN_TEMPLATE.format(date=page_date(masthead.run_date)) if masthead.run_date else "",
+            SYNTHETIC if masthead.synthetic else "",
+        )
+        if part
+    ]

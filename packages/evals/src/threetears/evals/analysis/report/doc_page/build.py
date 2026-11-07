@@ -49,7 +49,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from threetears.evals.analysis.campaign_title import report_input_title
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
@@ -81,7 +80,15 @@ from threetears.evals.analysis.report.doc_page.words import (
     SLOT_TITLES,
     UNRESOLVED,
 )
-from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, render, resolve, written_arm
+from threetears.evals.analysis.report.figure_keys import (
+    Figure,
+    NamedKind,
+    format_figure,
+    is_figure_key,
+    render,
+    resolve,
+    written_arm,
+)
 from threetears.evals.analysis.report.md_parts import one_line
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
@@ -104,7 +111,7 @@ from threetears.evals.analysis.report_decision import (
 )
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_arms import fact_arms
-from threetears.evals.analysis.style import humanize
+from threetears.evals.analysis.style import humanize, measure_name
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.report_doc import DocCaveat, Evidence, ReportDoc, ReportFinding, is_analyst_caveat
 from threetears.evals.kernel.chart_query import ChartSpec, PlannedChart
@@ -247,6 +254,8 @@ def _masthead(reader: _Reader) -> PageMasthead:
         kind = "measurement"
     else:
         kind = "change" if any(arm.role == "control" for arm in report_input.arms) else "choice"
+    # As the editor and the judge read it (doc_page_text), so a recorded review keeps its key: a reader's page dates it
+    # and names each part once where it prints it (masthead_parts).
     return PageMasthead(
         kind=_KIND_LABELS[kind],
         system=meta.behavior or meta.campaign,
@@ -484,7 +493,74 @@ def _explore(doc: ReportDoc, reader: _Reader) -> TableBlock | None:
     )
 
 
-def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int]) -> list[DocFinding]:
+#: An engine key in an editor's finding, as the editor quoted it: a dotted figure path, in backticks or not, and the
+#: value it was read at where the editor wrote one (``settle.margin.<aspect>.<arm>.cases_needed_80 = 62``).
+_FINDING_KEY = re.compile(
+    r"`?(?P<key>[a-z_][\w-]*(?:\.[\w<>*-]+)+)`?(?:\s*=\s*`?(?P<value>-?\d[\d.,]*\d|-?\d)`?)?(?![\w-])"
+)
+
+#: A figure key's last word as a sentence says it, where the key names no figure on this input (an editor's
+#: placeholder, ``<arm>``): the settle sizes by what they buy, any other by its words.
+_STATISTIC_WORDS = {
+    "cases_needed": "the cases that settle it half the time",
+    "cases_needed_80": "the cases that settle it four times in five",
+    "cases_needed_two_sided": "the cases a two-sided interval needs half the time",
+    "cases_needed_two_sided_80": "the cases a two-sided interval needs four times in five",
+    "trials_needed": "the trials that settle it half the time",
+    "trials_needed_80": "the trials that settle it four times in five",
+    "n": "the count",
+}
+
+#: A figure key's words that name its place in the grammar, not what it is about.
+_PLACE_WORDS = frozenset({"overall", "criteria", "margin", "settle", "measure", "compare", "cost", "reading", "task"})
+
+
+def _key_words(path: str) -> str:
+    """A figure key that names no figure on this input, in words: what it measures and of what, never its path."""
+    *subject, statistic = path.split(".")
+    named = [
+        "an arm" if word.startswith("<") else measure_name(word)[:1].lower() + measure_name(word)[1:]
+        for word in subject[1:]
+        if word not in _PLACE_WORDS and word != "*"
+    ]
+    said = _STATISTIC_WORDS.get(statistic, statistic.replace("_", " "))
+    return f"{said} ({', '.join(named)})" if named else said
+
+
+#: A claim's id in an editor's finding (``c2``), which the page names by its place.
+_CLAIM_ID = re.compile(r"\b(?P<id>c\d+)\b")
+
+
+def _finding_words(text: str, reader: _Reader, places: Mapping[str, int]) -> str:
+    """An editor's finding as a page prints it: each figure key it quotes written out as the figure it names (its
+    value, as every key on the page prints), each claim id as the claim's place (``claim 2``), so no finding prints
+    the engine's vocabulary. A key that does not resolve on this input is left as the editor wrote it."""
+
+    def figure(match: re.Match[str]) -> str:
+        key = match.group("key").rstrip(".")
+        tail = match.group(0)[len(match.group(0).rstrip(".")) :]
+        try:
+            return render(f"{{{key}}}", reader.report_input, reader.arm_names) + tail
+        except UnresolvableReference:
+            # NOSILENT: a figure key's form that names no figure here (an editor's placeholder) reads in words; any
+            # other dotted word (a version, a model id) is the editor's and stands.
+            return _key_words(key) + tail if is_figure_key(key) else match.group(0)
+
+    def claim(match: re.Match[str]) -> str:
+        place = places.get(match.group("id"))
+        if place is None:
+            return match.group(0)
+        # ``Claim 2`` where it opens a sentence, ``claim 2`` inside one.
+        opens = (
+            not match.string[: match.start()].rstrip(" `") or match.string[: match.start()].rstrip(" `")[-1] in ".!?"
+        )
+        word = CLAIM_WORD.format(place=place)
+        return word if opens else word[:1].lower() + word[1:]
+
+    return _CLAIM_ID.sub(claim, _FINDING_KEY.sub(figure, text))
+
+
+def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int], reader: _Reader) -> list[DocFinding]:
     shown = []
     for finding in findings:
         place = places.get(finding.claim)
@@ -493,7 +569,9 @@ def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int]) -> l
                 about=CLAIM_WORD.format(place=place) if place is not None else PAGE_WORD,
                 claim_place=place,
                 severity=SEVERITY_WORDS[finding.severity],
+                # As the editor wrote it, which the judge reads (doc_page_text); a reader's page prints its words.
                 finding=finding.finding,
+                words=_finding_words(finding.finding, reader, places),
             )
         )
     return shown
@@ -551,7 +629,8 @@ def build(
         for place, claim in enumerate(doc.claims, start=1)
     ]
     page = DocPage(
-        title=report_input_title(report_input),
+        # The page's name is the campaign's: what it compares is the masthead's, so the name never stacks.
+        title=report_input.meta.campaign,
         masthead=_masthead(reader),
         headline=reader.written(doc.headline, "headline"),
         lede=reader.written(doc.lede, "lede"),
@@ -594,7 +673,7 @@ def build(
             )
             for index, item in enumerate(doc.method)
         ],
-        findings=_findings(findings, {claim.id: claim.place for claim in claims}),
+        findings=_findings(findings, {claim.id: claim.place for claim in claims}, reader),
         made=made,
         draft=draft,
     )

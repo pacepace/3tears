@@ -27,13 +27,15 @@ found by the marks those carry, never by their words.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 
 from threetears.evals.analysis.arms import short_digest
+from threetears.evals.analysis.contention import reader_latency_sentence
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, CriterionKind, LateCriterion
 from threetears.evals.analysis.report.campaign.common import named_arms
-from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.campaign.warnings import listed, where
 from threetears.evals.analysis.report.decision import floor_statement
 from threetears.evals.analysis.report.model import (
@@ -136,36 +138,66 @@ def question_blocks(campaign: EvalCampaign, *, compares: bool) -> list[ReportBlo
     return [DisclosureBlock(section="answer", source="basis", text=f'"{" ".join(campaign.question.split())}"')]
 
 
-def _lines(bundles: Sequence[AnalysisContextBundle]) -> list[tuple[_Kind, str]]:
-    """Each report-wide disclosure that holds, with its one line: the one construction every surface says it by."""
+def _lines(bundles: Sequence[AnalysisContextBundle], names: AspectNames | None = None) -> list[tuple[_Kind, str]]:
+    """Each report-wide disclosure that holds, with its one line: the one construction every surface says it by, each
+    aspect by what ``names`` calls it (else by :func:`aspect_name`)."""
     total = len(bundles)
+    named = names if names is not None else AspectNames.of(bundles)
     lines: list[tuple[_Kind, str]] = []
     if late := [bundle for bundle in bundles if bundle.reading_scope.late_criteria]:
-        on = where([aspect_name(bundle) for bundle in late], total)
+        on = where([named(bundle.aspect) for bundle in late], total)
         unrecorded = any(
             criterion.set_at is None for bundle in late for criterion in bundle.reading_scope.late_criteria
         )
-        lines.append(("late", _LATE_LINE[unrecorded].format(where=on)))
+        held = {criterion.criterion for bundle in late for criterion in bundle.reading_scope.late_criteria}
+        # In the order a design declares them: the aspect, the control, the margin, then its bars, guardrails, floors.
+        kinds = [kind for kind in _LATE_NOUNS if kind in held]
+        # Past three kinds the line says criteria, and the table one step down names each.
+        what = f"The {listed([_LATE_NOUNS[kind] for kind in kinds])}" if len(kinds) <= 3 else "Criteria"
+        several = len(kinds) > 1 or any(
+            sum(criterion.criterion == kinds[0] for criterion in bundle.reading_scope.late_criteria) > 1
+            for bundle in late
+        )
+        line = _LATE_LINE[unrecorded]["other" if several else "one"]
+        lines.append(("late", line.format(what=what, where=on)))
     if untimed := [bundle for bundle in bundles if bundle.reading_scope.untimed_results]:
         count = sum(bundle.reading_scope.untimed_results for bundle in untimed)
-        on = where([aspect_name(bundle) for bundle in untimed], total)
+        on = where([named(bundle.aspect) for bundle in untimed], total)
         lines.append(("untimed", _UNTIMED_LINE["one" if count == 1 else "other"].format(count=count, where=on)))
-    if contended := [aspect_name(bundle) for bundle in bundles if bundle.latency_contended]:
+    if contended := [named(bundle.aspect) for bundle in bundles if bundle.latency_contended]:
         lines.append(("latency", _LATENCY_LINE.format(where=where(contended, total))))
-    if unconfirmed := [aspect_name(bundle) for bundle in bundles if bundle.request_settings_disclosure]:
+    if unconfirmed := [named(bundle.aspect) for bundle in bundles if bundle.request_settings_disclosure]:
         lines.append(("settings", _SETTINGS_LINE.format(where=where(unconfirmed, total))))
-    if directional := [aspect_name(bundle) for bundle in bundles if _calibration_sentences(bundle)]:
+    if directional := [named(bundle.aspect) for bundle in bundles if _calibration_sentences(bundle)]:
         lines.append(("judge", _JUDGE_LINE.format(where=where(directional, total))))
     return lines
 
 
-#: The line for criteria set after their readings were visible, by whether any has no recorded time.
-_LATE_LINE = {
-    False: "Criteria on {where} were set after the results there existed, so they were not fixed in advance.",
-    True: "Criteria on {where} were set after the results there existed or have no recorded time, so they are not "
-    "shown fixed in advance.",
+#: What a late criterion of each kind is called where the late line names what was set late.
+_LATE_NOUNS: dict[CriterionKind, str] = {
+    "aspect": "aspect",
+    "control": "control",
+    "margin": "margin",
+    "bar": "bar",
+    "guardrail": "guardrail margin",
+    "floor": "floor",
 }
 
+#: The line for criteria set after their readings were visible, naming what was set, by whether any has no recorded
+#: time and by count. It leads the report-wide caveats, the one set apart as a flag
+#: (:data:`~threetears.evals.analysis.report.blocks.FLAGGED_CAVEATS`).
+_LATE_LINE = {
+    False: {
+        "one": "{what} on {where} was set after the results there existed, so it was not fixed in advance.",
+        "other": "{what} on {where} were set after the results there existed, so they were not fixed in advance.",
+    },
+    True: {
+        "one": "{what} on {where} was set after its results existed or has no recorded time, so it is not shown "
+        "fixed in advance.",
+        "other": "{what} on {where} were set after its results existed or have no recorded time, so they are not "
+        "shown fixed in advance.",
+    },
+}
 #: The line for results with no time that can be ordered, by count form.
 _UNTIMED_LINE = {
     "one": "{count} result on {where} carries no time that can be ordered, so whether a criterion was set after it "
@@ -192,20 +224,24 @@ _SETTINGS_LINE = (
 _JUDGE_LINE = "Judged scores on {where} are directional until people's labels calibrate the judge."
 
 
-def timing_caveats(bundles: Sequence[AnalysisContextBundle]) -> list[str]:
+def timing_caveats(bundles: Sequence[AnalysisContextBundle], names: AspectNames | None = None) -> list[str]:
     """The report's caveat lines on when its criteria were set, as its first screen says them: one if any criterion
     was set after the readings it judges were visible or has no recorded time, one if any result carries no time that
     can be ordered. An analysis's listing line says these after its warnings.
 
     :param bundles: Each aspect's evidence, in the campaign's order; one for an aspect's own page.
     :ptype bundles: Sequence[AnalysisContextBundle]
+    :param names: What the page calls each aspect; None names each by :func:`aspect_name`.
+    :ptype names: AspectNames | None
     :return: The lines; none where every criterion came before its readings and every result is timed.
     :rtype: list[str]
     """
-    return [line for kind, line in _lines(bundles) if kind in ("late", "untimed")]
+    return [line for kind, line in _lines(bundles, names) if kind in ("late", "untimed")]
 
 
-def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSection) -> list[ReportBlock]:
+def caveat_blocks(
+    bundles: Sequence[AnalysisContextBundle], *, section: ReportSection, names: AspectNames | None = None
+) -> list[ReportBlock]:
     """A page's first-screen caveat lines, after what warns: when its criteria were set, results with no ordered time,
     latency read under concurrency, request settings not confirmed, a judge not yet calibrated, each once for the
     whole page, naming where it holds; each carries the id its kind marks it by.
@@ -215,6 +251,8 @@ def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSe
     :param section: The first-screen section they sit in: ``warnings`` on a campaign's page, ``header`` on an
         aspect's.
     :ptype section: ReportSection
+    :param names: What the page calls each aspect; None names each by :func:`aspect_name`.
+    :ptype names: AspectNames | None
     :return: The lines; none where nothing holds.
     :rtype: list[ReportBlock]
     """
@@ -224,8 +262,10 @@ def caveat_blocks(bundles: Sequence[AnalysisContextBundle], *, section: ReportSe
             source=_CAVEAT_SOURCES[kind],
             text=line,
             anchor=_CAVEAT_ANCHORS[kind],
+            # The judged scale is one click from the first screen: the judge's line links its glossary entry.
+            term="judged score" if kind == "judge" else None,
         )
-        for kind, line in _lines(bundles)
+        for kind, line in _lines(bundles, names)
     ]
 
 
@@ -336,18 +376,49 @@ def _setup_detail(kind: _SetupKind, bundle: AnalysisContextBundle, arm: Callable
     names the role and what was sent against what was asked), and for latency the arms it holds for, where it does
     not hold for every arm; each judge's state and next step; the cost's routing, where any arm was priced."""
     if kind == "settings":
-        return (bundle.request_settings_disclosure or "").strip() or None
+        return _settings_in_words((bundle.request_settings_disclosure or "").strip()) or None
     if kind == "judge":
         return " ".join(_calibration_sentences(bundle)) or None
     if kind == "cost":
         return COST_ROUTING_CAVEAT if priced_aspects([bundle]) else None
-    sentence = (bundle.latency_contended or "").strip()
+    sentence = reader_latency_sentence((bundle.latency_contended or "").strip())
     if not sentence:
         return None
     keys = sorted({cell.variant_key for cell in bundle.latency_contended_cells})
     if not keys or set(keys) >= {board.variant_key for board in bundle.scoreboard}:
         return sentence
     return f"{sentence} Read under concurrency: {'; '.join(arm(key) for key in keys)}."
+
+
+#: A stored sentence's request settings as the engine quotes them (``{max_tokens=10240, reasoning_effort=high,
+#: strict}``), and the field its reports name them by.
+_SETTINGS_PHRASE = re.compile(r"\{([^{}]*=[^{}]*)\}")
+_SETTINGS_FIELD = " (sent_settings)"
+
+#: Each quoted setting as a sentence says it.
+_SETTING_WORDS = {
+    "max_tokens": "max tokens",
+    "reasoning_effort": "reasoning effort",
+    "reasoning_max_tokens": "reasoning max tokens",
+}
+
+
+def _settings_in_words(sentence: str) -> str:
+    """A stored request-settings sentence as a page prints it: each quoted set of settings in words (``max tokens
+    10240, reasoning max tokens 8192, strict output``), never ``key=value``, and no field name. The stored sentence
+    stays as frozen; only its printing changes."""
+
+    def words(match: re.Match[str]) -> str:
+        said = []
+        for part in match.group(1).split(", "):
+            key, equals, value = part.partition("=")
+            if equals:
+                said.append(f"{_SETTING_WORDS.get(key, key.replace('_', ' '))} {value}")
+            else:
+                said.append({"strict": "strict output", "not strict": "no strict output"}.get(part, part))
+        return f"({', '.join(said)})"
+
+    return _SETTINGS_PHRASE.sub(words, sentence).replace(_SETTINGS_FIELD, "")
 
 
 def provenance_blocks(
@@ -441,13 +512,18 @@ def _criteria_table(
             groups.setdefault(key, []).append(bundle.aspect)
     if not groups:
         return []
+    # Criteria set at one time on the same aspects share a row, each named once in the order declared.
+    merged: dict[tuple[str | None, tuple[str, ...]], list[str]] = {}
+    for (kind, what, at), held in groups.items():
+        merged.setdefault((at, tuple(held)), []).append(_criterion_noun(kind, what))
+    # One criterion's words may hold a comma (a measure's name), so a row's criteria are set apart by semicolons.
     rows = [
         {
-            "criterion": TableCell(value=_criterion_noun(kind, what)),
+            "criterion": TableCell(value="; ".join(nouns)),
             "set_on": TableCell(value=at or "not recorded"),
-            "aspects": cell(held),
+            "aspects": cell(list(held)),
         }
-        for (kind, what, at), held in groups.items()
+        for (at, held), nouns in merged.items()
     ]
     return [
         TableBlock(
@@ -460,7 +536,10 @@ def _criteria_table(
                 TableColumn(key="aspects", header="Results existed on"),
             ],
             rows=rows,
-            order="each criterion as the aspects declare it, in the campaign's order",
+            order=(
+                "each criterion as the aspects declare it, in the campaign's order; those set at one time on the same "
+                "aspects share a row"
+            ),
             total_rows=len(rows),
         )
     ]
