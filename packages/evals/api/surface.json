@@ -4783,8 +4783,8 @@
     },
     "threetears.evals.run.update_template": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "update_template(host: EvalHost, template_id: str, scope_id: str, fields: dict[str, Any]) -> EvalTemplate",
+      "tier": "host-contract"
     },
     "threetears.evals.run.validated_kind_spec": {
       "kind": "function",
@@ -5151,6 +5151,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.check_names": {
+      "kind": "function",
+      "signature": "check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]",
+      "tier": "host-contract"
+    },
     "threetears.evals.analysis.compare_two_runs": {
       "kind": "function",
       "signature": "",
@@ -5271,6 +5276,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.DECLARED_NAME_CHARS": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "host-contract"
+    },
     "threetears.evals.analysis.DeclaredCellCoverage": {
       "kind": "model",
       "signature": "",
@@ -5357,6 +5367,11 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.DocCaveatLine": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.DocCheck": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -5680,6 +5695,11 @@
       "kind": "constant (dict)",
       "signature": "",
       "tier": "provisional"
+    },
+    "threetears.evals.analysis.GOAL_CHECK": {
+      "kind": "constant (str)",
+      "signature": "",
+      "tier": "host-contract"
     },
     "threetears.evals.analysis.GoalCheckProofReading": {
       "kind": "model",

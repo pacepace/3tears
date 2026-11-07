@@ -133,7 +133,9 @@ def _definition(check: str, on: str = "") -> str:
 
 #: The glossary's entry pairing a name with its expression, in Markdown and in HTML.
 _GLOSSARY_ROW = {
-    "markdown": lambda name, check: f"- **{name}**: {_definition(check)}",
+    "markdown": lambda name, check: (
+        f'- <a id="g-check-{re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")}"></a>**{name}**: {_definition(check)}'
+    ),
     "html": lambda name, check: (
         f'<dt id="g-check-{re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")}">{escape(name)}</dt>'
         f"<dd>The goal check <code>{escape(check)}</code>, which code runs on every trial.</dd>"

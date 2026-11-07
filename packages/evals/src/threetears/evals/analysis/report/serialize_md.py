@@ -22,7 +22,7 @@ results.
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.report.blocks import (
@@ -44,6 +44,7 @@ from threetears.evals.analysis.report.md_parts import (
     table_lines,
 )
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
+from threetears.evals.analysis.report.html_parts import check_anchor
 from threetears.evals.analysis.style import GLOSSARY, check_definition
 from threetears.evals.analysis.report.verdict import cause_short
 
@@ -90,7 +91,9 @@ def campaign_report_markdown(report: CampaignReport) -> str:
     :rtype: str
     """
     if report.doc_page is not None:
-        record = [*_fold_lines(report), *_glossary_lines(report)] if report.doc_trials else []
+        # The document's own Checks list defines each check it names: the record's glossary defines only the others.
+        defined = [check.name for check in report.doc_page.checks]
+        record = [*_fold_lines(report), *_glossary_lines(report, defined=defined)] if report.doc_trials else []
         return doc_page_markdown(report.doc_page, record=record)
     # The title first, then the decision: the question, the answer, then what warns, as consequences.
     lines = [f"# {one_line(report.title)}"]
@@ -150,19 +153,26 @@ def _section_lines(
     return lines
 
 
-def _glossary_lines(report: Report | CampaignReport) -> list[str]:
+def _check_row(name: str, said: Sequence[tuple[str, str | None]]) -> str:
+    """A goal check's glossary row: its anchor, its name, then the expression it stands for, as a span."""
+    anchor, definition = check_anchor(name), check_definition(said, span=code_span)
+    return f'- <a id="{anchor}"></a>**{name}**: {definition}'  # one line: a name, and an expression laid on one line
+
+
+def _glossary_lines(report: Report | CampaignReport, *, defined: Collection[str] = ()) -> list[str]:
     """The page's glossary: each term it links, then each goal check's name, its expression set as a span no backtick
-    inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; nothing when the page
-    defines none."""
-    entries = [(term, GLOSSARY[term]) for term in report.terms]
-    entries += [(name, check_definition(said, span=code_span)) for name, said in report.check_glossary]
+    inside it can close (a check's string may hold one), so nothing a host wrote becomes Markdown; none of the checks
+    ``defined`` names, which a report document's own Checks list defines; nothing when the page defines none."""
+    entries = [f"- **{term}**: {GLOSSARY[term]}" for term in report.terms]
+    # A check's row carries the id its HTML row has, so a link to it lands there in either form.
+    entries += [_check_row(name, said) for name, said in report.check_glossary if name not in defined]
     if not entries:
         return []
     return [
         "",
         f"## {SECTION_TITLES['glossary']}",
         "",
-        *(f"- **{term}**: {definition}" for term, definition in entries),
+        *entries,
     ]
 
 

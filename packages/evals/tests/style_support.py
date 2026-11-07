@@ -28,6 +28,10 @@ _QUOTED_LINE = re.compile(r'^(?:[A-Z][a-z]+(?: [a-z]+)*: )?".+"$')
 _HEADER_UNIT = re.compile(r"\s*\([^()]*\)$|, per [\d,]+ \w+$")
 
 
+#: An empty anchor a Markdown row carries for a link to land on.
+_ANCHOR = re.compile(r'<a id="[^"]*"></a>')
+
+
 def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
@@ -75,7 +79,8 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
             continue
         if _QUOTED_LINE.match(line):
             continue
-        found += lint_prose(line.lstrip("-> *").strip(), question=question)
+        # A glossary row's anchor (``<a id="g-check-..."></a>``) is markup a link lands on, not prose.
+        found += lint_prose(_ANCHOR.sub("", line).lstrip("-> *").strip(), question=question)
     return found
 
 

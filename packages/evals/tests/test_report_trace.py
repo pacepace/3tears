@@ -147,6 +147,10 @@ def _links_land_in_sight(page: str) -> None:
     for href, shut, _ in parsed.links:
         assert href.startswith("#"), f"{href} is not a link to a place on the page"
         assert href[1:] in parsed.held, f"{href} lands nowhere"
+        # The one link that lands inside a closed fold: a goal check's name, on its own glossary row, the one place
+        # its expression stands (coordinator ruling, 2026-11-07).
+        if href.startswith("#g-check-"):
+            continue
         assert parsed.held[href[1:]] <= shut, f"{href} lands inside a closed fold"
     assert "<base" not in without_kit_script(page)
 
@@ -181,7 +185,8 @@ async def test_every_link_on_both_pages_lands_in_sight() -> None:
     html = report_html(page)
     nav = html[html.index("<nav>") : html.index("</nav>")]
     assert 'href="#cases"' in nav and "-body" not in nav
-    assert 'href="#glossary"' in html and 'href="#g-' not in html
+    # A term of art lands on the glossary's heading; only a goal check's name lands on its row.
+    assert 'href="#glossary"' in html and 'href="#g-' not in html.replace('href="#g-check-', "")
     _links_land_in_sight(html)
     campaign = off_loop(_campaign_page, host, analysis)
     campaign_html = campaign_report_html(campaign)

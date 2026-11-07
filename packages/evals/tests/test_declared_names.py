@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 import pytest
@@ -794,7 +795,10 @@ class TestANamedCheckPrintsByNameOnThePage:
         for check, name in CHECK_NAMES.items():
             assert name in markdown, name
             # Only the glossary states the expression, defining the name; no row is headed by it.
-            entry = f"- **{name}**: The goal check `{check}`, which code runs on every trial."
+            anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            entry = (
+                f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{check}`, which code runs on every trial.'
+            )
             assert markdown.count(entry) == 1, f"{check} has no glossary entry"
             assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
 
@@ -802,7 +806,10 @@ class TestANamedCheckPrintsByNameOnThePage:
         _, page = _page(named=False)
         markdown = campaign_report_markdown(page)
         for check, name in {CHECKS[1]: "Chat messages check", CHECKS[0]: "Shop cart check"}.items():
-            entry = f"- **{name}**: The goal check `{check}`, which code runs on every trial."
+            anchor = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+            entry = (
+                f'- <a id="g-check-{anchor}"></a>**{name}**: The goal check `{check}`, which code runs on every trial.'
+            )
             assert markdown.count(entry) == 1, f"{check} has no glossary entry"
             assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
         assert not any(name in markdown for name in CHECK_NAMES.values())

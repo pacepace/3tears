@@ -4,11 +4,9 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 
 - :func:`humanize` is the one seam an identifier passes through on its way to a reader: a model id, an arm, a judged
   dimension, a case, a provider. :data:`HUMANIZE_OVERRIDES` names exceptions by hand. A check expression is code and
-  never passes through it: :func:`measure_name` names a check's measure by the name the caller passes
-  (``declared=``, read off the bundle with :func:`declared_check_name`), the display name its template declares, else
-  ``Goal check`` (numbered, ``Goal check 2``, where an aspect reads several, :func:`check_names`). No header or lead
-  prints a check's expression; the page's glossary carries it, once, as the definition of the check's name
-  (:func:`check_definition`).
+  never passes through it: :func:`measure_name` names a check's measure by the name :func:`check_names` gives it (the
+  caller passes it as ``declared=``, read off the bundle), and no header or lead prints a check's expression; the
+  page's glossary carries it, once, as the definition of the check's name (:func:`check_definition`).
 - :class:`ArmName` names an arm twice: in full on its first mention (``deepseek-v4.1-flash (production, control)``)
   and by its given label after that (``production``).
 - :func:`arm_display_name` is the one rule a name code computed from an arm's levers is printed by, on every page:
@@ -23,6 +21,7 @@ The renderer (:mod:`threetears.evals.analysis.report`) reads this module for eve
 from __future__ import annotations
 
 import ast
+import functools
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,6 +29,13 @@ from datetime import datetime
 from typing import Literal
 
 from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.schema.goal_grammar import (
+    ACTION_BUILTINS,
+    FIRE_PREDICATES,
+    PATH_ROOTS,
+    REFUSAL_BUILTINS,
+    WORLD_ROOT,
+)
 
 #: What :func:`humanize` names.
 HumanizeKind = Literal["model", "arm", "dimension", "case", "provider"]
@@ -135,21 +141,24 @@ def measure_name(name: str, reader_name: str | None = None, *, declared: str | N
     return reader_name or humanize("dimension", name)
 
 
-#: The call predicates whose first argument names an action, by the words the subject takes after it.
-_ACTION_WORDS: dict[str, str] = {
-    "call_count": "calls",
-    "calls": "calls",
-    "called_before": "calls",
-    "called_after": "calls",
-    "last_call_was": "calls",
-    "refused": "refusals",
-    "refused_count": "refusals",
-    "fired": "firing",
-    "fired_armed": "firing",
-}
+def _action_word(builtin: str | None) -> str | None:
+    """The word a call predicate's subject takes after its action (``Send message calls``), read off the goal
+    grammar's own sets, so a builtin the grammar gains is named as its set's are: ``refusals`` for a builtin reading
+    the calls a tool refused, ``calls`` for any other naming an action, ``firing`` for an event predicate; None for a
+    builtin naming no action."""
+    if builtin in REFUSAL_BUILTINS:
+        return "refusals"
+    if builtin in ACTION_BUILTINS:
+        return "calls"
+    if builtin in FIRE_PREDICATES:
+        return "firing"
+    return None
 
-#: The roots a path's subject never names: the world itself, and a value a generator binds per element.
-_ROOTS = frozenset({"state"})
+
+#: The roots a path names no subject under: a case parameter (``variation``), the expectation a check holds the end
+#: state to rather than what it tests, and the element a generator binds. A path under the end state's root
+#: (``state.refund.amount``) names its subject with that root dropped.
+_NO_SUBJECT_ROOTS = PATH_ROOTS - {WORLD_ROOT}
 
 
 def _path(node: ast.expr) -> list[str] | None:
@@ -190,15 +199,23 @@ class _Subject:
 
 
 def _reads(node: ast.AST) -> set[tuple[str, ...]]:
-    """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent."""
+    """Every path and call predicate an expression reads, each as a tuple: what tells a guard from its consequent. A
+    path under a root that names no subject (a case parameter, a generator's element) is the expectation, not what is
+    tested, so a guard reading one beside the end state (``contains(state.inventory.orders, variation.sku)``) is still a
+    guard when a later operand reads that end state."""
     found: set[tuple[str, ...]] = set()
+    # A predicate's own name (``contains``, ``call_count``) is the function a call makes, never a path it reads.
+    called = {id(part.func) for part in ast.walk(node) if isinstance(part, ast.Call)}
     for part in ast.walk(node):
-        if isinstance(part, ast.Call) and isinstance(part.func, ast.Name) and part.func.id in _ACTION_WORDS:
+        if id(part) in called:
+            continue
+        if isinstance(part, ast.Call) and isinstance(part.func, ast.Name) and _action_word(part.func.id) is not None:
             first = part.args[0] if part.args else None
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
                 found.add((part.func.id, first.value))
         elif isinstance(part, ast.Attribute | ast.Name) and (path := _path(part)) is not None:
-            found.add(tuple(path))
+            if path[0] not in _NO_SUBJECT_ROOTS:
+                found.add(tuple(path))
     return found
 
 
@@ -227,10 +244,14 @@ def _subjects_of(node: ast.AST, bound: frozenset[str]) -> list[_Subject]:
     if isinstance(node, ast.Call):
         name = node.func.id if isinstance(node.func, ast.Name) else None
         first = node.args[0] if node.args else None
-        if name in _ACTION_WORDS and isinstance(first, ast.Constant) and isinstance(first.value, str):
+        if (
+            (action := _action_word(name)) is not None
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+        ):
             if not _IDENTIFIER.fullmatch(first.value):
                 return []
-            return [_Subject(re.sub(r"_+", " ", first.value.rsplit(".", 1)[-1]).strip(), _ACTION_WORDS[name])]
+            return [_Subject(re.sub(r"_+", " ", first.value.rsplit(".", 1)[-1]).strip(), action)]
         if name == "passed" and not node.args:
             return [_Subject("deliberate pass")]
         children: list[ast.AST] = [*node.args, *(keyword.value for keyword in node.keywords)]
@@ -242,9 +263,9 @@ def _subjects_of(node: ast.AST, bound: frozenset[str]) -> list[_Subject]:
         # A generator tests each element of a collection: the collection is its subject.
         children = [*(gen.iter for gen in node.generators), node.elt]
     elif isinstance(node, ast.expr) and (path := _path(node)) is not None:
-        if path[0] in bound:
+        if path[0] in bound or path[0] in _NO_SUBJECT_ROOTS:
             return []
-        words = path[1:] if path[0] in _ROOTS and len(path) > 1 else path
+        words = path[1:] if path[0] == WORLD_ROOT and len(path) > 1 else path
         words = words[:-1] if len(words) > 1 and words[-1] == "length" else words
         said = " ".join(re.sub(r"_+", " ", word) for word in words).strip()
         return [_Subject(said)] if said else []
@@ -277,6 +298,7 @@ def _top_bool(node: ast.AST) -> ast.boolop | None:
     return None
 
 
+@functools.cache
 def _check_subject(expression: str) -> str | None:
     """What a goal check tests, in a reader's words, read off its expression alone: ``Refund amount`` for
     ``state.refund.amount <= state.order.total`` (and for it guarded by ``state.order.total > 0 and ...``, named by
@@ -327,22 +349,6 @@ def check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str,
         alone = len(held) == 1 and name.casefold() not in taken
         names.update({check: name if alone else f"{name} {index}" for index, check in enumerate(held, start=1)})
     return {check: names[check] for check in every}
-
-
-def written_check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]:
-    """What a report document's page calls each goal check, by expression: :func:`check_names` over ``checks``, the
-    display name ``declared`` gives it, else what it tests, as the code page names it. The one rule the document's own
-    tables and the evidence record laid out after it name a check by, so one page never carries a check under two
-    forms.
-
-    :param checks: The checks the page names, by expression.
-    :ptype checks: Iterable[str]
-    :param declared: Declared display names, by expression.
-    :ptype declared: Mapping[str, str]
-    :return: Each check's name, by expression, in sorted order.
-    :rtype: dict[str, str]
-    """
-    return check_names(checks, declared)
 
 
 #: The hover a link to a check's name carries: never the check's expression or its name, which are a host's text and
@@ -734,5 +740,4 @@ __all__ = [
     "measure_name",
     "page_date",
     "sentences",
-    "written_check_names",
 ]

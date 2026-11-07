@@ -10,11 +10,12 @@ field can open a ``<script>``, a ``<link>``, an event-handler attribute or a ``j
 
 from __future__ import annotations
 
+import functools
 import html
 import json
 import math
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
@@ -734,10 +735,37 @@ def glossary_slug(term: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", term.casefold()).strip("-")
 
 
+def check_header_links(markup: str, names: Sequence[str]) -> str:
+    """``markup`` with each column header that names one of the goal checks ``names`` linked to that check's entry: a
+    header is where a reader first meets a check's name, as a term of art's header links its term. A header naming a
+    check reads its name, then its unit in brackets or the aspects it reads after a comma.
+
+    :param markup: The page's markup.
+    :ptype markup: str
+    :param names: The checks' names the page defines.
+    :ptype names: Sequence[str]
+    :return: The markup, each such header linked.
+    :rtype: str
+    """
+    for name in names:
+        header = re.compile(rf"(<th\b[^>]*>)({re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?)(</th>)")
+        markup = header.sub(functools.partial(_check_header, name), markup)
+    return markup
+
+
+def _check_header(name: str, found: re.Match[str]) -> str:
+    """A matched header cell naming the check ``name``, its text linked to the check's entry."""
+    return f"{found[1]}{term_link(name, found[2])}{found[3]}"
+
+
+#: The namespace of a goal check's glossary row's id (:func:`check_anchor`).
+CHECK_ANCHOR_PREFIX = "g-check-"
+
+
 def check_anchor(name: str) -> str:
     """A goal check's glossary entry's id: the checks' own namespace, so a declared name that is a term of art's words
     (``Outcome``) never repeats the term's id."""
-    return f"g-check-{glossary_slug(name)}"
+    return f"{CHECK_ANCHOR_PREFIX}{glossary_slug(name)}"
 
 
 def inline_html(text: str) -> str:
@@ -794,12 +822,14 @@ def _arm_chip(tag: str, color: str | None, markup: str) -> str:
 
 
 __all__ = [
+    "CHECK_ANCHOR_PREFIX",
     "KIT_JS",
     "TRIAL_ID",
     "chart_html",
     "code_html",
     "escape",
     "check_anchor",
+    "check_header_links",
     "glossary_slug",
     "grid_html",
     "inline_html",

@@ -71,27 +71,35 @@ or naming nothing a reader can read, is `Goal check`. A name is built from ident
 from a literal that is a dotted name, never from other text, so no literal's markup reaches a page. An expression
 keeps its name on every aspect and run where none of the checks named beside it would share that name; two that would
 are numbered (`Ticket status check 1`, `Ticket status check 2`), so a sibling check added in a later run can move a
-number. A trial's failed-check cell says `check:` only where a name does not say it is one. A production campaign headed a table, and led its page, with a
-four-line `call_count(...) >= 1 or ...`. The page's glossary defines each check's name by its expression, whole, on
-one line, once ("Goal check: The goal check `( call_count(...) >= 1 or ... )`, which code runs on every trial."), and says which aspect a name holds on where one name stands for different expressions; a check's entry has
-an id of its own (`g-check-...`). A check's column header links its entry, and every link to a check carries one hover
+number. A path under a case parameter (`variation.expected`) is what a check holds the end state to, not what it
+tests, so `variation.expected == state.answer` is `Answer check`, as its mirror is; the action builtins and roots are
+read from the goal grammar's own sets (`ACTION_BUILTINS`, `PATH_ROOTS`, `WORLD_ROOT`, new in
+`threetears.evals.schema.goal_grammar`). A trial's failed-check cell says `check:` only where a name does not say it
+is one. A production campaign headed a table, and led its page, with a four-line `call_count(...) >= 1 or ...`. The
+page's glossary defines each check's name by its expression, whole, on one line, once ("Goal check: The goal check
+`( call_count(...) >= 1 or ... )`, which code runs on every trial."), and says which aspect a name holds on where one
+name stands for different expressions; a check's entry has an id of its own (`g-check-...`), which its Markdown row
+carries too. A check's column header links its own row, the one link that lands inside the closed Glossary, and every
+link to a check carries one hover
 ("Code runs this goal check on every trial; the glossary states it in full."), never the host's text. The Markdown
 glossary sets an expression in a span no backtick inside it can close. The Design & provenance `Checks` legend this
 replaces is gone. A column whose aspects name one check apart is headed by each name (`Total right / Sum right
 (%)`); two columns whose checks share a name each name their aspects. A trial's failed-check cell, an unproven check's
 line and a floor's sentence name the check the same way; a trial's record prints the name beside the expression it
 failed. A report document's own tables, and the evidence record laid out after them, name a check the same way
-(`written_check_names`, `input_check_name`, both new, provisional), the record through `input_check_name` on the
-report input the bundle gives, so both name over one set of checks; the report writer's recorded judge was recorded
-again over the named pages. This reverses the earlier rule that an
-undeclared check is printed by its whole expression (owner ruling, 2026-11-07).
+(`input_check_name`, new, provisional), the record through it on the report input the bundle gives, so both name over
+one set of checks, and the document's appendix lists its `Checks` after Method, each name defined by its expression
+once, its headers linking there; the report writer's recorded judge was recorded again over the named pages, and the
+text it reads (`doc_page_text`) carries no Checks list. This reverses the earlier rule that an undeclared check is
+printed by its whole expression (owner ruling, 2026-11-07).
 
 **Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, the checks a floor or
 a bar names included, and `AnalysisContextBundle.check_name` returns a name for every goal check, declared or not,
-where it returned None for an undeclared one. `style.check_names`, `style.check_definition`,
-`style.written_check_names`, `style.GOAL_CHECK` and `style.CHECK_LINK_TITLE` are new. `measure_name(goal_check_key)`
-with no `declared` returns the check's subject name, where it returned the expression as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins (new) are what the serializers
-print. A host pinning a header, a lead or the provenance legend that printed a check's expression updates its match.
+where it returned None for an undeclared one. `style.check_names`, `style.check_definition`, `style.GOAL_CHECK` and
+`style.CHECK_LINK_TITLE` are new. `measure_name(goal_check_key)` with no `declared` returns the check's subject name,
+where it returned the expression as code. `Report.glossary`, `Report.check_glossary` and their `CampaignReport` twins
+(new) are what the serializers print, and `DocPage.checks` (new, `DocCheck`) what a report document's page lists.
+A host pinning a header, a lead or the provenance legend that printed a check's expression updates its match.
 Nothing stored changes: the campaign's readings keep a check's expression in their frozen words, and the writer's
 report input keeps its label.
 

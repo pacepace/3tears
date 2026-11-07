@@ -32,6 +32,7 @@ __all__ = [
     "FINDINGS_TITLE",
     "LATE_NAMED",
     "LEVEL_WORDS",
+    "CHECKS_TITLE",
     "METHOD_TITLE",
     "NEXT_TITLE",
     "OMITTED_TITLE",
@@ -146,6 +147,10 @@ OMITTED_TITLE = "Left out, and why"
 
 #: Method's heading in the appendix, apart from what was left out.
 METHOD_TITLE = "Method"
+
+#: The heading of the appendix's list defining each goal check's name by its expression: the one place a report
+#: document's page prints a check's expression beside the name its tables use.
+CHECKS_TITLE = "Checks"
 
 #: A draft's line, first on its page under the masthead: its editor's review left findings open, each listed under
 #: :data:`FINDINGS_TITLE`. ``{count}`` is how many, with its noun (``1 finding``, ``6 findings``).

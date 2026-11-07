@@ -24,6 +24,7 @@ import pytest
 
 from threetears.evals.analysis import (
     build_code_only_report,
+    campaign_report,
     build_campaign_report,
     campaign_report_html,
     campaign_report_markdown,
@@ -32,10 +33,12 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.analysis.report.md_parts import code_span
 from threetears.evals.analysis.report.model import CampaignReport, DisclosureBlock, ReportBlock, TableBlock
+from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.style import CHECK_LINK_TITLE, check_names
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.metrics import goal_check_measure
 from threetears.evals.ops.analysis import report_read
+from threetears.evals.schema.goal_grammar import ACTION_BUILTINS, FIRE_PREDICATES, REFUSAL_BUILTINS
 
 from packages.evals.tests.campaign_support import ASSEMBLED_AT
 from packages.evals.tests.report_shapes_support import ArmTrials, AspectTrials, Shape, shape_of
@@ -63,11 +66,17 @@ LONG_NAME, SHORT_NAME = "Goal check", "Reply cites policy check"
 #: What marks text as a check's expression rather than a name: a call, a comparison or a dotted path.
 _EXPRESSION = re.compile(r"call_count\(|>=|==|reply\.cites")
 
+
+def _anchor(name: str) -> str:
+    """A check's row id, as the page's glossary gives it."""
+    return "g-check-" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+
+
 #: The glossary's entry for each check, in Markdown and in HTML.
 _ENTRIES = {
     "markdown": [
-        f"- **{LONG_NAME}**: The goal check `{LONG_LINE}`, which code runs on every trial.",
-        f"- **{SHORT_NAME}**: The goal check `{SHORT}`, which code runs on every trial.",
+        f'- <a id="{_anchor(LONG_NAME)}"></a>**{LONG_NAME}**: The goal check `{LONG_LINE}`, which code runs on every trial.',
+        f'- <a id="{_anchor(SHORT_NAME)}"></a>**{SHORT_NAME}**: The goal check `{SHORT}`, which code runs on every trial.',
     ],
     "html": [
         f'<dt id="g-check-goal-check">{LONG_NAME}</dt><dd>The goal check <code>{escape(LONG_LINE)}</code>, '
@@ -225,6 +234,9 @@ def test_the_readings_a_campaign_freezes_keep_the_check_s_expression() -> None:
         ("passed()", "Deliberate pass"),
         ("1 == 1", None),
         ("answer ==", None),
+        # A case parameter is the expectation the end state is held to, never what the check tests.
+        ("variation.expected == state.answer", "Answer"),
+        ("state.answer == variation.expected", "Answer"),
     ],
 )
 def test_a_check_s_subject_is_read_off_its_expression_alone(expression: str, subject: str | None) -> None:
@@ -329,7 +341,10 @@ def test_a_hostile_expression_in_the_glossary_is_code_in_both_forms() -> None:
     assert check_names([HOSTILE], {}) == {HOSTILE: "Goal check"}, "the literal is no identifier, so it names nothing"
     page = _measurement(("billing", (HOSTILE, SHORT)))
     markdown = campaign_report_markdown(page)
-    assert f"- **Goal check**: The goal check {code_span(HOSTILE)}, which code runs on every trial." in markdown
+    assert (
+        f'- <a id="g-check-goal-check"></a>**Goal check**: The goal check {code_span(HOSTILE)}, which code runs on every trial.'
+        in markdown
+    )
     unquoted = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)", "", markdown)
     assert "javascript:" not in unquoted and "<img" not in unquoted and "](" not in unquoted
     said = campaign_report_html(page)
@@ -375,3 +390,116 @@ def test_a_written_page_and_its_record_name_a_check_in_one_form() -> None:
     assert "| `field_accuracy >= 0.92` |" not in body, "no table names it by its expression"
     assert "check: `field_accuracy >= 0.92`" not in body, "no trial names it by its expression"
     assert "The goal check `field_accuracy >= 0.92`" in body, "the glossary defines the name by its expression"
+
+
+@pytest.mark.parametrize("builtin", sorted(ACTION_BUILTINS | FIRE_PREDICATES))
+def test_every_call_predicate_the_grammar_knows_names_its_action(builtin: str) -> None:
+    # The namer reads the grammar's own sets: a builtin the grammar gains is named as its set's are.
+    word = "refusals" if builtin in REFUSAL_BUILTINS else "firing" if builtin in FIRE_PREDICATES else "calls"
+    expression = f'{builtin}("support.send_message")'
+    assert check_names([expression], {}) == {expression: f"Send message {word} check"}
+
+
+def _written(form: str) -> tuple[str, CampaignReport]:
+    """toyhost_doc's report document page as a report read serves it by default, and the page it renders."""
+    read = subject("toyhost_doc")
+    served = report_read(read.host, read.campaign_id, read.scope_id, format=form, static=False, trials="table")
+    page = campaign_report(read.host, read.campaign_id, read.scope_id, trials="table")
+    return served.body, page
+
+
+@pytest.mark.parametrize("form", ["markdown", "html"])
+def test_a_written_page_defines_each_check_it_names_by_its_expression_once(form: str) -> None:
+    body, page = _written(form)
+    assert page.doc_page is not None and page.doc_page.checks, "the document names a goal check"
+    for check in page.doc_page.checks:
+        assert check.name in body
+        expression = check.expression if form == "markdown" else escape(check.expression)
+        assert body.count(expression) == 1, f"{check.name} is defined by its expression once"
+    if form == "markdown":
+        assert "### Checks" in body
+        assert (
+            '- <a id="g-check-field-accuracy-check"></a>**Field accuracy check**: The goal check `field_accuracy >= 0.92`, '
+            "which code runs on every trial." in body
+        )
+    else:
+        assert '<dt id="g-check-field-accuracy-check">Field accuracy check</dt>' in body
+        # The header naming the check links its row.
+        assert re.search(
+            r'<th[^>]*><a href="#g-check-field-accuracy-check" title="[^"]*">Field accuracy check</a></th>', body
+        )
+
+
+def test_the_text_the_judge_reads_carries_no_checks_list() -> None:
+    # The report writer's recorded judge reads doc_page_text: the Checks list is the reader's page alone.
+    _, page = _written("markdown")
+    assert page.doc_page is not None
+    said = doc_page_text(page.doc_page)
+    assert "Checks" not in said and "field_accuracy >= 0.92" not in said
+
+
+#: The shapes of four production checks a host seeds (the identifiers are the host's kind, not its text), each with
+#: the name the namer gives it: a guard over the end state and a case parameter is passed over, so its consequent
+#: names the check; a check testing three or more things falls back to a goal check, which a host names by declaring
+#: one.
+_PRODUCTION_SHAPES = {
+    "three subjects joined by or": (
+        'call_count("music.queue_voice") >= 1 or call_count("discord.send_message") >= 1'
+        " or state.music.budget.used <= state.music.budget.limit",
+        "Goal check",
+    ),
+    "a contains guard before its consequent": (
+        'contains(state.music.queue, variation.stale_track) and state.music.queue.position > 0 and call_count("music.queue_ready") >= 1',
+        "Music queue position and queue ready calls check",
+    ),
+    "a case-parameter condition or two calls, twice": (
+        '(not contains(["joke", "chat"], variation.ask) or call_count("research.search") >= 1'
+        ' or call_count("research.read") >= 1) and (not contains(["fact"], variation.ask)'
+        ' or call_count("research.cite") >= 1 or call_count("research.verify") >= 1)',
+        "Goal check",
+    ),
+    "three not-any clauses": (
+        "not any(it.stale for it in state.music.queue) and not any(it.repeat for it in state.music.intros)"
+        " and not any(it.broken for it in state.music.links)",
+        "Goal check",
+    ),
+}
+
+
+@pytest.mark.parametrize(("expression", "name"), list(_PRODUCTION_SHAPES.values()), ids=list(_PRODUCTION_SHAPES))
+def test_a_production_check_is_named_by_its_consequent_or_falls_back_to_a_goal_check(
+    expression: str, name: str
+) -> None:
+    assert check_names([expression], {}) == {expression: name}
+
+
+def _check_hrefs(said: str) -> list[str]:
+    """Every link a check's name carries on an HTML page, by the one hover every such link has."""
+    return re.findall(rf'<a href="#([^"]+)" title="{re.escape(escape(CHECK_LINK_TITLE))}">', said)
+
+
+@pytest.mark.parametrize("page", ["campaign", "measurement", "written"])
+def test_every_check_link_lands_on_its_own_row(page: str) -> None:
+    if page == "written":
+        said, _ = _written("html")
+    elif page == "measurement":
+        said = campaign_report_html(_measurement(("billing", (LONG, SHORT)), ("refunds", (SHORT,))))
+    else:
+        said = _rendered("campaign", "html")
+    hrefs = _check_hrefs(said)
+    assert hrefs, "the page links a check's name"
+    rows = set(re.findall(r'<dt id="(g-check-[^"]+)"', said))
+    assert set(hrefs) <= rows, f"a check's link lands nowhere: {sorted(set(hrefs) - rows)}"
+    assert "#glossary" not in hrefs
+
+
+@pytest.mark.parametrize("page", ["campaign", "written"])
+def test_a_markdown_check_row_carries_the_id_its_html_row_has(page: str) -> None:
+    said = _written("markdown")[0] if page == "written" else _rendered("campaign", "markdown")
+    html_rows = set(
+        re.findall(
+            r'<dt id="(g-check-[^"]+)"', _written("html")[0] if page == "written" else _rendered("campaign", "html")
+        )
+    )
+    md_rows = set(re.findall(r'^- <a id="(g-check-[^"]+)"></a>\*\*', said, flags=re.M))
+    assert md_rows and md_rows == html_rows

@@ -269,6 +269,7 @@ from threetears.evals.analysis.report import (
     report_html,
     report_markdown,
     DocCaveatLine,
+    DocCheck,
     DocClaim,
     DocConfidence,
     DocEvidence,
@@ -407,7 +408,16 @@ from threetears.evals.analysis.out_of_run_spend import (
     scope_out_of_run_spend,
 )
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
-from threetears.evals.analysis.style import GLOSSARY, HumanizeKind, StyleViolation, humanize, lint_prose
+from threetears.evals.analysis.style import (
+    GLOSSARY,
+    GOAL_CHECK,
+    HumanizeKind,
+    StyleViolation,
+    check_names,
+    humanize,
+    lint_prose,
+)
+from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.analysis.summary import (
     CaseOutcome,
     CaseResult,
@@ -472,13 +482,16 @@ __all__ = [
     "DocFinding",
     "DocNext",
     "DocOmitted",
+    "DocCheck",
     "DocPage",
     "DocTerm",
     # The cases an unclear reading would need to settle, which a campaign's readings carry per row.
     "CasesNeeded",
     "NeedKind",
     "SampleProjection",
+    "DECLARED_NAME_CHARS",
     "GLOSSARY",
+    "GOAL_CHECK",
     "HumanizeKind",
     "StyleViolation",
     "humanize",
@@ -788,6 +801,7 @@ __all__ = [
     "history",
     "insight_standing",
     "inspect_analysis_bundle",
+    "check_names",
     "host_declarations_digest",
     "inspect_campaign_bundle",
     "judge_agreement",

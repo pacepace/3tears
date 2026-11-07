@@ -54,6 +54,7 @@ from threetears.evals.analysis.report.block_spec import block_look, complete_cha
 from threetears.evals.analysis.report.blocks import TableBlock, TableCell, TableColumn
 from threetears.evals.analysis.report.doc_page.model import (
     DocCaveatLine,
+    DocCheck,
     DocClaim,
     DocConfidence,
     DocEvidence,
@@ -84,12 +85,14 @@ from threetears.evals.analysis.report.figure_keys import (
     Figure,
     NamedKind,
     format_figure,
+    input_check_name,
     is_figure_key,
     render,
     resolve,
     written_arm,
 )
 from threetears.evals.analysis.report.md_parts import one_line
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import PageLook
 from threetears.evals.analysis.report.parts.model import (
@@ -577,6 +580,19 @@ def _findings(findings: Sequence[ReportFinding], places: Mapping[str, int], read
     return shown
 
 
+def _checks(report_input: ReportInput) -> list[DocCheck]:
+    """Each goal check the input reads, by the name the page's tables print (:func:`input_check_name`) and the
+    expression it stands for, in the checks' sorted order; none named by its expression itself, which has nothing to
+    define."""
+    named = []
+    for key in report_input.measures:
+        check = goal_check_of(key)
+        name = input_check_name(key, report_input)
+        if check is not None and name is not None and name != f"`{check}`":
+            named.append(DocCheck(name=name, expression=check))
+    return sorted(named, key=lambda held: held.expression)
+
+
 def build(
     doc: ReportDoc,
     report_input: ReportInput,
@@ -676,6 +692,7 @@ def build(
         findings=_findings(findings, {claim.id: claim.place for claim in claims}, reader),
         made=made,
         draft=draft,
+        checks=_checks(report_input),
     )
     if reader.degraded:
         return page.model_copy(update={"degraded": DEGRADED_PAGE})

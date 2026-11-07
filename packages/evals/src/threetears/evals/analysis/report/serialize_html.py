@@ -58,12 +58,11 @@ reader's colour-scheme setting either way.
 
 from __future__ import annotations
 
-import functools
 import html
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from threetears.evals.analysis.bundle.schema import TrialState
@@ -85,7 +84,9 @@ from threetears.evals.analysis.report.html_parts import (
     KIT_JS,
     TRIAL_ID,
     chart_html,
+    CHECK_ANCHOR_PREFIX,
     check_anchor,
+    check_header_links,
     code_html,
     escape,
     glossary_slug,
@@ -268,22 +269,11 @@ def _first_uses(markup: str, report: Report | CampaignReport) -> str:
 
 
 def _check_headers(markup: str, report: Report | CampaignReport) -> str:
-    """``markup`` with each column header that names a goal check linked to its glossary entry: a header is where a
-    reader first meets a check's name, as a term of art's header links its term. A header naming a check reads its
-    name, then its unit in brackets or the aspects it reads after a comma; a name that is a term of art's words is
+    """``markup`` with each column header that names a goal check linked to its glossary entry
+    (:func:`~threetears.evals.analysis.report.html_parts.check_header_links`); a name that is a term of art's words is
     left to the term."""
     of_art = {term.casefold() for term in report.terms}
-    for name, _ in report.check_glossary:
-        if name.casefold() in of_art:
-            continue
-        header = re.compile(rf"(<th\b[^>]*>)({re.escape(escape(name))}(?:,[^<(]*)?(?: \([^<]*\))?)(</th>)")
-        markup = header.sub(functools.partial(_check_header, name), markup)
-    return markup
-
-
-def _check_header(name: str, found: re.Match[str]) -> str:
-    """A matched header cell naming the check ``name``, its text linked to the check's glossary entry."""
-    return f"{found[1]}{term_link(name, found[2])}{found[3]}"
+    return check_header_links(markup, [name for name, _ in report.check_glossary if name.casefold() not in of_art])
 
 
 def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
@@ -314,7 +304,8 @@ def _appendix(report: CampaignReport, static: bool) -> list[str]:
         "\n".join(_aspect_fold(fold, slug, static=static))
         for fold, slug in zip(report.aspects, report.fold_ids, strict=True)
     ]
-    glossary = _glossary(report)
+    # The document's own Checks list defines each check it names: the record's glossary defines only the others.
+    glossary = _glossary(report, defined=[check.name for check in report.doc_page.checks] if report.doc_page else [])
     return [*folds, *(["\n".join(glossary)] if glossary else [])]
 
 
@@ -413,10 +404,11 @@ def _sections(
     return parts
 
 
-def _glossary(report: Report | CampaignReport) -> list[str]:
+def _glossary(report: Report | CampaignReport, *, defined: Collection[str] = ()) -> list[str]:
     """The glossary section, closed: each term the page links, then each goal check's name, its expression escaped and
     set as code, whole, under an id of the checks' own (``g-check-…``) so a declared name that is a term's words never
-    repeats a term's id; nothing when the page defines none."""
+    repeats a term's id; none of the checks ``defined`` names, which a report document's own Checks list defines;
+    nothing when the page defines none."""
     entries = "".join(
         f'<dt id="g-{glossary_slug(term)}">{escape(term)}</dt><dd>{escape(GLOSSARY[term])}</dd>'
         for term in report.terms
@@ -425,6 +417,7 @@ def _glossary(report: Report | CampaignReport) -> list[str]:
         f'<dt id="{check_anchor(name)}">{escape(name)}</dt>'
         f"<dd>{check_definition(said, span=lambda check: f'<code>{escape(check)}</code>', words=escape)}</dd>"
         for name, said in report.check_glossary
+        if name not in defined
     )
     if not entries:
         return []
@@ -671,7 +664,8 @@ def _links_in_sight(page: str) -> str:
     reader has not opened holds it, else the nearest place around it outside every such fold — a closed section's own
     ``<section>``, a closed table's own ``<details>``, an aspect's fold's ``<section>`` — whose heading every browser
     shows. No link may land inside a closed ``<details>``: a browser that does not open it on its own would leave the
-    reader where they were, and nothing on the page opens it. A trial id naming a trial the page does not hold
+    reader where they were, and nothing on the page opens it. The one exception is a link to a goal check's row
+    (``g-check-…``), which lands on the row: what a reader following a check's name wants is its expression. A trial id naming a trial the page does not hold
     is not linked.
 
     The links are the parser's own, rewritten where it found them, so nothing else has to agree with it on what a link
@@ -719,6 +713,10 @@ def _redrawn(page: str, link: _Link, outline: _Outline) -> tuple[str, int]:
     if page[link.start : after] != link.tag:
         raise ValueError(f"the link to #{link.target} is not where the outline read it")
     chain = outline.places.get(link.target)
+    if chain is not None and link.target.startswith(CHECK_ANCHOR_PREFIX):
+        # A goal check's name links its own row, the one place its expression stands: a reader following a header
+        # wants that row, and the glossary's heading names no check. The one link that may land inside a closed fold.
+        return link.tag, after
     if chain is None:
         text = page[after : link.end] if link.end is not None else ""
         # prose-canary: allow — a trial id (T4), which code numbered, not anything a model wrote
