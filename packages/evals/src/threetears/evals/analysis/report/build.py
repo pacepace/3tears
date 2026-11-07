@@ -60,7 +60,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
-from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form, spell_stored_counts
+from threetears.evals.kernel.numbers import MoneyForm, format_number, money_form, spell_count, spell_stored_counts
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.blocks import bare_columns, money_columns, percent_columns
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
@@ -3071,7 +3071,8 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
                 section="cases",
                 source="runs",
                 text=(
-                    f"{bundle.trials_omitted} more trials count on the scoreboard and are not listed here, the passed "
+                    f"{spell_count(bundle.trials_omitted)} more trials count on the scoreboard and are not listed "
+                    "here, the passed "
                     "ones first."
                 ),
             )
@@ -3177,10 +3178,14 @@ def _census_line(bundle: AnalysisContextBundle) -> str:
     passed = sum(board.passed for board in boards)
     failed = sum(sum(board.failed.values()) for board in boards)
     lost = sum(sum(board.lost.values()) for board in boards)
-    opened = f"{ran} trial{'' if ran == 1 else 's'} ran."
+    opened = f"{spell_count(ran)} trial{'' if ran == 1 else 's'} ran."
     if passed == ran:
         return f"{opened} {'It' if ran == 1 else 'Every one'} passed."
-    counts = [f"{passed} passed", f"{failed} failed", *([f"{lost} were lost"] if lost else [])]
+    counts = [
+        f"{spell_count(passed)} passed",
+        f"{spell_count(failed)} failed",
+        *([f"{spell_count(lost)} were lost"] if lost else []),
+    ]
     return f"{opened} Of them {', '.join(counts[:-1])} and {counts[-1]}."
 
 

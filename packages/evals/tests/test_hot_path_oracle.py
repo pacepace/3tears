@@ -92,6 +92,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import report_read
 from threetears.evals.ops.lenses import detectable_effects
 from threetears.evals.schema.hashing import identity_json
+from threetears.evals.kernel.numbers import spell_count
 from packages.evals.tests.fixtures.courierhost import COURIER_SCOPE, COURIER_TEMPLATE_ID, courier_cases
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
 from packages.evals.tests.hot_path_support import (
@@ -475,7 +476,11 @@ def test_the_scaled_page_states_how_many_trials_it_lists_of_how_many_ran(pinned_
     assert aspect.trials_omitted > 0, "the scaled campaign must run past the trial cap for this to test anything"
     body = report_read(read.host, read.campaign_id, read.scope_id, format="markdown").body
 
-    assert f"{aspect.trials_omitted} more trials count on the scoreboard and are not listed here" in body
+    # Each count reads grouped by thousands, as every count in the package's prose does.
+    assert f"{spell_count(aspect.trials_omitted)} more trials count on the scoreboard and are not listed here" in body
+    ran = sum(board.ran for board in aspect.scoreboard)
+    assert ran >= 1000, "the scaled campaign must run a thousand trials for the grouping to show"
+    assert f"{spell_count(ran)} trials ran. Of them " in body and f" {ran} trials ran" not in body
 
 
 @pytest.mark.parametrize("name", CAMPAIGNS)
