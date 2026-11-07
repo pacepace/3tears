@@ -217,6 +217,8 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
     # Fewer launches than N: two batches of three, each arm a run per batch, all in the one campaign.
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 6, CANDIDATE: 6}
     assert len(await _runs(result)) == 2 * len(arms)
+    # Each arm ran under its part of the $30 cap across its batches: its ceiling is that part, never above the cap.
+    assert {summary.max_cost_usd for summary in result.arms.values()} == {30.0 * 0.8 / len(arms)}
     # The cases launched are the bet's first six, in its order.
     planned = stopping.rule.case_ids
     bet = [planned[index] for index in bet_order(CASES)]
@@ -625,12 +627,60 @@ def _witnessed(storage: EvalStorage, run_id: str) -> None:
     storage.save_eval_run(run.model_copy(update={"apparatus_provenance": "witnessed"}))
 
 
-async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_shares_its_own(
+async def _verdicts(result: WriterResult) -> list[tuple[str, str, float | None]]:
+    """The candidate's gated readings, as its promotion read reads them: each one's kind, name and level."""
+    status = await job_poll(OpsHost.reading(result.host), result.pairwise[CANDIDATE].job_id, SCOPE)
+    read = await asyncio.to_thread(
+        writer_promotion, result.host, result.campaign_id, SCOPE, candidate=CANDIDATE, pairwise_job=status
+    )
+    return sorted((verdict.kind, verdict.name, verdict.interval_level) for verdict in read.verdicts)
+
+
+async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_gated_readings(
     tmp_path: Path, offline: list[object]
 ) -> None:
-    """One case a batch, four of them unjudged: a batch whose pages went unjudged records no judge, so each arm sits
-    under two rigs, and every pair's two runs share one, so the pass reads them. Moved crosswise, each arm still
-    under the same rigs but a pair's two runs under two, the pass refuses, as it refuses two rigs in one run."""
+    """One case a batch, four of them unjudged: a batch that stored no page on either arm judged nothing, so its runs
+    record no judge. They stay out of the campaign's readings, said once, and the pass reads their pairs as ties: the
+    gated readings, and each one's level, are those of the same run without the four cases."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+    alone = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=1, max_cost_usd=60.0).run()
+    _lay_unjudged(tmp_path, cases, arms)
+
+    result = await _eval(
+        tmp_path,
+        cases,
+        arms,
+        judge=FakeSplitJudge(JUDGE),
+        batch_size=1,
+        max_cost_usd=60.0,
+        store=tmp_path / "with.sqlite",
+    ).run()
+
+    assert result.pairwise_unread == {}
+    report = await _report(result)
+    assert report.stopping is not None and report.stopping.stopped_on == "all_cases"
+    assert sum(1 for pair in report.pairs if pair.missing == "both") == len(UNJUDGED)
+    assert len(report.outside_run_ids) == len(UNJUDGED) * len(arms)
+    assert set(report.outside_run_ids).isdisjoint(await _runs(result))
+    said = (
+        "4 cases, in batches that stored no page on either arm, are read side by side as ties and left out of the "
+        "gated readings, which no judge was asked of on them."
+    )
+    assert result.disclosures.count(said) == 1
+    assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 11, CANDIDATE: 11}
+    with_them, without = await _verdicts(result), await _verdicts(alone)
+    assert with_them == without and len(with_them) == len({name for _, name, _ in with_them})
+    assert offline == []
+
+
+async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_makes_no_second_one(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """One case a batch, four of them unjudged and so left out of the campaign's readings: each arm sits under one rig.
+    Given a second rig on one batch's two runs, each arm sits under two and each pair's two runs still share one, so
+    the pass reads them; moved crosswise, a pair's two runs under two rigs, the pass refuses, as it refuses two rigs in
+    one run."""
     arms = _arms()
     cases = _lay(tmp_path, arms)
     _lay_unjudged(tmp_path, cases, arms)
@@ -638,22 +688,33 @@ async def test_a_pair_s_two_runs_must_share_a_rig_and_an_unjudged_batch_shares_i
     result = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=1, max_cost_usd=60.0).run()
 
     assert result.pairwise_unread == {}
-    bundle = await asyncio.to_thread(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE)
-    rigs: dict[str, set[str]] = {}
-    for aspect in bundle.aspects:
-        for cell in aspect.cells:
-            rigs.setdefault(cell.variant_key, set()).add(cell.apparatus_class_id)
-    assert [len(each) for each in rigs.values()] == [2, 2] and len(set(map(frozenset, rigs.values()))) == 1
-    # Crosswise: the control's first judged run and the candidate's second, each witnessed.
+
+    async def rigs() -> list[int]:
+        bundle = await asyncio.to_thread(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE)
+        under: dict[str, set[str]] = {}
+        for aspect in bundle.aspects:
+            for cell in aspect.cells:
+                under.setdefault(cell.variant_key, set()).add(cell.apparatus_class_id)
+        return [len(each) for each in under.values()]
+
+    assert await rigs() == [1, 1]
     report = await _report(result)
     judged = [pair for pair in report.pairs if pair.missing is None][:2]
     storage = result.host.storage
-    first = await asyncio.to_thread(storage.load_eval_result, judged[0].control_result_id, SCOPE)
-    second = await asyncio.to_thread(storage.load_eval_result, judged[1].candidate_result_id, SCOPE)
-    assert first is not None and second is not None
-    for run_id in (first.eval_run_id, second.eval_run_id):
-        await asyncio.to_thread(_witnessed, storage, run_id)
 
+    async def run_of(result_id: str) -> str:
+        stored = await asyncio.to_thread(storage.load_eval_result, result_id, SCOPE)
+        assert stored is not None
+        return stored.eval_run_id
+
+    # One batch's two runs witnessed: a second rig for each arm, every pair still within one.
+    for result_id in (judged[0].control_result_id, judged[0].candidate_result_id):
+        await asyncio.to_thread(_witnessed, storage, await run_of(result_id))
+    assert await rigs() == [2, 2]
+    reading = OpsHost.reading(result.host)
+    await writer_pairwise(reading, result.campaign_id, SCOPE, candidate=CANDIDATE)
+    # Crosswise: another batch's control run witnessed alone, so that pair's two runs read two rigs.
+    await asyncio.to_thread(_witnessed, storage, await run_of(judged[1].control_result_id))
     with pytest.raises(ValidationFailedError, match="a pair compares two pages written under one rig"):
-        await writer_pairwise(OpsHost.reading(result.host), result.campaign_id, SCOPE, candidate=CANDIDATE)
+        await writer_pairwise(reading, result.campaign_id, SCOPE, candidate=CANDIDATE)
     assert offline == []

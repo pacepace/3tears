@@ -836,7 +836,8 @@ class Acceptance:
         yield self.criterion.verdict()
         if self.candidate.editor().digest != self.shipped.editor().digest:
             yield from self._two_editors()
-        yield from result.disclosures
+        # The floor's line is printed once, before anything is bought (main), so the readout leaves it to that print.
+        yield from (line for line in result.disclosures if line != result.resolution)
 
     def envelope_line(self) -> str:
         """The run's spend against the standing monthly envelope beside the shipped skill's verdict in the skill

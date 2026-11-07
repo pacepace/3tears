@@ -272,7 +272,7 @@ async def test_a_rule_to_read_every_case_is_todays_reading_exactly(policy: Polic
     assert stopping is not None and stopping.stopped_at is None
     assert len(stopping.looks) == len(shares) and stopping.looks[-1].p == report.whole.p
     first = stopping.first_separated_at
-    said = "no look up to" if first is None else f"first separated at case {first}"
+    said = "was consistent with no preference" if first is None else f"first separated at case {first}"
     assert stopping.line.startswith(
         f"Read {len(_CASES)} of {len(_CASES)} cases under the rule declared before the first result: "
     )

@@ -53,7 +53,7 @@ naming the candidate) and commit the change with its entry in the skill ledger
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Final, Literal
 
 from pydantic import Field, ValidationError
@@ -247,6 +247,7 @@ def _pass_report(
     control: CampaignArm,
     judge_model: str,
     results: frozenset[str],
+    outside: Callable[[Sequence[str]], frozenset[str]],
 ) -> WriterPairwiseReport:
     """The pass's report, refusing a job that is no completed pass over what this read reads:
     ``results`` are the ids of both arms' results in the campaign's runs as they stand."""
@@ -281,7 +282,10 @@ def _pass_report(
             remedy="run the pass over this campaign's candidate (writer_pairwise), then read with its job id",
         )
     read = {result for pair in report.pairs for result in (pair.candidate_result_id, pair.control_result_id)}
-    gone, unread = read - results, results - read - set(report.unpaired)
+    # A batch that stored no page on either arm is left out of the campaign's readings and read by the pass beside
+    # them: its results are the pass's to hold, never the campaign's.
+    aside = outside(report.outside_run_ids)
+    gone, unread = read - results - aside, results - read - set(report.unpaired)
     if gone or unread:
         raise ValidationFailedError(
             f"job {job}'s pass read {len(gone)} result(s) the campaign's runs no longer hold and left {len(unread)} "
@@ -519,6 +523,9 @@ def writer_promotion(
             control=control,
             judge_model=judge_model,
             results=results,
+            outside=lambda run_ids: frozenset(
+                result.id for run_id in run_ids for result in results_without_payloads(host.storage, run_id, scope_id)
+            ),
         )
     verdicts = [verdict for verdict in campaign_verdicts(host, campaign_id, scope_id) if verdict.variant_key in keys]
     primary = None if report is None else report.whole.verdict

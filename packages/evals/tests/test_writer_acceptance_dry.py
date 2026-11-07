@@ -240,7 +240,7 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
     dry: tuple[Acceptance, list[object]],
 ) -> None:
     """The default rule reads every case, declared as the eval starts, so before its first result; the record and
-    acceptance.json carry it, and the readout says what it did and the floor its seven cases set."""
+    acceptance.json carry it and the floor its seven cases set, and the readout says what it did."""
     found, _ = dry
     summary = found.summary()
     stopping = summary["stopping"]
@@ -255,7 +255,8 @@ def test_the_rule_is_declared_before_the_first_result_and_recorded_and_the_reado
     )
     assert summary["resolution"] == floor
     assert floor in found.result.disclosures
-    assert stopping["line"] in summary["readout"] and floor in summary["readout"]
+    # The floor is printed once, before the launch, and acceptance.json keeps it; the readout does not repeat it.
+    assert stopping["line"] in summary["readout"] and floor not in summary["readout"]
 
 
 def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
