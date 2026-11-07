@@ -26,7 +26,7 @@ and, where headless Chromium launches (the ``integration`` marker), on the page 
   no word in one breaks across lines but an id-like cell's, and ``scripts/check.py`` fails a page where one is.
 - **A key column is as wide as its text, and an id is one word.** A two-key table's first column is its text's
   width between the floor and the cap, so a short key ("All cases") leaves the frame to the columns past it. A
-  hyphenated id in a pinned cell (``claude-sonnet-5-5``, a case id) never breaks after its hyphen while another column
+  hyphenated id in a pinned cell (``deepseek-v4.1-flash``, a case id) never breaks after its hyphen while another column
   has room: where the table scrolls anyway, or where the columns past it can give way; one too long for the cap, or
   for a phone's, still wraps after its hyphens, inside the frame.
 - **The nav paints over the tables.** Each table frame isolates its cells' stacking, so the sticky nav covers a pinned
@@ -947,7 +947,7 @@ def test_the_render_check_fails_a_table_that_fits_by_crushing_its_key_column(tmp
 # =============================================================================
 
 #: Ids as a pinned column holds them: one the floor holds whole, one that needs more (``long``), and one past any cap.
-SHORT_ID, LONG_ID, TOO_LONG_ID = "qwen3.8-flash", "claude-sonnet-5-5", "abt-a-case-id-longer-than-any-cap-holds"
+SHORT_ID, LONG_ID, TOO_LONG_ID = "qwen3.8-flash", "deepseek-v4.1-flash", "abt-a-case-id-longer-than-any-cap-holds"
 
 
 def _keyed_table(keys: list[str], *, key_columns: int = 1, figures: int = 6, name: str = "probe") -> TableBlock:

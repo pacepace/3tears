@@ -527,7 +527,7 @@ def _pinned_text(markup: str, pinned: bool) -> str:
 
 def _one_word(markup: str) -> str:
     """A pinned cell's markup, each hyphenated word of its text set ``<span class="id">``, which the stylesheet
-    keeps on one line: ``claude-sonnet-5-5`` is one word, never broken after a hyphen while its column can grow.
+    keeps on one line: ``deepseek-v4.1-flash`` is one word, never broken after a hyphen while its column can grow.
 
     Only text is read: a tag (a link's ``href`` holds a case id too) and a code span (an expression, which breaks
     anywhere instead) are left as they are. A word longer than :data:`_ONE_WORD_CHARS` is left free to wrap after its
@@ -599,6 +599,7 @@ def _id_rem(block: TableBlock, key: str) -> float | None:
     widths = [
         len(word) * _CELL_REM_PER_CHAR + (_CHIP_REM if row[key].tag is not None else 0.0)
         for row in block.rows
+        # prose-canary: allow — sizes a column to the words a cell sets; layout, never a judgement of what it says
         for word in _HYPHENATED.findall(row[key].text)
         if _FLOOR_WORD_CHARS < len(word) <= _ONE_WORD_CHARS
     ]
