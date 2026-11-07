@@ -131,9 +131,16 @@ _STORED_REASON_WORDS: dict[str, str] = {
 }
 
 
+#: A campaign reading's stored reason for a superiority row whose interval reaches zero
+#: (``its interval reaches zero, so v2 and v1 are not separated``), stored with an analysis's readings (its frame):
+#: the arms it names, ``{arm} and {control}``, are kept and said in the glossary's sentence (:func:`cannot_tell_apart`).
+_STORED_UNSEPARATED = re.compile(r"its interval reaches zero, so (?P<arms>.+?) are not separated")
+
+
 def reason_words(reason: str | None) -> str | None:
     """A reason a bundle stores, as a page says it: each stored text :data:`_STORED_REASON_WORDS` rewords in the
-    reader's words wherever it appears, and any other reason unchanged.
+    reader's words wherever it appears, a reading's stored "are not separated" sentence (:data:`_STORED_UNSEPARATED`)
+    says the evidence cannot tell its arms apart, and any other reason reads unchanged.
 
     :param reason: The reason as the bundle stores it, or None where it stores none.
     :ptype reason: str | None
@@ -144,7 +151,7 @@ def reason_words(reason: str | None) -> str | None:
         return None
     for stored, said in _STORED_REASON_WORDS.items():
         reason = reason.replace(stored, said)
-    return reason
+    return _STORED_UNSEPARATED.sub(r"its interval reaches zero, so the evidence cannot tell \g<arms> apart", reason)
 
 
 def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, higher_is_better: bool = True) -> str:

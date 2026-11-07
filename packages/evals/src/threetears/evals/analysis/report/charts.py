@@ -29,6 +29,7 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 from pydantic import ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.evals.kernel.numbers import (
+    MONEY_FIGURES,
     WHOLE_FROM,
     MoneyForm,
     format_number,
@@ -103,11 +104,13 @@ _PER_THOUSAND_FORMAT = "usdpk"
 _FORMAT_SPEC = re.compile(r"^(\+?)([a-z]+)(?::(\d))?$")
 
 
-def _formatted(spec: str, value: float, read_at: str = "") -> str:
+def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = False) -> str:
     """``value`` as a chart's table prints it: in the unit the kit's named format ``spec`` states it in, by the
     package's one number rule, signed where the spec signs it; whatever digits the spec rounds its axis to, a table
     never rounds away what the value holds, but money: a money format with digits (``usd:2``) is the chart's one money
-    form, chosen from every amount it draws, and its table writes each amount in it, as its ticks and notes do.
+    form, chosen from every amount it draws, and its table writes each amount in it, as its notes do: to its own two
+    significant figures (its ticks to the largest amount's decimals). A format of no decimals (``usd:0``) is a rate's
+    from $10 up, which reads in whole dollars; any other reads to cents at least.
 
     Where the format names no unit (``num``) and its block says the unit its values are read at (``read_at``, a
     chart of what an analysis computes: two arms' difference, a lever's effect, in points), the value is spelled at
@@ -121,6 +124,9 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
     :ptype value: float
     :param read_at: The unit the block's values are read at, where its format names none; empty for the format's.
     :ptype read_at: str
+    :param finer: Whether money is written to one significant figure more: an interval whose two ends would otherwise
+        read alike.
+    :ptype finer: bool
     :return: The value as text.
     :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
@@ -134,7 +140,10 @@ def _formatted(spec: str, value: float, read_at: str = "") -> str:
         form = MoneyForm(per_thousand=True, decimals=int(match[3]) if match[3] is not None else 2)
         return form.spell(value, signed=bool(match[1]))
     if unit == MONEY and match[3] is not None:
-        return MoneyForm(decimals=int(match[3])).spell(value, signed=bool(match[1]))
+        # The chart's money form (money_form): each amount to its own two significant figures, cents at least.
+        decimals = int(match[3])
+        form = MoneyForm(decimals=decimals, figures=MONEY_FIGURES + finer, rate=decimals == 0)
+        return form.spell(value, signed=bool(match[1]))
     if not unit and read_at:
         text = number_in(value, read_at)
         # Signed as format_signed signs a change: a positive value carries its "+", a bound its own direction.
@@ -320,8 +329,9 @@ def even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     """A values table's cells, every number at one precision among the cells that read alike: cells that read the
     same but for their numbers (``94% · 3 calls``, ``96.4% · 4 calls``), wherever they sit in the table, have each
     number in the same place padded with zeros to the most decimals that place holds among them (``94.0%``), up to
-    three. Money's whole dollars are first grouped by thousands (``$1,239``, :func:`_money_by_column`), as the figure keys
-    write money.
+    three. Money is never padded, since each amount reads to its own two significant figures
+    (:func:`~threetears.evals.kernel.numbers.money_form`): its whole dollars are only grouped by thousands (``$1,239``,
+    :func:`_money_by_column`), as the figure keys write money.
 
     Padding never rounds: a cell keeps every digit it had, so a table still never rounds away what a value holds,
     and two figures a reader compares read at one precision. Nor does it state a digit the number was never rounded
@@ -389,6 +399,10 @@ def _padded_cell(cell: str, most: Sequence[int]) -> str:
     def pad(found: re.Match[str]) -> str:
         wanted = most[next(place)]
         decimals = found.group(3) or ""
+        if found.string[found.start(2) - 1 : found.start(2)] == "$":
+            # Money is never padded: each amount reads to its own two significant figures (money_form, owner ruling
+            # Q3), so $0.11 beside $0.008 stays $0.11, never $0.110.
+            return found.group(0)
         if wanted > _MOST_PADDED:
             return found.group(0)
         wanted = min(wanted, _own_decimals(found.group(2)))
@@ -404,7 +418,11 @@ def _interval(spec: str, low: float | None, high: float | None, read_at: str = "
     one: :func:`_formatted`), empty without one."""
     if low is None or high is None:
         return ""
-    return f"{_formatted(spec, low, read_at)} to {_formatted(spec, high, read_at)}"
+    said = (_formatted(spec, low, read_at), _formatted(spec, high, read_at))
+    if said[0] == said[1] and low != high:
+        # Two ends that read alike at their own figures read to one figure more, as the money form spells an interval.
+        said = (_formatted(spec, low, read_at, finer=True), _formatted(spec, high, read_at, finer=True))
+    return f"{said[0]} to {said[1]}"
 
 
 def _restates(note: str | None, value: float | None, said: str, spec: str, read_at: str) -> bool:

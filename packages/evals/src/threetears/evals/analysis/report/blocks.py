@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
 from pydantic import Field, JsonValue, model_validator
@@ -554,24 +554,39 @@ class TableCell(EvalDocumentModel):
 
 
 def money_columns(
-    rows: Sequence[Mapping[str, TableCell]], *, by_row: Sequence[str | None] | None = None
+    rows: Sequence[Mapping[str, TableCell]],
+    *,
+    by_row: Sequence[str | None] | None = None,
+    totals: Collection[str] = (),
+    reconciles: Collection[str] = (),
 ) -> list[dict[str, TableCell]]:
     """A table's rows with each set of its money in one form (#993). A set is every amount of one figure type the
     table shows, across its rows and columns: by default a column's (a table of arms by measure); where ``by_row``
     names a row's figure type (a table of slices by arm, each row one measure across the arms), every money cell of
     the rows naming the same one. Every money number a set holds, and the ends of its intervals, choose the set's
     :func:`~threetears.evals.kernel.numbers.money_form` from the values themselves, never from one cell, and every
-    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, one more where an
-    interval's two ends would otherwise read alike. A table states the count its money is drawn per in its head or its
-    row, never as a mark on the amount. The values are as stored, so the shared decimals state no digit a value does
-    not hold; a cell of words, of another unit, or already carrying a form its builder chose from a wider set, is left
-    as it is.
+    such cell is written in it (:meth:`TableCell.amount`): plain dollars to two significant figures, a rate in whole
+    dollars from $10 and a total to cents. Each cell writes its value and its interval's ends at one precision, the
+    finest of them needs, and one significant figure more where its own interval's ends would otherwise read alike
+    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.places_of`), so $0.008 reads ``$0.0080`` beside ``$0.11``, never
+    ``$0.1100``. A table states the count its money is drawn per in its
+    head or its row, never as a mark on the amount. The values are as stored, so the decimals state no digit a value
+    does not hold; a cell of words, of another unit, or already carrying a form its builder chose from a wider set, is
+    left as it is.
 
     :param rows: The table's rows, by column key.
     :ptype rows: Sequence[Mapping[str, TableCell]]
     :param by_row: Each row's figure type, where the table lays one per row (``None`` for a row whose money is set by
         its column); unset for a table whose every set is a column.
     :ptype by_row: Sequence[str | None] | None
+    :param totals: The sets (a column's key, or a row's figure type under ``by_row``) that hold totals (a run's cost, a
+        month's); every other set is money per something, a rate, as a table's money is drawn per the count its head
+        names.
+    :ptype totals: Collection[str]
+    :param reconciles: The sets a total computed from each amount is printed beside (a cost per 1,000 at a declared
+        monthly volume), whose amounts take a third figure where two would leave them off that total
+        (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
+    :ptype reconciles: Collection[str]
     :return: The rows, each money cell carrying its set's form.
     :rtype: list[dict[str, TableCell]]
     """
@@ -584,7 +599,6 @@ def money_columns(
         return ("row", kind) if kind is not None else ("column", key)
 
     held: dict[tuple[str, str], list[float]] = {}
-    spans: dict[tuple[str, str], list[tuple[float | None, float | None]]] = {}
     for at, row in enumerate(rows):
         for key, cell in row.items():
             if chosen(cell):
@@ -593,15 +607,28 @@ def money_columns(
                     for number in (cell.value, cell.low, cell.high)
                     if isinstance(number, int | float) and not isinstance(number, bool)
                 )
-                spans.setdefault(set_of(at, key), []).append((cell.low, cell.high))
-    forms = {name: money_form(amounts, intervals=spans.get(name, ())) for name, amounts in held.items()}
+    forms = {
+        name: money_form(amounts, rate=name[1] not in totals, reconciles=name[1] in reconciles)
+        for name, amounts in held.items()
+    }
     return [
         {
-            key: cell.model_copy(update={"decimals": forms[set_of(at, key)].decimals}) if chosen(cell) else cell
+            key: cell.model_copy(
+                update={"decimals": forms[set_of(at, key)].places_of(_cell_amounts(cell), ends=(cell.low, cell.high))}
+            )
+            if chosen(cell)
+            else cell
             for key, cell in row.items()
         }
         for at, row in enumerate(rows)
     ]
+
+
+def _cell_amounts(cell: TableCell) -> list[float | None]:
+    """A money cell's amounts: its value and its interval's ends."""
+    value = cell.value
+    point = float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+    return [point, cell.low, cell.high]
 
 
 def table_row(values: Mapping[str, CellValue | TableCell]) -> dict[str, TableCell]:
@@ -966,7 +993,6 @@ class ChartBlock(_Block):
             (amount for point in self.points for amount in (point.cost, point.cost_low, point.cost_high)),
             per=1,
             start=_REPLIES_PER_COST_UNIT,
-            intervals=((point.cost_low, point.cost_high) for point in self.points),
         )
         return ruler.spell, ruler.scale, ruler.words(REPLIES), ruler.form.decimals
 

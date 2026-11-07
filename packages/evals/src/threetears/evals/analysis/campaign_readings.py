@@ -1048,7 +1048,8 @@ def _reason(
                     f"{arm}'s {side} clears zero at {_percent(INTERVAL_LEVEL)}, not at the {_percent(level)} its "
                     f"{side}s are read at, corrected across {arm}'s aspects"
                 )
-        # Frozen with an analysis's readings (its frame), so its words stay as stored: a page states it as a reason.
+        # Frozen with an analysis's readings (its frame), so its words stay as stored: a page states it as a reason, in
+        # the glossary's words (report.words.reason_words).
         return f"its interval reaches zero, so {arm} and {control} are not separated"
     if row.margin is None:
         if rate.interval[1] < 0:

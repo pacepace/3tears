@@ -53,7 +53,7 @@ is the gate check spelled out, never a second reading of it.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace
 
 from threetears.evals.kernel.numbers import format_number
@@ -129,6 +129,7 @@ def _table(
     order: str,
     *,
     by_row: Sequence[str | None] | None = None,
+    reconciles: Collection[str] = (),
 ) -> TableBlock:
     """A Full results table, each figure type's money in one form chosen from its own values (#993): a column's, or,
     where ``by_row`` names each row's measure (a slice table, each row one measure across the arms), every row's on
@@ -139,7 +140,7 @@ def _table(
         name=name,
         title=FULL_RESULTS_TITLES[name],
         columns=list(columns),
-        rows=money_columns(rows, by_row=by_row),
+        rows=money_columns(rows, by_row=by_row, reconciles=reconciles),
         order=order,
         total_rows=len(rows),
     )
@@ -257,7 +258,7 @@ def _arms_by_measure(report_input: ReportInput, look: PageLook) -> list[TableBlo
         if costed:
             cells["cost_per_1k"] = _cost(report_input, arm)
         rows.append(cells)
-    return [_table("arms_by_measure", columns, rows, "in the campaign's arm order")]
+    return [_table("arms_by_measure", columns, rows, "in the campaign's arm order", reconciles=_beside_a_month(report_input))]
 
 
 def _measured_aspects(report_input: ReportInput) -> list[Aspect]:
@@ -290,7 +291,12 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
     measures = [key for key, table in report_input.measures.items() if held(table, key)]
     costs = {aspect.id: aspect_costs_per_thousand(report_input, aspect.id) for aspect in aspects}
     # Over every cost this column prints, a partly priced arm's included (:func:`_cost`'s reason).
-    ruler = money_ruler([cost for held_costs in costs.values() for cost in held_costs.values()], per=1000, start=1000)
+    ruler = money_ruler(
+        [cost for held_costs in costs.values() for cost in held_costs.values()],
+        per=1000,
+        start=1000,
+        reconciles=report_input.meta.volume_per_month is not None,
+    )
     costed = not any(quantity(figure_unit(report_input, key)).unit == MONEY for key in measures) and any(
         arm in costs[aspect.id] for aspect, arm in places
     )
@@ -328,7 +334,17 @@ def _arms_by_aspect_and_measure(report_input: ReportInput, look: PageLook, aspec
                 else TableCell(value=None)
             )
         rows.append(cells)
-    return [_table("arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER)]
+    return [_table("arms_by_measure", columns, rows, ASPECTS_TABLE_ORDER, reconciles=_beside_a_month(report_input))]
+
+
+def _beside_a_month(report_input: ReportInput) -> frozenset[str]:
+    """The columns holding the page's cost per 1,000 (its own, and the measure it is read from) where a monthly volume
+    is declared, so each cost reads as the month printed from it does (``reconciles``,
+    :class:`~threetears.evals.kernel.numbers.MoneyForm`); none without a volume."""
+    if report_input.meta.volume_per_month is None:
+        return frozenset()
+    source = cost_basis(report_input).source
+    return frozenset({"cost_per_1k", f"measure:{source}"})
 
 
 # --- the corrected comparisons ---------------------------------------------------------------------------------------

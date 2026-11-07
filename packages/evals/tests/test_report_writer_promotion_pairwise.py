@@ -40,6 +40,7 @@ from packages.evals.tests.writer_promotion_support import (
     WriterMeasures,
     promotion_campaign,
 )
+from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.actions import eval_catalogue, read_only_tools, standard_tools
 from threetears.evals.analysis.report.verdict import MIN_CASES
 from threetears.evals.analysis.stats import (
@@ -335,7 +336,8 @@ async def test_a_primary_reading_not_separated_is_undecided_however_the_gated_re
     assert set(_outcomes(read, "contrast").values()) == {"improved"}
     assert read.primary is not None and (read.primary.outcome, read.primary.reason) == ("not_separated", "no_margin")
     assert read.decision == "undecided", read.why
-    assert "does not separate" in read.why
+    # The undecided reading in the glossary's sentence (owner ruling Q2).
+    assert "the evidence cannot tell " in read.why and " apart" in read.why
     assert read.cases_to_settle is None, "an estimate of zero is settled by no count of cases"
 
 
@@ -352,7 +354,8 @@ async def test_a_primary_reading_on_too_few_cases_is_undecided_and_named_by_its_
     detail = f"{len(_TOLD)} cases, under the {MIN_CASES} a rate needs"
     assert read.primary.reason_detail == detail
     assert f"too few cases to decide ({detail})" in read.why
-    assert f"| primary | {outcome.replace('_', ' ')} (too few cases) |" in read.readout
+    reads = CANNOT_TELL_APART if outcome == "not_separated" else outcome.replace("_", " ")  # owner ruling Q2
+    assert f"| primary | {reads} (too few cases) |" in read.readout
 
 
 async def test_a_primary_reading_left_untested_by_a_stopped_pass_is_undecided_and_says_why() -> None:

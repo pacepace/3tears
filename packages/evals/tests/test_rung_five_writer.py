@@ -1,7 +1,7 @@
 """Rung 5, ``examples/5-writer/``: the report writer evaluated as the thing under test, replayed with no key.
 
-The rung's recordings (14 reports on ``claude-sonnet-5-5``, the flash judge and its pairwise pass, recorded
-2026-11-03) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
+The rung's recordings (14 reports on ``claude-sonnet-5-5`` recorded 2026-11-03, and the flash judge and its pairwise
+pass recorded again 2026-11-07 over the pages as the package now prints them) ship beside it. What is held: the eleven case files read back and split 7 held-out to 4 dev;
 ``writer.py`` stays short and reaches the engine through public roots; ``python -m threetears.evals writer.py``
 replays the shipped recordings with no key, every turn and judge call served from them and none left unasked, and
 prints the judge's preference and the promotion read. In a copy with its recordings stripped, the door refuses,
@@ -118,8 +118,9 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert 'effort="medium"' in writer and "max_cost_usd=39.0" in writer
     assert "budget_usd=2.5" in writer and "turns=45" in writer and "max_tokens=2048" in writer
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
-    # The recording's date, the head it was made at, and what it cost.
+    # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
+    assert "2026-11-07, at head `b748d69aa`" in readme
     assert "Not recorded" not in readme
 
 
@@ -130,13 +131,15 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     printed = capsys.readouterr().out
     lines = printed.splitlines()
     assert lines[0] == f"writer: lead-first against shipped, 7 held-out case(s) x 1, judged by {JUDGE}"
-    # The pairwise preference, the primary reading: lead-first's share, not separated at 7 cases, a row with columns.
-    assert "| lead-first | every pair | not separated | 68 | 36 | -28 to 100 |" in lines
-    assert any(line.startswith("| lead-first | 86% (6 of 7) | 7 | 0 | 39 | ") for line in lines)
+    # The pairwise preference, the primary reading: lead-first's share, which the evidence cannot tell from shipped's
+    # at 7 cases (the glossary's words, owner ruling Q2), a row with columns; the pass's spend in the money form.
+    assert "| lead-first | every pair | cannot tell apart | 64 | 29 | -28 to 99 |" in lines
+    assert "| lead-first | 86% (6 of 7) | 7 | 0 | 63 | $0.14 of $1.95 |" in lines
+    assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
-        "promotion of lead-first: Undecided: the primary reading does not separate lead-first from shipped, and only "
-        "an improved primary reading promotes."
+        "promotion of lead-first: Undecided: on the primary reading the evidence cannot tell lead-first and shipped "
+        "apart, and only an improved primary reading promotes."
     )
     # Every arm replayed whole: nothing recorded now, and no recorded turn left unasked.
     assert "shipped: writer turns replayed from" in printed and "lead-first: writer turns replayed from" in printed
@@ -152,10 +155,13 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # What the page compares and on what is the line under the question (presentation chunk 4), then the answer.
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
-        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 68% of its preference over "
-        "shipped (50% is even), too few cases to tell from an even split; about 39 cases would settle it.**"
+        "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 64% of its preference over "
+        "shipped (50% is even), too few cases to tell from an even split; about 63 cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
+    # No surface of the page prints the retired words (owner ruling Q2).
+    html = (writer_dir / ".evals" / "reports" / "writer" / "report.html").read_text(encoding="utf-8")
+    assert "not separated" not in page and "not separated" not in html
 
 
 def test_with_nothing_recorded_the_door_refuses_naming_the_judge_s_file_and_its_key(

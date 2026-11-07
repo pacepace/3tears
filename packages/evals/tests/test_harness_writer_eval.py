@@ -699,7 +699,7 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
         in lines
     )
     # Report B was preferred in both orders: a lean away from the page read first.
-    assert checks == "| variant | 0% (0 of 1) | -25 | 0 | — | $0 of $1.6 |"
+    assert checks == "| variant | 0% (0 of 1) | -25 | 0 | — | $0 of $1.60 |"
     assert sum(1 for line in table.splitlines() if line and not line.startswith("|")) == 1, "one sentence over it"
     written = result.write(tmp_path / "report")
     assert table in written["pairwise"].read_text(encoding="utf-8")

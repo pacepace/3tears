@@ -70,7 +70,7 @@ from threetears.evals.analysis.report.model import (
     table_row,
 )
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
-from threetears.evals.analysis.report.words import PASS_RATE
+from threetears.evals.analysis.report.words import PASS_RATE, reason_words
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart, humanize
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -841,7 +841,7 @@ def _sizings(
             arm=row.arm_label,
             shows=f"no worse than the {format_number(row.margin)}-point margin",
             decided_by=PASS_RATE,
-            why=row.reason,
+            why=reason_words(row.reason) or "",
             projection=row.projection,
         )
         found.append(own)
@@ -887,7 +887,7 @@ def _sizings(
                 arm=row.arm_label,
                 shows=f"the {format_number(clause.max_points)}-point floor holds",
                 decided_by=None if deciding is None else _rate_words(deciding),
-                why=verdict.reason if deciding is None else deciding.reason,
+                why=reason_words(verdict.reason if deciding is None else deciding.reason) or "",
                 projection=projection,
                 floor=True,
             )
@@ -1545,19 +1545,13 @@ def _money_rulers(readings: CampaignReadings, reports: Mapping[str, Report]) -> 
     (per 1,000,000 where a figure is under a cent there), the count in the header (:func:`_money_label`), never a mark
     on the figure, as the measure's figures read on every row."""
     held: dict[str, list[float]] = {}
-    spans: dict[str, list[tuple[float | None, float | None]]] = {}
     for reading in readings.measures:
         described = _described(reading, reports)
         if reading.passed is not None or described is None or not is_money(described.unit or ""):
             continue
         figures = held.setdefault(reading.measure, [])
         figures += [figure for figure in (reading.value, *(reading.interval or ())) if figure is not None]
-        if reading.interval is not None:
-            spans.setdefault(reading.measure, []).append(reading.interval)
-    return {
-        key: money_ruler(figures, per=1, start=_PER_THOUSAND_REPLIES, intervals=spans.get(key, ()))
-        for key, figures in held.items()
-    }
+    return {key: money_ruler(figures, per=1, start=_PER_THOUSAND_REPLIES) for key, figures in held.items()}
 
 
 #: How many replies a money measure's figures are drawn per, at the least.
@@ -1574,17 +1568,20 @@ def _money_cell(value: float | None, interval: tuple[float, float] | None, ruler
     """A money figure on its measure's ruler, in its one form, its interval where given."""
     if value is None:
         return TableCell(value=None)
-    cell = TableCell(value=ruler.drawn(value), unit=MONEY, decimals=ruler.form.decimals)
+    drawn = ruler.drawn(value)
     if interval is None:
-        return cell
-    return cell.model_copy(update={"low": ruler.drawn(interval[0]), "high": ruler.drawn(interval[1])})
+        return TableCell(value=drawn, unit=MONEY, decimals=ruler.form.places_of([drawn]))
+    low, high = ruler.drawn(interval[0]), ruler.drawn(interval[1])
+    places = ruler.form.places_of([drawn, low, high], ends=(low, high))
+    return TableCell(value=drawn, unit=MONEY, decimals=places, low=low, high=high)
 
 
 def _money_interval(interval: tuple[float, float] | None, ruler: MoneyRuler) -> str | None:
     """A money figure's interval as the fold's table states it, its ends in the figure's one form on its ruler."""
     if interval is None:
         return None
-    return f"[{ruler.spell(interval[0])}, {ruler.spell(interval[1])}]"
+    low, high = ruler.spell_ends(*interval)
+    return f"[{low}, {high}]"
 
 
 def _measured(value: float | None, passed: int | None, trials: int | None, cases: int, *, rate: bool) -> CellValue:

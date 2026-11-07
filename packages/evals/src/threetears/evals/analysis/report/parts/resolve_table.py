@@ -49,7 +49,7 @@ a row an analysis computed (compare, settle, levers) prints each figure as its k
 citing the key read alike.
 Money reads in one form per column (#993), chosen from every amount the column holds, its intervals' ends included
 (:func:`~threetears.evals.analysis.report.blocks.money_columns`, :func:`~threetears.evals.kernel.numbers.money_form`):
-whole dollars where every amount is $10 or more, else cents, with more decimals only where the least amount needs them,
+each amount to two significant figures, cents at least, one more only where two would print an interval's ends alike,
 and per 1,000 where one is under a cent; a change column's set is its changes'. A query's arms keep the rows of those
 arms, on sources whose rows are of no one arm too.
 """
@@ -532,7 +532,7 @@ def _prices_drawn(context: ChartContext) -> Quantity:
 
 def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
     steps = [(row.item, row.interval) for row in context.rows() if isinstance(row.item, PriceStep)]
-    # One form for the column, its open ends included (#993): whole dollars where every price is $10 or more.
+    # One form for the column, its open ends included (#993): each price to two significant figures, cents at least.
     drawn = _prices_drawn(context)
     form = drawn.money or MoneyForm()
 
@@ -543,13 +543,13 @@ def _prices(context: ChartContext, _laid: _Laid) -> Iterator[_Row]:
         return context.look.arm(arm).name if arm in context.look.arms else arm
 
     for step, interval in steps:
+        ends = (dollars(interval[0]), dollars(interval[1])) if interval is not None else None
+        places = form.places_of([dollars(step.value), *(ends or ())], ends=ends)
         row = {
             "step": _words(PRICE_STEP_TEMPLATE.format(first=name(step.first), second=name(step.second))),
-            "per_point": _number(
-                dollars(step.value),
-                drawn.unit,
-                (dollars(interval[0]), dollars(interval[1])) if interval is not None else None,
-            ).model_copy(update={"decimals": form.decimals, "per_thousand": form.per_thousand}),
+            "per_point": _number(dollars(step.value), drawn.unit, ends).model_copy(
+                update={"decimals": places, "per_thousand": form.per_thousand}
+            ),
         }
         if step.open_from is not None and context.level:
             # An interval open above has one end, which no cell's two ends hold: its interval cell is laid out here.
@@ -644,7 +644,11 @@ def _table(context: ChartContext) -> Drawn:
                 header = _prices_drawn(context).label(header, cost_basis(context.report_input).noun)
             columns.append(TableColumn(key=key, header=header))
     # Each money column's head names the count it is drawn per, so no amount carries the mark beside it.
-    columns, rows = _with_intervals(columns, money_columns(rows), context.spec.level)
+    report_input = context.report_input
+    # The page's cost per 1,000, where a monthly volume is declared, reads as the month printed from it does.
+    source = cost_basis(report_input).source
+    beside = {source, f"measure:{source}"} if report_input.meta.volume_per_month is not None else set()
+    columns, rows = _with_intervals(columns, money_columns(rows, reconciles=beside), context.spec.level)
     columns, rows = _filled(columns, rows, keep={on for on, _header in measured})
     notes = (
         price_notes(context)

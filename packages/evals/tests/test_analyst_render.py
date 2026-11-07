@@ -659,8 +659,9 @@ def test_no_scatter_names_a_point_by_an_id_the_input_names_otherwise() -> None:
 
 def test_cells_that_read_alike_print_their_numbers_at_one_precision_and_lose_no_digit() -> None:
     rows = [["A", "94% · $1 per 1,000 calls", "-7.6 to +1.1"], ["B", "96.4% · $1.655 per 1,000 calls", "-3 to +0.25"]]
+    # Money is never padded: each amount reads to its own two significant figures (owner ruling Q3, 2026-11-09).
     assert even_precision(rows) == [
-        ["A", "94.0% · $1.000 per 1,000 calls", "-7.6 to +1.10"],
+        ["A", "94.0% · $1 per 1,000 calls", "-7.6 to +1.10"],
         ["B", "96.4% · $1.655 per 1,000 calls", "-3.0 to +0.25"],
     ]
     assert even_precision([["p95 latency", "Few-shot (12 ex.)"]]) == [["p95 latency", "Few-shot (12 ex.)"]]
@@ -712,7 +713,9 @@ def test_padding_never_states_a_digit_past_the_precision_a_number_was_rounded_to
 
 
 def test_a_tables_paired_figures_read_at_one_precision() -> None:
-    """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure."""
+    """The prototype's complaint: 98% beside 98.6% in one table reads as a different precision, not a rounder figure.
+    Money reads by one rule of figures instead (owner ruling Q3, 2026-11-09): each amount under a dollar to two
+    significant figures, or three where it reconciles with its month, and every amount from a dollar up to cents."""
     name, held, keys = next(
         (name, held, keys)
         for name, held in _inputs().items()
@@ -721,6 +724,14 @@ def test_a_tables_paired_figures_read_at_one_precision() -> None:
     drawn = block_render(held, block_kind="table", query=_query("measures", measures=keys), limit=200)
     for column in range(1, len(drawn.columns)):
         cells = [row.cells[column] for row in drawn.rows if row.cells[column] not in ("", "—")]
+        if cells and all(cell.lstrip("+-").startswith("$") for cell in cells):
+            amounts = [cell.split(" ")[0].lstrip("+-").removeprefix("$").replace(",", "") for cell in cells]
+            assert all(len(a.partition(".")[2]) in (0, 2) for a in amounts if float(a) >= 1), (name, cells)
+            assert all(len(a.partition(".")[2]) == 2 for a in amounts if 1 <= float(a) < 10), (name, cells)
+            # Two figures, three only where a cost per 1,000 reconciles with its month beside it (Q3).
+            figures = {len(a.partition(".")[2].lstrip("0")) for a in amounts if 0 < float(a) < 1}
+            assert figures <= {2, 3}, (name, drawn.columns[column], cells)
+            continue
         decimals = {len(cell.split(" ")[0].split(".")[1]) if "." in cell.split(" ")[0] else 0 for cell in cells}
         assert len(decimals) <= 1 or max(decimals) > 3, (name, drawn.columns[column], cells)
 

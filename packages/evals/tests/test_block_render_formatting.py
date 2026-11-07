@@ -262,7 +262,8 @@ def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell
     assert block is not None
     costs = [found for row in block.rows for cell in row.cells[1:] for found in _COST.findall(cell)]
     assert len(costs) > 1, "the control: r1's matrix prices its cells"
-    # One form for every cost the matrix prints (#993): the decimals money_form gives every task cost it states.
+    # One form for every cost the matrix prints (#993): each task cost to the places money_form gives it, a rate per
+    # 1,000 in whole dollars from $10 and to cents under it (owner ruling Q3, 2026-11-09), whatever else its cell says.
     held = _inputs()["r1"]
     stated = [
         cost
@@ -270,7 +271,10 @@ def test_a_gate_matrix_prints_every_cost_at_one_precision_whatever_else_its_cell
         for cost in (task_costs(held, task.id).get(arm.id) for arm in held.arms)
         if cost is not None
     ]
-    assert {len(decimals) for _whole, decimals in costs} == {money_form(stated).decimals}, costs
+    form = money_form(stated, rate=True)
+    spelled = {form.spell(cost).removeprefix("$") for cost in stated}
+    assert {f"{whole}.{decimals}" if decimals else whole for whole, decimals in costs} <= spelled, costs
+    assert {len(decimals) for whole, decimals in costs if int(whole.replace(",", "")) >= 10} == {0}, costs
     assert any(cell.endswith("(Cheapest passing)") for row in block.rows for cell in row.cells), "the control"
 
 

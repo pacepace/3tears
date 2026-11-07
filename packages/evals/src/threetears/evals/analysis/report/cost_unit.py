@@ -175,6 +175,11 @@ class MoneyRuler:
         """An amount as stored, spelled as drawn, in the set's form."""
         return self.form.spell(value * self.scale, signed=signed)
 
+    def spell_ends(self, low: float, high: float, *, signed: bool = False) -> tuple[str, str]:
+        """An interval's two ends as stored, spelled as drawn, in the set's form, one figure finer where they would
+        read alike (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`)."""
+        return self.form.spell_ends(low * self.scale, high * self.scale, signed=signed)
+
     def words(self, noun: str) -> str:
         """The words a drawn amount is per (``per 1,000,000 calls``); empty for a total."""
         return per_count(noun, self.counted) if self.counted else ""
@@ -237,7 +242,8 @@ def money_ruler(
     *,
     per: int,
     start: int = 0,
-    intervals: Iterable[tuple[float | None, float | None]] = (),
+    rate: bool | None = None,
+    reconciles: bool = False,
 ) -> MoneyRuler:
     """The one owner of how a set of money amounts is stated (:class:`MoneyRuler`): every chart, table and figure key
     reads its scale, its form and its count from here, so no surface chooses its own.
@@ -245,13 +251,13 @@ def money_ruler(
     An amount that counts something (money per reply, per 1,000 or per 1,000,000 of what it counts) is drawn per
     ``start`` of it, and, where some amount is under a cent there, per a thousand times more, up to 1,000,000: the
     ruler moves, and the count is said in the header or the axis that carries it ("Cost per 1,000 replies"), never as a
-    mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars to
-    the decimals its least amount needs for two significant figures (``$0.0030 per 1,000,000 replies``). A total
-    (``per`` 0: a run's cost, a month's) counts nothing and is never scaled: it reads in plain dollars, to two
-    significant figures under a dollar (``$0.0041``), to cents from a dollar up and whole dollars from $10 (``$1,208``).
-    Either way an
-    interval the set prints never reads its two ends alike where its stored ends differ
-    (:func:`~threetears.evals.kernel.numbers.money_form`).
+    mark on the amount. A set still under a cent per 1,000,000 moves no further: it reads at that count, in dollars, each
+    amount to two significant figures (``$0.0030 per 1,000,000 replies``). A total (``per`` 0: a run's cost, a month's)
+    counts nothing and is never scaled: it reads in plain dollars, to two significant figures under a dollar
+    (``$0.0041``) and to cents from a dollar up, whatever its size (``$1,208.00``, owner ruling Q3); a rate reads in
+    whole dollars from $10 (``$75``). Either way an interval never reads its two ends alike where its stored ends
+    differ: the interval takes one figure more where it is spelled
+    (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`).
 
     :param amounts: Every amount the set holds, as stored.
     :ptype amounts: Iterable[float | None]
@@ -261,27 +267,29 @@ def money_ruler(
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
     :ptype start: int
+    :param rate: Whether the set is money per something, which reads in whole dollars from $10; a total, to cents
+        whatever its size. Where unset, a set that counts something (``per`` above 0) is a rate. A figure key spelled
+        as a bare amount (``per`` 0) says which it is.
+    :ptype rate: bool | None
+    :param reconciles: Whether a total computed from each amount is printed beside it (a cost per 1,000 beside its
+        month at a declared volume), so an amount two figures round too far takes a third
+        (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
+    :ptype reconciles: bool
     :param intervals: The intervals the set prints, each ``(low, high)`` as stored; none by default.
     :ptype intervals: Iterable[tuple[float | None, float | None]]
     :return: The ruler.
     :rtype: MoneyRuler
     """
     held = [amount for amount in amounts if amount is not None]
-    spans = list(intervals)
+    counts = per > 0 if rate is None else rate
     if per == 0:
-        return MoneyRuler(form=money_form(held, intervals=spans), scale=1.0, counted=0)
+        return MoneyRuler(form=money_form(held, rate=counts, reconciles=reconciles), scale=1.0, counted=0)
     stated = [abs(amount) for amount in held if math.isfinite(amount) and amount != 0]
     count = max(start, per)
     while stated and min(stated) * count / per < CENT and count < _MOST_COUNTED:
         count *= 1000
     scale = count / per
-    form = money_form(
-        (amount * scale for amount in held),
-        intervals=(
-            (low * scale if low is not None else None, high * scale if high is not None else None)
-            for low, high in spans
-        ),
-    )
+    form = money_form((amount * scale for amount in held), rate=counts, reconciles=reconciles)
     return MoneyRuler(form=form, scale=scale, counted=count)
 
 

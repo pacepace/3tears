@@ -403,10 +403,15 @@ asked for, and its summary says which model answered is unconfirmed
 production runs: the contrasts, each decision-surface cell, its cost column and a frontier's cost axis (which
 refuses `cost_usd`); the report heads it `Production cost`. `cost_usd` and `program_cost` also sum what a judge
 spent, which is measuring cost: never tested between arms, and labelled `Measuring spend` wherever shown, except in a campaign whose every result is judge-kind (see below), where those dollars are the arm's own spend and read `Spend, all roles`, `Program spend`, `Total spend` and `Mean spend per result`. A judge campaign is the one place the judge is the subject: every call its cells make is the judge under test, metered under the judge role, so there that role is what the arm costs (`production_replicating_cost` reads the result's `candidate_kind`). Money reads
-one way per set: a column, an axis or a family of figures is spelled in one form throughout, and where any amount in
+one way per set: a column, an axis or a family of figures is spelled by one rule throughout, and where any amount in
 it is too small for cents the whole set reads per 1,000 replies, which the heading says (`Cost per 1,000 replies`,
-`Production cost, per 1,000 replies`). A difference takes the form of the amounts it compares, to the places its
-interval supports.
+`Production cost, per 1,000 replies`). The rule is one count of significant figures, not one count of decimals (owner
+ruling Q3, 2026-11-09, which replaces the 2026-10-27 reading of one decimal count per set): each amount reads to two
+significant figures, so `$0.0080` sits beside `$0.11`, never `$0.1100`. A total reads to cents from a dollar up
+(`$1,208.00`); a rate reads in whole dollars from $10 (`$75 [$73, $77]`). Only an interval whose two ends would read
+alike takes a third figure, and a cost per 1,000 takes one where two would leave the month printed beside it more than
+half a percent off (`$0.302 per 1,000 calls` beside `$1,208.00 a month`). A difference takes the form of the amounts
+it compares, to the places its interval supports.
 
 **What an arm costs and what the program spent count different results.** A comparison cost — the
 candidate's own spend, `production_replicating_cost`, and every mean of it (`mean_prod_cost_usd` in a run

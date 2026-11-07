@@ -63,6 +63,7 @@ from threetears.evals.analysis.analyst.skill_ledger import ShippedSkill, skill_r
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_verdicts
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, PROJECTION_CASE_CAP, bounded_cases_to_clear
+from threetears.evals.analysis.style import CANNOT_TELL_APART, cannot_tell_apart
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
@@ -327,9 +328,9 @@ def _cases_to_settle(report: WriterPairwiseReport) -> int | None:
 
 
 def _reads(verdict: Verdict) -> str:
-    """What a verdict reads, as its row prints it: its outcome, with too few cases beside it when it was read on fewer
-    cases than a rate needs."""
-    outcome = verdict.outcome.replace("_", " ")
+    """What a verdict reads, as its row prints it: its outcome (the undecided one in the glossary's words, ``cannot tell
+    apart``), with too few cases beside it when it was read on fewer cases than a rate needs."""
+    outcome = CANNOT_TELL_APART if verdict.outcome == "not_separated" else verdict.outcome.replace("_", " ")
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
 
 
@@ -371,7 +372,7 @@ def _decided(
     elif primary.reason == "too_few_cases":
         because = f"the primary reading has too few cases to decide{detail}"
     elif primary.outcome == "not_separated":
-        because = f"the primary reading does not separate {candidate} from {control}"
+        because = f"on the primary reading {cannot_tell_apart([candidate], control)}"
     else:
         because = f"the primary reading is {primary.outcome.replace('_', ' ')}{detail}"
     return "undecided", f"Undecided: {because}, and only an improved primary reading promotes."

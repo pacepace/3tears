@@ -49,6 +49,7 @@ import pytest
 
 from packages.evals.tests.plan_charts_support import anchor_look, stored_charts
 from packages.evals.tests.fixtures.report_inputs import dataset
+from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis import ChartBlock, TableBlock
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.report.charts import (
@@ -416,10 +417,19 @@ def _figure_faults(input_key: str, spec: ChartSpec, data: Any, keys: Sequence[st
             if not whose:
                 faults.append(f"{value} is no figure of {list(keys)} in its unit")
             elif spec.kind in _FORMATTED_AS_ITS_MEASURE:
-                # Money's format follows every amount the chart draws of the measure, on every panel (#993: one form
-                # per chart), so the expectation reads them all.
+                # Money's format follows every amount the chart draws of the measures sharing this axis, on every
+                # panel (#993: one form per chart); its ticks are written to the largest amount's decimals (owner
+                # ruling Q3, 2026-11-09), so the expectation reads every amount of every money measure on the axis.
+                money = [one for one in keys if quantity(figure_unit(report_input, one)).unit == MONEY]
+                sharing = [one for one in money if any(_is_figure(v, _figures(input_key, one)) for v in axis.values)]
                 formats = {
-                    quantity(figure_unit(report_input, key), _drawn_of(input_key, key, axes)).fmt for key in whose
+                    quantity(
+                        figure_unit(report_input, key),
+                        [drawn for one in sharing for drawn in _drawn_of(input_key, one, axes)]
+                        if key in sharing
+                        else _drawn_of(input_key, key, axes),
+                    ).fmt
+                    for key in whose
                 }
                 if axis.fmt not in formats:
                     faults.append(f"{value} is a figure of {whose}, drawn as {axis.fmt!r}, not {sorted(formats)}")

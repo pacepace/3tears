@@ -234,7 +234,7 @@ Grammar: `{path|filter|filter}`, in single braces; a double brace is refused. `{
 
 A reference page in `references/` is hand-built with the kit: every prose number in its page script is computed from the data beside it (`rN-*.json`), the same data the keys name. For example: `"{arm:qwen3.8-flash} is clearly worse: down {reading.qwen3.8-flash.change|abs|pts} points ({reading.qwen3.8-flash.interval|pts})"`. That makes three things true by construction: no number is invented, rounding matches the tables, and a re-run updates the prose. A sentence whose figure is missing from the input is dropped.
 
-**Money reads one way per set.** A column, a chart axis or a family of keys (every arm's cost per call, say) spells all its amounts in one form, chosen for the set, never per value. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
+**Money reads one way per set.** A column, a chart axis or a family of keys (every arm's cost per call, say) spells all its amounts by one rule, chosen for the set, never per value: one count of significant figures, not one count of decimals (owner ruling, 2026-11-09). Each amount reads to two significant figures (`$0.0080` beside `$0.11`, never `$0.1100`); a total to cents from a dollar up, a rate in whole dollars from $10; a third figure only where an interval's two ends would read alike, or where a rate sits beside a total computed from it and two figures would leave that total more than half a percent off. When any member is too small for cents, the whole set reads per 1,000. A difference between amounts takes their form, with as many places as its interval's width supports.
 
 ### 6.3 Style
 

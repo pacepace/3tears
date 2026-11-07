@@ -42,9 +42,14 @@ from threetears.evals.analysis import (
     report_html,
     report_markdown,
 )
+from threetears.evals.analysis.analyst.blocks import values_table
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
+from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.chart_svg import chart_drawing
 from threetears.evals.analysis.report.html_parts import KIT_JS, grid_html
 from threetears.evals.analysis.report.parts.look import arm_token
@@ -238,17 +243,19 @@ def test_per_reply_cost_reads_per_1000_replies_and_totals_read_plain_dollars(
         assert len(significant.replace(",", "")) <= 2 or (whole != "0" and len(cents) == 2), test_cost
 
 
-def test_a_set_of_money_takes_one_decimal_more_only_where_two_figures_would_print_an_interval_s_ends_alike() -> None:
-    """P19: ``$0.045 [$0.045, $0.045]`` hid the interval; one decimal more tells its ends apart, and no more."""
-    plain = money_form([0.0451, 0.0448, 0.0453])
+def test_an_interval_takes_one_figure_more_only_where_two_would_print_its_ends_alike() -> None:
+    """P19: ``$0.045 [$0.045, $0.045]`` hid the interval; one figure more tells its ends apart, and no more, for that
+    interval alone (owner ruling Q3: "one more only where"): the set's other amounts keep two figures."""
+    plain = money_form([0.0451, 0.0448, 0.0453, 0.11])
     assert plain.spell(0.0448) == plain.spell(0.0453) == "$0.045"
-    told = money_form([0.0451, 0.0448, 0.0453], intervals=[(0.0448, 0.0453)])
-    assert (told.spell(0.0448), told.spell(0.0451), told.spell(0.0453)) == ("$0.0448", "$0.0451", "$0.0453")
-    # An interval one more decimal does not tell apart is as narrow as the figures can say: no further.
-    tight = money_form([0.04512, 0.04513], intervals=[(0.04512, 0.04513)])
-    assert tight.decimals == told.decimals
+    assert plain.spell_ends(0.0448, 0.0453) == ("$0.0448", "$0.0453")
+    assert plain.places_of([0.0451, 0.0448, 0.0453], ends=(0.0448, 0.0453)) == 4
+    assert plain.spell(0.11) == "$0.11", "the set's other amounts keep two figures"
+    # An interval one more figure does not tell apart is as narrow as the figures can say: no further.
+    assert plain.spell_ends(0.04512, 0.04513) == ("$0.0451", "$0.0451")
     # An interval whose stored ends are equal is printed alike, as stored.
-    assert money_form([0.045], intervals=[(0.045, 0.045)]).decimals == plain.decimals
+    assert plain.spell_ends(0.045, 0.045) == ("$0.045", "$0.045")
+    assert plain.places_of([0.045], ends=(0.045, 0.045)) == 3
 
 
 @pytest.mark.parametrize("name", sorted(_RUNGS))
@@ -397,6 +404,71 @@ def test_a_forest_s_end_label_never_reads_coarser_than_its_note(kairo_document: 
     assert all(len(re.findall(r"<tspan", spans)) <= 2 for spans in re.findall(r"<text[^>]*>(.*?)</text>", drawn))
     assert not {"-8", "-3"} & set(labels), "an end label fell back to the axis's whole numbers"
     assert "kWrap(r.note," in KIT_JS, "the kit wraps a forest's note rather than falling back to its format"
+
+
+def _kairo_text() -> str:
+    """The Kairo prototype-5 document's page as a reader who cannot see the picture reads it (``doc_page_text``): what
+    the editor and the scoring judge read."""
+    record = json.loads((REPORT_DOCS / "prototype5" / "kairo" / "record.json").read_text())
+    page = build(
+        ReportDoc.model_validate(record["doc"]),
+        ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input),
+        strict=False,
+        findings=[ReportFinding.model_validate(finding) for finding in record.get("findings", [])],
+        draft=record["ending"] == "stored_with_findings",
+    )
+    return doc_page_text(page)
+
+
+#: The retired words for an undecided reading (owner ruling Q2).
+_RETIRED = re.compile(r"\bnot separated\b", re.IGNORECASE)
+
+
+def test_a_written_page_s_tables_say_an_undecided_reading_in_the_glossary_s_words() -> None:
+    """Owner ruling Q2, landed with rung 5's judge recorded again (2026-11-09): every table a written page draws, the
+    corrected comparisons and a chart's values table among them, says an undecided reading ``cannot tell apart``, never
+    ``not separated``. The writer's own sentences are its words, not the package's, so only the rows code lays out are
+    held here."""
+    text = _kairo_text()
+    rows = [line for line in text.splitlines() if line.startswith("|")]
+    assert not [row for row in rows if _RETIRED.search(row)], [row for row in rows if _RETIRED.search(row)][:3]
+    assert any("| Cannot tell apart |" in row for row in rows), "the corrected comparisons' verdict"
+    assert any(row.endswith(" cannot tell apart |") for row in rows), "a chart's note"
+
+
+def test_a_forest_s_values_table_reads_each_figure_at_its_unit_s_one_precision() -> None:
+    """A forest of changes in points prints its values and their intervals' ends at a point's one decimal, as its end
+    labels and the keys citing its rows read them, never at the float's four figures (``-3.010 | -5.815 to +1.136``)."""
+    held = ReportInput.model_validate(snapshot_of("prototype5/kairo").report_input)
+    look = block_look(held, fact_arms(held))
+    spec, faults = complete_chart(
+        PlannedChart(
+            kind="forest",
+            title="",
+            query=ChartQuery.model_validate(
+                {
+                    "source": "readings",
+                    "aspect": "",
+                    "measures": [],
+                    "arms": [],
+                    "strata": [],
+                    "limit": 0,
+                    "transform": "none",
+                    "small_multiples_by": "none",
+                }
+            ),
+            reference=[],
+            emphasis="",
+        ),
+        held,
+        "block",
+    )
+    assert not faults, faults
+    drawn = resolve_chart(spec, held, look, title="", fallback_title="t")
+    assert isinstance(drawn.chart, ChartBlock)
+    _, rows = values_table(drawn.chart)
+    figures = [number for row in rows for cell in row[1:3] for number in re.findall(r"[+-]?\d+\.\d+|[+-]?\d+", cell)]
+    assert figures and all(len(number.partition(".")[2]) == 1 for number in figures), rows
 
 
 def test_a_gate_scatter_s_region_label_never_shares_a_row_with_the_budget_s_label() -> None:

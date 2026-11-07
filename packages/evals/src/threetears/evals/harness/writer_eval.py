@@ -157,11 +157,12 @@ from threetears.evals.analysis.report.blocks import (
 )
 from threetears.evals.analysis.report.md_parts import table_lines
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
+from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
+from threetears.evals.kernel.numbers import format_number, group_thousands, money_form, spell_dollars
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
@@ -1601,8 +1602,8 @@ class WriterEval:
 
 def _pairwise_reads(verdict: Verdict) -> str:
     """What a pairwise verdict reads, as its cell prints it: its outcome, too few cases beside it when it was read on
-    fewer cases than a rate needs."""
-    outcome = verdict.outcome.replace("_", " ")
+    fewer cases than a rate needs; the undecided outcome in the glossary's words, ``cannot tell apart``."""
+    outcome = CANNOT_TELL_APART if verdict.outcome == "not_separated" else verdict.outcome.replace("_", " ")
     return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
 
 
@@ -1679,7 +1680,8 @@ def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
     if read is None:
         return _cells({key: arm if key == "candidate" else None for key, _ in _CHECK_COLUMNS})
     rate, settle = read.order_consistency, read.cases_to_settle
-    spent = "unpriced" if read.cost_usd is None else format_number(read.cost_usd, prefix="$")
+    form = money_form([read.cost_usd, read.cap_usd])  # the spend and its part read in one money form
+    spent = form.spell(read.cost_usd)
     return _cells(
         {
             "candidate": arm,
@@ -1693,7 +1695,7 @@ def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
             else f"more than {PROJECTION_CASE_CAP}"
             if settle > PROJECTION_CASE_CAP
             else settle,
-            "spent": spent if read.cap_usd is None else f"{spent} of {format_number(read.cap_usd, prefix='$')}",
+            "spent": spent if read.cap_usd is None else f"{spent} of {form.spell(read.cap_usd)}",
         }
     )
 

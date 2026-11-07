@@ -722,7 +722,8 @@ lists each open caveat with its condition; `low` is always allowed. A lead's ris
 beside the lead, and does not lower the form by itself.
 
 **Cost is stated with where it came from.** The options table gives each arm's cost per run, or per 1,000 runs where any arm's is
-too small for cents, in one form down the column, with the price source, the provider that served it and the share of
+too small for cents, by one rule down the column (each cost to two significant figures; a third where the month beside it
+needs one), with the price source, the provider that served it and the share of
 calls priced. A partly unpriced arm says how many calls were priced, and never shows a smaller total. Prices are the
 host's ([who sets the prices](cost-and-budgets.md#who-sets-the-prices)). Monthly figures appear only where the
 campaign declares a volume.

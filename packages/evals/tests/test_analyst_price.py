@@ -954,12 +954,11 @@ def _monthly_steps(held: ReportInput) -> Iterator[tuple[str, list[Price]]]:
             yield key, steps
 
 
-def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_the_whole_dollar() -> None:
-    """A step's price a month reads as its key reads under ``usd_whole`` (``$1,239``, never ``$1239``) where every step
-    on the axis is $10 or more, which whole dollars do not round away; under that, the column reads in its prices' one
-    form (#993): cents at least, and as many more decimals as its least price needs. Either way no dollar amount prints
-    four digits ungrouped, in the table or in the bars' values."""
-    whole_seen = cents_seen = False
+def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_cents() -> None:
+    """A step's price a month reads in its prices' one form (#993): each to two significant figures and cents at
+    least, a total of $10 or more to cents too (``$1,239.34``, never ``$1,239``: owner ruling Q3, 2026-11-09). No dollar
+    amount prints four digits ungrouped, in the table or in the bars' values."""
+    large_seen = small_seen = False
     for name, held in fixture_inputs().items():
         for key, steps in _monthly_steps(held):
             prices = [step.monthly_per_point for step in steps]
@@ -971,24 +970,17 @@ def test_a_prices_tables_money_reads_with_its_thousands_grouped_and_a_months_to_
                 for row in block.rows:
                     assert not any(re.search(r"\$\d{4}", cell) for cell in row.cells), (name, key, row.cells)
             cells = [row.cells[1] for row in table.rows]
-            if min(abs(value) for value in values) >= 10:
-                whole = [format_figure(resolve(price.key, held), ("usd_whole",)) for price in prices if price]
-                assert cells == whole, (name, key)
-                whole_seen |= any(abs(value) >= 1000 for value in values)
-            else:
-                # One form for the column (#993): every cell to the decimals money_form gives the prices (cents at
-                # least, more where the least price needs them), each its own value at them, so no cell states a
-                # digit its value does not hold.
-                decimals = {len(cell.partition(".")[2]) for cell in cells}
-                assert decimals == {money_form(values).decimals}, (name, key, cells)
-                (places,) = decimals
-                assert places >= 2, (name, key, cells)
-                for cell, value in zip(cells, values, strict=True):
-                    number = float(cell.lstrip("+-").removeprefix("$").replace(",", ""))
-                    assert abs(number - abs(value)) <= 10.0**-places / 2 + 1e-12, (name, key, cell)
-                cents_seen = True
-    assert whole_seen, "the control: some fixture prices a step a month at $1,000 or more"
-    assert cents_seen, "the control: some fixture prices a step a month under $10"
+            form = money_form(values)
+            assert cells == [form.spell(value) for value in values], (name, key, cells)
+            for cell, value in zip(cells, values, strict=True):
+                places = len(cell.partition(".")[2])
+                assert places >= 2, (name, key, cell)
+                number = float(cell.lstrip("+-").removeprefix("$").replace(",", ""))
+                assert abs(number - abs(value)) <= 10.0**-places / 2 + 1e-12, (name, key, cell)
+            large_seen |= any(abs(value) >= 1000 for value in values)
+            small_seen |= any(abs(value) < 10 for value in values)
+    assert large_seen, "the control: some fixture prices a step a month at $1,000 or more"
+    assert small_seen, "the control: some fixture prices a step a month under $10"
 
 
 def _stepless(held: ReportInput) -> Iterator[tuple[str, list[str]]]:

@@ -208,7 +208,9 @@ def test_a_table_spells_each_value_by_the_number_rule_not_the_axis_s_rounding() 
             "legend": [{"label": "calls", "color": "--s1"}, {"label": "retries", "color": "--s2"}],
         }
     )
-    assert stacked.values_table() == (["Row", "Value", "Parts"], [["arm", "$4", "calls $3 · retries $1"]])
+    # Money in a table reads to its own two significant figures and cents at least, whatever digits the axis rounds
+    # its ticks to (owner ruling Q3, 2026-11-09).
+    assert stacked.values_table() == (["Row", "Value", "Parts"], [["arm", "$4.00", "calls $3.00 · retries $1.00"]])
 
 
 def test_a_bar_with_a_low_end_and_no_high_end_reads_as_an_interval_open_above() -> None:
