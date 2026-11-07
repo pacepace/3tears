@@ -72,7 +72,7 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.declaration import CampaignArm, aware_instant, resolve_control_arm
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, spell_count
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.out_of_run import OutOfRunBudget, PlannedCall
@@ -1281,7 +1281,9 @@ def resolution_line(cases: int, *, projected: int | None = None, fewest: int | N
         head = f"{at} this run can separate only a preference of {format_number(percent)}% or more, held on every case"
     if projected is None:
         return f"{head}."
-    settle = f"more than {PROJECTION_CASE_CAP}" if projected > PROJECTION_CASE_CAP else str(projected)
+    settle = (
+        f"more than {spell_count(PROJECTION_CASE_CAP)}" if projected > PROJECTION_CASE_CAP else spell_count(projected)
+    )
     return f"{head}; the last run on these cases projected {settle} to settle."
 
 

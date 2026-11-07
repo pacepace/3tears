@@ -103,6 +103,7 @@ from threetears.evals.analysis import EvalSummary, RunMeasureSummary
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
 from threetears.evals.harness.writer_host import WriterJudge
 from threetears.evals.harness.writer_turns import writer_turns
@@ -576,7 +577,8 @@ class Criterion:
         settle = (
             ""
             if self.cases_to_settle is None
-            else f" About {self.cases_to_settle} held-out cases like these would settle the primary; this run stops here."
+            else f" About {spell_count(self.cases_to_settle)} held-out cases like these would settle the primary; this "
+            "run stops here."
         )
         return f"FAIL: not held: {failed}.{settle}"
 

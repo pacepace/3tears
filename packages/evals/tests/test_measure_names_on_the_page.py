@@ -384,6 +384,8 @@ def test_a_written_page_and_its_record_name_a_check_in_one_form() -> None:
     # record laid out after them names it so too, through the one call over the one set of checks.
     read = subject("toyhost_doc")
     body = report_read(read.host, read.campaign_id, read.scope_id, format="markdown", static=False, trials="all").body
+    # One spelling per figure on the page: the options table and Every arm by measure read the pass rate alike (N-4).
+    assert body.count("44% (16 of 36)") >= 2 and "44.4%" not in body, "one figure, one spelling"
     assert "| Field accuracy check | 0% | 44% |" in body, "the document's table names the check by what it tests"
     assert "| failed | Field accuracy check |" in body, "the record's trials name it so too"
     assert "- `Field accuracy check`: `field_accuracy >= 0.92`" in body, "a trial's record prints its expression"

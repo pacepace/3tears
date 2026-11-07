@@ -120,7 +120,7 @@ def test_the_recordings_readme_names_the_one_command_that_records_and_its_keys()
     assert "owner-approved $39 cap" in readme and "awaiting" not in readme
     # The recording's date, the head it was made at, and what it cost; and when the judge's calls were recorded again.
     assert "2026-11-03" in readme and "`28efc1fd1`" in readme and "$7.56" in readme
-    assert "2026-11-07, at head `c588012f3`" in readme
+    assert "2026-11-07, at head `a6eea952f`" in readme
     assert "Not recorded" not in readme
 
 
@@ -134,7 +134,7 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     # The pairwise preference, the primary reading: lead-first's share, which the evidence cannot tell from shipped's
     # at 7 cases (the glossary's words, owner ruling Q2), a row with columns; the pass's spend in the money form.
     assert "| lead-first | every pair | cannot tell apart | 52 | 4 | -67 to 70 |" in lines
-    assert "| lead-first | 71% (5 of 7) | 16 | 0 | 2969 | $0.14 of $1.95 |" in lines
+    assert "| lead-first | 71% (5 of 7) | 16 | 0 | 2,969 | $0.14 of $1.95 |" in lines
     assert "not separated" not in printed
     (promotion,) = [line for line in lines if line.startswith("promotion of lead-first: ")]
     assert promotion == (
@@ -156,7 +156,8 @@ def test_the_shipped_recordings_replay_with_no_key_and_print_the_preference_and_
     assert first_screen[3] == "shipped vs lead-first · report-writing"
     assert first_screen[5] == (
         "**Undecided, so shipped stays: across 7 held-out cases the judge gave lead-first 52% of its preference over "
-        "shipped (50% is even), too few cases to tell from an even split; about 2969 cases would settle it.**"
+        "shipped (50% is even), too few cases to tell from an even split; if the share stayed near 52%, roughly 3,000 "
+        "cases would settle it.**"
     )
     assert "set after the results" not in page and "Criteria set late" not in page
     # No surface of the page prints the retired words (owner ruling Q2).

@@ -22,6 +22,9 @@ from typing import Final
 import pytest
 
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case, kairo_report, lay_recording
+from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
+from threetears.evals.kernel.numbers import spell_count
+from threetears.evals.ops.report_writer.writer_pairwise import resolution_line
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.harness import Writer, WriterEval, WriterResult
@@ -153,3 +156,30 @@ async def test_an_interval_end_near_zero_keeps_its_sign_and_two_near_ends_stay_a
     assert row(0.2, (-0.00004, 0.4)).endswith("| 20 | -0.004 to 40 |")
     # Two ends that whole points would print alike take the decimals that tell them apart.
     assert row(0.3402, (0.3401, 0.3404)).endswith("| 34.02 | 34.01 to 34.04 |")
+
+
+async def test_a_count_of_cases_to_settle_reads_with_its_thousands_separated(tmp_path: Path, offline: None) -> None:
+    """After rung 5's judge was recorded again its page printed "Held-out cases to settle | 2969": a count on the page
+    reads as every count the page spells does, thousands separated (``2,969``), through the one count speller."""
+    result = await _replayed(tmp_path)
+    read = result.pairwise["variant"]
+    shown = replace(result, pairwise={"variant": replace(read, cases_to_settle=2969)}).pairwise_text()
+    (line,) = [line for line in shown.splitlines() if line.startswith("| variant | 0% ")]
+    assert "| 2,969 |" in line and "2969" not in line, line
+    capped = replace(result, pairwise={"variant": replace(read, cases_to_settle=PROJECTION_CASE_CAP + 1)})
+    (line,) = [line for line in capped.pairwise_text().splitlines() if line.startswith("| variant | 0% ")]
+    assert "| more than 10,000 |" in line, line
+
+
+def test_the_count_speller_separates_thousands_and_the_resolution_line_reads_through_it() -> None:
+    """Finding N-6: one count speller (``spell_count``) for every count a page spells."""
+    assert [spell_count(count) for count in (7, 44, 999, 2969, 10_000, 6224)] == [
+        "7",
+        "44",
+        "999",
+        "2,969",
+        "10,000",
+        "6,224",
+    ]
+    assert resolution_line(11, projected=2969).endswith("the last run on these cases projected 2,969 to settle.")
+    assert resolution_line(11, projected=PROJECTION_CASE_CAP + 1).endswith("projected more than 10,000 to settle.")

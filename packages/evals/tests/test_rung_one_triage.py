@@ -136,7 +136,9 @@ def test_the_program_runs_offline_prints_its_readings_and_writes_its_report(
     # The pass rate carries the count it is computed over beside it (presentation build, chunk 1), and every other rate
     # reads in percent with its count beside it too (chunk 3: never 0.9 beside 77.8).
     assert matrix.startswith(
-        "| emails | 77.8 (70 of 90 trials, 30 cases) | 90 (81 of 90 trials, 30 cases) | 100 (17 of 17 trials, 7 cases) |"
+        # Every (%) column of the table at one precision, one decimal where whole would print two alike (N-4).
+        "| emails | 77.8 (70 of 90 trials, 30 cases) | 90.0 (81 of 90 trials, 30 cases) | 100.0 (17 of 17 trials, 7 "
+        "cases) |"
     )
     assert rows and all(line.startswith("| emails | triage |") for line in rows)
     # The matrix heads a column by each measure's name, as its folded rows name it: a name, not a header's words.

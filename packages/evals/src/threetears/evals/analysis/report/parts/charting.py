@@ -73,6 +73,7 @@ from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
 from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, input_check_name, resolve
+from threetears.evals.kernel.numbers import spell_count
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
@@ -1239,4 +1240,4 @@ def count_text(count: float) -> str:
     :return: The text.
     :rtype: str
     """
-    return format_figure(Figure(path="count", kind="number", value=float(count), scale="count"), ("int",))
+    return spell_count(round(count))

@@ -125,6 +125,18 @@ def group_thousands(text: str) -> str:
     return sign + THOUSANDS_SEPARATOR.join([whole, *groups]) + point + fraction
 
 
+def spell_count(count: int) -> str:
+    """A count as the package spells it in prose, a cell and a disclosure alike: whole, its thousands separated
+    (``2,969``, ``10,000``, ``6,224 of 6,224``), so one count reads one way on every surface.
+
+    :param count: The count.
+    :ptype count: int
+    :return: Its text.
+    :rtype: str
+    """
+    return group_thousands(str(int(count)))
+
+
 def spell_dollars(amount: float) -> str:
     """An amount of money as the package spells it, alone: a total in the money form (:func:`money_form`), so one
     amount reads alike in a sentence, a byline and the table beside it: ``$0`` for zero, two significant figures
@@ -466,6 +478,7 @@ __all__ = [
     "format_number",
     "format_signed",
     "money_form",
+    "spell_count",
     "spell_dollars",
     "spell_multiple",
 ]
