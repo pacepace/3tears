@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +42,9 @@ from packages.evals.tests.fixtures.writer_cases.writer_calibration import (
 )
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import JUDGE as SMOKE_JUDGE
 from packages.evals.tests.fixtures.writer_cases.writer_smoke import WRITER as SMOKE_WRITER
+from threetears.evals.kernel import judge_criterion_digest
 from threetears.evals.ops.report_writer.preference import preference_rubric
+from threetears.evals.schema import DEFAULT_JUDGE_TEMPERATURE
 from threetears.evals.schema import JudgeEvidence
 
 #: The scripted judge's name, as the anchor rows record the judge asked.
@@ -99,6 +103,11 @@ class _Printed:
 
     def flush(self) -> None:
         return None
+
+
+def _printed(record: dict[str, Any]) -> str:
+    """A stored read's date as the reread's opening line names it."""
+    return f"{datetime.fromisoformat(record['read_at']):%Y-%m-%d %H:%M} UTC"
 
 
 def _clients(judge: FakeAnchorJudge) -> Any:
@@ -171,8 +180,10 @@ def found() -> list[Page]:
 
 
 @pytest.fixture(scope="module")
-def stored(found: list[Page]) -> dict[str, Any]:
+def stored(found: list[Page], tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """The stored record: the steady judge's first read, as ``--out`` writes it and a file gives it back."""
+    source = tmp_path_factory.mktemp("first") / "empty.json"
+    source.write_text("{}", encoding="utf-8")
     first = _read({}, found, FakeAnchorJudge(_script(found), "judge-v1"))
     assert all(held is None for held in first.held().values())
     lines = list(first.lines())
@@ -189,7 +200,7 @@ def stored(found: list[Page]) -> dict[str, Any]:
         f"| {_LEAN} | 0.00 |",
     ]
     assert not any("Held" in line or "served model" in line for line in lines)
-    record: dict[str, Any] = json.loads(json.dumps(first.record(Path("stored.json")), default=str))
+    record: dict[str, Any] = json.loads(json.dumps(first.record(source, source.parent), default=str))
     return record
 
 
@@ -200,8 +211,8 @@ def test_a_shifted_judge_moves_on_all_three_measures_and_the_served_model_change
     assert read.held() == dict.fromkeys(MEASURES, False)
     lines = list(read.lines())
     assert lines[0] == (
-        f"A reread asks {_JUDGE} the anchor cases again and compares it with its own stored read: it detects a judge "
-        "or version shift, never whether the judge is right."
+        f"A reread asks {_JUDGE} the anchor cases again and compares it with its own stored read of {_printed(stored)}: "
+        "it detects a judge or version shift, never whether the judge is right."
     )
     # The four flipped and the four leaning pairs each changed side; the leaning four lost their order consistency
     # and lean the whole way, 0.5 each over 21 pairs.
@@ -222,8 +233,9 @@ def test_a_shifted_judge_moves_on_all_three_measures_and_the_served_model_change
 
 
 def test_an_unchanged_judge_holds_on_all_three_and_agrees_with_the_opus_editor_on_its_own_line(
-    found: list[Page], stored: dict[str, Any]
+    found: list[Page], stored: dict[str, Any], tmp_path: Path
 ) -> None:
+    started = datetime.now(UTC).replace(microsecond=0)
     read = _read(stored, found, FakeAnchorJudge(_script(found), "judge-v1"))
     assert read.held() == dict.fromkeys(MEASURES, True)
     assert read.changed() == (0, 21)
@@ -239,9 +251,34 @@ def test_an_unchanged_judge_holds_on_all_three_and_agrees_with_the_opus_editor_o
         "the stored read and 1.00 in this one."
     )
     # Every trial is a row of the new anchor, as the next reread reads it.
-    record = read.record(Path("stored.json"))
+    source = tmp_path / "records" / "stored.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps(stored), encoding="utf-8")
+    record = read.record(source, tmp_path / "out")
     assert len(record["anchor"]) == 2 * 42 and record["case_sets"] == {PAIR_SET: {"cases": 42}}
     assert {(row["judge"], row["served_model"]) for row in record["anchor"]} == {(_JUDGE, "judge-v1")}
+    # The record says when it was read, under which tolerance and judge settings, and of which source, named relative
+    # to the record's own directory and by its bytes, so two reads can be ordered and one reproduced.
+    assert started <= datetime.fromisoformat(record["read_at"]) <= datetime.now(UTC)
+    assert record["read_at"].endswith("Z") and read.file_name() == f"{read.read_at:%Y%m%dT%H%M%SZ}-reread.json"
+    assert record["held_within"] == 0.05
+    assert record["reread_of"] == "../records/stored.json"
+    assert record["reread_of_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    settings = record["judge_settings"]
+    (prompt,) = settings.pop("judge_config_ids")
+    assert prompt.startswith("builtin:")
+    criterion = preference_rubric()
+    assert settings == {
+        "model": _JUDGE,
+        "served_models": ["judge-v1"],
+        "temperatures": [DEFAULT_JUDGE_TEMPERATURE],
+        "criterion_digests": [judge_criterion_digest(criterion.name, criterion.scale, criterion)],
+        "trials_per_case": 2,
+    }
+    # A stored record from before the date was kept says so where the date would stand.
+    undated = {key: value for key, value in stored.items() if key != "read_at"}
+    opening = next(iter(_read(undated, found, FakeAnchorJudge(_script(found), "judge-v1")).lines()))
+    assert "compares it with its own stored read of an unrecorded date: it detects" in opening
 
 
 @pytest.mark.parametrize(
@@ -334,12 +371,13 @@ def test_the_reread_only_reads_the_stored_record_and_writes_to_a_new_out_directo
     out = tmp_path / "new"
     assert main(["--reread", str(path), "--dry", "--out", str(out)]) == 0
     assert path.read_bytes() == before
-    written = json.loads((out / "reread.json").read_text(encoding="utf-8"))
-    assert written["reread_of"] == str(path) and len(written["anchor"]) == 2 * 42
+    (filed,) = out.glob("*-reread.json")
+    written = json.loads(filed.read_text(encoding="utf-8"))
+    assert written["reread_of"] == "../records/20261107-steady.json" and len(written["anchor"]) == 2 * 42
     # An --out already there is refused before anything is judged, so neither file is written over.
     with pytest.raises(FileExistsError):
         main(["--reread", str(path), "--dry", "--out", str(out)])
-    assert path.read_bytes() == before and json.loads((out / "reread.json").read_text(encoding="utf-8")) == written
+    assert path.read_bytes() == before and json.loads(filed.read_text(encoding="utf-8")) == written
 
 
 def test_a_live_reread_prints_its_cost_before_the_judge_is_called_and_runs_under_its_cap(
@@ -370,7 +408,8 @@ def test_a_live_reread_prints_its_cost_before_the_judge_is_called_and_runs_under
     )
     assert "judge called" in events and "judge called" not in events[:1]
     # The cap reached the arm: $0.30 at $0.01 a call stops it short of the 84 calls.
-    (arm,) = json.loads((out / "reread.json").read_text(encoding="utf-8"))["arms"]
+    (filed,) = out.glob("*-reread.json")
+    (arm,) = json.loads(filed.read_text(encoding="utf-8"))["arms"]
     assert arm["stopped"] is not None and arm["trials"] < 84 and events.count("judge called") < 84
 
 

@@ -1078,7 +1078,7 @@ def test_an_id_is_one_word_where_the_cap_holds_it_and_wraps_where_no_column_has_
 
 #: Every visible table frame: whether it scrolls, its pinned columns' widths and where the second is pinned, and each
 #: hyphenated word in a pinned cell that the browser drew across more than one line.
-_ID_PROBE = """async () => {
+_ID_PROBE = r"""async () => {
   for (const d of document.querySelectorAll('details')) d.open = true;
   // a frame's scroll state is read once the opened folds are laid out
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))));

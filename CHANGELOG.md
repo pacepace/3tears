@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the writer calibration script rereads its judge's anchor cases to catch a judge change
+
+`writer_calibration.py --reread`, a test-fixture script no host imports, asks one judge the 42 anchor pair cases
+again and compares its verdicts with its own stored read on preference, order consistency and first-slot lean,
+naming a served-model change as the likely cause: it tells a judge or version shift, never whether the judge is right,
+and costs about $0.67 to $1.34 a read at flash's recorded rate.
+
 ### evals: a goal check is named by what it tests in every header and lead, its expression in the glossary
 
 **Changed:** every table header, reading row and lead names a goal check by the display name its template declares
