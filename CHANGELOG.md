@@ -16,7 +16,8 @@ budget refuses its own first turn on the real ceiling, so `report_write` ends `o
 above that ceiling is refused: the cap holds back the next turn's ceiling against what was actually spent, so whether a
 second turn fits turns on what the first really cost. A `WriterEval` budget under two of the analyst's first-turn
 ceiling launches with one warning line among its disclosures, citing the recorded Sonnet 5.5 runs (at $0.75, 16 of 50
-reports stored a page; at $1.00, 17 to 22 of 22; at $1.50, 50 of 50).
+reports stored a page; at $1.00, 17 to 22 of 22; at $1.50, 99 of 100); on any other model the line says no
+acceptance run is recorded on it.
 
 **Changed:** a report that still runs out ends saying how many turns it was admitted and how many turns its whole
 budget admits at the ceiling that stopped it. A writer eval adds, for an arm whose reports ended over budget with no

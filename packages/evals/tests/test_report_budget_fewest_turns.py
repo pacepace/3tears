@@ -15,8 +15,9 @@ spent, plus one turn's ceiling.
 Mutations that turn this file red: a budget above the first turn's ceiling refused; a budget below it admitted, or
 refused without naming the budget, the ceiling, the fewest turns and the budget that admits the turn; the rule applied
 to a turn after the first; the launch warning missing, or given at a budget two ceilings fit; the launch refusal made
-after the store opens; the ending's words dropping the turns admitted or the turns the budget admits; the writer eval's
-disclosure missing, giving spend alone, or counting a report that stored a page as one with none.
+after the store opens, or never made for an editor on a dearer model than its analyst; the recorded figures cited
+for a model they were not recorded on; the ending's words dropping the turns admitted or the turns the budget admits;
+the writer eval's disclosure missing, giving spend alone, or counting a report that stored a page as one with none.
 
 Every turn is scripted, and nothing reaches a model. The writer eval's arms run on the incident's model, whose
 published rates price its launch; each expected figure is read back from the line that states it and checked against
@@ -47,10 +48,13 @@ from packages.evals.tests.report_writer_support import (
 )
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval
+from threetears.evals.analysis.analyst.skill import load_skill
+from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
+from threetears.evals.kernel.capped_completion import prompt_token_bound
 from threetears.evals.ops.report_writer.tally import MIN_TURNS_FOR_A_REPORT, ReportBudget
+from threetears.evals.providers import AnthropicPublishedRates
 from threetears.evals.providers.wire import KEY_VARIABLES
 from threetears.evals.schema.turns import TurnCeiling, TurnReply
 from threetears.evals.storage import SqliteDocumentStore
@@ -67,6 +71,12 @@ ADMITTED_BUDGET: Final = 1.5
 WRITER: Final = "claude-sonnet-5-5"
 
 SCOPE: Final = "fewest-turns"
+
+#: An editor dearer than the writer: Opus 5.5, whose first turn costs more than Sonnet's.
+OPUS: Final = "claude-opus-5-5"
+
+#: A writer no acceptance run was recorded on.
+HAIKU: Final = "claude-haiku-5-5"
 
 #: A budget under the incident's first-turn ceiling, which cannot admit even one turn.
 TOO_SMALL: Final = 0.5
@@ -178,7 +188,7 @@ def _lines(path: Path, sessions: dict[str, Sequence[tuple[float, TurnReply | Non
     path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
 
 
-def _laid(tmp_path: Path, arms: dict[str, Writer]) -> None:
+def _laid(tmp_path: Path, arms: dict[str, Writer], model: str = WRITER) -> None:
     """Kairo's report, which stores a page, and r1's, which runs out after one turn, laid for each arm."""
     kairo = kairo_case(tmp_path / "cases")
     group, withhold = SEED["r1"]
@@ -195,20 +205,20 @@ def _laid(tmp_path: Path, arms: dict[str, Writer]) -> None:
             cases={kairo.snapshot.id: "kairo", r1.snapshot.id: "r1"},
         )
         _lines(
-            routed.path(WRITER, None, kairo.snapshot.id),
+            routed.path(model, None, kairo.snapshot.id),
             {
                 "analyst": [
-                    (0.05, reply(call(1, "options_dominance", "{snapshot}"), cost=cost, model=WRITER)),
-                    (0.05, reply(submitted(), cost=cost, model=WRITER)),
+                    (0.05, reply(call(1, "options_dominance", "{snapshot}"), cost=cost, model=model)),
+                    (0.05, reply(submitted(), cost=cost, model=model)),
                 ],
-                "editor-1": [(0.05, reply(review(), cost=cost, model=WRITER))],
+                "editor-1": [(0.05, reply(review(), cost=cost, model=model))],
             },
         )
         _lines(
-            routed.path(WRITER, None, r1.snapshot.id),
+            routed.path(model, None, r1.snapshot.id),
             {
                 "analyst": [
-                    (0.3, reply(call(1, "campaign_overview", "{snapshot}"), cost=0.11, model=WRITER)),
+                    (0.3, reply(call(1, "campaign_overview", "{snapshot}"), cost=0.11, model=model)),
                     (SONNET_CEILING, None),
                 ]
             },
@@ -247,8 +257,7 @@ async def test_the_writer_eval_warns_once_and_says_what_the_paged_reports_needed
     twice = re.fullmatch(
         r"the \$0\.75, 40-turn report budget is under 2 of a first turn's ceiling on claude-sonnet-5-5 \((\$[0-9.]+)\), "
         r"so the cap may stop a report before its review; in the recorded Sonnet 5\.5 acceptance runs, at \$0\.75 16 of "
-        r"50 reports stored a page, at \$1\.00 17 to 22 of 22, and at \$1\.50 50 of 50, the budget at which no "
-        r"recorded report ran out",
+        r"50 reports stored a page, at \$1\.00 17 to 22 of 22, and at \$1\.50 99 of 100",
         warning,
     )
     assert twice is not None and _dollars(twice[1]) > INCIDENT_BUDGET
@@ -304,3 +313,57 @@ async def test_a_writer_eval_whose_budget_cannot_admit_one_turn_is_refused_befor
     assert said is not None, str(refused.value)
     assert _dollars(said[1]) > 0.25 and _dollars(said[2]) >= _dollars(said[1])
     assert not (tmp_path / "evals.sqlite").exists() and offline == []
+
+
+def _floor(model: str, text: str) -> float:
+    """A first turn's floor as the launch prices it: the text and the 32,000-token output cap at the published rates."""
+    rated = AnthropicPublishedRates().rates_for(model, provider="anthropic")
+    assert rated is not None
+    return float(rated.rates.ceiling(prompt_tokens=prompt_token_bound(text, "", None), output_tokens=32_000))
+
+
+async def test_an_editor_whose_first_turn_the_budget_cannot_admit_is_refused_by_name_before_the_store_opens(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    # An Opus editor under a Sonnet analyst, at a budget the analyst's first turn fits and the editor's does not.
+    kairo = kairo_case(tmp_path / "cases")
+    skill = load_skill()
+    analyst = _floor(WRITER, skill.analyst(withhold=kairo.withhold).text)
+    editor = _floor(OPUS, skill.editor().text)
+    assert analyst < editor
+    between = round((analyst + editor) / 2, 2)
+    arms = {"own editor": Writer(WRITER), "opus editor": Writer(WRITER, editor_model=OPUS)}
+
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, arms, between).run()
+
+    said = re.fullmatch(
+        r"the writer eval was not launched, and nothing was sent or spent: the editor's first turn of arm 'opus editor' "
+        r"on claude-opus-5-5, priced at its 32,000-token output cap and its text before any snapshot is read, can cost "
+        r"up to (\$[0-9.]+), above the report's (\$[0-9.]+) budget, so it cannot admit even one turn of the 2 a report "
+        r"takes; a budget of (\$[0-9.]+) or more admits it: raise budget_usd",
+        str(refused.value),
+    )
+    assert said is not None, str(refused.value)
+    assert _dollars(said[1]) == pytest.approx(editor, abs=0.006) and _dollars(said[2]) == pytest.approx(between)
+    assert _dollars(said[3]) >= _dollars(said[1])
+    assert not (tmp_path / "evals.sqlite").exists() and offline == []
+
+
+async def test_a_warning_on_a_model_no_acceptance_run_recorded_cites_no_figures(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    arms = {"two revisions": Writer(HAIKU), "one revision": Writer(HAIKU, revisions=1)}
+    _laid(tmp_path, arms, model=HAIKU)
+    floor = _floor(HAIKU, min((load_skill().analyst(withhold=w).text for w in _withheld(tmp_path)), key=len))
+
+    result = await _eval(tmp_path, arms, round(floor * 1.5, 4)).run()
+
+    (warning,) = [line for line in result.disclosures if "of a first turn's ceiling" in line]
+    assert warning.endswith(f"so the cap may stop a report before its review; no acceptance run is recorded on {HAIKU}")
+    assert "Sonnet" not in warning and offline == []
+
+
+def _withheld(tmp_path: Path) -> list[list[str]]:
+    """The notes each laid case withholds."""
+    return [case.withhold for case in read_writer_cases(tmp_path / "cases")]

@@ -424,7 +424,7 @@ def test_a_report_budget_that_cannot_admit_one_turn_is_refused_and_one_under_two
     (warning,) = [line for line in printed.splitlines() if "recorded Sonnet 5.5 acceptance runs" in line]
     twice = re.search(r"under 2 of a first turn's ceiling on claude-sonnet-5-5 \(\$([0-9.]+)\)", warning)
     assert twice is not None and float(twice[1]) > 0.75
-    assert "at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and at $1.50 50 of 50" in warning
+    assert "at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and at $1.50 99 of 100" in warning
     # At two of the ceiling and above, no warning.
     assert (
         writer_acceptance.main(["--dry", "--writer", "claude-sonnet-5-5", "--budget-usd", "1.5", "--cap-usd", "30"])

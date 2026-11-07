@@ -36,9 +36,10 @@ Anthropic publishes, which a recording run is built on. A first turn's brief and
 floor of the real ceiling. A ``budget_usd`` under either is refused by name, at $0 and once, with the budget that admits
 the turn (:meth:`~threetears.evals.ops.report_writer.tally.ReportBudget.first_turn_refusal`). A budget under
 :data:`~threetears.evals.ops.report_writer.tally.MIN_TURNS_FOR_A_REPORT` of the analyst's first-turn ceiling is launched,
-with one line among the result's disclosures citing the recorded runs at such budgets: whether it fits turns on what the
-turns really cost. A model those rates do not list is not checked here; each report's first turn is then refused, at $0,
-when its real ceiling is above the budget. After the arms run, an arm whose reports ended over budget with no page says
+with one line among the result's disclosures, on any model, since whether it fits turns on what the turns really
+cost; on the model the recorded acceptance runs wrote on, the line cites what they stored at such budgets, and on any
+other it says no acceptance run is recorded on it. A model those rates do not list is not checked here; each report's
+first turn is then refused, at $0, when its real ceiling is above the budget. After the arms run, an arm whose reports ended over budget with no page says
 how many, and what the reports of its run that stored a page needed: what they spent, plus one turn's ceiling.
 
 **The cap is split before anything launches.** ``pairwise_share`` of ``max_cost_usd`` (a fifth unless told) is
@@ -165,12 +166,16 @@ from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult
 from threetears.evals.schema.turns import TurnCeiling
 
+#: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
+_RECORDED_MODEL: Final = "claude-sonnet-5-5"
+
 #: What the recorded writer acceptance runs read at budgets near two first-turn ceilings, in their own words: Sonnet 5.5
-#: at medium effort, the shipped skill against its hollow and no-editor variants
-#: (``tests/fixtures/report_docs/writer_acceptance``: 2026-11-03 and 2026-11-04 at $1, 2026-11-06 at $0.75 and $1.50).
+#: at medium effort, the shipped skill against its hollow, no-editor and minimal variants
+#: (``tests/fixtures/report_docs/writer_acceptance``: 2026-11-03 and 2026-11-04 at $1, 2026-11-06 at $0.75, and the
+#: no-editor and minimal runs at $1.50, which stored 50 of 50 and 49 of 50 pages).
 _RECORDED_BUDGETS: Final = (
     "in the recorded Sonnet 5.5 acceptance runs, at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and "
-    "at $1.50 50 of 50, the budget at which no recorded report ran out"
+    "at $1.50 99 of 100"
 )
 
 #: The effort lever's id, as the writer's overlays name it.
@@ -869,7 +874,7 @@ class WriterEval:
         return floors, [
             f"the {self.budget.spelled} report budget is under {MIN_TURNS_FOR_A_REPORT} of a first turn's ceiling on "
             f"{model} ({spell_dollars(dearest * MIN_TURNS_FOR_A_REPORT)}), so the cap may stop a report before its "
-            f"review; {_RECORDED_BUDGETS}"
+            f"review; {_RECORDED_BUDGETS if model == _RECORDED_MODEL else f'no acceptance run is recorded on {model}'}"
         ]
 
     def _first_turn_floor(self, model: str, text: str, max_tokens: int) -> TurnCeiling | None:
