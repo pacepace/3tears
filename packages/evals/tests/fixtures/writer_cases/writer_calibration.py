@@ -832,8 +832,15 @@ class Reread:
             None if leans[0] is None or leans[1] is None else leans[1] - leans[0],
         )
         return {
-            name: None if move is None else abs(move) <= HELD_WITHIN for name, move in zip(MEASURES, moves, strict=True)
+            # Compared at the printed precision, so a change shown as 0.050 holds under "0.05 or less".
+            name: None if move is None else round(abs(move), 3) <= HELD_WITHIN
+            for name, move in zip(MEASURES, moves, strict=True)
         }
+
+    def _agreement(self, rows: Sequence[dict[str, Any]], read: AnchorRead | None) -> float | None:
+        """The weighted κ of ``rows`` on this judge's own reading, or one that names no served model, or any model the
+        read's responses named."""
+        return _weighted_kappa(rows, {self.judge, None, *(read.served if read else ())})
 
     def lines(self) -> Iterator[str]:
         """The printed reread: the three measures in a table, what "held" means, then a sentence each on the shift, its
@@ -901,12 +908,8 @@ class Reread:
                 yield f"Its served model is {_models(served[1])} in both reads{why}."
         yield ""
         kappa = (
-            _weighted_kappa(
-                self.stored.get("agreement_with_the_opus_editor", []),
-                {self.judge, *(before.served if before else ())},
-            ),
-            # This read is one arm, so a reading that names no served model is still this judge's.
-            _weighted_kappa(agreement_rows(self.readings), {self.judge, None, *(now.served if now else ())}),
+            self._agreement(self.stored.get("agreement_with_the_opus_editor", []), before),
+            self._agreement(agreement_rows(self.readings), now),
         )
         yield (
             "Agreement with the Opus editor's rubric totals, an agent's labels, as weighted κ on the anchor cases: "
