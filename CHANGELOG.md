@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.92.0 -- 2026-11-06
+
 ### enforcement: the import-floor gate measures what a base install costs to import
 
 **Added (enforcement):** `threetears.enforcement.import_floor`, the gate `3tears-iam`'s base install
@@ -94,6 +96,50 @@ hard-depend on it, so without it they are uninstallable at the new version.
 and iam's step-up check both enforce. `threetears.agent.acl.ImpersonationCategory` is the same class,
 so existing imports and identity comparisons hold. agent-acl now depends on the leaf.
 
+### agent-tools: a tool pod serves its own metrics on the health port's `/metrics`
+
+**Added:** `ToolServerBootstrap(..., extra_metric_registries=...)`. The health port's `/metrics` now
+serves the tool server's metrics and then each registry passed here, so a pod needs no second metrics
+port and no second scrape. A pod that records through `threetears.observe.metrics` passes
+`prometheus_client.REGISTRY`.
+
+- The registries are read at every scrape, so a metric created after the pod starts is served from
+  the next scrape.
+- A metric name served twice is served once. The tool server's copy wins, then the earlier registry.
+  The left-out copy is logged once as a warning. Without this, Prometheus would reject the whole scrape.
+- `ToolServer.metrics_registry` returns the registry `render_metrics()` renders.
+- A pod that passes nothing serves exactly what it served before.
+
+### agent-tools: a pod that makes long requests holds its replaced connection for them across a renewal, `longest_request_seconds`
+
+**Fixed:** a tool pod renews its NATS credential about once a day by moving to a new connection. It
+kept the old one open only for the 30 s synchronous reply budget. A request the pod itself was
+waiting on is answered on the connection it was sent on. So a request older than 30 s when the
+renewal landed, such as a warehouse export, lost its reply and failed at its own timeout as
+`REQUEST_FAILED`.
+
+- `ToolServer(..., longest_request_seconds=...)` is the longest request the pod makes. A renewal
+  keeps the replaced connection open that long: its subscriptions for that long, then the
+  connection for that long again. It also renews that much earlier in the credential's lifetime.
+  It defaults to `SYNC_REPLY_BUDGET_SECONDS`, today's 30 s, so a pod that passes nothing is
+  unchanged.
+- It must be finite and at least the reply budget, because a shorter hold would cut off replies the
+  pod owes. It is refused beside an injected `nats_client`, whose owner sets its own renewal.
+- Cost, measured with nats-py on NATS 2.12: one extra idle connection for twice the hold, once per
+  renewal. That is about 22 KiB of Python heap, plus about 4.6 KiB for each subscription during
+  the first half of the hold. A 700 s hold at the platform's 24 h TTL means two connections for
+  about 23 minutes a day, under 1 MiB even with 200 subscriptions. The server sees one more
+  connection for that time. Messages are not doubled: each subscription's two halves share one
+  queue group.
+
+### scrape: `discover_links_labeled` follows an attribute other than `href`
+
+**Added:** `discover_links_labeled(..., attribute="href")`. A listing that names its documents in another
+attribute, such as a contest dropdown whose `<option value>` is each page's id, is walked with
+`attribute="value"`; the element's text is the label, and a match without the attribute is skipped as an
+anchor without `href` is. `base_url=""` returns the raw value for a caller that fills its own URL template.
+The default keeps every existing call unchanged. An API addition, so it ships in the next minor.
+
 ### datasources: an export waits for its own deadline, `export_timeout`, 660 s by default
 
 **Fixed:** `DatasourceQueryClient.export()` used to wait the client's general deadline, 120 s by
@@ -111,8 +157,6 @@ export deletes and export listings keep `timeout`.
 - A hub set to a longer export deadline needs its clients to pass a matching `export_timeout`.
 - `export_part`, `export_partitions`, `export_counted_partitions` and every other caller of
   `client.export` get the export deadline with no change.
-
-## v0.92.0 -- 2026-11-06
 
 ### epoch: a replaced counter resets every consumer, through `on_bump` when it registered no `on_reset`
 

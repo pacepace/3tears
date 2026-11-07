@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -261,6 +262,7 @@ class _CallState(enum.Enum):
 
 
 if TYPE_CHECKING:
+    from prometheus_client import CollectorRegistry
     from threetears.core.coordination.replay_anchor import ReplayAnchor
     from threetears.core.security.door_request import PopKey
 
@@ -1138,6 +1140,7 @@ class ToolServer:
         result_delivery_retry_seconds: float = _RESULT_DELIVERY_RETRY_SECONDS,
         registration_key: "Callable[[], RegistrationKey | None] | None" = None,
         pop_key: "Callable[[], PopKey | None] | None" = None,
+        longest_request_seconds: float | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -1297,6 +1300,16 @@ class ToolServer:
         :param pop_key: an agent's IN-PROCESS server's provider of the key the agent's own token binds;
             its calls carry that token, which a tool proves with it
         :ptype pop_key: Callable[[], PopKey | None] | None
+        :param longest_request_seconds: the longest request this pod MAKES on its own connection --
+            a datasource export it waits on, say -- when that is longer than the synchronous reply
+            budget (``SYNC_REPLY_BUDGET_SECONDS``, the default). A credential renewal keeps the
+            replaced connection open this long, and a request sent on it is answered there: one
+            in flight for longer than this when a renewal lands loses its reply and fails at its own
+            timeout. Raising it holds the replaced connection longer after each renewal (its
+            subscriptions for this long, then the connection for this long again) and renews this
+            much earlier in the credential's lifetime. Only for a pod that opens its own connection;
+            an injected connection's owner chooses its renewal. ``None`` for the reply budget
+        :ptype longest_request_seconds: float | None
         :param assertion_replay_anchor: the durable first-existence record for the
             self-provisioned assertion replay guard, so it can tell a first run from a wiped
             bucket. ``None`` for a pod with nowhere to record one, which leaves that guard
@@ -1316,10 +1329,27 @@ class ToolServer:
             ``assertion_replay_guard`` was sized for a smaller verifier future tolerance than the
             pod's assertion leeway, ``pod_id`` is dotted -- an agent's shape -- but names no
             agent (:meth:`~threetears.nats.Subjects.agent_inprocess_owner_id`), or ``agent_id``
-            names a different agent than the one ``pod_id`` names
+            names a different agent than the one ``pod_id`` names, or ``longest_request_seconds`` is
+            below the synchronous reply budget, not finite, or given with an injected ``nats_client``
         """
         if not nats_url and nats_client is None:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
+        if longest_request_seconds is not None:
+            if nats_client is not None:
+                raise ValueError(
+                    "longest_request_seconds applies to a connection the pod opens; an injected nats_client is "
+                    "renewed by its owner, which sets its own longest request"
+                )
+            # not-below also refuses NaN, which compares false either way
+            if not (SYNC_REPLY_BUDGET_SECONDS <= longest_request_seconds < math.inf):
+                raise ValueError(
+                    f"longest_request_seconds must be finite and at least the synchronous reply budget "
+                    f"({SYNC_REPLY_BUDGET_SECONDS}s), or a renewal cuts off replies the pod owes; "
+                    f"got {longest_request_seconds}"
+                )
+        self._longest_request_seconds = (
+            SYNC_REPLY_BUDGET_SECONDS if longest_request_seconds is None else float(longest_request_seconds)
+        )
         if max_concurrent_calls is not None and max_concurrent_calls < 1:
             raise ValueError(f"max_concurrent_calls must be >= 1 when set, got {max_concurrent_calls}")
         if max_calls_in_flight < 1:
@@ -1674,6 +1704,18 @@ class ToolServer:
         :rtype: tuple[str, bytes]
         """
         return self._inflight_gauge.render()
+
+    @property
+    def metrics_registry(self) -> "CollectorRegistry | None":
+        """return the registry :meth:`render_metrics` renders: the in-flight gauge and the call metrics.
+
+        :class:`ToolServerBootstrap` reads it to serve a pod's own registries beside it on the one
+        ``/metrics`` route, with this registry's families taking precedence on a name clash.
+
+        :return: the server's prometheus registry, or ``None`` when ``prometheus_client`` is absent
+        :rtype: CollectorRegistry | None
+        """
+        return self._inflight_gauge.registry
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -2438,14 +2480,15 @@ class ToolServer:
         # a credential that never expires. the client runs the loop, and stops it when this pod
         # shuts the client down. the longest request is the synchronous reply budget: a renewal
         # keeps the replaced connection open that long, so a reply owed for a call that arrived
-        # on it still leaves on it -- NATS lets only the receiving connection answer.
+        # on it still leaves on it -- NATS lets only the receiving connection answer. a pod whose own
+        # requests run longer (an export it waits on) declares that instead, so their replies survive too.
         if self._owns_nats_connection and self._auth_token is not None and self._nc is not None:
             # the server's word on the lifetime outranks the configured one: no handshake tells a
             # tool pod what the hub minted, and a configured guess longer than that renews after
             # the server has already ended the connection -- the pod then crash-loops.
             self._nc.renew_credential(
                 ttl_seconds=self._current_nats_jwt_ttl_seconds,
-                longest_request_seconds=SYNC_REPLY_BUDGET_SECONDS,
+                longest_request_seconds=self._longest_request_seconds,
                 ask_server=True,
             )
 

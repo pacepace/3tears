@@ -120,30 +120,42 @@ class MultiDocumentDriverError(Exception):
         super().__init__(f"{code}: {message}")
 
 
-def discover_links_labeled(html: str, base_url: str, link_selector: str) -> list[tuple[str, str]]:
-    """Resolve every ``link_selector``-matching ``<a href>`` to ``(absolute_url, anchor_text)``.
+def discover_links_labeled(
+    html: str, base_url: str, link_selector: str, *, attribute: str = "href"
+) -> list[tuple[str, str]]:
+    """Resolve every ``link_selector`` match's link attribute to ``(absolute_url, element_text)``.
 
     The label-carrying sibling of :func:`discover_links`: the identical selector walk, but each entry
-    also carries the anchor's **visible text** (whitespace-collapsed to a single line; ``""`` when the
-    anchor has no text, e.g. an image-only link). A listing's anchor text is often the only
+    also carries the element's **visible text** (whitespace-collapsed to a single line; ``""`` when the
+    element has no text, e.g. an image-only link). A listing's anchor text is often the only
     human-readable name a linked document has ("November 2024 schedule"), and it is discarded the moment
     the page is re-parsed -- so a caller that wants it (per-document provenance, a labeled inventory) must
     capture it on the same walk that resolves the URL. Ordering, de-duplication, host policy, and pattern
     filtering remain the caller's, exactly as for :func:`discover_links`.
 
+    ``attribute`` names where each match keeps its link. It is ``href`` for anchors; a page that lists its
+    documents another way names that attribute instead, such as a dropdown whose ``<option value>`` is
+    each document's path or id (``link_selector="#raceSelect option"``, ``attribute="value"``). A match
+    without the attribute, or with it empty, is skipped, as an anchor without ``href`` is. The value is
+    resolved against ``base_url`` like an href; a caller that needs the raw value (to fill a URL template
+    of its own) passes ``base_url=""``, which resolves nothing.
+
     :param html: the listing page's HTML
     :ptype html: str
-    :param base_url: the URL to resolve relative hrefs against (usually the listing's own URL)
+    :param base_url: the URL to resolve relative values against (usually the listing's own URL)
     :ptype base_url: str
-    :param link_selector: a CSS selector for the anchors to follow
+    :param link_selector: a CSS selector for the elements to follow
     :ptype link_selector: str
-    :return: ``(resolved_absolute_url, anchor_text)`` for every matched href, in document order
+    :param attribute: the attribute of each match that holds its link
+    :ptype attribute: str
+    :return: ``(resolved_absolute_url, element_text)`` for every match carrying the attribute, in
+        document order
     :rtype: list[tuple[str, str]]
     """
     soup = BeautifulSoup(html, "html.parser")
     labeled: list[tuple[str, str]] = []
     for tag in soup.select(link_selector):
-        href = tag.get("href")
+        href = tag.get(attribute)
         if href:
             label = " ".join(tag.get_text().split())
             labeled.append((urljoin(base_url, str(href)), label))

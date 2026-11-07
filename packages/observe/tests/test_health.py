@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import socket
-from contextlib import closing
 
 import pytest
 
@@ -36,16 +36,27 @@ from threetears.observe.health import (
 )
 
 
-def _free_port() -> int:
-    """find a free localhost port for tests.
+#: ports these tests bind a server to, below the range the OS hands outgoing connections (49152+
+#: on macOS, 32768+ on Linux). a port the OS picked for us comes from that range, and between closing
+#: it and the server binding it, another worker's client connection can take it as its local port.
+_TEST_PORTS = range(20000, 32000)
 
-    binds + immediately closes a socket so we get a port the OS will
-    leave alone for the moment we then bind the HealthServer to it.
+
+def _free_port() -> int:
+    """a TCP port a server can bind, outside the outgoing-connection range.
+
+    :return: the port
+    :rtype: int
+    :raises AssertionError: when no port in the range binds
     """
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(("127.0.0.1", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
+    for port in random.sample(_TEST_PORTS, 50):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("0.0.0.0", port))  # noqa: S104 -- the server under test binds every interface
+            except OSError:
+                continue
+        return port
+    raise AssertionError(f"no free port in {_TEST_PORTS}")
 
 
 async def _http_get(host: str, port: int, path: str) -> tuple[int, str]:
