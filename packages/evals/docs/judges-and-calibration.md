@@ -911,7 +911,8 @@ is refused, naming the smallest that would. At `--cap-usd 45` each arm's part is
 4 × ($1.50 + 7 dimensions × 2 attempts × the rung-5 judge's $0.0101 floor) = $6.57 (a judge that prices nothing: $6),
 so reservations alone admit two batches, 8 cases; at the recorded 25-case runs' $0.44 per case for the costlier arm,
 every batch of the 25 is admitted. A landslide that launches 8 cases costs about 8 × $0.66 (both arms: $16.62 over 25
-in the recorded no-editor run) + 7 pairs × $0.016 = $5.39.
+in the recorded no-editor run) + 7 pairs × $0.016 = $5.39. The recorded live no-editor run under the
+rule stopped at case 7 for $4.31, against about $13.53 for all 25.
 
 **A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
 verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.

@@ -692,7 +692,8 @@ async def test_a_replay_whose_pages_reach_the_judge_runs_the_pass_in_both_orders
     # One case is too few for the test to run, and the orders' disagreement voids it besides.
     assert read.primary.outcome == "untested"
     every, finished, checks = [line for line in lines if line.startswith("| variant | ")]
-    assert every.startswith("| variant | every pair | untested (void) | 50 | ")
+    assert every.startswith(f"| variant | every pair | untested: {read.primary.reason_detail} (void) | 50 | ")
+    assert read.primary.reason_detail == "1 case with a share, and the test needs two"
     assert finished.startswith("| variant | both pages finished | ")
     assert (
         "| Candidate | Order consistency | First-slot lean (pts) | Can't tell | Held-out cases to settle | Spent |"
@@ -802,7 +803,7 @@ async def test_a_pass_stopped_by_an_account_refusal_is_read_said_and_exits_1(
     assert report.read_on == report.job_id
     assert result.exit_code() == 1
     text = result.render()
-    assert any(line.startswith("| variant | every pair | untested | ") for line in text.splitlines())
+    assert any(line.startswith(f"| variant | every pair | untested: {report.stopped} | ") for line in text.splitlines())
     assert f"pairwise pass of variant: stopped before its last pair: {report.stopped}" in text
     assert offline == []
 

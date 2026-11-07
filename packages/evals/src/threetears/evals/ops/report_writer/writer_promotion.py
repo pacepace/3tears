@@ -335,7 +335,10 @@ def _reads(verdict: Verdict) -> str:
     """What a verdict reads, as its row prints it: its outcome (the undecided one in the glossary's words, ``cannot tell
     apart``), with too few cases beside it when it was read on fewer cases than a rate needs."""
     outcome = CANNOT_TELL_APART if verdict.outcome == "not_separated" else verdict.outcome.replace("_", " ")
-    return f"{outcome} (too few cases)" if verdict.reason == "too_few_cases" else outcome
+    if verdict.reason == "too_few_cases":
+        return f"{outcome} (too few cases)"
+    # An untested reading names why, in the one sentence its row has.
+    return f"{outcome}: {verdict.reason_detail}" if verdict.outcome == "untested" and verdict.reason_detail else outcome
 
 
 def _decided(

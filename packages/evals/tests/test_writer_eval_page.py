@@ -109,7 +109,9 @@ async def test_the_answer_leads_the_page_in_the_results_own_words_and_the_tables
         ("variant", "every pair"),
         ("variant", "both pages finished"),
     ]
-    assert values[0]["reads"] == "untested (void)" and values[0]["share"] == share
+    # An untested reading names why in its row: one case, under the two the test needs; and void besides.
+    assert values[0]["reads"] == f"untested: {read.primary.reason_detail} (void)" and values[0]["share"] == share
+    assert read.primary.reason_detail == "1 case with a share, and the test needs two"
     checks = tables["judge_checks"].values()
     assert [row["candidate"] for row in checks] == ["variant"]
     assert checks[0]["order_consistency"] == f"0% ({read.order_consistent} of {read.both_orders})"
