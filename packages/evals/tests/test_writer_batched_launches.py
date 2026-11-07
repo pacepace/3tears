@@ -206,6 +206,8 @@ async def test_a_landslide_stops_launching_at_the_first_batch_whose_preference_s
     assert (stopping.rule.batch_size, stopping.rule.max_cases) == (BATCH, CASES)
     assert stopping.stopped_at == stopping.first_separated_at == LANDSLIDE_AT
     assert stopping.cases_found == 2 * BATCH < CASES and not stopping.past_the_stop
+    # A cap that admits every batch: the run stopped on the preference, not on the cap.
+    assert stopping.stopped_on == "separated"
     # Fewer launches than N: two batches of three, each arm a run per batch, all in the one campaign.
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 6, CANDIDATE: 6}
     assert len(await _runs(result)) == 2 * len(arms)
@@ -462,4 +464,50 @@ async def test_an_arm_s_batches_summarise_as_one_and_runs_of_two_arms_are_refuse
         await asyncio.to_thread(summarize_runs, host, runs, SCOPE)
     with pytest.raises(ValueError, match="at least one run"):
         await asyncio.to_thread(summarize_runs, host, [], SCOPE)
+    assert offline == []
+
+
+async def test_a_cap_that_admits_two_batches_stops_the_run_at_the_cap_and_says_so(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """A batch of two cases costs an arm $1.50 at worst, and a $10 cap gives each arm $4: two batches fit and a third
+    would not, so a preference that never separates stops at the cap after four of the seven cases, reads what it
+    has, and its record and line say so."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+
+    result = await _eval(tmp_path, cases, arms, judge=FakeSplitJudge(JUDGE), batch_size=2, max_cost_usd=10.0).run()
+
+    report = await _report(result)
+    stopping = report.stopping
+    assert stopping is not None
+    said = "Stopped at the cap after 4 of 7 cases: the next batch, 2 cases from case 5, could pass the $10.00 cap."
+    assert stopping.stopped_on == "spend_cap" and stopping.line.endswith(said)
+    assert stopping.cases_found == 4 and stopping.stopped_at is None
+    assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 4, CANDIDATE: 4}
+    assert (
+        "Read on 4 cases: the arms ran 4 of the 7 held-out cases, 2 at a time in the bet's order, and stopped once its "
+        "next batch could pass what the cap had left, so the gated readings and guardrails were read once, on those 4."
+    ) in result.disclosures
+    assert result.pairwise_unread == {}
+    assert offline == []
+
+
+async def test_a_cap_that_admits_no_batch_is_refused_naming_the_smallest_that_would(
+    tmp_path: Path, offline: list[object]
+) -> None:
+    """The one cap refused: a $3 cap gives each arm $1.20, under the first batch's two reports at $0.75. The refusal
+    names the smallest cap that admits it, two arms' $1.50 over the four fifths the arms share: $3.75."""
+    arms = _arms()
+    cases = _lay(tmp_path, arms)
+
+    with pytest.raises(ValueError) as refused:
+        await _eval(tmp_path, cases, arms, batch_size=2, max_cost_usd=3.0).run()
+
+    assert str(refused.value) == (
+        "the first batch's 2 report(s) at $0.75 each could pass an arm's $1.20 part of max_cost_usd $3.00, after the "
+        "pairwise pass's $0.60 (pairwise_share 0.2); a max_cost_usd of $3.75 or more admits it, or lower budget_usd"
+    )
+    storage = EvalStorage(SqliteDocumentStore(tmp_path / "evals.sqlite"))
+    assert await asyncio.to_thread(storage.query_eval_runs, SCOPE) == [], "no arm was launched"
     assert offline == []

@@ -896,6 +896,13 @@ cells a run holds in flight is one full wave. At k = N the reading is the one-ba
 
 The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and saves the rest of the writing.
 
+**The cap is a budget the run runs under.** Before each batch the run checks that the batch's worst case (its reports
+at `budget_usd`, their judging and its pairs at the judge's floor) fits what the batches before it left of each part.
+The first batch that does not fit is not launched: the run stops at the cap, reads what it has, and its pass's record
+and stop line say so (`stopped_on`: `separated`, `all_cases` or `spend_cap`). Only a cap that cannot admit the first
+batch is refused, naming the smallest that would. At `--cap-usd 45`, each arm's part is $18, so with the default batch
+of 4 it admits 12 cases per arm at the $1.50 budget before judging, and a landslide still spends about $6.
+
 **A rule declared late.** A rule declared after the arms' first result, or with no time, is not refused and its
 verdict is not demoted. The record and the page say when it was declared, the same standing a late criterion has.
 

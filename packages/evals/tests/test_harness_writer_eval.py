@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import socket
 from collections.abc import Callable, Mapping
@@ -51,6 +52,7 @@ from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseRep
 from threetears.evals.ops.report_writer.writer_bank import writer_case_bank
 from threetears.evals.ops.report_writer.writer_contract import WRITER_KIND, WRITER_KIND_MEASURES, writer_scoring_rubric
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS
+from threetears.evals.kernel.numbers import spell_dollars
 from threetears.evals.providers import Catalogue, Model, ProviderError
 from threetears.evals.providers.model import DEFAULT_MAX_TOKENS
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
@@ -355,10 +357,12 @@ async def test_reports_whose_budgets_could_pass_an_arms_share_are_refused_before
     # The control: the cap would cover the reports alone, split with no reserve; with the pass's part taken, it does not.
     assert reports <= max_cost_usd / len(arms) and reports > share
 
+    # The smallest cap whose arm's part holds the reports: they are the first batch, every case launching at once.
+    smallest = spell_dollars(math.ceil(reports * len(arms) / 0.8 * 100 - 1e-9) / 100)
     expected = (
-        f"{len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} part of "
-        f"max_cost_usd ${max_cost_usd:.2f}, after the pairwise pass's $1.60 (pairwise_share 0.2); raise max_cost_usd "
-        "or lower budget_usd"
+        f"the {len(HELD_OUT_FIXTURES)} report(s) at ${budget_usd:.2f} each could pass an arm's ${share:.2f} part of "
+        f"max_cost_usd ${max_cost_usd:.2f}, after the pairwise pass's $1.60 (pairwise_share 0.2); a max_cost_usd of "
+        f"{smallest} or more admits it, or lower budget_usd"
     )
     with pytest.raises(ValueError) as refused:
         await _eval(tmp_path, arms, budget_usd=budget_usd, max_cost_usd=max_cost_usd).run()
@@ -420,6 +424,13 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
     each = f"${FLOOR:.4f} each before any page is read ({JUDGE}'s output cap and {PROMPT_FRAMING_TOKENS} prompt tokens)"
     pass_calls = cases * 2 * JUDGE_CALL_ATTEMPTS
     judge_calls = cases * dims * JUDGE_CALL_ATTEMPTS
+
+    def admits(share: float, budget_usd: float) -> str:
+        """The smallest cap whose parts hold every case's reports, judging and pairs at the floor."""
+        arm = cases * budget_usd + judge_calls * FLOOR
+        smallest = max(arm * len(arms) / (1 - share), pass_calls * FLOOR / share)
+        return f"a max_cost_usd of {spell_dollars(math.ceil(smallest * 100 - 1e-9) / 100)} or more admits it"
+
     if what == "pass":
         # A hundredth of $8 for the pass: under its calls at their floor, though the arms' parts hold theirs.
         share, budget_usd = 0.01, 0.75
@@ -428,8 +439,8 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
         expected = (
             f"a pairwise pass's {pass_calls} judge call(s) ({cases} pair(s) in both orders, {JUDGE_CALL_ATTEMPTS} "
             f"attempts each) are priced at {each}, ${pass_calls * FLOOR:.2f} in all, above the pass's "
-            f"${pass_part:.2f} part of max_cost_usd ${max_cost_usd:.2f} (pairwise_share {share}); raise "
-            "pairwise_share or max_cost_usd, or lower the judge's max_tokens"
+            f"${pass_part:.2f} part of max_cost_usd ${max_cost_usd:.2f} (pairwise_share {share}); "
+            f"{admits(share, budget_usd)}, or raise pairwise_share or lower the judge's max_tokens"
         )
     else:
         # The reports alone fit the arm's part, and do not once its judging is priced beside them.
@@ -441,8 +452,8 @@ async def test_a_judge_whose_calls_at_their_floor_could_pass_a_part_is_refused_b
         expected = (
             f"an arm's {cases} report(s) at ${budget_usd:.2f} and its {judge_calls} judge call(s) ({cases} case(s) x "
             f"{dims} dimension(s) x {JUDGE_CALL_ATTEMPTS} attempts), priced at {each}, come to ${total:.2f}, above "
-            f"the arm's ${arm_part:.2f} part of max_cost_usd ${max_cost_usd:.2f}; raise max_cost_usd, or lower "
-            "budget_usd or the judge's max_tokens"
+            f"the arm's ${arm_part:.2f} part of max_cost_usd ${max_cost_usd:.2f}; {admits(share, budget_usd)}, or "
+            "lower budget_usd or the judge's max_tokens"
         )
     with pytest.raises(ValueError) as refused:
         await _eval(

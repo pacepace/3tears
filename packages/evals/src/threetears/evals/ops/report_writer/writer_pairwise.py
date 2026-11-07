@@ -151,6 +151,10 @@ _MISSING: Final[dict[tuple[bool, bool], MissingPage]] = {
 }
 
 
+#: Why a pass read no further: its preference ``separated``; it read ``all_cases``, the cap of N; or the run stopped
+#: launching at its ``spend_cap``, its next batch able to pass what the cap had left.
+_StoppedOn = Literal["separated", "all_cases", "spend_cap"]
+
 #: What a stopping rule stops on: ``separated``, the first look at which the preference separates, either way; or
 #: ``never``, every case read.
 StopWhen = Literal["separated", "never"]
@@ -243,6 +247,11 @@ class PairwiseStopping(EvalBaseModel):
         description="The cases read at the first look that separated; None when none did."
     )
     looks: list[PairwiseLook] = Field(description="The preference after each case, in the order the bet read them.")
+    stopped_on: _StoppedOn | None = Field(
+        default=None,
+        description="Why the pass read no further: separated, all_cases (the cap of N) or spend_cap (the run's next "
+        "batch could pass what the spend cap had left); None for a pass with no rule or one read short otherwise.",
+    )
     past_the_stop: bool = Field(
         default=False,
         description="Whether the pass read on past its first separation to the cap, because the readings read there "
@@ -493,17 +502,28 @@ def _collect(host: EvalHost, campaign_id: str, scope_id: str, candidate: str) ->
         )
         for side, keys in ((arm, candidate_keys), (control, control_keys))
     }
-    if any(len(each) != 1 for each in rigs.values()) or rigs[arm.label] != rigs[control.label]:
-        counts = ", ".join(f"{label} under {len(each)}" for label, each in rigs.items())
-        raise ValidationFailedError(
-            f"a pair compares two pages written under one rig, and the arms were not each measured under the same "
-            f"one ({counts})",
-            remedy="take the runs of the other rigs off the campaign (campaign_runs_remove), then ask again",
-        )
+    counts = ", ".join(f"{label} under {len(each)}" for label, each in rigs.items())
+    unlike = ValidationFailedError(
+        f"a pair compares two pages written under one rig, and the arms were not each measured under the same one "
+        f"({counts})",
+        remedy="take the runs of the other rigs off the campaign (campaign_runs_remove), then ask again",
+    )
+    if not rigs[arm.label] or rigs[arm.label] != rigs[control.label]:
+        raise unlike
     results = [result for run in runs for result in results_without_payloads(storage, run.id, scope_id)]
     mine = _by_case_and_repeat([result for result in results if result.variant_key in candidate_keys], arm)
     theirs = _by_case_and_repeat([result for result in results if result.variant_key in control_keys], control)
     shared = sorted(mine.keys() & theirs.keys())
+    if len(rigs[arm.label]) > 1:
+        # A launch made in batches is several runs of each arm, and a batch whose every page went unjudged records
+        # no judge, so it reads as a rig of its own. Its pairs are still two pages written under one rig when both
+        # came from the one batch: runs launched together, over one case set.
+        sets = {run.id: run.case_set for run in runs}
+        if any(
+            sets[mine[key].eval_run_id] is None or sets[mine[key].eval_run_id] != sets[theirs[key].eval_run_id]
+            for key in shared
+        ):
+            raise unlike
     if not shared:
         raise ValidationFailedError(
             f"arms {arm.label} and {control.label} ran no case and repeat in common, so no page has a partner",
@@ -567,6 +587,8 @@ class _Prepared:
     past_the_stop: bool
     #: The cases launched so far, for a run launched in batches; None when every case launched at once.
     launched: frozenset[str] | None
+    #: Why the run stopped launching at its spend cap, in one sentence; None when it did not.
+    out_of_budget: str | None
 
 
 def _orders(collected: _Collected, pair: _Pair) -> tuple[JudgeContext, JudgeContext] | None:
@@ -599,6 +621,7 @@ async def _prepare(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> _Prepared:
     """Collect the campaign, check the judge's family, build the judge over budgeted clients and admit every call
     no earlier pass (``judged``) answered.
@@ -664,6 +687,7 @@ async def _prepare(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=None if launched is None else frozenset(launched),
+        out_of_budget=out_of_budget,
     )
 
 
@@ -973,6 +997,7 @@ async def _run(prepared: _Prepared, *, out_of_run_cap_usd: float | None) -> Writ
         stop_at=stop_at,
         past_the_stop=prepared.past_the_stop,
         launched=prepared.launched,
+        out_of_budget=prepared.out_of_budget,
     )
     spends = [*prepared.budget.recorded, *prepared.budget.unrecorded]
     costs: list[float | None] = [spend.cost_usd for spend in spends]
@@ -1052,6 +1077,7 @@ def _stopping(
     stop_at: int | None,
     past_the_stop: bool = False,
     launched: frozenset[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> PairwiseStopping:
     """The record of how the pass ran against its rule, with the sentence the page prints."""
     late = _late(rule, collected.first_result_at)
@@ -1062,6 +1088,13 @@ def _stopping(
     absent = plan.absent if launched is None else [case_id for case_id in plan.absent if case_id in launched]
     if absent or plan.unplanned:
         line += f" {_differs(plan, absent=absent, read=rule is not None and rule.stop_when == 'never')}"
+    stopped_on: _StoppedOn | None = None
+    if out_of_budget is not None:
+        stopped_on, line = "spend_cap", f"{line} {out_of_budget}"
+    elif stop_at is not None:
+        stopped_on = "separated"
+    elif rule is not None and reached >= rule.max_cases:
+        stopped_on = "all_cases"
     return PairwiseStopping(
         rule=rule,
         first_result_at=collected.first_result_at,
@@ -1072,6 +1105,7 @@ def _stopping(
         stopped_at=stop_at,
         first_separated_at=first,
         looks=list(looks),
+        stopped_on=stopped_on,
         past_the_stop=past_the_stop,
         line=line,
     )
@@ -1221,6 +1255,7 @@ async def _writer_pairwise_work(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> JobWork[EvalActionJob]:
     """Admit the pairwise pass over a writer campaign's candidate and control: every refusal made, every call priced.
 
@@ -1252,6 +1287,9 @@ async def _writer_pairwise_work(
     :param launched: The cases launched so far, for a run launched in batches: a planned case not launched yet is not
         said as not found, and a launched one is; ``None`` when every case launched at once.
     :ptype launched: Collection[str] | None
+    :param out_of_budget: Why the run stopped launching at its spend cap, in one sentence, which the record carries;
+        ``None`` when it did not.
+    :ptype out_of_budget: str | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
     :rtype: JobWork[EvalActionJob]
@@ -1277,6 +1315,7 @@ async def _writer_pairwise_work(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=launched,
+        out_of_budget=out_of_budget,
     )
 
     async def run() -> WriterPairwiseReport:
@@ -1313,6 +1352,7 @@ async def writer_pairwise(
     judged: WriterPairwiseReport | None = None,
     past_the_stop: bool = False,
     launched: Collection[str] | None = None,
+    out_of_budget: str | None = None,
 ) -> JobsStarted:
     """Admit the pairwise pass over a writer campaign, then start it as a job, under the host's out-of-run cap.
 
@@ -1340,6 +1380,8 @@ async def writer_pairwise(
     :param launched: The cases launched so far, for a run launched in batches; ``None`` when every case launched at
         once.
     :ptype launched: Collection[str] | None
+    :param out_of_budget: Why the run stopped launching at its spend cap, which the record carries; ``None`` when not.
+    :ptype out_of_budget: str | None
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
     :rtype: JobsStarted
@@ -1361,6 +1403,7 @@ async def writer_pairwise(
         judged=judged,
         past_the_stop=past_the_stop,
         launched=launched,
+        out_of_budget=out_of_budget,
     )
     return await start_job(
         host, AdmittedJob(work=work, kind="action", target_id=WRITER_PAIRWISE_ACTION, label=work.record.label)

@@ -61,9 +61,12 @@ records every writer turn and judge call under ``--out``. A run over fewer than 
 default seven included, runs, and its floor line says it is under them: a floor is a disclosure, never a refusal.
 
 **The cap.** The writer eval's rule splits it: a fifth goes to the pairwise pass, and the arms share the rest equally,
-each arm's part holding its reports and their absolute judging. At ``--cap-usd 45`` over eleven cases the pass gets
-$9 and each arm $18: its reports' budgets come to 11 × $1.50 = $16.50, leaving $1.50 for 77 absolute judge calls
-(about $0.77 on flash). The cap bounds the worst case, never the expected spend.
+each arm's part holding its reports and their absolute judging. The cap is a budget the run runs under: each batch
+launches only when its worst case (its reports at their budget, their judging and its pairs at the judge's floor) fits
+what the batches before it left, and the run stops at the cap, reading what it has, when the next would not; only a
+cap that cannot admit the first batch is refused, naming the smallest that would. At ``--cap-usd 45`` each arm's part
+is $18, so with the default batch of 4 it admits 12 cases per arm at the $1.50 budget before judging; a landslide
+stops on its preference near case 7 or 8 and spends about $6.
 
 **The cases.** ``--cases DIR`` reads a directory of writer case files (``*.json.gz``). Without it, the cases are the
 seven fixture snapshots prototype 5 wrote over (Kairo round 2 and six misfits, in four split groups), written as
@@ -848,6 +851,11 @@ class Acceptance:
         spent = writing + judged
         saved = writing / launched * (planned - launched) if launched else 0.0
         saved += judged / reached * (planned - reached) if reached else 0.0
+        if stopping.stopped_on == "spend_cap":
+            return (
+                f"The run stopped at the cap after {launched} of {planned} cases, launched {batch} at a time, and spent "
+                f"${spent:.2f}."
+            )
         if launched >= planned and reached >= planned:
             return f"{where}, and spent ${spent:.2f}; the stop saved nothing."
         return (
@@ -1202,10 +1210,11 @@ def main(argv: Sequence[str]) -> int:
         if options.out is None or options.cap_usd is None:
             parser.error("a live run names --cap-usd and --out")
         refuse_missing_keys(options.judge)
-        # Said before anything is bought: what this many held-out cases can show, under the floor or not, never a
-        # refusal.
-        held = held_out_cases(options.cases, options.held_out_fraction)
-        print(resolution_line(held, fewest=MIN_LIVE_CASES), file=sys.stderr)
+    # Said before anything is bought, and by a dry run as by the live one it rehearses: what this many held-out cases
+    # can show, under the floor or not, never a refusal.
+    held = held_out_cases(options.cases, options.held_out_fraction)
+    print(resolution_line(held, fewest=MIN_LIVE_CASES), file=sys.stderr)
+    if not options.dry:
         # Made before anything is sent, so a directory already there refuses the run rather than its result.
         options.out.mkdir(parents=True, exist_ok=False)
     prior = None if options.prior is None else read_prior(options.prior)
