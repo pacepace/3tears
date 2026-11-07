@@ -156,17 +156,22 @@ VOLUMED = [name for name in sorted(INPUTS) if INPUTS[name].meta.volume_per_month
 @pytest.mark.parametrize("name", VOLUMED)
 def test_a_price_per_1000_times_the_volume_reaches_the_monthly_figure_beside_it(name: str) -> None:
     """r2's page printed "$0.30 per 1,000 calls" beside "$1,208 a month" at 4,000,000 calls: $0.30 x 4,000 is
-    $1,200. A price keeps three significant figures, so the product is within half a percent of the month."""
+    $1,200. A price reads to two significant figures (owner ruling Q3, 2026-11-09), so the product reaches the month
+    within the price's own rounding times the volume, never further: the price is its key's value, rounded once."""
     held = INPUTS[name]
     volume = held.meta.volume_per_month
     assert volume is not None
     costs = _costs(held)
     checked = 0
     for arm in costs:
-        price = _price(render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {}))
+        text = render(f"{{cost_per_1k.{arm}|usd_per_1k}}", held, {})
+        price = _price(text)
         month = resolve(f"cost_per_month.{arm}", held).value
         assert isinstance(month, float)
-        assert price * float(volume) / 1000 == pytest.approx(month, rel=0.005), arm
+        places = len(text.split(" ", 1)[0].partition(".")[2])
+        per = 1000 * (1000 if " per 1,000,000 " in f"{text} " else 1)
+        rounding = 10.0**-places / 2 / (per / 1000) * float(volume) / 1000
+        assert abs(price * float(volume) / 1000 - month) <= rounding + 1e-9, (arm, text, month)
         checked += 1
     assert checked, "the control: a declared volume and a cost"
 

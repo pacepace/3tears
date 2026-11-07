@@ -206,8 +206,8 @@ _FILTER_MEANS: dict[str, str] = {
     "pct": "a rate as a percent",
     "pts": "a change in points, signed, one decimal at most",
     "abs": "the magnitude, without its sign",
-    "usd": "dollars, in one form for the key's whole family: cents, with more decimals where its least amount needs "
-    "them, and per 1,000 (`$8/1000`) where any of its amounts is under a cent",
+    "usd": "dollars, in one form for the key's whole family: each amount to two significant figures, cents at least, "
+    "and the family moved per 1,000 more of what it counts where any of its amounts is under a cent",
     "int": "the nearest whole number, its thousands separated; a multiple keeps its unit (`21 times`), every other "
     "unit is left for the prose to write",
     "pct10": "a rate rounded to the nearest 10%",

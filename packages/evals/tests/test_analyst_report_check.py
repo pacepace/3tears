@@ -459,7 +459,10 @@ _EVALS_BYTES = "b014d6e25c053873f4d67c2beb06fc0b1edefc456290ba651bf2fef6fe60160f
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
-_EDITOR_BYTES = "4dddb29abaff5301a3e1d99374919e79995c5bdfcefe17de0e882f66be53afe4"
+#: The editor's and the analyst's moved again when money came to read to two significant figures per amount, cents at
+#: least whatever its size (owner ruling Q3, 2026-11-09): the `usd` filter's line says so, and the grammar's
+#: `cost_per_month` example reads "$1,892.00".
+_EDITOR_BYTES = "cf93329095e3a8138150332f22d45ced7b45b60ba5bd97e5d222c832ab5fc122"
 
 #: The analyst tool's actions before ``report_check``, in help's order, and the digest of their help pages, the tool's
 #: description and its topics.
@@ -483,7 +486,7 @@ _ANALYST_ACTIONS_BEFORE = [
     "block_render",
     "capability_gap",
 ]
-_ANALYST_BYTES = "1b65b43026ea94a88d3e88e8d578ff7701705eb4e0bf6eb287c2f7613026ee95"
+_ANALYST_BYTES = "ecf238df0e2311587b950a91f4d27e2665fa3c1415f1dfe473ce32c44a83dd02"
 
 
 def test_the_evals_tool_serves_the_bytes_it_served_before() -> None:
