@@ -6,8 +6,8 @@ package ships, six misfits), scored by a judge of another family. The control is
 (``skills/control/``); the candidate puts the lead claim first (``skills/lead-first.md``). Each arm writes the
 held-out cases once, and the engine reads the promotion.
 
-It replays ``recordings/`` with no key, recorded 2026-11-03 for $7.56; ``recordings/README.md`` holds the one command
-that records them again.
+It replays ``recordings/`` with no key, recorded 2026-11-03 (the judge's calls again 2026-11-07) for $7.56;
+``recordings/README.md`` holds the one command that records them again.
 """
 
 from pathlib import Path
