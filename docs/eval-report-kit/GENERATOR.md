@@ -111,10 +111,10 @@ check(arm, stratum, criteria) -> {status, fails[], borders[]}
 - **Non-inferiority reading** (shape D). For a candidate with change Δ and interval [lo, hi] against margin M:
   - `hi < 0`: **worse**. Lead with the size ("worse by 3.4 to 10.8 points"), then say whether it is within the margin.
   - `lo > 0`: **better**.
-  - otherwise: **not separated**.
+  - otherwise: **cannot tell apart** (a sentence: "the evidence cannot tell v2 and v1 apart"; never "not separated", which a reader takes for "the same").
   - Within the margin when `-lo < M`. The margin at which the reading flips is `-lo`. Show it in the explore part.
   - A margin that no plausible result could fail (larger than twice the worst observed drop) gets flagged as uninformative.
-- **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); not separated is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
+- **Status color follows the direction of the change, not the margin.** Worse is ✕ fail-red even when it is within the margin ("Worse, within margin"); cannot tell apart is neutral gray; better is ✓ green. The margin verdict goes in the words. A green pill on a regression reads as approval.
 - **Gate the asked aspect on its readings** (`aspects[].readings`). If a floor `speaks_for` a different measure than its reading (a judged dimension instead of the pass rate), show that floor separately and name the mismatch in Method. Never merge the two.
 - **"Pass" is whatever the bundle defines.** If the input doesn't say which checks and judged dimensions make a trial pass, Method says so plainly ("a trial passes when its checks and judged dimensions pass; the bundle doesn't list which") instead of guessing.
 - **Routing.** For each routable task, the cheapest passing candidate (among those that also pass every cross-cutting aspect). Blended cost uses declared traffic shares only.
@@ -148,7 +148,7 @@ Use it when §1.1 says so. The page prices the trade; it doesn't pretend to deci
 | One rate per candidate against a floor | Dot + interval strips, floor dashed (r1 `dims`) | Bars from zero hiding a 3-point gap |
 | Two measures that trade off | Scatter with gate region or floor, Pareto line, hollow marks for failures, `placeLabels()` | A dual-axis chart |
 | Magnitudes per option (cost, error rate) | `barsH()` from zero, reference line for the budget | Pass rates on a truncated axis: chart failure rate from zero instead |
-| Deltas per stratum or lever | `barsH()` diverging about zero; muted when not separated | A before-and-after table |
+| Deltas per stratum or lever | `barsH()` diverging about zero; muted where the evidence cannot tell it from zero | A before-and-after table |
 | Ordered x (turn depth, version, date, input length) | `lineChart()`, bands on at most two series, end labels | Lines over unordered categories |
 | Latency distributions | p50–p95 range bars with the budget line | Mean only |
 | Two crossed factors | Lattice of tiles with metric, cost, latency, pill | Grouped bars hiding the interaction |

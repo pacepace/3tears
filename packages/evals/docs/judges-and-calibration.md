@@ -892,7 +892,7 @@ cells a run holds in flight is one full wave. At k = N the reading is the one-ba
 |---|---|
 | Separated, either way | Stops launching. The gated readings and guardrails are fixed-n tests, read once, on the cases launched; the page says how many. |
 | Separated improved, a guardrail not shown held | Goes on to N, and says the gated readings and guardrails had a second look. The writer template declares no guardrail, so only a scope whose template a host gave one reaches this row. |
-| Not separated | Launches the next batch, or ends at N. |
+| Cannot tell apart | Launches the next batch, or ends at N. |
 
 The money is in the arms: a landslide over 25 cases stops near case 7 or 8 and saves the rest of the writing.
 
@@ -950,7 +950,7 @@ only, since a family that wide cannot separate on a small held-out set.
 |---|---|
 | promote | The primary reads improved on 5 cases or more, no gated reading reads regressed, and every guardrail is held. |
 | keep | The primary reads regressed, a gated reading reads regressed (on too few cases too), or a guardrail is breached. |
-| undecided | Anything else: the primary not separated, improved on too few cases, untested, void or not read; or a guardrail not shown held. |
+| undecided | Anything else: the evidence cannot tell the primary's arms apart, it improved on too few cases, it is untested, void or not read; or a guardrail not shown held. |
 
 A pass its rule stopped is read as any other: its primary at the stop, the gated readings and guardrails on every
 case run.

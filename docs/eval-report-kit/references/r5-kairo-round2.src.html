@@ -124,7 +124,7 @@ const usd=v=>"$"+v.toFixed(2);
 // ---- options table
 (function(){const cc=cost(ctl.id).mean*1000;const rows=[ctl,...cands];
   document.getElementById("opt").innerHTML=`<thead><tr><th>Arm</th><th class="r">Pass rate</th><th class="r">Change</th><th>Reading</th><th class="r">In-character (judge)</th><th class="r">Per 1k replies</th></tr></thead><tbody>`+
-  rows.map(a=>{const r=R[a.id];const ok=a===ctl;const read=!r?"–":r.within_interval[1]<0?pill("bad","Worse, within margin"):pill("neutral","Not separated, within margin");
+  rows.map(a=>{const r=R[a.id];const ok=a===ctl;const read=!r?"–":r.within_interval[1]<0?pill("bad","Worse, within margin"):pill("neutral","Cannot tell apart, within margin");
     return `<tr class="${ok?"hl":""}"><td>${ok?"<strong>Keep </strong>":"Switch to "}${chip(a)}${ok?" · recommended":""}</td><td class="r">${pr(a.id).toFixed(1)}% <span style="color:var(--muted)">(${SB[a.id].passed} of ${SB[a.id].usable})</span></td><td class="r">${r?`${pts(r.change)} <span style="color:var(--muted)">[${r.within_interval.map(v=>v.toFixed(1)).join(", ")}]</span>`:"–"}</td><td>${ok?pill("good","Control"):read}</td><td class="r">${(jm(prim,a.id)*100).toFixed(1)}%</td><td class="r">${usd(cost(a.id).mean*1000)}${ok?"":` <span style="color:var(--muted)">(+${Math.round((cost(a.id).mean*1000/cc-1)*100)}%)</span>`}</td></tr>`;}).join("")+"</tbody>";})();
 
 // ---- summary: corrected changes in points, and cost bars
@@ -147,7 +147,7 @@ document.getElementById("key").innerHTML=`<thead><tr><th>Arm</th><th>Role</th><t
   document.getElementById("q-cap").textContent=`Pass rate on ${asp.name}: a trial passes when every check and judged dimension passes. Confirmatory 95% intervals on ${asp.readings[0].cases[0]} paired cases. The margin was set after the readings were visible.`;
   setChart(document.getElementById("question"),{domain:[-16,4],fmt:"+num:0",level:"95%",reference:{value:-margin,label:`margin −${margin}`,kind:"margin"},label_width:160,label_width_narrow:110,
     rows:cands.map(a=>{const r=R[a.id];return {id:a.id,label:nm(a),value:r.change,lo:r.within_interval[0],hi:r.within_interval[1],color:COL[a.id],strong:r.within_interval[1]<0,
-      note:r.within_interval[1]<0?"worse":"not separated",tip:[a.name,`${pts(r.change)} points [${r.within_interval.map(v=>v.toFixed(1)).join(", ")}]`,`${r.arm_passed} passed vs ${r.control_passed}`]};})});})();
+      note:r.within_interval[1]<0?"worse":"cannot tell apart",tip:[a.name,`${pts(r.change)} points [${r.within_interval.map(v=>v.toFixed(1)).join(", ")}]`,`${r.arm_passed} passed vs ${r.control_passed}`]};})});})();
 
 // ---- strata
 (function(){const top=D.strata.slice(0,12);const c0=ctl.id;
@@ -186,7 +186,7 @@ explore();
   const mn=k=>dn[k]||(k==="passed"?"Pass rate (asked)":k==="production_replicating_cost"?"Cost per reply":k.startsWith("goal_state")?"Goal check: message or voice sent":k);
   const fv=c=>c.measure==="production_replicating_cost"?v=>"$"+(v*1000).toFixed(2)+"/1k":J[c.measure]&&J[c.measure].scale!=="pass_fail"?v=>v.toFixed(2):v=>(v*100).toFixed(1)+" pts";
   document.getElementById("ctr").innerHTML=`<thead><tr><th>Candidate</th><th>Measure</th><th class="r">Change</th><th class="r">Interval (${famLevel})</th><th class="r">Adjusted p</th><th>Verdict</th><th>Confounds</th></tr></thead><tbody>`+
-  D.contrasts.map(c=>{const f=fv(c);return `<tr><td>${chip(A[c.arm])}</td><td>${mn(c.measure)}</td><td class="r">${c.delta>0?"+":""}${f(c.delta)}</td><td class="r">[${f(c.interval[0])}, ${f(c.interval[1])}]</td><td class="r">${c.p_adjusted<1e-4?c.p_adjusted.toExponential(1):c.p_adjusted.toFixed(4)}</td><td>${c.verdict==="regressed"?pill("bad","Regressed"):pill("neutral","Not separated")}</td><td>${c.confounds.join(", ")||"–"}</td></tr>`;}).join("")+"</tbody>";
+  D.contrasts.map(c=>{const f=fv(c);return `<tr><td>${chip(A[c.arm])}</td><td>${mn(c.measure)}</td><td class="r">${c.delta>0?"+":""}${f(c.delta)}</td><td class="r">[${f(c.interval[0])}, ${f(c.interval[1])}]</td><td class="r">${c.p_adjusted<1e-4?c.p_adjusted.toExponential(1):c.p_adjusted.toFixed(4)}</td><td>${c.verdict==="regressed"?pill("bad","Regressed"):pill("neutral","Cannot tell apart")}</td><td>${c.confounds.join(", ")||"–"}</td></tr>`;}).join("")+"</tbody>";
   const st=document.getElementById("sfull");const rows=D.strata.map(s=>({id:s.id.replace(/_/g," "),n:s.n_cases,...Object.fromEntries(ar.map(a=>[a.id,s.per_arm[a.id][prim].mean*100]))}));
   st.innerHTML=`<thead><tr><th class="sort" data-k="id">Stratum</th><th class="sort r" data-k="n">Cases</th>${ar.map(a=>`<th class="sort r" data-k="${a.id}">${a.short} in-character</th>`).join("")}</tr></thead><tbody></tbody>`;
   sortable(st,rows,s=>{st.querySelector("tbody").innerHTML=s.map(r=>`<tr><td>${r.id}</td><td class="r">${r.n}</td>${ar.map(a=>`<td class="r">${r[a.id].toFixed(1)}%</td>`).join("")}</tr>`).join("");},"n",-1);
