@@ -668,6 +668,10 @@ async def test_a_batch_that_stored_no_page_on_either_arm_adds_no_second_set_of_g
         "gated readings, which no judge was asked of on them."
     )
     assert result.disclosures.count(said) == 1
+    assert (
+        "The arms ran every held-out case, 1 at a time in the bet's order, so the gated readings and guardrails were "
+        "read once, on every case but the 4 that stored no page."
+    ) in result.disclosures
     assert {arm: summary.n_cases for arm, summary in result.arms.items()} == {CONTROL: 11, CANDIDATE: 11}
     with_them, without = await _verdicts(result), await _verdicts(alone)
     assert with_them == without and len(with_them) == len({name for _, name, _ in with_them})

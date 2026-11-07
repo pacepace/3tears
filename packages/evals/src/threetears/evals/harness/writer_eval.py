@@ -476,6 +476,7 @@ def _launched_line(
     read_on: Mapping[str, int],
     *,
     capped: str | None = None,
+    left_out: int = 0,
 ) -> str:
     """Where a batched run stopped launching, in one sentence: the cases the gated readings and guardrails are read on,
     and how often. ``read_on`` is the cases each candidate's were read on, at its own stop or the last batch."""
@@ -494,18 +495,20 @@ def _launched_line(
             f"read {'' if again else 'once, '}on the cases launched by then: {each}."
         )
     if launched >= planned:
-        read = "read on every case" if again else "read once, on every case"
+        every = "every case" if not left_out else f"every case but the {left_out} that stored no page"
+        read = f"read on {every}" if again else f"read once, on {every}"
         return f"{ran}, so the gated readings and guardrails were {read}."
     separated = len(reports) == len(passes) and all(
         report.stopping is not None and report.stopping.stopped_at is not None for report in reports
     )
+    those = f"those {launched}" if not left_out else f"the {launched - left_out} of those that stored a page"
     if capped is not None:
         return (
             f"{ran}, until the spend cap stopped it (the pass's line says where), so the gated readings and guardrails "
-            f"were read once, on those {launched}."
+            f"were read once, on {those}."
         )
     why = "every candidate's preference had separated" if separated else "no candidate's pass could read further"
-    return f"{ran}, and stopped once {why}, so the gated readings and guardrails were read once, on those {launched}."
+    return f"{ran}, and stopped once {why}, so the gated readings and guardrails were read once, on {those}."
 
 
 @dataclass(frozen=True)
@@ -1163,7 +1166,14 @@ class WriterEval:
         if batched:
             read_on = {arm: held[arm].launched if arm in held else len(launched) for arm in passes}
             launch_line = _launched_line(
-                len(launched), len(planned), self.batch_size, _SIDE_WORDS[self.side], passes, read_on, capped=cap_stop
+                len(launched),
+                len(planned),
+                self.batch_size,
+                _SIDE_WORDS[self.side],
+                passes,
+                read_on,
+                capped=cap_stop,
+                left_out=pageless,
             )
             disclosures.append(launch_line)
         case_names = {receipt.test_case_id: case.name for case, receipt in on_side}
