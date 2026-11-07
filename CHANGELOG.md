@@ -6,6 +6,8 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+## v0.93.0 -- 2026-11-06
+
 ### interfaces: one dependency-free package for the family's shared Protocols and vocabulary
 
 **Release step:** `3tears-interfaces` is a new PyPI project, so it needs a pending trusted publisher on PyPI
@@ -64,7 +66,6 @@ the same classes, now from `threetears.interfaces`.
 **Changed:** `3tears-agent-acl`, `3tears-agent-tools`, `3tears-backup`, `3tears-geo`, `3tears-iam`,
 `3tears-langgraph`, `3tears-models`, `3tears-object-store` and `3tears-search` now depend on `3tears-interfaces`
 in place of the package they took before. search's and iam's dependency floors name it in the same place.
-
 
 ## v0.92.0 -- 2026-11-06
 
