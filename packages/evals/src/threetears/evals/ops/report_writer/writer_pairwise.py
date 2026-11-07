@@ -151,10 +151,6 @@ _MISSING: Final[dict[tuple[bool, bool], MissingPage]] = {
 }
 
 
-#: Why a pass read no further: its preference ``separated``; it read ``all_cases``, the cap of N; or the run stopped
-#: launching at its ``spend_cap``, its next batch able to pass what the cap had left.
-_StoppedOn = Literal["separated", "all_cases", "spend_cap"]
-
 #: What a stopping rule stops on: ``separated``, the first look at which the preference separates, either way; or
 #: ``never``, every case read.
 StopWhen = Literal["separated", "never"]
@@ -247,7 +243,7 @@ class PairwiseStopping(EvalBaseModel):
         description="The cases read at the first look that separated; None when none did."
     )
     looks: list[PairwiseLook] = Field(description="The preference after each case, in the order the bet read them.")
-    stopped_on: _StoppedOn | None = Field(
+    stopped_on: Literal["separated", "all_cases", "spend_cap"] | None = Field(
         default=None,
         description="Why the pass read no further: separated, all_cases (the cap of N) or spend_cap (the run's next "
         "batch could pass what the spend cap had left); None for a pass with no rule or one read short otherwise.",
@@ -1088,7 +1084,7 @@ def _stopping(
     absent = plan.absent if launched is None else [case_id for case_id in plan.absent if case_id in launched]
     if absent or plan.unplanned:
         line += f" {_differs(plan, absent=absent, read=rule is not None and rule.stop_when == 'never')}"
-    stopped_on: _StoppedOn | None = None
+    stopped_on: Literal["separated", "all_cases", "spend_cap"] | None = None
     if out_of_budget is not None:
         stopped_on, line = "spend_cap", f"{line} {out_of_budget}"
     elif stop_at is not None:
