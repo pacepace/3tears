@@ -143,7 +143,7 @@ it, and reads v2 against v1 in one row
 ...
 | Aspect | Cases | ▸ v1 (%) | v2 (pts) |
 |---|---|---|---|
-| classify | 30 | 81.1 | 16.7 (not separated) |
+| classify | 30 | 81.1 (73 of 90 trials, 30 cases) | 16.7 (not separated) |
 ```
 
 with the guardrail's row saying why, on the row's ruler beside its interval of `[-13.4, 13.4] pts`: `undecided: not
