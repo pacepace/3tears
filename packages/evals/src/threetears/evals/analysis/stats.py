@@ -2839,8 +2839,8 @@ def smallest_separable_move(
     has spread, and the test needs more than this to separate it, so the figure is a floor of what the cases can
     show, never a promise that a move above it separates. It is the gate's own test that is inverted, not a normal
     approximation: the betting test's price for holding α on coarse values at every n is a wider floor than a binomial
-    test's. Found by bisection on the move, across which the test's verdict changes once (checked on a grid of
-    1/10,000 of the range at every count up to 25).
+    test's. Found by bisection on the move, across which the test's verdict changes once: checked on a grid of
+    1/10,000 of the range at every count from 2 to 25, and held by a test on a grid of 1/500.
 
     :param cases: The pairs read.
     :ptype cases: int

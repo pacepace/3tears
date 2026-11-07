@@ -25,7 +25,9 @@ editor's own model. ``await WriterEval(...).run()``:
    the preference separates, either way, and the decision read there stands; ``never``, the default, reads every case.
    Either way each look is recorded, the result says what happened in one sentence, and the launch's disclosures say
    the resolution floor: the smallest preference, held on every case, the side's cases can separate
-   (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal;
+   (:func:`~threetears.evals.ops.report_writer.writer_pairwise.resolution_line`), never a refusal, with the
+   projection a :class:`~threetears.evals.ops.report_writer.writer_pairwise.WriterPrior` run on the same cases made. Every arm runs every case before the pass, so the
+   stop saves judge calls and defines the verdict's standing; the money waits on launching cases in batches;
 7. **reads the promotion** of each candidate against the control
    (:func:`~threetears.evals.ops.report_writer.writer_promotion.writer_promotion`), its pass's completed job as the
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
@@ -163,6 +165,7 @@ from threetears.evals.ops.report_writer.writer_pairwise import (
     StoppingRule,
     StopWhen,
     WriterPairwiseReport,
+    WriterPrior,
     resolution_line,
     writer_pairwise,
 )
@@ -402,6 +405,8 @@ class WriterResult:
         a pass that did not start, or whose job ended other than completed, has none.
     :ivar pairwise_unread: Why a candidate's pass did not complete, by arm: refused before any call, ended other than
         completed, or stopped before its last pair.
+    :ivar cases: The side's case files the arms ran, by name, sorted: what a later run's ``WriterPrior`` names.
+    :ivar resolution: The resolution floor's line, as the disclosures carry it.
     """
 
     name: str
@@ -422,6 +427,8 @@ class WriterResult:
     k: int = 1
     pairwise: dict[str, WriterPairwise] = field(default_factory=dict, repr=False)
     pairwise_unread: dict[str, str] = field(default_factory=dict)
+    cases: tuple[str, ...] = ()
+    resolution: str = ""
 
     def __str__(self) -> str:
         """The quiet summary (:meth:`render`)."""
@@ -508,11 +515,6 @@ class WriterResult:
         """What each candidate's pass did against its stopping rule, one sentence each."""
         return [
             f"pairwise pass of {arm}: {read.stopping.line}"
-            + (
-                ""
-                if read.stopping.stopped_at is None
-                else f" The gated readings and guardrails were read once, on those {read.stopping.stopped_at} cases."
-            )
             for arm, read in self.pairwise.items()
             if read.stopping is not None
         ]
@@ -632,6 +634,7 @@ class WriterEval:
         store: DocumentStore | str | os.PathLike[str] | None = None,
         scope: str | None = None,
         stop_when: StopWhen = "never",
+        prior: WriterPrior | None = None,
     ) -> None:
         """Declare the eval; nothing is read or run until :meth:`run`.
 
@@ -685,6 +688,9 @@ class WriterEval:
             over the side's cases: ``separated`` stops the judge at the first case after which the preference
             separates, either way, where the decision read there stands; ``never`` reads every case.
         :ptype stop_when: StopWhen
+        :param prior: An earlier run on these cases, whose projection the resolution line carries when it ran the same
+            case files; one over other cases is said and not carried.
+        :ptype prior: WriterPrior | None
         :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, a
             blank question, a ``k`` other than 1, a stopping rule that is neither, or a share, budget, turn cap or
             ceiling out of its range.
@@ -742,6 +748,7 @@ class WriterEval:
         self.store = store
         self.scope_id = name if scope is None else scope
         self.stop_when: StopWhen = stop_when
+        self.prior = prior
 
     async def run(self) -> WriterResult:
         """Mint the cases, launch every arm on one side's cases, file the campaign and read the promotion.
@@ -821,10 +828,13 @@ class WriterEval:
         held_elsewhere = await run_blocking(
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
         )
-        rule = StoppingRule(stop_when=self.stop_when, max_cases=len(on_side), declared_at=declared_at)
+        planned = sorted({receipt.test_case_id for _, receipt in on_side})
+        rule = StoppingRule(stop_when=self.stop_when, case_ids=planned, max_cases=len(planned), declared_at=declared_at)
+        names = frozenset(case.name for case, _ in on_side)
+        resolution = self._resolution(len(on_side), names)
         disclosures = [
             *warned,
-            resolution_line(len(on_side)),
+            resolution,
             *self._recording_disclosures(turns, named),
             *held_elsewhere,
         ]
@@ -870,8 +880,20 @@ class WriterEval:
                 strata=Counter(case.stratum or "none" for case, _ in on_side),
                 where=where,
                 disclosures=tuple(disclosures),
+                cases=tuple(sorted(names)),
+                resolution=resolution,
             ),
         )
+
+    def _resolution(self, cases: int, names: frozenset[str]) -> str:
+        """The resolution floor's line at ``cases``, with the prior run's projection when it ran these same case files,
+        and saying so when it ran others."""
+        prior = self.prior
+        if prior is None:
+            return resolution_line(cases)
+        if prior.case_names != names:
+            return f"{resolution_line(cases)} The prior run given ran other cases, so its projection is not carried."
+        return resolution_line(cases, projected=prior.cases_to_settle)
 
     @property
     def _pass_part(self) -> float:
@@ -1121,6 +1143,8 @@ class WriterEval:
         strata: Mapping[str, int],
         where: str,
         disclosures: tuple[str, ...],
+        cases: tuple[str, ...],
+        resolution: str,
     ) -> WriterResult:
         """Read each candidate's promotion on its pass, and summarise each arm. Blocking."""
         control = next(iter(self.arms))
@@ -1156,6 +1180,8 @@ class WriterEval:
                 if ran.status is not None
             },
             pairwise_unread={arm: ran.why_not for arm, ran in passes.items() if ran.why_not is not None},
+            cases=cases,
+            resolution=resolution,
         )
 
 

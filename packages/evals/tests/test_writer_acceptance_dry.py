@@ -19,6 +19,7 @@ directory; the doc's commands drifting from the script's.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import socket
 from collections.abc import Iterator
@@ -254,10 +255,38 @@ def test_a_rule_to_stop_on_separation_is_recorded_as_declared(monkeypatch: pytes
     found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, stop_when="separated"))
     stopping = found.summary()["stopping"]
     assert stopping["rule"]["stop_when"] == "separated" and stopping["rule"]["max_cases"] == DEFAULT_CASES
+    # The planned cases are the held-out set as declared, every one the arms ran.
+    planned = sorted({pair.case_id for pair in found.report.pairs})
+    assert stopping["rule"]["case_ids"] == planned and stopping["absent"] == stopping["unplanned"] == []
     assert stopping["late"] is False
     reached = sum(1 for pair in found.report.pairs if pair.reached)
     assert found.report.calls_made == 2 * reached
     assert (stopping["stopped_at"] is None) == (reached == DEFAULT_CASES)
+
+
+@pytest.mark.parametrize("same", [True, False], ids=["same cases", "other cases"])
+def test_a_prior_run_on_the_same_cases_carries_its_projection_into_the_floors_line(
+    dry: tuple[Acceptance, list[object]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same: bool
+) -> None:
+    """``--prior`` reads an earlier acceptance.json; its projection is carried only when it ran the same case files."""
+    earlier = dry[0].summary()
+    assert len(earlier["cases"]) == DEFAULT_CASES
+    cases = earlier["cases"] if same else earlier["cases"][1:]
+    record = tmp_path / "acceptance.json"
+    record.write_text(
+        json.dumps({**earlier, "cases": cases, "promotion": {**earlier["promotion"], "cases_to_settle": 43}}),
+        encoding="utf-8",
+    )
+    _offline(monkeypatch)
+    prior = writer_acceptance.read_prior(record)
+    found = asyncio.run(acceptance(dry=True, cases_dir=None, cap_usd=10.0, out=None, prior=prior))
+    floor = "At 7 cases this run can separate only a preference of 89% or more, held on every case"
+    resolution = found.summary()["resolution"]
+    if same:
+        assert resolution == f"{floor}; the last run on these cases projected 43 to settle."
+    else:
+        assert resolution == f"{floor}. The prior run given ran other cases, so its projection is not carried."
+    assert resolution in found.result.disclosures
 
 
 def test_the_read_takes_the_pass_as_its_primary_and_the_criterion_is_decided_on_it(

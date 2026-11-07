@@ -1437,6 +1437,7 @@
 "threetears.evals.harness.WriterEval": "host-contract",
 "threetears.evals.harness.WriterJudge": "provisional",
 "threetears.evals.harness.WriterPairwise": "provisional",
+"threetears.evals.harness.WriterPrior": "provisional",
 "threetears.evals.harness.WriterResult": "provisional",
 "threetears.evals.harness.WriterSide": "provisional",
 "threetears.evals.harness.WriterSplit": "provisional",

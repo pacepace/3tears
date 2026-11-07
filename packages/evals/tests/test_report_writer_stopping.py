@@ -4,11 +4,12 @@ Each campaign is the promotion read's scripted one (a control and a candidate ov
 three repeats each), its pages stored and the scoring judge scripted, so every figure is checked against the stats
 functions on shares the test computes itself, read as prefixes of the one bet the rule fixes. No model is called.
 
-Held: a rule to stop on separation judges the cases in the bet's order, stops at the first case after which the
-preference separates and the decision read there stands, asks nothing past it, and records each look; the promotion
-read on that pass reads the gated readings and guardrails once, on the cases judged. A guardrail not shown held at the
-stop sends the pass on to the cap, saying it looked twice. A rule declared after the first result, or with no time,
-keeps its verdict and says so. A rule to read every case equals the fixed-n reading at N, judged in the bet's order.
+Held: a rule to stop on separation judges the planned cases in the declared bet's order, stops at the first case after
+which the preference separates, asks nothing past it, and records each look; the promotion read on that pass reads the
+gated readings and guardrails once, on every case the arms ran (each arm ran all of them before the pass). A rule
+declared after the first result, or with no time, keeps its verdict and says so. A rule to read every case is today's
+reading exactly, a case with no share included. Cases found that the rule did not plan, or planned and not found, are
+said, never refused.
 """
 
 from __future__ import annotations
@@ -39,7 +40,13 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.ops import JobStatus, OpsHost, await_job
-from threetears.evals.ops.report_writer.writer_pairwise import StoppingRule, WriterPairwiseReport, writer_pairwise
+from threetears.evals.ops.report_writer.writer_pairwise import (
+    StoppingRule,
+    StopWhen,
+    WriterPairwiseReport,
+    writer_pairwise,
+)
+from threetears.evals.run.judge import CANNOT_TELL
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.schema.models import utc_now_iso
 
@@ -75,6 +82,12 @@ def _campaign(policy: Policy, **campaign: Any) -> tuple[EvalHost, str, ScriptedP
     off_loop(store_pages, host, campaign_id)
     judge = ScriptedPairJudge(policy=policy)
     return dataclasses.replace(host, clients=lambda _role, _model, *, temperature=None: judge), campaign_id, judge
+
+
+def _rule(stop_when: StopWhen, declared_at: str | None = _EARLY, cases: list[str] = _CASES) -> StoppingRule:
+    """A rule over ``cases``, sorted, declared at ``declared_at``."""
+    planned = sorted(cases)
+    return StoppingRule(stop_when=stop_when, case_ids=planned, max_cases=len(planned), declared_at=declared_at)
 
 
 def _ops(host: EvalHost) -> OpsHost:
@@ -119,14 +132,14 @@ def _first_separation(shares: list[float], planned: int) -> int:
 
 async def test_a_separating_run_stops_at_the_first_look_that_separates_and_records_each_look() -> None:
     host, campaign_id, judge = _campaign(prefers_the_candidate)
-    rule = StoppingRule(stop_when="separated", max_cases=len(_CASES), declared_at=_EARLY)
+    rule = _rule("separated")
     report, status = await _pass(host, campaign_id, rule)
 
     k = _first_separation([1.0] * len(_CASES), len(_CASES))
     stopping = report.stopping
     assert stopping is not None and stopping.rule == rule and not stopping.late
     assert stopping.stopped_at == k < len(_CASES) and stopping.first_separated_at == k
-    assert stopping.second_look is None and stopping.cases_found == len(_CASES) and stopping.beyond_cap == []
+    assert stopping.cases_found == len(_CASES) and stopping.absent == [] and stopping.unplanned == []
     # The judge read the cases in the bet's order, every repeat of a case in both orders, and nothing past the stop.
     judged = _bet(len(_CASES))[:k]
     assert [document for document, *_ in judge.calls[:: 2 * _REPEATS]] == judged
@@ -155,17 +168,14 @@ async def test_a_separating_run_stops_at_the_first_look_that_separates_and_recor
         f"{CANDIDATE} on {k} of {k}, separated."
     )
 
-    # The promotion read on the stopped pass reads the gated readings once, on the cases judged, and says so.
+    # The promotion read on the stopped pass decides on it, and says what it did.
     read = _read(host, campaign_id, status)
-    assert read.decision == "promote" and read.gated_on == k
-    assert read.stopping_line == (
-        f"{stopping.line} The gated readings and guardrails were read once, on the {k} cases judged."
-    )
+    assert read.decision == "promote" and read.stopping_line == stopping.line
 
 
 async def test_the_stop_applies_toward_keep_too() -> None:
     host, campaign_id, judge = _campaign(prefers_the_control)
-    report, status = await _pass(host, campaign_id, StoppingRule(stop_when="separated", max_cases=len(_CASES)))
+    report, status = await _pass(host, campaign_id, _rule("separated", None))
 
     k = _first_separation([0.0] * len(_CASES), len(_CASES))
     assert report.stopping is not None and report.stopping.stopped_at == k
@@ -184,9 +194,7 @@ async def test_the_stop_applies_toward_keep_too() -> None:
 async def test_a_rule_declared_late_keeps_its_verdict_and_says_so(declared_at: str | None, said: str) -> None:
     host, campaign_id, _ = _campaign(prefers_the_candidate)
     stamp = utc_now_iso() if declared_at == "now" else None
-    report, status = await _pass(
-        host, campaign_id, StoppingRule(stop_when="separated", max_cases=len(_CASES), declared_at=stamp)
-    )
+    report, status = await _pass(host, campaign_id, _rule("separated", stamp))
 
     stopping = report.stopping
     assert stopping is not None and stopping.late
@@ -199,69 +207,97 @@ async def test_a_rule_declared_late_keeps_its_verdict_and_says_so(declared_at: s
     assert read.decision == "promote" and read.stopping_line is not None and said in read.stopping_line
 
 
-async def test_a_guardrail_not_held_at_the_stop_reads_on_to_the_cap_and_says_it_looked_twice() -> None:
+async def test_a_stop_reads_the_primary_alone_and_the_guardrails_are_read_on_every_case_run() -> None:
+    """A guardrail its few cases at the stop could not show held is held on the twelve every arm ran: the read, on
+    every case run, promotes, as the campaign's page over the same cases reads it."""
     nothing = {document: {_LEAKS.name: 0.0} for document in TOYHOST_DOCUMENTS}
     host, campaign_id, judge = _campaign(prefers_the_candidate, writer=(nothing, nothing), measures=[_LEAKS])
-    report, status = await _pass(host, campaign_id, StoppingRule(stop_when="separated", max_cases=len(_CASES)))
+    report, status = await _pass(host, campaign_id, _rule("separated"))
 
     stopping = report.stopping
     k = _first_separation([1.0] * len(_CASES), len(_CASES))
-    assert stopping is not None and stopping.first_separated_at == k
-    # The guardrail is not shown held on k cases, so the decision there did not stand: the judge read every case.
-    assert stopping.stopped_at is None
-    assert stopping.second_look is not None and "1 of 1 guardrails are not shown held" in stopping.second_look
-    assert len(judge.calls) == 2 * _REPEATS * len(_CASES) and all(pair.reached for pair in report.pairs)
-    assert f"separated at case {k}, but the decision there did not stand" in stopping.line
-    assert "looked at a second time, on every case" in stopping.line
-    # On every case the guardrail is held, and the read decides on all of them.
+    assert stopping is not None and stopping.stopped_at == k < len(_CASES)
+    assert len(judge.calls) == 2 * _REPEATS * k
     read = _read(host, campaign_id, status)
-    assert read.gated_on is None and read.decision == "promote"
+    assert read.decision == "promote"
     assert {verdict.name: verdict.outcome for verdict in read.verdicts if verdict.kind == "guardrail"} == {
         _LEAKS.name: "held"
     }
     assert read.stopping_line == stopping.line
 
 
+_LEAN = (5, 5, 4, 4, 4, 3, 5, 4, 3, 2, 5, 4)
+
+
 def _graded(document: str, slot: str) -> int:
     """A judge whose preference moves with the document: a spread of shares, leaning to the candidate."""
-    lean = [5, 5, 4, 4, 4, 3, 5, 4, 3, 2, 5, 4][TOYHOST_DOCUMENTS.index(document)]
+    lean = _LEAN[TOYHOST_DOCUMENTS.index(document)]
     return lean if slot == "B" else 6 - lean
 
 
-async def test_a_rule_to_read_every_case_equals_the_fixed_n_reading_and_says_where_it_would_have_stopped() -> None:
-    host, campaign_id, judge = _campaign(_graded)
-    report, _ = await _pass(
-        host, campaign_id, StoppingRule(stop_when="never", max_cases=len(_CASES), declared_at=_EARLY)
-    )
+#: A document every order of which the judge cannot tell on, so it has no share.
+_UNTOLD = _CASES[4]
 
-    shares = [(([5, 5, 4, 4, 4, 3, 5, 4, 3, 2, 5, 4][TOYHOST_DOCUMENTS.index(case)]) - 1) / 4 for case in _CASES]
+
+def _graded_but_one(document: str, slot: str) -> int | str:
+    return CANNOT_TELL if document == _UNTOLD else _graded(document, slot)
+
+
+@pytest.mark.parametrize("policy", [_graded, _graded_but_one], ids=["every share", "a case with no share"])
+async def test_a_rule_to_read_every_case_is_todays_reading_exactly(policy: Policy) -> None:
+    host, campaign_id, judge = _campaign(policy)
+    report, _ = await _pass(host, campaign_id, _rule("never"))
+
+    shares = [(_LEAN[TOYHOST_DOCUMENTS.index(case)] - 1) / 4 for case in _CASES if policy(case, "A") != CANNOT_TELL]
     control = [1.0 - share for share in shares]
-    # The fixed-n reading over the cases in case order, as with no rule: the same numbers.
+    # The fixed-n reading over the shares found, in case order, with no bet fixed: the code before stopping rules.
+    assert report.whole.cases == len(shares)
     assert report.whole.p == bounded_separation_p(control, shares, paired=True, value_range=_RANGE)
     assert report.whole.verdict.interval == bounded_difference_interval(
         control, shares, paired=True, value_range=_RANGE, confidence=INTERVAL_LEVEL
     )
+    # And the same as a pass given no rule, which the engine action starts.
+    ops = _ops(host)
+    (bare,) = await await_job(
+        ops, await writer_pairwise(ops, campaign_id, TOYHOST_SCOPE, candidate=CANDIDATE), TOYHOST_SCOPE
+    )
+    assert bare.result is not None
+    unruled = WriterPairwiseReport.model_validate(bare.result)
+    assert (unruled.whole.p, unruled.whole.verdict.interval) == (report.whole.p, report.whole.verdict.interval)
+    # Judged in case order, as before; the looks say where it would have stopped.
+    assert [document for document, *_ in judge.calls[: 2 * _REPEATS * len(_CASES) : 2 * _REPEATS]] == [
+        case for case in _CASES
+    ]
     stopping = report.stopping
-    assert stopping is not None and stopping.stopped_at is None and stopping.second_look is None
-    assert [document for document, *_ in judge.calls[:: 2 * _REPEATS]] == _bet(len(_CASES))
-    assert len(stopping.looks) == len(_CASES) and stopping.looks[-1].p == report.whole.p
+    assert stopping is not None and stopping.stopped_at is None
+    assert len(stopping.looks) == len(shares) and stopping.looks[-1].p == report.whole.p
     first = stopping.first_separated_at
-    assert first is None or stopping.looks[first - 1].separated
-    said = "no look up to 12 excluded no preference" if first is None else f"first separated at case {first}"
-    assert stopping.line.startswith("Read 12 of 12 cases under the rule declared before the first result: ")
+    said = "no look up to" if first is None else f"first separated at case {first}"
+    assert stopping.line.startswith(
+        f"Read {len(_CASES)} of {len(_CASES)} cases under the rule declared before the first result: "
+    )
     assert said in stopping.line
 
 
-async def test_cases_past_the_rules_cap_are_named_and_never_read() -> None:
-    host, campaign_id, judge = _campaign(prefers_the_candidate)
-    report, _ = await _pass(host, campaign_id, StoppingRule(stop_when="never", max_cases=10, declared_at=_EARLY))
+async def test_the_bet_is_the_declared_one_and_cases_off_the_plan_are_said() -> None:
+    """A rule planned over a case the pass does not find, and missing two it does: the bet is fixed by the planned ids,
+    the two unplanned are not read, and both differences are said, never refused."""
+    host, campaign_id, judge = _campaign(prefers_the_control)
+    planned = [*_CASES[:10], "zz-not-run"]
+    report, _ = await _pass(host, campaign_id, _rule("separated", cases=planned))
 
     stopping = report.stopping
-    assert stopping is not None and stopping.beyond_cap == _CASES[10:]
-    assert {document for document, *_ in judge.calls} == set(_CASES[:10])
-    assert report.whole.cases == 10
-    assert all(not pair.reached for pair in report.pairs if pair.case_id in _CASES[10:])
-    assert stopping.line.startswith("Read 10 of 10 cases")
+    assert stopping is not None and stopping.absent == ["zz-not-run"] and stopping.unplanned == _CASES[10:]
+    ids = sorted(planned)
+    bet = [ids[index] for index in bet_order(len(ids)) if ids[index] != "zz-not-run"]
+    k = stopping.stopped_at
+    assert k is not None
+    assert [document for document, *_ in judge.calls[:: 2 * _REPEATS]] == bet[:k]
+    assert not {document for document, *_ in judge.calls} & set(_CASES[10:])
+    assert stopping.line.endswith(
+        "1 case the rule planned was not found; 2 found were not planned, and the bet holds no place for them, so "
+        "they were not read."
+    )
 
 
 async def test_with_no_rule_every_case_is_read_and_the_record_says_no_rule_was_declared() -> None:
@@ -277,3 +313,10 @@ async def test_with_no_rule_every_case_is_read_and_the_record_says_no_rule_was_d
     assert len(judge.calls) == 2 * _REPEATS * len(_CASES)
     assert len(stopping.looks) == len(_CASES)
     assert stopping.line.startswith("Read all 12 cases with no stopping rule declared: ")
+
+
+def test_a_rule_lists_its_planned_cases_sorted_and_counts_them() -> None:
+    with pytest.raises(ValueError, match="sorted, each once"):
+        StoppingRule(stop_when="never", case_ids=["b", "a"], max_cases=2)
+    with pytest.raises(ValueError, match="max_cases is the 2 cases planned"):
+        StoppingRule(stop_when="never", case_ids=["a", "b"], max_cases=3)

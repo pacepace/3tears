@@ -23,7 +23,7 @@ this package may not import, so that composition is the host's.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol
 
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore, assemble_context_bundle
@@ -78,17 +78,8 @@ if TYPE_CHECKING:
         EvalInsight,
     )
     from threetears.evals.kernel.host.profile import HostProfile
-    from threetears.evals.schema.models import (
-        CalibrationRating,
-        EvalCaseStratum,
-        EvalResult,
-        EvalRun,
-        EvalTemplate,
-        JudgeEvidence,
-    )
+    from threetears.evals.schema.models import EvalRun
     from threetears.evals.kernel.host.eval_host import EvalHost
-    from threetears.evals.kernel.judge_profiles import EvalJudgeProfile
-    from threetears.evals.kernel.result_reading import ResultView
     from concurrent.futures import Executor
 
 
@@ -824,12 +815,7 @@ def get_analysis(storage: AnalysisStore, analysis_id: str, scope_id: str) -> Eva
 
 
 def _assembled_campaign_bundle(
-    campaign: EvalCampaign,
-    *,
-    storage: EvalStorage,
-    profile: HostProfile,
-    insights_as_of: str | None = None,
-    cases: Collection[str] | None = None,
+    campaign: EvalCampaign, *, storage: EvalStorage, profile: HostProfile, insights_as_of: str | None = None
 ) -> CampaignBundle:
     """Assemble every aspect's bundle, the campaign's arms and code's readings into the campaign bundle. Blocking.
 
@@ -849,17 +835,13 @@ def _assembled_campaign_bundle(
     :ptype profile: HostProfile
     :param insights_as_of: The insight ledger's cutoff, or None for now.
     :ptype insights_as_of: str | None
-    :param cases: The test cases to read the runs over, as if they had run only these (:class:`_CasesRead`); None
-        for every case they ran.
-    :ptype cases: Collection[str] | None
     :return: The campaign bundle.
     :rtype: CampaignBundle
     """
-    read: CampaignReadStore = storage if cases is None else _CasesRead(storage, frozenset(cases))
     with phase_logged("assemble_context_bundle", scope_id=campaign.scope_id, campaign_id=campaign.id):
         bundles = [
             assemble_context_bundle(
-                campaign, aspect=aspect.label, storage=read, profile=profile, insights_as_of=insights_as_of
+                campaign, aspect=aspect.label, storage=storage, profile=profile, insights_as_of=insights_as_of
             )
             for aspect in campaign.aspects
         ]
@@ -869,73 +851,6 @@ def _assembled_campaign_bundle(
         summaries = [summary for bundle in bundles for summary in bundle.run_summaries]
         took_in(runs=len(summaries), results=sum(summary.n_results for summary in summaries))
         return build_campaign_bundle(campaign, bundles, arms=arms, readings=readings)
-
-
-class _CasesRead:
-    """A campaign's store read as if its runs had run only some of their cases: each run lists only those, and only
-    their results are read; every other read passes through.
-
-    What a reading stopped part-way through its cases reads its fixed-n readings on (``campaign_verdicts``'s
-    ``cases``): the campaign as it stood had only those cases run.
-    """
-
-    def __init__(self, storage: EvalStorage, cases: frozenset[str]) -> None:
-        self._storage = storage
-        self._cases = cases
-
-    def load_eval_runs(
-        self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str]
-    ) -> list[EvalRun]:
-        """The named runs, each listing only the cases read."""
-        runs = self._storage.load_eval_runs(run_ids, scope_id, elide_payload=elide_payload)
-        return [
-            run.model_copy(update={"test_case_ids": [case for case in run.test_case_ids if case in self._cases]})
-            for run in runs
-        ]
-
-    def iter_result_readings(self, run_ids: Sequence[str], scope_id: str, /) -> Iterable[ResultView]:
-        """The named runs' results on the cases read."""
-        return (
-            result
-            for result in self._storage.iter_result_readings(run_ids, scope_id)
-            if result.test_case_id in self._cases
-        )
-
-    def load_eval_results(
-        self, result_ids: Sequence[str], scope_id: str, /, *, elide: Sequence[str] = ()
-    ) -> list[EvalResult]:
-        """The named results, as the store holds them."""
-        return self._storage.load_eval_results(result_ids, scope_id, elide=elide)
-
-    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str, /) -> list[EvalCaseStratum]:
-        """The named cases' strata, as the store holds them."""
-        return self._storage.load_case_strata(test_case_ids, scope_id)
-
-    def query_calibration_ratings(
-        self, scope_id: str, /, *, run_ids: Sequence[str] | None = None
-    ) -> list[CalibrationRating]:
-        """The scope's calibration ratings, as the store holds them."""
-        return self._storage.query_calibration_ratings(scope_id, run_ids=run_ids)
-
-    def query_insights(self, scope_id: str, /, *, subject_id: str) -> list[EvalInsight]:
-        """The subject's insights, as the store holds them."""
-        return self._storage.query_insights(scope_id, subject_id=subject_id)
-
-    def analyses_archived(self, analysis_ids: Sequence[str], scope_id: str, /) -> dict[str, bool]:
-        """Whether each named analysis is archived, as the store holds it."""
-        return self._storage.analyses_archived(analysis_ids, scope_id)
-
-    def load_templates(self, template_ids: Sequence[str], scope_id: str, /) -> list[EvalTemplate]:
-        """The named templates, as the store holds them."""
-        return self._storage.load_templates(template_ids, scope_id)
-
-    def query_judge_profiles(self, scope_id: str, /) -> list[EvalJudgeProfile]:
-        """The scope's judge profiles, as the store holds them."""
-        return self._storage.query_judge_profiles(scope_id)
-
-    def load_judge_evidence(self, result_ids: Sequence[str], scope_id: str, /) -> dict[str, JudgeEvidence]:
-        """The named results' judge evidence, as the store holds it."""
-        return self._storage.load_judge_evidence(result_ids, scope_id)
 
 
 def assemble_campaign_bundle(host: EvalHost, campaign_id: str, scope_id: str) -> CampaignBundle:
@@ -1470,7 +1385,6 @@ def _code_only_page(
     unread_analysis_id: str | None = None,
     unread_report_doc_id: str | None = None,
     unread_line: str = NO_LONGER_READS,
-    cases: Collection[str] | None = None,
 ) -> CampaignReport:
     """The campaign's code-only page over its evidence assembled now, whatever analyses it holds.
 
@@ -1488,13 +1402,11 @@ def _code_only_page(
     :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as the line says it.
     :ptype unread_line: str
-    :param cases: The test cases the page reads the runs over; None for every case they ran.
-    :ptype cases: Collection[str] | None
     :return: The page, ``basis="code_only"``.
     :rtype: CampaignReport
     """
     assembled_at = utc_now_iso()
-    bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile, cases=cases)
+    bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
     return _campaign_page(
         campaign,
         bundle,
@@ -1506,9 +1418,7 @@ def _code_only_page(
     )
 
 
-def campaign_verdicts(
-    host: EvalHost, campaign_id: str, scope_id: str, *, cases: Collection[str] | None = None
-) -> list[Verdict]:
+def campaign_verdicts(host: EvalHost, campaign_id: str, scope_id: str) -> list[Verdict]:
     """Every verdict code reaches on the campaign's evidence as it stands now, typed — what a CI gate reads.
 
     The code-only page's :attr:`~threetears.evals.analysis.report.CampaignReport.verdicts` over the evidence assembled
@@ -1516,22 +1426,17 @@ def campaign_verdicts(
     aspect — whether or not an analysis was generated: a gate rests on code's verdicts, never on an analyst's words,
     and an analysis's frozen surface holds no contrast. Costs no model call.
 
-    ``cases`` reads them as if the runs had run only those test cases: what a reading that stopped after some of its
-    cases reads its fixed-n verdicts on, once, at the stop.
-
     :param host: The host whose store holds the campaign, and whose vocabulary its evidence is assembled in.
     :ptype host: EvalHost
     :param campaign_id: The campaign.
     :ptype campaign_id: str
     :param scope_id: The scope it lives in.
     :ptype scope_id: str
-    :param cases: The test cases to read the runs over; None for every case they ran.
-    :ptype cases: Collection[str] | None
     :return: The verdicts, aspect by aspect in the campaign's order, each in its page's order.
     :rtype: list[Verdict]
     :raises NotFoundError: No campaign with that id in the scope.
     """
-    return _code_only_page(host, _load_campaign(host.storage, campaign_id, scope_id), cases=cases).verdicts
+    return _code_only_page(host, _load_campaign(host.storage, campaign_id, scope_id)).verdicts
 
 
 # ---------------------------------------------------------------------------

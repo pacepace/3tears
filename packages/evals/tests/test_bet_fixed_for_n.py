@@ -127,6 +127,32 @@ def test_the_resolution_floor_is_the_gates_own_test_inverted(cases: int, share: 
     )
 
 
+def test_the_verdict_changes_once_across_the_move_so_bisection_finds_the_floor() -> None:
+    """Over every count from 2 to 25, on a grid of 1/500 of the range, a move held on every case that separates is
+    never followed by a larger one that does not: the monotonicity the bisection rests on."""
+    for cases in range(2, 26):
+        seen = False
+        for step in range(1, 501):
+            move = step / 500
+            p = bounded_separation_p([0.0] * cases, [move] * cases, paired=True, value_range=_RANGE)
+            interval = bounded_difference_interval([0.0] * cases, [move] * cases, paired=True, value_range=_RANGE)
+            separates = p is not None and p < 0.05 and interval is not None and interval[0] > 0
+            assert separates or not seen, (cases, move)
+            seen = seen or separates
+        floor = smallest_separable_move(cases, value_range=_RANGE)
+        assert (floor is None) == (not seen), cases
+
+
+def test_the_line_carries_the_last_runs_projection_when_it_is_given() -> None:
+    assert resolution_line(11, projected=43) == (
+        "At 11 cases this run can separate only a preference of 73% or more, held on every case; the last run on "
+        "these cases projected 43 to settle."
+    )
+    assert resolution_line(25, projected=10_001).endswith(
+        "; the last run on these cases projected more than 10000 to settle."
+    )
+
+
 def test_too_few_cases_separate_nothing_and_the_line_says_so() -> None:
     assert smallest_separable_move(5, value_range=_RANGE) is None
     assert resolution_line(5) == "At 5 cases this run cannot separate any preference, even one held on every case."

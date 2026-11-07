@@ -51,9 +51,8 @@ _AWAITING_A_CALLER: dict[ModuleType, frozenset[str]] = {
     writer_bank: frozenset(
         {"HELD_OUT_FRACTION", "WriterCaseBank", "WriterSplitSets", "log", "writer_group_side", "writer_split"}
     ),
-    # The engine's writer_promotion action reads the decision; its literal type is the decision rule's
-    # (writer_decision.py), which the read and the pairwise pass's stop both read.
-    writer_promotion: frozenset(),
+    # The engine's writer_promotion action reads the decision; nothing names its literal type.
+    writer_promotion: frozenset({"PromotionDecision"}),
     # The editor reads its session's rubric (editor_rubric, EditorRubric), the scoring rubric the shipped one; no reader
     # names an item's type.
     rubric: frozenset({"RubricItem"}),
