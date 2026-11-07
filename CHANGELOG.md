@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a report budget that cannot admit one turn is refused before any is bought; one under two is warned
+
+**Added:** a dollar budget under a report's first-turn ceiling cannot admit even one turn of the two a report takes
+(the analyst's submission and the editor's review), so it is refused at $0, naming the ceiling and the budget that
+admits the turn (`ReportBudget.first_turn_refusal`). `WriterEval` refuses it once, before the store opens, pricing each
+arm's analyst and editor first turns at their output caps and texts on the rates Anthropic publishes; every report's
+budget refuses its own first turn on the real ceiling, so `report_write` ends `over_budget` with nothing sent. Nothing
+above that ceiling is refused: the cap holds back the next turn's ceiling against what was actually spent, so whether a
+second turn fits turns on what the first really cost. A `WriterEval` budget under two of the analyst's first-turn
+ceiling launches with one warning line among its disclosures, citing the recorded Sonnet 5.5 runs (at $0.75, 16 of 50
+reports stored a page; at $1.00, 17 to 22 of 22; at $1.50, 99 of 100); on any other model the line says no
+acceptance run is recorded on it.
+
+**Changed:** a report that still runs out ends saying how many turns it was admitted and how many turns its whole
+budget admits at the ceiling that stopped it. A writer eval adds, for an arm whose reports ended over budget with no
+page, how many did and what the reports of its run that stored a page needed: what they spent, plus one turn's ceiling.
+The writer acceptance's first criterion is now "both arms stored a page on every case", read off the pairwise pass's
+pairs rather than off cells that completed, and its readout's first table counts the cases with two pages to compare
+and the ties a page missing on both sides made.
+
+**No soft budget.** The cap stays a cap: no turn is admitted on an average of what turns have cost, none is reserved
+at one, and no policy floor is set above what the arithmetic proves.
+
+**Hosts:** a host launching a report with a dollar budget below one turn's ceiling is refused before spending, naming
+the budget that admits the turn; a writer eval under two first-turn ceilings is warned, not refused. A budget in tokens
+and turns is unchanged.
+
 ### evals: 26 declared names only Discodon's tests import go provisional
 
 **Changed:** the declared surface (`host-contract` and `stable`) drops from 514 names to 488. The 24 names the hold-back

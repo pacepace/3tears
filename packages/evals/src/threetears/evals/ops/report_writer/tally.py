@@ -26,6 +26,17 @@ and the turns sent, never by its price, so a model nothing prices (a local model
 report, tallied unpriced and never as ``$0``. A turn cap may ride on a dollar budget too (``ReportBudget(usd=,
 turns=)``): it is the one cap that bounds how long a report can run, which a host's job ceiling reads
 (``writer_ceiling_s(..., turns=)``), since dollars bound no count of turns. Either way, a refusal sends nothing.
+
+**A dollar budget that cannot admit even one turn is refused, and only that.** The cap holds back the next turn's
+ceiling against what was actually spent, so a report of :data:`MIN_TURNS_FOR_A_REPORT` turns fits when the budget
+covers the first turn's ceiling, and then the first turn's real cost plus the second's ceiling: no figure above the
+first ceiling proves a budget too small. :meth:`ReportBudget.admit` refuses the report's first turn, at $0, when its
+ceiling alone is above the budget, saying it cannot admit even one turn and naming the budget that admits it
+(:meth:`ReportBudget.first_turn_refusal`); a launch that can price each role's first turn before any snapshot is read
+refuses the same way, once, before anything runs, and warns, citing the recorded runs, when the budget is under two
+first-turn ceilings (``WriterEval``). The cap stays a cap: no turn is ever admitted on an average of what turns have
+cost, and a report that still runs out ends ``over_budget`` saying how many turns it was admitted and how many its
+budget admits whole at the ceiling that stopped it.
 """
 
 from __future__ import annotations
@@ -34,12 +45,23 @@ import math
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from threetears.evals.kernel.numbers import group_thousands, spell_dollars
 from threetears.evals.schema.turns import TurnCeiling, TurnReply
 
-__all__ = ["BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
+__all__ = ["MIN_TURNS_FOR_A_REPORT", "BounceKind", "ReportBudget", "Tally", "TurnCost", "WriterRole"]
+
+#: The fewest turns a finished report takes: the analyst's submission and the editor's review.
+#:
+#: Counted from the session and the loop, not from the skill. The analyst's first read costs no turn: its brief (the
+#: first user message) already carries the snapshot's ``campaign_overview`` as the tool answers it, so its first reply
+#: may submit, and a reply that calls no tool is its submission. The loop then sends the document to the editor, whose
+#: first reply that calls no tool is its review, and a review that clears the report stores it. So two turns, and no
+#: fewer: nothing is stored before a review, and no review is read without an editor turn. The shipped skill asks the
+#: analyst to investigate, render and check before it submits, so its reports take more (rung 5's took 12 to 19); this
+#: is the floor none comes in under, which a launch warns against (it refuses only a budget that cannot admit one turn).
+MIN_TURNS_FOR_A_REPORT: Final = 2
 
 #: Who a session writes as: the analyst, who drafts and revises, or the report editor, who reviews.
 WriterRole = Literal["analyst", "editor"]
@@ -388,7 +410,8 @@ class ReportBudget:
     turns=)``, either cap or both, admits a turn by a bound on its tokens (its prompt's, as its price ceiling bounds it,
     and its output cap) and by the turns already sent, and never asks for a price. A turn cap may ride on a dollar
     budget (``ReportBudget(usd=, turns=)``), admitting by both: dollars bound what a report spends and no count of its
-    turns, so the turn cap is what bounds how long it can run. A refused turn is never sent.
+    turns, so the turn cap is what bounds how long it can run. A refused turn is never sent. A dollar budget below its
+    first turn's ceiling refuses that turn by name (:meth:`first_turn_refusal`): it cannot admit even one.
     :meth:`charge` counts a sent turn: at what it cost or, unpriced, its ceiling; at the tokens it reported or, where
     it reported none, its bound; and as one turn.
 
@@ -476,12 +499,47 @@ class ReportBudget:
                 "(load the price catalogue, hand the model a pricer, use a model it prices, or declare a token and "
                 "turn budget for a model nothing prices)"
             )
+        if self._sent == 0 and (launch := self.first_turn_refusal(ceiling, priced="this first turn")) is not None:
+            return launch
         if self._spent + ceiling.usd > self.usd:
+            # Only a turn priced above $0 can be refused with nothing overspent; one at $0 over a spent budget admits
+            # no count of turns worth naming.
+            whole = (
+                f", and at that ceiling the whole budget admits {math.floor(self.usd / ceiling.usd)}"
+                if ceiling.usd > 0
+                else ""
+            )
             return (
                 f"the next turn can cost up to {spell_dollars(ceiling.usd)}, and {spell_dollars(self._spent)} of the report's "
-                f"{spell_dollars(self.usd)} budget is spent"
+                f"{spell_dollars(self.usd)} budget is spent; it admitted {self._sent} turn{'' if self._sent == 1 else 's'}"
+                f"{whole}, where a report takes at least {MIN_TURNS_FOR_A_REPORT}"
             )
         return None
+
+    def first_turn_refusal(self, ceiling: TurnCeiling, *, priced: str) -> str | None:
+        """Why a dollar budget cannot admit even the first turn of a report, or ``None`` when it can or declares no
+        dollars.
+
+        The only budget the arithmetic proves too small: the first turn is admitted on its ceiling against nothing
+        spent, so a budget under that ceiling admits no turn at all. Above it, whether a report fits turns on what its
+        turns really cost, which no launch knows, so nothing above it is refused.
+
+        :param ceiling: The first turn's ceiling, or a floor of it priced before the turn's prompt is known.
+        :ptype ceiling: TurnCeiling
+        :param priced: What the ceiling prices, as the refusal names it (``this first turn``).
+        :ptype priced: str
+        :return: ``None``, or the refusal: the budget asked, the ceiling, the fewest turns and the budget that admits
+            the turn.
+        :rtype: str | None
+        """
+        if self.usd is None or ceiling.usd <= self.usd:
+            return None
+        admits = math.ceil(round(ceiling.usd * 100, 6)) / 100
+        return (
+            f"{priced} can cost up to {spell_dollars(ceiling.usd)}, above the report's {spell_dollars(self.usd)} budget, "
+            f"so it cannot admit even one turn of the {MIN_TURNS_FOR_A_REPORT} a report takes; a budget of "
+            f"{spell_dollars(admits)} or more admits it"
+        )
 
     def admitted_on_estimate(self, ceiling: TurnCeiling | None) -> bool:
         """Whether admitting a turn on ``ceiling`` checks the cap against an estimate: a dollar budget, and a ceiling

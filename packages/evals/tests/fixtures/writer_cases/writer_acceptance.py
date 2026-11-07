@@ -29,9 +29,9 @@ Then:
    the cap, its pages scored by the fixed scoring judge; then its pairwise pass shows that judge each case's two pages
    in both orders, under the pass's part; then its promotion read reads the pass as its primary reading, which the
    criterion reads again whole, off the pass's stored job;
-2. the pass criterion is decided by code: the read answers ``keep``, and its primary reading
-   (``report_writer.preferred``) reads ``regressed``, separated, its interval below 0, with the order check standing
-   and bounces not separated. Anything else fails; a primary that does not separate states the held-out cases that
+2. the pass criterion is decided by code: both arms stored a page on every case, read off the pass's pairs; the read
+   answers ``keep``, and its primary reading (``report_writer.preferred``) reads ``regressed``, separated, its interval
+   below 0, with the order check standing and bounces not separated. Anything else fails; a primary that does not separate states the held-out cases that
    would settle it, and the run stops there: nobody re-rolls.
 
 Commands::
@@ -71,6 +71,7 @@ import os
 import re
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -569,19 +570,28 @@ _REASON_WORDS: Final = {
 }
 
 
+def pages_stored(report: WriterPairwiseReport) -> dict[str, int]:
+    """How many pairs each side stored a page on, by role (``candidate``, ``control``), read off the pass's pairs."""
+    return {
+        side: sum(1 for pair in report.pairs if pair.missing not in (side, "both")) for side in ("candidate", "control")
+    }
+
+
 def pass_criterion(
     read: WriterPromotion,
     runs: Mapping[str, EvalSummary],
+    report: WriterPairwiseReport,
     *,
     variant: Variant = VARIANTS[HOLLOW],
     one_editor: bool = True,
 ) -> Criterion:
     """Decide the pass criterion on a promotion read (reset P2 §4).
 
-    Both arms' runs must have completed with a result for every case; the read must answer ``keep``; its primary
-    reading must read ``regressed``, separated, with its interval below 0; the judge's order check must not void it;
-    and bounces must not separate, since a variant that changes bounces broke the format rather than the writing. A
-    candidate expected better asks the mirror: ``promote``, ``improved``, its interval above 0.
+    Both arms' runs must have completed and stored a page on every case, read off the pass's pairs (a cell that
+    completed with no page counts as none); the read must answer ``keep``; its primary reading must read
+    ``regressed``, separated, with its interval below 0; the judge's order check must not void it; and bounces must not
+    separate, since a variant that changes bounces broke the format rather than the writing. A candidate expected
+    better asks the mirror: ``promote``, ``improved``, its interval above 0.
 
     With two editors (a candidate skill whose ``editor.md`` differs), the readings in :data:`EDITOR_READINGS` measure
     two instruments: each is reported, not compared. The read's decision folds them in, so in its place the criterion
@@ -589,7 +599,8 @@ def pass_criterion(
     banners the judge sees, the preference over the pairs both stored finished must point the primary's way.
 
     :param read: The promotion read of the candidate arm, made with the pass as its ``pairwise_job``.
-    :param runs: Each arm's run summary, by arm.
+    :param runs: Each arm's run summary, by arm, the control first.
+    :param report: The pairwise pass the read was made on.
     :param variant: The candidate the verdict names.
     :param one_editor: Whether both arms ran one ``editor.md``.
     :return: The criterion, each requirement decided.
@@ -608,12 +619,19 @@ def pass_criterion(
         if reliability is None or consistency is None
         else f"{consistency:.2f} ({reliability.order_consistent} of {reliability.both_orders} cases)"
     )
-    ran = "; ".join(f"{arm} {run.status}, {run.n_results} of {run.n_cases}" for arm, run in runs.items())
+    stored = pages_stored(report)
+    pages = {arm: stored[role] for arm, role in zip(runs, ("control", "candidate"), strict=True)}
+    reads = "; ".join(
+        f"{arm} {pages[arm]} of {run.n_cases * run.k_runs}"
+        + ("" if run.status == "completed" else f", its run {run.status}")
+        for arm, run in runs.items()
+    )
     requirements = (
         Requirement(
-            "both arms ran every case",
-            ran,
-            all(run.status == "completed" and run.n_results == run.n_cases * run.k_runs for run in runs.values()),
+            "both arms stored a page on every case",
+            reads,
+            not report.unpaired
+            and all(run.status == "completed" and pages[arm] == run.n_cases * run.k_runs for arm, run in runs.items()),
         ),
         *(
             (Requirement(f"the read answers {decision}", read.decision, read.decision == decision),)
@@ -722,6 +740,8 @@ class Acceptance:
         yield ""
         yield self.variant.question
         yield ""
+        yield from self.pages()
+        yield ""
         yield "| Arm | Role | Skill | Files differing from shipped | Editor digest | Cases | Run |"
         yield "|---|---|---|---|---|---|---|"
         for arm, skill in ((SHIPPED, self.shipped), (self.variant.name, self.candidate)):
@@ -801,6 +821,18 @@ class Acceptance:
             f"Bounces read {'not read' if bounces is None else bounces.outcome.replace('_', ' ')} for "
             f"{self.variant.name}, beside each arm's analyst rounds, since more rounds give more submissions to bounce."
         )
+
+    def pages(self) -> Iterator[str]:
+        """The readout's first table: the cases the judge had two pages of, and the ties a page missing on both sides
+        made, since a pair with no page on either side ties without the judge reading anything."""
+        pairs = self.report.pairs
+        missing = Counter(pair.missing for pair in pairs)
+        yield "| Pages | Cases |"
+        yield "|---|---|"
+        yield f"| Cases with two pages to compare | {missing[None]} of {len(pairs)} |"
+        yield f"| Only the control's page, so the control wins | {missing['candidate']} |"
+        yield f"| Only the candidate's page, so the candidate wins | {missing['control']} |"
+        yield f"| No page on either side, so a tie | {missing['both']} |"
 
     def summary(self) -> dict[str, Any]:
         """What the run found, as JSON: the read, the pass's report, the criterion and the readout."""
@@ -1026,7 +1058,7 @@ async def acceptance(
         report=report,
         read=read,
         criterion=pass_criterion(
-            read, result.arms, variant=chosen, one_editor=candidate.editor().digest == shipped.editor().digest
+            read, result.arms, report, variant=chosen, one_editor=candidate.editor().digest == shipped.editor().digest
         ),
         cap_usd=cap_usd,
         editor_model=editor_model,

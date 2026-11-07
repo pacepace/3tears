@@ -27,6 +27,21 @@ editor's own model. ``await WriterEval(...).run()``:
 8. returns a :class:`WriterResult`, which prints the campaign's readings and each pass's as tables and writes the
    campaign's page.
 
+**A report budget that cannot admit even one turn is refused before anything runs; one under two turns is warned.**
+The cap holds back the next turn's ceiling against what was actually spent, so the arithmetic proves a budget too small
+only when it is under a first turn's ceiling. Each arm's first turn of each role is priced before the store is opened:
+the analyst's at the writer's output cap and the arm's skill text (its shortest over the cases, each without the note it
+withholds), the editor's at its output cap and the editor's text, on the editor's own model, both at the rates
+Anthropic publishes, which a recording run is built on. A first turn's brief and tools only add to that, so each is a
+floor of the real ceiling. A ``budget_usd`` under either is refused by name, at $0 and once, with the budget that admits
+the turn (:meth:`~threetears.evals.ops.report_writer.tally.ReportBudget.first_turn_refusal`). A budget under
+:data:`~threetears.evals.ops.report_writer.tally.MIN_TURNS_FOR_A_REPORT` of the analyst's first-turn ceiling is launched,
+with one line among the result's disclosures, on any model, since whether it fits turns on what the turns really
+cost; on the model the recorded acceptance runs wrote on, the line cites what they stored at such budgets, and on any
+other it says no acceptance run is recorded on it. A model those rates do not list is not checked here; each report's
+first turn is then refused, at $0, when its real ceiling is above the budget. After the arms run, an arm whose reports ended over budget with no page says
+how many, and what the reports of its run that stored a page needed: what they spent, plus one turn's ceiling.
+
 **The cap is split before anything launches.** ``pairwise_share`` of ``max_cost_usd`` (a fifth unless told) is
 reserved for the pairwise passes, in one equal part per candidate; each part is the out-of-run cap its pass's calls are
 admitted under. The arms share the rest equally, and each arm's part holds its reports and their absolute judging. The
@@ -109,16 +124,16 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP
-from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, refresh_prices
+from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
-from threetears.evals.kernel.numbers import format_number
+from threetears.evals.kernel.numbers import format_number, group_thousands, spell_dollars
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.ops import JobStatus, OpsHost, await_job
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
-from threetears.evals.ops.report_writer.tally import ReportBudget
+from threetears.evals.ops.report_writer.tally import MIN_TURNS_FOR_A_REPORT, ReportBudget
 from threetears.evals.ops.report_writer.writer_kind import WriterSide
 from threetears.evals.ops.report_writer.writer_bank import (
     MintedWriterCase,
@@ -127,6 +142,8 @@ from threetears.evals.ops.report_writer.writer_bank import (
     writer_template_create,
 )
 from threetears.evals.ops.report_writer.writer_contract import (
+    ENDING_MEASURE,
+    MUST_FIX_OPEN_MEASURE,
     SKILL_LEVER,
     WRITER_KIND,
     EffortWord,
@@ -134,7 +151,7 @@ from threetears.evals.ops.report_writer.writer_contract import (
     WriterModelFactory,
     WriterModels,
 )
-from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel
+from threetears.evals.ops.report_writer.loop import MOST_REVISIONS, TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.writer_pairwise import WriterPairwiseReport, writer_pairwise
 from threetears.evals.ops.report_writer.writer_promotion import WriterPromotion, writer_promotion
 from threetears.evals.quick.contract import open_store
@@ -146,7 +163,20 @@ from threetears.evals.harness.writer_host import WriterJudge, writer_ops_host
 from threetears.evals.harness.writer_turns import WriterTurns, writer_turns
 from threetears.evals.run import quote_launch, start_run
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
-from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef
+from threetears.evals.schema.models import DECLARED_NAME_CHARS, CaseSetRef, EvalResult
+from threetears.evals.schema.turns import TurnCeiling
+
+#: The model the recorded writer acceptance runs wrote on, whose figures :data:`_RECORDED_BUDGETS` states.
+_RECORDED_MODEL: Final = "claude-sonnet-5-5"
+
+#: What the recorded writer acceptance runs read at budgets near two first-turn ceilings, in their own words: Sonnet 5.5
+#: at medium effort, the shipped skill against its hollow, no-editor and minimal variants
+#: (``tests/fixtures/report_docs/writer_acceptance``: 2026-11-03 and 2026-11-04 at $1, 2026-11-06 at $0.75, and the
+#: no-editor and minimal runs at $1.50, which stored 50 of 50 and 49 of 50 pages).
+_RECORDED_BUDGETS: Final = (
+    "in the recorded Sonnet 5.5 acceptance runs, at $0.75 16 of 50 reports stored a page, at $1.00 17 to 22 of 22, and "
+    "at $1.50 99 of 100"
+)
 
 #: The effort lever's id, as the writer's overlays name it.
 _EFFORT_LEVER = f"{WRITER_KIND}.reasoning_effort"
@@ -681,6 +711,7 @@ class WriterEval:
         """
         cases = read_writer_cases(self.cases_dir)
         _refuse_unheld_notes(cases, self.arms)
+        floors, warned = self._launch_budget(cases)
         opened, where = open_store(self.store)
         turns: dict[str, WriterTurns] = {}
         host = writer_ops_host(
@@ -696,14 +727,21 @@ class WriterEval:
             out_of_run_cost_usd=self._pass_part,
         )
         try:
-            return await self._run(host, cases, turns, where)
+            return await self._run(host, cases, turns, where, floors=floors, warned=warned)
         finally:
             for routed in turns.values():
                 await routed.aclose()
             await host.launch.job_manager.shutdown()
 
     async def _run(
-        self, host: OpsHost, cases: Sequence[WriterCaseFile], turns: dict[str, WriterTurns], where: str
+        self,
+        host: OpsHost,
+        cases: Sequence[WriterCaseFile],
+        turns: dict[str, WriterTurns],
+        where: str,
+        *,
+        floors: Mapping[str, float],
+        warned: Sequence[str],
     ) -> WriterResult:
         eval_host = host.eval_host
         template_id = await run_blocking(eval_host.blocking_executor, self._template, host)
@@ -734,7 +772,7 @@ class WriterEval:
         held_elsewhere = await run_blocking(
             eval_host.blocking_executor, _results_held_elsewhere, host, self.scope_id, on_side
         )
-        disclosures = [*self._recording_disclosures(turns, named), *held_elsewhere]
+        disclosures = [*warned, *self._recording_disclosures(turns, named), *held_elsewhere]
         share = self._arm_part
         if self.budget.usd is not None and len(on_side) * self.k * self.budget.usd > share:
             raise ValueError(
@@ -752,6 +790,15 @@ class WriterEval:
         for arm, routed in turns.items():
             disclosures += [f"{arm}: {left}" for left in routed.unconsumed()]
         run_ids = {arm: run.id for arm, run in runs.items()}
+        disclosures += await run_blocking(
+            eval_host.blocking_executor,
+            _over_budget_with_no_page,
+            host,
+            self.scope_id,
+            run_ids,
+            self.budget.spelled,
+            floors,
+        )
         campaign_id = await run_blocking(
             eval_host.blocking_executor, self._file_campaign, eval_host, run_ids, template_id
         )
@@ -780,6 +827,68 @@ class WriterEval:
     def _arm_part(self) -> float:
         """Each arm's part of what the pairwise reserve leaves: the ceiling its launch names."""
         return self.max_cost_usd * (1 - self.pairwise_share) / len(self.arms)
+
+    def _launch_budget(self, cases: Sequence[WriterCaseFile]) -> tuple[dict[str, float], list[str]]:
+        """Each arm's analyst first-turn ceiling, priced before any snapshot is read, and the launch's warning, if any;
+        the run is refused first when an arm's analyst or editor cannot be admitted even one turn (the module
+        docstring). An arm whose model the published rates do not list is left to each report's first turn."""
+        floors: dict[str, float] = {}
+        twice: list[tuple[float, str]] = []
+        for arm, writer in self.arms.items():
+            analyst_texts = [writer.analyst_skill.analyst(withhold=case.withhold).text for case in cases] or [
+                writer.analyst_skill.analyst().text
+            ]
+            limits = WriterLimits()
+            roles = (
+                ("analyst", writer.model_id, min(analyst_texts, key=len), limits.analyst.session.max_tokens),
+                (
+                    "editor",
+                    writer.editor_model or writer.model_id,
+                    writer.analyst_skill.editor().text,
+                    limits.editor.session.max_tokens,
+                ),
+            )
+            for role, model, text, max_tokens in roles:
+                ceiling = self._first_turn_floor(model, text, max_tokens)
+                if ceiling is None:
+                    continue
+                refused = self.budget.first_turn_refusal(
+                    ceiling,
+                    priced=(
+                        f"the {role}'s first turn of arm {arm!r} on {model}, priced at its "
+                        f"{group_thousands(str(max_tokens))}-token output cap and its text before any snapshot is read,"
+                    ),
+                )
+                if refused is not None:
+                    raise ValueError(
+                        f"the writer eval was not launched, and nothing was sent or spent: {refused}: raise budget_usd"
+                    )
+                if role == "analyst":
+                    floors[arm] = ceiling.usd
+                    twice.append((ceiling.usd, model))
+        if self.budget.usd is None or not twice:
+            return floors, []
+        dearest, model = max(twice)
+        if dearest * MIN_TURNS_FOR_A_REPORT <= self.budget.usd:
+            return floors, []
+        return floors, [
+            f"the {self.budget.spelled} report budget is under {MIN_TURNS_FOR_A_REPORT} of a first turn's ceiling on "
+            f"{model} ({spell_dollars(dearest * MIN_TURNS_FOR_A_REPORT)}), so the cap may stop a report before its "
+            f"review; {_RECORDED_BUDGETS if model == _RECORDED_MODEL else f'no acceptance run is recorded on {model}'}"
+        ]
+
+    def _first_turn_floor(self, model: str, text: str, max_tokens: int) -> TurnCeiling | None:
+        """A floor of a first turn's ceiling on ``model``: its system ``text`` and output cap at Anthropic's published
+        rates, or ``None`` when they do not list the model on the writer's provider."""
+        # The client's own table, loaded once per launch: importing the harness loads no client (test_providers_boundary).
+        from threetears.evals.providers import AnthropicPublishedRates, Provider
+
+        provider = next((known for known in get_args(Provider) if known == self.writer_provider), None)
+        rated = None if provider is None else AnthropicPublishedRates().rates_for(model, provider=provider)
+        if rated is None:
+            return None
+        dollars = rated.rates.ceiling(prompt_tokens=prompt_token_bound(text, "", None), output_tokens=max_tokens)
+        return TurnCeiling(usd=float(dollars), estimate=not rated.guaranteed)
 
     async def _refuse_judging_past_its_part(self, host: OpsHost, template_id: str, *, cases: int) -> None:
         """Refuse the run before any arm launches when the judge's calls, each at its floor, could pass an arm's part
@@ -1072,6 +1181,63 @@ def _refuse_unheld_notes(cases: Sequence[WriterCaseFile], arms: Mapping[str, Wri
             "a case withholds a note an arm's skill does not hold, so no cell of that arm could run it: "
             + "; ".join(faults)
         )
+
+
+def _over_budget_with_no_page(
+    host: OpsHost, scope_id: str, run_ids: Mapping[str, str], budget: str, floors: Mapping[str, float]
+) -> list[str]:
+    """For each arm whose reports ended over budget with no page, how many did, and what the reports of its run that
+    stored a page needed under the cap: what they spent, plus one turn's ceiling (the arm's analyst first-turn floor,
+    where it was priced), so the next budget is sized from them. Blocking."""
+    storage = host.eval_host.storage
+    said: list[str] = []
+    for arm, run_id in run_ids.items():
+        results = storage.query_eval_results_by_run(run_id, scope_id)
+        # A stored page carries its open findings' count; a report that stored none carries none.
+        paged = [result for result in results if MUST_FIX_OPEN_MEASURE in result.host_measures]
+        blank = [
+            result
+            for result in results
+            if result.host_measures.get(ENDING_MEASURE) == "over_budget"
+            and MUST_FIX_OPEN_MEASURE not in result.host_measures
+        ]
+        if not blank:
+            continue
+        spent = sorted(cost for result in paged if (cost := _writer_spend(result)) is not None)
+        if spent:
+            most = spent[-1]
+            floor = floors.get(arm)
+            needed = (
+                "that plus one turn's ceiling"
+                if floor is None
+                else f"about {spell_dollars(most + floor)}, that plus one turn's ceiling of at least {spell_dollars(floor)}"
+            )
+            low, high = spell_dollars(spent[0]), spell_dollars(most)
+            span = low if low == high else f"{low} to {high}"
+            evidence = (
+                f"the {len(spent)} that stored a page under it spent {span}{' each' if len(spent) > 1 else ''}, so "
+                f"under the cap the costliest needed {needed}"
+            )
+        elif paged:
+            evidence = f"the {len(paged)} that stored a page under it were not all priced"
+        else:
+            evidence = "none stored a page, so this run shows no budget that admits one"
+        said.append(
+            f"{arm}: {len(blank)} of {len(results)} report(s) ended over their {budget} budget with no page; {evidence}"
+        )
+    return said
+
+
+def _writer_spend(result: EvalResult) -> float | None:
+    """What a result's report cost its writer (the candidate's usage), or ``None`` when any of it went unpriced."""
+    total = 0.0
+    for usage in result.usage:
+        if usage.role != "candidate":
+            continue
+        if usage.cost_usd is None:
+            return None
+        total += usage.cost_usd
+    return total
 
 
 def _results_held_elsewhere(

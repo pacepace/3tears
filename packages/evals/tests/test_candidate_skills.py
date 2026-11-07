@@ -256,9 +256,9 @@ def test_a_candidate_skill_passes_only_when_the_gate_reads_it_better(
     like_against_like: tuple[Acceptance, list[object]],
 ) -> None:
     found, _ = like_against_like
-    variant, runs = found.variant, found.result.arms
+    variant, runs, report = found.variant, found.result.arms, found.report
     better = pass_criterion(
-        _shaped(found.read, decision="promote", outcome="improved", low=0.1, high=0.4), runs, variant=variant
+        _shaped(found.read, decision="promote", outcome="improved", low=0.1, high=0.4), runs, report, variant=variant
     )
     assert better.passed
     assert (
@@ -266,7 +266,7 @@ def test_a_candidate_skill_passes_only_when_the_gate_reads_it_better(
         == "PASS: the gate reads the shipped-again skill as writing better reports, on the primary reading."
     )
     worse = pass_criterion(
-        _shaped(found.read, decision="keep", outcome="regressed", low=-0.4, high=-0.1), runs, variant=variant
+        _shaped(found.read, decision="keep", outcome="regressed", low=-0.4, high=-0.1), runs, report, variant=variant
     )
     assert not worse.passed
     assert "the read answers promote; the primary reading reads improved; it separated, its interval above 0" in (
@@ -274,15 +274,18 @@ def test_a_candidate_skill_passes_only_when_the_gate_reads_it_better(
     )
     # A variant made to write worse still asks for worse.
     assert pass_criterion(
-        _shaped(found.read, decision="keep", outcome="regressed", low=-0.4, high=-0.1), runs, variant=VARIANTS["hollow"]
+        _shaped(found.read, decision="keep", outcome="regressed", low=-0.4, high=-0.1),
+        runs,
+        report,
+        variant=VARIANTS["hollow"],
     ).passed
     # Bounces are counted before any editor sees a page, so they separate a candidate with one editor or two.
     read = _shaped(found.read, decision="promote", outcome="improved", low=0.1, high=0.4)
     bounced = _with(read, BOUNCES_MEASURE, "regressed")
-    assert not pass_criterion(bounced, runs, variant=variant).passed
-    assert not pass_criterion(_finished(bounced, 0.2), runs, variant=variant, one_editor=False).passed
+    assert not pass_criterion(bounced, runs, report, variant=variant).passed
+    assert not pass_criterion(_finished(bounced, 0.2), runs, report, variant=variant, one_editor=False).passed
     with pytest.raises(ValueError, match="expected worse"):
-        pass_criterion(read, runs, variant=VARIANTS["hollow"], one_editor=False)
+        pass_criterion(read, runs, report, variant=VARIANTS["hollow"], one_editor=False)
 
 
 def _with(read: WriterPromotion, name: str, outcome: str) -> WriterPromotion:
@@ -305,25 +308,27 @@ def test_with_two_editors_the_editors_own_readings_decide_nothing_and_the_finish
     like_against_like: tuple[Acceptance, list[object]],
 ) -> None:
     found, _ = like_against_like
-    variant, runs = found.variant, found.result.arms
+    variant, runs, report = found.variant, found.result.arms, found.report
     # A stricter editor leaves more must-fix findings open, so the read keeps the control on an instrument difference.
     kept = _with(
         _shaped(found.read, decision="keep", outcome="improved", low=0.1, high=0.4), MUST_FIX_OPEN_MEASURE, "regressed"
     )
-    assert not pass_criterion(_finished(kept, 0.2), runs, variant=variant).passed
-    two = pass_criterion(_finished(kept, 0.2), runs, variant=variant, one_editor=False)
+    assert not pass_criterion(_finished(kept, 0.2), runs, report, variant=variant).passed
+    two = pass_criterion(_finished(kept, 0.2), runs, report, variant=variant, one_editor=False)
     assert two.passed, two.verdict()
     rows = {requirement.asks: requirement for requirement in two.requirements}
     assert "the read answers promote" not in rows
     assert rows["Must-fix findings open"].holds is None and rows["Must-fix findings open"].reads == "regressed"
     assert rows["Report finished"].holds is None
     # The finished pairs, free of draft banners, must point the primary's way.
-    against = pass_criterion(_finished(kept, -0.1), runs, variant=variant, one_editor=False)
+    against = pass_criterion(_finished(kept, -0.1), runs, report, variant=variant, one_editor=False)
     assert not against.passed
     assert "the preference over pairs both finished points the same way" in against.verdict()
     # Any other gated reading regressed still fails it, by name.
     judged = next(verdict.name for verdict in kept.verdicts if verdict.reading == "judged")
-    other = pass_criterion(_finished(_with(kept, judged, "regressed"), 0.2), runs, variant=variant, one_editor=False)
+    other = pass_criterion(
+        _finished(_with(kept, judged, "regressed"), 0.2), runs, report, variant=variant, one_editor=False
+    )
     assert not other.passed
     assert "no other gated reading regressed, and every guardrail held" in other.verdict()
     assert (

@@ -101,6 +101,12 @@ The pass criterion `both arms ran every case` read yes because every cell comple
 both-missing pair as a tie, so the primary read on 7 pairs. The budget rule and the criterion are filed as W6 and W7 in
 the reset's backlog. The 25 cases themselves are sound (their Critic verified them before the run).
 
+Since W6 and W7, this command runs with one warning among the result's disclosures: $0.75 is under two of a Sonnet first
+turn's ceiling, and the warning cites this run's 16 of 50 pages. Only a budget under one first-turn ceiling is refused. The criterion is now named `both arms stored a page on every case` and reads off the pass's pairs, where this
+run reads shipped 7 of 25 and no-editor 9 of 25 and fails; the readout's first table leads with `Cases with two pages
+to compare`, 7 of 25 here, beside 16 ties from a page missing on both sides. The JSON and the printed run above are the
+record as it was and stay unchanged.
+
 # Writer acceptance: no-editor against the shipped skill over 25 held-out cases at a $1.50 report budget, 2026-11-06
 
 Files: `20261106-sonnet-no-editor-25-budget150.json` (the result), `20261106-sonnet-no-editor-25-budget150-run.txt` (the
