@@ -138,7 +138,7 @@ from threetears.observe import contain, contained, get_logger, retry_with_backof
 
 from threetears.core.sql_fragments import equality_conditions, quote_identifier
 from threetears.core.backends.arrow_reply import ReplyNotArrowError
-from threetears.core.backends.protocol import ArrowL3Reader
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, ArrowL3Reader
 from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement, stored_value
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, l3_row_pages
@@ -469,7 +469,8 @@ class SnapshotTable:
         L3 only to rebuild what L2 holds no copy of (``docs/design-scoped-snapshot.md``, "Recovery from the diff")
     :ivar retained: the copy keeps only some of L3's rows of the table (a backend's retention lets the others go,
         :meth:`~threetears.core.cache.duckdb.DuckDBBackend.export_rows`): its rows are not counted against L3's, and a
-        diff that finds rows the copy kept gone from L3 (rows it let go might count again) cannot bring it forward
+        diff that finds rows the copy kept gone from L3 (rows it let go might count again) reads the table whole for
+        the scope, through the retention, rather than leave the scope behind
     :ivar partial_groups: with ``retained`` and ``partition_values``, the copy keeps only the partitions the ask names
         and, of each, only some rows (reports' LSF county projections: a thinned set of a night's runs, and of each
         kept run its history rows). A diff then counts and reads only the named partitions, so its per-group count
@@ -1479,6 +1480,88 @@ def _group_key(value: Any, code: str) -> Any:
     :rtype: Any
     """
     return stored_value(value, code)
+
+
+def _rows_cap(l3: Any) -> int | None:
+    """the most rows ``l3`` answers one statement, as it states it (``rows_per_statement``); the rail's cap
+    (:data:`~threetears.core.backends.protocol.L3_RAIL_ROW_CAP`) when it states none, or states it in a form that is
+    not a count; None for one that says it never cuts.
+
+    :param l3: the L3
+    :ptype l3: Any
+    :return: the cap, or None
+    :rtype: int | None
+    """
+    stated = getattr(l3, "rows_per_statement", L3_RAIL_ROW_CAP)
+    if stated is None:
+        return None
+    return stated if isinstance(stated, int) and not isinstance(stated, bool) else L3_RAIL_ROW_CAP
+
+
+async def _by_value_pages(
+    l3: Any, head: str, where: str, value: str, params: Sequence[Any], *, group: bool = False, name: str = "value"
+) -> list[dict[str, Any]]:
+    """every row of ``head WHERE where [GROUP BY value]``, one row a value of ``value``, read in pages of that
+    column's order under the L3's row cap (:func:`_rows_cap`): a statement answering one row a group or a distinct
+    value -- a run of the night, say -- answers more than the rail's cap once a scope holds that many, and the rail
+    cuts it (cobalt prod 2026-11-07: a diff's count of a state's 1,986 runs of a feed answered 1,000, and the rest
+    looked gone from L3). Keyset pages, ``value > $n`` after the last, the NULL value first.
+
+    :param l3: the L3, an asyncpg-shaped ``fetch``
+    :ptype l3: Any
+    :param head: ``SELECT ... FROM ...``, selecting ``value`` as its first column, named ``name``
+    :ptype head: str
+    :param where: the condition, over ``params`` (``$1`` ...)
+    :ptype where: str
+    :param value: the quoted column whose values page the answer
+    :ptype value: str
+    :param params: the condition's parameters
+    :ptype params: Sequence[Any]
+    :param group: whether the statement groups by ``value`` (``GROUP BY``), else it selects distinct values
+    :ptype group: bool
+    :param name: the name ``head`` selects ``value`` as
+    :ptype name: str
+    :return: the rows, in ``value`` order, the NULL one first
+    :rtype: list[dict[str, Any]]
+    :raises ValueError: for a cap under two, which leaves no room to tell a full page from the last
+    """
+    grouped = f" GROUP BY {value}" if group else ""
+    cap = _rows_cap(l3)
+    if cap is None:
+        return [dict(row) for row in await l3.fetch(f"{head} WHERE {where}{grouped}", *params)]
+    if cap < 2:
+        raise ValueError(f"a row cap of {cap} leaves no room to page")
+    page = cap - 1
+    rows = [
+        dict(row)
+        for row in await l3.fetch(f"{head} WHERE {where}{grouped} ORDER BY 1 NULLS FIRST LIMIT {page}", *params)
+    ]
+    found = list(rows)
+    while len(rows) == page and rows[-1][name] is not None:
+        after = f"{where} AND {value} > ${len(params) + 1}"
+        rows = [
+            dict(row)
+            for row in await l3.fetch(f"{head} WHERE {after}{grouped} ORDER BY 1 LIMIT {page}", *params, rows[-1][name])
+        ]
+        found += rows
+    return found
+
+
+def _reported_behind(applying: Mapping[str, tuple[int, str]], lag: Mapping[str, str]) -> Mapping[str, str]:
+    """every scope a replica's L1 is behind on, as a read reports it: those whose chunks it could not apply
+    (:attr:`ScopedSnapshot.behind`) and those a catch-up left behind L3 there (:meth:`ScopedSnapshot._note_lagging`).
+    A function of the two mappings a reader took once each, so a reader on any thread sees one state of both.
+
+    :param applying: scope -> (failures, why), the snapshot's ``_behind``
+    :ptype applying: Mapping[str, tuple[int, str]]
+    :param lag: scope -> why, the snapshot's ``_lag``
+    :ptype lag: Mapping[str, str]
+    :return: scope -> why it is behind
+    :rtype: Mapping[str, str]
+    """
+    # an apply's why first, then the catch-up's for a scope only it names
+    reported = {scope: why for scope, (_, why) in applying.items()}
+    return MappingProxyType({**{scope: why for scope, why in lag.items() if scope not in reported}, **reported})
 
 
 def _key_tuples(rows: Any, key: Sequence[str], codes: Mapping[str, str]) -> list[tuple[Any, ...]]:
@@ -2643,6 +2726,10 @@ class ScopedSnapshot:
         self._failure: str | None = None
         # scope -> (how many passes in a row its current chunks could not be applied, why the last failed)
         self._behind: Mapping[str, tuple[int, str]] = _updated({})
+        # scope -> why: the scopes the last catch-up left behind L3 here (its diff refused, a write in progress, another
+        # replica's claim): reported with ``_behind`` to every reader (:func:`_reported_behind`), never retried as an
+        # apply is; each leaves at its commit here or at the next catch-up that finds it in step
+        self._lag: Mapping[str, str] = _updated({})
         # table -> scope -> rows the L1 holds, kept as each replacement commits, so the status never
         # queries DuckDB (a query would wait on the lock a load or a swap holds, on the event loop)
         self._rows: Mapping[str, Mapping[str, int]] = _updated({t.name: _updated({}) for t in self._tables})
@@ -2690,16 +2777,17 @@ class ScopedSnapshot:
         elif self._failure is not None:
             phase, detail = SnapshotPhase.FAILED, self._failure
         elif self._ready.is_set():
-            behind = sorted(self._behind)
+            behind = sorted(_reported_behind(self._behind, self._lag))
             phase, detail = SnapshotPhase.READY, f"ready; behind on {behind}" if behind else "ready"
             foreign = sorted(scope for scope, pointer in self._seen.items() if not self._loadable(pointer))
             if foreign:
                 detail += f"; {len(foreign)} scopes' pointers carry other columns, so they are served from L3"
         else:
             phase, detail = SnapshotPhase.STARTING, "watching the pointers"
-        if self._behind and phase is not SnapshotPhase.READY:
+        reported = _reported_behind(self._behind, self._lag)
+        if reported and phase is not SnapshotPhase.READY:
             # whatever else it is doing, a replica serving an older epoch of some scopes says which
-            detail = f"{detail}; behind on {sorted(self._behind)}"
+            detail = f"{detail}; behind on {sorted(reported)}"
         progress = self._progress
         if progress.phase is not phase or progress.detail != detail:
             log.info("scoped snapshot %s: %s", self._name, detail, extra={"extra_data": {"phase": phase.value}})
@@ -3069,7 +3157,8 @@ class ScopedSnapshot:
         :rtype: SnapshotStatus
         """
         # each taken once: the loop rebinds them, never changes them, so this is one state of each
-        progress, rows, behind, applied = self._progress, self._rows, self._behind, self._applied
+        progress, rows, applying, lag, applied = self._progress, self._rows, self._behind, self._lag, self._applied
+        behind = _reported_behind(applying, lag)
         return SnapshotStatus(
             phase=progress.phase,
             source=progress.source,
@@ -3081,7 +3170,7 @@ class ScopedSnapshot:
             history=tuple(progress.history),
             last_change=progress.last_change,
             ready_at=progress.ready_at,
-            behind={scope: why for scope, (_, why) in sorted(behind.items())},
+            behind=dict(sorted(behind.items())),
             reading=(
                 None
                 if progress.reading is None
@@ -3155,6 +3244,7 @@ class ScopedSnapshot:
         await asyncio.to_thread(self._versioned.swap, replacements, put, dropped)
         _headway(f"committed {len(replacements)} replacements here", landed=True)
         self._behind = _updated(self._behind, drop=current)
+        self._lag = _updated(self._lag, drop=current)
         if count:
             self._count(replacements)
 
@@ -3172,16 +3262,16 @@ class ScopedSnapshot:
         """
         # taken before the read opens, and a scope leaves it only after its commit: so it names every
         # scope the read is behind on, and may still name one brought current in between
-        behind = self._behind
+        applying, lag = self._behind, self._lag
         with self._backend.read_snapshot() as cursor:
-            yield cursor, MappingProxyType({scope: why for scope, (_, why) in behind.items()})
+            yield cursor, _reported_behind(applying, lag)
 
     @property
     def behind(self) -> Mapping[str, str]:
-        """the scopes this replica's L1 is behind on now, and why, as a read opened now reports them
-        (:meth:`read_versioned`): for a reader of a copy published from an earlier read (a shared-memory
-        version, :mod:`~threetears.core.collections.shared_snapshot`) to see that what it holds no longer
-        says what the L1 does. Safe on any thread.
+        """the scopes this replica's L1 is behind on because it could not apply their current chunks, and why: the
+        scopes it retries the apply of itself. A read reports these and the scopes a catch-up left behind L3 here
+        (:meth:`read_versioned`, :meth:`read_with_behind`, :meth:`status`); a caller that starts catch-ups for scopes
+        behind L3 leaves these out, as the snapshot retries them. Safe on any thread.
 
         :return: scope -> why it is behind
         :rtype: Mapping[str, str]
@@ -3242,13 +3332,9 @@ class ScopedSnapshot:
         table = quote_identifier(self._tables[0].name)
         # taken before the read opens, and a scope leaves it only after its commit (as
         # read_with_behind): it names every scope the read is behind on
-        behind = self._behind
+        applying, lag = self._behind, self._lag
         with self._versioned.open(table) as (cursor, epochs):
-            yield VersionedRead(
-                cursor=cursor,
-                epochs=epochs,
-                behind=MappingProxyType({scope: why for scope, (_, why) in behind.items()}),
-            )
+            yield VersionedRead(cursor=cursor, epochs=epochs, behind=_reported_behind(applying, lag))
 
     async def wait_ready(self, *, timeout: float) -> None:
         """wait until every scope has been loaded.
@@ -6456,10 +6542,14 @@ class ScopedSnapshot:
                 expected += rows_now
                 drop.add(key)
             elif had is not None and some and had > rows_now:
-                return f"rows it keeps of {group}={value!r} went from L3, so rows it let go may count again"
+                return await self._retained_whole(
+                    table, scope, f"rows it keeps of {group}={value!r} went from L3, so rows it let go may count again"
+                )
         gone = set(held_counts) - set(in_l3)
         if gone and some:
-            return f"{len(gone)} groups of {group} it keeps went from L3, so rows it let go may count again"
+            return await self._retained_whole(
+                table, scope, f"{len(gone)} groups of {group} it keeps went from L3, so rows it let go may count again"
+            )
         drop |= gone
         mask = groups.keeping(drop)
         parts: list[Any] = [held.filter(mask)]
@@ -6478,6 +6568,46 @@ class ScopedSnapshot:
         if not table.retained and rows_now.num_rows != total:
             return f"L3 holds {total} rows of it, the diff makes {rows_now.num_rows}"
         return rows_now, read
+
+    async def _retained_whole(self, table: SnapshotTable, scope: str, why: str) -> tuple[Any, int]:
+        """one table's rows of a scope read whole from L3, as this L1 keeps them, for a copy that keeps only some of
+        them (:attr:`SnapshotTable.retained`) whose kept rows went from L3: which rows it let go now count again the
+        diff cannot tell, so the table alone is read as a cold rebuild reads it, each page through this L1's
+        retention. Never left behind for it: a scope stuck behind L3 serves the night's numbers stale forever
+        (cobalt prod 2026-11-07, "stuck is not acceptable"). The other tables of the scope stay diffed. Said at
+        WARNING, with why.
+
+        :param table: the table
+        :ptype table: SnapshotTable
+        :param scope: the scope
+        :ptype scope: str
+        :param why: what the diff found
+        :ptype why: str
+        :return: the rows as this L1 keeps them, and how many were read from L3
+        :rtype: tuple[pyarrow.Table, int]
+        """
+        log.warning(
+            "scoped snapshot %s: %s of scope %r is read whole from L3, the one table: %s",
+            self._name,
+            table.name,
+            scope,
+            why,
+            extra={"extra_data": {"table": table.name, "scope": scope, "why": why}},
+        )
+        parts: list[Any] | None = None
+        if isinstance(self._l3, ArrowL3Reader):
+            try:
+                parts = await self._read_table(table, scope, _rail_types(self._backend.column_types(table.name)))
+            except ReplyNotArrowError as exc:
+                # NOSILENT: a value the rail answers otherwise than its column's Arrow type: read as dict rows
+                log.info(
+                    "a table's rows are read from L3 as dict rows: a value is not its column's Arrow type",
+                    extra={"extra_data": {"table": table.name, "scope": scope, "error": str(exc)}},
+                )
+        if parts is None:
+            parts = await self._read_table(table, scope, None)
+        rows = _concatenated(parts) if parts else await self._export(table, scope, [])
+        return rows, rows.num_rows
 
     async def _group_counts(
         self,
@@ -6510,11 +6640,12 @@ class ScopedSnapshot:
         stamp = quote_identifier(table.version_column)
         counts = (
             f"count(*) AS total, count(*) FILTER (WHERE {stamp} > $2) AS changed, max({stamp}) AS newest "
-            f"FROM {quote_identifier(table.name)} WHERE {quote_identifier(table.scope_column)} = $1"
+            f"FROM {quote_identifier(table.name)}"
         )
+        in_scope = f"{quote_identifier(table.scope_column)} = $1"
         members: list[Any] = []
         if group is None:
-            rows = await self._l3.fetch(f"SELECT NULL AS value, {counts}", scope, held_at)  # noqa: S608
+            rows = await self._l3.fetch(f"SELECT NULL AS value, {counts} WHERE {in_scope}", scope, held_at)  # noqa: S608
         else:
             column = quote_identifier(group)
             among = ""
@@ -6526,11 +6657,14 @@ class ScopedSnapshot:
                 if not listed:
                     return {}
                 among = f" AND ({' OR '.join(listed)})"
-            rows = await self._l3.fetch(
-                f"SELECT {column} AS value, {counts}{among} GROUP BY {column}",  # noqa: S608
-                scope,
-                held_at,
-                *members,
+            # one row a group: paged under the rail's cap, which a scope of more groups (a night's runs) passes
+            rows = await _by_value_pages(
+                self._l3,
+                f"SELECT {column} AS value, {counts}",  # noqa: S608
+                f"{in_scope}{among}",
+                column,
+                (scope, held_at, *members),
+                group=True,
             )
         counted = {
             _group_key(row["value"], code): (row["value"], int(row["total"]), int(row["changed"]), row["newest"])
@@ -7042,8 +7176,14 @@ class ScopedSnapshot:
         """
         scopes: set[str] = set()
         for table in self._tables:
-            rows = await self._l3.fetch(
-                f"SELECT DISTINCT {quote_identifier(table.scope_column)} AS scope FROM {quote_identifier(table.name)}"  # noqa: S608
+            # one row a scope: paged under the rail's cap, as every answer of one row a value is
+            rows = await _by_value_pages(
+                self._l3,
+                f"SELECT DISTINCT {quote_identifier(table.scope_column)} AS scope FROM {quote_identifier(table.name)}",  # noqa: S608
+                "TRUE",
+                quote_identifier(table.scope_column),
+                (),
+                name="scope",
             )
             found = {row["scope"] for row in rows}
             if None in found:
@@ -7188,10 +7328,13 @@ class ScopedSnapshot:
                 await self._read_values(table, scope, columns, types, named, paged, moved, parts)
                 self._table_done(table.name, scope)
                 return parts
-        values = await self._l3.fetch(
-            f"SELECT DISTINCT {quote_identifier(table.partition_by)} AS value FROM {quote_identifier(table.name)} "  # noqa: S608
-            f"WHERE {quote_identifier(table.scope_column)} = $1 ORDER BY 1",
-            scope,
+        # one row a value: paged under the rail's cap, which a scope of more values (a night's runs) passes
+        values = await _by_value_pages(
+            self._l3,
+            f"SELECT DISTINCT {quote_identifier(table.partition_by)} AS value FROM {quote_identifier(table.name)}",  # noqa: S608
+            f"{quote_identifier(table.scope_column)} = $1",
+            quote_identifier(table.partition_by),
+            (scope,),
         )
         self._table_read(table.name, scope, partitions_total=len(values), count=(table, None))
         await self._read_values(table, scope, columns, types, [row["value"] for row in values], paged, moved, parts)
@@ -8083,6 +8226,7 @@ class ScopedSnapshot:
             await self._catch_up(record)
         finally:
             self._end_run("catch_up")
+            self._note_lagging(record)
         return list(record.caught)
 
     async def catch_up(self) -> CatchUpOutcome:
@@ -8114,6 +8258,7 @@ class ScopedSnapshot:
             wait = self._waiting.get("catch_up")
         finally:
             self._end_run("catch_up")
+            self._note_lagging(record)
         if record.claim_held:
             result = CatchUpResult.CLAIM_HELD
         elif result is CatchUpResult.CAUGHT_UP and waited:
@@ -8134,6 +8279,37 @@ class ScopedSnapshot:
             reason=reason,
             left=MappingProxyType(dict(record.left)),
         )
+
+    def _note_lagging(self, record: _CatchUpRecord) -> None:
+        """name every scope a catch-up leaves behind L3 here, with why, to every reader (:func:`_reported_behind`):
+        one whose diff it could not bring forward (:attr:`_CatchUpRecord.left`), one a write in progress holds, one
+        another replica's claim holds, one whose catch-up raised. A reader of :meth:`read_with_behind` or
+        :meth:`read_versioned` is then told the copy is behind on it, never that it is current (cobalt prod
+        2026-11-07: 27 states stuck behind L3 for an hour while the reports' index said ``behind: []``). A scope
+        leaves at its commit here (:meth:`_commit`) or at the next catch-up that finds it in step.
+
+        :param record: what the catch-up found and did
+        :ptype record: _CatchUpRecord
+        :return: nothing
+        :rtype: None
+        """
+        if not record.scopes:
+            # it read no scope of L3 (it failed first): what the last one found stands
+            return
+        # against the pointers seen now: a scope the catch-up republished has moved its pointer
+        lagging = self._lagging(record.epochs, record.scopes)
+        caught = set(record.caught)
+        lag: dict[str, str] = {}
+        for scope, lagged in lagging.items():
+            if scope in caught:
+                continue
+            lag[scope] = record.left.get(scope) or (
+                f"another replica's catch-up holds the claim (L3 at epoch {lagged.l3_epoch}, the copy at "
+                f"{lagged.pointer_epoch})"
+                if record.claim_held
+                else f"behind L3 (L3 at epoch {lagged.l3_epoch}, the copy at {lagged.pointer_epoch})"
+            )
+        self._lag = _updated(lag)
 
     def _lagging(self, epochs: Mapping[str, int], scopes: Iterable[str]) -> dict[str, ScopeLag]:
         """the scopes whose epoch in L3 is ahead of the pointer this replica has seen.

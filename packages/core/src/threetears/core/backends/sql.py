@@ -45,6 +45,7 @@ from threetears.observe import get_logger
 import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
+    L3AnswerCutError,
     FileLoad,
     LoadFile,
     LoadingStore,
@@ -521,10 +522,16 @@ class _LedRead:
         :return: the rows
         :rtype: list[dict[str, Any]]
         """
-        rows = [dict(row) for row in await self.reader.fetch(self.sql, values)]
         self.statements += 1
-        if self.row_cap is None or len(rows) < self.row_cap:
+        try:
+            rows = [dict(row) for row in await self.reader.fetch(self.sql, values)]
+        except L3AnswerCutError:
+            # the rail said it cut the answer: read as an answer that reached the cap is, in halves then by pages
+            rows = None
+        if rows is not None and (self.row_cap is None or len(rows) < self.row_cap):
             return rows
+        if self.row_cap is None:
+            raise L3AnswerCutError(f"{self.schema.name}: a transport that states no cap cut a key-led answer", rows=0)
         if len(values) > 1:
             self.splits += 1
             half = len(values) // 2
@@ -1376,7 +1383,23 @@ class SqlL3Backend:
         await self._execute(schema_sql.build_delete_sql(schema), *coerced, conn=conn)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty)."""
+        """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty).
+
+        A table whose schema is registered is read in pages of its primary key under the transport's row cap
+        (:attr:`rows_per_statement`), so a scan of more rows than the L3 rail answers a statement reads every one;
+        any other is one statement, which the rail refuses rather than cut when it matches more.
+        """
+        schema = self._schemas.get(table)
+        cap = self.rows_per_statement
+        if schema is not None and cap is not None and cap > 1:
+            read = await read_keyset_pages(
+                self,
+                f"SELECT * FROM {_quote_ident(table)}",  # noqa: S608 - a registered schema's table
+                list(schema.pk_columns),
+                where=dict(filters or {}),
+                page_size=cap - 1,
+            )
+            return read.rows
         if not filters:
             return await self.fetch(f"SELECT * FROM {_quote_ident(table)}")
         where, params = self._where(filters, start=1)

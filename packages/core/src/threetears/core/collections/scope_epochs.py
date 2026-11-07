@@ -563,14 +563,31 @@ class ScopeEpochs:
             raise ValueError(
                 f"commit of version {version} refused: {[str(r['scope']) for r in behind]} are already at or past it"
             )
-        moved = await conn.fetch(
+        # the scopes it moves, read first in pages under the rail's row cap: an UPDATE ... RETURNING of them answers one
+        # row a scope, which a write of more scopes than the cap (cobalt prod moved 531 in one write, 2026-11-07)
+        # would have cut without saying so, and the scopes past the cut would never be enrolled
+        moved: list[str] = []
+        page: list[Any] = [None] * DEFAULT_PAGE_SIZE
+        while len(page) == DEFAULT_PAGE_SIZE:
+            after = "" if not moved else "AND scope > $2 "
+            page = await conn.fetch(
+                f"SELECT scope FROM {self._table} WHERE pending IS NOT NULL AND scope <> $1 {after}"  # noqa: S608 - the owner's table name
+                f"ORDER BY scope LIMIT {DEFAULT_PAGE_SIZE}",
+                WHOLE,
+                *((moved[-1],) if moved else ()),
+            )
+            moved += [str(row["scope"]) for row in page]
+        # only the scopes read: whatever else is pending by the UPDATE stays pending for the next commit, never moved
+        # unenrolled (the fence keeps a touch out until this transaction ends; this holds the commit to what it read)
+        await conn.execute(
             f"UPDATE {self._table} SET previous_epoch = NULLIF(epoch, 0), epoch = $1, pending = NULL, "  # noqa: S608 - the owner's table name
-            "date_updated = now() WHERE pending IS NOT NULL AND scope <> $2 RETURNING scope",
+            "date_updated = now() WHERE pending IS NOT NULL AND scope <> $2 AND scope = ANY($3::text[])",
             version,
             WHOLE,
+            moved,
         )
-        for row in moved:
-            transaction.enroll(self._collection, str(row["scope"]))
+        for scope in moved:
+            transaction.enroll(self._collection, scope)
         log.info(
             "write committed and its scopes' epochs moved",
             extra={"extra_data": {"table": self._collection.table_name, "version": version, "scopes": len(moved)}},

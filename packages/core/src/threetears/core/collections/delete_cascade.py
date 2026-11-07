@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP
 from threetears.core.collections.generation import announce_unheard_writes, tables_with_write_generation
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.observe import get_logger
@@ -96,11 +97,9 @@ async def read_delete_cascade(collection: Any, parent_keys: Sequence[Any]) -> li
             continue
         columns = tuple(child.primary_key_columns)
         carried = tuple(dict.fromkeys((*columns, *getattr(child, "invalidation_columns", ()))))
-        # cache-bypass: the rows a foreign-key action is about to reach, found by the column naming the parent
-        rows = await collection.l3_pool.fetch(
-            f"SELECT {', '.join(carried)} FROM {cascade.child_table} WHERE {cascade.child_column} = ANY($1)",  # noqa: S608 -- declared identifiers
-            values,
-        )
+        # cache-bypass: the rows a foreign-key action is about to reach, found by the column naming the parent, in
+        # pages of the child's key under the L3 rail's row cap (a parent of more children than it is cut past it)
+        rows = await _children(collection.l3_pool, cascade.child_table, cascade.child_column, carried, columns, values)
         keys = tuple(row[columns[0]] if len(columns) == 1 else tuple(row[c] for c in columns) for row in rows)
         if not keys:
             continue
@@ -176,3 +175,40 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
             failure = failure or exc
     if failure is not None:
         raise failure
+
+
+async def _children(
+    pool: Any, table: str, column: str, carried: Sequence[str], key: Sequence[str], values: Sequence[Any]
+) -> list[Any]:
+    """the rows of ``table`` whose ``column`` is one of ``values``, read in pages of ``key`` under the L3 rail's row
+    cap: ``WHERE column = ANY($1) [AND (key) > (...)] ORDER BY key LIMIT``.
+
+    :param pool: the L3, an asyncpg-shaped ``fetch``
+    :ptype pool: Any
+    :param table: the child table, a declared identifier
+    :ptype table: str
+    :param column: the column naming the parent, a declared identifier
+    :ptype column: str
+    :param carried: the columns read, ``key`` among them
+    :ptype carried: Sequence[str]
+    :param key: the child's primary key, declared identifiers
+    :ptype key: Sequence[str]
+    :param values: the parents' values
+    :ptype values: Sequence[Any]
+    :return: the rows
+    :rtype: list[Any]
+    """
+    page_size = L3_RAIL_ROW_CAP - 1
+    order = ", ".join(key)
+    head = f"SELECT {', '.join(carried)} FROM {table} WHERE {column} = ANY($1)"  # noqa: S608 -- declared identifiers
+    found: list[Any] = []
+    page = list(await pool.fetch(f"{head} ORDER BY {order} LIMIT {page_size}", values))
+    found += page
+    while len(page) == page_size:
+        last = [page[-1][c] for c in key]
+        after = ", ".join(f"${2 + i}" for i in range(len(key)))
+        page = list(
+            await pool.fetch(f"{head} AND ({order}) > ({after}) ORDER BY {order} LIMIT {page_size}", values, *last)
+        )
+        found += page
+    return found

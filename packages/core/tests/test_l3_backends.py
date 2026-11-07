@@ -11,6 +11,8 @@ Proves the L3 tier is genuinely two-layered and storage-agnostic:
 
 from __future__ import annotations
 
+import re
+import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +29,7 @@ from threetears.core.backends import (
     RowcountUnreadableError,
     parse_rowcount,
 )
+from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
 
 
 class _RecordingPool:
@@ -574,3 +577,37 @@ async def test_execute_batch_runs_on_bound_conn_in_the_request_transaction() -> 
         await backend.execute_batch([{"query": "INSERT 1"}, {"query": "INSERT 2", "params": ["p"]}])
     assert conn.calls == [("INSERT 1", ()), ("INSERT 2", ("p",))]
     assert pool.calls == []
+
+
+class _CuttingSqlitePool:
+    """an L3 over one SQLite table behind the rail: every statement run as sent, its answer cut at four rows without
+    a word, and the cap stated as the rail's client states it."""
+
+    rows_per_statement = 4
+
+    def __init__(self, rows: list[tuple[str, str]]) -> None:
+        self.db = sqlite3.connect(":memory:")
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("CREATE TABLE widgets (id TEXT PRIMARY KEY, kind TEXT)")
+        self.db.executemany("INSERT INTO widgets VALUES (?, ?)", rows)
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        sql = re.sub(r"\$(\d+)", r"?\1", query)
+        return [dict(r) for r in self.db.execute(sql, params).fetchall()][:4]
+
+
+@pytest.mark.asyncio
+async def test_a_scan_of_a_registered_table_reads_every_row_in_pages_under_the_rail_s_cap() -> None:
+    """a scan was one statement, which the L3 rail cuts at its cap: a registered table is read in pages of its key."""
+    schema = TableSchema(
+        name="widgets", primary_key="id", columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)]
+    )
+    rows = [(f"w{i:02d}", "gadget" if i % 2 else "gizmo") for i in range(10)]
+    backend = SqlL3Backend(_CuttingSqlitePool(rows))
+    backend.register_schema("widgets", schema)  # type: ignore[arg-type]
+
+    every = await backend.scan("widgets")
+    gadgets = await backend.scan("widgets", {"kind": "gadget"})
+
+    assert sorted(r["id"] for r in every) == [row[0] for row in rows]
+    assert sorted(r["id"] for r in gadgets) == [row[0] for row in rows if row[1] == "gadget"]

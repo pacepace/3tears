@@ -50,17 +50,19 @@ class ReplyNotArrowError(ValueError):
 
 
 class _RailReply:
-    """a parsed rail reply: whether it succeeded, and its rows.
+    """a parsed rail reply: whether it succeeded, its rows, and whether the broker cut them at its row cap.
 
     :ivar success: the reply's ``success``
     :ivar rows: its rows, one column a type asked for, in that order (empty for a failed reply)
+    :ivar truncated: the reply's ``truncated``: the broker answered fewer rows than the statement matched
     """
 
-    __slots__ = ("rows", "success")
+    __slots__ = ("rows", "success", "truncated")
 
-    def __init__(self, success: bool, rows: Any) -> None:
+    def __init__(self, success: bool, rows: Any, truncated: bool = False) -> None:
         self.success = success
         self.rows = rows
+        self.truncated = truncated
 
 
 def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
@@ -81,7 +83,9 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
     if not _PYARROW:
         raise ImportError("an L3 read as Arrow needs pyarrow: install 3tears[snapshot]")
     row_type = pa.struct([pa.field(name, kind) for name, kind in types.items()])
-    schema = pa.schema([pa.field("success", pa.bool_()), pa.field("rows", pa.list_(row_type))])
+    schema = pa.schema(
+        [pa.field("success", pa.bool_()), pa.field("rows", pa.list_(row_type)), pa.field("truncated", pa.bool_())]
+    )
     try:
         parsed = pa_json.read_json(
             io.BytesIO(reply),
@@ -101,7 +105,8 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
                     raise ReplyNotArrowError(
                         f"text column {name!r} holds the rail's bytes mark, which fetch answers as bytes"
                     )
-    return _RailReply(success, rows)
+    truncated = parsed.num_rows == 1 and bool(parsed.column("truncated")[0].as_py())
+    return _RailReply(success, rows, truncated)
 
 
 def _rail_value(value: Any, kind: Any) -> Any:
