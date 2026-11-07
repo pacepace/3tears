@@ -99,6 +99,7 @@ from threetears.evals.analysis.bundle.schema import (
     JudgeIdentityLevel,
     BundleInspection,
     GoalCheckProofReading,
+    host_declarations_digest,
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -785,6 +786,7 @@ __all__ = [
     "history",
     "insight_standing",
     "inspect_analysis_bundle",
+    "host_declarations_digest",
     "inspect_campaign_bundle",
     "judge_agreement",
     "judge_evidence_tiers",

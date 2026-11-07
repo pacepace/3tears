@@ -214,7 +214,7 @@ def read_profile_file(path: str | Path) -> ProfileFile:
         nearly = f"; it holds {', '.join(repr(key) for key in near)}" if near else ""
         raise RefusedInput(
             f"{source} declares no 'host_declarations_digest'{nearly}",
-            remedy="name the digest under 'host_declarations_digest', as the host's analysis bundles record it",
+            remedy="name the digest under 'host_declarations_digest', computed with the package's own function",
         )
     for key, value in (("built_by", built_by), ("host_declarations_digest", digest)):
         if (value is not None or key == "host_declarations_digest") and not isinstance(value, str):
