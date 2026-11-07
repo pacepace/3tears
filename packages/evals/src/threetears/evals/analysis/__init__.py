@@ -423,6 +423,7 @@ from threetears.evals.analysis.summary import (
     UNPRICED,
     dollars_text,
     summarize_run,
+    summarize_runs,
 )
 
 __all__ = [
@@ -503,6 +504,7 @@ __all__ = [
     "UNPRICED",
     "dollars_text",
     "summarize_run",
+    "summarize_runs",
     "MIN_CASES",
     "SECTION_TITLES",
     "CellValue",

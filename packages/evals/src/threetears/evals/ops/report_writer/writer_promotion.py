@@ -30,9 +30,9 @@ the floors hold`` reads): a size to plan the next campaign at, never a reason to
 **A pass that stopped early.** A pass judging under a declared stopping rule
 (:class:`~threetears.evals.ops.report_writer.writer_pairwise.StoppingRule`) may stop once its preference separates;
 each look is a prefix of one bet fixed for the rule's planned cases, so the primary holds its level at the stop. Every
-arm ran every case before the pass began, so the gated readings and guardrails are read as always, once, on every case
-run: one fixed-n read at a pre-set N, the same the campaign's page reads. The read says what the pass did in one
-sentence (``stopping_line``).
+arm ran every case launched before the pass began, so the gated readings and guardrails are read as always, on every
+case run: under a writer eval that launches in batches, once, at the stop, on the cases launched by then. The read
+says what the pass did in one sentence (``stopping_line``).
 
 **Generic over levers.** The candidate is an arm, and what it changed is read off the arms' recorded lever maps, so a
 model, an effort or a host's own lever is decided as a skill text is.
@@ -40,7 +40,7 @@ model, an effort or a host's own lever is decided as a skill text is.
 **What it refuses.** A campaign whose arms were not scored by one judge on one rubric
 (:func:`~threetears.evals.ops.report_writer.writer_contract.refuse_unfixed_scoring_judge`), and one that ran over
 anything but held-out writer cases: each run must name its case set, and each case it ran must be a writer case its
-mint put on the held-out side of its split, in the set the run names. The dev side is where a change is tuned, so a
+mint put on the held-out side of its split, in the set the run names or in a batch of it, a set made for one launch. The dev side is where a change is tuned, so a
 decision read there would be read on the cases it was fitted to. And a pairwise job that is not a completed pass, or
 whose report names another campaign, candidate, control, judge or preference criterion than the read's.
 
@@ -164,6 +164,16 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
     """The held-out sets the runs named and how many cases they ran, refusing a run or case off the held-out side."""
     faults = [f"run {run.id} named no case set" for run in runs if run.case_set is None]
     named = {run.case_set.name for run in runs if run.case_set is not None}
+    # A batch of a launch made in batches names a set made for that one launch; each of its cases is still held to
+    # the held-out side of its split, case by case, below.
+    batched = {
+        case_id
+        for run in runs
+        if run.case_set is not None
+        and (listed := host.storage.load_case_set(run.case_set.name, run.case_set.version, scope_id)) is not None
+        and not listed.tracked
+        for case_id in run.test_case_ids
+    }
     ids = sorted({case_id for run in runs for case_id in run.test_case_ids})
     stored = host.storage.load_test_cases_by_ids(ids, scope_id)
     bank = writer_case_bank(stored)
@@ -179,7 +189,7 @@ def _refuse_unheld_out(host: EvalHost, runs: Sequence[EvalRun], scope_id: str) -
             faults.append(f"case {case_id} was put in no split")
         elif origin.side != "held_out":
             faults.append(f"case {case_id} is on the {origin.side} side of its split")
-        elif origin.case_set not in named:
+        elif origin.case_set not in named and case_id not in batched:
             faults.append(f"case {case_id} was minted into {origin.case_set!r}, which no run names")
     if faults:
         raise ValidationFailedError(
