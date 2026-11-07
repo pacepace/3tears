@@ -89,11 +89,12 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
     pooled_rate_interval,
 )
-from threetears.evals.analysis.style import measure_name
+from threetears.evals.analysis.style import code, measure_name
 from threetears.evals.kernel.analysis_measures import BarVerdict
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.schema.base import EvalDocumentModel
 
 __all__ = [
@@ -1458,7 +1459,7 @@ def _bar_statuses(
             order = [arm.variant_key for arm in arms if arm.variant_key in by_arm]
             order += [key for key in by_arm if key not in order]
             descriptor = bundles[aspect.label].measure_catalog.get(bar.measure_id)
-            heading = measure_name(bar.measure_id, descriptor.reader_name if descriptor is not None else None)
+            heading = _read_name(bar.measure_id, descriptor.reader_name if descriptor is not None else None)
             for key in order:
                 verdicts = by_arm[key]
                 decisions = [verdict.decision for verdict in verdicts]
@@ -1490,6 +1491,16 @@ def _bar_statuses(
                     )
                 )
     return statuses
+
+
+def _read_name(name: str, reader_name: str | None) -> str:
+    """A measure as the readings store it, in every name and reason sentence: a goal check by its expression, as code,
+    any other measure as :func:`~threetears.evals.analysis.style.measure_name` names it. These words are frozen into
+    the campaign's bundle and fingerprinted with it, so no name a page gives a check may move them: a page names the
+    check at render time (``BarStatus.missed_reason``,
+    :func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`)."""
+    check = goal_check_of(name)
+    return code(check) if check is not None else measure_name(name, reader_name)
 
 
 def _measure_readings(
@@ -1534,7 +1545,7 @@ def _measure_readings(
                             arm=board.variant_key,
                             arm_label=label,
                             measure=summary.name,
-                            name=measure_name(summary.name, descriptor.reader_name if descriptor else None),
+                            name=_read_name(summary.name, descriptor.reader_name if descriptor else None),
                             rig=cell.apparatus_class_id,
                             value=value,
                             interval=(summary.ci_low, summary.ci_high)

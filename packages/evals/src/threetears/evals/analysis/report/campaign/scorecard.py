@@ -849,7 +849,7 @@ def _sizings(
     if control is None:
         return found
     bundle = reports[row.aspect].bundle
-    figures = floor_readings(bundle, control, row.arm, check_names=bundle.goal_check_names)
+    figures = floor_readings(bundle, control, row.arm, check_names=bundle.named_checks())
     per_case = case_cost_usd(bundle)
     for status in readings.floors:
         floor = floor_of(campaign.floors, status.floor)
@@ -1340,8 +1340,8 @@ def measure_blocks(
 
 def _measure_words(reading: MeasureReading, reports: Mapping[str, Report]) -> str:
     """A measure as the page names it on its aspect, and as every other surface names it
-    (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its declared display
-    name else its whole expression, any other measure by its reader name; the pass rate as a name, capitalised as the
+    (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`): a goal check by its name on the aspect
+    (declared, else ``Goal check``), any other measure by its reader name; the pass rate as a name, capitalised as the
     others are (``Pass rate``)."""
     if reading.measure == _PASS_RATE:
         return reading.name[:1].upper() + reading.name[1:]
@@ -1365,10 +1365,9 @@ def _shown_measures(readings: CampaignReadings) -> list[MeasureReading]:
 
 def _measure_header(key: str, readings: CampaignReadings, reports: Mapping[str, Report]) -> str:
     """A measure's name over a column spanning aspects: its name on every aspect reading it where they agree; where
-    two aspects' templates name one check apart, its whole expression, as the readings name it."""
+    two aspects name one check apart, each name, in the campaign's order, which the glossary defines alike."""
     held = [reading for reading in readings.measures if reading.measure == key]
-    said = {_measure_words(reading, reports) for reading in held}
-    return said.pop() if len(said) == 1 else held[0].name
+    return " / ".join(dict.fromkeys(_measure_words(reading, reports) for reading in held))
 
 
 def _measure_matrix(

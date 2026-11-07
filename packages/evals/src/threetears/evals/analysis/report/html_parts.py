@@ -203,10 +203,14 @@ def _header(text: str, term: str | None) -> str:
     return term_link(term, shown) if term else shown
 
 
-def term_link(term: str, label: str, *, css: str = "") -> str:
-    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place."""
+def term_link(term: str, label: str, *, css: str = "", definition: str | None = None) -> str:
+    """A link to a glossary term, its sentence as the link's title so a hover reads it without leaving the place:
+    ``definition`` where the page defines the term itself (a goal check's name), else the term's :data:`GLOSSARY`
+    sentence."""
     style = f' class="{css}"' if css else ""
-    return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(GLOSSARY[term])}">{label}</a>'
+    # A hover shows text, never markup: a definition's code span (a check's expression) reads without its ticks.
+    said = _CODE.sub(r"\1", definition) if definition is not None else GLOSSARY[term]
+    return f'<a{style} href="#g-{glossary_slug(term)}" title="{escape(said)}">{label}</a>'
 
 
 def code_html(text: str) -> str:

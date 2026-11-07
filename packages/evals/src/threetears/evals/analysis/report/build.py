@@ -152,6 +152,7 @@ from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
 from threetears.evals.analysis.style import (
     CANNOT_TELL_APART,
     GLOSSARY,
+    GOAL_CHECK,
     page_date,
     ArmName,
     arm_display_name,
@@ -263,7 +264,7 @@ def _floor_verdicts(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
         return {}
     read: dict[str, tuple[FloorVerdict, ...]] = {}
     for key in _candidates(bundle):
-        readings = floor_readings(bundle, control, key, check_names=bundle.goal_check_names)
+        readings = floor_readings(bundle, control, key, check_names=bundle.named_checks())
         read[key] = tuple(
             read_floor(floor, readings, control=arm(control), candidate=arm(key)) for floor in declared.floors
         )
@@ -603,7 +604,7 @@ def _typed_verdicts(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str, s
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
     cell_name = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))
-    guardrails = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers, check_names=bundle.goal_check_names)
+    guardrails = guardrail_verdicts(surface, bundle.guardrails, cell_name, rulers, check_names=bundle.named_checks())
     return [*guardrails, *contrast_verdicts(bundle, surface, arm_labels=arm_labels)]
 
 
@@ -636,9 +637,9 @@ def _page(
     cell_name = _cell_namer(surface, names)
     charts = _ChartLedger(bundle, arm)
     guardrails_read = guardrail_verdicts(
-        surface, bundle.guardrails, cell_name, rulers, check_names=bundle.goal_check_names
+        surface, bundle.guardrails, cell_name, rulers, check_names=bundle.named_checks()
     )
-    bars_read = bar_verdicts(surface, cell_name, check_names=bundle.goal_check_names)
+    bars_read = bar_verdicts(surface, cell_name, check_names=bundle.named_checks())
     contrasts_read = contrast_verdicts(bundle, surface, arm_labels=arm_labels)
     # The readings no declared question asked about are said with what was not tested, after what code says there.
     noted = _question_blocks(bundle)
@@ -1501,7 +1502,7 @@ def _contrast_blocks(
     blocks.extend(_readings_blocks(bundle, surface, names, rulers))
     blocks.extend(_guardrail_blocks(surface, bundle.guardrails, guardrails_read, rulers))
     blocks.extend(
-        _strata_blocks(surface, names, rulers, check_names=bundle.goal_check_names, stratum_names=bundle.stratum_names)
+        _strata_blocks(surface, names, rulers, check_names=bundle.named_checks(), stratum_names=bundle.stratum_names)
     )
     blocks.extend(_label_blocks(surface, names, rulers))
     return blocks
@@ -2202,7 +2203,7 @@ def guardrail_verdicts(
     """Each guardrail check as a typed verdict, in the guardrails table's row order; the table prints their words.
 
     An undecided check whose interval straddles its line says why on ``rulers`` (the surface's own where None), the
-    ruler the guardrails table states that reading on. ``check_names`` (``AnalysisContextBundle.goal_check_names``)
+    ruler the guardrails table states that reading on. ``check_names`` (``AnalysisContextBundle.named_checks``)
     heads a goal check by its declared display name.
     """
     if guardrails is None or guardrails.withheld is not None:
@@ -2263,7 +2264,7 @@ def bar_verdicts(
     surface: DecisionSurface, arm: Callable[[str, str], str], *, check_names: Mapping[str, str] | None = None
 ) -> list[Verdict]:
     """Each adjudicated bar's reading on each arm as a typed verdict, bar by bar in the surface's order; a bar on a
-    goal check headed by its declared display name in ``check_names`` (``AnalysisContextBundle.goal_check_names``)."""
+    goal check headed by its declared display name in ``check_names`` (``AnalysisContextBundle.named_checks``)."""
     reasons: dict[str, VerdictReason] = {
         "cleared": "interval_clears",
         "missed": "interval_misses",
@@ -3087,17 +3088,14 @@ def _marks(trials: Sequence[TrialRow]) -> str:
 
 def _trial_why(trial: TrialRow, check_names: Mapping[str, str]) -> str | None:
     """Which check or judged dimension failed a trial, or why it was lost, on one line; None for a passed trial. A
-    check by its declared display name in ``check_names``, else its expression."""
+    check by its name in ``check_names`` (``AnalysisContextBundle.named_checks``), never its expression."""
     if trial.state == "passed":
         return None
     if trial.state == "lost":
         return f"lost: {cause_short(trial.cause or 'unknown')}"
     if trial.cause == "check" and trial.failed_checks:
-        # A check is named by its declared name, else as code, by its expression: never humanized, and never a
-        # "pass rate" on one trial.
-        return "check: " + ", ".join(
-            check_names.get(check.expression) or code(check.expression) for check in trial.failed_checks
-        )
+        # A check is named by its name, never by its expression and never a "pass rate" on one trial.
+        return "check: " + ", ".join(check_names.get(check.expression) or GOAL_CHECK for check in trial.failed_checks)
     if trial.cause == "judged":
         under = [entry.dim for entry in trial.judge if entry.scale == "pass_fail" and entry.score == 0]
         return "judge: " + ", ".join(humanize("dimension", dim) for dim in under) if under else "failed by the judge"
@@ -3187,11 +3185,12 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, r
     exclusions = arm_exclusions(bundle)
     statuses = arm_run_statuses(bundle)
     case_name = _case_namer(bundle)
+    checks = bundle.named_checks()
     wrong = [trial for trial in _wrong_first(bundle.trials) if trial.state != "passed"]
     rows: list[dict[str, TableCell]] = []
     held: list[ReportBlock] = []
     for position, trial in enumerate(wrong):
-        why = _trial_why(trial, bundle.goal_check_names)
+        why = _trial_why(trial, checks)
         row = table_row(
             {
                 "trial": trial.trial_id,
@@ -3235,11 +3234,9 @@ def _trial_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, r
                 why=why,
                 **_asked_and_world(trial.first_input),
                 excerpt=trial.excerpt,
-                # The trial's own record keeps the rate name; the page prints a declared name beside the expression.
+                # The trial's own record keeps the rate name; the page prints the check's name beside the expression.
                 failed_checks=[
-                    check.model_copy(update={"name": bundle.goal_check_names[check.expression]})
-                    if check.expression in bundle.goal_check_names
-                    else check
+                    check.model_copy(update={"name": checks[check.expression]}) if check.expression in checks else check
                     for check in trial.failed_checks
                 ],
                 judge=list(trial.judge),
@@ -3342,7 +3339,7 @@ def _not_tested_blocks(
             said.append(f"{arm(board.variant_key)} has no usable trial of {named}.")
     for proof in bundle.goal_check_proofs:
         if proof.proof != "proven":
-            said.append(_unproven_check_sentence(proof, bundle.goal_check_names.get(proof.check)))
+            said.append(_unproven_check_sentence(proof, bundle.named_checks().get(proof.check)))
     blocks: list[ReportBlock] = [DisclosureBlock(section="not_tested", source="not_tested", text=text) for text in said]
     blocks += _no_margin_blocks(bundle)
     blocks += calibration_blocks(bundle)
@@ -3391,12 +3388,14 @@ NOT_SHOWN_TO_MEASURE = "a candidate that did nothing might pass it, so it is not
 
 
 def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None) -> str:
-    """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not. Named by its declared
-    display name, else its expression."""
-    check = declared if declared is not None else code(proof.check)
+    """A goal check not shown to beat doing nothing: what it is, and what its pass rate is not. Named by its name on the
+    aspect (``Goal check 2``, ``Goal check Total right``), never by its expression, which the glossary defines it by."""
+    named = declared if declared is not None else GOAL_CHECK
+    check = named.removeprefix(GOAL_CHECK).strip()
+    check = f" {check}" if check else ""
     if proof.refused is not None:
         return (
-            f"Goal check {check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
+            f"Goal check{check} is {CHECK_REFUSED_UNDER_CURRENT_GRAMMAR} ({proof.refused}), so no arm was graded on "
             "it. Any pass rate it has predates the rule."
         )
     notes = []
@@ -3406,7 +3405,7 @@ def _unproven_check_sentence(proof: GoalCheckProofReading, declared: str | None)
         notes.append(f"{proof.stale} of {proof.runs} runs proved it under an earlier rule; relaunch to re-prove")
     tail = f" ({'; '.join(notes)})" if notes else ""
     words = CHECK_PROOF_WORDS["refuted" if proof.proof == "refuted" else "unproven"]
-    return f"Goal check {check} is {words}{tail}. {NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
+    return f"Goal check{check} is {words}{tail}. {NOT_SHOWN_TO_MEASURE[:1].upper()}{NOT_SHOWN_TO_MEASURE[1:]}."
 
 
 def _no_margin_blocks(bundle: AnalysisContextBundle) -> list[ReportBlock]:

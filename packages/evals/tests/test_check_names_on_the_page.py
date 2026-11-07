@@ -1,14 +1,15 @@
-"""Every place a campaign's page names a goal check names it by the display name its template declares
-(``EvalTemplate.goal_check_names``), through the one door (:func:`~threetears.evals.analysis.report.campaign.names.
-measure_name_of`, ``AnalysisContextBundle.check_name``, ``AspectNames.check_names``), and by its whole expression only
-where none is declared.
+"""Every place a campaign's page names a goal check names it by a name, never its expression: the display name its
+template declares (``EvalTemplate.goal_check_names``), else ``Goal check``, numbered where an aspect reads several,
+through the one door (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`,
+``AnalysisContextBundle.check_name``, ``AnalysisContextBundle.named_checks``, ``AspectNames.check_names``). The owner
+ruled it on 2026-11-09 (Q11), reversing the rule that printed an unnamed check by its whole expression.
 
 The sweep runs over the shared shapes with every check named, the page's folds included: a change whose floor reads
 one check and whose call overrides it, a choice, a change of one aspect, and a measurement held to a bar on a check.
-An expression stands beside its name in two places: once in the campaign's **Checks** legend (Design & provenance),
-on every page, and in a trial's failed-check line, which a page laid out with ``trials="all"`` states for each trial:
-the name, then the expression the trial failed. On ``campaign_report``'s default (``trials="table"``) the legend is
-the one place.
+An expression stands beside its name in two places: once in the page's glossary, which defines each check's name by
+it, on every page, and in a trial's failed-check line, which a page laid out with ``trials="all"`` states for each
+trial: the name, then the expression the trial failed. On ``campaign_report``'s default (``trials="table"``) the
+glossary is the one place.
 """
 
 from __future__ import annotations
@@ -115,17 +116,37 @@ def _page(build: str, names: Mapping[str, str]) -> CampaignReport:
     return build_campaign_report(shape.campaign, shape.readings, shape.reports, call=call)
 
 
-#: A trial's failed-check line, which states a check's name and then its expression, in Markdown and in HTML.
+#: A trial's failed-check line, which states a check's name and then its expression, in Markdown and in HTML; in
+#: HTML the name, a glossary term, is linked to its entry where it is the page's first use of it.
 _TRIAL_LINE = {
-    "markdown": lambda name, check: f"- `{name}`: `{check}`",
-    "html": lambda name, check: f"<li>{escape(name)}: <code>{escape(check)}</code></li>",
+    "markdown": lambda name, check: re.escape(f"- `{name}`: `{check}`"),
+    "html": lambda name, check: (
+        rf"<li>(?:<a [^>]*>)?{re.escape(escape(name))}(?:</a>)?: <code>{re.escape(escape(check))}</code></li>"
+    ),
 }
 
-#: The check legend's row pairing a name with its expression, in Markdown and in HTML.
-_LEGEND_ROW = {
-    "markdown": lambda name, check: f"| {name} | `{check}` |",
-    "html": lambda name, check: f"<tr><td>{escape(name)}</td><td><code>{escape(check)}</code></td></tr>",
+def _definition(check: str, on: str = "") -> str:
+    """The glossary's sentence for a check's name, with the aspect it holds on where it says one."""
+    return f"The goal check `{check}`{f' on {on}' if on else ''}, which code runs on every trial."
+
+
+#: The glossary's entry pairing a name with its expression, in Markdown and in HTML.
+_GLOSSARY_ROW = {
+    "markdown": lambda name, check: f"- **{name}**: {_definition(check)}",
+    "html": lambda name, check: (
+        f'<dt id="g-{re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")}">{escape(name)}</dt>'
+        f"<dd>The goal check <code>{escape(check)}</code>, which code runs on every trial.</dd>"
+    ),
 }
+
+
+def _without_entries(said: str, form: str, names: Mapping[str, str]) -> str:
+    """``said`` without each check's glossary entry and, in HTML, without the hover a link to it carries, which reads
+    the same definition."""
+    for check, name in names.items():
+        said = said.replace(_GLOSSARY_ROW[form](name, check), "")
+        said = said.replace(f'title="{escape(_definition(check).replace("`", ""))}"', "")
+    return said
 
 
 def _rendered(page: CampaignReport, form: str) -> str:
@@ -137,20 +158,31 @@ def _rendered(page: CampaignReport, form: str) -> str:
 def test_a_named_check_is_printed_by_its_name_wherever_the_page_names_it(build: str, form: str) -> None:
     said = _rendered(_page(build, NAMES), form)
     for check, name in NAMES.items():
-        assert said.count(_LEGEND_ROW[form](name, check)) == 1, "the legend pairs the name with its check once"
-        said = said.replace(_TRIAL_LINE[form](name, check), "").replace(_LEGEND_ROW[form](name, check), "")
+        assert said.count(_GLOSSARY_ROW[form](name, check)) == 1, "the glossary pairs the name with its check once"
+        said = re.sub(_TRIAL_LINE[form](name, check), "", said)
+    said = _without_entries(said, form, NAMES)
     assert any(name in said for name in NAMES.values()), "the page names a check"
     left = [check for check in CHECKS if escape(check) in said or check in said]
     assert not left, f"{left} printed by its expression where a name is declared"
 
 
+#: What the page calls each check its template names nothing: a goal check, numbered in the checks' sorted order.
+UNNAMED = {CHECKS[1]: "Goal check 1", CHECKS[0]: "Goal check 2"}
+
+
 @pytest.mark.parametrize("form", ["markdown", "html"])
 @pytest.mark.parametrize("build", ["s1", "s2", "s4", "measurement"])
-def test_with_no_name_each_check_the_page_names_is_its_whole_expression(build: str, form: str) -> None:
+def test_with_no_name_each_check_is_a_numbered_goal_check_its_expression_in_the_glossary(build: str, form: str) -> None:
     page = _page(build, {})
     said = _rendered(page, form)
     assert not any(name in said for name in NAMES.values())
-    assert any(re.search(re.escape(escape(check)), said) for check in CHECKS)
+    for check, name in UNNAMED.items():
+        assert said.count(_GLOSSARY_ROW[form](name, check)) == 1, "the glossary pairs the name with its check once"
+        said = re.sub(_TRIAL_LINE[form](name, check), "", said)
+    said = _without_entries(said, form, UNNAMED)
+    assert any(name in said for name in UNNAMED.values()), "the page names a check"
+    left = [check for check in CHECKS if escape(check) in said or check in said]
+    assert not left, f"{left} printed by its expression, where the page names it Goal check"
     assert not any(isinstance(block, TableBlock) and block.name == "check_names" for block in page.blocks)
 
 
@@ -164,32 +196,31 @@ def _default_page(build: str, by_aspect: Mapping[str, Mapping[str, str]] | None 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])
 @pytest.mark.parametrize("build", ["s1", "s2", "s4"])
-def test_on_the_default_page_the_check_legend_is_the_one_place_each_named_check_s_expression_stands(
+def test_on_the_default_page_the_glossary_is_the_one_place_each_named_check_s_expression_stands(
     build: str, form: str
 ) -> None:
     page = _default_page(build)
-    (legend,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "check_names"]
-    assert legend.section == "provenance"
-    assert [(row["name"].text, row["expression"].text) for row in legend.rows] == [
-        (name, f"`{check}`") for check, name in NAMES.items()
+    # The legend the glossary replaced is gone: a check's name is defined once, at the foot.
+    assert not any(isinstance(block, TableBlock) and block.name == "check_names" for block in page.blocks)
+    named = {name for name in NAMES.values()}
+    assert [(term, said) for term, said in page.glossary if term in named] == [
+        (name, _definition(check)) for check, name in sorted(NAMES.items())
     ]
-    # Every aspect names its checks alike, so no row needs its aspects.
-    assert [column.key for column in legend.columns] == ["name", "expression"]
     said = _rendered(page, form)
     for check, name in NAMES.items():
-        row = _LEGEND_ROW[form](name, check)
-        assert said.count(row) == 1
-        # Outside its legend row, a named check's expression is printed nowhere on the default page.
-        assert check not in said.replace(row, "") and escape(check) not in said.replace(row, "")
+        assert said.count(_GLOSSARY_ROW[form](name, check)) == 1
+    # Outside its glossary entry, a named check's expression is printed nowhere on the default page.
+    rest = _without_entries(said, form, NAMES)
+    assert not [check for check in CHECKS if check in rest or escape(check) in rest]
 
 
-def test_a_check_two_aspects_name_apart_has_a_legend_row_per_name_with_the_aspects_declaring_it() -> None:
+def test_a_check_two_aspects_name_apart_has_a_glossary_entry_per_name_with_the_aspect_declaring_it() -> None:
     page = _default_page("measurement", {"orders": {CHECKS[0]: "Total right"}, "returns": {CHECKS[0]: "Sum right"}})
-    (legend,) = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "check_names"]
-    assert [(row["name"].text, row["expression"].text, row["aspects"].text) for row in legend.rows] == [
-        ("Total right", f"`{CHECKS[0]}`", "orders"),
-        ("Sum right", f"`{CHECKS[0]}`", "returns"),
-    ]
+    glossary = dict(page.glossary)
+    assert glossary["Total right"] == _definition(CHECKS[0], "orders")
+    assert glossary["Sum right"] == _definition(CHECKS[0], "returns")
+    # The other check is named alike on both aspects, so its entry names no aspect.
+    assert glossary["Goal check"] == _definition(CHECKS[1])
 
 
 def test_the_call_names_the_check_floor_it_overrides_by_the_check_s_name() -> None:
@@ -237,16 +268,21 @@ def _fold_names(page: CampaignReport) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("returns", [{CHECKS[0]: "Sum right"}, {}], ids=["named otherwise", "unnamed"])
-def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_the_whole_expression(
-    returns: dict[str, str],
+@pytest.mark.parametrize(
+    ("returns", "named"),
+    [({CHECKS[0]: "Sum right"}, "Sum right"), ({}, UNNAMED[CHECKS[0]])],
+    ids=["named otherwise", "unnamed"],
+)
+def test_a_column_spanning_aspects_that_name_its_check_apart_is_headed_by_each_name(
+    returns: dict[str, str], named: str
 ) -> None:
     shape = _named_by(_measurement(), {"orders": {CHECKS[0]: "Total right"}, "returns": returns})
     page = build_campaign_report(shape.campaign, shape.readings, shape.reports)
-    # A rate's column names its unit after the name (``(%)``), as every rate header does.
-    assert _measure_column(page) == f"`{CHECKS[0]}` (%)"
+    # A rate's column names its unit after the name (``(%)``), as every rate header does; each name, in the
+    # campaign's order, and never the expression, which the glossary defines each name by.
+    assert _measure_column(page) == f"Total right / {named} (%)"
     # Each folded row still names the check as its own aspect does.
-    assert _fold_names(page) == {"orders": "Total right", "returns": returns.get(CHECKS[0], f"`{CHECKS[0]}`")}
+    assert _fold_names(page) == {"orders": "Total right", "returns": named}
 
 
 def test_a_column_whose_aspects_name_its_check_alike_is_headed_by_the_name() -> None:

@@ -95,7 +95,7 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -137,11 +137,11 @@ def report_html(report: Report, *, static: bool = False) -> str:
     ]
     titles = report.section_titles
     present = _present_sections(report)
-    nav = [*present, *(["glossary"] if report.terms else [])]
+    nav = [*present, *(["glossary"] if report.glossary else [])]
     parts.append("<nav>" + "".join(f'<a href="#{section}">{escape(titles[section])}</a>' for section in nav) + "</nav>")
     parts += _sections(report, present, static=static)
-    parts = [_first_uses("\n".join(parts), report.terms)]
-    parts += _glossary(report.terms)
+    parts = [_first_uses("\n".join(parts), report.glossary)]
+    parts += _glossary(report.glossary)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
@@ -192,7 +192,7 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     links = [(section, titles[section]) for section in before]
     links += [(fold_anchor(slug), fold.heading) for fold, slug in zip(report.aspects, slugs, strict=True)]
     links += [(section, titles[section]) for section in after]
-    links += [("glossary", SECTION_TITLES["glossary"])] if report.terms else []
+    links += [("glossary", SECTION_TITLES["glossary"])] if report.glossary else []
     parts.append("<nav>" + "".join(f'<a href="#{href}">{escape(text)}</a>' for href, text in links) + "</nav>")
     for section in before:
         parts += _campaign_section(report, section, static=static)
@@ -200,8 +200,8 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
         parts += _aspect_fold(fold, slug, static=static)
     for section in after:
         parts += _campaign_section(report, section, static=static)
-    parts = [_first_uses("\n".join(parts), report.terms)]
-    parts += _glossary(report.terms)
+    parts = [_first_uses("\n".join(parts), report.glossary)]
+    parts += _glossary(report.glossary)
     parts += ["</article>", "</div>", *_script(static), "</body>", "</html>"]
     return _links_in_sight("\n".join(parts) + "\n")
 
@@ -221,24 +221,25 @@ _UNLINKED_IN: frozenset[str] = frozenset(
 )
 
 
-def _first_uses(markup: str, terms: Sequence[str]) -> str:
+def _first_uses(markup: str, glossary: Sequence[tuple[str, str]]) -> str:
     """``markup`` with each glossary term the page defines linked where the page first uses it in its prose: the first
     time its words stand whole in a line a reader reads, unless a link to it came first (a column header's, a line's
     own). Each term is linked once this way; the glossary at the foot defines it."""
-    by_definition = {GLOSSARY[term]: term for term in terms}
+    definitions = dict(glossary)
+    by_definition = {definition: term for term, definition in glossary}
     pending = {
         # The undecided reading is linked in its sentence form too: ``cannot tell v2 and v1 apart``.
         term: CANNOT_TELL_APART_PHRASE
         if term == CANNOT_TELL_APART
         else re.compile(rf"(?<![\w-]){re.escape(escape(term))}(?![\w-])", re.IGNORECASE)
-        for term in terms
+        for term in definitions
     }
     opened: list[str] = []
     out: list[str] = []
     for token in _TAG.split(markup):
         if not token.startswith("<"):
             if token and pending and not any(name in _UNLINKED_IN for name in opened):
-                token = _linked_once(token, pending)
+                token = _linked_once(token, pending, definitions)
             out.append(token)
             continue
         out.append(token)
@@ -258,9 +259,9 @@ def _first_uses(markup: str, terms: Sequence[str]) -> str:
     return "".join(out)
 
 
-def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
-    """``text`` with the first use of each pending term in it linked, the longest first where two start alike; each
-    term linked is no longer pending."""
+def _linked_once(text: str, pending: dict[str, re.Pattern[str]], definitions: dict[str, str]) -> str:
+    """``text`` with the first use of each pending term in it linked to its entry in ``definitions``, the longest first
+    where two start alike; each term linked is no longer pending."""
     found = sorted(
         (
             (match.start(), -len(match.group(0)), match.end(), term)
@@ -273,7 +274,7 @@ def _linked_once(text: str, pending: dict[str, re.Pattern[str]]) -> str:
     for start, _, end, term in found:
         if start < at:
             continue
-        said += [text[at:start], term_link(term, text[start:end])]
+        said += [text[at:start], term_link(term, text[start:end], definition=definitions[term])]
         pending.pop(term)
         at = end
     return "".join([*said, text[at:]])
@@ -286,7 +287,7 @@ def _appendix(report: CampaignReport, static: bool) -> list[str]:
         "\n".join(_aspect_fold(fold, slug, static=static))
         for fold, slug in zip(report.aspects, report.fold_ids, strict=True)
     ]
-    glossary = _glossary(report.terms)
+    glossary = _glossary(report.glossary)
     return [*folds, *(["\n".join(glossary)] if glossary else [])]
 
 
@@ -385,12 +386,14 @@ def _sections(
     return parts
 
 
-def _glossary(terms: Sequence[str]) -> list[str]:
-    """The glossary section defining ``terms``, closed; nothing when the page links none."""
-    if not terms:
+def _glossary(glossary: Sequence[tuple[str, str]]) -> list[str]:
+    """The glossary section, each ``(term, definition)`` of it, closed; nothing when the page defines none. A
+    definition's code span (a goal check's expression) is set as code, whole."""
+    if not glossary:
         return []
     entries = "".join(
-        f'<dt id="g-{glossary_slug(term)}">{escape(term)}</dt><dd>{escape(GLOSSARY[term])}</dd>' for term in terms
+        f'<dt id="g-{glossary_slug(term)}">{escape(term)}</dt><dd>{code_html(definition)}</dd>'
+        for term, definition in glossary
     )
     return [
         '<section id="glossary">',
