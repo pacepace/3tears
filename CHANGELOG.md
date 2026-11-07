@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an export of named runs past one page's ceiling is paged, not refused
+
+**Changed:** `scope_export` with `export_run_ids` whose runs hold more than `EXPORT_PAGE_RESULTS` (1,000) results
+pages them as it pages the scope, where two or more named runs past it were refused (owner ruling: run reads are
+incremental, with no per-run ceiling). The pages hold the named runs alone, archived ones included: whole runs oldest
+first, and a named run past the ceiling by its cases, as one named run alone already was. `export_after_run_id` is
+taken with `export_run_ids` whenever it is one of the named runs; one naming a run outside them is refused, naming it
+and the runs named. The ceiling itself is unchanged: it bounds one response, not what an export reads.
+
+**Hosts:** a host exporting three or more named runs reads them page by page instead of catching the refusal: each
+page's `page.named_run_ids` (an existing field, now set on every page of a named export) lists the named runs, and the
+page text names the call that reads the next (`export_after_run_id`, `export_run_ids` again, and
+`export_after_case_id` inside a run). A named export within the ceiling is whole and unpaged, as before. The help for
+`export_run_ids`, the `scope_export` action and `ops.scope_export` says named runs page as the scope does.
+
 ### evals: a stored report renders across a shape bump that added only optional fields
 
 **Changed:** a report whose evidence was assembled at aspect bundle shape 64 renders whole on this build (shape 65)
