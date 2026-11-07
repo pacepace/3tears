@@ -34,19 +34,27 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.blocks import DisclosureBlock
-from threetears.evals.analysis.report.build import build_code_only_report
+from threetears.evals.analysis.report.build import analysis_campaign_bundle, build_code_only_report
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.serialize_md import report_markdown
-from threetears.evals.analysis.service import analysis_report
+from threetears.evals.analysis.service import analysis_report, record_campaign_call
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.ops.analysis import analyses_list, report_read
+from threetears.evals.kernel.declaration import OverriddenBar
+from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
+from threetears.evals.ops.analysis import analyses_list, link_written_report, report_read
+from threetears.evals.ops.analyst import report_snapshot_freeze
+from threetears.evals.ops.report_writer.tally import Tally
+from threetears.evals.ops.report_writer.writer_bank import WriterCaseMint, writer_case_mint
+from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import analysed_aspect, empty_bundle, make_analysis
 from packages.evals.tests.fixtures.report_inputs.dataset import KAIRO_BUNDLE
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, OpsFixture, generate, ops_fixture, settled
+from packages.evals.tests.doc_writer_support import passing_review, submission
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, generate, ops_fixture, settled
+from packages.evals.tests.report_writer_support import MODEL, FakeToolTurnClient, FakeTurnModel, reply, written
+from packages.evals.tests.writer_host_support import WRITER_TEMPLATE
 
 #: The shape v0.75.0 and v0.76.0 froze analyses over.
 SHIPPED_SHAPE = 60
@@ -129,8 +137,9 @@ STORED_SHAPE = 64
 
 #: The line a page read from shape-64 evidence says, as shipped.
 STORED_LINE = (
-    "Rendered from evidence assembled at shape 64; this build assembles shape 65 (a rate's contrast is now drawn on "
-    "its bounded interval). Regenerate with analysis_generate to read it at 65."
+    "This report was written on an earlier build. Its rate contrasts were read on the t interval; the current build "
+    "draws them on a bounded interval, so a separation shown here may read as not separated today. Regenerating "
+    "would redraw them."
 )
 
 
@@ -308,3 +317,116 @@ async def test_a_report_over_a_shape_outside_the_set_is_still_refused_as_it_was(
     assert STORED_LINE not in read.body
     assert line.needs_regeneration is not None and "shape 63" in line.needs_regeneration
     assert line.verdict.startswith("Needs regeneration: ")
+
+
+async def test_a_listing_whose_shape_64_report_no_longer_reads_needs_regeneration_and_carries_no_stored_line() -> None:
+    # The stored-shape line joins the verdict only once nothing needs regenerating, so a line never carries both.
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+    assert analysis.report_doc_id is not None
+    store.upsert({**_stored(store, analysis.report_doc_id), "doc": {"claims": "no longer a list"}})
+
+    (line,) = off_loop(analyses_list, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
+
+    assert line.needs_regeneration is not None and line.needs_regeneration.startswith(NO_LONGER_READS)
+    assert STORED_LINE not in line.verdict
+
+
+# -- the doors a shape-64 analysis now opens --------------------------------------------------------------------------
+
+
+def _shapes(bundle: Mapping[str, Any] | None) -> set[int]:
+    assert bundle is not None
+    return {aspect["schema_version"] for aspect in bundle["aspects"]}
+
+
+async def test_a_snapshot_frozen_from_a_shape_64_analysis_holds_its_bundle_as_stored() -> None:
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+
+    frozen = await report_snapshot_freeze(
+        fixture.host, TOYHOST_SCOPE, analysis_id=analysis.id, created_by=CALLER.identity
+    )
+
+    # Before, the analysis's bundle was refused here. Its evidence is the generation's, so the freeze names the
+    # snapshot that evidence was frozen in, which holds it at 64 too.
+    snapshot = off_loop(fixture.host.eval_host.storage.load_report_snapshot, frozen.snapshot_id, TOYHOST_SCOPE)
+    assert snapshot is not None and _shapes(snapshot.bundle) == {STORED_SHAPE}
+
+
+async def test_a_report_written_over_that_snapshot_links_an_analysis_that_reads_with_the_line() -> None:
+    # The mint every written report goes through (link_written_report's, as the harness's analyse calls it), over a
+    # snapshot of shape-64 evidence: the analysis it links holds that evidence as stored, and its page says so.
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+    frozen = await report_snapshot_freeze(
+        fixture.host, TOYHOST_SCOPE, analysis_id=analysis.id, created_by=CALLER.identity
+    )
+    model = FakeTurnModel(
+        analyst=FakeToolTurnClient(reply(submission())), editor_1=FakeToolTurnClient(reply(passing_review()))
+    )
+    result = await written(model, snapshot=frozen.snapshot_id, host=fixture.host)
+    assert result.ending == "stored", result.outcome.reason
+
+    linked = await link_written_report(
+        fixture.host,
+        result,
+        campaign_id=fixture.campaign.id,
+        scope_id=TOYHOST_SCOPE,
+        writer_model=MODEL,
+        started_at=utc_now_iso(),
+        tally=Tally(),
+    )
+
+    assert {aspect.bundle["schema_version"] for aspect in linked.aspects} == {STORED_SHAPE}
+    read = off_loop(report_read, fixture.host.eval_host, fixture.campaign.id, TOYHOST_SCOPE, format="markdown")
+    assert read.analysis_id == linked.id and read.needs_regeneration is None
+    assert read.body.count(STORED_LINE) == 1
+
+
+async def test_a_call_over_a_shape_64_analysis_is_read_against_its_frozen_readings_and_recorded() -> None:
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+    stored = off_loop(fixture.host.eval_host.storage.load_analysis, analysis.id, TOYHOST_SCOPE)
+    assert stored is not None
+    frozen = analysis_campaign_bundle(stored)
+    assert {aspect.schema_version for aspect in frozen.aspects} == {STORED_SHAPE}
+    arm = frozen.arms[0]
+    host = fixture.host.eval_host
+    call = {"arm": arm.variant_key, "called_by": CALLER.identity, "reason": "kept on the stored report"}
+
+    # Read against the readings frozen at 64 (it was refused by shape before): the bar the arm misses there is named.
+    with pytest.raises(ValidationFailedError, match="misses the bar on field_accuracy on extract_invoice_fields"):
+        off_loop(record_campaign_call, host, fixture.campaign.id, TOYHOST_SCOPE, analysis_id=analysis.id, **call)
+    called = off_loop(
+        record_campaign_call,
+        host,
+        fixture.campaign.id,
+        TOYHOST_SCOPE,
+        analysis_id=analysis.id,
+        bars_overridden=[OverriddenBar(aspect="extract_invoice_fields", measure="field_accuracy")],
+        **call,
+    )
+
+    assert called.call is not None and called.call.variant_key == arm.variant_key
+
+
+async def test_a_writer_case_minted_from_a_shape_64_analysis_freezes_its_bundle_as_stored() -> None:
+    store = InMemoryDocumentStore()
+    fixture, analysis = await _written(store)
+    _frozen_again_at(store, analysis, STORED_SHAPE)
+    off_loop(fixture.host.eval_host.storage.save_template, WRITER_TEMPLATE)
+
+    minted = await writer_case_mint(
+        fixture.host,
+        WriterCaseMint(template_id=WRITER_TEMPLATE.id, analysis_id=analysis.id),
+        TOYHOST_SCOPE,
+        created_by=CALLER.identity,
+    )
+
+    snapshot = off_loop(fixture.host.eval_host.storage.load_report_snapshot, minted.snapshot_id, TOYHOST_SCOPE)
+    assert snapshot is not None and _shapes(snapshot.bundle) == {STORED_SHAPE}

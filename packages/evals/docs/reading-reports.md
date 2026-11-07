@@ -720,9 +720,10 @@ campaign declares a volume.
 newest analysis that is not archived. Read later, a stored report degrades rather than refuses: a key that no longer
 resolves prints "—", a block that no longer draws prints its values, and the page carries one note to regenerate. A
 report whose evidence was assembled at an earlier shape this version reads as stored renders whole, its figures as they
-were written, and its first line says so: "Rendered from evidence assembled at shape 64; this build assembles shape 65
-(a rate's contrast is now drawn on its bounded interval). Regenerate with analysis_generate to read it at 65." The
-analysis listing's verdict carries the same line, and the report is not listed as needing regeneration. An earlier
+were written, and its first line says what that means for its figures: "This report was written on an earlier
+build. Its rate contrasts were read on the t interval; the current build draws them on a bounded interval, so a
+separation shown here may read as not separated today. Regenerating would redraw them." The analysis listing's verdict
+carries the same line, and the report is not listed as needing regeneration. An earlier
 shape joins only when every field added since is optional and no stored figure changes meaning; nothing is migrated.
 A report written in any other shape this version no longer reads gets the code-only page and one line: written in a
 shape this version no longer reads; regenerate with `analysis_generate`.

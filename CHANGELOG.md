@@ -15,7 +15,7 @@ first, and a named run past the ceiling by its cases, as one named run alone alr
 taken with `export_run_ids` whenever it is one of the named runs; one naming a run outside them is refused, naming it
 and the runs named. The ceiling itself is unchanged: it bounds one response, not what an export reads.
 
-**Hosts:** a host exporting three or more named runs reads them page by page instead of catching the refusal: each
+**Hosts:** a host exporting two or more named runs reads them page by page instead of catching the refusal: each
 page's `page.named_run_ids` (an existing field, now set on every page of a named export) lists the named runs, and the
 page text names the call that reads the next (`export_after_run_id`, `export_run_ids` again, and
 `export_after_case_id` inside a run). A named export within the ceiling is whole and unpaged, as before. The help for
@@ -32,10 +32,11 @@ were written, never recomputed or migrated. 64 qualifies: 65 added `FamilyCompar
 by. A bundle of any other earlier shape is refused as before.
 
 **Added:** the page says what it is in one line, first under its masthead (`DocPage.stored_shape`, provisional, left
-out of the document when empty) and first on the code-only page of the analysis by its id: "Rendered from evidence
-assembled at shape 64; this build assembles shape 65 (a rate's contrast is now drawn on its bounded interval).
-Regenerate with analysis_generate to read it at 65." `analyses_list` lists such an analysis as written, the same line
-after its verdict, and `needs_regeneration` is None; the JSON form names the shape in `aspects[].bundle_schema_version`.
+out of the document when empty) and first on the code-only page of the analysis by its id: "This report was written
+on an earlier build. Its rate contrasts were read on the t interval; the current build draws them on a bounded
+interval, so a separation shown here may read as not separated today. Regenerating would redraw them." `analyses_list`
+lists such an analysis as written, the same line after its verdict, and `needs_regeneration` is None; the JSON form
+names the shape in `aspects[].bundle_schema_version`.
 
 **Hosts:** a host no longer regenerates an analysis written over shape-64 evidence to read it: `report_read` renders
 its written report whole with the one line above, `analyses_list` and `campaigns_list` report it `written`, and its
@@ -561,8 +562,8 @@ them change.
 rate, a check's or a goal check's pass rate, accuracy, or a judged dimension scored pass or fail. It reads improved or regressed only where that interval excludes zero. Its p values are still the t
 test's, so no adjusted p moves and the family's error rate holds. A campaign's reading of the pass rate uses the same
 method, so its 95% interval now sits inside its contrast's. A rate the t test separated may now read not separated.
-Other measures keep the t interval. The aspect bundle shape moves from 64 to 65, so every stored analysis at 64 reads
-as needing regeneration, and `report_read` serves the code-only page until it is generated again.
+Other measures keep the t interval. The aspect bundle shape moves from 64 to 65. A stored analysis at 64 is read as
+stored: its report renders whole, its rate contrasts on the t interval they were drawn on, and its first line says so.
 
 **Added:** each corrected comparison names how its interval was drawn (`FamilyComparison.interval_basis`, `bounded` or
 `t`). A comparison whose adjusted p is under alpha while its interval reaches zero says why it is not separated

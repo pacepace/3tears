@@ -225,9 +225,13 @@ class ExportPage(EvalBaseModel):
         description="The runs the export named, which the next call names again; None for an export of the scope.",
     )
     run_status: str | None = Field(description="The run status the pages are narrowed to; None for every status.")
-    archived_runs: int = Field(description="Archived runs in the scope, left out of every page and not read.")
+    archived_runs: int = Field(
+        description="Archived runs in the scope, left out of every page and not read; 0 on an export of named runs, "
+        "which reads an archived run it names."
+    )
     runs_outside_status: int = Field(
-        description="Runs in the scope, not archived, whose status is not run_status: left out and not read."
+        description="Runs considered whose status is not run_status, left out and not read: the scope's runs not "
+        "archived, or on an export of named runs, the named runs."
     )
 
 

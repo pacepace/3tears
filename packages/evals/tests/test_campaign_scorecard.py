@@ -20,6 +20,7 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import FamilyComparison
+from threetears.evals.analysis.stats import difference_interval
 from threetears.evals.analysis.lenses.frontier import FrontierCostDecision, FrontierCostTie, FrontierVerdict
 from threetears.evals import Answer, Eval
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
@@ -719,6 +720,34 @@ def test_a_contrast_showing_a_drop_the_row_does_not_say_the_row_counts_one_only_
     )
     assert "a bounded interval at 95%, on its own;" in line
     assert line.endswith("The row counts a drop only past the 10-point margin.")
+
+
+def test_a_shape_64_rate_contrast_drawn_on_its_t_interval_is_named_a_t_interval() -> None:
+    """A stored shape-64 contrast on a rate was drawn on the t interval of the test its p came from (``basis`` ``t``)
+    and records no ``interval_basis``, which 65 added. Read as stored, the reconciliation names the interval it was
+    drawn on, a t interval, never the bounded one a rate is drawn on now. The interval is the one 64 drew, the t
+    interval at the family's level over the stored per-case values; the verdict is forced to differ from the row, as
+    the test above forces it, since every 64 verdict on this shape agrees with its row."""
+    shape = s1_change()
+    level = next(
+        family.interval_level
+        for family in shape.bundles["refunds"].multiple_comparisons.families
+        if any(comparison.reading == "trial" for comparison in family.comparisons)
+    )
+    assert level is not None
+
+    def at_64(comparison: FamilyComparison) -> FamilyComparison:
+        assert comparison.case_values is not None and comparison.basis == "t"
+        control, contrast = comparison.case_values
+        interval = difference_interval(
+            list(control), list(contrast), paired=comparison.test == "paired", confidence=level, value_range=(0.0, 1.0)
+        )
+        assert interval is not None and interval != comparison.bounded_interval
+        return comparison.model_copy(update={"interval": interval, "interval_basis": None, "verdict": "regressed"})
+
+    reports = _with_trial_contrast(shape, "refunds", "v2", at_64)
+    (line,) = _on(_lines(build_campaign_report(shape.campaign, shape.readings, reports)), "On refunds")
+    assert "; the contrast a t interval at " in line and "the contrast a bounded interval" not in line
 
 
 def test_a_contrast_over_other_values_is_not_reconciled_whatever_its_verdict() -> None:

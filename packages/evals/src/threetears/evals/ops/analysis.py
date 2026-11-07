@@ -1237,11 +1237,6 @@ def _analysis_line(
             needs_regeneration = f"{unreadable.fault}; {unreadable.remedy}" if unreadable.remedy else unreadable.fault
     if needs_regeneration is not None:
         verdict = f"Needs regeneration: {needs_regeneration}"
-    elif read.bundle is not None and (
-        stored := stored_shape_line(aspect.schema_version for aspect in read.bundle.aspects)
-    ):
-        # Evidence of an earlier shape this build reads as stored: the report reads whole, and the verdict says so.
-        verdict = f"{verdict} {stored}"
     unread: str | None = None
     draft = False
     findings = 0
@@ -1252,6 +1247,11 @@ def _analysis_line(
     elif unread is not None:
         why = "; ".join(reason for reason in (unread, needs_regeneration) if reason is not None)
         needs_regeneration = f"{NO_LONGER_READS} ({why})"
+    if needs_regeneration is None and read.bundle is not None:
+        # Evidence of an earlier shape this build reads as stored: the report reads whole, and the verdict says so.
+        # Only once nothing needs regenerating, so a line never carries both.
+        if stored := stored_shape_line(aspect.schema_version for aspect in read.bundle.aspects):
+            verdict = f"{verdict} {stored}"
     return AnalysisLine(
         id=analysis.id,
         campaign_id=analysis.campaign_id,
