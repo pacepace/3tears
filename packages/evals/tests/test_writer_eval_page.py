@@ -153,3 +153,13 @@ async def test_an_interval_end_near_zero_keeps_its_sign_and_two_near_ends_stay_a
     assert row(0.2, (-0.00004, 0.4)).endswith("| 20 | -0.004 to 40 |")
     # Two ends that whole points would print alike take the decimals that tell them apart.
     assert row(0.3402, (0.3401, 0.3404)).endswith("| 34.02 | 34.01 to 34.04 |")
+
+
+async def test_a_count_of_cases_to_settle_reads_with_its_thousands_separated(tmp_path: Path, offline: None) -> None:
+    """After rung 5's judge was recorded again its page printed "Held-out cases to settle | 2969": a count on the page
+    reads as every count the page spells does, thousands separated (``2,969``), through the one count speller."""
+    result = await _replayed(tmp_path)
+    read = result.pairwise["variant"]
+    shown = replace(result, pairwise={"variant": replace(read, cases_to_settle=2969)}).pairwise_text()
+    (line,) = [line for line in shown.splitlines() if line.startswith("| variant | 0% ")]
+    assert "| 2,969 |" in line and "2969" not in line, line

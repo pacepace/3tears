@@ -156,6 +156,7 @@ from threetears.evals.analysis.report.blocks import (
     Verdict,
 )
 from threetears.evals.analysis.report.md_parts import table_lines
+from threetears.evals.analysis.report.parts.charting import count_text
 from threetears.evals.analysis.stats import PROJECTION_CASE_CAP, bet_order
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.capped_completion import PROMPT_FRAMING_TOKENS, prompt_token_bound, refresh_prices
@@ -1692,9 +1693,9 @@ def _check_row(arm: str, read: WriterPairwise | None) -> dict[str, TableCell]:
             "cannot_tell": read.cannot_tell,
             "to_settle": None
             if settle is None
-            else f"more than {PROJECTION_CASE_CAP}"
+            else f"more than {count_text(PROJECTION_CASE_CAP)}"
             if settle > PROJECTION_CASE_CAP
-            else settle,
+            else count_text(settle),
             "spent": spent if read.cap_usd is None else f"{spent} of {form.spell(read.cap_usd)}",
         }
     )
@@ -1835,7 +1836,12 @@ def _answer_sentence(
     elif primary.outcome == "not_separated":
         preference += ", too few cases to tell from an even split"
         if settle is not None:
-            about = f"more than {PROJECTION_CASE_CAP}" if settle > PROJECTION_CASE_CAP else f"about {settle}"
+            # A count as every count on the page reads, thousands separated (count_text): ``about 2,969``.
+            about = (
+                f"more than {count_text(PROJECTION_CASE_CAP)}"
+                if settle > PROJECTION_CASE_CAP
+                else f"about {count_text(settle)}"
+            )
             preference += f"; {about} cases would settle it"
     else:
         preference += f", which reads as {primary.outcome.replace('_', ' ')}"
