@@ -124,7 +124,9 @@ def _headers(said: str, form: str) -> list[str]:
     if form == "html":
         return re.findall(r"<th\b[^>]*>(.*?)</th>", said, flags=re.DOTALL)
     lines = said.splitlines()
-    return [line for line, under in zip(lines, lines[1:], strict=False) if re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", under)]
+    return [
+        line for line, under in zip(lines, lines[1:], strict=False) if re.fullmatch(r"\|(?:\s*:?-+:?\s*\|)+", under)
+    ]
 
 
 @pytest.mark.parametrize("form", ["markdown", "html"])

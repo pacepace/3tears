@@ -125,6 +125,7 @@ _TRIAL_LINE = {
     ),
 }
 
+
 def _definition(check: str, on: str = "") -> str:
     """The glossary's sentence for a check's name, with the aspect it holds on where it says one."""
     return f"The goal check `{check}`{f' on {on}' if on else ''}, which code runs on every trial."

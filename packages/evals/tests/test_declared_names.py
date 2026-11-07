@@ -2,8 +2,9 @@
 
 An aspect declares a ``short_name`` (``Aspect.short_name``), so may an arm (``CampaignArm.short_name``), and a
 template a display name per goal check (``EvalTemplate.goal_check_names``). A page prints the declared name. Where
-none is declared it prints an aspect's full label or a check's full expression, unchanged and never shortened, and
-computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
+none is declared it prints an aspect's full label, unchanged and never shortened, a check as ``Goal check``, numbered
+where an aspect reads several, its expression the glossary's definition of that name (the owner's ruling of
+2026-11-09), and computes an arm's short name from what differs from the control. No name is part of anything a run, a cell, a pool
 or a pairing keys on, nor of any fingerprint an analysis or a reporter case is checked against: naming an aspect, an
 arm or a check changes no reading and stales nothing.
 
@@ -672,19 +673,20 @@ class TestAnUndeclaredNameFallsBackWhole:
         assert aspect_name(long) == "An aspect label far longer than any short name could be"
         assert AspectNames.of([long])("an aspect no evidence was given for") == "an aspect no evidence was given for"
 
-    def test_a_check_with_no_display_name_is_its_whole_expression_as_code(self) -> None:
+    def test_a_check_with_no_display_name_is_a_goal_check_numbered_in_its_checks_sorted_order(self) -> None:
         unnamed = _fixture(named=False)["bundles"][LABELS[0]]
         named = _fixture(named=True)["bundles"][LABELS[0]]
-        measure = goal_check_measure(CHECKS[0])
-        assert measure_name_of(unnamed, measure) == f"`{CHECKS[0]}`"
-        assert measure_name_of(named, measure) == CHECK_NAMES[CHECKS[0]]
+        # The owner ruled it (2026-11-09): never the expression, which the glossary defines the name by.
+        assert measure_name_of(unnamed, goal_check_measure(CHECKS[0])) == "Goal check 2"
+        assert measure_name_of(unnamed, goal_check_measure(CHECKS[1])) == "Goal check 1"
+        assert measure_name_of(named, goal_check_measure(CHECKS[0])) == CHECK_NAMES[CHECKS[0]]
 
     def test_measure_name_prints_a_declared_name_and_never_the_rate_name(self) -> None:
         measure = goal_check_measure(CHECKS[0])
         assert measure_name(measure, declared="Cart filled") == "Cart filled"
-        assert measure_name(measure, "Cart filled") == f"`{CHECKS[0]}`", "a reader name is never read for a check"
-        assert measure_name(measure, f"Pass rate of {CHECKS[0]}") == f"`{CHECKS[0]}`"
-        assert measure_name(measure) == f"`{CHECKS[0]}`"
+        assert measure_name(measure, "Cart filled") == "Goal check", "a reader name is never read for a check"
+        assert measure_name(measure, f"Pass rate of {CHECKS[0]}") == "Goal check"
+        assert measure_name(measure) == "Goal check"
 
 
 # --- a names-only edit moves no run's reading of its template -----------------------------------------------------
@@ -782,14 +784,18 @@ class TestANamedCheckPrintsByNameOnThePage:
         markdown = campaign_report_markdown(page)
         for check, name in CHECK_NAMES.items():
             assert name in markdown, name
-            # Only the check legend states the expression, beside the name; no row is headed by it.
-            assert markdown.count(f"| {name} | `{check}` |") == 1, f"{check} has no legend row"
+            # Only the glossary states the expression, defining the name; no row is headed by it.
+            entry = f"- **{name}**: The goal check `{check}`, which code runs on every trial."
+            assert markdown.count(entry) == 1, f"{check} has no glossary entry"
             assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
 
-    def test_with_no_name_each_check_prints_its_whole_expression(self) -> None:
+    def test_with_no_name_each_check_prints_as_a_goal_check_its_expression_in_the_glossary(self) -> None:
         _, page = _page(named=False)
         markdown = campaign_report_markdown(page)
-        assert all(f"`{check}`" in markdown for check in CHECKS)
+        for check, name in {CHECKS[1]: "Goal check 1", CHECKS[0]: "Goal check 2"}.items():
+            entry = f"- **{name}**: The goal check `{check}`, which code runs on every trial."
+            assert markdown.count(entry) == 1, f"{check} has no glossary entry"
+            assert f"\n| `{check}` |" not in markdown, f"{check} still heads a row by its expression"
         assert not any(name in markdown for name in CHECK_NAMES.values())
 
 

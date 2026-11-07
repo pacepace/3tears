@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a goal check is named in every header and lead, its expression in the glossary
+
+**Changed:** every table header, reading row and lead names a goal check by the display name its template declares
+(`EvalTemplate.goal_check_names`), else `Goal check`, numbered in the checks' sorted order where an aspect reads
+several (`Goal check 1`, `Goal check 2`), never by its expression: a production campaign headed a table, and led its
+page, with a four-line `call_count(...) >= 1 or ...`. The page's glossary defines each check's name by its
+expression, whole, on one line, once ("Goal check 1: The goal check `( call_count(...) >= 1 or ... )`, which code
+runs on every trial."), and a name the page links shows it on hover; the Design & provenance `Checks` legend this replaces is gone. A column whose
+aspects name one check apart is headed by each name (`Total right / Sum right (%)`), and the glossary says which
+aspect each holds on. A trial's failed-check cell and an unproven check's line name it the same way; a trial's record
+still prints the name beside the expression it failed. The written page's figure keys and charts name an undeclared
+check alike (`input_check_name`, new, provisional). This reverses the earlier rule that an undeclared check is printed
+by its whole expression (owner ruling, 2026-11-09).
+
+**Hosts:** `AnalysisContextBundle.named_checks()` (new) gives every check's name by expression, and
+`AnalysisContextBundle.check_name` returns a name for every goal check, declared or not, where it returned None for an
+undeclared one; `style.check_names`, `style.check_definition` and `style.GOAL_CHECK` are new;
+`measure_name(goal_check_key)` with no `declared` returns `Goal check`, where it returned the expression as code.
+`Report.glossary` and `CampaignReport.glossary` (new) are what the serializers print. A host pinning a header, a lead
+or the provenance legend that printed a check's expression updates its match. Nothing stored changes: the campaign's
+readings keep a check's expression in their frozen words, and the writer's report input keeps its label.
+
 ### evals: the report page fits a host's frame without crushing its key column
 
 **Fixed:** a table's pinned key column holds a floor (8rem, or 30% of the frame) as well as its cap, and wraps at its

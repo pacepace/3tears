@@ -2904,7 +2904,8 @@ class AnalysisContextBundle(EvalDocumentModel):
         exclude_if=lambda names: not names,
         description=(
             "What a page prints for a goal check, by its expression, as the member runs' templates declare it "
-            "(`EvalTemplate.goal_check_names`). A check absent here is printed as its whole expression. Presentation "
+            "(`EvalTemplate.goal_check_names`). A check absent here is printed as `Goal check`, numbered where several "
+            "are unnamed (`named_checks`), its expression in the page's glossary. Presentation "
             "only: written only when a name is declared and no part of the bundle's fingerprint, and never in "
             "`measure_catalog`, whose names every reading is read under."
         ),

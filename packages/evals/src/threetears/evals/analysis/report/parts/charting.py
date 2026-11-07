@@ -72,7 +72,7 @@ from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock
 from threetears.evals.analysis.quantities import MONEY
 from threetears.evals.analysis.report.charts import ChartReference, KitChart, LegendItem
 from threetears.evals.analysis.report.cost_unit import REPLIES, per_noun
-from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, resolve
+from threetears.evals.analysis.report.figure_keys import Figure, NamedKind, format_figure, input_check_name, resolve
 from threetears.evals.analysis.report.parts.look import PageLook, Quantity, figure_text, quantity, series_token
 from threetears.evals.analysis.report.parts.model import WRITER_SECTION
 from threetears.evals.analysis.report.parts.words import (
@@ -359,7 +359,9 @@ def measure_words(report_input: ReportInput, key: str, *, kind: str | None = Non
         if label is None and measure.unit in _MONEY_UNITS:
             # A money key's last word names its currency, never what the money is: ``cost_usd`` reads ``cost``.
             return _CURRENCY_WORD.sub("", measure_name(key))
-        return measure_name(key) if label is None or label == goal_check_of(key) else label
+        if (check := input_check_name(key, report_input)) is not None:
+            return check
+        return measure_name(key) if label is None else label
     if key in report_input.judged:
         return report_input.judged[key].label or measure_name(key)
     return measure_name(key)

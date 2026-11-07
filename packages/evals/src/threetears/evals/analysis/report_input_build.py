@@ -110,7 +110,7 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import measure_name
+from threetears.evals.analysis.style import declared_check_name, measure_name
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -730,7 +730,9 @@ class _Builder:
         (:func:`_grade`; a goal-state check the catalog does not describe is still a check's pass rate)."""
         facts = aspect.measure_catalog.get(name)
         check = goal_check_of(name)
-        label = (aspect.check_name(name) or check) if check is not None else None
+        # The writer reads this label: a declared name, else the expression, as the writer's recorded runs read it.
+        # The page names an undeclared check at render time (``figure_keys.input_check_name``).
+        label = (declared_check_name(aspect.goal_check_names, name) or check) if check is not None else None
         if facts is None:
             return {"label": label, "grade": "pass_fail" if check is not None else None}
         return {

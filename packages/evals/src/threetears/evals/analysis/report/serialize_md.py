@@ -153,7 +153,12 @@ def _glossary_lines(glossary: Sequence[tuple[str, str]]) -> list[str]:
     """The glossary, each ``(term, definition)`` of it; nothing when the page defines none."""
     if not glossary:
         return []
-    return ["", f"## {SECTION_TITLES['glossary']}", "", *(f"- **{term}**: {definition}" for term, definition in glossary)]
+    return [
+        "",
+        f"## {SECTION_TITLES['glossary']}",
+        "",
+        *(f"- **{term}**: {definition}" for term, definition in glossary),
+    ]
 
 
 #: The sources of what warns, set apart under the title: a missed bar, a broken floor, a guardrail an arm is not

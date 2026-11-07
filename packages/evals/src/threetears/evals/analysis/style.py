@@ -170,7 +170,9 @@ def check_definition(by_aspect: Sequence[tuple[str, str | None]]) -> str:
     :return: The sentence.
     :rtype: str
     """
-    said = [code(_ONE_LINE.sub(" ", check).strip()) + (f" on {aspect}" if aspect else "") for check, aspect in by_aspect]
+    said = [
+        code(_ONE_LINE.sub(" ", check).strip()) + (f" on {aspect}" if aspect else "") for check, aspect in by_aspect
+    ]
     checks = said[0] if len(said) == 1 else f"{', '.join(said[:-1])} and {said[-1]}"
     return f"The goal check {checks}, which code runs on every trial."
 

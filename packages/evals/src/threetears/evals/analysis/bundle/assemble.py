@@ -952,9 +952,9 @@ def _criteria(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) ->
 def _check_names(runs: Sequence[EvalRun], templates: Mapping[str, EvalTemplate]) -> dict[str, str]:
     """Each goal check's display name as the member runs' templates declare it, by the check's expression.
 
-    A template that no longer resolves names nothing, and a check no template names is absent, printed as its
-    expression. A check two templates name differently is absent too, so it prints whole rather than under a name one
-    template chose, and the warning log names the check and each template's name for it: picking one would print a
+    A template that no longer resolves names nothing, and a check no template names is absent, printed as a goal check
+    (``AnalysisContextBundle.named_checks``). A check two templates name differently is absent too, so it prints as a
+    goal check rather than under a name one template chose, and the warning log names the check and each template's name for it: picking one would print a
     name the other template's author never gave it.
     """
     given: dict[str, dict[str, str]] = {}

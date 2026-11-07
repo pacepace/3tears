@@ -178,7 +178,7 @@ from threetears.evals.analysis.separation import (
     wrong_side_share,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.style import humanize, measure_name
+from threetears.evals.analysis.style import check_names, humanize, measure_name
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 
 #: What a figure is: a number, an interval (low, high), a piece of text, or an arm (rendered by name and tag).
@@ -3165,6 +3165,31 @@ def _cell_figure(report_input: ReportInput, values: tuple[str, ...], path: str) 
 NamedKind = Literal["aspect", "measure", "judged", "stratum", "task", "criterion"]
 
 
+def input_check_name(key: str, report_input: ReportInput) -> str | None:
+    """What a page calls the goal check ``key`` reads on a report input: the name the input's label declares, else
+    ``Goal check``, numbered in sorted order where the input reads several unnamed
+    (:func:`~threetears.evals.analysis.style.check_names`), as the evidence record names it. The input's label for an
+    undeclared check is its expression, which the writer reads; the page never prints it as a name.
+
+    :param key: Any measure key.
+    :ptype key: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :return: The check's name; None for a key that is no goal check's.
+    :rtype: str | None
+    """
+    check = goal_check_of(key)
+    if check is None:
+        return None
+    read = {
+        expression: measure.label
+        for name, measure in report_input.measures.items()
+        if (expression := goal_check_of(name)) is not None
+    }
+    declared = {expression: label for expression, label in read.items() if label and label != expression}
+    return check_names([*read, check], declared)[check]
+
+
 def _measure_reader_name(key: str, report_input: ReportInput) -> str:
     """A measure's or judged dimension's reader name, whichever the key names."""
     if key in report_input.measures:
@@ -3199,8 +3224,10 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput) -> 
     if kind == "measure":
         label = report_input.measures[identifier].label
         # A goal check the input declares no display name for carries its bare expression as its label: it is named as
-        # the package names an undeclared check (a code span), as every table header and chart names it.
-        return measure_name(identifier) if label is None or label == goal_check_of(identifier) else label
+        # the page names an undeclared check (``Goal check``, numbered), as every table header and chart names it.
+        if (check := input_check_name(identifier, report_input)) is not None:
+            return check
+        return measure_name(identifier) if label is None else label
     if kind == "judged":
         return report_input.judged[identifier].label or humanize("dimension", identifier)
     if kind == "stratum":
@@ -7492,6 +7519,7 @@ __all__ = [
     "cost_basis",
     "flip_margin",
     "format_figure",
+    "input_check_name",
     "gain_axis",
     "is_figure_key",
     "key_form",

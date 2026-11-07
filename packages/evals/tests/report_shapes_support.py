@@ -244,7 +244,9 @@ def _assembled(
             id=f"campaign-{name}",
             label=aspect.label,
             run_ids=[run.id for run in runs],
-            design=minimal_aspect_design(merit_axes=[], bars=list(aspect.bars), measure_order=list(aspect.measure_order)),
+            design=minimal_aspect_design(
+                merit_axes=[], bars=list(aspect.bars), measure_order=list(aspect.measure_order)
+            ),
             question=question,
             asked_at=ASKED_AT,
             control=arms[0] if control else None,

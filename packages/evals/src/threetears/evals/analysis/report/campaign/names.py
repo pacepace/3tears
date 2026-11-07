@@ -22,14 +22,11 @@ from dataclasses import dataclass, field
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.model import (
-    ReportBlock,
-    TableBlock,
     TableCell,
-    TableColumn,
     fold_anchor,
     fold_ids,
 )
-from threetears.evals.analysis.style import code, measure_name
+from threetears.evals.analysis.style import measure_name
 from threetears.evals.kernel.declaration import printed_aspect_name
 
 __all__ = ["AspectNames", "aspect_name", "legend", "measure_name_of"]
